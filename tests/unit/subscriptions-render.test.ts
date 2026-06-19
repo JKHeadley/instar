@@ -22,6 +22,8 @@ import {
   renderAccounts,
   renderPendingLogins,
   renderDisabled,
+  renderAccountMatrix,
+  buildMatrixModel,
 } from '../../dashboard/subscriptions.js';
 
 let doc: Document;
@@ -250,6 +252,86 @@ describe('renderDisabled', () => {
     renderDisabled(doc, { accounts, pending });
     expect(accounts.querySelector('.sub-disabled')).toBeTruthy();
     expect(pending.children.length).toBe(0);
+  });
+});
+
+// ── account-machine-matrix (account × machine grid) ─────────────────────────
+describe('renderAccountMatrix', () => {
+  // a1 is active on machine m1 (reachable); m2 is offline (in pool.failed, no account rows).
+  const poolScope = {
+    enabled: true,
+    accounts: [
+      { id: 'a1', email: 'a1@x.com', status: 'active', machineId: 'm1', machineNickname: 'Laptop', remote: false },
+    ],
+    pool: { selfMachineId: 'm1', failed: [{ machineId: 'm2', error: 'timeout' }] },
+    scope: 'pool',
+  };
+  // A pending login for (a2, m1) → that cell is in-progress.
+  const pendingScope = { enabled: true, logins: [{ id: 'a2', machineId: 'm1' }] };
+
+  it('renders ✓ active for an (account,machine) with an active pool row', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, poolScope, pendingScope, {});
+    // The a1 × m1 cell is active (✓ Active), not a button.
+    const cell = t.querySelector('.sub-matrix-active');
+    expect(cell).toBeTruthy();
+    expect(cell!.textContent).toContain('✓');
+    expect(cell!.querySelector('.sub-matrix-setup')).toBeNull();
+  });
+
+  it('renders a "Set up" button for a genuinely-empty (reachable) cell', () => {
+    // Two reachable machines m1, m1b; account a1 is active only on m1 → a1 × m1b is empty.
+    const t = el();
+    const pool = {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+        { id: 'aX', email: 'aX@x.com', status: 'active', machineId: 'm1b', machineNickname: 'Mini' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] },
+      scope: 'pool',
+    };
+    renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, {});
+    const setupBtns = t.querySelectorAll('.sub-matrix-setup');
+    const a1OnMini = Array.from(setupBtns).find((b) => b.getAttribute('data-account-id') === 'a1' && b.getAttribute('data-machine-id') === 'm1b');
+    expect(a1OnMini).toBeTruthy();
+    expect(a1OnMini!.textContent).toBe('Set up');
+  });
+
+  it('renders an offline/disabled column for a pool.failed machine — no fabricated ✓', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, poolScope, pendingScope, {});
+    // m2 is in pool.failed → its header is marked offline and its cells read "unknown".
+    const offHead = t.querySelector('.sub-matrix-off');
+    expect(offHead).toBeTruthy();
+    expect(offHead!.textContent).toContain('offline');
+    // The a1 × m2 cell is offline-unknown, never ✓ (no fabricated active state for a dark peer).
+    const offCells = t.querySelectorAll('.sub-matrix-offline');
+    expect(offCells.length).toBeGreaterThan(0);
+    Array.from(offCells).forEach((c) => {
+      expect(c.textContent).not.toContain('✓');
+      expect(c.querySelector('.sub-matrix-setup')).toBeNull();
+    });
+  });
+
+  it('renders an in-progress (◷) cell for a pending login on a reachable machine', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, poolScope, pendingScope, {});
+    // a2 × m1 has a pending login → in-progress.
+    const cell = t.querySelector('.sub-matrix-in-progress');
+    expect(cell).toBeTruthy();
+    expect(cell!.textContent).toContain('◷');
+    expect(cell!.querySelector('.sub-matrix-setup')).toBeNull();
+  });
+
+  it('buildMatrixModel pivots on (accountId, machineId) and marks offline machines', () => {
+    const model = buildMatrixModel(poolScope, pendingScope, {});
+    expect(model.machines.find((m: any) => m.machineId === 'm2')!.offline).toBe(true);
+    expect(model.machines.find((m: any) => m.machineId === 'm1')!.offline).toBe(false);
+    const a1m1 = model.rows.find((r: any) => r.account.accountId === 'a1')!.cells.find((c: any) => c.machineId === 'm1');
+    expect(a1m1.state).toBe('active');
+    const a1m2 = model.rows.find((r: any) => r.account.accountId === 'a1')!.cells.find((c: any) => c.machineId === 'm2');
+    expect(a1m2.state).toBe('offline');
   });
 });
 

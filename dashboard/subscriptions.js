@@ -330,6 +330,156 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
   }
 }
 
+// ── Account × Machine matrix (account-machine-matrix spec) ─────────────────
+// At-a-glance "which account is set up on which machine," with a one-tap "Set up"
+// per empty cell that runs the whole sign-in IN the dashboard (PIN → mandate →
+// enroll-start → paste the code). Pure renderer so the jsdom tests exercise the
+// SHIPPED grid. Built ENTIRELY from already-shipped pool-scope reads (FD1): the
+// matrix invents no account key — it pivots `(accountId, machineId)` rows.
+//
+// Inputs:
+//   poolScope    = GET /subscription-pool?scope=pool body
+//                  { accounts:[{id,email,status,machineId,machineNickname,remote}],
+//                    pool:{ selfMachineId, failed:[{machineId,error}] } }
+//   pendingScope = GET /subscription-pool/pending-logins?scope=pool body
+//                  { logins:[{id,machineId,...}] }  (id === accountId for matrix enrollments)
+//   transient    = optional client-side last-attempt map keyed `${accountId}::${machineId}`
+//                  → { state:'held'|'cant-resolve' } (FD6 — known only to the client)
+
+/** Pivot the pool-scope + pending-scope bodies into a grid model. Pure + testable. */
+export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
+  const accountRows = (poolScope && Array.isArray(poolScope.accounts)) ? poolScope.accounts : [];
+  const pendingRows = (pendingScope && Array.isArray(pendingScope.logins)) ? pendingScope.logins : [];
+  const failed = (poolScope && poolScope.pool && Array.isArray(poolScope.pool.failed)) ? poolScope.pool.failed : [];
+  const selfMachineId = (poolScope && poolScope.pool && poolScope.pool.selfMachineId) || null;
+  const offlineMachineIds = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
+
+  // Columns = union of machines from account rows + failed (offline) machines. A failed
+  // machine has NO account rows (pool-scope queries live, codex r3 #1) — so its column is
+  // discovered from the failed list and rendered offline (never a fabricated per-account ✓).
+  const machines = new Map(); // machineId → { machineId, nickname, offline }
+  for (const a of accountRows) {
+    const mid = a && a.machineId;
+    if (!mid || offlineMachineIds.has(mid)) continue;
+    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: (a.machineNickname || mid), offline: false });
+  }
+  for (const f of failed) {
+    const mid = f && f.machineId;
+    if (!mid) continue;
+    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: mid, offline: true });
+    else machines.get(mid).offline = true;
+  }
+
+  // Rows = union of account ids, displayed by email (FD8 — keyed by pool id, shown by email).
+  const accounts = new Map(); // accountId → { accountId, email }
+  for (const a of accountRows) {
+    const id = a && a.id;
+    if (!id) continue;
+    if (!accounts.has(id)) accounts.set(id, { accountId: id, email: a.email || id });
+    else if (!accounts.get(id).email && a.email) accounts.get(id).email = a.email;
+  }
+  // A pending matrix login can reference an account not yet in any pool row — surface its row too.
+  for (const l of pendingRows) {
+    const id = l && l.id;
+    if (id && !accounts.has(id)) accounts.set(id, { accountId: id, email: id });
+  }
+
+  // (accountId, machineId) → active|needs-reauth, from a CURRENTLY-REACHABLE machine only.
+  const cellStatus = new Map();
+  for (const a of accountRows) {
+    const mid = a && a.machineId;
+    if (!a || !a.id || !mid || offlineMachineIds.has(mid)) continue;
+    cellStatus.set(`${a.id}::${mid}`, a.status === 'needs-reauth' ? 'needs-reauth' : (a.status === 'active' ? 'active' : 'other'));
+  }
+  // (accountId, machineId) in-progress, correlated on (login.id === accountId, machineId) (FD6 r3 #2).
+  const inProgress = new Set();
+  for (const l of pendingRows) {
+    if (l && l.id && l.machineId) inProgress.add(`${l.id}::${l.machineId}`);
+  }
+
+  const machineList = Array.from(machines.values());
+  const accountList = Array.from(accounts.values());
+  const cells = [];
+  for (const acct of accountList) {
+    const rowCells = [];
+    for (const m of machineList) {
+      const key = `${acct.accountId}::${m.machineId}`;
+      let state;
+      if (m.offline) state = 'offline';                              // whole column offline (FD6)
+      else if (transient[key] && transient[key].state === 'held') state = 'held';
+      else if (transient[key] && transient[key].state === 'cant-resolve') state = 'cant-resolve';
+      else if (inProgress.has(key)) state = 'in-progress';
+      else if (cellStatus.get(key) === 'active') state = 'active';
+      else if (cellStatus.get(key) === 'needs-reauth') state = 'needs-reauth';
+      else state = 'empty';                                          // → "Set up" button
+      rowCells.push({ accountId: acct.accountId, machineId: m.machineId, state });
+    }
+    cells.push({ account: acct, cells: rowCells });
+  }
+  return { machines: machineList, accounts: accountList, rows: cells, selfMachineId };
+}
+
+const MATRIX_CELL_GLYPH = {
+  active: '✓', 'needs-reauth': '⟳', 'in-progress': '◷', offline: '—', held: '⚠', 'cant-resolve': '✗',
+};
+const MATRIX_CELL_WORD = {
+  active: 'Active', 'needs-reauth': 'Needs sign-in', 'in-progress': 'Signing in…',
+  offline: 'Machine offline', held: 'Didn’t match — re-try', 'cant-resolve': 'Can’t set up', other: 'Set up',
+};
+
+/** Render the account × machine grid. `target` is replaced. Each empty (reachable) cell
+ *  gets a "Set up" button carrying its (accountId, machineId) as data-* attributes for the
+ *  controller's delegated tap handler. Offline columns are disabled; no state is fabricated. */
+export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}) {
+  if (!target) return;
+  target.replaceChildren();
+  const model = buildMatrixModel(poolScope, pendingScope, transient);
+  if (model.accounts.length === 0 || model.machines.length === 0) {
+    target.appendChild(el(doc, 'div', 'sub-empty', 'No accounts or machines to show yet.'));
+    return;
+  }
+  const table = el(doc, 'table', 'sub-matrix');
+  // Header row: blank corner + one column per machine.
+  const thead = doc.createElement('thead');
+  const hr = doc.createElement('tr');
+  hr.appendChild(el(doc, 'th', 'sub-matrix-corner', ''));
+  for (const m of model.machines) {
+    const th = el(doc, 'th', m.offline ? 'sub-matrix-mach sub-matrix-off' : 'sub-matrix-mach',
+      sanitizeForDisplay(m.nickname, 'label') + (m.offline ? ' (offline)' : ''));
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = doc.createElement('tbody');
+  for (const row of model.rows) {
+    const tr = doc.createElement('tr');
+    tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
+    for (const c of row.cells) {
+      const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}`);
+      if (c.state === 'empty' || c.state === 'held' || c.state === 'cant-resolve') {
+        // An actionable cell → a "Set up" button (held/cant-resolve let the operator retry).
+        const btn = el(doc, 'button', 'sub-matrix-setup', c.state === 'empty' ? 'Set up' : 'Retry');
+        btn.setAttribute('data-matrix-setup', '1');
+        btn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+        btn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+        if (c.state !== 'empty') {
+          td.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH[c.state]} ${MATRIX_CELL_WORD[c.state]}`));
+        }
+        td.appendChild(btn);
+      } else {
+        const word = c.state === 'offline' ? 'unknown' : MATRIX_CELL_WORD[c.state];
+        const glyph = MATRIX_CELL_GLYPH[c.state] || '';
+        td.appendChild(el(doc, 'span', 'sub-matrix-glyph', `${glyph} ${word}`.trim()));
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  target.appendChild(table);
+}
+
 export function renderDisabled(doc, els) {
   if (els && els.accounts) {
     els.accounts.replaceChildren(
@@ -349,6 +499,10 @@ const URLS = {
   submitCode: '/subscription-pool/follow-me/submit-code', // POST — paste-back the sign-in code (ws52-code-paste-back)
   scan: '/subscription-pool/follow-me/scan', // POST — follow-me consent offers (one-tap card)
   issue: '/mandate/issue-for-machine',       // POST (PIN-gated) — Approve issues the mandate
+  // account-machine-matrix: pool-scope accounts feed the grid (the SAME read the accounts list
+  // uses, with peers merged); start-cell is the PIN-gated "Set up" orchestrator over the chain.
+  accountsPool: '/subscription-pool?scope=pool',
+  startCell: '/subscription-pool/matrix/start-cell', // POST (PIN-gated) — start a cell's sign-in
 };
 
 export function createController(opts) {
@@ -362,7 +516,10 @@ export function createController(opts) {
     cancel = (id) => clearTimeout(id),
   } = opts;
 
-  const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false };
+  // matrixTransient: client-side last-attempt state per `${accountId}::${machineId}` cell (FD6 —
+  // held / cant-resolve are known only to the client from the response it just got).
+  const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
+    matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null };
 
   async function fetchJson(url, controller) {
     const resp = await fetchImpl(url, { signal: controller.signal });
@@ -389,15 +546,17 @@ export function createController(opts) {
     if (state.inFlight) { try { state.inFlight.abort(); } catch { /* superseded */ } }
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : { signal: undefined, abort() {} };
     state.inFlight = controller;
-    let accountsBody, pendingBody, inUseBody, scanBody;
+    let accountsBody, pendingBody, inUseBody, scanBody, poolBody;
     try {
       // in-use AND the follow-me scan are best-effort — their failure must not blank the
       // accounts list, so each is caught independently (in-use → "unknown"; scan → no card).
-      [accountsBody, pendingBody, inUseBody, scanBody] = await Promise.all([
+      // poolBody (scope=pool) feeds the account×machine matrix; best-effort (matrix is hidden if absent).
+      [accountsBody, pendingBody, inUseBody, scanBody, poolBody] = await Promise.all([
         fetchJson(URLS.accounts, controller),
         fetchJson(URLS.pending, controller),
         fetchJson(URLS.inUse, controller).catch(() => null),
         postJson(URLS.scan, {}, controller).then((r) => (r.ok ? r.json : null)).catch(() => null),
+        fetchJson(URLS.accountsPool, controller).catch(() => null),
       ]);
     } catch {
       if (controller.signal && controller.signal.aborted) return;
@@ -414,17 +573,25 @@ export function createController(opts) {
       return;
     }
     state.offers = scanBody && Array.isArray(scanBody.offered) ? scanBody.offered : [];
-    render(accountsBody, pendingBody, inUseBody);
+    render(accountsBody, pendingBody, inUseBody, poolBody);
     reschedule();
   }
 
-  function render(accountsBody, pendingBody, inUseBody) {
+  function render(accountsBody, pendingBody, inUseBody, poolBody) {
     const accounts = accountsBody && Array.isArray(accountsBody.accounts) ? accountsBody.accounts : [];
     const logins = pendingBody && Array.isArray(pendingBody.logins) ? pendingBody.logins : [];
     const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
     renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId);
     renderPendingLogins(doc, els.pending, logins, now());
     wireCodeSubmit();
+    // The account × machine matrix (account-machine-matrix) — built from the pool-scope read +
+    // the (already pool-scope) pending logins. Hidden when the pool-scope read is unavailable.
+    if (els.matrix) {
+      state.lastPoolBody = poolBody || null;
+      state.lastPendingBody = pendingBody || null;
+      renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient);
+      wireMatrixSetup();
+    }
     // The one-tap follow-me Approve card(s) — rendered into els.followMe from the scan offers
     // (ws52-operator-tap-not-text Part A). Silent when there are none. The Approve click is wired
     // once (delegated) so re-renders never stack listeners.
@@ -528,6 +695,159 @@ export function createController(opts) {
     s.textContent = text;
   }
 
+  // Delegated, wired ONCE: a "Set up" tap on a matrix cell expands an inline PIN input +
+  // Confirm. Confirm POSTs the PIN-gated start-cell; on success the cell shows the auth link
+  // (operator opens it) + a code input + Submit, which POSTs the SHIPPED submit-code relay.
+  // The PIN + code are memory-only (read from the input on tap, cleared after use; never cached).
+  function wireMatrixSetup() {
+    if (state.matrixWired || !els.matrix) return;
+    state.matrixWired = true;
+    els.matrix.addEventListener('click', (ev) => {
+      const t = ev.target;
+      if (!t || typeof t.closest !== 'function') return;
+      const setupBtn = t.closest('[data-matrix-setup]');
+      if (setupBtn && els.matrix.contains(setupBtn)) { onSetupTap(setupBtn); return; }
+      const confirmBtn = t.closest('[data-matrix-confirm]');
+      if (confirmBtn && els.matrix.contains(confirmBtn)) { onConfirmTap(confirmBtn); return; }
+      const codeBtn = t.closest('[data-matrix-code-submit]');
+      if (codeBtn && els.matrix.contains(codeBtn)) { onCodeTap(codeBtn); return; }
+    });
+  }
+
+  function matrixCellOf(node) {
+    return node && typeof node.closest === 'function' ? node.closest('.sub-matrix-cell') : null;
+  }
+  function setCellStatus(cell, text) {
+    let s = cell.querySelector('.sub-matrix-status');
+    if (!s) { s = el(doc, 'div', 'sub-matrix-status', ''); cell.appendChild(s); }
+    s.textContent = text;
+  }
+
+  // Expand the cell into a PIN input + Confirm (replacing the "Set up"/"Retry" button).
+  function onSetupTap(btn) {
+    const cell = matrixCellOf(btn);
+    if (!cell) return;
+    const accountId = btn.getAttribute('data-account-id');
+    const machineId = btn.getAttribute('data-machine-id');
+    if (!accountId || !machineId) return;
+    btn.remove();
+    const pin = doc.createElement('input');
+    pin.setAttribute('type', 'password');
+    pin.setAttribute('class', 'sub-matrix-pin');
+    pin.setAttribute('placeholder', 'Your PIN');
+    pin.setAttribute('autocomplete', 'off');
+    cell.appendChild(pin);
+    const confirm = el(doc, 'button', 'sub-matrix-confirm', 'Confirm');
+    confirm.setAttribute('data-matrix-confirm', '1');
+    confirm.setAttribute('data-account-id', accountId);
+    confirm.setAttribute('data-machine-id', machineId);
+    cell.appendChild(confirm);
+  }
+
+  // Confirm → POST the PIN-gated start-cell; render the auth link + code input on success.
+  function onConfirmTap(btn) {
+    const cell = matrixCellOf(btn);
+    if (!cell) return;
+    const accountId = btn.getAttribute('data-account-id');
+    const machineId = btn.getAttribute('data-machine-id');
+    const pinInput = cell.querySelector('.sub-matrix-pin');
+    const pin = pinInput ? pinInput.value.trim() : '';
+    if (!accountId || !machineId) { setCellStatus(cell, 'Couldn’t prepare this — please refresh.'); return; }
+    if (!pin) { setCellStatus(cell, 'Enter your PIN to set this up.'); return; }
+    setCellStatus(cell, 'Starting sign-in…');
+    btn.setAttribute('disabled', '1');
+    void (async () => {
+      try {
+        const r = await postJson(URLS.startCell, { accountId, machineId, pin });
+        if (pinInput) pinInput.value = ''; // PIN is memory-only — clear it immediately
+        if (r.ok && r.json && r.json.verificationUrl) {
+          renderCellSignIn(cell, accountId, machineId, r.json.verificationUrl, r.json.loginId || accountId);
+        } else if (r.status === 409) {
+          state.matrixTransient[`${accountId}::${machineId}`] = { state: 'cant-resolve' };
+          setCellStatus(cell, 'Can’t set this account up here — its details couldn’t be resolved.');
+          btn.removeAttribute('disabled');
+        } else {
+          const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
+          setCellStatus(cell, `Couldn’t start: ${msg}`);
+          btn.removeAttribute('disabled');
+        }
+      } catch (e) {
+        setCellStatus(cell, 'Couldn’t reach the server — try again.');
+        btn.removeAttribute('disabled');
+      }
+    })();
+  }
+
+  // After start-cell: show the sign-in link (operator opens it) + a code input + Submit.
+  function renderCellSignIn(cell, accountId, machineId, verificationUrl, loginId) {
+    // Clear the PIN/Confirm UI, keep the status line.
+    const pin = cell.querySelector('.sub-matrix-pin'); if (pin) pin.remove();
+    const confirm = cell.querySelector('[data-matrix-confirm]'); if (confirm) confirm.remove();
+    setCellStatus(cell, 'Open the sign-in link, then paste the code below.');
+    const href = trustedLoginUrl(verificationUrl);
+    if (href) {
+      const a = doc.createElement('a');
+      a.setAttribute('href', href);
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+      a.setAttribute('class', 'sub-matrix-signin');
+      a.textContent = 'Sign in';
+      cell.appendChild(a);
+    } else {
+      cell.appendChild(el(doc, 'div', 'sub-matrix-url', sanitizeForDisplay(verificationUrl, 'url')));
+    }
+    const code = doc.createElement('input');
+    code.setAttribute('type', 'text');
+    code.setAttribute('class', 'sub-matrix-code-input');
+    code.setAttribute('placeholder', 'Paste your sign-in code');
+    code.setAttribute('autocomplete', 'off');
+    cell.appendChild(code);
+    const submit = el(doc, 'button', 'sub-matrix-code-submit', 'Submit');
+    submit.setAttribute('data-matrix-code-submit', '1');
+    submit.setAttribute('data-account-id', accountId);
+    submit.setAttribute('data-machine-id', machineId);
+    submit.setAttribute('data-login-id', loginId);
+    cell.appendChild(submit);
+  }
+
+  // Submit the pasted code via the SHIPPED submit-code relay (unchanged contract).
+  function onCodeTap(btn) {
+    const cell = matrixCellOf(btn);
+    if (!cell) return;
+    const accountId = btn.getAttribute('data-account-id');
+    const machineId = btn.getAttribute('data-machine-id');
+    const loginId = btn.getAttribute('data-login-id') || accountId;
+    const input = cell.querySelector('.sub-matrix-code-input');
+    const code = input ? input.value.trim() : '';
+    if (!code) { setCellStatus(cell, 'Paste the code the sign-in page gave you, then tap Submit.'); return; }
+    setCellStatus(cell, 'Sending your code…');
+    btn.setAttribute('disabled', '1');
+    void (async () => {
+      try {
+        const r = await postJson(URLS.submitCode, { machineId, id: loginId, code });
+        if (input) input.value = ''; // code is memory-only — cleared after use
+        const key = `${accountId}::${machineId}`;
+        if (r.ok && r.json && r.json.outcome === 'validated') {
+          delete state.matrixTransient[key];
+          setCellStatus(cell, 'Done — this machine is set up with the account.');
+        } else if (r.ok && r.json && r.json.outcome === 'submitted') {
+          setCellStatus(cell, 'Code sent — finishing sign-in…');
+        } else if (r.ok && r.json && r.json.outcome === 'held') {
+          state.matrixTransient[key] = { state: 'held' };
+          setCellStatus(cell, 'Signed in, but the account didn’t match what was approved — re-try with the right account.');
+          btn.removeAttribute('disabled');
+        } else {
+          const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
+          setCellStatus(cell, `Couldn’t submit the code: ${msg}`);
+          btn.removeAttribute('disabled');
+        }
+      } catch (e) {
+        setCellStatus(cell, 'Couldn’t reach the server — try again.');
+        btn.removeAttribute('disabled');
+      }
+    })();
+  }
+
   function reschedule() {
     if (!state.active) return;
     if (state.timerId != null) cancel(state.timerId);
@@ -550,5 +870,6 @@ if (typeof window !== 'undefined') {
   window.Subscriptions = {
     createController, sanitizeForDisplay, renderAccounts, renderPendingLogins,
     renderFollowMeOffers, renderFollowMeApproveCard, buildFollowMeIssuePayload,
+    renderAccountMatrix, buildMatrixModel,
   };
 }

@@ -152,4 +152,70 @@ describe('subscriptions controller — follow-me card wiring', () => {
     // here assert the controller does not throw and the card area is managed.
     expect(h.els.followMe).toBeTruthy();
   });
+
+  // ── account-machine-matrix "Set up" → PIN → start-cell wiring ──────────────
+  function makeMatrixHarness() {
+    const dom = new JSDOM('<!doctype html><body><div id="fm"></div><div id="mx"></div></body>');
+    const doc = dom.window.document;
+    const els = {
+      accounts: doc.createElement('div'), pending: doc.createElement('div'),
+      followMe: doc.getElementById('fm'), matrix: doc.getElementById('mx'),
+    };
+    const calls = [];
+    const fetchImpl = (url, o = {}) => {
+      calls.push({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : undefined });
+      const ok = (json, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(json) });
+      if (url === '/subscription-pool') return ok({ enabled: true, accounts: [] });
+      if (url === '/subscription-pool?scope=pool') return ok({
+        enabled: true, scope: 'pool',
+        // a1 active on m1; a1 is EMPTY on m1b (second reachable machine) → a "Set up" cell.
+        accounts: [
+          { id: 'a1', email: 'a1@x.com', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+          { id: 'aX', email: 'aX@x.com', status: 'active', machineId: 'm1b', machineNickname: 'Mini' },
+        ],
+        pool: { selfMachineId: 'm1', failed: [] },
+      });
+      if (url.startsWith('/subscription-pool/pending-logins')) return ok({ enabled: true, logins: [] });
+      if (url === '/subscription-pool/in-use') return ok({ activeAccountId: null });
+      if (url === '/subscription-pool/follow-me/scan') return ok({ enabled: true, offered: [] });
+      if (url === '/subscription-pool/matrix/start-cell') return ok({ verificationUrl: 'https://claude.com/oauth', loginId: 'a1', machineId: 'm1b' }, 201);
+      return ok({});
+    };
+    const ctrl = createController({ doc, els, fetchImpl, schedule: () => 0, cancel: () => {} });
+    ctrl._state.active = true;
+    return { doc, els, calls, ctrl };
+  }
+
+  it('a "Set up" tap → Confirm WITH a PIN POSTs start-cell with {accountId, machineId, pin}', async () => {
+    const h = makeMatrixHarness();
+    await h.ctrl.tick();
+    // the empty (a1 × m1b) cell rendered a "Set up" button
+    const setup = Array.from(h.els.matrix.querySelectorAll('[data-matrix-setup]'))
+      .find((b) => b.getAttribute('data-account-id') === 'a1' && b.getAttribute('data-machine-id') === 'm1b');
+    expect(setup).toBeTruthy();
+    setup.click(); // expands inline PIN + Confirm
+    await flush();
+    const pin = h.els.matrix.querySelector('input.sub-matrix-pin');
+    expect(pin).toBeTruthy();
+    pin.value = '123456';
+    h.els.matrix.querySelector('[data-matrix-confirm]').click();
+    await flush();
+    const cell = h.calls.find((c) => c.url === '/subscription-pool/matrix/start-cell');
+    expect(cell?.method).toBe('POST');
+    expect(cell?.body).toMatchObject({ accountId: 'a1', machineId: 'm1b', pin: '123456' });
+  });
+
+  it('a Confirm tap with NO PIN does NOT POST start-cell (prompts for the PIN)', async () => {
+    const h = makeMatrixHarness();
+    await h.ctrl.tick();
+    const setup = Array.from(h.els.matrix.querySelectorAll('[data-matrix-setup]'))
+      .find((b) => b.getAttribute('data-account-id') === 'a1' && b.getAttribute('data-machine-id') === 'm1b');
+    setup.click();
+    await flush();
+    // tap Confirm without typing a PIN
+    h.els.matrix.querySelector('[data-matrix-confirm]').click();
+    await flush();
+    expect(h.calls.find((c) => c.url === '/subscription-pool/matrix/start-cell')).toBeUndefined();
+    expect(h.els.matrix.textContent.toLowerCase()).toContain('pin');
+  });
 });

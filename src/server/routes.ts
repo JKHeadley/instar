@@ -21443,6 +21443,162 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // account-machine-matrix (Account × Machine matrix) — PIN-GATED orchestrator over the
+  // already-shipped PIN→mandate→enroll-start chain. The Subscriptions-tab matrix "Set up"
+  // tap calls this with {accountId, machineId, pin}: it requires the dashboard PIN (the only
+  // proof of operator presence — the AGENT also holds the Bearer, FD4), resolves the account
+  // email + agents pair SERVER-SIDE from pool state (never from the body, FD3/FD8), issues the
+  // per-(account, targetMachine) account-follow-me mandate exactly as /mandate/issue-for-machine
+  // does, then drives the EXISTING mandate-gated enroll/start (self → loopback; peer → deliver
+  // the signed mandate + remote enroll/start, the proven adriana cross-machine path). It adds NO
+  // new authority — it just drives the existing chain in one call so the frontend never handles
+  // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
+  // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
+  router.post('/subscription-pool/matrix/start-cell', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) {
+      res.status(503).json({ error: 'enrollment wizard or subscription pool not configured' });
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.accountId !== 'string' || !b.accountId.trim() || typeof b.machineId !== 'string' || !b.machineId.trim()) {
+      res.status(400).json({ error: 'accountId and machineId are required' });
+      return;
+    }
+    // THE LOAD-BEARING GATE (FD4): the dashboard PIN proves operator presence. checkMandatePin
+    // is the EXACT mechanism /mandate/issue-for-machine uses; a missing/invalid PIN sends its own
+    // 401/403/429 response — never start an enrollment without it. The agent shares the Bearer, so
+    // Bearer-only would let any agent session start a cross-machine account login with no operator.
+    if (!checkMandatePin(req, res)) return;
+
+    const accountId = b.accountId.trim();
+    const machineId = b.machineId.trim();
+    const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    const isSelf = machineId === selfMachineId;
+    const localFp = resolveAgentFingerprint(ctx);
+
+    // SELF-only idempotency (spec): a re-tap on a cell already mid-setup must REUSE the existing
+    // pending login (correct expectedEmail + un-expired) rather than minting a new mandate / a
+    // duplicate login. Peer-target idempotency is left to the peer's own enroll/start (we never
+    // read a peer's pending() from here). The configHome is per-account so the pane identity is 1:1.
+    if (isSelf) {
+      try {
+        const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
+        const localAccounts = ctx.subscriptionPool.list().map((a) => ({
+          id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
+        }));
+        const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
+        const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
+        if (!target.resolved) {
+          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
+          res.status(409).json({ error: 'cannot resolve approved account email' });
+          return;
+        }
+        const existing = ctx.enrollmentWizard.pending().find(
+          (l) => l.id === accountId && l.status === 'pending'
+            && Date.parse(l.ttlExpiresAt) > Date.now()
+            && (!l.expectedEmail || l.expectedEmail === target.expectedEmail),
+        );
+        if (existing) {
+          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=reused-pending`);
+          res.status(201).json({ verificationUrl: existing.verificationUrl, loginId: existing.id, machineId, reused: true });
+          return;
+        }
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'matrix start-cell pre-check failed' });
+        return;
+      }
+    }
+
+    // Issue the per-(account, targetMachine) account-follow-me mandate — EXACTLY the bounds
+    // /mandate/issue-for-machine writes (R1 exact-bounds, re-mint), PIN already verified above.
+    // The agents pair is this Echo identity's routing fingerprint (issuer === target identity:
+    // the agent following its own account onto another machine), as the scan card does.
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    let mandateId: string;
+    try {
+      const mandate = ctx.coordination.store.issue({
+        scope: 'account-follow-me',
+        agents: [localFp, localFp],
+        authorities: [
+          { action: 'account-follow-me', bounds: { accountId, targetMachineId: machineId, mechanism: 're-mint' } },
+        ],
+        author: 'justin',
+        expiresAt,
+      });
+      mandateId = mandate.id;
+
+      // For a PEER target, deliver the signed mandate over the mesh first (the proven R4a path
+      // that enrolled adriana); the peer's enroll/start re-verifies the issuance signature.
+      if (!isSelf) {
+        if (!ctx.packageMandateForDelivery || !ctx.deliverMandateToMachine) {
+          res.status(503).json({ error: 'cross-machine mandate delivery unavailable (no mesh identity)' });
+          return;
+        }
+        const portable = ctx.packageMandateForDelivery(mandate);
+        const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable });
+        if (!outcome.ok) {
+          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=deliver-failed`);
+          res.status(502).json({ error: 'could not deliver authorization to the target machine — try again in a moment', retryable: true });
+          return;
+        }
+      }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'matrix mandate issuance failed' });
+      return;
+    }
+
+    // Drive the EXISTING mandate-gated enroll/start (no reimplementation of email resolution /
+    // S7 / configHome / driveLogin). self → loopback; peer → the peer's local enroll/start. On
+    // success it returns { login }; on an unresolvable email a 409; on a drive failure a 502.
+    let baseUrl: string;
+    if (isSelf) {
+      baseUrl = `http://${ctx.config.host || '127.0.0.1'}:${ctx.config.port}`;
+    } else {
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+      if (!peer) {
+        console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=peer-unreachable`);
+        res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment`, retryable: true });
+        return;
+      }
+      baseUrl = peer.url;
+    }
+    try {
+      const r = await fetch(`${baseUrl}/subscription-pool/follow-me/enroll/start`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mandateId, accountId }),
+        signal: AbortSignal.timeout(40_000),
+      });
+      const body = await r.json().catch(() => ({})) as { login?: { id?: string; verificationUrl?: string }; error?: string };
+      if (r.status === 201 && body.login?.verificationUrl) {
+        console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=started`);
+        res.status(201).json({ verificationUrl: body.login.verificationUrl, loginId: body.login.id ?? accountId, machineId });
+        return;
+      }
+      if (r.status === 409) {
+        console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
+        res.status(409).json({ error: body.error || 'cannot resolve approved account email' });
+        return;
+      }
+      // Mandate issued but enroll-start failed (drive throw / unreachable / other). Honest
+      // retryable 502 — the unused mandate lapses by its TTL; a re-tap reuses or re-mints.
+      console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-failed`);
+      res.status(502).json({ error: body.error || 'could not start the sign-in on the target — try again', retryable: true });
+    } catch (err) {
+      console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-error`);
+      res.status(502).json({ error: 'could not reach the machine doing the login — try again', retryable: true });
+    }
+  });
+
   // Single-segment path → no collision with /enroll/:id/complete (3 segments).
   router.post('/subscription-pool/enroll/reissue-expired', async (_req, res) => {
     if (!ctx.enrollmentWizard) {
