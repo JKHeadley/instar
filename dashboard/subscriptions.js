@@ -471,6 +471,17 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
         const word = c.state === 'offline' ? 'unknown' : MATRIX_CELL_WORD[c.state];
         const glyph = MATRIX_CELL_GLYPH[c.state] || '';
         td.appendChild(el(doc, 'span', 'sub-matrix-glyph', `${glyph} ${word}`.trim()));
+        // An in-progress (◷) cell gets a tappable Cancel so a mis-tapped setup can be
+        // reversed (abandon the login + tear down its pane). Emitted on the DURABLE
+        // re-rendered cell (not just the live sign-in DOM) so it survives the poll loop.
+        // The login id === accountId for a matrix login; the relay routes to self/peer.
+        if (c.state === 'in-progress') {
+          const cancelBtn = el(doc, 'button', 'sub-matrix-cancel', 'Cancel');
+          cancelBtn.setAttribute('data-matrix-cancel', '1');
+          cancelBtn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          cancelBtn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          td.appendChild(cancelBtn);
+        }
       }
       tr.appendChild(td);
     }
@@ -503,6 +514,7 @@ const URLS = {
   // uses, with peers merged); start-cell is the PIN-gated "Set up" orchestrator over the chain.
   accountsPool: '/subscription-pool?scope=pool',
   startCell: '/subscription-pool/matrix/start-cell', // POST (PIN-gated) — start a cell's sign-in
+  cancel: '/subscription-pool/follow-me/cancel', // POST (Bearer, no PIN) — cancel an in-flight cell (relay → self/peer)
 };
 
 export function createController(opts) {
@@ -711,6 +723,8 @@ export function createController(opts) {
       if (confirmBtn && els.matrix.contains(confirmBtn)) { onConfirmTap(confirmBtn); return; }
       const codeBtn = t.closest('[data-matrix-code-submit]');
       if (codeBtn && els.matrix.contains(codeBtn)) { onCodeTap(codeBtn); return; }
+      const cancelBtn = t.closest('[data-matrix-cancel]');
+      if (cancelBtn && els.matrix.contains(cancelBtn)) { onCancelTap(cancelBtn); return; }
     });
   }
 
@@ -839,6 +853,42 @@ export function createController(opts) {
         } else {
           const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
           setCellStatus(cell, `Couldn’t submit the code: ${msg}`);
+          btn.removeAttribute('disabled');
+        }
+      } catch (e) {
+        setCellStatus(cell, 'Couldn’t reach the server — try again.');
+        btn.removeAttribute('disabled');
+      }
+    })();
+  }
+
+  // Cancel an in-flight cell: POST the Bearer-only cancel relay (self/peer), abandoning
+  // the login + tearing down its pane. No PIN (mirrors the code-submit step — a PIN can't
+  // cross the mesh). Reversible: the cell frees up to re-tap "Set up". Guarded by a native
+  // confirm where available (degrades to proceed under jsdom/headless).
+  function onCancelTap(btn) {
+    const cell = matrixCellOf(btn);
+    if (!cell) return;
+    const accountId = btn.getAttribute('data-account-id');
+    const machineId = btn.getAttribute('data-machine-id');
+    if (!accountId || !machineId) { setCellStatus(cell, 'Couldn’t prepare this — please refresh.'); return; }
+    const view = doc.defaultView;
+    if (view && typeof view.confirm === 'function') {
+      let ok = true;
+      try { ok = view.confirm('Cancel this in-progress setup?'); } catch (e) { ok = true; }
+      if (!ok) return;
+    }
+    setCellStatus(cell, 'Cancelling…');
+    btn.setAttribute('disabled', '1');
+    void (async () => {
+      try {
+        const r = await postJson(URLS.cancel, { machineId, id: accountId });
+        if (r.ok && r.json && (r.json.cancelled || r.json.alreadyTerminal)) {
+          delete state.matrixTransient[`${accountId}::${machineId}`];
+          setCellStatus(cell, 'Cancelled — you can set this up again.');
+        } else {
+          const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
+          setCellStatus(cell, `Couldn’t cancel: ${msg}`);
           btn.removeAttribute('disabled');
         }
       } catch (e) {

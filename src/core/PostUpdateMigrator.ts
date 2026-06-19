@@ -5455,7 +5455,8 @@ When enabled, certain stores (preferences, relationships) replicate across my ma
     if (!content.includes('Cross-Machine Account Follow-Me (WS5.2')) {
       const ws52Section =
         '**Cross-Machine Account Follow-Me (WS5.2 — seamless account/quota sharing)** — When I run on more than one machine, "log in once, the account works everywhere" is delivered the ToS-SAFE way: each machine RE-MINTS its OWN login (operator approves once per machine; Mechanism B — default), and NO Claude OAuth token is ever copied between machines (Anthropic\'s ToS forbids relocating a Claude login). Only a redacted, credential-free METADATA projection of each account (id, nickname, email, provider, framework, status, quota) replicates so a peer KNOWS an account\'s depth/quota — the login LOCATION (configHome) and every credential field are STRIPPED and never cross the wire. A cross-machine credential SHARE (Mechanism A, sealed-transport) is fully designed but REFUSED for Anthropic by default (per-provider allowlist, default empty). Authorization is operator-mandate-gated (deny-by-default; a peer can NEVER enroll an account onto itself via the mesh), the cross-machine mandate carries an asymmetric Ed25519 issuance signature (the local HMAC proof is machine-local), de-pairing ROTATES the recipient key so old sealed credentials die, and per-account spend is lease-sliced (sum-of-leases bound). Ships DARK on the fleet, LIVE on a development agent (dogfooding); gate: `multiMachine.accountFollowMe`. Spec: `docs/specs/ws52-account-follow-me-security.md`.\n' +
-        '- **When to use** (PROACTIVE): the user asks "do I have to log my account in on every machine?" / "share my account across machines" → explain the re-mint-per-machine model (one approval per machine, then that machine serves from the shared pool\'s quota; no token copied). "is my login copied to my other machines?" → NO — only non-credential account metadata replicates; each machine holds its own grant.\n\n';
+        '- **When to use** (PROACTIVE): the user asks "do I have to log my account in on every machine?" / "share my account across machines" → explain the re-mint-per-machine model (one approval per machine, then that machine serves from the shared pool\'s quota; no token copied). "is my login copied to my other machines?" → NO — only non-credential account metadata replicates; each machine holds its own grant.\n' +
+        '- **Cancel a mis-tapped cell** (PROACTIVE): if the operator started a matrix cell (◷ in-progress) by mistake, they tap **Cancel** on that cell in the dashboard Subscriptions grid — it abandons the in-flight login and tears down its sign-in pane on the owning machine (self OR peer, via the Bearer-only `POST /subscription-pool/follow-me/cancel` relay), freeing the cell to re-tap. No PIN (a per-machine PIN can\'t cross the mesh, like the code-submit step).\n\n';
       const relAnchor = '**Relationships** — Track people I interact with.';
       const relIdx = content.indexOf(relAnchor);
       if (relIdx >= 0) {
@@ -5465,6 +5466,24 @@ When enabled, certain stores (preferences, relationships) replicate across my ma
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added WS5.2 Account Follow-Me awareness section');
+    }
+
+    // WS5.2 matrix-cell Cancel awareness — a TARGETED top-up for agents that ALREADY have
+    // the WS5.2 Account Follow-Me section (the block-if-absent above won't re-add it, so a
+    // deployed agent would otherwise never learn about the new Cancel affordance). Splices
+    // the Cancel bullet right after the existing "each machine holds its own grant" bullet.
+    // Idempotent via the 'Cancel a mis-tapped cell' marker.
+    if (content.includes('Cross-Machine Account Follow-Me (WS5.2') && !content.includes('Cancel a mis-tapped cell')) {
+      const afmBulletEnd = 'each machine holds its own grant.\n';
+      const idx = content.indexOf(afmBulletEnd);
+      if (idx >= 0) {
+        const insertAt = idx + afmBulletEnd.length;
+        const cancelBullet =
+          '- **Cancel a mis-tapped cell** (PROACTIVE): if the operator started a matrix cell (◷ in-progress) by mistake, they tap **Cancel** on that cell in the dashboard Subscriptions grid — it abandons the in-flight login and tears down its sign-in pane on the owning machine (self OR peer, via the Bearer-only `POST /subscription-pool/follow-me/cancel` relay), freeing the cell to re-tap. No PIN (a per-machine PIN can\'t cross the mesh, like the code-submit step).\n';
+        content = content.slice(0, insertAt) + cancelBullet + content.slice(insertAt);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added matrix-cell Cancel awareness to the WS5.2 Account Follow-Me section');
+      }
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent

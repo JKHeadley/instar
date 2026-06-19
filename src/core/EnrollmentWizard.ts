@@ -360,4 +360,18 @@ export class EnrollmentWizard {
   pending(): PendingLogin[] {
     return this.store.active();
   }
+
+  /** Look up a single login by id INCLUDING terminal/expired records (unlike
+   *  pending(), which returns only live-pending). The operator-cancel route uses
+   *  this so an expired login is still found — and its pane torn down — not 404'd. */
+  getById(id: string): PendingLogin | null {
+    return this.store.get(id);
+  }
+
+  /** Operator-cancel: abandon a pending/expired login. Delegates to the store's
+   *  terminal-guarded transition, so a login that COMPLETED a moment earlier is
+   *  never clobbered back to abandoned. */
+  abandon(id: string): PendingLogin | null {
+    return this.store.abandon(id);
+  }
 }

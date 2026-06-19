@@ -21399,6 +21399,76 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // WS5.2 matrix-cell operator-cancel — TARGET-LOCAL: abandon an in-flight follow-me
+  // pending login on THIS machine and tear down its waiting `claude auth login` pane.
+  // Reversibility for a mis-tapped matrix cell. In the SAME closure as submit-code so it
+  // shares `followMeSubmitInFlight` (cancel stands aside while a code is mid-submit).
+  // Bearer-only like submit-code (the PIN gate lives on start-cell, the mint) — a
+  // per-machine PIN can't cross the mesh, which is what lets the fronting relay reach a
+  // peer's cancel. Dark behind multiMachine.accountFollowMe. Spec: matrix-cell-operator-cancel.
+  router.post('/subscription-pool/follow-me/enroll/:id/cancel', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.enrollmentWizard) {
+      res.status(503).json({ error: 'enrollment wizard not configured' });
+      return;
+    }
+    const id = req.params.id;
+    // Validate the id shape (the store's ID_RE) BEFORE any lookup or tmux-target
+    // derivation — never let a malformed param reach the kill path.
+    if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) {
+      res.status(404).json({ error: 'no pending login to cancel', id });
+      return;
+    }
+    // Resolve INCLUDING terminal/expired records (getById, NOT pending()) — an expired
+    // login must still be found so its stale pane is torn down, not 404'd.
+    const login = ctx.enrollmentWizard.getById(id);
+    if (!login) {
+      console.log(`[follow-me] cancel outcome=not-found id=${id} paneKilled=false`);
+      res.status(404).json({ error: 'no pending login to cancel', id });
+      return;
+    }
+    // Idempotent terminal read: a completed/abandoned login is NOT cancelled here — a
+    // completed enrollment must never be clobbered. Calm 200, no kill, no mutation.
+    if (login.status === 'completed' || login.status === 'abandoned') {
+      console.log(`[follow-me] cancel outcome=already-terminal id=${id} paneKilled=false`);
+      res.json({ enabled: true, cancelled: false, alreadyTerminal: true, terminalStatus: login.status, id });
+      return;
+    }
+    // Stand aside while a code is actively being submitted for this login (submit-code's
+    // 30s credential-poll window): killing the pane mid-write would strand a partial
+    // credential. The operator can re-tap cancel once the submit settles.
+    if (followMeSubmitInFlight.has(id)) {
+      res.status(409).json({ error: 'a sign-in is being completed for this login — try again in a moment' });
+      return;
+    }
+    // State FIRST (D2): abandon the record so it's immediately non-reusable + the cell
+    // clears, THEN best-effort tear down the pane. A crash in between leaves an orphaned
+    // pane, but enroll-start pre-cleans the slot's pane before any re-spawn.
+    ctx.enrollmentWizard.abandon(id);
+    // RAW tmux kill — NOT sessionManager.killSession: the enroll pane is a bare
+    // `tmux new-session` (never registered in SessionManager), so killSession would
+    // no-op. Mirrors enroll-start's own spawn-time pre-clean.
+    const paneSession = enrollPaneSessionName(login.framework, login.configHome);
+    const tmuxPath = ctx.config.sessions?.tmuxPath;
+    let paneKilled = false;
+    if (tmuxPath) {
+      try {
+        execFileSync(tmuxPath, ['kill-session', '-t', `=${paneSession}`], { stdio: 'ignore' });
+        paneKilled = true;
+      } catch {
+        /* @silent-fallback-ok: pane teardown is best-effort cleanup; abandon() is the
+           authoritative state transition and already ran; a stale pane is pre-cleaned
+           on the next enroll. */
+      }
+    }
+    console.log(`[follow-me] cancel outcome=abandoned id=${id} paneKilled=${paneKilled}`);
+    res.json({ enabled: true, cancelled: true, id, status: 'abandoned' });
+  });
+
   // WS5.2 code paste-back — FRONTING RELAY: the operator's single dashboard calls this;
   // it carries the code one authed hop to the machine that owns the login pane. self →
   // local submit-code; peer → POST {code} to that peer's local submit-code. The code rides
@@ -21440,6 +21510,47 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(r.status).json(body);
     } catch (err) {
       res.status(502).json({ error: 'could not reach the machine doing the login — try again, or re-tap Approve' });
+    }
+  });
+
+  // WS5.2 matrix-cell operator-cancel — FRONTING RELAY: the operator's single dashboard
+  // calls this; it carries the cancel one authed hop to the machine that owns the login
+  // pane. self → local cancel; peer → POST to that peer's local cancel. Mirrors
+  // follow-me/submit-code exactly (Bearer-authed mesh hop; dark/offline target → 502).
+  router.post('/subscription-pool/follow-me/cancel', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    const b = req.body ?? {};
+    const { machineId, id } = b as { machineId?: string; id?: string };
+    if (typeof id !== 'string' || !id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    const selfId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    let baseUrl: string | null = null;
+    if (!machineId || machineId === selfId) {
+      baseUrl = `http://${ctx.config.host || '127.0.0.1'}:${ctx.config.port}`;
+    } else {
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+      if (!peer) {
+        res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment` });
+        return;
+      }
+      baseUrl = peer.url;
+    }
+    try {
+      const r = await fetch(`${baseUrl}/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(40_000),
+      });
+      const body = await r.json().catch(() => ({}));
+      res.status(r.status).json(body);
+    } catch (err) {
+      res.status(502).json({ error: 'could not reach the machine doing the login — try again' });
     }
   });
 
