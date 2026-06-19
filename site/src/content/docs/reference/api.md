@@ -930,6 +930,21 @@ user-usable.
 | GET | `/subscription-pool/pending-logins` | The "Pending Logins" surface — active logins awaiting approval (code/URL + TTL). |
 | POST | `/subscription-pool/enroll/:id/complete` | Mark a login completed once the operator approved + the account enrolled. |
 | POST | `/subscription-pool/enroll/reissue-expired` | Sweep + auto-reissue every expired login with a fresh code/URL (the background tick calls the same path). |
+| GET | `/subscription-pool/in-use` | Which pooled accounts are currently serving a live session. |
+
+### Account follow-me / account×machine matrix (WS5.2)
+
+Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark behind `multiMachine.accountFollowMe`. Each machine re-mints its OWN login (no token is copied between machines).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/subscription-pool/matrix/start-cell` | PIN-gated orchestrator: the grid's "Set up" tap. Issues the per-(account, targetMachine) `account-follow-me` mandate, then drives the enroll/start chain (self → loopback; peer → deliver the signed mandate + remote enroll). Body: `accountId`, `machineId`, `pin`. |
+| POST | `/subscription-pool/follow-me/enroll/start` | Mandate-gated: re-mint the login on THIS target machine (Mechanism B). Spawns the waiting `claude auth login` pane + records a pending login. Body: `mandateId`, `accountId`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/submit-code` | Target-local: type the operator's verification code into the waiting login pane, then drive to a real outcome (S7 email-gate complete → add to pool). |
+| POST | `/subscription-pool/follow-me/submit-code` | Fronting relay for the above — the operator's single dashboard hop; self → loopback, peer → forward. Body: `machineId`, `id`, `code`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/cancel` | Target-local: cancel a mis-tapped in-flight cell — abandon the pending login + tear down its login pane (raw `tmux kill-session`). Idempotent on a terminal record (200 `alreadyTerminal`); unknown/malformed id → 404; stands aside (409) while a code is mid-submit. Bearer-only. |
+| POST | `/subscription-pool/follow-me/cancel` | Fronting relay for cancel — dispatches to self/peer by `machineId` (offline peer → 502). The route the dashboard Cancel button calls. Body: `machineId`, `id`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/complete` | Mark a follow-me login completed once the freshly-minted account passes the S7 email-gate. |
 
 The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
 and guarantees a long-lived session that hits its account's quota resumes on

@@ -161,8 +161,18 @@ export class PendingLoginStore {
     const id = (input.id ?? '').trim();
     if (!id) throw new ValidationError('id is required');
     if (!ID_RE.test(id)) throw new ValidationError('id must match ^[a-z0-9-]+$');
-    if (this.store.logins.some((l) => l.id === id)) {
-      throw new ValidationError(`pending login ${id} already exists`);
+    const dupIdx = this.store.logins.findIndex((l) => l.id === id);
+    if (dupIdx !== -1) {
+      // A still-live PENDING record with this id is a genuine in-flight duplicate —
+      // refuse it. But a TERMINAL (completed/abandoned) or live-EXPIRED record is
+      // stale: replace it so the account can be RE-enrolled. Follow-me reuses the
+      // accountId as the login id, so an operator who cancels a cell (→ abandoned)
+      // and re-taps it must not hit "already exists". The stale login pane, if any,
+      // is pre-cleaned by enroll-start's own spawn-time kill-session.
+      if (this.withLiveStatus(this.store.logins[dupIdx]).status === 'pending') {
+        throw new ValidationError(`pending login ${id} already exists`);
+      }
+      this.store.logins.splice(dupIdx, 1);
     }
     if (!input.label?.trim()) throw new ValidationError('label is required');
     if (!input.verificationUrl?.trim()) throw new ValidationError('verificationUrl is required');
@@ -230,6 +240,15 @@ export class PendingLoginStore {
   private transition(id: string, to: PendingLoginStatus): PendingLogin | null {
     const login = this.store.logins.find((l) => l.id === id);
     if (!login) return null;
+    // Terminal guard (defense in depth): completed/abandoned are terminal. Never
+    // re-transition a terminal record — a cancel landing a moment after a login
+    // COMPLETES must NOT clobber the successful enrollment back to abandoned. Also
+    // idempotent: a record already in the requested state is a no-op. This makes
+    // the cancel route's terminal-state correctness enforced at the store, not only
+    // in the route.
+    if (login.status === 'completed' || login.status === 'abandoned' || login.status === to) {
+      return { ...login };
+    }
     login.status = to;
     login.updatedAt = new Date(this.now()).toISOString();
     login.version += 1;
