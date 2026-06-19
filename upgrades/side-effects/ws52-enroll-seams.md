@@ -69,3 +69,7 @@ CI surfaced two real issues from seam #3, both fixed: (1) the `?scope=pool` bran
 ## Follow-up (CI hang fix, 2026-06-18)
 
 CI shard 4/4 hung ~1h46m — root cause in this change: the seam #1 consumer's `setTimeout` (boot-sweep) + `setInterval` (60s tick) in AgentServer were NOT `.unref()`'d, so a test that boots AgentServer kept the event loop alive (vitest hangs on the open handle). Fixed: `.unref()` both timers (matches the sibling pollers), and added `AbortSignal.timeout` to the consumer's self-fetches (5s on the idempotency reads, 200s on the enroll-start drive) so a wedged fetch can't hold the loop either. tsc clean.
+
+## Follow-up (the real "code=t" login bug, 2026-06-18)
+
+Driving the proof to completion (Justin tapped Approve) exposed the actual remaining bug: the device-code login link surfaced as a placeholder ending in code=t. Root cause: the verification URL from `claude auth login` is long and HARD-WRAPS across tmux pane lines with no inserted space (`...?code=t` then `rue&client_id=...` on the next line); FrameworkLoginDriver's URL scrape stopped at the first wrap and kept only the head fragment. The login was always real; the SCRAPE cut it short. Fix: (1) `parseArtifact` now re-joins wrapped URL fragments before matching (pure + unit-tested against the REAL captured Mini pane); (2) the capture switched to `tmux capture-pane -J` (joins wraps at the source). 14 FrameworkLoginDriver tests green incl. the wrapped-URL fixture. This makes the surfaced login link actually usable.
