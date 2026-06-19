@@ -66,8 +66,9 @@ LOAD_PER_CORE=$(awk -v l="${L5:-0}" -v c="${CORES:-0}" 'BEGIN{if(c+0>0)printf "%
 LEDGER="unavailable"
 AUTH=$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null || echo "")
 PORT=$(node -pe "require('./.instar/config.json').port" 2>/dev/null || echo 4042)
+AGENT_ID="${INSTAR_AGENT_ID:-$(node -pe "require('./.instar/config.json').projectName" 2>/dev/null || echo "")}"
 if [ -n "$AUTH" ]; then
-  LEDGER=$(curl -s -m 8 -H "Authorization: Bearer $AUTH" "http://localhost:${PORT}/resources/summary?sinceHours=1" 2>/dev/null \
+  LEDGER=$(curl -s -m 8 -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: ${AGENT_ID}" "http://localhost:${PORT}/resources/summary?sinceHours=1" 2>/dev/null \
     | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);const a=(j.sources||[]).find(s=>s.source==='aggregate')||{};console.log('avg='+(a.avgCpuPercent??'?')+' peak='+(a.peakCpuPercent??'?')+' current='+(a.currentCpuPercent??'?')+' samples='+(j.sampleCount??'?'))}catch(e){console.log('unavailable')}})" 2>/dev/null || echo "unavailable")
 fi
 

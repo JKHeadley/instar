@@ -62,3 +62,13 @@ The reviewer independently audited the 4 additive blocks, ran the 14 tests, AND 
 5. **Packaging — sound:** `loadRelayTemplate('load-assess.sh')` resolves via `src/templates/scripts/`, which IS in package.json `files` (ships to npm) — the same proven mechanism as `secret-get.mjs`. Content-sniff anchor `'Machine Load Assessment'` is unique (no cross-section collision); idempotency confirmed count==1 after repeated runs.
 
 No concerns raised.
+
+---
+
+## CI-conformance follow-up (post-open, #1231)
+
+CI shard 4/4 surfaced two required-conformance gaps (caught by the full suite, not my local subset run):
+- `load-assess.sh`'s localhost API call to `/resources/summary` lacked the `X-Instar-AgentId` header that `template-agent-id-header.test.ts` requires of every Bearer call in a template. Added (AGENT_ID derived from `INSTAR_AGENT_ID`/config.json projectName, same as session-start.sh). No behavior change — the header is identification only; the call already fail-softs.
+- The `Machine Load Assessment` migrateClaudeMd section was not registered in `feature-delivery-completeness.test.ts`'s `legacyMigratorSections` tracking list. Added (observe-only, ships ON, no framework-shadow marker → legacy migrator list, not featureSections). No runtime change — a test-registry entry.
+
+Both are conformance fixes to the same change; the design + second-pass review above stand unchanged.
