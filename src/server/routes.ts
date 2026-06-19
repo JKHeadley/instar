@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { classifyActionClaim } from '../core/action-claim.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
+import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21249,6 +21250,196 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me enroll start failed' });
+    }
+  });
+
+  // Per-login submit mutex for the paste-back route below (codex r2 #1) — process/instance
+  // scoped so a concurrent double-tap can't interleave two codes into the same login pane.
+  const followMeSubmitInFlight = new Set<string>();
+  // WS5.2 code paste-back (ws52-code-paste-back) — TARGET-LOCAL: type the operator's
+  // verification CODE into the waiting `claude auth login` pane on THIS machine, then
+  // finish enrollment. The Claude url-code-paste login is two-part (open URL+auth →
+  // paste the returned code); this is the second part, off-chat. The code is the
+  // operator's own single-use auth code; the provider validates it — instar holds no
+  // new authority and never stores/logs the code value. Dev-gated like the rest.
+  router.post('/subscription-pool/follow-me/enroll/:id/submit-code', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) {
+      res.status(503).json({ error: 'enrollment wizard or subscription pool not configured' });
+      return;
+    }
+    const id = req.params.id;
+    const code = (req.body ?? {}).code;
+    if (typeof code !== 'string' || !code.trim()) {
+      res.status(400).json({ error: 'code is required' });
+      return;
+    }
+    // Code-shape validation (codex cross-model finding #2/#4): the route types this into a
+    // live login pane, so narrow it to a single token — reject any control char, newline,
+    // or internal whitespace (a newline would submit the pane prematurely / split the code).
+    const trimmedCode = code.trim();
+    // eslint-disable-next-line no-control-regex -- intentionally reject whitespace + control chars
+    if (/[\s\x00-\x1f\x7f]/.test(trimmedCode) || trimmedCode.length > 512) {
+      res.status(400).json({ error: 'that does not look like a sign-in code — paste only the code the page gave you' });
+      return;
+    }
+    // Reject a pasted URL (codex r4 #3): Claude's flow returns a RAW code, but an operator may
+    // paste the whole redirect link instead. A URL has no whitespace so it slips past the check
+    // above — guard it explicitly with plain copy rather than typing a URL into the login.
+    if (/^https?:\/\//i.test(trimmedCode) || trimmedCode.includes('://')) {
+      res.status(400).json({ error: 'paste just the code, not the whole link — the code is the short value the page shows after you sign in' });
+      return;
+    }
+    // Resolve the pending login → its configHome + framework → the enroll pane session
+    // name (derived through the shared helper so it can NEVER drift from enroll-start's spawn).
+    const login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
+    if (!login) {
+      res.status(404).json({ error: `no pending login "${id}" is waiting for a code — re-tap Approve to start a fresh sign-in` });
+      return;
+    }
+    // Narrow the authority (codex finding #4): this paste-back path is ONLY for the
+    // two-part url-code-paste flow. A device-code login never prompts for a pasted code.
+    if (login.kind !== 'url-code-paste') {
+      res.status(409).json({ error: `this login does not use a paste-back code` });
+      return;
+    }
+    // Per-login in-flight mutex (codex r2 #1): two rapid POSTs must not both type into the
+    // same pane (interleaved input / a stale second code after the first advances the prompt).
+    // The first holds the lock through delivery+poll; a concurrent second gets a clean 409.
+    if (followMeSubmitInFlight.has(id)) {
+      res.status(409).json({ error: `a code is already being submitted for this login — give it a moment` });
+      return;
+    }
+    followMeSubmitInFlight.add(id);
+    try {
+    const paneSession = enrollPaneSessionName(login.framework, login.configHome);
+    const tmuxPath = ctx.config.sessions?.tmuxPath;
+    // Readiness check — FAILS CLOSED (internal security review; Signal-vs-Authority "safety guard
+    // on an irreversible action"). Typing a live auth code into a pane that is NOT at the code
+    // prompt (the login exited → a SHELL) would execute it (leak + garbage). We must be able to
+    // CAPTURE + VERIFY the pane before typing; if we cannot, we REFUSE rather than blind-type.
+    // This guard previously skipped when captureOutput was absent — an open bypass of FD13.
+    if (typeof ctx.sessionManager.captureOutput !== 'function') {
+      res.status(503).json({ error: `cannot verify the login pane on this machine — code not delivered` });
+      return;
+    }
+    let frame = '';
+    try { frame = ctx.sessionManager.captureOutput(paneSession, 12) || ''; }
+    catch { frame = ''; /* capture failed → treated as not-ready below (fail closed) */ }
+    // An empty frame also covers a MISSING pane (captureOutput returns null for a dead session),
+    // so this single check subsumes the old has-session existence test — and fails closed.
+    const lastLine = frame.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0).pop() ?? '';
+    // POSITIVE: the paste-code prompt is present (last ~12 lines, near the live prompt, so old
+    // scrollback can't satisfy it — codex r5 #1). NEGATIVE: the last visible line is NOT a shell
+    // prompt (codex r6 #1) — an exited login drops to a shell ending in $/%/# ; the real Claude
+    // prompt ends in '>'. Both must hold, on a non-empty frame, before a single char is typed.
+    const looksReady = /paste/i.test(frame) && /code/i.test(frame);
+    const looksLikeShell = /[#$%]\s*$/.test(lastLine);
+    if (!frame.trim() || !looksReady || looksLikeShell) {
+      res.status(409).json({ error: `this login isn't at the code prompt (the sign-in window may have closed) — re-tap Approve to start a fresh sign-in` });
+      return;
+    }
+    // Type the code into the pane (sendInput appends Enter). NEVER log the code value.
+    const sent = ctx.sessionManager.sendInput(paneSession, code.trim());
+    if (!sent) {
+      res.status(502).json({ error: 'could not deliver the code to the login — try again, or re-tap Approve' });
+      return;
+    }
+    // Residual hardening (codex r3 #2): the code echoes into the pane's tmux scrollback. The
+    // code is single-use + short-lived, but clear the pane history best-effort so it does not
+    // linger in scrollback on the target machine. Never fatal if it fails.
+    let cleared = false;
+    if (tmuxPath) {
+      try { execFileSync(tmuxPath, ['clear-history', '-t', `=${paneSession}:`], { stdio: 'ignore' }); cleared = true; }
+      catch { /* @silent-fallback-ok: scrollback clear is best-effort residual hardening */ }
+    }
+    console.log(`[follow-me] submitted operator code to login "${id}" (value redacted; scrollback cleared=${cleared})`);
+    // Observability (Observability standard): every terminal outcome is logged on a
+    // single greppable key so submit-code success/timeout/error rates are auditable
+    // across the loop without surfacing the code value. `[follow-me] submit-code outcome=…`.
+    const logOutcome = (outcome: string, extra = '') =>
+      console.log(`[follow-me] submit-code outcome=${outcome} id=${id}${extra ? ' ' + extra : ''}`);
+    // Drive to a real outcome (FD5): poll for the credential the login writes to its
+    // configHome, then run the S7 email-gate complete + add to pool. Bounded; on timeout
+    // return "submitted" (the reissue/complete sweep finishes it) — never a false "done".
+    const home = login.configHome ?? '';
+    const credPath = home ? path.join(home, '.claude.json') : '';
+    const deadline = Date.now() + 30_000;
+    while (credPath && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2_000));
+      if (fs.existsSync(credPath)) {
+        try {
+          const result = await ctx.enrollmentWizard.completeFollowMe(id, 'this machine');
+          if (result.outcome === 'validated') {
+            const acct = ctx.subscriptionPool.add({
+              id: result.login.id, nickname: result.login.label, provider: result.login.provider,
+              framework: result.login.framework, configHome: result.login.configHome ?? '', status: 'active', email: result.email,
+            });
+            logOutcome('validated');
+            res.status(201).json({ enabled: true, outcome: 'validated', account: acct });
+            return;
+          }
+          if (result.outcome === 'held') {
+            logOutcome('held', `reason=${result.reason}`);
+            res.json({ enabled: true, outcome: 'held', reason: result.reason });
+            return;
+          }
+        } catch { /* keep polling until the deadline */ }
+        break;
+      }
+    }
+    logOutcome('submitted');
+    res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in' });
+    } finally {
+      followMeSubmitInFlight.delete(id);
+    }
+  });
+
+  // WS5.2 code paste-back — FRONTING RELAY: the operator's single dashboard calls this;
+  // it carries the code one authed hop to the machine that owns the login pane. self →
+  // local submit-code; peer → POST {code} to that peer's local submit-code. The code rides
+  // the Bearer-authed API + authed mesh hop only, never chat. Dark target → honest 502.
+  router.post('/subscription-pool/follow-me/submit-code', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    const b = req.body ?? {};
+    const { machineId, id, code } = b as { machineId?: string; id?: string; code?: string };
+    if (typeof id !== 'string' || !id || typeof code !== 'string' || !code.trim()) {
+      res.status(400).json({ error: 'id and code are required' });
+      return;
+    }
+    const selfId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    // Local target → forward to this machine's own submit-code handler over loopback (keeps
+    // one implementation). Peer target → forward to the peer's local submit-code.
+    let baseUrl: string | null = null;
+    if (!machineId || machineId === selfId) {
+      baseUrl = `http://${ctx.config.host || '127.0.0.1'}:${ctx.config.port}`;
+    } else {
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+      if (!peer) {
+        res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment` });
+        return;
+      }
+      baseUrl = peer.url;
+    }
+    try {
+      const r = await fetch(`${baseUrl}/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/submit-code`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+        signal: AbortSignal.timeout(40_000),
+      });
+      const body = await r.json().catch(() => ({}));
+      res.status(r.status).json(body);
+    } catch (err) {
+      res.status(502).json({ error: 'could not reach the machine doing the login — try again, or re-tap Approve' });
     }
   });
 

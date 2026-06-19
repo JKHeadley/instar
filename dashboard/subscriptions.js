@@ -271,6 +271,9 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
   }
   for (const l of logins) {
     const row = el(doc, 'div', 'sub-pending');
+    // Non-sensitive identifiers for the code-submit handler (never a credential).
+    row.setAttribute('data-login-id', sanitizeForDisplay(l && l.id, 'label'));
+    if (l && (l.machineId || l.machineNickname)) row.setAttribute('data-machine-id', sanitizeForDisplay(l.machineId, 'label'));
 
     // Lead with a plain-language headline naming what to do + where (machine).
     const machine = sanitizeForDisplay(l && (l.machineNickname || l.machineId), 'label');
@@ -300,6 +303,22 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
       row.appendChild(el(doc, 'div', 'sub-pending-code', `Code: ${sanitizeForDisplay(l.userCode, 'code')}`));
     }
 
+    // url-code-paste flow (Claude): after signing in, the provider hands the operator a
+    // CODE to paste back. Give them a field for it right here — so it goes straight to the
+    // machine doing the login (off-chat), not relayed by hand. (ws52-code-paste-back)
+    if (l && l.kind === 'url-code-paste') {
+      row.appendChild(el(doc, 'div', 'sub-pending-codehint', 'After you sign in, paste the code the page gives you here:'));
+      const input = doc.createElement('input');
+      input.setAttribute('type', 'text');
+      input.setAttribute('class', 'sub-pending-code-input');
+      input.setAttribute('placeholder', 'Paste your sign-in code');
+      input.setAttribute('autocomplete', 'off');
+      row.appendChild(input);
+      const submit = el(doc, 'button', 'sub-pending-code-submit', 'Submit code');
+      submit.setAttribute('data-submit-code', '1');
+      row.appendChild(submit);
+    }
+
     // One short secondary line: the TTL, and the flow notice only if present (trimmed).
     const ttl = l && l.ttlExpiresAt ? countdown(l.ttlExpiresAt, now) : '';
     if (ttl) row.appendChild(el(doc, 'div', 'sub-pending-ttl', `Link expires in ${ttl}`));
@@ -327,6 +346,7 @@ const URLS = {
   // operator's single dashboard (WS5.2 seam #3) — without it the device-code link never appears here.
   pending: '/subscription-pool/pending-logins?scope=pool',
   inUse: '/subscription-pool/in-use',
+  submitCode: '/subscription-pool/follow-me/submit-code', // POST — paste-back the sign-in code (ws52-code-paste-back)
   scan: '/subscription-pool/follow-me/scan', // POST — follow-me consent offers (one-tap card)
   issue: '/mandate/issue-for-machine',       // POST (PIN-gated) — Approve issues the mandate
 };
@@ -404,6 +424,7 @@ export function createController(opts) {
     const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
     renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId);
     renderPendingLogins(doc, els.pending, logins, now());
+    wireCodeSubmit();
     // The one-tap follow-me Approve card(s) — rendered into els.followMe from the scan offers
     // (ws52-operator-tap-not-text Part A). Silent when there are none. The Approve click is wired
     // once (delegated) so re-renders never stack listeners.
@@ -453,6 +474,57 @@ export function createController(opts) {
   function setCardStatus(card, text) {
     let s = card.querySelector('.sub-followme-status');
     if (!s) { s = el(doc, 'div', 'sub-followme-status', ''); card.appendChild(s); }
+    s.textContent = text;
+  }
+
+  // Delegated, wired ONCE: a "Submit code" tap on a pending-login row reads the pasted
+  // sign-in code and POSTs it (with the login's id + machineId) to the fronting relay,
+  // which carries it to the machine doing the login (off-chat). The code is never stored
+  // client-side beyond the input; it's cleared on success. (ws52-code-paste-back)
+  function wireCodeSubmit() {
+    if (state.codeSubmitWired || !els.pending) return;
+    state.codeSubmitWired = true;
+    els.pending.addEventListener('click', (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-submit-code]') : null;
+      if (!btn || !els.pending.contains(btn)) return;
+      const row = btn.closest('.sub-pending');
+      if (!row) return;
+      const input = row.querySelector('.sub-pending-code-input');
+      const code = input ? input.value.trim() : '';
+      const id = row.getAttribute('data-login-id');
+      const machineId = row.getAttribute('data-machine-id') || undefined;
+      if (!code) { setRowStatus(row, 'Paste the code the sign-in page gave you, then tap Submit.'); return; }
+      if (!id) { setRowStatus(row, 'Couldn’t identify this login — please refresh.'); return; }
+      setRowStatus(row, 'Sending your code…');
+      btn.setAttribute('disabled', '1');
+      void (async () => {
+        try {
+          const r = await postJson(URLS.submitCode, { machineId, id, code });
+          if (r.ok && r.json && r.json.outcome === 'validated') {
+            setRowStatus(row, 'Done — this machine is set up with the account.');
+            if (input) input.value = '';
+          } else if (r.ok && r.json && r.json.outcome === 'submitted') {
+            setRowStatus(row, 'Code sent — finishing sign-in…');
+            if (input) input.value = '';
+          } else if (r.ok && r.json && r.json.outcome === 'held') {
+            setRowStatus(row, 'Signed in, but the account didn’t match what was approved — check with the operator.');
+            btn.removeAttribute('disabled');
+          } else {
+            const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
+            setRowStatus(row, `Couldn’t submit the code: ${msg}`);
+            btn.removeAttribute('disabled');
+          }
+        } catch (e) {
+          setRowStatus(row, 'Couldn’t reach the server — try again.');
+          btn.removeAttribute('disabled');
+        }
+      })();
+    });
+  }
+
+  function setRowStatus(row, text) {
+    let s = row.querySelector('.sub-pending-status');
+    if (!s) { s = el(doc, 'div', 'sub-pending-status', ''); row.appendChild(s); }
     s.textContent = text;
   }
 

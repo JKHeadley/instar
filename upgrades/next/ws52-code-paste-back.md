@@ -1,0 +1,21 @@
+<!-- slug: ws52-code-paste-back -->
+<!-- bump: patch -->
+
+## What Changed
+
+Completes the last step of the account-follow-me login. The `url-code-paste` login (letting one machine use another's subscription) is two parts: open the link and sign in, then paste back the **code** the provider hands you. The dashboard card showed the "Sign in" link but had nowhere to put the code — in the live run the operator signed in, got a code, and had to route it through chat for the agent to paste by hand. This adds a code field right on the pending-login card, plus the routing to deliver it off-chat: a target-local route types the code into the waiting login pane and drives to a real outcome (S7 email-gate → add to pool), and a fronting relay carries the code one authed hop from the operator's single dashboard to the machine that owns the login. Hardened from a 4-round cross-model (codex) review: pane derivation via a single shared helper, single-token code-shape validation, a `url-code-paste` kind guard, a pane-**readiness** check (refuses if the pane dropped to a shell, so the code is never typed into a shell), a per-login in-flight mutex, best-effort scrollback clear after submit, and a greppable terminal-outcome log. Dev-gated (`multiMachine.accountFollowMe`), dark on the fleet.
+
+## What to Tell Your User
+
+When you let one of your machines borrow another's subscription, signing in is now self-serve from the dashboard. After you tap "Sign in" and authenticate, paste the code the page gives you into the box right there on the card and tap Submit — it goes straight to the machine doing the login over the secure connection, never through chat. The card then updates to "Done." No more sending a sign-in code through a message for me to paste by hand.
+
+## Summary of New Capabilities
+
+- **Paste your sign-in code on the card (off-chat).** The account-follow-me pending-login card now has a code field + "Submit code" button for the two-part Claude sign-in. The code travels over the authenticated dashboard API to the machine doing the login — never through chat — and the card shows the real outcome (done / finishing / needs another try). Dev-gated; dark on the fleet.
+
+## Evidence
+
+- `tests/integration/account-follow-me-submit-code-route.test.ts` — 12 tests over the full HTTP pipeline (target route + fronting relay): dark→503, missing/whitespace/control-char code→400, wrong-kind→409, no-pending→404, pane-not-at-prompt→409 (code never typed), concurrent double-submit→409 (mutex), happy-path→201 validated (code typed, value never echoed in the response), self→loopback relay→201, unreachable peer→502.
+- `tests/unit/framework-login-driver.test.ts` — 17 tests incl. the shared `enrollPaneSessionName` helper (regression guard against pane-name drift between spawn and submit).
+- `tests/unit/subscriptions-render.test.ts` (28) + `tests/unit/follow-me-controller-wiring.test.ts` (6) — the code field renders only for `url-code-paste` logins, and a Submit tap POSTs `{id, machineId, code}` to the relay (empty field does not POST).
+- `npx tsc --noEmit` clean; `pnpm build` clean.

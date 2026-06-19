@@ -6,7 +6,24 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { FrameworkLoginDriver } from '../../src/core/FrameworkLoginDriver.js';
+import { FrameworkLoginDriver, enrollPaneSessionName } from '../../src/core/FrameworkLoginDriver.js';
+
+describe('enrollPaneSessionName (shared pane-name source of truth — ws52-code-paste-back / codex #1)', () => {
+  it('is deterministic for a given framework + configHome', () => {
+    const a = enrollPaneSessionName('claude-code', '/Users/x/.instar/agents/echo/.claude-followme-adriana');
+    const b = enrollPaneSessionName('claude-code', '/Users/x/.instar/agents/echo/.claude-followme-adriana');
+    expect(a).toBe(b);
+    expect(a).toMatch(/^instar-enroll-claude-code-/);
+  });
+  it('includes the framework so two providers in the same slot do not collide', () => {
+    expect(enrollPaneSessionName('claude-code', '/same/slot')).not.toBe(enrollPaneSessionName('codex-cli', '/same/slot'));
+  });
+  it('matches the literal formula enroll-start spawns (regression guard against drift)', () => {
+    const configHome = '/Users/x/.instar/agents/echo/.claude-followme-adriana';
+    const slug = configHome.replace(/[^a-zA-Z0-9]+/g, '-').slice(-24);
+    expect(enrollPaneSessionName('claude-code', configHome)).toBe(`instar-enroll-claude-code-${slug}`);
+  });
+});
 
 // Realistic Codex device-code login output.
 const CODEX_PANE = `

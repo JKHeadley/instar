@@ -189,6 +189,33 @@ describe('renderPendingLogins', () => {
     // The confusing "re-issued N times" noise is gone.
     expect(t.querySelector('.sub-pending-reissue')).toBeNull();
   });
+  it('a url-code-paste login renders a code paste-back field + Submit (ws52-code-paste-back)', () => {
+    const t = el();
+    renderPendingLogins(doc, t, [{
+      id: 'adriana', label: 'adriana', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
+      verificationUrl: 'https://claude.com/cai/oauth/authorize?code=true&client_id=x', ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0,
+    }], NOW);
+    expect(t.querySelector('.sub-pending-codehint')!.textContent).toContain('paste the code');
+    const input = t.querySelector('input.sub-pending-code-input');
+    expect(input).toBeTruthy();
+    const submit = t.querySelector('button.sub-pending-code-submit[data-submit-code]');
+    expect(submit!.textContent).toBe('Submit code');
+    // the row carries the non-sensitive ids the submit handler needs
+    const row = t.querySelector('.sub-pending');
+    expect(row!.getAttribute('data-login-id')).toBe('adriana');
+    expect(row!.getAttribute('data-machine-id')).toBe('m_mini');
+  });
+
+  it('a device-code login does NOT render the paste-back field (only url-code-paste does)', () => {
+    const t = el();
+    renderPendingLogins(doc, t, [{
+      id: 'codex-1', label: 'codex', kind: 'device-code', userCode: '7DAU-W4XJA',
+      verificationUrl: 'https://auth.openai.com/codex/device', ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0,
+    }], NOW);
+    expect(t.querySelector('.sub-pending-code-input')).toBeNull();
+    expect(t.querySelector('[data-submit-code]')).toBeNull();
+  });
+
   it('a javascript: URL renders as inert text, not an anchor', () => {
     const t = el();
     renderPendingLogins(doc, t, [{ id: 'x', label: 'l', kind: 'url-code-paste', verificationUrl: 'javascript:alert(1)', ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0 }], NOW);
