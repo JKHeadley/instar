@@ -428,6 +428,28 @@ try {
   warnings.push(`lint-no-direct-llm-http failed to run: ${err.message}`);
 }
 
+// ── Scrape-fixture-realness lint (full repo) ──────────────────────────
+//
+// docs/specs/scrape-fixture-realness.md (the "code=t" lesson): every parser in
+// the curated SCRAPE_PARSERS registry must have a test that FEEDS it a
+// structurally-real captured fixture and asserts on the result. Invoked here
+// directly (alongside the other lints) so a `npm run lint` regression can't
+// silently drop it.
+
+try {
+  const { spawnSync } = await import('node:child_process');
+  const result = spawnSync(
+    process.execPath,
+    [path.join(ROOT, 'scripts/lint-scrape-fixture-realness.js')],
+    { cwd: ROOT, stdio: ['ignore', 'inherit', 'inherit'] },
+  );
+  if (result.status !== 0) {
+    errors.push('lint-scrape-fixture-realness: violations detected (see output above)');
+  }
+} catch (err) {
+  warnings.push(`lint-scrape-fixture-realness failed to run: ${err.message}`);
+}
+
 // ── 6. URL.pathname filesystem guard ──────────────────────────────────
 // new URL(..., import.meta.url).pathname preserves %20-encoded spaces,
 // breaking filesystem operations. Use __dirname (via fileURLToPath) instead.

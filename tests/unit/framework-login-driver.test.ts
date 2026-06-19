@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { FrameworkLoginDriver, enrollPaneSessionName } from '../../src/core/FrameworkLoginDriver.js';
+import { loadCapturedFixture } from '../helpers/loadCapturedFixture.js';
 
 describe('enrollPaneSessionName (shared pane-name source of truth — ws52-code-paste-back / codex #1)', () => {
   it('is deterministic for a given framework + configHome', () => {
@@ -63,22 +64,19 @@ describe('FrameworkLoginDriver.parseArtifact', () => {
     expect(a!.userCode).toBeUndefined(); // paste-back code flows user→CLI, not scraped
   });
 
-  it('re-joins a verification URL HARD-WRAPPED across tmux pane lines (the code=t bug)', () => {
-    // Real captured pane from `claude auth login` on the Mac Mini (2026-06-18): the long
-    // OAuth URL wrapped at the pane width with NO inserted space, so a naive scrape
-    // truncated it to "...authorize?code=t". parseArtifact must de-wrap and return the FULL url.
-    const WRAPPED = [
-      'Opening browser to sign in…',
-      'If the browser didn’t open, visit: https://claude.com/cai/oauth/authorize?code=t',
-      'rue&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_u',
-      'ri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aprofile',
-      '&state=K9pItOrURdZZjsD2XdIssdaVUOr7tT-oCJ1s1LnYadY',
-      'Paste code here if prompted >',
-    ].join('\n');
-    const a = FrameworkLoginDriver.parseArtifact(WRAPPED, 'url-code-paste');
+  it('parses the REAL wrapped Mac Mini login pane', () => {
+    // Real captured pane from `claude auth login` on the Mac Mini (2026-06-18), now
+    // loaded from disk (tests/fixtures/captured/claude-url-code-paste/mac-mini-wrapped.txt)
+    // via the single sanctioned loader. The long OAuth URL hard-wraps at the pane width
+    // with NO inserted space, so a naive scrape truncated it to "...authorize?code=t".
+    // parseArtifact must de-wrap and return the FULL url. The fixture's secrets
+    // (client_id/state) are same-shape redacted; the hard-wrap is byte-preserved.
+    // (Scrape/Parser Fixture Realness standard — the code=t lesson, structurally enforced.)
+    const pane = loadCapturedFixture('claude-url-code-paste', 'mac-mini-wrapped');
+    const a = FrameworkLoginDriver.parseArtifact(pane, 'url-code-paste');
     expect(a).not.toBeNull();
     expect(a!.verificationUrl).toBe(
-      'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aprofile&state=K9pItOrURdZZjsD2XdIssdaVUOr7tT-oCJ1s1LnYadY',
+      'https://claude.com/cai/oauth/authorize?code=true&client_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aprofile&state=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-zzzzzzzzzzzz',
     );
     // NOT the truncated value
     expect(a!.verificationUrl).not.toBe('https://claude.com/cai/oauth/authorize?code=t');
