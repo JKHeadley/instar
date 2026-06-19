@@ -3393,6 +3393,19 @@
       .sub-pending-url { font-size:12px; opacity:.7; word-break:break-all; margin-top:4px; }
       .sub-pending-reissue { font-size:11px; opacity:.55; margin-top:4px; }
       .sub-empty, .sub-disabled { font-size:13px; opacity:.7; padding:8px 0; }
+      /* account-machine-matrix grid */
+      .sub-matrix { border-collapse:collapse; width:100%; font-size:13px; }
+      .sub-matrix th, .sub-matrix td { border:1px solid var(--border,#2a2a2a); padding:8px 10px; text-align:center; vertical-align:top; }
+      .sub-matrix-acct { text-align:left; font-weight:600; word-break:break-all; }
+      .sub-matrix-mach { font-weight:600; }
+      .sub-matrix-off { opacity:.55; }
+      .sub-matrix-cell.sub-matrix-offline { opacity:.5; }
+      .sub-matrix-glyph { font-size:13px; }
+      .sub-matrix-setup, .sub-matrix-confirm, .sub-matrix-code-submit { margin-top:4px; padding:4px 10px; cursor:pointer; }
+      .sub-matrix-pin, .sub-matrix-code-input { display:block; margin:4px auto; padding:3px 6px; width:90%; box-sizing:border-box; }
+      .sub-matrix-status { font-size:11px; opacity:.8; margin-top:4px; }
+      .sub-matrix-signin { display:inline-block; margin-top:4px; }
+      .sub-matrix-url { font-size:11px; opacity:.7; word-break:break-all; margin-top:4px; }
     </style>
     <div id="subscriptionsPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <h2 class="ph-title">Subscriptions</h2>
@@ -3401,6 +3414,14 @@
            your subscriptions (ws52-operator-tap-not-text Part A). Leads the panel as the primary
            action when present; silent otherwise. -->
       <div id="subFollowMe"></div>
+      <!-- Account × Machine matrix (account-machine-matrix) — at-a-glance "which account is set up
+           on which machine," with a one-tap "Set up" per empty cell that runs the whole sign-in in
+           the dashboard (PIN → sign-in link → paste the code). Hidden when there's nothing to show. -->
+      <section class="ph-section">
+        <h3 class="ph-h">Accounts on each machine</h3>
+        <p class="ph-h-sub">Which subscription is set up on which machine. Tap “Set up” on an empty cell to add one — you’ll enter your PIN, open the sign-in link, and paste the code right here.</p>
+        <div id="subMatrix"></div>
+      </section>
       <section class="ph-section">
         <h3 class="ph-h">Accounts</h3>
         <p class="ph-h-sub">Each account’s live usage (5-hour and weekly) and when it resets.</p>
@@ -9157,6 +9178,7 @@
           accounts: document.getElementById('subAccounts'),
           pending: document.getElementById('subPending'),
           followMe: document.getElementById('subFollowMe'),
+          matrix: document.getElementById('subMatrix'),
         };
         // Pass opts through (method/body/signal) so the controller can POST the follow-me
         // scan + the PIN-gated issue-for-machine, not just GET.
