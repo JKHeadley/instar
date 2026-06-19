@@ -10650,7 +10650,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // a 2nd account never clobbers the 1st.
     const { PendingLoginStore } = await import('../core/PendingLoginStore.js');
     const { EnrollmentWizard } = await import('../core/EnrollmentWizard.js');
-    const { FrameworkLoginDriver } = await import('../core/FrameworkLoginDriver.js');
+    const { FrameworkLoginDriver, enrollPaneSessionName } = await import('../core/FrameworkLoginDriver.js');
     const DEFAULT_ENROLL_LOGIN_COMMANDS: Record<string, string> = {
       'claude-code': 'claude auth login',
       'codex-cli': 'codex login',
@@ -10708,8 +10708,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const cmd = configHome
             ? `env CLAUDE_CONFIG_DIR=${JSON.stringify(configHome)} ${baseCmd}`
             : baseCmd;
-          const slug = (configHome ?? framework).replace(/[^a-zA-Z0-9]+/g, '-').slice(-24);
-          const session = `instar-enroll-${framework}-${slug}`;
+          const session = enrollPaneSessionName(framework, configHome);
           try {
             execFileSync(tmuxPath, ['kill-session', '-t', `=${session}`], { stdio: 'ignore' });
           } catch { /* @silent-fallback-ok: no prior enroll session for this slot */ }

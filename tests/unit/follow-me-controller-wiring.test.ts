@@ -86,6 +86,62 @@ describe('subscriptions controller — follow-me card wiring', () => {
     expect(h.els.followMe.textContent.toLowerCase()).toContain('pin');
   });
 
+  it('a "Submit code" tap POSTs the pasted code to the relay with id + machineId (ws52-code-paste-back)', async () => {
+    const dom = new JSDOM('<!doctype html><body><div id="fm"></div></body>');
+    const doc = dom.window.document;
+    const els = { accounts: doc.createElement('div'), pending: doc.createElement('div'), followMe: doc.getElementById('fm') };
+    const calls = [];
+    const fetchImpl = (url, o = {}) => {
+      calls.push({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : undefined });
+      const ok = (json, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(json) });
+      if (url.startsWith('/subscription-pool/pending-logins')) return ok({ enabled: true, logins: [{
+        id: 'adriana', label: 'adriana', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
+        verificationUrl: 'https://claude.com/cai/oauth/authorize?code=true&client_id=x',
+        ttlExpiresAt: '2999-01-01T00:00:00Z', reissueCount: 0,
+      }] });
+      if (url === '/subscription-pool') return ok({ enabled: true, accounts: [] });
+      if (url === '/subscription-pool/in-use') return ok({ activeAccountId: null });
+      if (url === '/subscription-pool/follow-me/scan') return ok({ enabled: true, offered: [] });
+      if (url === '/subscription-pool/follow-me/submit-code') return ok({ enabled: true, outcome: 'validated' }, 201);
+      return ok({});
+    };
+    const ctrl = createController({ doc, els, fetchImpl, schedule: () => 0, cancel: () => {} });
+    ctrl._state.active = true;
+    await ctrl.tick();
+    // the code field rendered for the url-code-paste login
+    const input = els.pending.querySelector('input.sub-pending-code-input');
+    expect(input).toBeTruthy();
+    input.value = 'CPTKTRL8-the-operator-code';
+    els.pending.querySelector('[data-submit-code]').click();
+    await flush();
+    const submit = calls.find((c) => c.url === '/subscription-pool/follow-me/submit-code');
+    expect(submit?.method).toBe('POST');
+    expect(submit?.body).toMatchObject({ id: 'adriana', machineId: 'm_mini', code: 'CPTKTRL8-the-operator-code' });
+  });
+
+  it('a "Submit code" tap with an EMPTY field does NOT POST (prompts to paste)', async () => {
+    const dom = new JSDOM('<!doctype html><body><div id="fm"></div></body>');
+    const doc = dom.window.document;
+    const els = { accounts: doc.createElement('div'), pending: doc.createElement('div'), followMe: doc.getElementById('fm') };
+    const calls = [];
+    const fetchImpl = (url, o = {}) => {
+      calls.push({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : undefined });
+      const ok = (json, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(json) });
+      if (url.startsWith('/subscription-pool/pending-logins')) return ok({ enabled: true, logins: [{
+        id: 'adriana', label: 'adriana', kind: 'url-code-paste', machineId: 'm_mini',
+        verificationUrl: 'https://claude.com/cai/oauth/authorize?code=true', ttlExpiresAt: '2999-01-01T00:00:00Z', reissueCount: 0,
+      }] });
+      return ok({ enabled: true, accounts: [], logins: [], offered: [] });
+    };
+    const ctrl = createController({ doc, els, fetchImpl, schedule: () => 0, cancel: () => {} });
+    ctrl._state.active = true;
+    await ctrl.tick();
+    els.pending.querySelector('[data-submit-code]').click();
+    await flush();
+    expect(calls.find((c) => c.url === '/subscription-pool/follow-me/submit-code')).toBeUndefined();
+    expect(els.pending.textContent.toLowerCase()).toContain('paste the code');
+  });
+
   it('renders nothing when the scan offers nothing (silent)', async () => {
     const h = makeHarness();
     // override scan to empty

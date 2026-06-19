@@ -25,6 +25,20 @@
 import type { LoginArtifact, LoginDriver } from './EnrollmentWizard.js';
 import type { LoginFlowKind, LoginProvider } from './PendingLoginStore.js';
 
+/**
+ * The tmux session name an enrollment login pane runs under. SINGLE SOURCE OF TRUTH —
+ * both the spawn (server.ts) and any consumer that needs to reach the live pane
+ * (e.g. WS5.2 code paste-back submit-code in routes.ts) MUST derive the name through
+ * this helper, so the two can never drift apart or collide differently. The slug is
+ * the configHome (the per-credential slot, unique by construction) normalized + tail-
+ * clamped; framework is included so two providers in the same slot can't collide.
+ * (ws52-code-paste-back — codex cross-model review finding #1.)
+ */
+export function enrollPaneSessionName(framework: string, configHome?: string): string {
+  const slug = (configHome ?? framework).replace(/[^a-zA-Z0-9]+/g, '-').slice(-24);
+  return `instar-enroll-${framework}-${slug}`;
+}
+
 /** A login flow we know how to launch + scrape. */
 export interface FrameworkLoginRequest {
   provider: LoginProvider;
