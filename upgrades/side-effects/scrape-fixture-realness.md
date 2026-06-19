@@ -39,3 +39,11 @@ Cheap. Revert the new files + the three small wiring edits (package.json, pre-pu
 
 ## Second-pass (high-risk: "lint"/gate)
 The lint's core (`checkTest`) was independently re-read against the spec: it requires, within the registry-named test, a `loadCapturedFixture('<slug>')` assigned to a var, that var passed as the first arg to the registered parser symbol (member-expression accepted), and an `expect(`. The sidecar check validates required fields + ISO timestamp. Matches the spec's canonical-shape matcher; the realness is executed (the suite runs the named test). Concur.
+
+## Follow-up fix (CI regressions)
+
+Two regressions this PR introduced were caught by CI (not the 3 files I first ran) and fixed:
+1. **Dangling ref:** the standard cited the `SCRAPE_PARSERS` token; the standards-enforcement-auditor resolves backticked `FOO_BAR` tokens as `src/**` symbols, and this one lives in `scripts/`, so it never resolved → danglingCount 0→1. Rephrased the standard to "a curated parser registry" (no marker token). Re-verified danglingCount=0.
+   - Over-block/Under-block: none — the lint's behavior is unchanged; only the registry prose changed.
+2. **Pre-push-gate scratch test:** the direct lint invocation added to `scripts/pre-push-gate.js` ran against the gate's resolved ROOT, which is a scratch dir in the gate's own unit tests (where the registered fixtures don't exist) → status 1. Removed the redundant direct invocation; the lint is enforced via the `npm run lint` chain that CI runs (authoritative). No loss of enforcement.
+   - Rollback cost: trivial (re-add the block if a future need arises, guarded for scratch).
