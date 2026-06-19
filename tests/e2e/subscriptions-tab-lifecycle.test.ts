@@ -85,8 +85,13 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
     expect(els.accounts.querySelector('.sub-account-nick')!.textContent).toBe('personal');
     expect(els.accounts.querySelectorAll('.sub-quota').length).toBe(2);
     expect(els.pending.querySelector('.sub-pending-code')!.textContent).toContain('7DAU-W4XJA');
-    // safety: no live link / injected element survived the round-trip
-    expect(els.pending.querySelector('a')).toBeNull();
+    // The pending login now offers a tappable "Sign in" link to the trusted provider URL
+    // (auth.openai.com) — the UX fix. The href is the provider's own OAuth URL, no token.
+    const signin = els.pending.querySelector('a.sub-pending-signin') as HTMLAnchorElement | null;
+    expect(signin).not.toBeNull();
+    expect(signin!.getAttribute('href')).toBe('https://auth.openai.com/codex/device');
+    expect(JSON.stringify(els.pending.innerHTML).toLowerCase()).not.toMatch(/token|secret|refresh|api_key/);
+    // safety: no injected <script> survived the round-trip
     expect(els.accounts.querySelector('script')).toBeNull();
   });
 

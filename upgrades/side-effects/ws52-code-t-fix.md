@@ -31,3 +31,7 @@ Revert; ship a patch. Pure code, no persistent state.
 
 ## Conclusion
 Small, pure, well-tested fix to the actual blocker that made the surfaced login link unusable. 14 driver tests green incl. the real wrapped-pane fixture; tsc clean.
+
+## Follow-up — Pending-logins card UX redesign (operator feedback, 2026-06-18)
+
+Justin: the Pending Logins card was "extremely hard to understand." Redesigned `renderPendingLogins` to be tap-simple: (1) a plain-language headline ("Sign in to finish setting up <account> on <machine>"); (2) the PRIMARY action is a single tappable "Sign in" link — but ONLY when the URL is https AND on a trusted provider host (claude.com/anthropic/openai/google); an untrusted or `javascript:` URL still renders as inert text with NO anchor (safety invariant preserved + unit-tested); (3) removed the confusing "re-issued N times" noise; (4) TTL shown as one short line. Tests updated: subscriptions-render (26), subscriptions-tab (5), subscriptions-tab-lifecycle e2e (2), pending-logins-pool-merge (3) — all green; the javascript:-URL-stays-inert safety test retained.

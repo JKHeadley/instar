@@ -247,6 +247,21 @@ export function buildFollowMeIssuePayload(card, offers, pinValue) {
 }
 
 /** Pending Logins panel: device code / verification URL (as TEXT) + TTL + reissues. */
+// Only render a verification URL as a TAPPABLE link when it is https AND points at a
+// known provider sign-in host. Anything else falls back to plain text (preserves the
+// "never make an arbitrary href clickable" intent while giving a real one-tap sign-in
+// for the legitimate provider OAuth URLs).
+const PROVIDER_LOGIN_HOSTS = ['claude.com', 'claude.ai', 'anthropic.com', 'openai.com', 'auth.openai.com', 'accounts.google.com', 'google.com'];
+function trustedLoginUrl(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:') return null;
+    const host = u.hostname.toLowerCase();
+    return PROVIDER_LOGIN_HOSTS.some((h) => host === h || host.endsWith('.' + h)) ? u.href : null;
+  } catch { return null; }
+}
+
 export function renderPendingLogins(doc, target, logins, now = Date.now()) {
   if (!target) return;
   target.replaceChildren();
@@ -256,25 +271,42 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
   }
   for (const l of logins) {
     const row = el(doc, 'div', 'sub-pending');
-    const head = el(doc, 'div', 'sub-pending-head');
-    head.appendChild(el(doc, 'span', 'sub-pending-label', sanitizeForDisplay(l && l.label, 'label')));
-    const ttl = l && l.ttlExpiresAt ? countdown(l.ttlExpiresAt, now) : '';
-    head.appendChild(el(doc, 'span', 'sub-pending-ttl', ttl ? `expires in ${ttl}` : 'expired'));
-    row.appendChild(head);
-    // Flow heads-up (e.g. the Claude two-code sequence) — shown before the code so
-    // the operator knows what to expect. Plain text, sanitized; never a live href.
-    if (l && l.notice) {
-      row.appendChild(el(doc, 'div', 'sub-pending-notice', sanitizeForDisplay(l.notice, 'summary')));
+
+    // Lead with a plain-language headline naming what to do + where (machine).
+    const machine = sanitizeForDisplay(l && (l.machineNickname || l.machineId), 'label');
+    const who = sanitizeForDisplay(l && l.label, 'label');
+    const headline = machine
+      ? `Sign in to finish setting up ${who} on ${machine}`
+      : `Sign in to finish setting up ${who}`;
+    row.appendChild(el(doc, 'div', 'sub-pending-headline', headline));
+
+    // The PRIMARY action: one tappable "Sign in" link to the provider's own OAuth URL.
+    // Falls back to copy-text only if the URL isn't a trusted provider sign-in host.
+    const href = trustedLoginUrl(l && l.verificationUrl);
+    if (href) {
+      const a = doc.createElement('a');
+      a.setAttribute('href', href);
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+      a.setAttribute('class', 'sub-pending-signin');
+      a.textContent = 'Sign in';
+      row.appendChild(a);
+    } else if (l && l.verificationUrl) {
+      row.appendChild(el(doc, 'div', 'sub-pending-url', sanitizeForDisplay(l.verificationUrl, 'url')));
     }
+
+    // A device code (only some flows) — shown compactly under the button.
     if (l && l.userCode) {
       row.appendChild(el(doc, 'div', 'sub-pending-code', `Code: ${sanitizeForDisplay(l.userCode, 'code')}`));
     }
-    // Verification URL shown as TEXT for the operator to copy — never a live href.
-    row.appendChild(el(doc, 'div', 'sub-pending-url', sanitizeForDisplay(l && l.verificationUrl, 'url')));
-    const rc = l && Number(l.reissueCount);
-    if (Number.isFinite(rc) && rc > 0) {
-      row.appendChild(el(doc, 'div', 'sub-pending-reissue', `Re-issued ${rc} time${rc === 1 ? '' : 's'}`));
+
+    // One short secondary line: the TTL, and the flow notice only if present (trimmed).
+    const ttl = l && l.ttlExpiresAt ? countdown(l.ttlExpiresAt, now) : '';
+    if (ttl) row.appendChild(el(doc, 'div', 'sub-pending-ttl', `Link expires in ${ttl}`));
+    if (l && l.notice) {
+      row.appendChild(el(doc, 'div', 'sub-pending-notice', sanitizeForDisplay(l.notice, 'summary')));
     }
+    // (No "re-issued N times" noise — it confused more than it informed.)
     target.appendChild(row);
   }
 }
