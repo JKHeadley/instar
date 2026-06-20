@@ -10,6 +10,7 @@ import type { Request as ExpressRequest, Response as ExpressResponse } from 'exp
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { classifyActionClaim } from '../core/action-claim.js';
+import { poolPollerVerdict } from '../core/pollerCount.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import fs from 'node:fs';
@@ -12376,6 +12377,26 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         : null,
       machines,
+    });
+  });
+
+  // GET /pool/poller-count — B5 (multimachine-lease-poll-robustness, Decision 11):
+  // the exactly-one-Telegram-listener verdict over the pool — ok (exactly one
+  // fresh poller) / dual (≥2 → 409 war) / silence (real zero) / indeterminate (a
+  // peer is dark → can't confirm; NEVER a false alarm). Observe-only, never gates.
+  // localSaw409 isn't yet plumbed from the lifeline to the server, so the verdict
+  // is driven by the heartbeat pollingActive count here (the 409 cross-check is a
+  // follow-up); single-machine → ok when self is polling.
+  router.get('/pool/poller-count', (_req, res) => {
+    const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
+    const verdict = poolPollerVerdict(
+      caps.map((c) => ({ machineId: c.machineId, online: c.online, pollingActive: c.pollingActive })),
+      false,
+    );
+    res.json({
+      enabled: !!ctx.machinePoolRegistry,
+      ...verdict,
+      machines: caps.map((c) => ({ machineId: c.machineId, nickname: c.nickname, online: c.online, pollingActive: c.pollingActive })),
     });
   });
 

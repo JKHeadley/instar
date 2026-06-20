@@ -101,6 +101,26 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     expect(typeof byId.m_a.selfReportedLastSeen).toBe('string');
   });
 
+  it('GET /pool/poller-count is alive: exactly one polling machine → ok (B5, Decision 11)', async () => {
+    // Both online; m_a is the poller, m_b is not.
+    registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString(), pollingActive: true });
+    registry.recordHeartbeat({ machineId: 'm_b', selfReportedLastSeen: new Date().toISOString(), pollingActive: false });
+    const r = await api('/pool/poller-count');
+    expect(r.status).toBe(200);
+    expect(r.body.enabled).toBe(true);
+    expect(r.body.verdict).toBe('ok');
+    expect(r.body.activePollers).toBe(1);
+  });
+
+  it('GET /pool/poller-count: a dark peer → indeterminate, NEVER a false silence (B5)', async () => {
+    // m_a online + not polling; m_b never heartbeated (dark) → can't confirm the count.
+    registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString(), pollingActive: false });
+    const r = await api('/pool/poller-count');
+    expect(r.status).toBe(200);
+    expect(r.body.verdict).toBe('indeterminate');
+    expect(r.body.hasVisibilityGap).toBe(true);
+  });
+
   it('PATCH /pool/machines/:id renames a machine; GET reflects it', async () => {
     const p = await api('/pool/machines/m_a', { method: 'PATCH', body: JSON.stringify({ nickname: 'My Mini' }) });
     expect(p.status).toBe(200);
