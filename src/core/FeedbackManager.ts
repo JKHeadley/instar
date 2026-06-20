@@ -17,6 +17,7 @@ import path from 'node:path';
 import { randomUUID, createHmac, createHash } from 'node:crypto';
 import type { FeedbackItem, FeedbackConfig } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { decideFeedbackRetry, parseRetryAfterSeconds } from './feedbackBackoff.js';
 
 /** Maximum number of feedback items stored locally. */
 const MAX_FEEDBACK_ITEMS = 1000;
@@ -35,6 +36,15 @@ export class FeedbackManager {
   private version: string;
   /** Cache of agentName -> pseudonym for resolvePseudonym reverse lookups */
   private pseudonymMap: Map<string, string> = new Map();
+  /**
+   * Webhook backoff state (L364). When the canonical feedback endpoint rate-limits
+   * us (429/503), we stop POSTing until `webhookNextRetryAtMs` and grow the wait
+   * with `webhookConsecutive429s`. In-memory by design: a restart re-probes once
+   * (one cycle) then re-backs-off — back-compatible and self-correcting. This is
+   * what stops `retryUnforwarded()` from re-POSTing the whole backlog every cycle.
+   */
+  private webhookNextRetryAtMs = 0;
+  private webhookConsecutive429s = 0;
 
   constructor(config: FeedbackConfig) {
     if (config.webhookUrl) {
@@ -163,8 +173,11 @@ export class FeedbackManager {
       forwarded: false,
     };
 
-    // Forward to webhook if enabled (before persisting, so we know result)
-    if (this.config.enabled && this.config.webhookUrl) {
+    // Forward to webhook if enabled (before persisting, so we know result).
+    // Skip the POST entirely while we're in a rate-limit backoff window (L364):
+    // hammering a 429-ing endpoint only makes it worse. The local record is still
+    // written below, so retryUnforwarded() will pick it up once the window passes.
+    if (this.config.enabled && this.config.webhookUrl && Date.now() >= this.webhookNextRetryAtMs) {
       try {
         const payload = {
           feedbackId: feedback.id,
@@ -187,11 +200,20 @@ export class FeedbackManager {
           signal: AbortSignal.timeout(10000), // 10s timeout
         });
 
-        if (response.ok) {
+        const decision = decideFeedbackRetry({
+          ok: response.ok,
+          status: typeof response.status === 'number' ? response.status : null,
+          retryAfterSec: parseRetryAfterSeconds(response.headers?.get?.('retry-after')),
+          nowMs: Date.now(),
+          consecutive429s: this.webhookConsecutive429s,
+        });
+        this.webhookNextRetryAtMs = decision.nextRetryAtMs;
+        this.webhookConsecutive429s = decision.consecutive429s;
+        if (decision.markForwarded) {
           feedback.forwarded = true;
           console.log(`[feedback] Forwarded to webhook`);
         } else {
-          console.error(`[feedback] Webhook returned ${response.status}: ${response.statusText}`);
+          console.error(`[feedback] Webhook returned ${response.status}: ${response.statusText} — ${decision.reason}`);
         }
       } catch (err) {
         // Don't fail on webhook errors — the local record is the receipt
@@ -231,8 +253,18 @@ export class FeedbackManager {
       return { retried: 0, succeeded: 0 };
     }
 
+    // Respect an active rate-limit backoff window (L364): if the endpoint just
+    // 429'd us, do NOT re-POST the whole backlog this cycle — that is exactly the
+    // self-reinforcing storm this fixes (661 items × every cycle = thousands of 429s).
+    if (Date.now() < this.webhookNextRetryAtMs) {
+      return { retried: 0, succeeded: 0 };
+    }
+
     let succeeded = 0;
+    let attempted = 0;
     for (const item of unforwarded) {
+      attempted++;
+      let decisionBreak = false;
       try {
         const payload = {
           feedbackId: item.id,
@@ -254,20 +286,35 @@ export class FeedbackManager {
           signal: AbortSignal.timeout(10000),
         });
 
-        if (response.ok) {
+        const decision = decideFeedbackRetry({
+          ok: response.ok,
+          status: typeof response.status === 'number' ? response.status : null,
+          retryAfterSec: parseRetryAfterSeconds(response.headers?.get?.('retry-after')),
+          nowMs: Date.now(),
+          consecutive429s: this.webhookConsecutive429s,
+        });
+        this.webhookNextRetryAtMs = decision.nextRetryAtMs;
+        this.webhookConsecutive429s = decision.consecutive429s;
+        if (decision.markForwarded) {
           item.forwarded = true;
           succeeded++;
         }
+        // Rate-limited → stop the batch NOW; the rest retry after the backoff window.
+        if (decision.breakBatch) {
+          console.error(`[feedback] retry batch halted after ${attempted}/${unforwarded.length}: ${decision.reason}`);
+          decisionBreak = true;
+        }
       } catch {
-        // @silent-fallback-ok — retry on next attempt
+        // @silent-fallback-ok — network/timeout: retry on next cycle
       }
+      if (decisionBreak) break;
     }
 
     if (succeeded > 0) {
       this.saveFeedback(items);
     }
 
-    return { retried: unforwarded.length, succeeded };
+    return { retried: attempted, succeeded };
   }
 
   // ── Private helpers ──────────────────────────────────────────────
