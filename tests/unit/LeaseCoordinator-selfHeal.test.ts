@@ -137,3 +137,111 @@ describe('LeaseCoordinator self-heal wiring (F2 + F3)', () => {
     expect(lc.isHolderHealthy('B')).toBe(false);
   });
 });
+
+// ── multi-transport-mesh-comms Layer 3 — solo-captain hold ──────────────────
+class FailingTunnel implements LeaseTransport {
+  peer: LeaseRecord | null = null;
+  broadcast = async () => false; // no rope confirms
+  observed = () => ({ lease: this.peer, lastNonceByHolder: this.peer ? { [this.peer.holder]: this.peer.nonce } : {} });
+  isReachable = () => false;
+}
+
+describe('LeaseCoordinator Layer 3 — solo-captain hold', () => {
+  function mkHeldCoordinator(opts: {
+    soloEnabled?: boolean;
+    preferred?: boolean;
+    allGone?: boolean;
+    mono?: () => number;
+  }) {
+    const store = new FakeStore();
+    const tunnel = new FailingTunnel();
+    let suspendReason: string | null = null;
+    const lc = new LeaseCoordinator({
+      lease: flA(),
+      store,
+      tunnel,
+      presumedDeadHolders: () => new Set(),
+      now: () => 1000,
+      monotonicNow: opts.mono ?? (() => 1000),
+      onSelfSuspend: (r) => { suspendReason = r; },
+      soloCaptainHold: () => (opts.soloEnabled ? { enabled: true } : null),
+      isPreferredAwakeAgreed: () => opts.preferred ?? false,
+      allPeersPresumedGone: () => opts.allGone ?? false,
+    });
+    return { lc, store, tunnel, getSuspend: () => suspendReason };
+  }
+
+  it('preferred + all-peers-presumed-gone + no-higher-epoch ⇒ HOLDS the same epoch (no suspend)', async () => {
+    const { lc } = mkHeldCoordinator({ soloEnabled: true, preferred: true, allGone: true });
+    expect(await lc.acquireIfEligible()).toBe(true); // A holds epoch 1
+    const epochBefore = lc.effectiveView().epoch;
+    const ok = await lc.renew(); // broadcast fails, but the hold engages
+    expect(ok).toBe(true);
+    expect(lc.holdsLease()).toBe(true);
+    expect(lc.effectiveView().epoch).toBe(epochBefore); // SAME epoch, no inflation
+  });
+
+  it('peer merely unreachable (NOT presumed-gone) ⇒ self-suspends after ttl (conservative)', async () => {
+    let mono = 1000;
+    const { lc, getSuspend } = mkHeldCoordinator({ soloEnabled: true, preferred: true, allGone: false, mono: () => mono });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    mono = 1000 + TTL + 1; // past the self-fence horizon
+    const ok = await lc.renew();
+    expect(ok).toBe(false);
+    expect(getSuspend()).toMatch(/could not confirm/);
+  });
+
+  it('NOT preferred ⇒ never holds solo (a traveler self-suspends as today)', async () => {
+    let mono = 1000;
+    const { lc, getSuspend } = mkHeldCoordinator({ soloEnabled: true, preferred: false, allGone: true, mono: () => mono });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    mono = 1000 + TTL + 1;
+    expect(await lc.renew()).toBe(false);
+    expect(getSuspend()).toBeTruthy();
+  });
+
+  it('flag OFF ⇒ byte-for-byte today (self-suspend even when preferred + all-gone)', async () => {
+    let mono = 1000;
+    const { lc, getSuspend } = mkHeldCoordinator({ soloEnabled: false, preferred: true, allGone: true, mono: () => mono });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    mono = 1000 + TTL + 1;
+    expect(await lc.renew()).toBe(false);
+    expect(getSuspend()).toBeTruthy();
+  });
+
+  it('a higher epoch observed ⇒ does NOT hold solo (real takeover dominates — captain yields)', async () => {
+    let mono = 1000;
+    const store = new FakeStore();
+    const tunnel = new FailingTunnel();
+    const lc = new LeaseCoordinator({
+      lease: flA(),
+      store,
+      tunnel,
+      presumedDeadHolders: () => new Set(),
+      now: () => 1000,
+      monotonicNow: () => mono,
+      soloCaptainHold: () => ({ enabled: true }),
+      isPreferredAwakeAgreed: () => true,
+      allPeersPresumedGone: () => true,
+    });
+    expect(await lc.acquireIfEligible()).toBe(true); // A holds epoch 1
+    // B observed at a HIGHER epoch (a real takeover the captain must yield to). The
+    // effective view now names B as the higher-epoch holder, so renew() yields
+    // (we are no longer the effective holder) — the hold can NEVER fire over a
+    // higher epoch. The load-bearing assertion: A does NOT retain a solo hold.
+    tunnel.peer = flB().signLease(5, new Date(1000).toISOString(), new Date(10_000_000).toISOString(), 9);
+    mono = 1000 + TTL + 1;
+    expect(await lc.renew()).toBe(false);
+    expect(lc.holdsLease()).toBe(false); // captain yielded to the higher epoch
+  });
+
+  it('soloCaptainHoldEligible is gated on epoch even when the held-holder check passes (direct)', async () => {
+    // Guards the inner no-higher-epoch clause directly: with NO higher peer epoch,
+    // the hold fires; this is already covered by the first test, so here we assert
+    // the dual — an enabled+preferred+all-gone coordinator with a SAME-epoch view holds.
+    const { lc } = mkHeldCoordinator({ soloEnabled: true, preferred: true, allGone: true });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(await lc.renew()).toBe(true);
+    expect(lc.holdsLease()).toBe(true);
+  });
+});

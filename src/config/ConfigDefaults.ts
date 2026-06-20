@@ -783,8 +783,32 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       silentStandbyRelinquish: {
         enabled: false,
       },
+      // multi-transport-mesh-comms Layer 3 — DARK by default (authority-bearing).
+      // Classified in DARK_GATE_EXCLUSIONS (action-bearing). When enabled + a
+      // preferredAwakeMachineId is set, a preferred stationary captain holds its
+      // lease when its sole peer is presumed-gone by liveness-silence.
+      soloCaptainHold: {
+        enabled: false,
+      },
       preferredAwakeMachineId: null,
       churnDetector: { maxFlipsPerWindow: 4, windowMs: 600000 },
+    },
+    // multi-transport-mesh-comms (Layers 0-2) — multi-rope mesh transport
+    // (Tailscale/LAN/Cloudflare hedged failover). Ships ENABLED (strictly additive;
+    // a single-machine agent is a no-op and keeps its 127.0.0.1 bind — the 0.0.0.0
+    // bind is gated on multiMachine.enabled). FLAT knobs to dodge the one-level-deep
+    // applyDefaults merge hazard. Spec: docs/specs/multi-transport-mesh-comms.md.
+    meshTransport: {
+      enabled: true,
+      hedgeDelayMs: 1500,
+      priorityTailscale: 10,
+      priorityLan: 20,
+      priorityCloudflare: 30,
+      tailscaleEnabled: true,
+      lanSubnetGate: true,
+      unhealthyAfterFailures: 3,
+      endpointEvictionMs: 3600000,
+      maxProbeBackoffMs: 300000,
     },
     // WS5.2 Account Follow-Me (docs/specs/ws52-account-follow-me-security.md). The
     // `enabled` literal is DELIBERATELY OMITTED (not hardcoded false) so

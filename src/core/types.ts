@@ -1757,6 +1757,18 @@ export type MachineRole = 'awake' | 'standby';
  */
 export type CoordinationMode = 'primary-standby' | 'independent';
 
+/**
+ * multi-transport-mesh-comms — one reachable endpoint a machine advertises about
+ * itself. The resolver tries them best-first with hedged failover. `kind` drives
+ * priority (tailscale<lan<cloudflare) and the per-kind URL-shape validation +
+ * health keying. Spec: docs/specs/multi-transport-mesh-comms.md.
+ */
+export interface MeshEndpoint {
+  kind: 'tailscale' | 'lan' | 'cloudflare';
+  /** http://100.x:PORT | http://192.168.x:PORT | https://<tunnel-host> */
+  url: string;
+}
+
 export interface MachineRegistryEntry {
   /** Human-friendly machine name (auto-detected hostname at pairing; static). */
   name: string;
@@ -1785,6 +1797,16 @@ export interface MachineRegistryEntry {
   lastSeen: string;
   /** Last known reachable URL (tunnel URL) — for cross-machine relay */
   lastKnownUrl?: string;
+  /**
+   * multi-transport-mesh-comms — the ordered set of endpoints this machine
+   * advertises it is reachable at (Tailscale / LAN / Cloudflare), self-computed
+   * and published INSIDE the machine-auth-signed heartbeat body (the registry
+   * mirror is additive and tolerated by un-upgraded peers; the signed heartbeat
+   * is authoritative). Absent ⇒ the peer resolves to the single `lastKnownUrl`
+   * (byte-for-byte today's single-rope behavior). Spec:
+   * docs/specs/multi-transport-mesh-comms.md.
+   */
+  endpoints?: MeshEndpoint[];
   /** ISO timestamp of revocation (if revoked) */
   revokedAt?: string;
   /** Machine ID that revoked this one */
@@ -2068,6 +2090,15 @@ export interface LeaseSelfHealConfig {
   /** F3 — a silent standby relinquishes a held lease (level-triggered). DARK. */
   silentStandbyRelinquish?: { enabled?: boolean };
   /**
+   * multi-transport-mesh-comms Layer 3 — the preferred stationary captain holds
+   * its lease (same epoch, no re-acquire) instead of self-suspending ONLY when
+   * its peer is presumed-gone by liveness-silence (`presumedDeadHolders()`),
+   * F4-agreed preferred, and no higher epoch is observed. The monotonic
+   * self-fence stays armed otherwise. DARK + opt-in; no-op when no preferred
+   * machine is set. Spec: docs/specs/multi-transport-mesh-comms.md.
+   */
+  soloCaptainHold?: { enabled?: boolean };
+  /**
    * F4 — preferred-awake machine (opt-in). null = off (today's behavior). When
    * set, the named (SAS-verified) machine wins ties ONLY while healthy, applied
    * only on cross-machine agreement; disagreement falls back to lower-machineId.
@@ -2086,6 +2117,33 @@ export interface LeaseSelfHealConfig {
     /** Default 600000 (10 min). Min 60000. */
     windowMs?: number;
   };
+}
+
+/**
+ * multi-transport-mesh-comms config (FLAT knobs under multiMachine.meshTransport).
+ * Spec: docs/specs/multi-transport-mesh-comms.md §Frontloaded Decisions.
+ */
+export interface MeshTransportConfig {
+  /** Master switch for Layers 0-2 + the 0.0.0.0 server bind. Default true; single-machine no-op. */
+  enabled?: boolean;
+  /** Hedge delay before firing the remaining ropes in parallel (Decision 3). Default 1500ms. Min 0. */
+  hedgeDelayMs?: number;
+  /** Endpoint priorities (lower = preferred, Decision 2). Defaults 10/20/30. Distinct positive ints. */
+  priorityTailscale?: number;
+  priorityLan?: number;
+  priorityCloudflare?: number;
+  /** Advertise/consume the Tailscale rope (Decision 16). Default true. */
+  tailscaleEnabled?: boolean;
+  /** Dial a peer's LAN endpoint only when same-subnet (Decision 8). Default true. */
+  lanSubnetGate?: boolean;
+  /** Consecutive-failure count before a rope is deprioritized (Decision 5). Default 3. Min 1. */
+  unhealthyAfterFailures?: number;
+  /** Evict an endpoint absent from the latest advertised set after this (Decision 4). Default 3600000. */
+  endpointEvictionMs?: number;
+  /** Exponential-backoff cap for probing a deprioritized rope (Decision 5). Default 300000. */
+  maxProbeBackoffMs?: number;
+  /** Bind host override (Decision 17). Default: '0.0.0.0' when enabled else '127.0.0.1'. */
+  bindHost?: string;
 }
 
 export interface MultiMachineConfig {
@@ -2202,6 +2260,13 @@ export interface MultiMachineConfig {
    * namespace. See docs/specs/multi-machine-lease-self-heal.md.
    */
   leaseSelfHeal?: LeaseSelfHealConfig;
+  /**
+   * multi-transport-mesh-comms — multi-rope mesh transport (Tailscale/LAN/
+   * Cloudflare failover). Ships ENABLED (Layers 0-2 are strictly additive); a
+   * single-machine agent is a no-op. FLAT knobs to dodge the one-level-deep
+   * applyDefaults merge hazard. Spec: docs/specs/multi-transport-mesh-comms.md.
+   */
+  meshTransport?: MeshTransportConfig;
   /**
    * Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7) — per-machine append-only
    * event streams (topic-placement / session-lifecycle / autonomous-run) +
