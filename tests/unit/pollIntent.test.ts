@@ -1,3 +1,5 @@
+// safe-git-allow: test fixture cleanup uses fs.rmSync on per-test tmp dirs only.
+// safe-fs-allow: test fixture cleanup uses fs.rmSync on per-test tmp dirs only.
 /**
  * B1 (multimachine-lease-poll-robustness, Decisions 5/6) — the cross-process
  * poll-intent file: integrity (PID/ts freshness) + atomic round-trip.

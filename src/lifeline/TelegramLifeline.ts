@@ -63,6 +63,7 @@ import { writeStartupMarker } from './startupMarker.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
 import { decidePollAction, type PollOverride } from './pollDecision.js';
 import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
 import { RestartOrchestrator } from './RestartOrchestrator.js';
 import { writeWakeRequestIfSlept } from './agentSleepWake.js';
@@ -995,8 +996,7 @@ export class TelegramLifeline {
       pollOverride?: string;
       developmentAgent?: boolean;
     }; developmentAgent?: boolean }).multiMachine;
-    const devAgent = !!(this.projectConfig as { developmentAgent?: boolean }).developmentAgent;
-    const enabled = mm?.pollFollowsLease?.enabled ?? devAgent;
+    const enabled = resolveDevAgentGate(mm?.pollFollowsLease?.enabled, this.projectConfig as { developmentAgent?: boolean });
     if (!enabled) return; // static-flag behavior unchanged
     const dryRun = mm?.pollFollowsLease?.dryRun !== false; // default DRY-RUN even on dev
 

@@ -2,6 +2,7 @@
 title: "Multi-Machine Lease & Poll-Ownership Robustness"
 slug: "multimachine-lease-poll-robustness"
 author: "echo"
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 eli16-overview: "multimachine-lease-poll-robustness.eli16.md"
 lessons-engaged:
   - "P14 Distrust Temporary Success: B3 fixes a symptom over a no-shared-CAS foundation — surfaced honestly as a bounded mitigation, not a substrate fix."

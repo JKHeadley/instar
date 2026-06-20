@@ -31,3 +31,6 @@ If this works, you stop seeing the symptoms entirely: no more two-of-me, no more
 ## Why review caught a lot before any code
 
 The first design draft had two genuinely dangerous bugs that six independent reviewers caught: my "keep the same badge" idea would have let a network-split computer wrongly believe it was still captain (two captains = chaos), and a timing "guard" I proposed would have refused to start up on *every* computer at default settings. Both are fixed now — which is the whole point of designing-and-reviewing before building.
+
+---
+*Anchored to the constitutional standard "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions": when this agent runs on more than one machine it must behave as one coherent agent even when a machine, clock, or network rope degrades — which is exactly what these five fixes harden.*

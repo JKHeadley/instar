@@ -88,3 +88,11 @@
 {"ts":"2026-06-05T08:09:30.263Z","slug":"unknown","suggestedTier":1,"declaredTier":2,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":12}
 {"ts":"2026-06-05T08:25:37.355Z","slug":"unknown","suggestedTier":1,"declaredTier":2,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":4}
 {"ts":"2026-06-05T08:26:14.567Z","slug":"unknown","suggestedTier":1,"declaredTier":2,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":4}
+{"ts":"2026-06-20T20:35:00.000Z","slug":"mm-b3-renew-timer","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":6,"loc":120}
+{"ts":"2026-06-20T20:35:01.000Z","slug":"mm-b4-skew-immune-liveness","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":5,"loc":110}
+{"ts":"2026-06-20T20:35:02.000Z","slug":"mm-b2-churn-breaker","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":5,"loc":200}
+{"ts":"2026-06-20T20:35:03.000Z","slug":"mm-b5-pollercount-core","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":2,"loc":120}
+{"ts":"2026-06-20T20:35:04.000Z","slug":"mm-b1-poll-decision-core","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":2,"loc":90}
+{"ts":"2026-06-20T20:35:05.000Z","slug":"mm-b1-poll-intent-producer","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":3,"loc":130}
+{"ts":"2026-06-20T20:35:06.000Z","slug":"mm-b1-lifeline-consumer","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":5,"loc":170}
+{"ts":"2026-06-20T20:35:07.000Z","slug":"mm-b5-pollingactive-heartbeat","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":5,"loc":80}

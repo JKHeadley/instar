@@ -4326,8 +4326,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // B4 Decision 10 — skew-immune liveness when the flag resolves on AND
             // the in-process registry has actually observed the peer; else legacy
             // lastSeen. enabled OMITTED ⇒ developmentAgent gate.
-            const skewImmune = config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled
-              ?? !!(config as { developmentAgent?: boolean }).developmentAgent;
+            const skewImmune = resolveDevAgentGate(config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled, config);
             const dead = new Set<string>();
             for (const [id, e] of Object.entries(reg.machines ?? {})) {
               if (id === selfMachineId) continue;
@@ -4371,8 +4370,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const peerIds = Object.keys(reg.machines ?? {}).filter((id) => id !== selfMachineId && !reg.machines![id].revokedAt);
             if (peerIds.length === 0) return false; // a solo machine never "holds against" a peer
             // B4 Decision 10 — same skew-immune liveness as presumedDeadHolders.
-            const skewImmune = config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled
-              ?? !!(config as { developmentAgent?: boolean }).developmentAgent;
+            const skewImmune = resolveDevAgentGate(config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled, config);
             return peerIds.every((id) => {
               const cap = leaseLivenessRegistry?.getCapacity(id);
               return isPeerPresumedDead({

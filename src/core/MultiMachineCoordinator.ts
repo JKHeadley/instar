@@ -27,6 +27,7 @@ import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
 import { ChurnBreaker } from './churnBreaker.js';
 import { writePollIntent } from './pollIntent.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
@@ -584,7 +585,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private getChurnBreaker(): ChurnBreaker | null {
     const c = this.config.multiMachine?.leaseSelfHeal?.churnDetector;
-    const enabled = c?.enabled ?? !!this.config.developmentAgent;
+    const enabled = resolveDevAgentGate(c?.enabled, this.config);
     if (!enabled) { this.churnBreaker = null; return null; }
     if (!this.churnBreaker) {
       this.churnBreaker = new ChurnBreaker(
@@ -602,7 +603,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private pollFollowsLeaseEnabled(): boolean {
     const m = this.config.multiMachine as { pollFollowsLease?: { enabled?: boolean } } | undefined;
-    return m?.pollFollowsLease?.enabled ?? !!this.config.developmentAgent;
+    return resolveDevAgentGate(m?.pollFollowsLease?.enabled, this.config);
   }
 
   /**
@@ -634,7 +635,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private resilientRenewEnabled(): boolean {
     const explicit = this.config.multiMachine?.leaseSelfHeal?.resilientRenew?.enabled;
-    return explicit ?? !!this.config.developmentAgent;
+    return resolveDevAgentGate(explicit, this.config);
   }
 
   /** B3 — the renew cadence, clamped so it is always comfortably under the TTL. */
