@@ -117,6 +117,7 @@ import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
 import { LeaseCoordinator, type LeaseStore } from '../core/LeaseCoordinator.js';
+import { isPeerPresumedDead } from '../core/leaseLiveness.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
 import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
 import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
@@ -4142,6 +4143,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       | undefined;
     const isGitRepo = fs.existsSync(path.join(config.projectDir, '.git'));
     const gitBackupEnabled = config.gitBackup?.enabled !== false;
+    // B4 (multimachine-lease-poll-robustness, Decision 10) — forward-ref to the
+    // (later-constructed) MachinePoolRegistry so the lease-liveness closures can
+    // read the SKEW-IMMUNE routerReceivedAt source instead of the skew-contaminated
+    // registry lastSeen. undefined until the registry is built below — during that
+    // window the closures fall back to lastSeen (safe). Function-body scope so it
+    // is visible to BOTH the lease closures (deeper) and the registry assignment.
+    let leaseLivenessRegistry:
+      | { getCapacity(id: string): { online: boolean; routerReceivedAt?: string } | null }
+      | undefined;
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
     // a standby needs it to pull, and a standby that later self-elects to awake
     // (the Phase-0 scenario) must ALREADY have it so its role-change push fires.
@@ -4312,11 +4322,23 @@ export async function startServer(options: StartOptions): Promise<void> {
           presumedDeadHolders: () => {
             const reg = idMgr.loadRegistry();
             const nowMs = Date.now();
+            // B4 Decision 10 — skew-immune liveness when the flag resolves on AND
+            // the in-process registry has actually observed the peer; else legacy
+            // lastSeen. enabled OMITTED ⇒ developmentAgent gate.
+            const skewImmune = config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled
+              ?? !!(config as { developmentAgent?: boolean }).developmentAgent;
             const dead = new Set<string>();
             for (const [id, e] of Object.entries(reg.machines ?? {})) {
               if (id === selfMachineId) continue;
-              const last = Date.parse(e.lastSeen);
-              if (!Number.isNaN(last) && nowMs - last > seamlessness.failoverThresholdMs) dead.add(id);
+              const cap = leaseLivenessRegistry?.getCapacity(id);
+              if (isPeerPresumedDead({
+                lastSeenMs: Date.parse(e.lastSeen),
+                routerObserved: !!cap?.routerReceivedAt,
+                routerOnline: !!cap?.online,
+                nowMs,
+                failoverThresholdMs: seamlessness.failoverThresholdMs,
+                skewImmune,
+              })) dead.add(id);
             }
             return dead;
           },
@@ -4347,9 +4369,19 @@ export async function startServer(options: StartOptions): Promise<void> {
             const nowMs = Date.now();
             const peerIds = Object.keys(reg.machines ?? {}).filter((id) => id !== selfMachineId && !reg.machines![id].revokedAt);
             if (peerIds.length === 0) return false; // a solo machine never "holds against" a peer
+            // B4 Decision 10 — same skew-immune liveness as presumedDeadHolders.
+            const skewImmune = config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled
+              ?? !!(config as { developmentAgent?: boolean }).developmentAgent;
             return peerIds.every((id) => {
-              const last = Date.parse(reg.machines![id].lastSeen);
-              return !Number.isNaN(last) && nowMs - last > seamlessness.failoverThresholdMs;
+              const cap = leaseLivenessRegistry?.getCapacity(id);
+              return isPeerPresumedDead({
+                lastSeenMs: Date.parse(reg.machines![id].lastSeen),
+                routerObserved: !!cap?.routerReceivedAt,
+                routerOnline: !!cap?.online,
+                nowMs,
+                failoverThresholdMs: seamlessness.failoverThresholdMs,
+                skewImmune,
+              });
             });
           },
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
@@ -15375,6 +15407,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           failoverThresholdMs,
           logger: (m: string) => console.log(pc.dim(`  [pool] ${m}`)),
         });
+        // B4 Decision 10 — hand the skew-immune registry to the lease-liveness
+        // closures (forward-ref declared at function-body scope above the lease).
+        leaseLivenessRegistry = machinePoolRegistry;
         const poolSelfId =
           machineHeartbeat?.config?.machineId ??
           (poolIdMgr.hasIdentity() ? poolIdMgr.loadIdentity().machineId : null);

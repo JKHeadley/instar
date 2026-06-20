@@ -797,6 +797,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // `enabled` OMITTED ⇒ developmentAgent gate (live-on-dev / dark-on-fleet).
       // Pure timing; never relaxes the monotonic self-fence.
       resilientRenew: {},
+      // B4 (multimachine-lease-poll-robustness, Decision 10) — skew-immune lease
+      // peer liveness (routerReceivedAt vs skew-contaminated lastSeen). `enabled`
+      // OMITTED ⇒ developmentAgent gate. Conservative + lastSeen fallback.
+      skewImmuneLiveness: {},
     },
     // multi-transport-mesh-comms (Layers 0-2) — multi-rope mesh transport
     // (Tailscale/LAN/Cloudflare hedged failover). Ships ENABLED (strictly additive;

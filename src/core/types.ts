@@ -2099,6 +2099,16 @@ export interface LeaseSelfHealConfig {
    */
   resilientRenew?: { enabled?: boolean };
   /**
+   * B4 (multimachine-lease-poll-robustness, Decision 10) — derive lease peer
+   * liveness (presumedDeadHolders / allPeersPresumedGone) from the SKEW-IMMUNE
+   * router-observed clock (MachinePoolRegistry routerReceivedAt) instead of the
+   * peer's skew-contaminated `lastSeen`. Closes the flap's root trigger: under
+   * clock skew, lastSeen makes a slow peer look dead (false failover) / a fast
+   * peer look alive (delayed failover). OMIT `enabled` ⇒ developmentAgent gate.
+   * Conservative + falls back to lastSeen when the peer isn't yet observed.
+   */
+  skewImmuneLiveness?: { enabled?: boolean };
+  /**
    * multi-transport-mesh-comms Layer 3 — the preferred stationary captain holds
    * its lease (same epoch, no re-acquire) instead of self-suspending ONLY when
    * its peer is presumed-gone by liveness-silence (`presumedDeadHolders()`),
