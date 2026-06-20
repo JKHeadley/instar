@@ -3462,6 +3462,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const coordinator = new MultiMachineCoordinator(state, {
       stateDir: config.stateDir,
       multiMachine: config.multiMachine,
+      developmentAgent: (config as { developmentAgent?: boolean }).developmentAgent,
     });
     const machineRole = coordinator.start();
     if (coordinator.enabled) {

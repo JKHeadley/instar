@@ -65,6 +65,15 @@ const TICK_WATCHDOG_INTERVAL_MS = 60_000;  // F1b — independent tick-stall wat
 const DEFAULT_FAILOVER_TIMEOUT_MS = 15 * 60_000;  // 15 min before failover
 /** Cross-Machine Coherence — default active lease-PULL cadence over the tunnel. */
 const DEFAULT_LEASE_PULL_INTERVAL_MS = 5_000;
+/**
+ * B3 (multimachine-lease-poll-robustness) — the dedicated renew timer fires at
+ * `clamp(leaseTtlMs × RENEW_SAFETY_FACTOR, [MIN, MAX])` so a holder renews (same
+ * epoch) BEFORE its lease lapses, instead of re-acquiring at epoch+1 on the slow
+ * heartbeat tick. Default TTL 60s → 30s renew cadence (well under TTL).
+ */
+const RENEW_SAFETY_FACTOR = 0.5;
+const MIN_RENEW_INTERVAL_MS = 5_000;
+const MAX_RENEW_INTERVAL_MS = 60_000;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -73,6 +82,13 @@ export interface CoordinatorConfig {
   stateDir: string;
   /** Multi-machine config from config.json */
   multiMachine?: MultiMachineConfig;
+  /**
+   * developmentAgent dark-feature gate (B3 — multimachine-lease-poll-robustness).
+   * When a leaseSelfHeal sub-feature OMITS its `enabled` flag, the coordinator
+   * resolves it `enabled ?? !!developmentAgent` (live on a dev agent, dark on the
+   * fleet). Threaded from the server's top-level `config.developmentAgent`.
+   */
+  developmentAgent?: boolean;
 }
 
 export interface CoordinatorEvents {
@@ -114,6 +130,15 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private readonly hbWriteEpisode = new FailureEpisodeLatch({ signalAfterMs: 6 * 60_000 });
   private heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * B3 (multimachine-lease-poll-robustness) — dedicated renew timer (TTL/2),
+   * decoupled from the slow heartbeat-check timer so a held lease never lapses
+   * between renewals. Null unless resilientRenew resolves on (dev-gate) AND a
+   * leaseCoordinator is attached.
+   */
+  private leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
+  private leaseRenewing: boolean = false;
+  private leaseRenewStartLogged: boolean = false;
   /** Integrated-Being v1 — tracks whether we've already emitted the
    *  per-machine-ledger warning this boot. Spec §Multi-machine. */
   private integratedBeingWarningEmitted: boolean = false;
@@ -414,6 +439,10 @@ export class MultiMachineCoordinator extends EventEmitter {
       clearTimeout(this.leasePullTimer);
       this.leasePullTimer = null;
     }
+    if (this.leaseRenewTimer) {
+      clearInterval(this.leaseRenewTimer);
+      this.leaseRenewTimer = null;
+    }
     this.nonceStore.destroy();
   }
 
@@ -535,6 +564,70 @@ export class MultiMachineCoordinator extends EventEmitter {
     this.leaseCoordinator = lc;
   }
 
+  /**
+   * B3 — resolve the resilientRenew gate. OMITTED `enabled` ⇒ developmentAgent
+   * gate (live-on-dev / dark-on-fleet); an explicit boolean wins. Read live so a
+   * config flip applies on the next renew tick without a restart.
+   */
+  private resilientRenewEnabled(): boolean {
+    const explicit = this.config.multiMachine?.leaseSelfHeal?.resilientRenew?.enabled;
+    return explicit ?? !!this.config.developmentAgent;
+  }
+
+  /** B3 — the renew cadence, clamped so it is always comfortably under the TTL. */
+  private renewIntervalMs(): number {
+    const ttl = this.leaseCoordinator?.ttlMs ?? MAX_RENEW_INTERVAL_MS * 2;
+    return Math.max(MIN_RENEW_INTERVAL_MS, Math.min(MAX_RENEW_INTERVAL_MS, Math.round(ttl * RENEW_SAFETY_FACTOR)));
+  }
+
+  /**
+   * B3 — start the dedicated renew timer. No-op unless a leaseCoordinator is
+   * attached AND resilientRenew resolves on. Keeps the held lease fresh (renew =
+   * same epoch) so it never lapses between the slow heartbeat ticks → the
+   * epoch-climb stops. Pure timing: it only renews a lease THIS machine already
+   * holds; it never acquires, never relaxes the monotonic self-fence.
+   */
+  private startLeaseRenewTimer(): void {
+    if (this.leaseRenewTimer) {
+      clearInterval(this.leaseRenewTimer);
+      this.leaseRenewTimer = null;
+    }
+    if (!this.leaseCoordinator || !this.resilientRenewEnabled()) return;
+    const interval = this.renewIntervalMs();
+    if (!this.leaseRenewStartLogged) {
+      console.log(`[MultiMachine] lease renew timer armed (every ${interval}ms; TTL ${this.leaseCoordinator.ttlMs}ms) — B3 resilient renew`);
+      this.leaseRenewStartLogged = true;
+    }
+    this.leaseRenewTimer = setInterval(() => { void this.leaseRenewTick(); }, interval);
+    if (this.leaseRenewTimer.unref) this.leaseRenewTimer.unref();
+  }
+
+  /**
+   * B3 — one renew tick. Renews ONLY when this machine currently holds the lease
+   * (same-epoch refresh); a non-holder is left entirely to tickLease's acquire
+   * path. Re-entrancy-guarded and bounded by withTickTimeout so a hung broadcast
+   * can't wedge the timer.
+   */
+  private async leaseRenewTick(): Promise<void> {
+    if (this.leaseRenewing || !this.leaseCoordinator) return;
+    // A muted/observe-only machine NEVER renews — same rule tickLease's
+    // observe-only branch enforces. Without this, a machine that booted
+    // observe-only while still NAMED in a persisted prior lease (the F3
+    // silent-standby zombie) would have its lease renewed/re-broadcast here for
+    // up to ~TTL, fighting the silent-standby-relinquish self-heal. (2nd-pass.)
+    if (this.isLeaseObserveOnly) return;
+    // Only a current holder renews. A lapsed/non-holder is acquireIfEligible's job.
+    if (!this.leaseCoordinator.holdsLease()) return;
+    this.leaseRenewing = true;
+    try {
+      await this.withTickTimeout('lease-renew', () => this.leaseCoordinator!.renew());
+    } catch (err) {
+      console.log(`[MultiMachine] lease renew tick error (non-fatal): ${(err as Error).message}`);
+    } finally {
+      this.leaseRenewing = false;
+    }
+  }
+
   /** Whether this machine structurally holds the lease (false if none attached). */
   holdsLease(): boolean {
     return this.leaseCoordinator?.holdsLease() ?? this._role === 'awake';
@@ -646,6 +739,9 @@ export class MultiMachineCoordinator extends EventEmitter {
     // standby learns of a takeover it was never pushed; a holder learns of a
     // same-epoch contender). No-op when the transport can't pull (git-only mesh).
     this.startLeasePullLoop();
+    // B3 — keep the held lease fresh (renew before it lapses) so the epoch stops
+    // climbing. No-op unless resilientRenew resolves on (dev-gate).
+    this.startLeaseRenewTimer();
   }
 
   /**

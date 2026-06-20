@@ -792,6 +792,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       },
       preferredAwakeMachineId: null,
       churnDetector: { maxFlipsPerWindow: 4, windowMs: 600000 },
+      // B3 (multimachine-lease-poll-robustness) — dedicated renew timer (TTL/2) so
+      // a held lease never lapses between heartbeat ticks (stops the epoch climb).
+      // `enabled` OMITTED ⇒ developmentAgent gate (live-on-dev / dark-on-fleet).
+      // Pure timing; never relaxes the monotonic self-fence.
+      resilientRenew: {},
     },
     // multi-transport-mesh-comms (Layers 0-2) — multi-rope mesh transport
     // (Tailscale/LAN/Cloudflare hedged failover). Ships ENABLED (strictly additive;

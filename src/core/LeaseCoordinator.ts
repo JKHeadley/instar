@@ -283,6 +283,16 @@ export class LeaseCoordinator {
     return this.effectiveView().epoch;
   }
 
+  /**
+   * The lease TTL in ms (B3 — multimachine-lease-poll-robustness). Exposed so the
+   * coordinator can size a dedicated renew timer SHORTER than the TTL, keeping the
+   * lease fresh between renewals instead of letting it lapse every heartbeat tick
+   * (the epoch-climb root: TTL 60s < tick 120s → always re-acquire at epoch+1).
+   */
+  get ttlMs(): number {
+    return this.fl.ttlMs;
+  }
+
   currentHolder(): string | null {
     const lease = this.effectiveView().lease;
     // F3 — a RELEASED tombstone declares "epoch N released, not held": it names

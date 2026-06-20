@@ -2090,6 +2090,15 @@ export interface LeaseSelfHealConfig {
   /** F3 — a silent standby relinquishes a held lease (level-triggered). DARK. */
   silentStandbyRelinquish?: { enabled?: boolean };
   /**
+   * B3 (multimachine-lease-poll-robustness) — a dedicated renew timer sized
+   * SHORTER than the lease TTL so the holder renews (same epoch) before the lease
+   * lapses, instead of re-acquiring at epoch+1 every heartbeat tick (the
+   * epoch-climb root: default TTL 60s < tick 120s). OMIT `enabled` so it resolves
+   * via the developmentAgent gate (live-on-dev / dark-on-fleet). Pure timing —
+   * never relaxes the monotonic self-fence; only prevents a needless epoch bump.
+   */
+  resilientRenew?: { enabled?: boolean };
+  /**
    * multi-transport-mesh-comms Layer 3 — the preferred stationary captain holds
    * its lease (same epoch, no re-acquire) instead of self-suspending ONLY when
    * its peer is presumed-gone by liveness-silence (`presumedDeadHolders()`),
