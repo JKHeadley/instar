@@ -457,13 +457,18 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
       const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}`);
-      if (c.state === 'empty' || c.state === 'held' || c.state === 'cant-resolve') {
-        // An actionable cell → a "Set up" button (held/cant-resolve let the operator retry).
-        const btn = el(doc, 'button', 'sub-matrix-setup', c.state === 'empty' ? 'Set up' : 'Retry');
+      if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve') {
+        // An actionable cell → a button that runs the SAME in-dashboard sign-in flow (PIN → link →
+        // paste code). empty → "Set up"; needs-reauth (an existing account whose login expired) →
+        // "Sign in"; held/cant-resolve → "Retry". A needs-reauth account already resolves to its
+        // email, so the start-cell orchestrator drives a real re-auth — never a cosmetic button.
+        const label = c.state === 'empty' ? 'Set up' : (c.state === 'needs-reauth' ? 'Sign in' : 'Retry');
+        const btn = el(doc, 'button', 'sub-matrix-setup', label);
         btn.setAttribute('data-matrix-setup', '1');
         btn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
         btn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
         if (c.state !== 'empty') {
+          // Show the status word ("⟳ Needs sign-in" / "⚠ Didn't match…") ABOVE the button.
           td.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH[c.state]} ${MATRIX_CELL_WORD[c.state]}`));
         }
         td.appendChild(btn);

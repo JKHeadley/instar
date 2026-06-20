@@ -324,6 +324,32 @@ describe('renderAccountMatrix', () => {
     expect(cell!.querySelector('.sub-matrix-setup')).toBeNull();
   });
 
+  it('renders a "Sign in" button (with the "Needs sign-in" word above it) for a needs-reauth cell', () => {
+    // a3 exists on a reachable machine but its login expired (status needs-reauth) → the cell must
+    // be ACTIONABLE: the status word AND a "Sign in" button carrying the (account, machine) ids.
+    const t = el();
+    const pool = {
+      enabled: true,
+      accounts: [
+        { id: 'a3', email: 'a3@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] },
+      scope: 'pool',
+    };
+    renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, {});
+    const cell = t.querySelector('.sub-matrix-needs-reauth');
+    expect(cell).toBeTruthy();
+    // The status word still shows…
+    expect(cell!.textContent).toContain('Needs sign-in');
+    // …AND there is a real, actionable button wired to the same start-cell flow as "Set up".
+    const btn = cell!.querySelector('.sub-matrix-setup');
+    expect(btn).toBeTruthy();
+    expect(btn!.textContent).toBe('Sign in');
+    expect(btn!.getAttribute('data-matrix-setup')).toBe('1');
+    expect(btn!.getAttribute('data-account-id')).toBe('a3');
+    expect(btn!.getAttribute('data-machine-id')).toBe('m1');
+  });
+
   it('buildMatrixModel pivots on (accountId, machineId) and marks offline machines', () => {
     const model = buildMatrixModel(poolScope, pendingScope, {});
     expect(model.machines.find((m: any) => m.machineId === 'm2')!.offline).toBe(true);
