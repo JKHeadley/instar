@@ -50,6 +50,10 @@ Three implementation choices deviate from the literal spec text; each is a SAFER
 
 CI flagged 6 new catch blocks via the `no-silent-fallbacks` ratchet. All are genuinely best-effort / fail-closed, not authority swallows: the two accept-ack signature-verify catches (a verify throw ⇒ FAILED rope, fail-closed — never a false confirmation), the two endpoint-URL-parse catches (an unparseable rope is dropped, never dialed), the best-effort endpoint-advertisement catch (the next heartbeat retries; the mesh degrades to the remaining ropes), and the `/health` meshEndpoints read catch (an unreadable registry yields an empty kinds list, never errors the health path). Each was tagged with an in-brace `@silent-fallback-ok` + justification, so the ratchet count drops UNDER the baseline (476) rather than bumping it — keeping the gate honest (it only ever decreases). Comment-only, zero behavior change.
 
+## Post-CI follow-up — F1 watchdog test flake (pre-existing, fixed)
+
+CI surfaced an intermittent failure in `MultiMachineCoordinator-tickSelfHeal.test.ts` (the F1 watchdog tests from CMT-699, which this change builds on): green on one runner, red on another. Root cause: the tests set `lastTickRunMonoMs = 1` (absolute) and rely on `monoNowMs()` (= `process.hrtime.bigint()/1e6`, offset from an ARBITRARY monotonic epoch) being far above the stale threshold — but on a freshly-booted runner the raw monotonic value can be *below* the threshold, so `now - 1` doesn't register as stale and the watchdog no-ops. Fixed test-only by pinning `c.monoNowMs` to a fixed large value in the affected tests (the production code is correct — it always compares two `monoNowMs()` readings, so the epoch offset cancels). Verified 3× locally; tsc clean. No production behavior change.
+
 ## Phase 5 — Second-pass review (independent reviewer)
 
 **Concur with the review.** The reviewer independently verified all five load-bearing safety claims against the actual worktree code (not just the artifact's claims), with file:line citations:

@@ -102,6 +102,14 @@ describe('MultiMachineCoordinator F1 — tick self-heal', () => {
   it('F1b watchdog: re-arms on a STALLED tick and clears a STUCK guard (old in-flight)', () => {
     const coord = makeCoord(dir, { tickWatchdog: { staleFactorMissedTicks: 2, maxReArmsPerHour: 6 } });
     const c = coord as any;
+    // Stub the monotonic clock to a fixed large value. monoNowMs() =
+    // process.hrtime.bigint()/1e6 is offset from an ARBITRARY monotonic epoch, so
+    // on a freshly-booted CI runner the raw value can be SMALLER than the stale
+    // threshold — then an absolute `lastTickRunMonoMs = 1` would NOT register as
+    // stale and the watchdog would no-op (the 2026-06-20 CI flake: green on a
+    // long-up runner, red on a fresh one). Pinning now() makes the ancient `1`
+    // reliably stale (and positive) on every runner.
+    c.monoNowMs = () => 1_000_000_000;
     // Simulate: main loop stalled (lastTickRunMonoMs ancient) AND a guard stuck
     // with an ANCIENT in-flight start (a tick that never reached its finally).
     c.lastTickRunMonoMs = 1;       // ancient ⇒ stale
@@ -116,6 +124,7 @@ describe('MultiMachineCoordinator F1 — tick self-heal', () => {
   it('F1b watchdog: does NOT preempt a legitimately-slow LIVE tick (recent in-flight)', () => {
     const coord = makeCoord(dir, { tickWatchdog: { staleFactorMissedTicks: 2 } });
     const c = coord as any;
+    c.monoNowMs = () => 1_000_000_000; // pin monotonic clock (see re-arms test note)
     c.lastTickRunMonoMs = 1;                 // main loop looks stalled
     c.leaseTicking = true;
     c.leaseTickStartMonoMs = c.monoNowMs();  // but THIS tick just started ⇒ slow-but-live
@@ -136,6 +145,7 @@ describe('MultiMachineCoordinator F1 — tick self-heal', () => {
   it('F1b watchdog: SELF-DISARMS after maxReArmsPerHour re-arms', () => {
     const coord = makeCoord(dir, { tickWatchdog: { staleFactorMissedTicks: 2, maxReArmsPerHour: 3 } });
     const c = coord as any;
+    c.monoNowMs = () => 1_000_000_000; // pin monotonic clock (see re-arms test note)
     for (let i = 0; i < 5; i++) {
       c.lastTickRunMonoMs = 1; // re-stale before each fire (re-arm resets it to now)
       c.runTickWatchdog();
@@ -147,6 +157,7 @@ describe('MultiMachineCoordinator F1 — tick self-heal', () => {
   it('F1b watchdog: disabled flag (read live) makes it a no-op', () => {
     const coord = makeCoord(dir, { tickWatchdog: { enabled: false, staleFactorMissedTicks: 2 } });
     const c = coord as any;
+    c.monoNowMs = () => 1_000_000_000; // pin monotonic clock (see re-arms test note)
     c.lastTickRunMonoMs = 1;
     c.leaseTicking = true;
     c.leaseTickStartMonoMs = 1;
