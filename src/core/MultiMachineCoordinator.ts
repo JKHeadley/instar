@@ -25,6 +25,7 @@ import type { StateManager } from './StateManager.js';
 import type { LeaseCoordinator } from './LeaseCoordinator.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
+import { ChurnBreaker } from './churnBreaker.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
@@ -139,6 +140,11 @@ export class MultiMachineCoordinator extends EventEmitter {
   private leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   private leaseRenewing: boolean = false;
   private leaseRenewStartLogged: boolean = false;
+  /**
+   * B2 (multimachine-lease-poll-robustness, Decision 8) — the lease flap
+   * circuit-breaker. Lazily built when the churnDetector gate resolves on.
+   */
+  private churnBreaker: ChurnBreaker | null = null;
   /** Integrated-Being v1 — tracks whether we've already emitted the
    *  per-machine-ledger warning this boot. Spec §Multi-machine. */
   private integratedBeingWarningEmitted: boolean = false;
@@ -565,6 +571,24 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * B2 — the churn breaker, gated by `leaseSelfHeal.churnDetector` (OMIT `enabled`
+   * ⇒ developmentAgent gate). Returns null when off. Uses the monotonic clock so a
+   * wall-clock step can't fake or mask a flap.
+   */
+  private getChurnBreaker(): ChurnBreaker | null {
+    const c = this.config.multiMachine?.leaseSelfHeal?.churnDetector;
+    const enabled = c?.enabled ?? !!this.config.developmentAgent;
+    if (!enabled) { this.churnBreaker = null; return null; }
+    if (!this.churnBreaker) {
+      this.churnBreaker = new ChurnBreaker(
+        { maxFlipsPerWindow: c?.maxFlipsPerWindow, windowMs: c?.windowMs, maxLatchesPerHour: c?.maxLatchesPerHour },
+        () => this.monoNowMs(),
+      );
+    }
+    return this.churnBreaker;
+  }
+
+  /**
    * B3 — resolve the resilientRenew gate. OMITTED `enabled` ⇒ developmentAgent
    * gate (live-on-dev / dark-on-fleet); an explicit boolean wins. Read live so a
    * config flip applies on the next renew tick without a restart.
@@ -766,6 +790,9 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (!this.leaseCoordinator || this.leaseTicking) return;
     this.leaseTicking = true;
     this.leaseTickStartMonoMs = this.monoNowMs(); // F1b — for the watchdog's ceiling-gated guard reset
+    // B2 — advance the churn breaker so a settled system auto-resets the latch
+    // after a calm window (no-op when the churnDetector gate is off).
+    this.getChurnBreaker()?.tick();
     try {
       if (this.isLeaseObserveOnly) {
         // F3 (silentStandbyRelinquish, DARK) — LEVEL-TRIGGERED: a silent standby
@@ -835,6 +862,24 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (holds) this.emit('promote');
     else this.emit('demote');
     console.log(`[MultiMachine] Lease reconcile → ${desired} (${reason})`);
+    // B2 — feed the flap circuit-breaker on every REAL role transition (this is
+    // past the `desired === this._role` early-return, so it counts only true
+    // flips). Observe/dry-run: log the would-latch; applying the deterministic
+    // role is the live graduation (dryRun:false).
+    const breaker = this.getChurnBreaker();
+    if (breaker) {
+      const v = breaker.recordFlip();
+      if (v.latched) {
+        const pref = this.config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
+        const wouldRole = breaker.latchedRole(!!pref && pref === this._identity.machineId);
+        const dryRun = this.config.multiMachine?.leaseSelfHeal?.churnDetector?.dryRun !== false;
+        console.log(
+          `[MultiMachine] [churn] breaker LATCHED — flips=${v.flipsInWindow}, latchesThisHour=${v.latchesInHour}` +
+          `${v.exhausted ? ' (EXHAUSTED — operator attention)' : ''} — ` +
+          `${dryRun ? `would hold role '${wouldRole}' (dry-run)` : `holding role '${wouldRole}'`}`,
+        );
+      }
+    }
   }
 
   // ── Cross-Machine Coherence: active lease PULL ───────────────────

@@ -2129,12 +2129,24 @@ export interface LeaseSelfHealConfig {
    * concrete resolved value so the overload derivation is retired for migrated agents.
    */
   leaseRole?: 'active' | 'observe-only' | 'deferential' | null;
-  /** Shared epoch-churn (F2) + preferred-flapping (F4) detector. */
+  /**
+   * Shared epoch-churn (F2) + preferred-flapping (F4) detector. B2
+   * (multimachine-lease-poll-robustness, Decision 8) wires the consumer (the
+   * ChurnBreaker): on >maxFlipsPerWindow role flips it latches deterministically
+   * to the preferred-awake role. OMIT `enabled` ⇒ developmentAgent gate;
+   * `dryRun` (default true) observes/logs the would-latch without applying it.
+   */
   churnDetector?: {
+    /** OMIT ⇒ developmentAgent gate (live-on-dev / dark-on-fleet). */
+    enabled?: boolean;
+    /** When true (default), record + log the latch verdict WITHOUT applying the role. */
+    dryRun?: boolean;
     /** Default 4. Min 2. */
     maxFlipsPerWindow?: number;
     /** Default 600000 (10 min). Min 60000. */
     windowMs?: number;
+    /** Latches per trailing hour that EXHAUST the breaker (then no auto-reset). Default 3. */
+    maxLatchesPerHour?: number;
   };
 }
 

@@ -791,7 +791,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         enabled: false,
       },
       preferredAwakeMachineId: null,
-      churnDetector: { maxFlipsPerWindow: 4, windowMs: 600000 },
+      // B2 (multimachine-lease-poll-robustness, Decision 8) — the flap breaker.
+      // `enabled` OMITTED ⇒ developmentAgent gate; dryRun:true observes/logs the
+      // would-latch without applying the deterministic role (the dark stage).
+      churnDetector: { dryRun: true, maxFlipsPerWindow: 4, windowMs: 600000, maxLatchesPerHour: 3 },
       // B3 (multimachine-lease-poll-robustness) — dedicated renew timer (TTL/2) so
       // a held lease never lapses between heartbeat ticks (stops the epoch climb).
       // `enabled` OMITTED ⇒ developmentAgent gate (live-on-dev / dark-on-fleet).
