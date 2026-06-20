@@ -119,6 +119,7 @@ import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
 import { LeaseCoordinator, type LeaseStore } from '../core/LeaseCoordinator.js';
 import { isPeerPresumedDead } from '../core/leaseLiveness.js';
 import { readPollActive, pidAlive as pollPidAlive } from '../core/pollIntent.js';
+import { checkMultiMachineConfigCoherence } from '../core/configCoherence.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
 import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
 import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
@@ -3471,6 +3472,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Multi-machine: ${pc.bold(machineRole)} (${coordinator.identity!.machineId.slice(0, 12)}...)`));
       if (machineRole === 'standby') {
         console.log(pc.yellow('  Standby mode — processing gated, writes disabled'));
+      }
+      // Phase 2 #7 — surface incoherent multi-machine config (WARN only, never a
+      // boot reject): e.g. meshTransport off while session transfer is live (the
+      // worst-of-both state from the 2026-06-20 audit), or duplicate mesh rope
+      // priorities. Signal — the operator decides; boot is never blocked.
+      for (const w of checkMultiMachineConfigCoherence(config.multiMachine, true)) {
+        console.log(pc.yellow(`  ⚠ config-coherence [${w.code}]: ${w.message}`));
       }
     }
 

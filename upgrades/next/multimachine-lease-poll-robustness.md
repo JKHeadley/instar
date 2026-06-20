@@ -26,3 +26,6 @@ Nothing changes for you yet — this PR is dark-shipped infrastructure. Every fi
 ## Summary of New Capabilities
 
 No new user-facing capabilities ship enabled in this release. Dark/dev-gated infrastructure added (each with an off-switch, single-machine no-op): a lease renew timer (`leaseSelfHeal.resilientRenew`), skew-immune lease liveness (`leaseSelfHeal.skewImmuneLiveness`), a lease-flap circuit-breaker (`leaseSelfHeal.churnDetector`), an exactly-one-Telegram-listener decision + `pollingActive` heartbeat field, and poll-ownership-follows-the-lease (`multiMachine.pollFollowsLease`, dry-run). These graduate to live (and get their own user-facing announcement) only after the Phase-4 live two-host proof.
+
+### Phase 2 #7 (also in this PR)
+Startup config-coherence WARNINGS (never a boot reject): flags `meshTransport.enabled:false` while session transfer is live (the worst-of-both state the 2026-06-20 audit identified) and duplicate/non-positive mesh rope priorities. Logged at boot on multi-machine agents only; single-machine is a no-op. No behaviour change beyond a yellow boot warning.
