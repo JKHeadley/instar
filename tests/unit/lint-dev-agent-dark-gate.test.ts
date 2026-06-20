@@ -419,9 +419,16 @@ describe('lint-dev-agent-dark-gate', () => {
       // R6b added `remoteScrapeTimeoutMs` (+7) and R7a added the `spendSlice` block ABOVE
       // these keys; merged with main's revocation-wiring (#1215) config additions → the
       // sessionPool keys resolve as below. RE-VERIFIED via the attributor on the MERGED ConfigDefaults.
-      '980': 'multiMachine.sessionPool.enabled',
-      '1005': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1034': 'multiMachine.sessionPool.holdForStability.enabled',
+      // multimachine-lease-poll-robustness (2026-06-20, topic 13481): the leaseSelfHeal +
+      // multiMachine blocks gained the dev-gated `resilientRenew`/`skewImmuneLiveness`/
+      // `churnDetector`/`pollFollowsLease` config (all OMIT `enabled` / dryRun-only → NO new
+      // attributed `enabled: false` path), inserting +17 lines ABOVE the sessionPool keys.
+      // Every key below the insertion shifts DOWN by +17; the flag SET is unchanged (still 22).
+      // RE-VERIFIED via the attributor on the edited ConfigDefaults (each maps to a real
+      // `enabled: false,` line).
+      '997': 'multiMachine.sessionPool.enabled',
+      '1022': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1051': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -455,10 +462,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // attributor on the edited ConfigDefaults.
       // After merging JKHeadley/main + my accountFollowMe block, these resolve as below.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      '1203': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1325': 'cartographer.freshnessSweep.enabled',
-      '1370': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1395': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1220': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1342': 'cartographer.freshnessSweep.enabled',
+      '1387': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1412': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
