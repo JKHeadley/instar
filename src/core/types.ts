@@ -1965,6 +1965,10 @@ export interface MachineCapacity {
    *  unless every machine is blocked or the user hard-pinned here. Absent =
    *  unknown = treated as not blocked (heartbeats from older versions). */
   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+  /** B5 (multimachine-lease-poll-robustness, Decision 11) — whether this machine's
+   *  lifeline is ACTUALLY polling Telegram (the truth, from lifeline-poll-active).
+   *  Absent = unknown (older peer) → exactly-one-listener guard reports indeterminate. */
+  pollingActive?: boolean;
   /** Platform/workspace reachability — which channels this machine's adapters are CONNECTED to
    *  (spec: placement-platform-workspace-aware). ADAPTER-DERIVED at heartbeat time (NOT config):
    *  a slack workspaceId appears only because the Socket-Mode adapter is genuinely connected to that

@@ -79,3 +79,19 @@ export function evaluatePollerCount(
   return { verdict: 'silence', activePollers, hasVisibilityGap,
     reason: 'NO machine is polling Telegram — inbound is not being received' };
 }
+
+/**
+ * Adapter — evaluate the exactly-one-listener verdict directly over the pool's
+ * MachineCapacity rows (from `?scope=pool`). `online` is the freshness signal
+ * (a dark peer → not fresh → indeterminate), `pollingActive` the truth field
+ * (absent on an older peer → unknown). This is what a `/guards` surface calls.
+ */
+export function poolPollerVerdict(
+  capacities: Array<{ machineId: string; online?: boolean; pollingActive?: boolean }>,
+  localSaw409: boolean,
+): PollerCountResult {
+  return evaluatePollerCount(
+    capacities.map((c) => ({ machineId: c.machineId, pollingActive: c.pollingActive, fresh: !!c.online })),
+    localSaw409,
+  );
+}

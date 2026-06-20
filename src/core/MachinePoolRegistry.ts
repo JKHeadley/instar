@@ -102,6 +102,14 @@ export interface HeartbeatObservation {
   machineId: string;
   /** The machine's own timestamp from its heartbeat (ISO) — advisory. */
   selfReportedLastSeen?: string;
+  /**
+   * B5 (multimachine-lease-poll-robustness, Decision 11) — whether this machine's
+   * LIFELINE is ACTUALLY polling Telegram (sourced from its lifeline-poll-active
+   * file, the truth — not the server's intent). Absent = an older peer that
+   * doesn't emit it yet → the exactly-one-listener guard treats it as UNKNOWN
+   * (→ indeterminate, never a false silence/dual alarm). Fail-open.
+   */
+  pollingActive?: boolean;
   loadAvg?: number;
   memPressure?: MachineCapacity['memPressure'];
   activeSessionCount?: number;
@@ -287,6 +295,7 @@ export class MachinePoolRegistry {
       hardware: known.hardware,
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
+      pollingActive: live?.obs.pollingActive,
       servesChannels: live?.obs.servesChannels,
       inboundQueue: live?.obs.inboundQueue,
       // WS1.1: capability advertisement passthrough. Memory-only (lost on a

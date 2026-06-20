@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { evaluatePollerCount, type PollerObservation } from '../../src/core/pollerCount.js';
+import { evaluatePollerCount, poolPollerVerdict, type PollerObservation } from '../../src/core/pollerCount.js';
 
 const m = (id: string, pollingActive: boolean | undefined, fresh = true): PollerObservation =>
   ({ machineId: id, pollingActive, fresh });
@@ -57,5 +57,28 @@ describe('B5 evaluatePollerCount — exactly-one-listener', () => {
 
   it('single-machine: self is the one poller → ok', () => {
     expect(evaluatePollerCount([m('self', true)], false).verdict).toBe('ok');
+  });
+
+  describe('poolPollerVerdict (MachineCapacity adapter)', () => {
+    it('online+pollingActive maps to a fresh poller (ok with one)', () => {
+      const r = poolPollerVerdict([
+        { machineId: 'A', online: true, pollingActive: true },
+        { machineId: 'B', online: true, pollingActive: false },
+      ], false);
+      expect(r.verdict).toBe('ok');
+    });
+    it('offline peer (online:false) → not fresh → indeterminate, not false silence', () => {
+      const r = poolPollerVerdict([
+        { machineId: 'A', online: true, pollingActive: false },
+        { machineId: 'B', online: false }, // dark — online undefined→false, pollingActive undefined
+      ], false);
+      expect(r.verdict).toBe('indeterminate');
+    });
+    it('two online pollers → dual', () => {
+      expect(poolPollerVerdict([
+        { machineId: 'A', online: true, pollingActive: true },
+        { machineId: 'B', online: true, pollingActive: true },
+      ], false).verdict).toBe('dual');
+    });
   });
 });

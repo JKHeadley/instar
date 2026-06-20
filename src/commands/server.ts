@@ -118,6 +118,7 @@ import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
 import { LeaseCoordinator, type LeaseStore } from '../core/LeaseCoordinator.js';
 import { isPeerPresumedDead } from '../core/leaseLiveness.js';
+import { readPollActive, pidAlive as pollPidAlive } from '../core/pollIntent.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
 import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
 import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
@@ -15553,6 +15554,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 selfReportedLastSeen: new Date().toISOString(),
                 loadAvg: osMod.loadavg()[0],
                 quotaState: selfQuotaState(),
+                // B5 — advertise this machine's REAL poll state (the lifeline's
+                // truth file), so the pool's exactly-one-listener guard counts
+                // actual pollers. undefined when the file is absent/stale or the
+                // lifeline pid is dead (→ peers read it as unknown = fail-open).
+                pollingActive: ((): boolean | undefined => {
+                  const pa = readPollActive(config.stateDir);
+                  if (!pa) return undefined;
+                  if (pa.pid && !pollPidAlive(pa.pid)) return undefined; // dead lifeline → unknown
+                  if (Date.now() - pa.ts > 90_000) return undefined; // stale → unknown
+                  return pa.pollingActive;
+                })(),
                 servesChannels: selfServesChannels(),
                 guardPosture: selfGuardPosture(),
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
