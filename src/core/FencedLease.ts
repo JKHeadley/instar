@@ -52,6 +52,21 @@ export interface TunnelAcceptDecision {
   reason: string;
 }
 
+/**
+ * F2 (staleHolderTakeover) inputs to `canAcquire`, passed ONLY when the dark
+ * `multiMachine.leaseSelfHeal.staleHolderTakeover` flag is enabled. All times
+ * are the OBSERVER's OWN monotonic clock (no remote wall-clock subtraction) so
+ * the takeover decision is clock-skew immune. `freshObservedMonoMs` is stamped
+ * when the holder's signed nonce watermark last advanced on a VERIFIED tunnel
+ * fold-in; `undefined` ⇒ never observed ⇒ fail-closed (no takeover).
+ */
+export interface StaleHolderTakeoverOpts {
+  monotonicNowMs: number;
+  freshObservedMonoMs: number | undefined;
+  /** ttlMs × nonRenewalMissedObservations */
+  nonRenewalThresholdMs: number;
+}
+
 const DEFAULT_CAS_MAX_RETRIES = 5;
 
 export class FencedLease {
@@ -78,18 +93,48 @@ export class FencedLease {
    * signature covers exactly these so a holder cannot later be impersonated
    * by re-ordering fields or smuggling extra keys.
    */
-  static canonicalize(lease: Pick<LeaseRecord, 'holder' | 'epoch' | 'acquiredAt' | 'expiresAt' | 'nonce'>): string {
-    return JSON.stringify([lease.holder, lease.epoch, lease.acquiredAt, lease.expiresAt, lease.nonce]);
+  static canonicalize(
+    lease: Pick<LeaseRecord, 'holder' | 'epoch' | 'acquiredAt' | 'expiresAt' | 'nonce'> & { released?: boolean },
+  ): string {
+    const base: Array<string | number | boolean> = [
+      lease.holder,
+      lease.epoch,
+      lease.acquiredAt,
+      lease.expiresAt,
+      lease.nonce,
+    ];
+    // OMIT-WHEN-FALSE (multi-machine-lease-self-heal F3, load-bearing invariant):
+    // a non-released lease canonicalizes to the IDENTICAL legacy 5-element form,
+    // so (a) existing signed leases from un-upgraded peers still verify byte-for-
+    // byte and (b) an upgraded signer's normal `released:false` renewal verifies
+    // on an un-upgraded verifier. ONLY a genuine tombstone (released===true)
+    // appends the 6th element — and that `true` is INSIDE the signature, so a
+    // relay can neither strip nor inject it.
+    if (lease.released === true) base.push(true);
+    return JSON.stringify(base);
   }
 
-  /** Build + sign a lease record naming THIS machine as holder. */
-  signLease(epoch: number, acquiredAtIso: string, expiresAtIso: string, nonce: number): LeaseRecord {
+  /**
+   * Build + sign a lease record naming THIS machine as holder. Pass
+   * `released:true` to mint a tombstone (F3 relinquish) — the bit is signed.
+   */
+  signLease(
+    epoch: number,
+    acquiredAtIso: string,
+    expiresAtIso: string,
+    nonce: number,
+    released = false,
+  ): LeaseRecord {
     const base = {
       holder: this.crypto.selfMachineId,
       epoch,
       acquiredAt: acquiredAtIso,
       expiresAt: expiresAtIso,
       nonce,
+      // conditional spread: a non-tombstone record carries NO `released` field
+      // at all (so it is byte-identical to a legacy record), a tombstone carries
+      // released:true (covered by the signature via canonicalize).
+      ...(released ? { released: true as const } : {}),
     };
     const signature = this.crypto.sign(FencedLease.canonicalize(base));
     return { ...base, signature };
@@ -190,6 +235,7 @@ export class FencedLease {
     currentLease: LeaseRecord | undefined | null,
     presumedDeadHolders: ReadonlySet<string>,
     nowMs: number,
+    staleHolderOpts?: StaleHolderTakeoverOpts,
   ): AcquireDecision {
     if (!currentLease) return { can: true, reason: 'no-current-lease' };
     if (this.isExpired(currentLease, nowMs)) return { can: true, reason: 'current-lease-expired' };
@@ -198,6 +244,25 @@ export class FencedLease {
     }
     if (presumedDeadHolders.has(currentLease.holder)) {
       return { can: true, reason: `holder-presumed-dead (${currentLease.holder})` };
+    }
+    // F2 (staleHolderTakeover) — DARK by default: opts are passed ONLY when the
+    // flag is on, so with no opts this method is byte-for-byte the legacy
+    // behavior. A holder whose signed nonce watermark hasn't advanced for
+    // `nonRenewalThresholdMs` of the OBSERVER'S OWN monotonic time is not
+    // renewing. Single-clock (no remote wall-clock subtraction) ⇒ skew-immune;
+    // unforgeable (the watermark advances only on a VERIFIED tunnel fold-in).
+    // FAIL-CLOSED: an absent/NaN observation never grants takeover.
+    if (staleHolderOpts) {
+      const { monotonicNowMs, freshObservedMonoMs, nonRenewalThresholdMs } = staleHolderOpts;
+      if (
+        typeof freshObservedMonoMs === 'number' &&
+        Number.isFinite(freshObservedMonoMs) &&
+        nonRenewalThresholdMs > 0 &&
+        monotonicNowMs - freshObservedMonoMs > nonRenewalThresholdMs
+      ) {
+        const stalledS = Math.round((monotonicNowMs - freshObservedMonoMs) / 1000);
+        return { can: true, reason: `holder-not-renewing (nonce watermark stalled ${stalledS}s)` };
+      }
     }
     return { can: false, reason: `held-by-live-peer (${currentLease.holder})` };
   }

@@ -1843,6 +1843,17 @@ export interface LeaseRecord {
    * (spec §6 replay protection).
    */
   nonce: number;
+  /**
+   * Tombstone flag (multi-machine-lease-self-heal F3). When `true`, this record
+   * declares "epoch N RELEASED, not held" — a machine demoted to silent standby
+   * relinquishing a lease it held, so peers stop deferring to a zombie. The bit
+   * is COVERED by the Ed25519 signature (canonicalize appends it ONLY when true,
+   * omit-when-false, so legacy 5-field leases verify byte-for-byte). A verified
+   * `released` record advances the nonce watermark but yields currentHolder=null
+   * for that epoch and is NEVER folded as an authoritative current-holder; a
+   * higher-epoch takeover always strictly dominates. Absent ⇒ a normal held lease.
+   */
+  released?: boolean;
 }
 
 export interface MachineRegistry {
@@ -2030,6 +2041,53 @@ export interface GuardPostureSummary {
   generatedAt: string;
 }
 
+/**
+ * multi-machine-lease-self-heal config (one consolidated namespace under
+ * `multiMachine.leaseSelfHeal`). F1 ships ENABLED (safe self-heal); F2/F3 ship
+ * DARK; F4 is opt-in (preferredAwakeMachineId null = off). All numeric factors
+ * are range-validated at startup. Spec: docs/specs/multi-machine-lease-self-heal.md.
+ */
+export interface LeaseSelfHealConfig {
+  /** F1 — bounded-await + monotonic tick watchdog. Ships enabled. */
+  tickWatchdog?: {
+    /** Default true. Read live each watchdog fire (disable takes effect without restart). */
+    enabled?: boolean;
+    /** Stall threshold = HEARTBEAT_CHECK_INTERVAL_MS × this. Default 5 (10 min). Min 2. */
+    staleFactorMissedTicks?: number;
+    /** Per-tick-network-call timeout (F1a). Default 20000. Min 1000. */
+    awaitTimeoutMs?: number;
+    /** Self-disarm + Attention above this re-arm count in a rolling hour. Default 6. Min 2. */
+    maxReArmsPerHour?: number;
+  };
+  /** F2 — take over a non-renewing holder (locally-clocked monotonic signal). DARK. */
+  staleHolderTakeover?: {
+    enabled?: boolean;
+    /** Non-renewal threshold = ttlMs × this (observer monotonic). Default 6. Min 1. */
+    nonRenewalMissedObservations?: number;
+  };
+  /** F3 — a silent standby relinquishes a held lease (level-triggered). DARK. */
+  silentStandbyRelinquish?: { enabled?: boolean };
+  /**
+   * F4 — preferred-awake machine (opt-in). null = off (today's behavior). When
+   * set, the named (SAS-verified) machine wins ties ONLY while healthy, applied
+   * only on cross-machine agreement; disagreement falls back to lower-machineId.
+   */
+  preferredAwakeMachineId?: string | null;
+  /**
+   * Lease-participation mode, decoupled from telegramPolling (M3). null ⇒ derived
+   * (telegramPolling===false ⇒ 'observe-only', else 'active'). Migration seeds the
+   * concrete resolved value so the overload derivation is retired for migrated agents.
+   */
+  leaseRole?: 'active' | 'observe-only' | 'deferential' | null;
+  /** Shared epoch-churn (F2) + preferred-flapping (F4) detector. */
+  churnDetector?: {
+    /** Default 4. Min 2. */
+    maxFlipsPerWindow?: number;
+    /** Default 600000 (10 min). Min 60000. */
+    windowMs?: number;
+  };
+}
+
 export interface MultiMachineConfig {
   /** Whether multi-machine is enabled */
   enabled: boolean;
@@ -2137,6 +2195,13 @@ export interface MultiMachineConfig {
    * standby can honor it. Consumed by TelegramLifeline.start().
    */
   telegramPolling?: boolean;
+  /**
+   * multi-machine-lease-self-heal — F1 lease-tick self-heal (ENABLED: bounded
+   * await + monotonic watchdog), F2 stale-holder takeover (DARK), F3 silent-
+   * standby relinquish (DARK), F4 preferred-awake (opt-in). All under one
+   * namespace. See docs/specs/multi-machine-lease-self-heal.md.
+   */
+  leaseSelfHeal?: LeaseSelfHealConfig;
   /**
    * Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7) — per-machine append-only
    * event streams (topic-placement / session-lifecycle / autonomous-run) +

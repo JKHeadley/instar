@@ -20,7 +20,7 @@
  * self-suspend logic are unit-testable with in-memory fakes.
  */
 
-import { FencedLease } from './FencedLease.js';
+import { FencedLease, type StaleHolderTakeoverOpts } from './FencedLease.js';
 import type { LeaseRecord } from './types.js';
 
 /** Durable (git-backed) view + CAS write of the lease. */
@@ -104,6 +104,14 @@ export interface LeaseCoordinatorDeps {
   onSelfSuspend?: (reason: string) => void;
   /** Fired whenever our effective epoch advances (drives leaseEpochChange → registry push). */
   onEpochAdvance?: (epoch: number) => void;
+  /**
+   * F2 (multi-machine-lease-self-heal staleHolderTakeover) — resolved live so a
+   * config flip needs no restart. null/disabled ⇒ canAcquire is byte-for-byte the
+   * legacy behavior. When enabled, a standby may take over a holder whose signed
+   * nonce watermark hasn't advanced for `ttlMs × nonRenewalMissedObservations` of
+   * the OBSERVER's own monotonic time (skew-immune; the takeover stays CAS-fenced).
+   */
+  staleHolderTakeover?: () => { enabled: boolean; nonRenewalMissedObservations: number } | null;
   logger?: (msg: string) => void;
 }
 
@@ -129,6 +137,17 @@ export class LeaseCoordinator {
    * while it is not superseded by a higher epoch.
    */
   private selfIssued: LeaseRecord | null = null;
+  /**
+   * F2 (staleHolderTakeover) — per-holder freshness on the OBSERVER's own
+   * monotonic clock: the time we last saw that holder's signed nonce watermark
+   * ADVANCE (a renewing holder bumps its nonce each renew). Stamped only when a
+   * VERIFIED observed lease's nonce strictly exceeds the last we recorded for
+   * that holder. `lastObservedNonce` is the per-holder high-water nonce that
+   * gates the stamp. Single-clock ⇒ clock-skew immune; the holder cannot forge
+   * freshness (the nonce is inside its Ed25519 signature).
+   */
+  private freshObservedMonoMs = new Map<string, number>();
+  private lastObservedNonce = new Map<string, number>();
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
@@ -194,9 +213,20 @@ export class LeaseCoordinator {
         const { [obs.lease.holder]: _self, ...nonceFloor } = obs.lastNonceByHolder;
         void _self;
         const decision = this.fl.acceptTunnelLease(obs.lease, git.epoch, nonceFloor);
-        if (decision.accept && obs.lease.epoch > epoch) {
-          bestLease = obs.lease;
-          epoch = obs.lease.epoch;
+        if (decision.accept) {
+          // F2 freshness stamp (VERIFIED fold-in): a renewing holder bumps its
+          // signed nonce each renew (same OR higher epoch), so its watermark
+          // advances; a non-renewing holder's stops. Stamp the OBSERVER's own
+          // monotonic time when a peer holder's nonce watermark strictly advances.
+          const prevNonce = this.lastObservedNonce.get(obs.lease.holder) ?? -1;
+          if (obs.lease.holder !== this.selfMachineId && obs.lease.nonce > prevNonce) {
+            this.lastObservedNonce.set(obs.lease.holder, obs.lease.nonce);
+            this.freshObservedMonoMs.set(obs.lease.holder, this.monotonicNow());
+          }
+          if (obs.lease.epoch > epoch) {
+            bestLease = obs.lease;
+            epoch = obs.lease.epoch;
+          }
         }
       }
     }
@@ -231,7 +261,24 @@ export class LeaseCoordinator {
   }
 
   currentHolder(): string | null {
-    return this.effectiveView().lease?.holder ?? null;
+    const lease = this.effectiveView().lease;
+    // F3 — a RELEASED tombstone declares "epoch N released, not held": it names
+    // no live holder, so peers stop deferring to a muted ex-holder's zombie. A
+    // higher-epoch normal acquisition still strictly dominates (epoch fold).
+    if (!lease || lease.released) return null;
+    return lease.holder;
+  }
+
+  /**
+   * F4 — is `machineId` the current holder of a LIVE (non-expired, non-released)
+   * lease we observe? The deferential-standby health gate: a non-preferred machine
+   * defers to its preferred peer ONLY while this is true, so a frozen/down/released
+   * preferred never strands coverage (the non-preferred then acquires normally).
+   */
+  isHolderHealthy(machineId: string): boolean {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.released || view.lease.holder !== machineId) return false;
+    return !this.fl.isExpired(view.lease, this.now());
   }
 
   /**
@@ -267,6 +314,52 @@ export class LeaseCoordinator {
     this.selfIssued = null;
     this.d.store.forceLocalExpiry?.();
     this.log('relinquished self-lease (contested tie-break loser) — winner may now advance to N+1');
+  }
+
+  /**
+   * F2 — build the StaleHolderTakeoverOpts for `canAcquire`, or `undefined` when
+   * the flag is off / the candidate is not a takeable peer (so canAcquire stays
+   * byte-for-byte the legacy behavior). Uses this holder's observed freshness on
+   * the OBSERVER's own monotonic clock.
+   */
+  private staleHolderOpts(currentLease: LeaseRecord | null | undefined): StaleHolderTakeoverOpts | undefined {
+    const cfg = this.d.staleHolderTakeover?.();
+    if (!cfg?.enabled) return undefined;
+    if (!currentLease || currentLease.holder === this.selfMachineId) return undefined;
+    return {
+      monotonicNowMs: this.monotonicNow(),
+      freshObservedMonoMs: this.freshObservedMonoMs.get(currentLease.holder),
+      nonRenewalThresholdMs: this.fl.ttlMs * Math.max(1, cfg.nonRenewalMissedObservations),
+    };
+  }
+
+  /**
+   * F3 — relinquish a lease THIS machine holds AND broadcast a SIGNED tombstone
+   * so peers stop deferring to a muted ex-holder's zombie. Called level-triggered
+   * by the coordinator when this machine is observe-only yet still the named
+   * holder (the 2026-06-19 silent-standby zombie). The tombstone is
+   * `released:true` at our epoch with a fresh nonce strictly greater than our last
+   * (so a concurrent in-flight renewal cannot out-nonce it) and a past expiry; a
+   * higher-epoch normal takeover always strictly dominates it. Idempotent: a no-op
+   * (just local relinquish) when we are not the named holder.
+   */
+  async relinquishAndBroadcast(): Promise<void> {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId || view.lease.released) {
+      // Not the live holder (or already a tombstone) → just clear local state.
+      this.relinquish();
+      return;
+    }
+    const tombstone = this.fl.signLease(
+      view.lease.epoch,
+      view.lease.acquiredAt,
+      new Date(this.now()).toISOString(), // past/now expiry — released regardless
+      this.nextNonce(),                   // strictly > our last renewal nonce
+      true,                               // released
+    );
+    this.relinquish(); // clear our own self-hold first (forceLocalExpiry preserves the epoch floor)
+    await this.broadcast(tombstone);
+    this.log(`relinquished + broadcast tombstone for epoch ${view.lease.epoch} (silent-standby release)`);
   }
 
   /**
@@ -380,7 +473,7 @@ export class LeaseCoordinator {
       if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
         return this.renew();
       }
-      const decision = this.fl.canAcquire(view.lease, dead, this.now());
+      const decision = this.fl.canAcquire(view.lease, dead, this.now(), this.staleHolderOpts(view.lease));
       if (!decision.can) {
         this.log(`acquire skipped: ${decision.reason}`);
         return false;
@@ -400,8 +493,8 @@ export class LeaseCoordinator {
       if (observedEpoch >= candidate.epoch) {
         this.log(`CAS lost to epoch ${observedEpoch} (our candidate ${candidate.epoch}) — yielding`);
         this.emitEpoch(observedEpoch);
-        // If the winner is a presumed-dead/expired holder we'll retry; else stop.
-        if (!this.fl.canAcquire(res.observed.lease, dead, this.now()).can) return false;
+        // If the winner is a presumed-dead/expired/non-renewing holder we'll retry; else stop.
+        if (!this.fl.canAcquire(res.observed.lease, dead, this.now(), this.staleHolderOpts(res.observed.lease)).can) return false;
       }
       retries++;
       if (this.fl.shouldBackoffAfterContention(retries, res.observed.lease?.holder ?? '')) {

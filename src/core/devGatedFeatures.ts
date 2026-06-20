@@ -504,6 +504,16 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'green-PR auto-merge watcher — merges PRs (an irreversible external mutation) when live. Off fleet-wide; flipped on per dev agent with expectedGhLogin. safe-merge re-verifies + lease-gated + runtime rollback + breaker; GitHub App is a binding precondition before any fleet promotion.',
   },
   {
+    configPath: 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+    category: 'action-bearing',
+    reason: 'multi-machine-lease-self-heal F2 — when enabled, a standby TAKES OVER the awake lease from a non-renewing holder (a live authority change, CAS-fenced). Ships hard-dark on EVERY agent (dev included) because it changes who-is-awake and MUST be live-verified on the real Mini+Laptop pair (with an injected clock offset) before any enablement; off ⇒ canAcquire is byte-for-byte the legacy behavior. Opt-in per agent after soak. Spec: docs/specs/multi-machine-lease-self-heal.md.',
+  },
+  {
+    configPath: 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+    category: 'action-bearing',
+    reason: 'multi-machine-lease-self-heal F3 — when enabled, a muted (silent-standby) machine that still holds a lease RELINQUISHES it and broadcasts a signed tombstone (a live authority change). Ships hard-dark on EVERY agent because it mutates the live lease record; must be live-verified on the real pair (reading the relinquishing machine\'s own security.jsonl) before enablement. Opt-in per agent after soak. Spec: docs/specs/multi-machine-lease-self-heal.md.',
+  },
+  {
     configPath: 'threadline.a2aCheckIn.enabled',
     category: 'action-bearing',
     reason: 'A2A check-in summarizer — sends UNBOUNDED user-facing Telegram summaries on a heartbeat while a conversation is active; live-on-dev would flood the operator. Opt-in to keep the operator un-flooded.',

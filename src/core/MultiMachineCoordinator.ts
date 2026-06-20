@@ -39,12 +39,21 @@ export interface MultiMachineSyncStatus {
   splitBrainState: 'clear' | 'contested' | 'self-suspended';
   protocolVersion: number;
   awakeMachineCount: number;
+  /**
+   * multi-machine-lease-self-heal observability (Agent Awareness). F1 tick-watchdog
+   * health — answers "did the watchdog fire?" / "is it disarmed?". `lastTickAgeMs`
+   * is the monotonic age of the last main-tick run (a large value = the tick has
+   * stalled). `preferredAwakeMachineId` echoes the F4 config (null = off).
+   */
+  leaseTickWatchdog?: { lastTickAgeMs: number; reArmCount: number; disarmed: boolean };
+  preferredAwakeMachineId?: string | null;
 }
 
 // ── Constants ────────────────────────────────────────────────────────
 
 const HEARTBEAT_WRITE_INTERVAL_MS = 2 * 60_000; // Write heartbeat every 2 min
 const HEARTBEAT_CHECK_INTERVAL_MS = 2 * 60_000;  // Check heartbeat every 2 min
+const TICK_WATCHDOG_INTERVAL_MS = 60_000;  // F1b — independent tick-stall watchdog cadence
 const DEFAULT_FAILOVER_TIMEOUT_MS = 15 * 60_000;  // 15 min before failover
 /** Cross-Machine Coherence — default active lease-PULL cadence over the tunnel. */
 const DEFAULT_LEASE_PULL_INTERVAL_MS = 5_000;
@@ -133,6 +142,24 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private contestedEpisode: { key: string; cycles: number; resolved: boolean; escalated: boolean } | null = null;
 
+  /**
+   * multi-machine-lease-self-heal F1 — the tick self-heal watchdog state.
+   * `lastTickRunMonoMs` is stamped on the OBSERVER's own monotonic clock at the
+   * TOP of checkHeartbeatAndAct (before any early-return, so a solo agent stamps
+   * a healthy advancing value and the watchdog stays a no-op). `*StartMonoMs`
+   * stamp when a reentrancy guard is taken, so the watchdog can distinguish a
+   * legitimately-slow in-flight tick (leave alone) from a stuck guard (reset).
+   * `watchdogReArmTimes` is a rolling window of re-arm timestamps for self-disarm.
+   */
+  private tickWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private lastTickRunMonoMs: number = 0;
+  private leaseTickStartMonoMs: number = 0;
+  private leasePullStartMonoMs: number = 0;
+  private watchdogReArmTimes: number[] = [];
+  private watchdogDisarmed: boolean = false;
+  /** F3 — per-incarnation latch so a silent standby relinquishes its held lease once. */
+  private silentStandbyRelinquished: boolean = false;
+
   constructor(state: StateManager, config: CoordinatorConfig) {
     super();
     this.state = state;
@@ -173,7 +200,43 @@ export class MultiMachineCoordinator extends EventEmitter {
    * such a machine is a deliberate un-mute (telegramPolling → true), not auto.
    */
   get isLeaseObserveOnly(): boolean {
-    return this.config.multiMachine?.telegramPolling === false;
+    return this.resolvedLeaseRole() === 'observe-only';
+  }
+
+  /**
+   * multi-machine-lease-self-heal M3 — the first-class lease-participation mode,
+   * decoupled from the overloaded `telegramPolling` flag. Explicit
+   * `leaseSelfHeal.leaseRole` wins; otherwise derive from `telegramPolling`
+   * (===false ⇒ 'observe-only', else 'active') for back-compat. ('deferential'
+   * is an F4 concept handled separately; only 'observe-only' gates acquisition
+   * here so F4's down-preferred failover is never accidentally suppressed.)
+   */
+  private resolvedLeaseRole(): 'active' | 'observe-only' | 'deferential' {
+    const explicit = this.config.multiMachine?.leaseSelfHeal?.leaseRole;
+    if (explicit === 'active' || explicit === 'observe-only' || explicit === 'deferential') return explicit;
+    return this.config.multiMachine?.telegramPolling === false ? 'observe-only' : 'active';
+  }
+
+  /**
+   * F4 (preferred-awake, opt-in; null = off) — should THIS machine defer (not
+   * contend for the lease) right now? True iff a `preferredAwakeMachineId` is
+   * configured, it names a DIFFERENT machine (we are NOT the preferred), and that
+   * preferred machine is currently a HEALTHY holder. A machine that IS the
+   * preferred never defers; a non-preferred machine defers only while the preferred
+   * is healthy, so the preferred going down never strands coverage. Safe under any
+   * config (no tie-break override, so a divergent config degrades to the existing
+   * lower-machineId baseline rather than flapping).
+   */
+  private shouldDeferToPreferred(): boolean {
+    const pref = this.config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
+    if (!pref || !this._identity || !this.leaseCoordinator) return false; // F4 off / no identity
+    if (pref === this._identity.machineId) return false;                   // WE are preferred → never defer
+    return this.preferredIsHealthy(pref);
+  }
+
+  /** F4 — the single shared health predicate: is the preferred machine a live holder? */
+  private preferredIsHealthy(machineId: string): boolean {
+    return this.leaseCoordinator?.isHolderHealthy(machineId) ?? false;
   }
 
   /** The coordination mode (default: 'primary-standby'). */
@@ -333,6 +396,10 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (this.heartbeatCheckTimer) {
       clearInterval(this.heartbeatCheckTimer);
       this.heartbeatCheckTimer = null;
+    }
+    if (this.tickWatchdogTimer) {
+      clearInterval(this.tickWatchdogTimer);
+      this.tickWatchdogTimer = null;
     }
     this.leasePullStopped = true;
     if (this.leasePullTimer) {
@@ -520,6 +587,14 @@ export class MultiMachineCoordinator extends EventEmitter {
       splitBrainState,
       protocolVersion: SEAMLESSNESS_PROTOCOL_VERSION,
       awakeMachineCount,
+      leaseTickWatchdog: this.leaseCoordinator
+        ? {
+            lastTickAgeMs: this.lastTickRunMonoMs > 0 ? this.monoNowMs() - this.lastTickRunMonoMs : -1,
+            reArmCount: this.watchdogReArmTimes.length,
+            disarmed: this.watchdogDisarmed,
+          }
+        : undefined,
+      preferredAwakeMachineId: this.config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null,
     };
   }
 
@@ -532,6 +607,9 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (this.isLeaseObserveOnly) {
       // Silent standby: do NOT acquire — only observe the primary's lease.
       this.reconcileRoleToLease('lease-init-observe-only');
+    } else if (this.shouldDeferToPreferred()) {
+      // F4 — boot as a deferential standby to a healthy preferred peer (no contend).
+      this.reconcileRoleToLease('lease-init-defer-preferred');
     } else {
       await this.leaseCoordinator.acquireIfEligible();
       this.reconcileRoleToLease('lease-init');
@@ -564,22 +642,47 @@ export class MultiMachineCoordinator extends EventEmitter {
   private async tickLease(): Promise<void> {
     if (!this.leaseCoordinator || this.leaseTicking) return;
     this.leaseTicking = true;
+    this.leaseTickStartMonoMs = this.monoNowMs(); // F1b — for the watchdog's ceiling-gated guard reset
     try {
       if (this.isLeaseObserveOnly) {
+        // F3 (silentStandbyRelinquish, DARK) — LEVEL-TRIGGERED: a silent standby
+        // that is STILL the named holder (the 2026-06-19 zombie: muted while
+        // holding epoch N) relinquishes + broadcasts a signed tombstone ONCE per
+        // incarnation, so peers stop deferring to it. Config flips need a restart,
+        // and the zombie is a persisted prior-process record, so this fires on the
+        // observe-only tick — not on an (absent) transition event.
+        if (
+          this.config.multiMachine?.leaseSelfHeal?.silentStandbyRelinquish?.enabled &&
+          !this.silentStandbyRelinquished &&
+          this._identity &&
+          this.leaseCoordinator.currentHolder() === this._identity.machineId
+        ) {
+          this.silentStandbyRelinquished = true;
+          await this.withTickTimeout('relinquishAndBroadcast', () => this.leaseCoordinator!.relinquishAndBroadcast());
+        }
         // Silent standby: never acquire/renew — just reconcile role to the
         // observed holder (effectiveView folds the primary's broadcast lease).
         this.reconcileRoleToLease('lease-tick-observe-only');
       } else if (this.leaseCoordinator.holdsLease()) {
-        await this.leaseCoordinator.renew();
+        // F1a — bounded await: a hung renew can never wedge the tick.
+        await this.withTickTimeout('renew', () => this.leaseCoordinator!.renew());
         this.reconcileRoleToLease('lease-tick');
+      } else if (this.shouldDeferToPreferred()) {
+        // F4 (preferred-awake, opt-in) — we are NON-preferred and observe the
+        // preferred machine holding a HEALTHY lease: defer, do not contend. If the
+        // preferred goes down/unhealthy, shouldDeferToPreferred() flips false and we
+        // acquire normally next tick (no coverage stranding, no flap — a deferential
+        // machine creates no contention to leapfrog, so no agreement-gossip needed).
+        this.reconcileRoleToLease('lease-tick-defer-preferred');
       } else {
-        await this.leaseCoordinator.acquireIfEligible();
+        await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
         this.reconcileRoleToLease('lease-tick');
       }
     } catch {
-      // @silent-fallback-ok — a tick failure is retried next interval
+      // @silent-fallback-ok — a tick failure (incl. a bounded-await timeout) is retried next interval
     } finally {
       this.leaseTicking = false;
+      this.leaseTickStartMonoMs = 0;
     }
   }
 
@@ -652,8 +755,10 @@ export class MultiMachineCoordinator extends EventEmitter {
   private async tickLeasePull(arm: () => void): Promise<void> {
     if (this.leasePulling) { arm(); return; }
     this.leasePulling = true;
+    this.leasePullStartMonoMs = this.monoNowMs(); // F1b — watchdog ceiling-gated guard reset
     try {
-      await this.leaseCoordinator!.pullFromPeers();
+      // F1a — bounded await: a hung peer pull can never wedge the pull loop.
+      await this.withTickTimeout('pullFromPeers', () => this.leaseCoordinator!.pullFromPeers());
       // Only reconcile role / surface split-brain when a peer lease was actually
       // OBSERVED. A solo machine (no peers, or no peer lease seen this boot) must
       // NEVER be demoted by the pull loop on a transient self-lease lapse — that
@@ -684,9 +789,10 @@ export class MultiMachineCoordinator extends EventEmitter {
         await this.resolveContestedSplitBrain();
       }
     } catch {
-      // @silent-fallback-ok — a pull failure is retried next tick
+      // @silent-fallback-ok — a pull failure (incl. a bounded-await timeout) is retried next tick
     } finally {
       this.leasePulling = false;
+      this.leasePullStartMonoMs = 0;
       arm();
     }
   }
@@ -874,6 +980,106 @@ export class MultiMachineCoordinator extends EventEmitter {
     }
   }
 
+  // ── multi-machine-lease-self-heal F1 — tick self-heal ─────────────
+
+  /** Monotonic milliseconds (NTP-step / sleep-resume immune), like LeaseCoordinator §L−1. */
+  private monoNowMs(): number {
+    return Number(process.hrtime.bigint() / 1_000_000n);
+  }
+
+  /** Resolved F1 watchdog config (defaults baked in; read live so disable needs no restart). */
+  private get tickWatchdogCfg(): { enabled: boolean; staleMs: number; awaitTimeoutMs: number; maxReArmsPerHour: number } {
+    const w = this.config.multiMachine?.leaseSelfHeal?.tickWatchdog;
+    const staleFactor = Math.max(2, w?.staleFactorMissedTicks ?? 5);
+    return {
+      enabled: w?.enabled ?? true,
+      staleMs: HEARTBEAT_CHECK_INTERVAL_MS * staleFactor,
+      awaitTimeoutMs: Math.max(1000, w?.awaitTimeoutMs ?? 20_000),
+      maxReArmsPerHour: Math.max(2, w?.maxReArmsPerHour ?? 6),
+    };
+  }
+
+  /**
+   * F1a — bound a tick-path network await so a never-settling call (the proven
+   * 2026-06-19 freeze: a hung fetch left `leaseTicking` stuck true forever) can
+   * NEVER hang the tick. ALL tick-path awaits route through this one helper, so
+   * the "no unbounded tick await" invariant is structural + grep-auditable.
+   */
+  private withTickTimeout<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    const ms = this.tickWatchdogCfg.awaitTimeoutMs;
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const t = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`tick-await timeout after ${ms}ms: ${label}`));
+      }, ms);
+      if (typeof t.unref === 'function') t.unref();
+      fn().then(
+        (v) => { if (!settled) { settled = true; clearTimeout(t); resolve(v); } },
+        (e) => { if (!settled) { settled = true; clearTimeout(t); reject(e); } },
+      );
+    });
+  }
+
+  /**
+   * F1b — the monotonic-clocked tick watchdog. Detects a stalled main tick loop
+   * (lost timer / stuck reentrancy guard) and re-arms it. SAFE-BY-CONSTRUCTION:
+   * never crashes (try/catch), never touches authority/epoch/suspend state, only
+   * resets a reentrancy guard whose in-flight tick is ALSO older than the ceiling
+   * (so a legitimately-slow live tick is never preempted), reads `enabled` live,
+   * and self-disarms (one DegradationReporter signal) if it re-arms too often.
+   * A true event-loop stall freezes this timer too — that case is layer-2 (the
+   * out-of-process fleet/launchd watchdog), as documented in the spec.
+   */
+  private runTickWatchdog(): void {
+    try {
+      const cfg = this.tickWatchdogCfg;
+      if (!cfg.enabled || this.watchdogDisarmed) return;
+      // No lease coordinator (solo / non-git mesh) ⇒ nothing to self-heal.
+      if (!this.leaseCoordinator) return;
+      const now = this.monoNowMs();
+      // lastTickRunMonoMs is stamped at the TOP of checkHeartbeatAndAct; if it
+      // has not advanced within the stale window, the main loop is stalled.
+      if (this.lastTickRunMonoMs > 0 && now - this.lastTickRunMonoMs <= cfg.staleMs) return;
+
+      // Ceiling-gated guard reset: only clear a guard whose in-flight tick is
+      // ALSO older than the ceiling (a stuck guard, not a slow-but-live tick).
+      if (this.leaseTicking && this.leaseTickStartMonoMs > 0 && now - this.leaseTickStartMonoMs > cfg.staleMs) {
+        this.leaseTicking = false;
+      }
+      if (this.leasePulling && this.leasePullStartMonoMs > 0 && now - this.leasePullStartMonoMs > cfg.staleMs) {
+        this.leasePulling = false;
+      }
+      // Re-arm the main monitor (clears + recreates the interval).
+      this.startHeartbeatMonitor();
+      this.lastTickRunMonoMs = now; // reset so we don't re-fire next tick on the same stall
+
+      // Self-disarm bookkeeping (rolling 1h window).
+      this.watchdogReArmTimes.push(now);
+      const hourAgo = now - 3_600_000;
+      this.watchdogReArmTimes = this.watchdogReArmTimes.filter((t) => t >= hourAgo);
+      console.log(`[MultiMachine] lease-tick watchdog: stalled >${cfg.staleMs}ms — re-armed (${this.watchdogReArmTimes.length}/${cfg.maxReArmsPerHour} this hour)`);
+      this.emit('tickStallRecovered', { reArmCount: this.watchdogReArmTimes.length });
+
+      if (this.watchdogReArmTimes.length > cfg.maxReArmsPerHour) {
+        this.watchdogDisarmed = true;
+        console.error('[MultiMachine] lease-tick watchdog SELF-DISARMED — re-arming too often; the tick itself is the incident');
+        DegradationReporter.getInstance().report({
+          feature: 'MultiMachine.leaseTickWatchdog',
+          primary: 'The lease-tick self-heal watchdog re-arms a stalled coordinator tick',
+          fallback: `Watchdog re-armed >${cfg.maxReArmsPerHour}×/hour and has self-disarmed; the lease tick is repeatedly stalling`,
+          reason: 'A persistently-stalling lease tick (transport hang / event-loop pressure) the in-process watchdog cannot durably fix',
+          impact: 'The awake-machine election may be unstable; investigate the coordinator/transport. The out-of-process fleet watchdog remains the backstop.',
+        });
+      }
+    } catch (err) {
+      // @silent-fallback-ok — the watchdog must NEVER throw out of its interval
+      // callback (an uncaughtException would turn a partial wedge into a crash).
+      console.error(`[MultiMachine] tick watchdog error (ignored): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /**
    * Start periodic heartbeat monitoring (all machines).
    */
@@ -889,12 +1095,27 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (this.heartbeatCheckTimer.unref) {
       this.heartbeatCheckTimer.unref();
     }
+
+    // F1b — arm the independent tick watchdog ONCE (shorter 60s cadence so
+    // detection latency isn't gated by the 2-min main cadence). startHeartbeat-
+    // Monitor is also called BY the watchdog to re-arm the main timer, so guard
+    // against stacking a second watchdog on re-arm.
+    if (!this.tickWatchdogTimer) {
+      this.tickWatchdogTimer = setInterval(() => {
+        this.runTickWatchdog();
+      }, TICK_WATCHDOG_INTERVAL_MS);
+      if (this.tickWatchdogTimer.unref) this.tickWatchdogTimer.unref();
+    }
   }
 
   /**
    * Check the heartbeat and take action if needed.
    */
   private checkHeartbeatAndAct(): void {
+    // F1b — stamp the monotonic liveness mark FIRST, before any early-return, so
+    // a solo / no-leaseCoordinator agent still advances it and the watchdog never
+    // re-arms there (genuine no-op on single-machine agents).
+    this.lastTickRunMonoMs = this.monoNowMs();
     if (!this._identity) return;
     // Independent mode: no failover/demotion logic
     if (this.coordinationMode === 'independent') return;

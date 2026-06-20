@@ -758,6 +758,34 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // multi-machine-lease-self-heal (docs/specs/multi-machine-lease-self-heal.md).
+    // F1 tick self-heal ships ENABLED (safe-by-construction: bounded await + a
+    // monotonic watchdog that only re-arms/recovers, never changes authority);
+    // F2 staleHolderTakeover + F3 silentStandbyRelinquish ship DARK; F4
+    // preferredAwakeMachineId is opt-in (null = off). applyDefaults() deep-merges
+    // this under an existing multiMachine block WITHOUT clobbering an operator-set
+    // value — so existing agents get F1-enabled + the dark flags on update
+    // (Migration Parity). `leaseRole` is intentionally OMITTED (defaults to the
+    // back-compat derivation from telegramPolling); a follow-up migration may seed
+    // it to the concrete resolved value to retire the derivation. Numeric factors
+    // are range-validated at startup.
+    leaseSelfHeal: {
+      tickWatchdog: {
+        enabled: true,
+        staleFactorMissedTicks: 5,
+        awaitTimeoutMs: 20000,
+        maxReArmsPerHour: 6,
+      },
+      staleHolderTakeover: {
+        enabled: false,
+        nonRenewalMissedObservations: 6,
+      },
+      silentStandbyRelinquish: {
+        enabled: false,
+      },
+      preferredAwakeMachineId: null,
+      churnDetector: { maxFlipsPerWindow: 4, windowMs: 600000 },
+    },
     // WS5.2 Account Follow-Me (docs/specs/ws52-account-follow-me-security.md). The
     // `enabled` literal is DELIBERATELY OMITTED (not hardcoded false) so
     // resolveDevAgentGate decides at runtime — DARK on the fleet (the security spec's

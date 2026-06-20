@@ -370,6 +370,16 @@ describe('lint-dev-agent-dark-gate', () => {
       '651': 'mentor.enabled',
       '662': 'mentor.autonomousFix.enabled',
       '677': 'mentee.enabled',
+      // multi-machine-lease-self-heal: a NEW multiMachine.leaseSelfHeal block was
+      // inserted at the TOP of the `multiMachine` block (ABOVE accountFollowMe). It
+      // adds TWO `enabled: false` literals — F2 staleHolderTakeover + F3
+      // silentStandbyRelinquish (both classified action-bearing in DARK_GATE_EXCLUSIONS;
+      // F1 tickWatchdog is `enabled: true` and F4 preferredAwakeMachineId is null, so
+      // neither is attributed). The block (~30 lines incl. its comment) shifts every
+      // subsequent `enabled: false` line DOWN by +28. RE-VERIFIED by hand via the
+      // attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
+      '780': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '784': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -403,9 +413,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // R6b added `remoteScrapeTimeoutMs` (+7) and R7a added the `spendSlice` block ABOVE
       // these keys; merged with main's revocation-wiring (#1215) config additions → the
       // sessionPool keys resolve as below. RE-VERIFIED via the attributor on the MERGED ConfigDefaults.
-      '928': 'multiMachine.sessionPool.enabled',
-      '953': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '982': 'multiMachine.sessionPool.holdForStability.enabled',
+      '956': 'multiMachine.sessionPool.enabled',
+      '981': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1010': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -439,10 +449,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // attributor on the edited ConfigDefaults.
       // After merging JKHeadley/main + my accountFollowMe block, these resolve as below.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      '1151': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1273': 'cartographer.freshnessSweep.enabled',
-      '1318': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1343': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1179': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1301': 'cartographer.freshnessSweep.enabled',
+      '1346': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1371': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

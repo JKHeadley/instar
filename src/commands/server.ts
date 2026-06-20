@@ -4226,6 +4226,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             return dead;
           },
           onEpochAdvance: (epoch) => coordinator.emit('leaseEpochChange', epoch),
+          // F2 (multi-machine-lease-self-heal staleHolderTakeover) — DARK by default.
+          // Resolved LIVE each call so a config flip needs no restart; off ⇒ canAcquire
+          // is byte-for-byte the legacy behavior.
+          staleHolderTakeover: () => {
+            const sht = config.multiMachine?.leaseSelfHeal?.staleHolderTakeover;
+            if (!sht?.enabled) return null;
+            return { enabled: true, nonRenewalMissedObservations: sht.nonRenewalMissedObservations ?? 6 };
+          },
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),
