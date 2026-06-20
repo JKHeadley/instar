@@ -54,6 +54,9 @@ CI flagged 6 new catch blocks via the `no-silent-fallbacks` ratchet. All are gen
 
 CI surfaced an intermittent failure in `MultiMachineCoordinator-tickSelfHeal.test.ts` (the F1 watchdog tests from CMT-699, which this change builds on): green on one runner, red on another. Root cause: the tests set `lastTickRunMonoMs = 1` (absolute) and rely on `monoNowMs()` (= `process.hrtime.bigint()/1e6`, offset from an ARBITRARY monotonic epoch) being far above the stale threshold — but on a freshly-booted runner the raw monotonic value can be *below* the threshold, so `now - 1` doesn't register as stale and the watchdog no-ops. Fixed test-only by pinning `c.monoNowMs` to a fixed large value in the affected tests (the production code is correct — it always compares two `monoNowMs()` readings, so the epoch offset cancels). Verified 3× locally; tsc clean. No production behavior change.
 
+## Post-CI follow-up 2 — CLAUDE.md section-parity tracking
+The `feature-delivery-completeness` parity test requires every CLAUDE.md section added by `migrateClaudeMd` to be registered in its tracking list. Registered "Multi-transport mesh comms" in `legacyMigratorSections` (it is emitted by BOTH the template and the migrator — a fresh init self-matches, never double-patched — same classification as the lease-self-heal / honest-progress sections). Test-only; 254 meta/parity tests green.
+
 ## Phase 5 — Second-pass review (independent reviewer)
 
 **Concur with the review.** The reviewer independently verified all five load-bearing safety claims against the actual worktree code (not just the artifact's claims), with file:line citations:
