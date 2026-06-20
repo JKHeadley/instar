@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual, createPrivateKey } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
+import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
@@ -208,6 +209,8 @@ export class AgentServer {
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
+  /** multi-transport-mesh-comms (Layer 0.5) — see the bind site in start(). */
+  private meshBindActive: boolean;
   private startTime: Date;
   private sessionManager: SessionManager;
   private state: StateManager;
@@ -425,6 +428,15 @@ export class AgentServer {
     trustElevationTracker?: import('../core/TrustElevationTracker.js').TrustElevationTracker;
     autonomousEvolution?: import('../core/AutonomousEvolution.js').AutonomousEvolution;
     coordinator?: MultiMachineCoordinator;
+    /**
+     * multi-transport-mesh-comms (Layer 0.5) — TRUE when this agent is genuinely
+     * multi-machine (has a machine identity) AND the mesh transport is enabled, so
+     * the server binds 0.0.0.0 (reachable on the advertised Tailscale/LAN endpoints)
+     * instead of loopback. Computed in server.ts from `identityManager.hasIdentity()`
+     * — NOT `config.multiMachine.enabled` (a near-dead field a real multi-machine
+     * agent never sets; that wrong predicate shipped the bind inert in 1.3.630).
+     */
+    meshBindActive?: boolean;
     /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
     /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
@@ -692,6 +704,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
     this.startTime = new Date();
     this.sessionManager = options.sessionManager;
@@ -3426,17 +3439,22 @@ export class AgentServer {
       // multi-transport-mesh-comms (Layer 0.5) — when this agent is MULTI-MACHINE
       // and the mesh transport is enabled, the server listens on the Tailscale/LAN
       // interfaces (not just localhost) so peers can reach it on the advertised
-      // endpoints. Gated on multiMachine.enabled so a SINGLE-machine agent keeps
-      // its 127.0.0.1 bind (no peers ⇒ no benefit, and we must not newly expose it
-      // on the LAN). For a multi-machine agent this is strictly LESS exposure than
-      // the always-on public Cloudflare tunnel it already runs (every /api/* route
-      // keeps machine-auth, the dashboard its PIN, the rest the Bearer token). An
-      // explicit `host`/`meshTransport.bindHost` override always wins. Reversible:
+      // endpoints. `meshBindActive` is computed in server.ts from the CANONICAL
+      // multi-machine signal `identityManager.hasIdentity()` — NOT the near-dead
+      // `config.multiMachine.enabled` field a real multi-machine agent never sets
+      // (that wrong predicate shipped the bind inert in 1.3.630; caught in
+      // live-verify). A SINGLE-machine agent (no identity) keeps its 127.0.0.1 bind
+      // (no peers ⇒ no benefit, and we must not newly expose it on the LAN). For a
+      // multi-machine agent this is strictly LESS exposure than the always-on public
+      // Cloudflare tunnel it already runs (every /api/* route keeps machine-auth, the
+      // dashboard its PIN, the rest the Bearer token). Reversible:
       // meshTransport.enabled:false → back to 127.0.0.1. (Decision 17.)
       const meshTransport = this.config.multiMachine?.meshTransport;
-      const meshBindActive = !!this.config.multiMachine?.enabled && meshTransport?.enabled !== false;
-      const meshBindDefault = meshBindActive ? '0.0.0.0' : '127.0.0.1';
-      const host = this.config.host || meshTransport?.bindHost || meshBindDefault;
+      const host = resolveMeshBindHost({
+        configHost: this.config.host,
+        meshBindActive: this.meshBindActive,
+        meshBindHostOverride: meshTransport?.bindHost,
+      });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
         console.log(`[instar] Dashboard: http://${host}:${this.config.port}/dashboard`);

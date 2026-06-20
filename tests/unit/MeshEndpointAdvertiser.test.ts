@@ -6,6 +6,7 @@ import {
   endpointsEqual,
   advertiseSelfMeshEndpoints,
   resolveTailscaleBin,
+  resolveMeshBindHost,
   type NetIfaces,
   type MeshUrlRecorder,
 } from '../../src/core/MeshUrlAdvertiser.js';
@@ -131,5 +132,35 @@ describe('advertiseSelfMeshEndpoints', () => {
   it('endpointsEqual is order-independent', () => {
     expect(endpointsEqual([eps[0], { kind: 'lan', url: 'http://10.0.0.1:4042' }], [{ kind: 'lan', url: 'http://10.0.0.1:4042' }, eps[0]])).toBe(true);
     expect(endpointsEqual(eps, [])).toBe(false);
+  });
+});
+
+describe('resolveMeshBindHost (1.3.630 bind-inert regression)', () => {
+  // THE regression: loadConfig ALWAYS defaults host to '127.0.0.1', so a mesh-active
+  // agent with no explicit host MUST still bind 0.0.0.0 — the bug was that the
+  // loopback default shadowed the mesh default, leaving the server on 127.0.0.1.
+  it('mesh-active + defaulted loopback host ⇒ 0.0.0.0 (the bug)', () => {
+    expect(resolveMeshBindHost({ configHost: '127.0.0.1', meshBindActive: true })).toBe('0.0.0.0');
+  });
+  it('mesh-active + undefined host ⇒ 0.0.0.0', () => {
+    expect(resolveMeshBindHost({ configHost: undefined, meshBindActive: true })).toBe('0.0.0.0');
+  });
+  it("mesh-active + 'localhost'/'::1' treated as loopback ⇒ 0.0.0.0", () => {
+    expect(resolveMeshBindHost({ configHost: 'localhost', meshBindActive: true })).toBe('0.0.0.0');
+    expect(resolveMeshBindHost({ configHost: '::1', meshBindActive: true })).toBe('0.0.0.0');
+  });
+  it('NOT mesh-active (single machine) ⇒ 127.0.0.1 (never newly exposed)', () => {
+    expect(resolveMeshBindHost({ configHost: '127.0.0.1', meshBindActive: false })).toBe('127.0.0.1');
+    expect(resolveMeshBindHost({ configHost: undefined, meshBindActive: false })).toBe('127.0.0.1');
+  });
+  it('explicit NON-loopback host wins over the mesh default', () => {
+    expect(resolveMeshBindHost({ configHost: '192.168.1.50', meshBindActive: true })).toBe('192.168.1.50');
+    expect(resolveMeshBindHost({ configHost: '0.0.0.0', meshBindActive: false })).toBe('0.0.0.0');
+  });
+  it('meshTransport.bindHost is the escape hatch (force loopback on a mesh agent)', () => {
+    expect(resolveMeshBindHost({ configHost: '127.0.0.1', meshBindActive: true, meshBindHostOverride: '127.0.0.1' })).toBe('127.0.0.1');
+  });
+  it('explicit non-loopback host outranks bindHost override', () => {
+    expect(resolveMeshBindHost({ configHost: '10.1.2.3', meshBindActive: true, meshBindHostOverride: '0.0.0.0' })).toBe('10.1.2.3');
   });
 });

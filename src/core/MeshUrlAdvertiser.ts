@@ -202,6 +202,36 @@ export function computeSelfMeshEndpoints(inputs: {
   return out;
 }
 
+/**
+ * multi-transport-mesh-comms (Layer 0.5) — resolve the HTTP server bind host.
+ *
+ * Precedence: an EXPLICIT non-loopback `configHost` wins → else `meshBindHostOverride`
+ * (meshTransport.bindHost) → else the mesh default (`0.0.0.0` when multi-machine +
+ * mesh active, `127.0.0.1` otherwise).
+ *
+ * The load-bearing subtlety (the 1.3.630 bind-inert bug, caught in live-verify):
+ * `loadConfig` ALWAYS defaults `host` to '127.0.0.1' when unset, so a naive
+ * `configHost || meshBindDefault` can NEVER reach meshBindDefault. We therefore treat
+ * a LOOPBACK configHost as NON-explicit (indistinguishable from the default), so the
+ * mesh default applies; a genuinely explicit non-loopback host still wins, and
+ * meshTransport.bindHost is the escape hatch to force loopback on a mesh agent.
+ *
+ * Extracted as a pure function precisely because the original inline version was
+ * untestable — every mocked-config unit test passed while the real bind stayed
+ * 127.0.0.1.
+ */
+export function resolveMeshBindHost(opts: {
+  configHost?: string;
+  meshBindActive: boolean;
+  meshBindHostOverride?: string;
+}): string {
+  const { configHost, meshBindActive, meshBindHostOverride } = opts;
+  const isLoopback = (h?: string): boolean => h === '127.0.0.1' || h === 'localhost' || h === '::1';
+  const explicitHost = configHost && !isLoopback(configHost) ? configHost : undefined;
+  const meshBindDefault = meshBindActive ? '0.0.0.0' : '127.0.0.1';
+  return explicitHost || meshBindHostOverride || meshBindDefault;
+}
+
 /** Shallow value-equality of two endpoint sets (order-independent) — for idempotent writes. */
 export function endpointsEqual(a: MeshEndpoint[] | undefined, b: MeshEndpoint[] | undefined): boolean {
   const norm = (x: MeshEndpoint[] | undefined) =>
