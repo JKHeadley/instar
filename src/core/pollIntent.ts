@@ -90,3 +90,44 @@ export function effectivePollIntent(
   if (i.nowMs - rec.ts > i.maxStaleMs) return null; // too old → no current opinion
   return rec.shouldPoll;
 }
+
+// ── lifeline-poll-active (B5 source — Decision 6) ───────────────────────────
+// The LIFELINE (the process that actually owns the getUpdates socket) writes its
+// REAL poll state here; B5's exactly-one-listener guard reads THIS (the truth),
+// not the server's intent (a wish). Same local-same-uid IPC + atomic-write posture.
+
+const POLL_ACTIVE_FILE = 'lifeline-poll-active.json';
+
+export interface PollActiveRecord { pollingActive: boolean; pid: number; ts: number; }
+
+export function pollActivePath(stateDir: string): string {
+  return join(stateDir, POLL_ACTIVE_FILE);
+}
+
+export function writePollActive(stateDir: string, pollingActive: boolean): void {
+  const p = pollActivePath(stateDir);
+  const tmp = `${p}.tmp.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify({ pollingActive, pid: process.pid, ts: Date.now() } satisfies PollActiveRecord), 'utf8');
+  renameSync(tmp, p);
+}
+
+export function readPollActive(stateDir: string): PollActiveRecord | null {
+  const p = pollActivePath(stateDir);
+  if (!existsSync(p)) return null;
+  try {
+    const rec = JSON.parse(readFileSync(p, 'utf8')) as PollActiveRecord;
+    if (typeof rec?.pollingActive !== 'boolean' || typeof rec?.ts !== 'number') return null;
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
+/** True iff a pid is alive (probe). Used to discount a crashed writer's record. */
+export function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (err) {
+    // EPERM = exists but not ours (still alive); ESRCH = gone.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}

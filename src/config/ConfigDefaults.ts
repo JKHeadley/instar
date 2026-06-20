@@ -805,6 +805,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // OMITTED ⇒ developmentAgent gate. Conservative + lastSeen fallback.
       skewImmuneLiveness: {},
     },
+    // B1 (multimachine-lease-poll-robustness) — tie Telegram poll-ownership to the
+    // fenced lease. `enabled` OMITTED ⇒ developmentAgent gate; dryRun:true logs the
+    // would-action WITHOUT changing ingress (the live flip is gated on the Phase-4
+    // two-host proof + B2/B5 live, so it can't disturb the Phase-0 stabilization).
+    pollFollowsLease: { dryRun: true },
     // multi-transport-mesh-comms (Layers 0-2) — multi-rope mesh transport
     // (Tailscale/LAN/Cloudflare hedged failover). Ships ENABLED (strictly additive;
     // a single-machine agent is a no-op and keeps its 127.0.0.1 bind — the 0.0.0.0

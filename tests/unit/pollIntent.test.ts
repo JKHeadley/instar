@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   writePollIntent, readPollIntent, effectivePollIntent, pollIntentPath,
+  writePollActive, readPollActive, pidAlive,
   type PollIntentRecord,
 } from '../../src/core/pollIntent.js';
 
@@ -62,6 +63,26 @@ describe('B1 pollIntent — integrity + freshness', () => {
 
     it('fresh shouldPoll:false from a live writer → false (a real mute, honored)', () => {
       expect(effectivePollIntent(rec({ shouldPoll: false }), fresh)).toBe(false);
+    });
+  });
+
+  describe('lifeline-poll-active (B5 truth source) + pidAlive', () => {
+    it('writes + reads the real poll state', () => {
+      writePollActive(dir, true);
+      expect(readPollActive(dir)).toMatchObject({ pollingActive: true, pid: process.pid });
+      writePollActive(dir, false);
+      expect(readPollActive(dir)?.pollingActive).toBe(false);
+    });
+    it('missing / corrupt poll-active → null', () => {
+      expect(readPollActive(dir)).toBeNull();
+      writeFileSync(join(dir, 'lifeline-poll-active.json'), 'nope', 'utf8');
+      expect(readPollActive(dir)).toBeNull();
+    });
+    it('pidAlive: this process is alive; a bogus pid is not; invalid → false', () => {
+      expect(pidAlive(process.pid)).toBe(true);
+      expect(pidAlive(2_147_483_646)).toBe(false); // almost-certainly-unused high pid
+      expect(pidAlive(0)).toBe(false);
+      expect(pidAlive(-1)).toBe(false);
     });
   });
 });

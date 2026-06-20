@@ -2285,6 +2285,20 @@ export interface MultiMachineConfig {
    */
   telegramPolling?: boolean;
   /**
+   * B1 (multimachine-lease-poll-robustness, Decisions 4-7) — tie Telegram
+   * poll-ownership to the fenced lease at runtime (the server writes a poll-intent
+   * file; the lifeline reconciles). OMIT `enabled` ⇒ developmentAgent gate;
+   * `dryRun` (default true) logs the would-action without changing ingress (the
+   * live flip is gated on the Phase-4 two-host proof + B2/B5 live).
+   */
+  pollFollowsLease?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * B1 — explicit operator poll override (LOCAL config floor above the lease
+   * intent). 'force-mute' = never poll (Phase-0 telegramPolling:false also maps
+   * here); 'force-poll' = always poll. Absent = follow the lease.
+   */
+  pollOverride?: 'force-poll' | 'force-mute';
+  /**
    * multi-machine-lease-self-heal — F1 lease-tick self-heal (ENABLED: bounded
    * await + monotonic watchdog), F2 stale-holder takeover (DARK), F3 silent-
    * standby relinquish (DARK), F4 preferred-awake (opt-in). All under one
