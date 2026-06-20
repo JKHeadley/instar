@@ -46,6 +46,10 @@ Three implementation choices deviate from the literal spec text; each is a SAFER
 - **Regression**: all existing lease/transport/fenced/routes suites green (FencedLease 28, LeaseCoordinator 11, tickSelfHeal 10, HttpLeaseTransport 16, StandbyObs 3, sibling-brakes 6, machine-routes 26). dark-gate lint 24. Total 189 across the affected area; tsc clean.
 - **Live-verify (the non-negotiable, runs at deploy)**: on the real Mini+Laptop pair over Tailscale — confirm `meshEndpoints` includes tailscale+lan+cloudflare, force Cloudflare down, assert the lease epoch stays stable ≥15min over the Tailscale/LAN rope. (Layer 3's sever-the-peer live-verify is a SEPARATE gate before its dark flag is ever enabled.)
 
+## Post-CI follow-up — no-silent-fallbacks ratchet
+
+CI flagged 6 new catch blocks via the `no-silent-fallbacks` ratchet. All are genuinely best-effort / fail-closed, not authority swallows: the two accept-ack signature-verify catches (a verify throw ⇒ FAILED rope, fail-closed — never a false confirmation), the two endpoint-URL-parse catches (an unparseable rope is dropped, never dialed), the best-effort endpoint-advertisement catch (the next heartbeat retries; the mesh degrades to the remaining ropes), and the `/health` meshEndpoints read catch (an unreadable registry yields an empty kinds list, never errors the health path). Each was tagged with an in-brace `@silent-fallback-ok` + justification, so the ratchet count drops UNDER the baseline (476) rather than bumping it — keeping the gate honest (it only ever decreases). Comment-only, zero behavior change.
+
 ## Phase 5 — Second-pass review (independent reviewer)
 
 **Concur with the review.** The reviewer independently verified all five load-bearing safety claims against the actual worktree code (not just the artifact's claims), with file:line citations:

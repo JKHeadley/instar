@@ -243,9 +243,14 @@ async function advertiseSelfMeshEndpointsNow(
       port: cfg.port ?? 4042,
       tailscaleEnabled,
     });
+    // E2E-PAIRING: EXEMPT — this commit is comment-only (@silent-fallback-ok ratchet
+    // tags); it adds NO new route. The mesh routes/fields shipped in the prior commit
+    // (1cd2618e) with their integration + 2-server tests.
     advertiseSelfMeshEndpoints(identityManager as never, machineId, endpoints, (m) => console.log(pc.dim(m)));
   } catch {
-    // best-effort: never let endpoint advertisement break boot
+    // @silent-fallback-ok: best-effort — endpoint advertisement must never break boot
+    // (a Tailscale-detect/registry hiccup just means fewer advertised ropes this tick;
+    // the next heartbeat retries and the mesh degrades to the remaining ropes).
   }
 }
 

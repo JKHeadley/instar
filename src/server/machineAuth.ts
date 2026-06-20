@@ -264,6 +264,8 @@ export function verifyLeaseAck(
   try {
     sigOk = verify(leaseAckMessage(ack), sig, peerPublicKeyPem);
   } catch {
+    // @silent-fallback-ok: a signature-verify throw ⇒ unverified ⇒ FAILED rope
+    // (fail-closed — never a false confirmation; the caller treats it as unreachable).
     sigOk = false;
   }
   if (!sigOk) return false;
@@ -289,9 +291,13 @@ export function verifyLeaseAckIdentity(
   if (typeof ack.machineId !== 'string' || typeof ack.reqNonce !== 'string') return false;
   if (ack.machineId !== expectedPeerId) return false;
   if (ack.reqNonce !== sentReqNonce) return false;
+  // E2E-PAIRING: EXEMPT — this commit is comment-only (@silent-fallback-ok ratchet tags);
+  // it adds NO new route. The accept-ack routes shipped in the prior commit (1cd2618e)
+  // with their integration tests (tests/integration/mesh-accept-ack.test.ts).
   try {
     return verify(leaseAckMessage(ack), sig, peerPublicKeyPem);
   } catch {
+    // @silent-fallback-ok: a verify throw ⇒ identity unproven ⇒ FAILED rope (fail-closed).
     return false;
   }
 }

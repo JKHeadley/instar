@@ -228,6 +228,9 @@ export function advertiseSelfMeshEndpoints(
     log?.(`  Mesh: advertised ${endpoints.length} endpoint(s) [${endpoints.map((e) => e.kind).join(',')}]`);
     return true;
   } catch {
+    // @silent-fallback-ok: best-effort advertisement — a registry write race/absence
+    // means peers simply keep the prior endpoint set; the next heartbeat retries. Not
+    // a degradation (mesh transport degrades gracefully to the remaining ropes).
     return false;
   }
 }

@@ -619,6 +619,8 @@ export class MultiMachineCoordinator extends EventEmitter {
       const eps = this.identityManager.getMachineEndpoints?.(id);
       return Array.isArray(eps) ? eps.map((e) => e.kind) : [];
     } catch {
+      // @silent-fallback-ok: a read-only /health observability field — an unreadable
+      // registry yields an empty kinds list, never an error on the health path.
       return [];
     }
   }
