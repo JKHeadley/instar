@@ -24,7 +24,7 @@
  * MeshRpc reject (replay-safety) and never gates; it raises an advisory alarm.
  */
 
-export type SkewBlame = 'self' | 'peer' | 'unknown';
+export type SkewBlame = 'self' | 'peer' | 'unknown' | 'local-freeze';
 
 export interface ClockSkewInputs {
   /** Measured offset to the peer in ms — use max(ewma, lastSample) so a STEP
@@ -39,6 +39,20 @@ export interface ClockSkewInputs {
   clearThresholdMs: number;
   /** Current alarm state for this peer (hysteresis). */
   currentlyAlarming: boolean;
+  /** ms since the last LOCAL event-loop STARVATION burst (e.g. SleepWakeDetector
+   *  drift). undefined = no recent freeze observed. THE LIVE LESSON (2026-06-20,
+   *  topic 13481): when this machine's event loop freezes for many seconds, mesh
+   *  timestamps set BEFORE the freeze are verified AFTER it and look "stale" — so
+   *  a large `observedOffsetMs` appears even when BOTH clocks are perfectly synced
+   *  (measured: Laptop vs Mini = 1s). Without this guard the alarm would
+   *  FALSE-POSITIVE as "peer clock skew" during a purely-local freeze. */
+  recentLocalStarvationAgeMs?: number;
+  /** How recent a local starvation counts as "could explain this offset" (ms).
+   *  Default caller: 30000. Within this window a large offset is attributed to the
+   *  freeze (blame 'local-freeze'), and the peer-skew alarm is SUPPRESSED — the
+   *  safe direction: a genuine PERSISTENT skew still alarms once the freeze ages
+   *  out, but we never finger-point a peer for our own freeze. */
+  starvationFreshnessMs?: number;
 }
 
 export interface ClockSkewVerdict {
@@ -54,6 +68,22 @@ export function evaluateClockSkew(i: ClockSkewInputs): ClockSkewVerdict {
   const alarming = i.currentlyAlarming ? mag >= i.clearThresholdMs : mag >= i.alarmThresholdMs;
   if (!alarming) {
     return { alarming: false, blame: 'unknown', reason: `clock offset ${Math.round(mag)}ms within tolerance` };
+  }
+  // Freeze-vs-skew disambiguation (the 2026-06-20 live lesson). If THIS machine's
+  // event loop just starved, a large apparent offset is most likely the freeze
+  // making pre-freeze timestamps look stale — NOT genuine peer clock drift. Defer
+  // to the starvation signal (which has its own surface) and SUPPRESS the peer
+  // alarm. Safe direction: a persistent genuine skew re-alarms once the freeze
+  // window ages out; we never raise a misleading "peer skew" during our own freeze.
+  const freshFreeze =
+    i.recentLocalStarvationAgeMs !== undefined &&
+    i.recentLocalStarvationAgeMs <= (i.starvationFreshnessMs ?? 30_000);
+  if (freshFreeze) {
+    return {
+      alarming: false,
+      blame: 'local-freeze',
+      reason: `clock offset ${Math.round(mag)}ms coincides with a LOCAL event-loop starvation ${Math.round(i.recentLocalStarvationAgeMs!)}ms ago — apparent staleness is freeze-induced (pre-freeze timestamps verified post-freeze), not peer skew; deferring to the starvation signal`,
+    };
   }
   // Attribution (N=2). If our own clock is unsynced, the fault is plausibly OURS
   // — blame self. If ours is verified synced, point at the peer. If we couldn't

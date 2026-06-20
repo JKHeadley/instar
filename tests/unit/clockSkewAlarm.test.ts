@@ -53,4 +53,39 @@ describe('B4 evaluateClockSkew — clock-drift early-warning', () => {
     const v = e({ observedOffsetMs: 25_000, ownNtpSynced: undefined });
     expect(v.blame).toBe('unknown');
   });
+
+  // Freeze-vs-skew (the 2026-06-20 live lesson, topic 13481): an event-loop freeze
+  // makes pre-freeze timestamps look stale → a large apparent offset with BOTH
+  // clocks synced. The alarm must NOT cry "peer skew" during a local freeze.
+  it('recent LOCAL event-loop starvation → SUPPRESSES the peer-skew alarm (blame local-freeze)', () => {
+    const v = e({ observedOffsetMs: 200_000, ownNtpSynced: true, recentLocalStarvationAgeMs: 2_000 });
+    expect(v.alarming).toBe(false); // would otherwise alarm + blame peer
+    expect(v.blame).toBe('local-freeze');
+    expect(v.reason).toMatch(/event-loop starvation/i);
+  });
+
+  it('a freeze OLDER than the freshness window does NOT suppress a genuine skew alarm', () => {
+    const v = e({ observedOffsetMs: 200_000, ownNtpSynced: true, recentLocalStarvationAgeMs: 120_000 });
+    expect(v.alarming).toBe(true); // freeze aged out → persistent offset is genuine skew
+    expect(v.blame).toBe('peer');
+  });
+
+  it('respects a custom starvationFreshnessMs window', () => {
+    // 40s-old freeze, but a 60s freshness window → still attributed to the freeze.
+    const v = e({ observedOffsetMs: 50_000, ownNtpSynced: true, recentLocalStarvationAgeMs: 40_000, starvationFreshnessMs: 60_000 });
+    expect(v.alarming).toBe(false);
+    expect(v.blame).toBe('local-freeze');
+  });
+
+  it('no starvation signal (undefined) → behaves exactly as before (skew alarm fires)', () => {
+    const v = e({ observedOffsetMs: 25_000, ownNtpSynced: true });
+    expect(v.alarming).toBe(true);
+    expect(v.blame).toBe('peer');
+  });
+
+  it('an in-tolerance offset stays no-alarm even with a fresh freeze (no spurious local-freeze verdict)', () => {
+    const v = e({ observedOffsetMs: 3_000, ownNtpSynced: true, recentLocalStarvationAgeMs: 1_000 });
+    expect(v.alarming).toBe(false);
+    expect(v.blame).toBe('unknown'); // within tolerance → the freeze branch is never reached
+  });
 });
