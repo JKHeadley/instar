@@ -47,6 +47,14 @@ export interface MultiMachineSyncStatus {
    */
   leaseTickWatchdog?: { lastTickAgeMs: number; reArmCount: number; disarmed: boolean };
   preferredAwakeMachineId?: string | null;
+  /**
+   * multi-transport-mesh-comms — the KINDS of mesh endpoint THIS machine currently
+   * advertises (e.g. ['tailscale','lan','cloudflare']). Kind-only by design: the
+   * raw private IPs appear ONLY on the Bearer-authed /health detail, never the
+   * unauthenticated basic check (Decision 15). Empty/absent ⇒ mesh transport off
+   * or no ropes advertised yet.
+   */
+  meshEndpoints?: string[];
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -595,7 +603,26 @@ export class MultiMachineCoordinator extends EventEmitter {
           }
         : undefined,
       preferredAwakeMachineId: this.config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null,
+      meshEndpoints: this.selfMeshEndpointKinds(),
     };
+  }
+
+  /**
+   * multi-transport-mesh-comms — the KINDS of mesh endpoint this machine advertises
+   * (kind-only; raw IPs stay off this surface — Decision 15). Best-effort read of
+   * our own registry entry; [] on any error or when none are advertised.
+   */
+  private selfMeshEndpointKinds(): string[] {
+    try {
+      const id = this._identity?.machineId;
+      if (!id) return [];
+      const eps = this.identityManager.getMachineEndpoints?.(id);
+      return Array.isArray(eps) ? eps.map((e) => e.kind) : [];
+    } catch {
+      // @silent-fallback-ok: a read-only /health observability field — an unreadable
+      // registry yields an empty kinds list, never an error on the health path.
+      return [];
+    }
   }
 
   /**

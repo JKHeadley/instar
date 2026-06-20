@@ -805,7 +805,7 @@ export class AgentServer {
         messageRouter: options.messageRouter ?? null,
         onLeaseReceived: options.leaseTransport
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
-          : undefined,
+          : undefined, // returns the resulting observed epoch → accept-ack (Decision 9)
         onLeasePullRequest: options.onLeasePullRequest,
         onLiveTailReceived: options.liveTailReceiver,
         onHandoffAck: options.handoffWireTransport
@@ -3423,7 +3423,20 @@ export class AgentServer {
     }
 
     return new Promise((resolve, reject) => {
-      const host = this.config.host || '127.0.0.1';
+      // multi-transport-mesh-comms (Layer 0.5) — when this agent is MULTI-MACHINE
+      // and the mesh transport is enabled, the server listens on the Tailscale/LAN
+      // interfaces (not just localhost) so peers can reach it on the advertised
+      // endpoints. Gated on multiMachine.enabled so a SINGLE-machine agent keeps
+      // its 127.0.0.1 bind (no peers ⇒ no benefit, and we must not newly expose it
+      // on the LAN). For a multi-machine agent this is strictly LESS exposure than
+      // the always-on public Cloudflare tunnel it already runs (every /api/* route
+      // keeps machine-auth, the dashboard its PIN, the rest the Bearer token). An
+      // explicit `host`/`meshTransport.bindHost` override always wins. Reversible:
+      // meshTransport.enabled:false → back to 127.0.0.1. (Decision 17.)
+      const meshTransport = this.config.multiMachine?.meshTransport;
+      const meshBindActive = !!this.config.multiMachine?.enabled && meshTransport?.enabled !== false;
+      const meshBindDefault = meshBindActive ? '0.0.0.0' : '127.0.0.1';
+      const host = this.config.host || meshTransport?.bindHost || meshBindDefault;
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
         console.log(`[instar] Dashboard: http://${host}:${this.config.port}/dashboard`);

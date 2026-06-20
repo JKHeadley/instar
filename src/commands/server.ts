@@ -101,7 +101,8 @@ import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
-import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../core/MeshUrlAdvertiser.js';
+import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints } from '../core/MeshUrlAdvertiser.js';
+import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
 import { relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
@@ -199,6 +200,59 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
+
+/**
+ * multi-transport-mesh-comms — this machine's own IPv4 CIDRs (for the
+ * PeerEndpointResolver LAN-subnet gate). Each non-internal IPv4 interface address
+ * with its prefix length, e.g. '192.168.87.67/24'. Pure read of os.networkInterfaces().
+ */
+function ownIpv4Cidrs(): string[] {
+  const out: string[] = [];
+  const ifaces = os.networkInterfaces();
+  for (const addrs of Object.values(ifaces)) {
+    for (const a of addrs ?? []) {
+      const isV4 = a.family === 'IPv4' || (a.family as unknown as number) === 4;
+      if (isV4 && !a.internal && typeof a.cidr === 'string' && a.cidr) out.push(a.cidr);
+    }
+  }
+  return out;
+}
+
+/**
+ * multi-transport-mesh-comms (Layer 0) — compute + advertise THIS machine's mesh
+ * endpoint set (Tailscale / LAN / Cloudflare) into its registry entry, co-located
+ * with the lastKnownUrl advertise. Best-effort + idempotent: detection failures
+ * fail silent (an absent rope is simply not advertised). No-op when the mesh
+ * transport is disabled. Called at boot + on sleep/wake tunnel restart.
+ */
+async function advertiseSelfMeshEndpointsNow(
+  identityManager: MachineIdentityManager,
+  machineId: string,
+  cfg: { multiMachine?: { enabled?: boolean; meshTransport?: { enabled?: boolean; tailscaleEnabled?: boolean } }; tunnel?: unknown; port?: number },
+  cloudflareUrl: string | null,
+): Promise<void> {
+  try {
+    if (!cfg.multiMachine?.enabled || cfg.multiMachine?.meshTransport?.enabled === false) return;
+    const tailscaleEnabled = cfg.multiMachine?.meshTransport?.tailscaleEnabled !== false;
+    const tailscaleIp = tailscaleEnabled ? await detectTailscaleIp() : null;
+    const lanIp = pickPrimaryLanIp(os.networkInterfaces() as never);
+    const endpoints = computeSelfMeshEndpoints({
+      cloudflareUrl,
+      lanIp,
+      tailscaleIp,
+      port: cfg.port ?? 4042,
+      tailscaleEnabled,
+    });
+    // E2E-PAIRING: EXEMPT — this commit is comment-only (@silent-fallback-ok ratchet
+    // tags); it adds NO new route. The mesh routes/fields shipped in the prior commit
+    // (1cd2618e) with their integration + 2-server tests.
+    advertiseSelfMeshEndpoints(identityManager as never, machineId, endpoints, (m) => console.log(pc.dim(m)));
+  } catch {
+    // @silent-fallback-ok: best-effort — endpoint advertisement must never break boot
+    // (a Tailscale-detect/registry hiccup just means fewer advertised ropes this tick;
+    // the next heartbeat retries and the mesh degrades to the remaining ropes).
+  }
+}
 
 /**
  * Dependencies for the fix command handler — populated incrementally as
@@ -4192,14 +4246,47 @@ export async function startServer(options: StartOptions): Promise<void> {
         // stays true, so the lease behaves exactly as git-only. Multi-machine
         // meshes get RTT-bounded acquisition + the renewal-requires-medium rule.
         let leaseSeq = Date.now();
+        // multi-transport-mesh-comms (Layer 1) — the hedged-failover resolver,
+        // built from the FLAT meshTransport config. Injected into the transport;
+        // when meshTransport.enabled is false the transport falls back to the
+        // single-`url` legacy path (byte-for-byte today).
+        const meshCfg = config.multiMachine?.meshTransport;
+        const meshEnabled = () => meshCfg?.enabled !== false; // default ON
+        const meshResolver = new PeerEndpointResolver({
+          config: {
+            enabled: meshCfg?.enabled !== false,
+            hedgeDelayMs: meshCfg?.hedgeDelayMs ?? 1500,
+            priorityTailscale: meshCfg?.priorityTailscale ?? 10,
+            priorityLan: meshCfg?.priorityLan ?? 20,
+            priorityCloudflare: meshCfg?.priorityCloudflare ?? 30,
+            tailscaleEnabled: meshCfg?.tailscaleEnabled !== false,
+            lanSubnetGate: meshCfg?.lanSubnetGate !== false,
+            unhealthyAfterFailures: meshCfg?.unhealthyAfterFailures ?? 3,
+            endpointEvictionMs: meshCfg?.endpointEvictionMs ?? 3_600_000,
+            maxProbeBackoffMs: meshCfg?.maxProbeBackoffMs ?? 300_000,
+            requestTimeoutMs: Math.min(seamlessness.leaseTtlMs / 2, 30_000),
+          },
+          ownCidrs: () => ownIpv4Cidrs(),
+          logger: (m) => console.log(pc.dim(m)),
+        });
         leaseTransport = new HttpLeaseTransport({
           selfMachineId,
           signingKeyPem: idMgr.loadSigningKey(),
           peers: () => {
             const reg = idMgr.loadRegistry();
             return Object.entries(reg.machines ?? {})
-              .filter(([id, e]) => id !== selfMachineId && !!e.lastKnownUrl && !e.revokedAt)
-              .map(([id, e]) => ({ machineId: id, url: e.lastKnownUrl as string }));
+              .filter(([id, e]) => id !== selfMachineId && (!!e.lastKnownUrl || (e.endpoints?.length ?? 0) > 0) && !e.revokedAt)
+              .map(([id, e]) => ({
+                machineId: id,
+                url: (e.lastKnownUrl ?? '') as string,
+                endpoints: e.endpoints,
+                publicKeyPem: idMgr.getSigningPublicKeyPem(id),
+                // Rolling-deploy gate: a peer that advertises an endpoint set is
+                // running THIS build (the field + the accept-ack receiver ship
+                // atomically), so it is ack-capable. An older peer (no endpoints,
+                // or no resolvable pubkey) stays on the 2xx back-compat path.
+                meshAckCapable: (e.endpoints?.length ?? 0) > 0 && !!idMgr.getSigningPublicKeyPem(id),
+              }));
           },
           nextSequence: () => ++leaseSeq,
           reachabilityWindowMs: seamlessness.leaseTtlMs,
@@ -4208,6 +4295,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // the whole TTL, but ABOVE the fleet's 5-40s receiver-stall envelope
           // so a slow-but-alive peer isn't converted into "no medium".
           requestTimeoutMs: Math.min(seamlessness.leaseTtlMs / 2, 30_000),
+          resolver: meshResolver,
+          meshTransportEnabled: meshEnabled,
+          hedgeDelayMs: meshCfg?.hedgeDelayMs ?? 1500,
           logger: (m) => console.log(pc.dim(m)),
         });
         const leaseCoordinator = new LeaseCoordinator({
@@ -4233,6 +4323,29 @@ export async function startServer(options: StartOptions): Promise<void> {
             const sht = config.multiMachine?.leaseSelfHeal?.staleHolderTakeover;
             if (!sht?.enabled) return null;
             return { enabled: true, nonRenewalMissedObservations: sht.nonRenewalMissedObservations ?? 6 };
+          },
+          // multi-transport-mesh-comms Layer 3 (soloCaptainHold) — DARK by default.
+          // Resolved live; the three gates are EXISTING signals: the F4 preferred-awake
+          // config (this machine is the named preferred), every peer presumed-gone by
+          // the same liveness timeout presumedDeadHolders uses, and (checked inside the
+          // coordinator) no higher epoch.
+          soloCaptainHold: () => {
+            const sch = config.multiMachine?.leaseSelfHeal?.soloCaptainHold;
+            return sch?.enabled ? { enabled: true } : null;
+          },
+          isPreferredAwakeAgreed: () => {
+            const pref = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
+            return !!pref && pref === selfMachineId;
+          },
+          allPeersPresumedGone: () => {
+            const reg = idMgr.loadRegistry();
+            const nowMs = Date.now();
+            const peerIds = Object.keys(reg.machines ?? {}).filter((id) => id !== selfMachineId && !reg.machines![id].revokedAt);
+            if (peerIds.length === 0) return false; // a solo machine never "holds against" a peer
+            return peerIds.every((id) => {
+              const last = Date.parse(reg.machines![id].lastSeen);
+              return !Number.isNaN(last) && nowMs - last > seamlessness.failoverThresholdMs;
+            });
           },
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
@@ -11957,11 +12070,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               // now stale; peers must learn the new one or cross-machine routing
               // silently breaks post-wake.
               if (coordinator.enabled && coordinator.identity) {
+                const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
                 advertiseSelfMeshUrl(
                   coordinator.managers.identityManager,
                   coordinator.identity.machineId,
-                  resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl),
+                  cfUrl,
                   (m) => console.log(pc.dim(m)),
+                );
+                // multi-transport-mesh-comms — re-advertise endpoints post-wake.
+                await advertiseSelfMeshEndpointsNow(
+                  coordinator.managers.identityManager,
+                  coordinator.identity.machineId,
+                  config,
+                  cfUrl,
                 );
               }
 
@@ -18390,11 +18511,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         // out (the session pool is inert across machines). The existing
         // RegistrySyncDebouncer propagates the populated entry to peers.
         if (coordinator.enabled && coordinator.identity) {
+          const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
           advertiseSelfMeshUrl(
             coordinator.managers.identityManager,
             coordinator.identity.machineId,
-            resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl),
+            cfUrl,
             (m) => console.log(pc.dim(m)),
+          );
+          // multi-transport-mesh-comms (Layer 0) — advertise the full endpoint set.
+          await advertiseSelfMeshEndpointsNow(
+            coordinator.managers.identityManager,
+            coordinator.identity.machineId,
+            config,
+            cfUrl,
           );
         }
       } catch (err) {

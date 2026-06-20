@@ -500,6 +500,29 @@ export class MachineIdentityManager {
   }
 
   /**
+   * multi-transport-mesh-comms — write this machine's advertised endpoint set into
+   * its registry entry. Rides the SAME authenticated registry-sync path as
+   * lastKnownUrl (syncSequence + authoredUnderEpoch + per-author replay guards),
+   * so a peer can only advertise endpoints under its own verified identity. The
+   * accept-ack's responder-identity verification is the load-bearing defense: a
+   * spoofed/bogus endpoint becomes a FAILED rope, never a trusted one.
+   */
+  updateMachineEndpoints(machineId: string, endpoints: import('./types.js').MeshEndpoint[]): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.endpoints = endpoints;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /** multi-transport-mesh-comms — read a machine's advertised endpoint set (or undefined). */
+  getMachineEndpoints(machineId: string): import('./types.js').MeshEndpoint[] | undefined {
+    const registry = this.loadRegistry();
+    return registry.machines[machineId]?.endpoints;
+  }
+
+  /**
    * Revoke a machine. Marks it as revoked with reason.
    * Does NOT handle external secret rotation — caller must do that.
    */

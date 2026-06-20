@@ -112,6 +112,29 @@ export interface LeaseCoordinatorDeps {
    * the OBSERVER's own monotonic time (skew-immune; the takeover stays CAS-fenced).
    */
   staleHolderTakeover?: () => { enabled: boolean; nonRenewalMissedObservations: number } | null;
+  /**
+   * multi-transport-mesh-comms Layer 3 (soloCaptainHold) — resolved live; DARK by
+   * default (null/disabled ⇒ renew() is byte-for-byte today's self-fence). When
+   * enabled AND all three preconditions hold, a preferred stationary captain that
+   * cannot confirm its renewal over ANY rope HOLDS its lease (same epoch) instead
+   * of self-suspending. The preconditions are SIGNALS consumed here, never
+   * authority invented here:
+   *   - isPreferredAwakeAgreed(): this machine is the F4-agreed preferred-awake
+   *     machine (NOT a raw-config read — the agreement signal from the coordinator).
+   *   - allPeersPresumedGone(): every peer is presumed-gone by liveness-silence
+   *     (the EXISTING presumedDeadHolders timeout), i.e. positively aged-out, not
+   *     merely unreachable this tick.
+   *   - no higher epoch observed (checked inline against the effective view).
+   * The monotonic self-fence stays armed whenever allPeersPresumedGone() is false,
+   * so a merely-unreachable-but-recently-alive peer can NEVER keep the captain
+   * alive — only a liveness-aged-out one can. store.refresh is NOT used as
+   * evidence (a tautology on LocalLeaseStore). Spec: docs/specs/multi-transport-mesh-comms.md.
+   */
+  soloCaptainHold?: () => { enabled: boolean } | null;
+  /** F4-agreed preferred-awake signal (consumed by Layer 3 — never the raw config). */
+  isPreferredAwakeAgreed?: () => boolean;
+  /** True iff EVERY peer is presumed-gone by liveness-silence (Layer 3 gate). */
+  allPeersPresumedGone?: () => boolean;
   logger?: (msg: string) => void;
 }
 
@@ -279,6 +302,28 @@ export class LeaseCoordinator {
     const view = this.effectiveView();
     if (!view.lease || view.lease.released || view.lease.holder !== machineId) return false;
     return !this.fl.isExpired(view.lease, this.now());
+  }
+
+  /**
+   * multi-transport-mesh-comms Layer 3 — may a preferred stationary captain HOLD
+   * its lease (same epoch) instead of self-suspending when no rope confirmed?
+   * ALL must hold (each is an EXISTING signal, never authority invented here):
+   *  (1) the feature is enabled (DARK by default);
+   *  (2) this machine is the F4-AGREED preferred-awake machine;
+   *  (3) EVERY peer is presumed-gone by liveness-silence (aged out, not merely
+   *      unreachable this tick) — the load-bearing "absent vs unreachable" gate;
+   *  (4) no higher epoch than ours is observed (a real takeover always wins).
+   * Fail-closed: a missing dep ⇒ not eligible (today's self-suspend).
+   */
+  private soloCaptainHoldEligible(ourEpoch: number): boolean {
+    const cfg = this.d.soloCaptainHold?.();
+    if (!cfg?.enabled) return false;
+    if (!this.d.isPreferredAwakeAgreed?.()) return false;
+    if (!this.d.allPeersPresumedGone?.()) return false;
+    // No higher epoch observed than the one we hold (a real takeover dominates).
+    const view = this.effectiveView();
+    if (view.epoch > ourEpoch) return false;
+    return true;
   }
 
   /**
@@ -576,6 +621,22 @@ export class LeaseCoordinator {
     if (confirmed) {
       this.selfIssued = renewed;
       this.markRenewOk();
+      return true;
+    }
+
+    // ── multi-transport-mesh-comms Layer 3 — safe-by-construction solo-captain hold ──
+    // The renewal could not confirm over any rope. BEFORE self-suspending, check the
+    // partition floor: a PREFERRED stationary captain whose sole peer is PROVABLY
+    // GONE (presumed-gone by liveness-silence) holds its lease (same epoch) instead
+    // of thrashing. Gated on F4-agreed-preferred + every-peer-presumed-gone + no
+    // higher epoch observed. The hold NEVER advances the epoch or takes over a
+    // peer's lease, so even a wrongly-presumed-gone live peer cannot double-write
+    // (the intact epoch-CAS + signature fence remains the authority). The monotonic
+    // self-fence stays armed whenever the presumed-gone gate is NOT satisfied.
+    if (this.soloCaptainHoldEligible(view.epoch)) {
+      this.selfIssued = renewed;
+      this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
+      this.log('solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
       return true;
     }
 

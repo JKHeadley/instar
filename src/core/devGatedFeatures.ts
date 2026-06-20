@@ -514,6 +514,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'multi-machine-lease-self-heal F3 — when enabled, a muted (silent-standby) machine that still holds a lease RELINQUISHES it and broadcasts a signed tombstone (a live authority change). Ships hard-dark on EVERY agent because it mutates the live lease record; must be live-verified on the real pair (reading the relinquishing machine\'s own security.jsonl) before enablement. Opt-in per agent after soak. Spec: docs/specs/multi-machine-lease-self-heal.md.',
   },
   {
+    configPath: 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+    category: 'action-bearing',
+    reason: 'multi-transport-mesh-comms Layer 3 — when enabled, a preferred stationary captain RETAINS the awake lease (a live authority change) instead of self-suspending when its sole peer is presumed-gone by liveness-silence. Ships hard-dark on EVERY agent because it changes who-is-awake under partition; preferred-awake + liveness gated; MUST be live-verified on the real Mini+Laptop pair (physically sever the peer, then return it at a higher epoch and assert one-tick stand-down) before enablement. Off ⇒ renew() is byte-for-byte the legacy self-fence. Opt-in per agent after soak. Spec: docs/specs/multi-transport-mesh-comms.md.',
+  },
+  {
     configPath: 'threadline.a2aCheckIn.enabled',
     category: 'action-bearing',
     reason: 'A2A check-in summarizer — sends UNBOUNDED user-facing Telegram summaries on a heartbeat while a conversation is active; live-on-dev would flood the operator. Opt-in to keep the operator un-flooded.',

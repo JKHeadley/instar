@@ -6939,6 +6939,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       }
     }
 
+    // multi-transport-mesh-comms — Agent Awareness + Migration Parity: existing
+    // agents learn the multi-rope mesh transport (Tailscale/LAN/Cloudflare hedged
+    // failover), the /health meshEndpoints read, the "why unreachable / why does
+    // the lease flap" proactive trigger, and the meshTransport.enabled kill-switch
+    // via this appended section. Content-sniffed on a stable heading → idempotent.
+    if (!content.includes('Multi-transport mesh comms')) {
+      content += `\n### Multi-transport mesh comms (multiMachine.meshTransport)\n\nWhen I run on more than one machine, my machines talk to each other over MULTIPLE ropes — Tailscale, the local network (LAN), and the Cloudflare tunnel — and automatically use whichever is healthy, so a single flaky tunnel no longer makes a machine look unreachable (the root cause of the lease flap). Each machine auto-advertises its reachable addresses; the lease layer hedges across them and verifies the answering machine really is the peer (a replay-proof signed handshake). \`GET /health → multiMachine.syncStatus.meshEndpoints\` lists the rope KINDS this machine advertises. Ships ENABLED (Layers 0-2 are strictly additive; a single-machine agent is a no-op and keeps its localhost bind). When multi-machine, the server also listens on the Tailscale/LAN interfaces so peers can reach it — strictly less exposure than the always-on public tunnel, all routes keep their existing auth. **Proactive trigger:** operator asks "why is my machine unreachable / why does the lease keep flapping?" → the single Cloudflare rope was flapping; multi-transport fixes it (recommend installing Tailscale on both machines for the strongest rope). Kill-switch: \`meshTransport.enabled:false\` (back to single-rope, one restart to apply). A preferred stationary captain can also HOLD the lease alone when its peer is provably gone — that piece (\`leaseSelfHeal.soloCaptainHold\`) ships dark/opt-in. Spec: \`docs/specs/multi-transport-mesh-comms.md\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Multi-transport mesh comms section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
