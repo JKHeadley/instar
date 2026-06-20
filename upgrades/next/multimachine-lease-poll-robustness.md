@@ -1,4 +1,3 @@
-<!-- internal-only -->
 # Multi-Machine Lease & Poll-Ownership Robustness (Phase 1)
 
 ## What Changed
@@ -19,3 +18,11 @@ No user-facing or fleet behavior changes ship in this PR — every item is dark/
 - ~48 unit tests across `LeaseCoordinator-resilientRenew`, `leaseLiveness`, `churnBreaker`, `pollerCount`, `pollDecision`, `pollIntent` — all green. `tsc --noEmit` clean; dev-gate-dark + SafeFs containment lints clean.
 - Side-effects artifacts (one per increment) in `upgrades/side-effects/mm-lease-poll-robustness-*.md`; each ingress/lease/recovery-touching change had an independent second-pass review (B3's caught + fixed an observe-only-renew edge; B1's lifeline consumer verified dry-run-safe against the live config).
 - Tracks CMT-1710 + the 2026-06-20 multi-machine audit.
+
+## What to Tell Your User
+
+Nothing changes for you yet — this PR is dark-shipped infrastructure. Every fix is OFF on the fleet and runs in observe/dry-run mode even on the development agent, so your agent's behaviour is byte-for-byte unchanged. These are the permanent fixes for the multi-machine glitches (two-of-me answering, occasional silence, the "who's awake" role flip-flopping) but they only switch on after a live two-machine test proves them — at which point a separate release will announce it. If your agent runs on a single machine, this is a complete no-op.
+
+## Summary of New Capabilities
+
+No new user-facing capabilities ship enabled in this release. Dark/dev-gated infrastructure added (each with an off-switch, single-machine no-op): a lease renew timer (`leaseSelfHeal.resilientRenew`), skew-immune lease liveness (`leaseSelfHeal.skewImmuneLiveness`), a lease-flap circuit-breaker (`leaseSelfHeal.churnDetector`), an exactly-one-Telegram-listener decision + `pollingActive` heartbeat field, and poll-ownership-follows-the-lease (`multiMachine.pollFollowsLease`, dry-run). These graduate to live (and get their own user-facing announcement) only after the Phase-4 live two-host proof.
