@@ -26,6 +26,7 @@ import type { LeaseCoordinator } from './LeaseCoordinator.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
 import { ChurnBreaker } from './churnBreaker.js';
+import { writePollIntent } from './pollIntent.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
@@ -145,6 +146,12 @@ export class MultiMachineCoordinator extends EventEmitter {
    * circuit-breaker. Lazily built when the churnDetector gate resolves on.
    */
   private churnBreaker: ChurnBreaker | null = null;
+  /**
+   * B1 (multimachine-lease-poll-robustness, Decision 5) — a per-PROCESS boot id
+   * stamped into the poll-intent file so the lifeline can tell a current intent
+   * from one left by a prior incarnation of this server.
+   */
+  private readonly bootId = `${process.pid}-${process.hrtime.bigint().toString(36)}`;
   /** Integrated-Being v1 — tracks whether we've already emitted the
    *  per-machine-ledger warning this boot. Spec §Multi-machine. */
   private integratedBeingWarningEmitted: boolean = false;
@@ -589,6 +596,38 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * B1 — resolve the pollFollowsLease gate. OMIT `enabled` ⇒ developmentAgent
+   * gate. When on, the server writes its lease-derived poll intent to the
+   * cross-process file so the lifeline can follow the lease at runtime.
+   */
+  private pollFollowsLeaseEnabled(): boolean {
+    const m = this.config.multiMachine as { pollFollowsLease?: { enabled?: boolean } } | undefined;
+    return m?.pollFollowsLease?.enabled ?? !!this.config.developmentAgent;
+  }
+
+  /**
+   * B1 — write the lease-derived poll intent for the lifeline. No-op when the gate
+   * is off. Guarded: a write failure is logged once, never thrown into the
+   * caller's hot path (the intent file is advisory; a missed write degrades to the
+   * lifeline's "no current opinion" → hold, the safe direction).
+   */
+  private writeLeasePollIntent(shouldPoll: boolean, role: MachineRole): void {
+    if (!this.pollFollowsLeaseEnabled() || !this.leaseCoordinator) return;
+    try {
+      writePollIntent(this.config.stateDir, {
+        shouldPoll,
+        leaseEpoch: this.leaseCoordinator.currentEpoch(),
+        role: role === 'awake' ? 'awake' : 'standby',
+        serverPid: process.pid,
+        bootId: this.bootId,
+        ts: Date.now(),
+      });
+    } catch (err) {
+      console.log(`[MultiMachine] [poll-intent] write failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
+  /**
    * B3 — resolve the resilientRenew gate. OMITTED `enabled` ⇒ developmentAgent
    * gate (live-on-dev / dark-on-fleet); an explicit boolean wins. Read live so a
    * config flip applies on the next renew tick without a restart.
@@ -766,6 +805,10 @@ export class MultiMachineCoordinator extends EventEmitter {
     // B3 — keep the held lease fresh (renew before it lapses) so the epoch stops
     // climbing. No-op unless resilientRenew resolves on (dev-gate).
     this.startLeaseRenewTimer();
+    // B1 — at boot the role isn't yet reconciled; publish the SAFE default
+    // (shouldPoll:false / mute) so a stale prior-boot {shouldPoll:true} can't
+    // resurrect a poller before the first reconcile decides the real role.
+    this.writeLeasePollIntent(false, 'standby');
   }
 
   /**
@@ -862,6 +905,11 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (holds) this.emit('promote');
     else this.emit('demote');
     console.log(`[MultiMachine] Lease reconcile → ${desired} (${reason})`);
+    // B1 — publish the lease-derived poll intent for the lifeline (shouldPoll =
+    // awake). No-op unless pollFollowsLease resolves on. Nothing consumes it yet
+    // (the lifeline reconcile loop is the next increment), so this is a safe,
+    // observe-only producer — it cannot change ingress.
+    this.writeLeasePollIntent(holds, desired);
     // B2 — feed the flap circuit-breaker on every REAL role transition (this is
     // past the `desired === this._role` early-return, so it counts only true
     // flips). Observe/dry-run: log the would-latch; applying the deterministic
