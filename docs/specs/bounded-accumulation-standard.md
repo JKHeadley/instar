@@ -4,8 +4,9 @@ slug: "bounded-accumulation-standard"
 author: "echo"
 parent-principle: "Structure beats Willpower"
 eli16-overview: "bounded-accumulation-standard.eli16.md"
-status: "draft"
-approved: false
+status: "converged"
+approved: true
+approved-by: "operator pre-approval — Justin, 2026-06-21: explicit full pre-approval for the 24h autonomous session to finish issues #2 (this Bounded Accumulation standard) and #3, including all decisions needed. D1 (token-ledger 30-day window) and D2 (audit logs archive-never-delete) ship as safe defaults, operator-tunable. The irreversible Increment-3 cleanup is covered by this pre-approval and runs only with the §5 safety guards (SafeFsExecutor, close-reopen, re-derivability check, confirmation token)."
 parent-spec: "docs/STANDARDS-REGISTRY.md (new standard in the family of 'No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes' [P19] and 'Bounded Notification Surface' [P17]); docs/specs/STATE-COHERENCE-REGISTRY.md (the EXISTING registry this EXTENDS, not replaces); docs/planning/2026-06-20-forkbomb-prevention-plan.md (Bounded Blast Radius — the compute/capacity twin whose lint+burst-test-same-PR enforcement this mirrors)"
 lessons-engaged:
   - "Structure beats Willpower: the 'leverage trees / avoid single accumulation points' value existed but was enforced nowhere — a wish. This gives it teeth (lint + growth-burst test that fail the build), as Bounded Blast Radius did for compute mass."
@@ -15,6 +16,16 @@ lessons-engaged:
   - "Self-Unblock 'verified, not self-asserted': the boundedByResolution exemption is a VERIFIED kind (allowlist + drain invariant + backstop ceiling), not a self-applied label — mirrors BlockerLedger.settleTrueBlocker requiring a persisted verified run, not a caller claim."
   - "Signal vs Authority + Maturation Path: the lints are deterministic STRUCTURAL checks (allowed to block, like the funnel lints) but ship warn-then-ratchet; the semantic 'is this store actionable?' judgment stays with author/reviewer, never the regex."
   - "P4 Testing Integrity: three tiers incl. a Tier-3 'feature-alive' E2E (rotation fires in a real server-boot lifecycle) + a NAMED growth-burst invariant asserting ON-DISK bytes stay bounded."
+review-convergence: "2026-06-21T23:21:11.822Z"
+review-iterations: 5
+review-completed-at: "2026-06-21T23:21:11.822Z"
+review-report: "docs/specs/reports/bounded-accumulation-standard-convergence.md"
+cross-model-review: "skipped-abbreviated"
+cross-model-review-reason: "external CLI reviewer needs a dist build absent in this spec-only worktree; 4 internal rounds (8 lenses) grounded every prior-art claim against code"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 2
+contested-then-cleared: 2
 ---
 
 # Bounded Accumulation — Every Persistent Store Carries Its Own Ceiling
@@ -111,7 +122,12 @@ custom hooks are an accepted, documented gap.
 Annotation-driven (no magic MB number): fails any `readFileSync`/`writeFileSync`/
 `JSON.parse(fs.readFileSync(...))` whose store is registry-marked `access:'streamed'`/`'sqlite'`.
 A store MUST be marked `streamed` once it can exceed **8 MB** (the declared rule for "too big for
-whole-sync"; below that whole-sync is permitted). This **subsumes and generalizes** the existing
+whole-sync"; below that whole-sync is permitted). **R-class exemption (round 2):** the
+coherence-journal kinds are accessed only through their own protocol-aware reader
+(`CoherenceJournalReader`), never an ad-hoc `readFileSync`, and some run a `maxFileBytes` up to
+16 MB by design — they are `coherenceScope: must-be-coherent` and Lint 2 keys on the registered
+accessor, so the 8 MB whole-sync rule does not apply to them (the rule governs ad-hoc whole-file
+reads, which these never do). This **subsumes and generalizes** the existing
 hardcoded `lint-no-mainthread-cartographer-walk.js` `.loadIndex(` ban into one path-keyed lint
 (cited as prior art, not a gap). Matching strategy: match the registered accessor / declared
 path-suffix against string literals in the call expression; residual false-negatives for fully
@@ -139,8 +155,12 @@ are byte/age segment rotation only.
 
 ## 4. Retrofit (Increment 2 — reuse existing machinery; concrete ceilings frontloaded)
 
-Reuse `src/utils/jsonl-rotation.ts` (post-§3.5 fix) and the existing `CoherenceJournal.maybeRotate`,
-`ThreadLog`, `AuditTrail` rotators — do NOT fork new ones. **Concrete per-store ceilings:**
+Reuse `src/utils/jsonl-rotation.ts` (post-§3.5 fix) and the existing `CoherenceJournal.maybeRotate`
++ `ThreadLog` rotators where they already cover a store — do NOT fork redundant ones. (NOT
+`AuditTrail`: it is a *different* store — `state/audit/current.jsonl`, 1000-row — and it itself
+rotates by `maxRows` via a whole-file `loadEntries()`, so it is non-conformant to §3.5/D4 and
+must receive the same segment-rotation fix; it is not the C-class rotator.) **Concrete per-store
+ceilings:**
 
 | Store | Class | Ceiling (default) |
 |-------|-------|-------|
@@ -156,16 +176,35 @@ Reuse `src/utils/jsonl-rotation.ts` (post-§3.5 fix) and the existing `Coherence
 **A-class (generic streamed JSONL):** segment rotation via the fixed `maybeRotateJsonl`, before
 dropping a segment a **low-watermark check** ensures no registered reader/replicator
 (TokenLedgerPoller byte-offset, WS2 replication cursor) is below it.
-**C-class (compliance / audit):** `security.jsonl`, `destructive-ops.jsonl` are forensic trails —
-rotated segments are **gzipped and retained (cold archive), never drop-deleted**. The standard
+**C-class (compliance / audit):** `audit/destructive-ops.jsonl` and `security.jsonl` are forensic
+trails. **Correction (round 3):** they are NOT unrotated — `destructive-ops.jsonl` has
+`SafeGitExecutor.maybeRotateAuditLog` (16 MB, single `.1` predecessor) and `security.jsonl` is
+also written by `SecurityLog` via `maybeRotateJsonl` — but BOTH existing rotators **drop-delete**
+older history (rename-clobber / keep-ratio truncate). That is the bug: an audit trail must never
+silently lose its oldest entries. So the C-class work **REPLACES** those drop-deleting rotators
+with never-delete gzip-archive segment machinery (built on §3.5), and must audit their callers.
+Rotated segments are **gzipped and retained (cold archive), never drop-deleted**; the standard
 forbids drop-deletion of any audit-classified log. (Closes the silent-audit-loss CRITICAL.)
 **R-class (replication substrate):** `state/coherence-journal/` own-streams AND `peers/*.jsonl`
-are EXCLUDED from external rotation — they carry seq watermarks + inline tombstones; naive
-truncation breaks peer sync and resurrects deleted PII. Size pressure there is handled by
-LOWERING `KindRetention.maxFileBytes` inside the existing protocol (which already guards with
-`oldestRetainedSeq` + tombstone-horizon). The real measured bloat — the **peer-replica** side —
-is bounded by a receive-side cap in `JournalSyncApplier` (drop-and-re-pull / compact-to-folded-head),
-NOT an external `.gz` rotator.
+are EXCLUDED from external rotation — they carry seq watermarks + inline delete-tombstones; naive
+truncation breaks peer sync and resurrects deleted PII. **Correction (round 2):** the existing
+`CoherenceJournal.pruneArchives` prunes own-stream archives by COUNT only (`rotateKeep`), with NO
+peer-ack / seq-floor / tombstone-horizon guard — so simply "lowering `maxFileBytes`" would prune
+MORE often and *increase* the resurrection risk. Therefore: (a) PII record-kinds (`relationship-record`, `user-record`, and every WS2 `*-record`
+kind) keep their EXISTING `rotateKeep: 4` (keep 4 archives, delete older) — NOT a flip to
+`rotateKeep: 0`, which `CoherenceJournal`'s own comment correctly forbids ("`rotateKeep:0`
+[rotate-but-never-delete] would be a compliance defect" = unbounded archive growth, the very
+thing this standard fights). The real gap is that the **count-based `pruneArchives` deletes the
+oldest archive without checking whether peers have acked past its tombstones** — so it can drop a
+delete-tombstone an offline peer hasn't pulled, resurrecting PII. The fix is a NAMED sub-item: a
+**seq-floor guard layered on the existing `rotateKeep`** — `pruneArchives` refuses to delete an
+archive whose max seq exceeds the minimum acked seq across known peers (retain until every peer
+has pulled past its tombstones, THEN the normal keep-4 applies). This bounds the journal under
+normal operation while never resurrecting PII; only a permanently-dark peer holds archives open,
+which surfaces as a loud lag signal, never silent unbounded growth.
+(b) The real measured bloat — the **peer-replica** side (`peers/*.jsonl`) — is safely re-pullable,
+so it is bounded by a receive-side cap in `JournalSyncApplier` (drop-and-re-pull / compact-to-
+HLC-folded-head), NOT an external `.gz` rotator.
 **SQLite (token-ledger.db):** set `PRAGMA auto_vacuum=INCREMENTAL` at creation; retention =
 batched `DELETE WHERE ts < cutoff LIMIT N` + bounded `PRAGMA incremental_vacuum` on a 6 h timer
 (mirroring the real feature-metrics prune at `AgentServer.ts`), never on the request path. The
@@ -216,10 +255,16 @@ operator go** — the one step this spec does not self-authorize (the rising tid
   never gains members; a new undeclared store fails). Per-PR gate = **non-increase**; strict
   decrease is the tracked retrofit cadence (§4), not a per-PR merge condition (so unrelated PRs
   don't deadlock and a count-swap can't game it).
-- **D7 Increment 1 (registry extension + 2 lints + §3.5 rotation fix + burst test) is
-  non-behavioral** and ships first. Increment 2 = A/C/R-class retrofit + SQLite + migration.
+- **D7 Increment 1 (registry extension + the `src/core/storage/` accessor module
+  [`JsonlStore`/`SqliteStore`] + 2 lints + §3.5 rotation fix + burst test) is non-behavioral**
+  and ships first. The two lints ship in **WARN mode over a FROZEN baseline of today's
+  violations** (the existing ~85 write-site categories are not refactored through the accessor
+  in one PR) — the ratchet (D6) then forbids NEW violations and counts the legacy backlog down;
+  a builder must NOT hard-fail the current tree on day one. Increment 2 = A/C/R-class retrofit +
+  SQLite + migration (incl. building the R-class seq-floor/tombstone-horizon prune guard).
   **Increment 2b = cartographer on-disk segmentation** (split out — the only true architecture
-  change). Increment 3 = operator-gated cleanup.
+  change). Increment 3 = operator-gated cleanup. Increment 2 must also audit existing
+  `maybeRotateJsonl` callers (their on-disk shape changes to segments).
 - **D8 The standard applies to its OWN machinery:** the drop-log and the gz archive dir are
   registered stores with their own ceilings (archive-total-bytes cap, compliance-hold excepted).
 - **D9 Sane-floor guard:** Lint 1 flags a suspiciously small `maxAgeMs` (< 1 h) / `maxBytes`
