@@ -1,0 +1,57 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+The sleep/wake watcher (`SleepWakeDetector`) used to decide "did the machine sleep?"
+purely from a timer-drift jump plus **system load**. On a multi-core machine, one
+internal thread can freeze for 10–60 seconds without moving the system load average — so
+the watcher would announce a "wake after ~Ns sleep" when the machine never slept at all
+(it was plugged in, lid open, with `caffeinate` running — sleep was impossible). Those
+false "sleep" reports hid the real cause: short event-loop freezes.
+
+Now the watcher also measures how much CPU **its own process** burned during the gap. A
+truly sleeping process burns almost no CPU; a frozen-but-busy one burns CPU the whole
+time. So a busy gap is correctly reported as a `stall` (a freeze the wedge watchers can
+act on) instead of a phantom "sleep." The new check runs first, applies even to
+multi-minute gaps, defaults on with no configuration, and fails safe (if the CPU reading
+can't be taken it quietly falls back to the old behavior).
+
+## What to Tell Your User
+
+If you ever saw your agent claim it "woke from sleep" on a machine that was plugged in
+and awake — that was a misread. The watcher now tells the difference between a real sleep
+and an internal freeze by checking its own CPU use, so those phantom "sleep" messages stop
+and genuine freezes get flagged honestly. Nothing to configure.
+
+## Summary of New Capabilities
+
+No new user-facing capability — a correctness fix. `SleepWakeDetector` gains a per-process
+CPU-burn discriminator that separates an event-loop block from real sleep: it emits a
+signal-only `stall` event (and suppresses the false `wake`) when this process burned CPU
+through the drift gap. Tunable via the optional `cpuBlockBusyRatio` (default 0.5; set 0 to
+disable). `getStats().suppressedByReason` gains an `event-loop-block` count. Existing
+agents get it via the normal update; on-disk formats and API shapes are unchanged.
+
+## Evidence
+
+**Reproduction (live, 2026-06-21):** Echo's server was flapping (watchdog SIGKILL+respawn
+on a cadence) from event-loop wedges. Throughout, `logs/server.log` carried
+`[SleepWakeDetector] Wake detected after ~Ns sleep` lines — on a host that was plugged in,
+lid open, with `caffeinate` running, where OS sleep is physically impossible. `pmset -g`
+confirmed no sleep occurred. The drifts were single-process event-loop blocks (one Node
+thread pinned), and the 16-core `loadavg` stayed well under `maxLoadRatio` (1.5), so the
+existing load guard never tripped and each block printed a phantom "sleep."
+
+**Before:** a 14s CPU-bound event-loop block under normal system load → `wake` emitted
+(`sleepDurationSeconds ≈ 14`), credited as real sleep in `wakeHistory`; the wedge was
+invisible (laundered into "sleep").
+
+**After:** the same 14s CPU-bound drift → the per-process CPU check measures ~100% busy
+across the gap → a `stall` event is emitted and the `wake` is suppressed (recorded under
+`suppressedByReason['event-loop-block']`), so it is never credited as sleep. A genuine
+idle/suspend gap (~0% CPU) still emits `wake` unchanged.
+
+**Automated:** `tests/unit/SleepWakeDetector-cpu-block.test.ts` reproduces both directions
+with injected clock + CPU providers (CPU-busy short drift → stall; idle drift → wake; long
+CPU-busy drift → stall; throwing provider → no crash). 15/15 unit tests green; `tsc` clean.
