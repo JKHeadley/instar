@@ -107,6 +107,24 @@ export interface SleepWakeDetectorConfig {
   cpuCountProvider?: () => number;
   /** Injectable wall-clock source (testing). Default: Date.now. */
   nowProvider?: () => number;
+  /**
+   * Fraction of a drift gap during which THIS process must have consumed CPU for the
+   * drift to be classified as an event-loop BLOCK (a wedge/stall) rather than sleep.
+   *
+   * This is the per-PROCESS signal the load heuristics can't provide: a suspended
+   * (sleeping) process burns ~0 CPU during the gap, while a blocked event loop burns
+   * CPU for most of it. One Node thread blocking for 14s doesn't move a 16-core
+   * `loadavg` above `maxLoadRatio`, so the load guards emit a FALSE "sleep" — but the
+   * process's own CPU usage exposes it definitively. Applies to LONG drifts too: a
+   * multi-minute CPU-busy drift is the event-loop wedge, never sleep. Default: 0.5.
+   * Set 0 to disable.
+   */
+  cpuBlockBusyRatio?: number;
+  /**
+   * Injectable cumulative-process-CPU source in MICROSECONDS (testing). Default sums
+   * `process.cpuUsage()` user + system. Used to compute CPU burned across a drift gap.
+   */
+  cpuUsageProvider?: () => number;
 }
 
 export interface WakeEvent {
@@ -114,7 +132,20 @@ export interface WakeEvent {
   timestamp: string;
 }
 
-export type WakeSuppressionReason = 'cpu-starvation' | 'cooldown';
+export type WakeSuppressionReason = 'cpu-starvation' | 'cooldown' | 'event-loop-block';
+
+/**
+ * Emitted when a drift is PROVEN to be an event-loop block (this process burned CPU
+ * through the gap), not sleep. Signal-only so wedge watchers can see a real stall that
+ * the detector would otherwise have mislabeled as a wake. No consumer = harmless.
+ */
+export interface StallEvent {
+  /** Drift duration in seconds (how long the loop was blocked). */
+  stallSeconds: number;
+  /** Fraction of the gap this process spent on CPU (≈1 = fully CPU-bound block). */
+  cpuBusyRatio: number;
+  timestamp: string;
+}
 
 export interface SuppressedWakeEvent {
   reason: WakeSuppressionReason;
@@ -160,6 +191,11 @@ export class SleepWakeDetector extends EventEmitter {
   private loadAvgProvider: () => number[];
   private cpuCountProvider: () => number;
   private now: () => number;
+  private cpuBlockBusyRatio: number;
+  private cpuUsageProvider: () => number;
+  /** Cumulative process CPU (µs) sampled at the previous tick — drives the per-process
+   *  CPU-busy-through-the-gap discriminator that separates a real sleep from a block. */
+  private lastCpuMicros = 0;
   private wakeHistory: WakeEvent[] = [];
   private suppressionHistory: SuppressedWakeEvent[] = [];
 
@@ -176,17 +212,26 @@ export class SleepWakeDetector extends EventEmitter {
     this.loadAvgProvider = config.loadAvgProvider ?? (() => os.loadavg());
     this.cpuCountProvider = config.cpuCountProvider ?? (() => os.cpus().length);
     this.now = config.nowProvider ?? (() => Date.now());
+    this.cpuBlockBusyRatio = config.cpuBlockBusyRatio ?? 0.5;
+    this.cpuUsageProvider =
+      config.cpuUsageProvider ?? (() => { const c = process.cpuUsage(); return c.user + c.system; });
     this.lastTick = this.now();
+    this.lastCpuMicros = this.readCpuMicros();
   }
 
   start(): void {
     if (this.interval) return;
     this.lastTick = this.now();
+    this.lastCpuMicros = this.readCpuMicros();
 
     this.interval = setInterval(() => {
       const now = this.now();
       const elapsed = now - this.lastTick;
       this.lastTick = now;
+      // CPU burned by THIS process across the gap — the per-process sleep-vs-block signal.
+      const cpuNowMicros = this.readCpuMicros();
+      const cpuBusyRatio = elapsed > 0 ? ((cpuNowMicros - this.lastCpuMicros) / 1000) / elapsed : 0;
+      this.lastCpuMicros = cpuNowMicros;
 
       if (elapsed <= this.driftThresholdMs) { this.consecutiveDrifts = 0; return; } // on-time tick → not starving
 
@@ -198,6 +243,30 @@ export class SleepWakeDetector extends EventEmitter {
       // guard below can measure recurrence; capture the prior value first for the check.
       const prevShortDriftAtMs = this.lastShortDriftAtMs;
       if (!isLongSleep) this.lastShortDriftAtMs = now;
+
+      // Per-process CPU check — the DEFINITIVE sleep-vs-block discriminator, ahead of the
+      // load heuristics. A suspended (sleeping) process burns ~0 CPU during the gap; a
+      // blocked event loop burns CPU through most of it. So a high busy ratio means the
+      // loop was BLOCKED and the machine did NOT sleep — regardless of duration (a
+      // multi-minute CPU-busy drift is the event-loop WEDGE, not sleep) and regardless of
+      // the system loadavg (one blocked Node thread doesn't move a 16-core average). Emit a
+      // `stall` signal for the wedge watchers; never a `wake`. (2026-06-21: fixes the
+      // misdiagnosis where 11-18s event-loop blocks on a caffeinated host — where sleep is
+      // physically impossible — were logged as "Wake detected after ~Ns sleep".)
+      if (this.cpuBlockBusyRatio > 0 && cpuBusyRatio >= this.cpuBlockBusyRatio) {
+        this.recordSuppression('event-loop-block', sleepDuration, loadRatio, now);
+        console.warn(
+          `[SleepWakeDetector] Drift ~${sleepDuration}s but this process burned ` +
+            `${Math.round(cpuBusyRatio * 100)}% CPU through the gap — event-loop BLOCK, not ` +
+            `sleep (the machine did not sleep). Emitting stall, suppressing wake.`,
+        );
+        this.emit('stall', {
+          stallSeconds: sleepDuration,
+          cpuBusyRatio,
+          timestamp: new Date(now).toISOString(),
+        } as StallEvent);
+        return;
+      }
 
       // Consecutive-drift burst = sustained CPU starvation, not sleep. A genuine sleep
       // is ONE isolated drift (the next on-time tick resets the counter); the 2nd+
@@ -283,6 +352,20 @@ export class SleepWakeDetector extends EventEmitter {
     }
   }
 
+  /** Read cumulative process CPU (µs) defensively. A provider error (or a non-finite
+   *  reading) yields the prior value, so the gap delta becomes 0 → no block signal →
+   *  the tick falls through to the load guards. That is the safe direction: a CPU-read
+   *  failure can never crash the tick (it runs inside setInterval) nor force a false
+   *  block classification — it just disables this one discriminator for that tick. */
+  private readCpuMicros(): number {
+    try {
+      const v = this.cpuUsageProvider();
+      return Number.isFinite(v) ? v : this.lastCpuMicros;
+    } catch {
+      return this.lastCpuMicros;
+    }
+  }
+
   /** Current `loadavg[0] / cpuCount` ratio. Returns 0 when load is unavailable
    *  (e.g. Windows reports [0,0,0]), which disables the starvation guard there. */
   private currentLoadRatio(): number {
@@ -353,6 +436,7 @@ export class SleepWakeDetector extends EventEmitter {
     const suppressedByReason: Record<WakeSuppressionReason, number> = {
       'cpu-starvation': 0,
       cooldown: 0,
+      'event-loop-block': 0,
     };
     for (const e of suppressed) suppressedByReason[e.reason]++;
     return {
