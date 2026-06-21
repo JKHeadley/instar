@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-21T09:04:31.896Z",
+  "slug": "commitment-tracker-verify-batches-saves",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 80,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent O(N) write amplification in CommitmentTracker.verify(): saveStore() ran per-mutation inside the sweep, serializing the whole store each time. Harmless until the store grew large (1.6MB / 1724 commitments, 1137 terminal never pruned), at which point the 60s sweep froze the event loop for minutes. Surfaced live on Echo 2026-06-21 via a JSON.stringify tracer."
+  },
+  "verdict": "pass"
+}
