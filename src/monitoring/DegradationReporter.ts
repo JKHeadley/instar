@@ -182,6 +182,16 @@ export class DegradationReporter {
   private static instance: DegradationReporter | null = null;
 
   private events: DegradationEvent[] = [];
+  /** Reentrancy guard for gateHealthAlert (event-loop WEDGE fix, 2026-06-21). */
+  private _gatingHealthAlert = false;
+  /**
+   * Hard cap on the in-memory `events` array (WEDGE fix, 2026-06-21). Defence in
+   * depth alongside the reentrancy guard: even outside the recursion, an agent that
+   * degrades steadily for a long uptime would otherwise grow `events` without bound,
+   * and operations that serialize the whole array (`getEventsJson`, persistence) get
+   * slower with it. Keep the most recent N.
+   */
+  private static readonly MAX_EVENTS = 500;
   private stateDir: string | null = null;
   private agentName: string = 'unknown';
   private instarVersion: string = '0.0.0';
@@ -310,6 +320,10 @@ export class DegradationReporter {
     );
 
     this.events.push(full);
+    // Bound the in-memory array (WEDGE fix): never let it grow without limit.
+    if (this.events.length > DegradationReporter.MAX_EVENTS) {
+      this.events.splice(0, this.events.length - DegradationReporter.MAX_EVENTS);
+    }
     this.persistToDisk(full);
 
     // F-3 path: produce a NormalizedDegradationEvent and either dispatch
@@ -675,27 +689,40 @@ export class DegradationReporter {
     candidate: string,
     healSignal: { attempted: boolean; succeeded: boolean | null; attempts: number },
   ): Promise<string> {
-    if (!this.toneGate) {
-      return candidate;
+    // Reentrancy guard (event-loop WEDGE fix, 2026-06-21). `toneGate.review` runs an
+    // LLM through the IntelligenceRouter, which can ITSELF degrade (e.g. an unavailable
+    // configured framework) and re-enter `report → reportEvent → gateHealthAlert`. That
+    // recursion is unbounded: each level pushes another event, and a `JSON.stringify` of
+    // the growing `events` array eventually hangs the single event-loop thread for
+    // MINUTES (observed live on Echo: /health HTTP 000, watchdog SIGKILL/respawn loop).
+    // Refusing to gate-within-a-gate breaks the cycle regardless of which framework
+    // degrades — the inner alert falls back to the safe template instead of recursing.
+    if (!this.toneGate || this._gatingHealthAlert) {
+      return this._gatingHealthAlert ? SAFE_HEALTH_ALERT_TEMPLATE : candidate;
     }
-    const jargon = detectJargon(candidate);
+    this._gatingHealthAlert = true;
     try {
-      const result = await this.toneGate.review(candidate, {
-        channel: 'telegram',
-        messageKind: 'health-alert',
-        signals: {
-          jargon: { detected: jargon.detected, terms: jargon.terms, score: jargon.score },
-          selfHeal: healSignal,
-        },
-      });
-      if (result.pass) {
+      const jargon = detectJargon(candidate);
+      try {
+        const result = await this.toneGate.review(candidate, {
+          channel: 'telegram',
+          messageKind: 'health-alert',
+          signals: {
+            jargon: { detected: jargon.detected, terms: jargon.terms, score: jargon.score },
+            selfHeal: healSignal,
+          },
+        });
+        if (result.pass) {
+          return candidate;
+        }
+        return SAFE_HEALTH_ALERT_TEMPLATE;
+      } catch {
+        // Fail-open on unexpected gate errors — at least the user hears
+        // SOMETHING about the degradation.
         return candidate;
       }
-      return SAFE_HEALTH_ALERT_TEMPLATE;
-    } catch {
-      // Fail-open on unexpected gate errors — at least the user hears
-      // SOMETHING about the degradation.
-      return candidate;
+    } finally {
+      this._gatingHealthAlert = false;
     }
   }
 

@@ -38,3 +38,13 @@ format is unchanged (still a JSON object, just not pretty-printed).
   `verify → verifyOne → mutateSync → saveStore` re-serializing the 1.6MB store
   repeatedly within one sweep; after the fix the per-sweep write count is 1 and the
   multi-minute event-loop freezes shortened.
+
+## What Changed (DegradationReporter reentrancy — same incident)
+
+The "something degraded" reporter could feed itself into an infinite loop: reporting a
+degradation runs a small AI "tone gate" to phrase the alert nicely, but that gate goes through
+the same router that just degraded — so if a configured tool is missing, the gate degrades
+again, which reports again, forever. The growing internal events list, serialized each cycle,
+froze the agent for minutes (the restart "flapping"). Fixed with a reentrancy guard (the gate
+won't run inside itself) plus a hard cap on the events list. Degradations are still logged and
+alerted; the agent just no longer melts down when a configured framework isn't installed.

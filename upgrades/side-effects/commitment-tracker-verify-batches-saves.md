@@ -71,3 +71,39 @@ The fix:
   `CommitmentTracker.saveStore` stack firing repeatedly from `verify()`'s timer; the store
   was 1.6MB / 1,724 commitments. Post-hotfix the per-sweep write count dropped to 1 and the
   4+ minute freezes shortened.
+
+---
+
+# Side-Effects Review — DegradationReporter reentrancy wedge (same incident)
+
+**Added 2026-06-21** — the dominant event-loop wedge from the same live investigation.
+
+## Summary
+`DegradationReporter.gateHealthAlert()` runs `toneGate.review()` — an LLM call routed through
+the IntelligenceRouter. When the configured framework is unavailable the router DEGRADES, and
+that degradation re-enters `report → reportEvent → gateHealthAlert` in the same synchronous
+stack — unbounded recursion. Each level pushes another event; a `JSON.stringify` of the growing
+`events` array eventually hangs the single event-loop thread for minutes (observed live: /health
+HTTP 000, watchdog SIGKILL/respawn loop — the dominant cause of Echo's flapping).
+
+## The change
+1. **Reentrancy guard** (`_gatingHealthAlert`): `gateHealthAlert` refuses to gate-within-a-gate,
+   returning the safe template instead of recursing. Breaks the cycle regardless of which
+   framework degrades.
+2. **Bounded `events` array** (`MAX_EVENTS = 500`): defence in depth — the in-memory array can
+   never grow without limit, so whole-array serializations stay cheap.
+
+## Roll-up
+- **Security/Integration/Migration:** none — internal monitoring path; on-disk/event shapes
+  unchanged; degradations are still logged and alerted.
+- **Reliability:** the entire point — removes a fleet-wide event-loop-freeze class. Any agent
+  with an unavailable configured framework would hit this.
+- **Adversarial:** the guard flag is reset in a `finally`; a throw inside the gate still clears it.
+
+## Evidence
+- `tests/unit/degradation-reporter-reentrancy-wedge.test.ts` (3 cases): the guard short-circuits
+  the gate while already gating; a re-entrant tone gate stays bounded (doesn't hang); the events
+  array is capped at 500. All green.
+- Live: captured the hung `JSON.stringify` stack via a write-on-entry/clear-on-return catcher
+  (the call never returns, so profilers can't flush); post-fix verification showed 0 CPU-wedges,
+  0 watchdog SIGKILLs, 200s continuous healthy (was flapping every ~3 min).

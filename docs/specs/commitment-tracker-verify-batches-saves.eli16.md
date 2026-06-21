@@ -22,3 +22,29 @@ which only made the file bigger and slower to write — nothing reads it by eye.
 Nothing about your commitments changes — what's tracked, what's saved, how it all works is
 identical. The agent just stops doing hundreds of pointless identical saves every minute, so
 it no longer freezes on that cadence.
+# ELI16 — DegradationReporter no longer melts down when it can't reach a model
+
+Your agent has a "something degraded" reporter. When an internal feature falls back to a
+backup (say a sentinel's preferred AI tool isn't installed, so it uses a different one), the
+reporter notes it and — before messaging you — runs the note past a small "tone gate" to make
+sure the wording is friendly.
+
+Here's the trap. That tone gate is itself a tiny AI call. And it goes through the same router
+that just degraded. So if the configured tool is missing, running the tone gate **degrades
+again** — which tells the reporter "something degraded" — which runs the tone gate — which
+degrades again… round and round, in one unbroken loop. Every loop adds another entry to a list
+the reporter keeps, and the reporter periodically turns that whole list into text (a
+`JSON.stringify`). The list grows so huge that turning it into text takes **minutes**, and
+during those minutes the agent's single worker can do nothing else — health checks fail, a
+watchdog thinks it crashed and restarts it, and it does the same thing again. That restart loop
+was the "flapping."
+
+The fix is one sentence of logic: **the tone gate refuses to run while it's already running.**
+So if checking a degradation alert triggers another degradation, that inner one just uses a
+plain safe message instead of recursing. The loop can't form — no matter which tool is missing.
+As a belt-and-suspenders, the list of degradation events is now capped at a fixed size, so even
+a steady drip of real degradations can never grow it without limit.
+
+Nothing about what you see changes — degradations are still logged and you're still alerted.
+The agent just stops eating itself alive when a configured tool isn't there.
+
