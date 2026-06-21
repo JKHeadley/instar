@@ -14,7 +14,13 @@
       "paths": [
         "state/coherence-journal/"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "CARVED OUT — bounded inside CoherenceJournal via KindRetention + the new seq-floor prune guard; never externally rotated"
+      }
     },
     {
       "category": "pending-pulls",
@@ -171,7 +177,13 @@
       "paths": [
         "state/coherence-journal/*.topic-placement.jsonl"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "CARVED OUT — replication substrate"
+      }
     },
     {
       "category": "autonomous-working-artifacts",
@@ -432,7 +444,12 @@
         "state/resource-ledger.db",
         "state/resources.db"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "maxAgeMs": 2592000000
+      }
     },
     {
       "category": "lease-coordination-state",
@@ -608,7 +625,14 @@
         "state/destructive-ops.jsonl",
         "logs/destructive-ops.jsonl"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "streamed",
+        "complianceHold": true,
+        "keepSegments": 0,
+        "note": "forensic trail — archive, never drop-delete (replaces SafeGitExecutor.maybeRotateAuditLog drop-rotate)"
+      }
     },
     {
       "category": "audit-job-runs",
@@ -621,7 +645,13 @@
         "state/job-runs.jsonl",
         "logs/job-runs.jsonl"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 33554432,
+        "keepSegments": 4
+      }
     },
     {
       "category": "audit-reaper",
@@ -671,7 +701,14 @@
         "state/security.jsonl",
         "logs/security.jsonl"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "streamed",
+        "complianceHold": true,
+        "keepSegments": 0,
+        "note": "forensic trail — archive, never drop-delete (replaces SecurityLog maybeRotateJsonl keep-ratio trim)"
+      }
     },
     {
       "category": "audit-decision-journal",
@@ -749,7 +786,13 @@
         "state/telegram-messages.jsonl",
         "logs/telegram-messages.jsonl"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 33554432,
+        "keepSegments": 4
+      }
     },
     {
       "category": "audit-a2a-messages",
@@ -814,7 +857,13 @@
         "state/feedback.jsonl",
         "logs/feedback.jsonl"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 33554432,
+        "keepSegments": 4
+      }
     },
     {
       "category": "audit-apprenticeship-decisions",
@@ -840,7 +889,13 @@
         "state/token-ledger.db",
         "state/tokens.db"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "maxAgeMs": 2592000000,
+        "note": "incremental-vacuum + batched delete off-thread (Increment 2)"
+      }
     },
     {
       "category": "derived-semantic-memory",
@@ -856,7 +911,13 @@
         "state/episodes/",
         "memory/semantic.jsonl"
       ],
-      "grandfathered": false
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "maxAgeMs": 7776000000,
+        "note": "mixed .db + memory/semantic.jsonl; jsonl arm is A-class streamed in retrofit"
+      }
     },
     {
       "category": "derived-topic-memory",

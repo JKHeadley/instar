@@ -1,0 +1,5 @@
+{
+  "note": "FROZEN baseline of literal whole-file-sync reads of streamed stores at Bounded Accumulation Increment 1. May only shrink. New hits fail the lint.",
+  "frozenAt": "2026-06-21",
+  "violations": []
+}
