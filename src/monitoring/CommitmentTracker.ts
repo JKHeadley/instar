@@ -361,6 +361,21 @@ export class CommitmentTracker extends EventEmitter {
   private rulesPath: string;
   private interval: ReturnType<typeof setInterval> | null = null;
   private nextId: number;
+  /**
+   * Coalesce the per-mutation full-store writes of a synchronous sweep into ONE
+   * write at the end. `verify()` mutates every active commitment via
+   * `mutateSync()`, and each `mutateSync()` calls `saveStore()` — which
+   * `JSON.stringify`s the ENTIRE store. With a large store (e.g. ~1.6MB / ~1700
+   * commitments) and N active commitments that is O(N) full-store serializations
+   * per sweep, which froze the single event-loop thread for MINUTES (observed
+   * 2026-06-21: server `/health` HTTP 000, watchdog SIGKILL/respawn loop). While
+   * batching, `saveStore()` marks the store dirty and returns; the sweep flushes
+   * exactly one write at the end. SAFE because the sweep is fully synchronous and
+   * never yields the event loop, so no other write path can observe or interleave
+   * with the deferred window.
+   */
+  private batchingSaves = false;
+  private pendingSave = false;
 
   /**
    * Single-writer FIFO queues, keyed by commitment id. Every write path
@@ -1070,32 +1085,45 @@ export class CommitmentTracker extends EventEmitter {
     let verified = 0;
     let pending = 0;
 
-    // Expire old commitments first
-    this.expireCommitments();
+    // Batch every per-commitment save in this sweep into ONE write at the end
+    // (see `batchingSaves`): each `mutateSync()` below otherwise writes the whole
+    // store, so a sweep over N commitments did O(N) full-store serializations and
+    // froze the event loop for minutes on a large store.
+    this.batchingSaves = true;
+    try {
+      // Expire old commitments first
+      this.expireCommitments();
 
-    for (const commitment of active) {
-      const result = this.verifyOne(commitment.id);
-      if (!result) continue;
+      for (const commitment of active) {
+        const result = this.verifyOne(commitment.id);
+        if (!result) continue;
 
-      if (result.passed) {
-        verified++;
-      } else {
-        // Attempt auto-correction for config-change commitments
-        let autoCorrected = false;
-        if (commitment.type === 'config-change' && commitment.configPath !== undefined) {
-          autoCorrected = this.attemptAutoCorrection(commitment);
+        if (result.passed) {
+          verified++;
+        } else {
+          // Attempt auto-correction for config-change commitments
+          let autoCorrected = false;
+          if (commitment.type === 'config-change' && commitment.configPath !== undefined) {
+            autoCorrected = this.attemptAutoCorrection(commitment);
+          }
+
+          violations.push({
+            id: commitment.id,
+            userRequest: commitment.userRequest,
+            detail: result.detail,
+            autoCorrected,
+          });
         }
+      }
 
-        violations.push({
-          id: commitment.id,
-          userRequest: commitment.userRequest,
-          detail: result.detail,
-          autoCorrected,
-        });
+      pending = active.filter(c => c.status === 'pending').length;
+    } finally {
+      this.batchingSaves = false;
+      if (this.pendingSave) {
+        this.pendingSave = false;
+        this.saveStore();
       }
     }
-
-    pending = active.filter(c => c.status === 'pending').length;
 
     const report: CommitmentVerificationReport = {
       timestamp: new Date().toISOString(),
@@ -1686,12 +1714,20 @@ export class CommitmentTracker extends EventEmitter {
   }
 
   private saveStore(): void {
+    // Coalesce writes during a batched sweep (see `batchingSaves`): mark dirty
+    // and let the sweep flush ONE write at the end instead of O(N) here.
+    if (this.batchingSaves) {
+      this.pendingSave = true;
+      return;
+    }
     this.store.lastModified = new Date().toISOString();
     try {
       const dir = path.dirname(this.storePath);
       fs.mkdirSync(dir, { recursive: true });
       const tmpPath = `${this.storePath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(this.store, null, 2) + '\n');
+      // Compact (not pretty-printed): this is a machine-read state file, and at
+      // ~1.6MB the indentation was pure serialization + I/O overhead per write.
+      fs.writeFileSync(tmpPath, JSON.stringify(this.store) + '\n');
       fs.renameSync(tmpPath, this.storePath);
       // P1.5 §3.2 rewind fence: the meta sidecar tracks the high-water
       // replicationSeq. Written AFTER the store (a crash between leaves the

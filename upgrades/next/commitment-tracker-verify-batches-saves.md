@@ -1,0 +1,40 @@
+<!-- bump: patch -->
+
+## What Changed
+
+`CommitmentTracker.verify()` runs every 60 seconds and checks each active commitment.
+Previously, each check that mutated a commitment rewrote the **entire** commitments
+store to disk (a full `JSON.stringify` of the whole file). On an agent whose store had
+grown large (observed: 1.6MB, ~1,700 commitments), a single 60-second sweep did
+hundreds of full-store serializations back-to-back — enough synchronous work to freeze
+the server's event loop for minutes (health checks timing out, an external watchdog
+restarting the process in a loop).
+
+Now `verify()` batches the whole sweep into **one** store write at the end, and writes
+the store compactly instead of pretty-printed. The per-sweep cost drops from
+"once per commitment" to "once per sweep".
+
+## What to Tell Your User
+
+If your agent ever became briefly unresponsive on a regular cadence — health checks
+failing, the server restarting itself — and you had accumulated a lot of tracked
+commitments, this removes the cause. Nothing changes in how commitments work or what
+gets saved; the agent just stops doing hundreds of redundant full-file saves each
+minute. No action needed.
+
+## Summary of New Capabilities
+
+No new user-facing capability — this is a performance/reliability fix. The commitments
+store is now persisted once per verification sweep (was once per mutated commitment),
+and saved compactly. Existing agents get it via the normal update; the on-disk store
+format is unchanged (still a JSON object, just not pretty-printed).
+
+## Evidence
+
+- New unit test `tests/unit/CommitmentTracker-verify-batches-saves.test.ts`: a sweep
+  over 40 mutated commitments produces exactly **1** store write (was 40); a lone mutate
+  outside a sweep still persists immediately.
+- Live diagnosis on Echo (2026-06-21): a `JSON.stringify` tracer captured
+  `verify → verifyOne → mutateSync → saveStore` re-serializing the 1.6MB store
+  repeatedly within one sweep; after the fix the per-sweep write count is 1 and the
+  multi-minute event-loop freezes shortened.
