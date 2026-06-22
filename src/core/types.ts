@@ -3081,8 +3081,17 @@ export interface InstarConfig {
         ceilingMs?: number;    // default 8000 (clamp for a single wait)
         maxWaitMs?: number;    // default 60000 (hard cap on honoring a long server retry-after)
       };
-      /** Queue rung for DEFERRABLE calls (LlmQueue.enqueue; enqueue-rejection falls through). */
-      queue?: { enabled?: boolean };
+      /**
+       * Queue rung for DEFERRABLE calls (LlmQueue.enqueue; enqueue-rejection falls through to the
+       * caller's heuristic, never dropped). The enqueued provider.evaluate honors the account-global
+       * breaker's retryAfterMs via acquireOrWait — so the call WAITS for capacity (the §3b.3
+       * rate-awareness) instead of being dropped. `attemptTimeoutMs` bounds a single enqueued call so
+       * a stuck/abandoned one self-terminates (default 60000); `drainMinGapMs` is the opt-in §3c herd
+       * guard — a jittered minimum gap between BACKGROUND-lane dispatches so a burst of queued calls
+       * can't re-trip a just-recovered provider (0/off by default keeps today's drain behavior, zero
+       * blast radius for existing LlmQueue callers).
+       */
+      queue?: { enabled?: boolean; attemptTimeoutMs?: number; drainMinGapMs?: number };
       /** Never-silent degradation tracking (DegradationReporter open/auto-resolve/escalate lifecycle). */
       neverSilent?: {
         enabled?: boolean;

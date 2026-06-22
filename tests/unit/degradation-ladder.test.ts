@@ -174,3 +174,123 @@ describe('Resilient Degradation Ladder — never-silent hooks (§4)', () => {
     expect(fell).toEqual([]); // gating → fail closed, never a heuristic-fallthrough
   });
 });
+
+// Queue rung (§3b.3) — a DEFERRABLE call that exhausted framework-swap WAITS for capacity in the
+// LlmQueue before dropping to its heuristic. gating NEVER reaches the queue (D5, structural).
+const LADDER_Q = { ...LADDER, backoffEnabled: false, queueEnabled: true, queueAttemptTimeoutMs: 60000 };
+/** Stub queue that runs the enqueued fn immediately (simulates capacity becoming available). */
+const passQueue = {
+  enqueued: 0,
+  async enqueue(_lane: 'interactive' | 'background', fn: (s: AbortSignal) => Promise<string>) {
+    this.enqueued++;
+    return fn(new AbortController().signal);
+  },
+};
+/** Stub queue that REJECTS the enqueue (daily-cap / interactive-reserve breach). */
+const rejectQueue = {
+  enqueued: 0,
+  async enqueue(_lane: 'interactive' | 'background', _fn: (s: AbortSignal) => Promise<string>) {
+    this.enqueued++;
+    throw new Error('LLM daily spend cap exceeded');
+  },
+};
+
+describe('Resilient Degradation Ladder — queue rung (§3b.3)', () => {
+  it('deferrable: no swap configured → WAITS in the queue → queued call succeeds + onResolved fires', async () => {
+    let calls = 0;
+    const resolved: Array<[string, string]> = [];
+    const primary: IntelligenceProvider = {
+      async evaluate() { calls++; if (calls === 1) throw rle(); return 'queued-ok'; },
+    };
+    const q = { enqueued: 0, async enqueue(_l: 'interactive' | 'background', fn: (s: AbortSignal) => Promise<string>) { this.enqueued++; return fn(new AbortController().signal); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({}), buildProvider: () => null,
+      llmQueue: q, ladder: LADDER_Q, onResolved: (c, f) => resolved.push([c, f]),
+    });
+    expect(await router.evaluate('x', DEFERRABLE)).toBe('queued-ok');
+    expect(q.enqueued).toBe(1);            // the call was enqueued
+    expect(calls).toBe(2);                 // main attempt + the queued retry
+    expect(resolved).toContainEqual(['Sentinel', 'claude-code']); // served → auto-resolve
+  });
+
+  it('deferrable: swap exhausted → THEN queue (order backoff/swap → queue → success)', async () => {
+    const seq: string[] = [];
+    const primary: IntelligenceProvider = {
+      async evaluate() { seq.push('primary'); if (seq.filter((s) => s === 'primary').length === 1) throw rle(); return 'queued-ok'; },
+    };
+    const swap: IntelligenceProvider = { async evaluate() { seq.push('swap'); throw new Error('swap down'); } };
+    const q = { async enqueue(_l: 'interactive' | 'background', fn: (s: AbortSignal) => Promise<string>) { seq.push('queue'); return fn(new AbortController().signal); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({ failureSwap: ['codex-cli'] }),
+      buildProvider: (fw: IntelligenceFramework) => (fw === 'codex-cli' ? swap : null),
+      llmQueue: q, ladder: LADDER_Q,
+    });
+    expect(await router.evaluate('x', DEFERRABLE)).toBe('queued-ok');
+    // primary(fail) → swap(down) → queue → primary(ok): queue comes AFTER swap, before success.
+    expect(seq).toEqual(['primary', 'swap', 'queue', 'primary']);
+  });
+
+  it('GATING is NEVER queued (D5 — structural queue-skip)', async () => {
+    passQueue.enqueued = 0;
+    const primary: IntelligenceProvider = { async evaluate() { throw rle(); } };
+    const swap: IntelligenceProvider = { async evaluate() { throw new Error('swap down'); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({ failureSwap: ['codex-cli'] }),
+      buildProvider: (fw: IntelligenceFramework) => (fw === 'codex-cli' ? swap : null),
+      llmQueue: passQueue, ladder: LADDER_Q,
+    });
+    await expect(router.evaluate('x', GATING)).rejects.toThrow();
+    expect(passQueue.enqueued).toBe(0); // a gating call fails closed, never enqueued
+  });
+
+  it('enqueue REJECTION → falls through to heuristic (never dropped) + onHeuristicFallthrough fires', async () => {
+    rejectQueue.enqueued = 0;
+    const fell: Array<[string, string]> = [];
+    const primary: IntelligenceProvider = { async evaluate() { throw rle(); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({}), buildProvider: () => null,
+      llmQueue: rejectQueue, ladder: LADDER_Q, onHeuristicFallthrough: (c, f) => fell.push([c, f]),
+    });
+    await expect(router.evaluate('x', DEFERRABLE)).rejects.toThrow();
+    expect(rejectQueue.enqueued).toBe(1);                 // it tried the queue
+    expect(fell).toEqual([['Sentinel', 'claude-code']]);  // then fell through to heuristic, tracked
+  });
+
+  it('non-deferrable advisory call is NEVER queued', async () => {
+    passQueue.enqueued = 0;
+    const primary: IntelligenceProvider = { async evaluate() { throw rle(); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({}), buildProvider: () => null,
+      llmQueue: passQueue, ladder: LADDER_Q,
+    });
+    await expect(router.evaluate('x', { attribution: { component: 'Adv' } })).rejects.toThrow();
+    expect(passQueue.enqueued).toBe(0); // only deferrable calls reach the queue rung
+  });
+
+  it('queueEnabled but NO llmQueue injected ⇒ rung is a no-op (deferrable just throws)', async () => {
+    const primary: IntelligenceProvider = { async evaluate() { throw rle(); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({}), buildProvider: () => null,
+      ladder: LADDER_Q, // queueEnabled true but llmQueue absent
+    });
+    await expect(router.evaluate('x', DEFERRABLE)).rejects.toThrow();
+  });
+
+  it('queue rung OFF (queueEnabled false) ⇒ deferrable call is not enqueued even with a queue present', async () => {
+    passQueue.enqueued = 0;
+    const primary: IntelligenceProvider = { async evaluate() { throw rle(); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({}), buildProvider: () => null,
+      llmQueue: passQueue, ladder: { ...LADDER_Q, queueEnabled: false },
+    });
+    await expect(router.evaluate('x', DEFERRABLE)).rejects.toThrow();
+    expect(passQueue.enqueued).toBe(0);
+  });
+});

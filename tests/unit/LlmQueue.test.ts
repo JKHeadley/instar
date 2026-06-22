@@ -90,4 +90,53 @@ describe('LlmQueue', () => {
 
     expect(completionOrder).toEqual(['int', 'bg']);
   });
+
+  // Herd-aware background drain pacing (Resilient Degradation Ladder §3c).
+  it('paces a second BACKGROUND dispatch when backgroundDispatchMinGapMs is set, even with a free slot', async () => {
+    const q = new LlmQueue({ maxConcurrent: 3, maxDailyCents: 100, backgroundDispatchMinGapMs: 40 });
+    const a = deferred();
+    const b = deferred();
+    const pa = q.enqueue('background', () => a.promise); // dispatched immediately (first)
+    const pb = q.enqueue('background', () => b.promise); // paced — deferred despite a free slot
+
+    expect(q.getInFlightCount()).toBe(1); // only the first is in flight
+    expect(q.getWaitingCount()).toBe(1);  // the second waits out the pacing gap
+
+    a.resolve('a');
+    b.resolve('b');
+    expect(await pa).toBe('a');
+    expect(await pb).toBe('b'); // the paced re-drain eventually runs the second
+  });
+
+  it('does NOT pace when backgroundDispatchMinGapMs is 0/off (today behavior — both start at once)', async () => {
+    const q = new LlmQueue({ maxConcurrent: 3, maxDailyCents: 100 }); // no pacing
+    const a = deferred();
+    const b = deferred();
+    const pa = q.enqueue('background', () => a.promise);
+    const pb = q.enqueue('background', () => b.promise);
+
+    expect(q.getInFlightCount()).toBe(2); // both dispatched immediately (no gap)
+    expect(q.getWaitingCount()).toBe(0);
+
+    a.resolve('a');
+    b.resolve('b');
+    await pa;
+    await pb;
+  });
+
+  it('interactive dispatch BYPASSES background pacing (latency-sensitive)', async () => {
+    const q = new LlmQueue({ maxConcurrent: 3, maxDailyCents: 100, backgroundDispatchMinGapMs: 1000 });
+    const bgD = deferred();
+    const intD = deferred();
+    const pbg = q.enqueue('background', () => bgD.promise);   // first bg dispatched
+    const pint = q.enqueue('interactive', () => intD.promise); // interactive NOT paced
+
+    expect(q.getInFlightCount()).toBe(2); // bg + interactive both running; interactive bypassed pacing
+    expect(q.getWaitingCount()).toBe(0);
+
+    bgD.resolve('bg');
+    intD.resolve('int');
+    await pbg;
+    await pint;
+  });
 });

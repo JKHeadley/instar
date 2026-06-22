@@ -31,6 +31,13 @@ export interface LlmQueueOptions {
   interactiveReservePct?: number;
   /** Daily spend cap in cents across both lanes. Default 100. */
   maxDailyCents?: number;
+  /**
+   * Herd-aware drain pacing (Resilient Degradation Ladder §3c). A jittered minimum gap (ms) between
+   * BACKGROUND-lane dispatches so a burst of queued background calls can't re-trip a just-recovered
+   * provider on recovery. Interactive-lane dispatches BYPASS pacing (latency-sensitive + preemptive).
+   * Default 0 = OFF (today's greedy drain, zero behavior change for existing callers).
+   */
+  backgroundDispatchMinGapMs?: number;
   /** Provide `Date.now()` — injectable for tests. */
   now?: () => number;
 }
@@ -53,10 +60,16 @@ export class LlmQueue {
   private maxConcurrent: number;
   private interactiveReservePct: number;
   private maxDailyCents: number;
+  private backgroundDispatchMinGapMs: number;
   private now: () => number;
 
   private inFlight: Set<InFlight> = new Set();
   private waiters: Waiter[] = [];
+
+  /** Wall-clock (via `now`) of the last BACKGROUND-lane dispatch — herd-pacing window anchor. */
+  private lastBackgroundStartAt = 0;
+  /** At most one pending paced re-drain timer; null when none scheduled. */
+  private pacingTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Daily spend ledger: { dateKey: 'YYYY-MM-DD', cents: number, interactive: number } */
   private dailySpendCents = 0;
@@ -67,6 +80,7 @@ export class LlmQueue {
     this.maxConcurrent = opts.maxConcurrent ?? 3;
     this.interactiveReservePct = opts.interactiveReservePct ?? 0.4;
     this.maxDailyCents = opts.maxDailyCents ?? 100;
+    this.backgroundDispatchMinGapMs = opts.backgroundDispatchMinGapMs ?? 0;
     this.now = opts.now ?? (() => Date.now());
   }
 
@@ -120,6 +134,23 @@ export class LlmQueue {
       const next = this.waiters[0];
 
       if (this.inFlight.size < this.maxConcurrent) {
+        // Herd guard (§3c): pace BACKGROUND-lane dispatches so a burst of queued calls can't re-trip
+        // a just-recovered provider. Interactive bypasses (latency-sensitive + preemptive). When a
+        // background dispatch is too soon after the previous one, schedule a paced re-drain instead of
+        // starting now. Because interactive waiters sort ahead, a background head means no interactive
+        // is waiting — so deferring it blocks nothing else. OFF when backgroundDispatchMinGapMs <= 0.
+        if (next.lane === 'background' && this.backgroundDispatchMinGapMs > 0 && this.lastBackgroundStartAt > 0) {
+          const since = this.now() - this.lastBackgroundStartAt;
+          // Jitter the gap (full-jitter low half) so independent recoveries don't re-sync into a herd.
+          const gap = Math.floor(this.backgroundDispatchMinGapMs * (0.5 + Math.random() * 0.5));
+          if (since < gap) {
+            this.schedulePacedDrain(gap - since);
+            break;
+          }
+        }
+        if (next.lane === 'background' && this.backgroundDispatchMinGapMs > 0) {
+          this.lastBackgroundStartAt = this.now();
+        }
         this.waiters.shift();
         this.start(next);
         continue;
@@ -141,6 +172,19 @@ export class LlmQueue {
       // of interactive calls. Wait for something to complete.
       break;
     }
+  }
+
+  /**
+   * Schedule a single paced re-drain (§3c herd guard). Coalesces to at most one pending timer so a
+   * burst of background enqueues can't stack timers. `unref`'d so it never holds the process open.
+   */
+  private schedulePacedDrain(delayMs: number): void {
+    if (this.pacingTimer) return;
+    this.pacingTimer = setTimeout(() => {
+      this.pacingTimer = null;
+      this.drain();
+    }, Math.max(1, delayMs));
+    this.pacingTimer.unref?.();
   }
 
   private start(w: Waiter): void {
