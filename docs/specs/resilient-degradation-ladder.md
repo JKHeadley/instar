@@ -1,158 +1,181 @@
 ---
-title: "Resilient Degradation Ladder — backoff → account-swap → framework-swap → queue → (last-resort) heuristic, never silently: Spec"
+title: "Resilient Degradation Ladder — slow-down-before-fallback for deferrable work, fast-fail-closed for gates, never silently: Spec"
 slug: "resilient-degradation-ladder"
 author: "echo"
 parent-principle: "No Silent Degradation to Brittle Fallback"
 eli16-overview: "resilient-degradation-ladder.eli16.md"
 status: "draft"
 approved: false
-parent-spec: "docs/specs/provider-fallback-default-policy.md (the framework-swap tail this EXTENDS); docs/LLM-SUPERVISED-EXECUTION.md (the standard that LLM intelligence — not a heuristic — directs important decisions)"
+parent-spec: "docs/specs/provider-fallback-default-policy.md (the framework-swap tail this EXTENDS); docs/LLM-SUPERVISED-EXECUTION.md (LLM intelligence — not a heuristic — directs important decisions)"
 lessons-engaged:
-  - "Operator degradation principle ([[feedback_heuristic_fallback_last_resort_never_silent]]): heuristic fallback is a LAST RESORT, low-risk only; PREFER slowing down (exponential backoff) over falling back; NEVER silently remain degraded indefinitely (loud + bounded + auto-healing). The ladder order is backoff → account-swap → framework-swap → queue → heuristic."
-  - "FOUNDATION AUDIT (the #2 lesson): much of this is ALREADY built — the IntelligenceRouter framework-swap tail, the CircuitBreaker, the SubscriptionPool account-swap, the LlmQueue, the DegradationReporter. This spec EXTENDS them into one ordered ladder; it does NOT rebuild. Every prior-art claim is grounded against the actual code and re-verified in spec-converge."
-  - "No Silent Degradation to Brittle Fallback (the parent): a low-context heuristic must never silently replace an LLM decision; degradation must be herd-aware, observable, and recover."
-  - "Observable Intelligence: every rung's firing is recorded in /metrics/features (the existing onDegrade → DegradationReporter path) so the ladder's behavior is auditable, never invisible."
+  - "Operator degradation principle ([[feedback_heuristic_fallback_last_resort_never_silent]]): heuristic is a LAST RESORT, low-risk only; PREFER slowing down (backoff) over falling back; NEVER silently remain degraded indefinitely. Round-1 refinement: 'slow down' is for DEFERRABLE/background work — a synchronous GATE the agent is awaiting must stay responsive (swap fast / fail closed), never add backoff stall to it."
+  - "FOUNDATION AUDIT (the #2 lesson) — round-1 verified every §2 prior-art claim against code (NO wrong claims). This EXTENDS the existing IntelligenceRouter / CircuitBreaker / LlmQueue / DegradationReporter; it does NOT rebuild. Rung (b) account-swap is CUT from v1 because it is net-new mechanism (internal calls use a process-wide credential; per-call account-swap does not exist) — account-swap already exists at the SESSION level (SubscriptionPool auto/proactive swap)."
+  - "The 2026-06-21 DegradationReporter event-loop wedge ([[incident_eventloop_wedge_degradationreporter_reentrancy]]) — §4 extends THE EXACT subsystem that wedged. It MUST: be bounded (reuse MAX_EVENTS-class cap), be reentrancy-safe (preserve `_gatingHealthAlert`; the open-tracking sweep NEVER calls report()), use O(1) per-component mutation (no O(N) full-map serialize), and be liveness-gated (a run-once/idle component must auto-close, not escalate a false alarm)."
+  - "No Silent Degradation to Brittle Fallback (parent): herd-aware, observable, MUST recover. LLM-Supervised Execution + Observable Intelligence + Signal-vs-Authority engaged."
 ---
 
 # Resilient Degradation Ladder
 
 ## 1. Problem (operator principle + the current gaps)
 
-Operator directive (2026-06-21): the system must "robustly handle rate-limits / outages NO MATTER
-WHAT" without becoming brittle — and WITHOUT silently abandoning the LLM-supervised-execution
-standard the moment a provider throttles. The binding rule:
+Operator directive (2026-06-21): handle rate-limits/outages robustly "NO MATTER WHAT" without
+becoming brittle, and WITHOUT silently abandoning LLM-supervised execution when a provider
+throttles. The rule: heuristic is a LAST RESORT (low-risk only); PREFER slowing down (backoff) over
+falling back; NEVER silently remain degraded indefinitely (loud, bounded, auto-healing). Order:
+backoff → account-swap → framework-swap → queue → heuristic.
 
-> Heuristic fallback is a LAST RESORT, low-risk only. PREFER slowing down (exponential backoff)
-> over falling back. NEVER silently remain degraded indefinitely (loud, bounded, auto-healing).
-> Order: **backoff → account-swap → framework-swap → queue → heuristic.**
+**Round-1 refinement (load-bearing):** "prefer slowing down" applies to **deferrable/background**
+work. A **gating** call is one the agent/user is *synchronously awaiting* — adding backoff there
+ADDS a multi-second stall to the exact path the existing router's 5s swap-cap exists to keep
+responsive. So the ladder is path-dependent: **deferrable work gets the full gentle ladder; a
+gating call swaps fast and fails closed (never a heuristic), and BOTH paths get never-silent
+tracking.**
 
-## 2. Foundation audit (what EXISTS — extend, do not rebuild)
+## 2. Foundation audit (what EXISTS — extend, do not rebuild; round-1 verified)
 
-Grounded against the code (2026-06-21):
+- **`src/core/IntelligenceRouter.ts:200-269`** — gating-call failure path: swap down the framework
+  chain (`codex→pi→gemini→claude`), each circuit-checked, each bounded by `swapAttemptTimeoutMs`
+  (default 5000, `server.ts:4999`), `onDegrade` per swap, then `throw` (fail closed). Non-gating →
+  `throw err` → caller's heuristic (no herd). The `catch` after `primary.evaluate()` (L203-205) is
+  the ladder seam.
+- **`src/core/CircuitBreakingIntelligenceProvider.ts` + `LlmCircuitBreaker.ts`** — `onRateLimited`
+  OPENS the per-framework breaker (no same-provider retry); a subsequent `evaluate()` is SHED via
+  `breaker.acquire()`→`allow:false`→`LlmCircuitOpenError` until the open window elapses. The breaker
+  ALREADY has a bounded wait-and-retry primitive: `acquireOrWait(rateLimitWaitMs)`.
+- **`src/monitoring/LlmQueue.ts:82`** — `enqueue(lane, fn: (signal: AbortSignal) => Promise<string>,
+  costCents=0)`; priority-laned; enforces a DAILY-CENTS cap (throws `'LLM daily spend cap exceeded'`)
+  and an interactive-reserve guard — an enqueue can be REJECTED. Used by callers, not the router.
+- **`src/monitoring/DegradationReporter.ts`** — report + Telegram-alert + persist; `registerHealer`
+  is a ONE-SHOT heal at report time; NO resolve/recover/duration lifecycle. Carries the
+  `_gatingHealthAlert` reentrancy guard + `MAX_EVENTS` cap from the 2026-06-21 wedge.
+- **Account-swap exists only at SESSION level:** `QuotaAwareScheduler.selectAccount` (a pure fn) +
+  `ProactiveSwapMonitor` move a tmux SESSION to a different `configHome` (respawn, `--resume`).
+  There is NO per-internal-call account selector; `ClaudeCliIntelligenceProvider.evaluate()` uses a
+  process-wide credential fixed at boot.
 
-- **`src/core/IntelligenceRouter.ts`** — the internal-call router. On a GATING call failure
-  (rate-limit / circuit-open / error) it swaps DOWN the framework chain
-  (`codex-cli → pi-cli → gemini-cli → claude-code`), each circuit-checked, each bounded by
-  `intelligence.swapAttemptTimeoutMs` (5s), reports each swap via `onDegrade`, then fails closed
-  (gating) — the non-gating caller swallows into its heuristic (no herd). Heuristic is ALREADY the
-  de-prioritized last resort (Provider-Fallback Default Policy SUPERSEDED "rate-limited → heuristic").
-- **`src/core/CircuitBreakingIntelligenceProvider.ts`** — per-framework breaker;
-  `onRateLimited(msg, retryAfterMs)` + `LlmCircuitOpenError(retryAfterMs)`. Opens-then-swaps; does
-  NOT backoff-retry the same provider.
-- **`src/core/SubscriptionPool.ts`** — multi-Claude-account ACCOUNT-swap ("select an account = the
-  swap mechanism"). Reactive auto-swap on `rate-limit:escalated` for SESSIONS; NOT wired into the
-  internal-call router path.
-- **`src/monitoring/LlmQueue.ts`** — priority-laned, rate-limited queue
-  (`enqueue('interactive'|'background', fn)`); used by individual callers (openConversationBrief,
-  A2ACheckInProxy, CartographerSweepEngine), NOT by the router's fallback path.
-- **`src/monitoring/DegradationReporter.ts`** — reports a degradation (feature/fallback/impact),
-  Telegram-alerts, persists; `registerHealer(feature, healer)` = a ONE-SHOT self-heal at report
-  time. NO continuous "still degraded? escalate / auto-heal-confirmed?" tracking (verified: no
-  resolve/recover/ongoing surface).
+### The gaps this spec closes (and the one it defers)
 
-### The four real GAPS vs the ladder
+1. **No backoff-before-swap for DEFERRABLE work** — drive the breaker's `acquireOrWait` (NOT a
+   parallel sleep that races the open window) for deferrable calls.
+2. **No queue/defer rung** — wire `LlmQueue` for deferrable calls (handling enqueue-rejection).
+3. **Never-silent not guaranteed** — DegradationReporter has no recover/escalate lifecycle.
+4. **DEFERRED to a tracked follow-up (not v1):** account-swap for an internal call (rung b). It is
+   net-new mechanism (per-call credential re-point), already covered at session level, and dissolves
+   the herd + cross-machine + auto-swap-conflict concerns by being out of v1.
 
-1. **No backoff-first.** The router swaps frameworks immediately on failure; there is no
-   exponential-backoff + retry of the SAME provider/account (respecting `retryAfterMs`) before
-   switching. ("Prefer slowing down over falling back.")
-2. **No account-swap in the router path.** The router swaps FRAMEWORKS (claude→codex); the operator
-   order is ACCOUNT-swap FIRST (claude-acct-1 → claude-acct-2, stay on the provider). The
-   SubscriptionPool can swap accounts but is not consulted in the internal-call fallback.
-3. **No queue/defer rung.** The router swaps-or-fails; there is no "queue the work, retry shortly"
-   step before the last-resort heuristic.
-4. **Never-silent not guaranteed.** Degradations are reported with a one-shot healer, but a
-   SUSTAINED heuristic-fallback is not tracked as a BOUNDED, AUTO-HEALING degradation that escalates
-   if it persists. (The exact thing the operator named: "prevent fallback from silently remaining
-   degraded indefinitely.")
+## 3. Design — path-dependent ladder
 
-## 3. Design — one ordered ladder in the gating-failure path
+Extend the `IntelligenceRouter` gating-failure `catch`. The path is chosen by two caller flags on
+`attribution`: `gating` (existing) and `deferrable` (NEW). **Structural invariant: `gating:true`
+ALWAYS skips the queue rung (a gate is awaited; it can never be deferred) — code-enforced, not a
+convention.** A gating-AND-deferrable call is treated as gating (fail-fast dominates).
 
-Extend `IntelligenceRouter`'s gating-call failure handling (the `catch` after
-`primary.evaluate()`) into the full ordered ladder. Each rung is config-gated, observable
-(`onDegrade` → DegradationReporter → /metrics/features), and bounded. The non-gating path is
-UNCHANGED (it still propagates to the caller's heuristic — no herd).
+### 3a. GATING call (synchronous, awaited) — stay responsive
+`primary.evaluate()` → on failure, the EXISTING fast framework-swap tail (5s/attempt cap) → fail
+closed (`throw`). **No backoff rung** (it would stall the awaited path). A single **ladder-total
+wall-clock budget** (`gatingLadderBudgetMs`, default 6000) caps the entire gating failure handling;
+when consumed, jump straight to fail-closed. If the fail-closed propagates to a caller heuristic
+(only a NON-gating caller does that — a gating call throws), §4 tracking opens. Net change for
+gating: the total budget + never-silent tracking; the fast-swap behavior is UNCHANGED.
 
-**Rung (a) — backoff + retry the SAME provider (NEW).** On a rate-limit with a `retryAfterMs`
-hint (or a bounded exponential backoff when absent: `base·2^attempt`, capped, jittered, ≤ N
-attempts), wait and retry the primary before swapping. "Slow but correct" beats "fast but
-switched." Bounded by a total-backoff ceiling so it never stalls a gating path indefinitely;
-above the ceiling, fall through to (b). A non-rate-limit error skips (a) (no point slowing down a
-hard error) and goes straight to (b)/(c).
+### 3b. DEFERRABLE call (background, not awaited) — the full gentle ladder
+1. **Backoff (NEW):** on a rate-limit, drive the breaker's `acquireOrWait(min(retryAfterMs,
+   deferrableBackoffCeilingMs))` — slow down and retry the SAME provider, honoring the server's
+   `retryAfterMs` (clamped to the ceiling; an over-ceiling retry-after for a deferrable call MAY
+   wait the full hint up to a hard `deferrableMaxWaitMs`). This reuses the breaker's open-window
+   timing rather than racing it.
+2. **Framework-swap (EXISTING):** the failureSwap tail.
+3. **Queue (NEW):** if still failing, `LlmQueue.enqueue(lane, signal => provider.evaluate(prompt,
+   {...,signal}))` for a bounded retry window with **rate-aware, jittered drain pacing** (honor the
+   recovered account's `retryAfterMs`; the queue must not thundering-herd on recovery). If the
+   enqueue is REJECTED (daily-cap / reserve), fall through to (4) — never silently drop.
+4. **Heuristic (EXISTING, last resort):** the caller's heuristic, tracked by §4.
 
-**Rung (b) — account-swap, SAME provider (NEW wiring).** Before changing frameworks, if the
-rate-limited framework is Claude and the SubscriptionPool has another eligible (non-throttled)
-account, retry the SAME provider on that account (the pool's existing account-selection). Keeps the
-call on the highest-quality provider. Bounded to the eligible-account set; exhausted → (c).
+### 3c. Herd-awareness (preserved)
+The non-gating no-herd property is unchanged. The queue drain (3b.3) is rate-aware so a recovered
+provider isn't re-tripped by a burst of deferred calls (a NEW herd guard the queue lacks today).
 
-**Rung (c) — framework-swap (EXISTING).** The current `failureSwap` tail down the active chain,
-each circuit-checked + `swapAttemptTimeoutMs`-bounded. Unchanged.
+## 4. Never-silent: bounded, reentrancy-safe, liveness-gated tracking (NEW)
 
-**Rung (d) — queue/defer (NEW wiring).** If (a)-(c) all fail and the call is deferrable (the
-caller marks `deferrable: true` — e.g. a background sentinel, NOT a synchronous gate the user is
-waiting on), enqueue via `LlmQueue` for a bounded retry window instead of degrading. A
-non-deferrable gating call skips (d).
-
-**Rung (e) — heuristic, LAST RESORT (EXISTING, hardened).** Only when (a)-(d) are exhausted (or
-not applicable) does the caller's heuristic run — AND only when the operation is low-risk (a
-consequential/irreversible decision queues or fails closed rather than guessing). Every heuristic
-fallthrough opens a tracked degradation (§4).
-
-## 4. Never-silent: bounded, auto-healing degradation tracking (NEW)
-
-Extend `DegradationReporter` from one-shot report to a tracked lifecycle:
-- **Open** a degradation when rung (e) (heuristic) fires for a component, keyed on the component.
-- **Auto-heal confirm:** on the next SUCCESSFUL real-LLM call for that component, mark it RESOLVED
-  (record the degraded duration). The existing one-shot healer remains; this adds the
-  success-observed auto-resolve.
-- **Persistence escalation:** a degradation OPEN longer than `degradationEscalateMs` raises a
-  LOUD, deduped attention item ("component X has been on its heuristic fallback for N minutes —
-  the LLM path hasn't recovered"). It can never persist silently: bounded by escalation, resolved
-  by a real success, deduped so it's not a flood.
-- Observable: open/resolved/escalated transitions feed /metrics/features + the audit file.
+Extend `DegradationReporter` with an open-degradation lifecycle — designed to NOT repeat the
+2026-06-21 wedge:
+- **Open** a degradation when a heuristic fallthrough (3a fail-closed-to-caller-heuristic, or
+  3b.4) fires, keyed on `(component, framework)` (NOT bare component — round-1 collision finding;
+  two callsites sharing a component string must not cross-resolve). Bounded by a `MAX_OPEN`
+  cap (same class as `MAX_EVENTS`); over the cap → oldest evicted with a one-line log (never
+  unbounded growth).
+- **Auto-resolve** on the next SUCCESSFUL real-LLM call for that `(component, framework)` — record
+  the degraded duration. O(1) map mutation; NO full-map serialize per open/resolve.
+- **Liveness-gated escalation:** a degradation OPEN longer than `degradationEscalateMs` (default
+  15m) AND with ≥1 real retry attempt since open raises ONE deduped, age-escalating attention item.
+  A degradation with ZERO retry attempts since open (a run-once / idle component that is simply
+  done, not stuck) AUTO-CLOSES at a TTL instead of escalating — closing the round-1 false-alarm
+  class.
+- **Reentrancy-safe:** the open-tracking sweep NEVER calls `report()`/`reportEvent()`; it raises the
+  attention item through the existing attention surface directly, preserving `_gatingHealthAlert`.
+  The sweep is a level-triggered check, not an event emitter.
+- **Inert when off:** when `neverSilent` is disabled the new lifecycle code path is NOT ENTERED (no
+  map maintained, no sweep) — "dark" means bypassed, not "flag false but still accumulating"
+  (round-1; given the wedge, this is mandatory).
 
 ## 5. Decisions frontloaded (single-run completable)
 
-- **D1 Ladder is opt-in per rung, config-gated, ships dark/dev-gated first** (`intelligence.degradationLadder`:
-  `{ backoff?, accountSwap?, queue?, neverSilent? }` each `{enabled, …bounds}`). Default behavior
-  with the ladder off = today's behavior (framework-swap only). Dev-agent gate → live-on-dev,
-  dark-on-fleet.
-- **D2 Backoff bounds:** base 500ms, factor 2, max 3 attempts, total ceiling 8s, full jitter;
-  honor a server `retryAfterMs` over the computed delay. (Gating calls can't stall — the ceiling
-  is hard.)
-- **D3 Deferrability is caller-declared** (`attribution.deferrable`), NOT inferred. A synchronous
-  gate is never queued. Background sentinels/reflectors opt in.
-- **D4 Risk gate on (e):** a heuristic only runs for a low-risk operation; the caller already owns
-  the heuristic, so this rung adds the tracking, not the risk judgment (the caller's existing
-  gating/non-gating split is the risk boundary — a gating call fails closed, never heuristic).
-- **D5 Account-swap reuses the SubscriptionPool's existing eligible-account selection** — no new
-  account logic; the router consults the pool, the pool decides. Single-account agents = no-op.
-- **D6 neverSilent escalation:** `degradationEscalateMs` default 15m; deduped per component; one
-  attention item per episode, age-escalating, auto-resolved on real success.
-- **D7 Observability:** every rung firing already flows through `onDegrade`; extend the reason
-  taxonomy (backoff-retry / account-swap / queued / heuristic-open / heuristic-resolved) so
-  /metrics/features shows WHERE in the ladder calls land.
+- **D1 Config + dark rollout.** `intelligence.degradationLadder`: `{ backoff?, queue?, neverSilent? }`
+  (NO accountSwap in v1), each `{enabled, …bounds}`. Registered in `DEV_GATED_FEATURES`
+  (`src/core/devGatedFeatures.ts`) with `enabled` OMITTED so `resolveDevAgentGate` resolves it
+  live-on-dev / dark-on-fleet (the known instar-dev pattern — round-1). Ladder fully off =
+  EXACTLY today's framework-swap-only behavior.
+- **D2 Backoff bounds (DEFERRABLE only).** base 500ms, factor 2, max 3 attempts,
+  `deferrableBackoffCeilingMs` 8000, `deferrableMaxWaitMs` 60000, full jitter; drive
+  `breaker.acquireOrWait`, do NOT sleep-race the breaker. Gating calls have NO backoff.
+- **D3 `gatingLadderBudgetMs` = 6000** — a single hard wall-clock budget for the whole gating
+  failure path; consumed → fail closed. **D3 is a LOAD-BEARING correctness decision (responsiveness
+  of awaited gates), NOT a dark-flag-tunable cheap tag** (round-1 contest).
+- **D4 Risk boundary — honestly scoped.** v1's invariant: a **gating** call NEVER reaches a
+  heuristic — it fails closed (UNCHANGED existing behavior). A **non-gating** call keeps today's
+  behavior (heuristic on exhaustion) BUT is now TRACKED (§4). The stronger "a CONSEQUENTIAL
+  non-gating call must also fail closed" requires a NEW `attribution.consequential` flag + a callsite
+  migration — **explicitly a tracked follow-up, NOT v1** (round-1: `gating` does not carry
+  consequence; claiming otherwise would be a strawman safety test). v1 does NOT add risk-based
+  protection beyond the existing gating boundary; it adds the gentler ORDER (deferrable) + the
+  never-silent TRACKING (both paths). This is a load-bearing scoping decision, frozen at approval.
+- **D5 `deferrable` is caller-declared; `gating:true` ⇒ queue-skipped, code-enforced** (a structural
+  precondition + a unit test `gating&&deferrable ⇒ not queued`), NOT a caller convention (round-1).
+- **D6 Never-silent bounds:** `degradationEscalateMs` 15m; `MAX_OPEN` cap; key `(component,
+  framework)`; liveness-gated (≥1 retry to escalate; TTL auto-close otherwise); deduped per episode;
+  reentrancy-safe.
+- **D7 Observability:** extend the `onDegrade` reason taxonomy (backoff-retry / framework-swap /
+  queued / queue-rejected / heuristic-open / heuristic-resolved / escalated) so /metrics/features
+  shows WHERE in the ladder calls land. Account-swap reason reserved for the deferred rung (b).
+- **D8 Migration Parity:** NO `migrateConfig` entry needed — the ladder is opt-in + off-by-default,
+  so deployed agents are unaffected until opt-in; the only install-path touch is the
+  `DEV_GATED_FEATURES` registration. The new `attribution.deferrable` defaults false (safe) at every
+  unmodified callsite.
 
 ## 6. Multi-machine posture (Cross-Machine Coherence)
-
-The ladder is per-process (each machine's router handles its own internal calls); no replicated
-state. The SubscriptionPool account-swap is already multi-machine-aware (account quota replicates
-via the existing pool-scope reads). DegradationReporter state is machine-local (each machine
-reports its own degradations). No cross-machine contract is introduced.
+Per-process / machine-local: each machine's router handles its own internal calls; DegradationReporter
+state is machine-local. No replicated state, no cross-machine contract. (Cutting rung (b) removes the
+only cross-machine concern round-1 raised — concurrent same-account selection.) A sustained
+per-machine degradation could double-alert on a 2-machine setup for one provider outage; accepted as
+a minor local-dedup limitation (noted, not coalesced in v1).
 
 ## 7. Testing (three tiers, NON-NEGOTIABLE)
-
-- **Unit:** each rung in isolation against a fake provider — backoff retries then succeeds /
-  exhausts to (b); account-swap consulted before framework-swap; queue used only when deferrable;
-  heuristic only after exhaustion; DegradationReporter opens→auto-resolves on next success and
-  escalates after the window. A NAMED safety-invariant test: a CONSEQUENTIAL/non-deferrable gating
-  call NEVER reaches the heuristic (fails closed instead) — the operator's load-bearing rule.
-- **Integration:** the full ladder through the real IntelligenceRouter + a stub SubscriptionPool +
-  a stub LlmQueue, asserting the ORDER (backoff → account → framework → queue → heuristic) and that
-  each transition is recorded.
-- **E2E:** the ladder config is alive in the server-boot path (the router is constructed with the
-  ladder when enabled; /metrics/features reflects a forced degradation) — the "feature is alive"
-  tier.
+- **Unit:** rung (a) drives `acquireOrWait` (no sleep-race) and only on deferrable; the gating path
+  has NO backoff and obeys `gatingLadderBudgetMs`; queue used only when deferrable and `gating&&
+  deferrable ⇒ NOT queued`; an enqueue REJECTION falls through to heuristic (never dropped); §4
+  opens→auto-resolves on next success, escalates only with ≥1 retry, TTL-auto-closes a run-once
+  component (no false alarm), keys on (component,framework) with NO cross-resolution, and the sweep
+  never re-enters report() (reentrancy test) + bounded growth under a burst (the 2026-06-21
+  invariant).
+- **Integration:** the full deferrable ladder through the real IntelligenceRouter + stub breaker +
+  stub LlmQueue asserts the ORDER (backoff → framework-swap → queue → heuristic) and the gating path
+  asserts fast-swap-then-fail-closed within budget; each transition recorded in /metrics/features.
+- **E2E:** the ladder config is alive in the server-boot path and FULLY INERT when off (the
+  feature-alive + inert-when-dark test — mandatory given the wedge).
 
 ## 8. Open questions
-*(none — D1–D7 frontload the decisions with safe dark-first defaults; bounds are operator-tunable
-at the approval checkpoint.)*
+*(none — round-1's three blocking items are resolved in-spec: rung (b) account-swap is CUT to a
+tracked follow-up (§2.4/D7); the gating stall is closed by the path-split + `gatingLadderBudgetMs`
+(§3a/D3); the safety boundary is honestly scoped to the existing gating fail-closed with the
+`consequential` flag deferred (D4). The `retryAfterMs`>ceiling case is decided in D2 (clamp for
+gating-N/A; deferrable may wait to `deferrableMaxWaitMs`).)*
