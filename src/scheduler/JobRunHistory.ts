@@ -130,6 +130,30 @@ export class JobRunHistory {
   private file: string;
   private machineId: string | null = null;
 
+  // ── Event-loop-freeze fix: incremental in-memory cache of parsed runs ──
+  //
+  // job-runs.jsonl is an append-only ledger that grows to tens of MB. Every
+  // read operation (findRun, recordCompletion, recordReflection, recordHandoff,
+  // query, stats, allStats, getLastHandoff) used to call readLines(), which did
+  // a SYNCHRONOUS full-file readFileSync + per-line JSON.parse on every call.
+  // The scheduler calls these on every job completion, on the wake-reaper tick,
+  // and on every job spawn — and the dashboard polls history routes — so a
+  // 13MB ledger blocked the event loop for 13-16s, repeatedly. A live
+  // /usr/bin/sample caught ~39% of main-thread time in JsonParser.
+  //
+  // The ledger is single-writer-per-process for JobRun rows (this instance),
+  // but a SECOND writer exists in-process — MigrationLedger.appendMigrationEvent
+  // appends `migration.*` rows to the SAME file. So the cache is validated
+  // against the file's (size, mtimeMs) and, when the file only GREW with an
+  // intact prefix, only the appended TAIL is read+parsed (O(delta), not O(13MB)).
+  // A shrink/truncation (compaction by another path, or external rewrite) falls
+  // back to a full re-read. This preserves the existing "JSONL append-only,
+  // dedup last-entry-per-runId, skip torn lines" semantics exactly — it only
+  // removes the per-call full parse.
+  private cachedRuns: JobRun[] | null = null;
+  private cachedSize = 0;
+  private cachedMtimeMs = 0;
+
   constructor(stateDir: string) {
     this.ledgerDir = path.join(stateDir, 'ledger');
     this.file = path.join(this.ledgerDir, 'job-runs.jsonl');
@@ -495,6 +519,23 @@ export class JobRunHistory {
       deduped.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
       const content = deduped.map(l => JSON.stringify(l)).join('\n') + '\n';
       fs.writeFileSync(this.file, content);
+      // The rewrite invalidates the (size, mtime) readLines() just cached.
+      // Seed the cache with the deduped set and the post-rewrite stat so the
+      // first read after boot is a no-IO cache hit, not a full 13MB re-parse.
+      try {
+        const stat = fs.statSync(this.file);
+        this.cachedRuns = deduped;
+        this.cachedSize = stat.size;
+        this.cachedMtimeMs = stat.mtimeMs;
+      } catch {
+        // @silent-fallback-ok — if the post-compaction stat fails, drop the cache
+        // so the next read re-reads the freshly-written file from disk. The
+        // compaction itself already succeeded (writeFileSync above); this only
+        // governs whether we seed the in-memory cache or rebuild it lazily.
+        this.cachedRuns = null;
+        this.cachedSize = 0;
+        this.cachedMtimeMs = 0;
+      }
       console.log(`[JobRunHistory] Compacted ${removed} duplicate entries (${deduped.length} unique runs preserved)`);
     }
   }
@@ -502,7 +543,27 @@ export class JobRunHistory {
   private appendLine(data: JobRun): void {
     try {
       const capped = this.applyRowSizeCap(data);
-      fs.appendFileSync(this.file, JSON.stringify(capped) + '\n');
+      const serialized = JSON.stringify(capped) + '\n';
+      fs.appendFileSync(this.file, serialized);
+      // Keep the in-memory cache coherent with our own append so the read that
+      // typically follows a completion does NOT have to re-stat+tail-read. If
+      // the cache isn't populated yet, leave it null — the next read builds it.
+      if (this.cachedRuns !== null) {
+        this.cachedRuns.push(capped);
+        try {
+          const stat = fs.statSync(this.file);
+          this.cachedSize = stat.size;
+          this.cachedMtimeMs = stat.mtimeMs;
+        } catch {
+          // @silent-fallback-ok — if we can't stat after writing, drop the cache
+          // so the NEXT read does a fresh full re-read rather than trusting a
+          // stale (size,mtime). This is a self-correcting fail-safe (the data is
+          // already durably on disk via appendFileSync), not a lost write.
+          this.cachedRuns = null;
+          this.cachedSize = 0;
+          this.cachedMtimeMs = 0;
+        }
+      }
     } catch (error) {
       console.error(`[JobRunHistory] Failed to write:`, error);
     }
@@ -545,20 +606,87 @@ export class JobRunHistory {
     return truncated;
   }
 
+  /**
+   * Parse a JSONL string into JobRun rows, skipping torn/corrupt lines
+   * (matches the long-standing readLines convention — a corrupt line reads as
+   * absent and is repaired on the next compaction/append).
+   */
+  private parseJsonl(content: string): JobRun[] {
+    const trimmed = content.trim();
+    if (!trimmed) return [];
+    return trimmed.split('\n').map(line => {
+      try {
+        return JSON.parse(line) as JobRun;
+      } catch {
+        // @silent-fallback-ok — a torn/corrupt JSONL line reads as absent; the
+        // next compaction/append repairs it. This is the long-standing readLines
+        // convention (moved here unchanged), not a new degradation.
+        return null;
+      }
+    }).filter(Boolean) as JobRun[];
+  }
+
+  /**
+   * Read all entries — cache-aware. Returns the parsed rows in file (append)
+   * order. The result is the SAME as a full readFileSync+parse, but the
+   * per-call cost is O(bytes-appended-since-last-read), not O(file-size):
+   *
+   *   - file unchanged (size + mtime match the cache) → return the cache, no IO.
+   *   - file grew with an intact prefix → read ONLY the appended tail and merge.
+   *   - file shrank / was rewritten (compaction, external truncation) → one
+   *     full re-read (rare).
+   *
+   * On any read error the cache is cleared and an empty list is returned (the
+   * historical fail-safe).
+   */
   private readLines(): JobRun[] {
-    if (!fs.existsSync(this.file)) return [];
+    if (!fs.existsSync(this.file)) {
+      this.cachedRuns = [];
+      this.cachedSize = 0;
+      this.cachedMtimeMs = 0;
+      return [];
+    }
 
     try {
-      const content = fs.readFileSync(this.file, 'utf-8').trim();
-      if (!content) return [];
+      const stat = fs.statSync(this.file);
+      const size = stat.size;
+      const mtimeMs = stat.mtimeMs;
 
-      return content.split('\n').map(line => {
+      // Fast path: nothing changed on disk since the last read.
+      if (this.cachedRuns !== null && size === this.cachedSize && mtimeMs === this.cachedMtimeMs) {
+        return this.cachedRuns;
+      }
+
+      // Incremental tail-read: the file only grew and our cached prefix is
+      // still valid (no truncation/rewrite). Read just the new bytes.
+      if (this.cachedRuns !== null && size > this.cachedSize && this.cachedSize > 0) {
+        const fd = fs.openSync(this.file, 'r');
         try {
-          return JSON.parse(line) as JobRun;
-        } catch {
-          return null;
+          const tailLen = size - this.cachedSize;
+          const buf = Buffer.allocUnsafe(tailLen);
+          fs.readSync(fd, buf, 0, tailLen, this.cachedSize);
+          const tail = buf.toString('utf-8');
+          // The cached prefix ended on a newline boundary IFF the byte at
+          // cachedSize-1 was '\n'. appendLine always writes a trailing '\n',
+          // so a grow that begins mid-line means the previous write was torn;
+          // parseJsonl drops that torn fragment safely. Merge the new rows.
+          const newRuns = this.parseJsonl(tail);
+          if (newRuns.length > 0) this.cachedRuns = this.cachedRuns.concat(newRuns);
+          this.cachedSize = size;
+          this.cachedMtimeMs = mtimeMs;
+          return this.cachedRuns;
+        } finally {
+          fs.closeSync(fd);
         }
-      }).filter(Boolean) as JobRun[];
+      }
+
+      // Full re-read: first read, or the file shrank / was rewritten.
+      const content = fs.readFileSync(this.file, 'utf-8');
+      const runs = this.parseJsonl(content);
+      this.cachedRuns = runs;
+      this.cachedSize = size;
+      this.cachedMtimeMs = mtimeMs;
+      return runs;
     } catch (error) {
       console.error(`[JobRunHistory] Failed to read:`, error);
       DegradationReporter.getInstance().report({
@@ -568,6 +696,10 @@ export class JobRunHistory {
         reason: `Failed to read ledger: ${error instanceof Error ? error.message : String(error)}`,
         impact: 'Job history queries return empty results',
       });
+      // Clear the cache so a transient error doesn't pin a stale view.
+      this.cachedRuns = null;
+      this.cachedSize = 0;
+      this.cachedMtimeMs = 0;
       return [];
     }
   }

@@ -8,7 +8,7 @@
  * History is memory. Memory should never be lost.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -678,6 +678,114 @@ describe('JobRunHistory unit tests', () => {
 
       const { total } = history.query();
       expect(total).toBe(0);
+    });
+  });
+
+  // ── Scenario 11: Event-loop-freeze fix — incremental read cache ───────
+  //
+  // Regression guard for the 13-16s event-loop freeze: readLines() must NOT
+  // re-parse the entire ledger on every call. The ledger is read on every job
+  // completion, on the wake-reaper tick, and on every spawn — a full
+  // readFileSync+JSON.parse of a 13MB file blocked the event loop repeatedly.
+  // These tests assert the hot path no longer does a full-file read+parse, while
+  // preserving every existing semantic (external appends visible, torn-line
+  // skip, dedup-last-wins, compaction).
+  describe('incremental read cache (event-loop-freeze fix)', () => {
+    const ledgerFile = (dir: string) => path.join(dir, 'ledger', 'job-runs.jsonl');
+
+    it('does NOT re-read the whole file on a read when nothing changed on disk', () => {
+      const history = new JobRunHistory(stateDir);
+      const r = history.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId: r, result: 'success' });
+
+      // Prime the cache with a read.
+      expect(history.query().total).toBe(1);
+
+      // Spy on readFileSync: a subsequent read of the unchanged file must NOT
+      // call readFileSync at all (pure cache hit). statSync is cheap and allowed.
+      const spy = vi.spyOn(fs, 'readFileSync');
+      try {
+        for (let i = 0; i < 25; i++) {
+          history.query();
+          history.findRun(r);
+          history.stats('job-a');
+        }
+        // No full-file read happened across 75 read operations.
+        const ledgerReads = spy.mock.calls.filter(c => String(c[0]).endsWith('job-runs.jsonl'));
+        expect(ledgerReads.length).toBe(0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('picks up an EXTERNAL append (e.g. MigrationLedger / another process) via a tail-read, without a full re-parse', () => {
+      const history = new JobRunHistory(stateDir);
+      const r1 = history.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId: r1, result: 'success' });
+      expect(history.query().total).toBe(1); // prime cache
+
+      // Simulate a SEPARATE writer appending a brand-new run directly to the file
+      // (this is exactly what MigrationLedger.appendMigrationEvent / a second
+      // process does — appendFileSync to the same path).
+      const externalRun: JobRun = {
+        runId: 'external-1',
+        slug: 'job-ext',
+        sessionId: 's-ext',
+        trigger: 'scheduled',
+        startedAt: new Date().toISOString(),
+        result: 'success',
+        completedAt: new Date().toISOString(),
+        durationSeconds: 5,
+      };
+      // mtime resolution can be coarse; ensure the stat differs by writing real bytes.
+      fs.appendFileSync(ledgerFile(stateDir), JSON.stringify(externalRun) + '\n');
+
+      // The external row must be visible — proving the tail-read merged it.
+      const after = history.query();
+      expect(after.total).toBe(2);
+      expect(history.findRun('external-1')).not.toBeNull();
+      expect(history.findRun('external-1')!.slug).toBe('job-ext');
+    });
+
+    it('a torn trailing line written externally is skipped, then completed on the next append', () => {
+      const history = new JobRunHistory(stateDir);
+      const r1 = history.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId: r1, result: 'success' });
+      expect(history.query().total).toBe(1); // prime cache
+
+      // Append a torn (no trailing newline, invalid JSON) fragment.
+      fs.appendFileSync(ledgerFile(stateDir), '{"runId":"torn-1","slug":"job-x"'); // no newline, invalid
+      // The torn fragment must be skipped (still only 1 valid run).
+      expect(history.query().total).toBe(1);
+
+      // Now a real append completes a new valid line AFTER the torn fragment.
+      fs.appendFileSync(stateDir + '/ledger/job-runs.jsonl',
+        '\n' + JSON.stringify({
+          runId: 'good-2', slug: 'job-y', sessionId: 's2', trigger: 'manual',
+          startedAt: new Date().toISOString(), result: 'success',
+        }) + '\n');
+      const after = history.query();
+      // The good row is visible; the torn fragment never becomes a phantom run.
+      expect(after.runs.some(r => r.runId === 'good-2')).toBe(true);
+      expect(after.runs.some(r => r.runId === 'torn-1')).toBe(false);
+    });
+
+    it('falls back to a full re-read when the file is rewritten smaller (compaction by another instance)', () => {
+      const h1 = new JobRunHistory(stateDir);
+      const r1 = h1.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      h1.recordCompletion({ runId: r1, result: 'success' });
+      const r2 = h1.recordStart({ slug: 'job-b', sessionId: 's2', trigger: 'scheduled' });
+      h1.recordCompletion({ runId: r2, result: 'success' });
+      expect(h1.query().total).toBe(2); // prime cache (4 raw lines → 2 runs)
+
+      // Another instance compacts the file on its own construction (shrinks it).
+      new JobRunHistory(stateDir);
+
+      // h1's cached (size,mtime) no longer matches → it must full-re-read and
+      // still see both runs (compaction never loses data).
+      const after = h1.query();
+      expect(after.total).toBe(2);
+      expect(after.runs.map(r => r.slug).sort()).toEqual(['job-a', 'job-b']);
     });
   });
 });
