@@ -4997,6 +4997,26 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §4.5: per-attempt swap timeout, inline-defaulted to 5s (no ConfigDefaults
           // entry — codexExecJson precedent; absent ⇒ 5s, present ⇒ operator's value).
           swapAttemptTimeoutMs: config.intelligence?.swapAttemptTimeoutMs ?? 5000,
+          // Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md), v1.
+          // Dev-gated: the backoff rung's `enabled` is OMITTED in config so resolveDevAgentGate
+          // resolves it (live-on-dev / dark-on-fleet); the gating budget rides the ladder's
+          // activation. Absent (fleet, unconfigured) ⇒ undefined ⇒ EXACTLY today's behavior.
+          ladder: (() => {
+            const dl = config.intelligence?.degradationLadder;
+            const backoffEnabled = resolveDevAgentGate(dl?.backoff?.enabled, config);
+            if (!backoffEnabled) return undefined;
+            return {
+              gatingLadderBudgetMs: dl?.gatingLadderBudgetMs ?? 6000,
+              backoffEnabled,
+              backoff: {
+                baseMs: dl?.backoff?.baseMs ?? 500,
+                factor: dl?.backoff?.factor ?? 2,
+                maxAttempts: dl?.backoff?.maxAttempts ?? 3,
+                ceilingMs: dl?.backoff?.ceilingMs ?? 8000,
+                maxWaitMs: dl?.backoff?.maxWaitMs ?? 60000,
+              },
+            };
+          })(),
           // Each non-default framework gets its OWN breaker (built once, from the
           // shared probe-cache so the active-set probe doesn't double-build).
           buildProvider: (fw) => cachedBuild(fw),

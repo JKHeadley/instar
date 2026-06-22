@@ -894,6 +894,15 @@ export interface IntelligenceOptions {
      * behavior. See docs/specs/no-silent-degradation-to-brittle-fallback.md.
      */
     gating?: boolean;
+    /**
+     * DEFERRABLE marker (Resilient Degradation Ladder, docs/specs/resilient-degradation-ladder.md).
+     * When true, this is BACKGROUND work the caller is NOT synchronously awaiting (a sentinel /
+     * reflector / sweep), so the degradation ladder may slow it down (backoff) and queue it on a
+     * rate-limit rather than degrade. A `gating:true` call is ALWAYS treated as non-deferrable (an
+     * awaited gate can never be queued) — the router enforces this structurally. Omitted ⇒ false
+     * (today's behavior: no backoff/queue rung).
+     */
+    deferrable?: boolean;
   };
   /**
    * Optional token-usage callback (Iris-audit item 1, spec
@@ -3049,6 +3058,38 @@ export interface InstarConfig {
      * so absence is the default state, never a persisted block.
      */
     swapAttemptTimeoutMs?: number;
+    /**
+     * Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md). Ships DARK /
+     * dev-gated: each rung's `enabled` is OMITTED so `resolveDevAgentGate` resolves it
+     * (live-on-dev / dark-on-fleet); with all rungs off, behavior is EXACTLY today's
+     * framework-swap-only. The ladder is path-dependent — a GATING call stays fast (no backoff)
+     * under `gatingLadderBudgetMs`; only DEFERRABLE work gets backoff + queue.
+     */
+    degradationLadder?: {
+      /**
+       * Single HARD wall-clock budget (ms) for the WHOLE gating-call failure path; when consumed,
+       * jump straight to fail-closed. Keeps an awaited gate responsive. Default 6000. Load-bearing
+       * (D3) — a correctness bound, not a tunable nicety.
+       */
+      gatingLadderBudgetMs?: number;
+      /** Backoff rung for DEFERRABLE calls (sets options.rateLimitWaitMs so the provider waits). */
+      backoff?: {
+        enabled?: boolean;
+        baseMs?: number;       // default 500
+        factor?: number;       // default 2
+        maxAttempts?: number;  // default 3
+        ceilingMs?: number;    // default 8000 (clamp for a single wait)
+        maxWaitMs?: number;    // default 60000 (hard cap on honoring a long server retry-after)
+      };
+      /** Queue rung for DEFERRABLE calls (LlmQueue.enqueue; enqueue-rejection falls through). */
+      queue?: { enabled?: boolean };
+      /** Never-silent degradation tracking (DegradationReporter open/auto-resolve/escalate lifecycle). */
+      neverSilent?: {
+        enabled?: boolean;
+        escalateMs?: number;   // default 900000 (15m) before a persistent open degradation escalates
+        maxOpen?: number;      // default 500 (MAX_OPEN cap — bounded, anti-wedge)
+      };
+    };
     /**
      * Anthropic subscription-path routing for INTERNAL intelligence calls
      * (sentinels, gates, extractors) — the June-15 readiness lever

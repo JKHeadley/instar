@@ -375,6 +375,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'WS2.6 cross-machine topic-operator replication — the THIRD PII kind (multi-machine-replicated-store-foundation).',
     justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
   },
+  {
+    name: 'degradationLadderBackoff',
+    configPath: 'intelligence.degradationLadder.backoff.enabled',
+    description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',
+    justification: 'Internal-call routing only; behavior-preserving when off (absent ladder = EXACTLY today\'s framework-swap-only behavior). On a dev agent it runs live: backoff only adds bounded, jittered waits to DEFERRABLE (non-awaited, background) calls on a rate-limit, and the gating budget only caps the awaited-gate failure path at 6s — MORE responsive, never less safe (a gate still fails closed, never degrades to a heuristic). No spend increase (same call count or fewer), no destructive action, no egress. Queue + never-silent rungs land in later increments.',
+  },
 ];
 
 /**
