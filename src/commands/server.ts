@@ -4970,6 +4970,27 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         const computedDefault = resolveInternalFrameworkDefault(activeFrameworkSet);
 
+        // Resilient Degradation Ladder rung gates, resolved ONCE here (dev-gated: `enabled` OMITTED in
+        // config ⇒ resolveDevAgentGate ⇒ live-on-dev / dark-on-fleet). The ladder object is present
+        // when ANY rung is active; absent (fleet, unconfigured) ⇒ undefined ⇒ EXACTLY today's behavior.
+        const dlCfg = config.intelligence?.degradationLadder;
+        const ladderBackoffEnabled = resolveDevAgentGate(dlCfg?.backoff?.enabled, config);
+        const ladderQueueEnabled = resolveDevAgentGate(dlCfg?.queue?.enabled, config);
+        // Dedicated LlmQueue for the queue rung (§3b.3) — built ONLY when the rung is active so the
+        // fleet default allocates nothing. A deferrable internal call that exhausted framework-swap
+        // WAITS here for capacity (background lane, its own small daily cap so it can't starve
+        // interactive callers; maxConcurrent:1 serializes retries → naturally herd-safe) instead of
+        // dropping to its heuristic. `drainMinGapMs` is the opt-in §3c pacing gap (0/off by default).
+        let degradationLadderQueue: import('../core/IntelligenceRouter.js').DeferrableQueue | undefined;
+        if (ladderQueueEnabled) {
+          const { LlmQueue: DegradationLadderQueueCls } = await import('../monitoring/LlmQueue.js');
+          degradationLadderQueue = new DegradationLadderQueueCls({
+            maxConcurrent: 1,
+            maxDailyCents: 25,
+            backgroundDispatchMinGapMs: dlCfg?.queue?.drainMinGapMs ?? 0,
+          });
+        }
+
         sharedIntelligence = new IntelligenceRouter({
           defaultProvider: rawDefault,
           defaultFramework: defaultFw,
@@ -4997,26 +5018,28 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §4.5: per-attempt swap timeout, inline-defaulted to 5s (no ConfigDefaults
           // entry — codexExecJson precedent; absent ⇒ 5s, present ⇒ operator's value).
           swapAttemptTimeoutMs: config.intelligence?.swapAttemptTimeoutMs ?? 5000,
-          // Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md), v1.
-          // Dev-gated: the backoff rung's `enabled` is OMITTED in config so resolveDevAgentGate
-          // resolves it (live-on-dev / dark-on-fleet); the gating budget rides the ladder's
-          // activation. Absent (fleet, unconfigured) ⇒ undefined ⇒ EXACTLY today's behavior.
-          ladder: (() => {
-            const dl = config.intelligence?.degradationLadder;
-            const backoffEnabled = resolveDevAgentGate(dl?.backoff?.enabled, config);
-            if (!backoffEnabled) return undefined;
-            return {
-              gatingLadderBudgetMs: dl?.gatingLadderBudgetMs ?? 6000,
-              backoffEnabled,
-              backoff: {
-                baseMs: dl?.backoff?.baseMs ?? 500,
-                factor: dl?.backoff?.factor ?? 2,
-                maxAttempts: dl?.backoff?.maxAttempts ?? 3,
-                ceilingMs: dl?.backoff?.ceilingMs ?? 8000,
-                maxWaitMs: dl?.backoff?.maxWaitMs ?? 60000,
-              },
-            };
-          })(),
+          // The dedicated queue for the DEFERRABLE queue rung (§3b.3); undefined when the rung is
+          // dark ⇒ the rung is a no-op (a deferrable call falls straight to its heuristic, as before).
+          llmQueue: degradationLadderQueue,
+          // Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md). Dev-gated: each
+          // rung's `enabled` is OMITTED in config so resolveDevAgentGate resolves it (live-on-dev /
+          // dark-on-fleet); the gating budget rides the ladder's activation. The ladder object is
+          // present when ANY rung (backoff OR queue) is active; absent ⇒ EXACTLY today's behavior.
+          ladder: (ladderBackoffEnabled || ladderQueueEnabled)
+            ? {
+                gatingLadderBudgetMs: dlCfg?.gatingLadderBudgetMs ?? 6000,
+                backoffEnabled: ladderBackoffEnabled,
+                backoff: {
+                  baseMs: dlCfg?.backoff?.baseMs ?? 500,
+                  factor: dlCfg?.backoff?.factor ?? 2,
+                  maxAttempts: dlCfg?.backoff?.maxAttempts ?? 3,
+                  ceilingMs: dlCfg?.backoff?.ceilingMs ?? 8000,
+                  maxWaitMs: dlCfg?.backoff?.maxWaitMs ?? 60000,
+                },
+                queueEnabled: ladderQueueEnabled,
+                queueAttemptTimeoutMs: dlCfg?.queue?.attemptTimeoutMs ?? 60000,
+              }
+            : undefined,
           // Each non-default framework gets its OWN breaker (built once, from the
           // shared probe-cache so the active-set probe doesn't double-build).
           buildProvider: (fw) => cachedBuild(fw),

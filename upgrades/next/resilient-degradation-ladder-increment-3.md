@@ -1,0 +1,49 @@
+<!-- bump: minor -->
+<!-- change_type: feature -->
+
+## What Changed
+
+The last rung of the rate-limit principle: **wait for capacity before falling back.** When an internal
+background check gets rate-limited and has already tried slowing-down-and-retrying and switching
+frameworks, it can now WAIT in a small queue for capacity to free up — instead of immediately giving up
+and dropping to a basic rule. The wait is bounded and rate-aware (it rides the same circuit-breaker
+timing that protects the account), so a burst of queued checks can't re-trip the limit the moment it
+recovers. Only background, non-urgent checks queue; anything the agent is actively waiting on still
+fails fast. If the queue is full or over its daily budget, the check falls through to its basic rule
+exactly as before — never silently dropped.
+
+This is **off by default** (on for the dev agent first), reuses the existing wedge-safe queue, and
+changes nothing for any other queue user.
+
+## What to Tell Your User
+
+Nothing changes unless you turn it on. Once on, if a background check hits a rate limit, it will
+briefly wait its turn for capacity to come back before falling back to a simpler rule — so you lose the
+smart answer less often. Urgent checks you are waiting on still respond fast, and if there is no spare
+capacity the check just uses its basic rule like before.
+
+## Summary of New Capabilities
+
+- `IntelligenceRouter` DEFERRABLE queue rung (`tryDeferrableQueue`): a non-gating call that exhausts
+  backoff + framework-swap enqueues onto a dedicated `LlmQueue` (background lane) and WAITS for
+  capacity (the enqueued `provider.evaluate` honors the account-global breaker's `retryAfterMs`)
+  before dropping to the caller's heuristic. Inserted at both fall-through points.
+- A GATING call is NEVER queued (`deferrable = !gating && …`, code-enforced — D5). An enqueue
+  rejection (daily-cap / interactive-reserve) or queued-call failure falls through to the heuristic,
+  never dropped. Two new `onDegrade` reasons (`queued` / `queue-rejected`) for `/metrics/features` (D7).
+- `LlmQueue` opt-in `backgroundDispatchMinGapMs` (§3c herd guard): a jittered minimum gap between
+  background dispatches; interactive bypasses; default 0 = off (zero change for existing callers).
+- Config `intelligence.degradationLadder.queue` → `{ enabled?, attemptTimeoutMs?, drainMinGapMs? }`;
+  `DEV_GATED_FEATURES` entry `degradationLadderQueue` (live-on-dev / dark-on-fleet).
+
+## Evidence
+
+**Before:** a deferrable internal call that exhausted backoff + framework-swap dropped STRAIGHT to its
+heuristic — even when capacity would have freed up moments later. **After:** with the rung enabled, it
+WAITS for capacity in a bounded, rate-aware queue first, and only falls back if the queue rejects it or
+the queued call fails. Reproduced by `tests/unit/degradation-ladder.test.ts` (7 queue cases: success +
+auto-resolve; order backoff/swap → queue → success; GATING never queued; enqueue-rejection ⇒ heuristic
+fallthrough; non-deferrable never queued; no-llmQueue no-op; queueEnabled:false not enqueued) and
+`tests/unit/LlmQueue.test.ts` (3 pacing cases). The rung reuses the existing wedge-safe `LlmQueue` and
+never calls the DegradationReporter alert machinery, so the 2026-06-21 event-loop wedge cannot recur.
+Full `tsc` + dark-gate lint green; `no-silent-fallbacks` holds at baseline 476.

@@ -63,6 +63,19 @@ export interface RouterDegradeInfo {
   reason: string;
 }
 
+/**
+ * Minimal structural view of `LlmQueue` (src/monitoring/LlmQueue.ts) used by the deferrable queue
+ * rung. Declared here so `core` does NOT import `monitoring` (avoids a layering cycle); the real
+ * LlmQueue satisfies this shape structurally.
+ */
+export interface DeferrableQueue {
+  enqueue(
+    lane: 'interactive' | 'background',
+    fn: (signal: AbortSignal) => Promise<string>,
+    costCents?: number,
+  ): Promise<string>;
+}
+
 export interface IntelligenceRouterOptions {
   /** The existing shared provider for the default framework (global breaker). Used unconfigured + for default-routed calls. */
   defaultProvider: IntelligenceProvider;
@@ -98,11 +111,16 @@ export interface IntelligenceRouterOptions {
   onHeuristicFallthrough?: (component: string, framework: string) => void;
   onResolved?: (component: string, framework: string) => void;
   /**
+   * The shared LLM call queue (LlmQueue) for the DEFERRABLE queue rung (§3b.3). Absent ⇒ no queue
+   * rung (a deferrable call falls straight through to its heuristic after framework-swap, as before).
+   */
+  llmQueue?: DeferrableQueue;
+  /**
    * Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md), RESOLVED at the
    * construction site (the dev-agent gate is applied there, so `*Enabled` are already the
    * gate-resolved booleans). Absent ⇒ no ladder (today's framework-swap-only behavior). The ladder
    * is path-dependent: a GATING call stays fast under `gatingLadderBudgetMs`; only a DEFERRABLE call
-   * gets the backoff rung. (Queue + never-silent rungs land in later increments.)
+   * gets the backoff + queue rungs.
    */
   ladder?: {
     /** Hard total wall-clock budget (ms) for the whole GATING failure path; exceeded ⇒ fail closed. */
@@ -110,6 +128,10 @@ export interface IntelligenceRouterOptions {
     /** Whether the DEFERRABLE backoff rung is enabled (gate-resolved). */
     backoffEnabled: boolean;
     backoff: { baseMs: number; factor: number; maxAttempts: number; ceilingMs: number; maxWaitMs: number };
+    /** Whether the DEFERRABLE queue rung is enabled (gate-resolved). Absent/false ⇒ no queue rung. */
+    queueEnabled?: boolean;
+    /** Bound (ms) for a single enqueued deferrable call so a stuck/abandoned one self-terminates. */
+    queueAttemptTimeoutMs?: number;
   };
 }
 
@@ -269,6 +291,13 @@ export class IntelligenceRouter implements IntelligenceProvider {
         }
       }
       if (swapTargets.length === 0) {
+        // RUNG (c) — DEFERRABLE queue: no swap configured, but a deferrable call can WAIT for capacity
+        // in the LlmQueue before dropping to its heuristic. gating can never reach here (deferrable =
+        // !gating && …) — the D5 queue-skip invariant is structural.
+        if (deferrable) {
+          const q = await this.tryDeferrableQueue(primary, prompt, options, component ?? '(none)', framework, category);
+          if (q.ok) return q.result;
+        }
         // Non-gating ⇒ the caller will swallow this into its heuristic — track it (never-silent).
         // Gating ⇒ this is a fail-closed, NOT a heuristic, so it is not tracked.
         if (!gating) this.opts.onHeuristicFallthrough?.(component ?? '(none)', framework);
@@ -338,11 +367,66 @@ export class IntelligenceRouter implements IntelligenceProvider {
           continue; // target also down (timeout / circuit-open / error) → try the next one
         }
       }
+      // RUNG (c) — DEFERRABLE queue: every swap target is also down, but a deferrable call can WAIT
+      // for capacity in the LlmQueue before dropping to its heuristic (the gentle order, §3b.3). A
+      // gating call NEVER reaches here (deferrable = !gating && …) — D5 queue-skip is structural.
+      if (deferrable) {
+        const q = await this.tryDeferrableQueue(primary, prompt, options, component ?? '(none)', framework, category);
+        if (q.ok) return q.result;
+      }
       // Every swap target is also down → re-throw so the (gating) caller fails CLOSED,
       // never silently degrading to a brittle heuristic. A NON-gating caller WILL swallow this into
       // its heuristic, so track it (never-silent §4); a gating fail-closed is not a heuristic.
       if (!gating) this.opts.onHeuristicFallthrough?.(component ?? '(none)', framework);
       throw err;
+    }
+  }
+
+  /**
+   * Queue rung (Resilient Degradation Ladder §3b.3) — DEFERRABLE calls only. Enqueue the SAME
+   * provider.evaluate so the call WAITS for capacity (the enqueued evaluate honors the account-global
+   * breaker's retryAfterMs via acquireOrWait — the §3b.3 rate-awareness) instead of dropping to the
+   * caller's heuristic. The AbortSignal cannot reach the subprocess (no IntelligenceOptions.signal —
+   * same as the swap loop), so we bound the enqueued call with `timeoutMs` and rely on the queue to
+   * free its slot on preemption; a preempted/abandoned call self-terminates at the bound. An enqueue
+   * REJECTION (daily-cap / interactive-reserve) OR a failed queued call returns `{ ok: false }` so the
+   * caller falls through to its heuristic — NEVER silently dropped (the callsite's onHeuristicFallthrough
+   * tracks it, §4). Both outcomes emit a distinct onDegrade reason for /metrics/features (D7).
+   */
+  private async tryDeferrableQueue(
+    primary: IntelligenceProvider,
+    prompt: string,
+    options: IntelligenceOptions | undefined,
+    component: string,
+    framework: IntelligenceFramework,
+    category: ComponentCategory,
+  ): Promise<{ ok: true; result: string } | { ok: false }> {
+    const q = this.opts.llmQueue;
+    const ladder = this.opts.ladder;
+    if (!q || !ladder?.queueEnabled) return { ok: false };
+    const bound = ladder.queueAttemptTimeoutMs ?? 0;
+    const enqueueOptions: IntelligenceOptions | undefined =
+      bound > 0 ? { ...(options ?? {}), timeoutMs: bound } : options;
+    try {
+      const result = await q.enqueue('background', () => primary.evaluate(prompt, enqueueOptions));
+      this.opts.onDegrade?.({
+        component,
+        category,
+        from: framework,
+        to: framework,
+        reason: 'queued: deferrable call waited for capacity in the LLM queue and was served',
+      });
+      this.opts.onResolved?.(component, framework); // a real answer via the queue → auto-resolve
+      return { ok: true, result };
+    } catch {
+      this.opts.onDegrade?.({
+        component,
+        category,
+        from: framework,
+        to: framework,
+        reason: 'queue-rejected: enqueue refused (daily-cap/reserve) or queued call failed — falling through to heuristic',
+      });
+      return { ok: false };
     }
   }
 }

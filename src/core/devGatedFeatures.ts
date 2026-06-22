@@ -387,6 +387,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Resilient Degradation Ladder §4 — never-silent degradation tracking: a non-gating call that exhausts the ladder (→ caller heuristic) opens a tracked degradation; a successful real-LLM answer auto-resolves it; a genuinely-stuck one (≥1 retry, open past 15m) escalates ONE deduped attention item; a run-once/idle one TTL-auto-closes (no false alarm).',
     justification: 'Observe-and-escalate only — opens/resolves an in-memory map and, on a genuinely-stuck degradation, sends ONE deduped fixed-template attention line. Designed to NOT repeat the 2026-06-21 DegradationReporter wedge: bounded (MAX_OPEN), O(1) per open/resolve, the sweep NEVER calls report()/reportEvent()/gateHealthAlert (it surfaces via telegramSender directly), liveness-gated (a run-once component auto-closes, never escalates). No spend, no destructive action; the only egress is the deduped escalation line the operator explicitly wants ("never silently degraded"). No-op when off.',
   },
+  {
+    name: 'degradationLadderQueue',
+    configPath: 'intelligence.degradationLadder.queue.enabled',
+    description: 'Resilient Degradation Ladder §3b.3 — the DEFERRABLE queue rung: a non-gating call that exhausts framework-swap WAITS for capacity in a dedicated LlmQueue (the enqueued provider.evaluate honors the account-global breaker retryAfterMs) instead of dropping straight to the caller heuristic; an enqueue rejection (daily-cap/reserve) or queued-call failure falls through to the heuristic, never dropped. Includes the opt-in §3c herd-pacing gap (drainMinGapMs, 0/off by default).',
+    justification: 'Internal-call routing only; behavior-preserving when off (no llmQueue injected ⇒ the rung is a no-op ⇒ EXACTLY today\'s heuristic-on-exhaustion behavior). On a dev agent it runs live on DEFERRABLE (non-awaited, background) calls ONLY — a GATING call NEVER reaches the queue rung (structural: deferrable = !gating && deferrable; D5). The dedicated queue is bounded (maxConcurrent 1, its own small daily cap so it cannot starve interactive callers) and each enqueued call is timeout-bounded; it adds bounded WAITS, not new calls — no spend increase (same call count or fewer), no destructive action, no egress. Reuses the existing wedge-safe LlmQueue.',
+  },
 ];
 
 /**
