@@ -27,6 +27,7 @@ import { CallbackRegistry, isAllowedButtonKey } from '../core/CallbackRegistry.j
 import type { DetectedPrompt } from '../monitoring/PromptGate.js';
 import { sanitizeForPrompt } from '../monitoring/SessionRecovery.js';
 import { formatForTelegram, type FormatMode } from './TelegramMarkdownFormatter.js';
+import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
 import {
   recordFormatApplied,
   recordFormatLintIssue,
@@ -2625,8 +2626,11 @@ export class TelegramAdapter implements MessagingAdapter {
   getMessageLog(limit = 100): Array<{ topicId: number; text: string; fromUser: boolean; timestamp: string }> {
     try {
       if (!fs.existsSync(this.messageLogPath)) return [];
-      const content = fs.readFileSync(this.messageLogPath, 'utf-8');
-      const lines = content.trim().split('\n').filter(Boolean).slice(-limit);
+      // Bounded TAIL read — never the whole file. This only returns the last
+      // `limit` entries (default 100), so loading the full multi-MB
+      // telegram-messages.jsonl was a needless event-loop blocker (2026-06-22
+      // batch). The 512KB window holds ~2,600 recent lines, well over any limit.
+      const lines = readJsonlTailLastLines(this.messageLogPath, limit);
       return lines.map(line => {
         try {
           const entry = JSON.parse(line);

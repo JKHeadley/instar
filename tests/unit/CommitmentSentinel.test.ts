@@ -579,6 +579,68 @@ describe('CommitmentSentinel', () => {
     });
   });
 
+  // ── Event-loop blocker regression (2026-06-22 batch) ──────────
+  // readNewMessages must NOT synchronously read the whole multi-MB
+  // telegram-messages.jsonl — only a bounded TAIL window. This is the
+  // freeze fix: a 12MB sync read on a 5-minute timer froze the loop ~20s.
+  describe('bounded tail read (does not load the whole message log)', () => {
+    it('never calls fs.readFileSync on the multi-MB message log', async () => {
+      const messagesPath = path.join(stateDir, 'telegram-messages.jsonl');
+      // ~3MB of older messages + a recent commitment pair at the very end.
+      const filler: string[] = [];
+      for (let i = 0; i < 30_000; i++) {
+        filler.push(JSON.stringify({
+          messageId: i, topicId: 100, text: 'x'.repeat(80), fromUser: i % 2 === 0,
+          timestamp: new Date().toISOString(),
+        }));
+      }
+      filler.push(JSON.stringify({ messageId: 99998, topicId: 100, text: 'Please turn off auto-updates', fromUser: true, timestamp: new Date().toISOString() }));
+      filler.push(JSON.stringify({ messageId: 99999, topicId: 100, text: "On it — I'll turn off auto-updates now", fromUser: false, timestamp: new Date().toISOString() }));
+      fs.writeFileSync(messagesPath, filler.join('\n') + '\n');
+      expect(fs.statSync(messagesPath).size).toBeGreaterThan(2_000_000);
+
+      // Spy: a full-file read of the message log would be a regression.
+      const realReadFileSync = fs.readFileSync.bind(fs);
+      const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (typeof p === 'string' && p.endsWith('telegram-messages.jsonl')) {
+          throw new Error('REGRESSION: full-file fs.readFileSync on telegram-messages.jsonl');
+        }
+        // @ts-expect-error pass-through to the real impl for every other path
+        return realReadFileSync(p, ...rest);
+      }) as typeof fs.readFileSync);
+
+      const intelligence = createMockIntelligence('[]');
+      const { sentinel } = makeSentinel(stateDir, intelligence);
+
+      // Must not throw — the sentinel must reach the recent messages via the
+      // bounded tail reader (openSync/readSync), never a full readFileSync.
+      await expect(sentinel.scan()).resolves.toBeDefined();
+      spy.mockRestore();
+    });
+
+    it('still detects a recent commitment that sits at the END of a large log', async () => {
+      const messagesPath = path.join(stateDir, 'telegram-messages.jsonl');
+      const filler: string[] = [];
+      for (let i = 0; i < 20_000; i++) {
+        filler.push(JSON.stringify({ messageId: i, topicId: 100, text: 'old noise '.repeat(8), fromUser: i % 2 === 0, timestamp: new Date(Date.now() - 1_000_000).toISOString() }));
+      }
+      filler.push(JSON.stringify({ messageId: 90001, topicId: 100, text: 'Can you turn off auto-updates?', fromUser: true, timestamp: new Date().toISOString() }));
+      filler.push(JSON.stringify({ messageId: 90002, topicId: 100, text: "I'll turn off auto-updates for you", fromUser: false, timestamp: new Date().toISOString() }));
+      fs.writeFileSync(messagesPath, filler.join('\n') + '\n');
+
+      const intelligence = createMockIntelligence(JSON.stringify([
+        { commitment: 'turn off auto-updates', type: 'one-time-action', confidence: 0.9 },
+      ]));
+      const { sentinel } = makeSentinel(stateDir, intelligence);
+      const detected = await sentinel.scan();
+      // The recent user→agent pair sits at the very END of a 20k-line log. Reading
+      // only the bounded tail must STILL surface it: the LLM was invoked over the
+      // pair (proving the tail read reached the newest records, not just the head).
+      expect((intelligence.evaluate as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      expect(typeof detected).toBe('number'); // scan() returns a count
+    });
+  });
+
   // ── Lifecycle ──────────────────────────────────────────
 
   describe('start() / stop()', () => {

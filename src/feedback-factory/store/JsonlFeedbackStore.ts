@@ -23,7 +23,7 @@
  * 148k-row artifact parses in well under a second.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FeedbackItem, Cluster } from '../processor/types.js';
 import type { ReopenDecision } from '../processor/reopen.js';
@@ -261,10 +261,35 @@ export class JsonlFeedbackStore implements FeedbackStore {
   }
 }
 
+/**
+ * (size, mtimeMs) load cache — skip the synchronous multi-MB read+parse when the
+ * on-disk file is byte-for-byte the one we last folded. `reload()` is called at
+ * the start of every processing pass, and the feedback.jsonl corpus is multiple
+ * MB; re-reading + JSON.parsing the whole file on the event loop when nothing
+ * changed since the last load was a needless freeze (2026-06-22 batch). Mirrors
+ * the JobRunHistory (size, mtime) cache pattern. Keyed per absolute path. The
+ * cached `rows` Map is cloned on serve so a caller's mutations never poison the
+ * cache (and the next genuine change still re-reads from disk).
+ */
+const loadCache = new Map<string, { size: number; mtimeMs: number; rows: Map<string, unknown>; totalLines: number }>();
+
 function loadJsonl<T>(path: string, idOf: (row: Record<string, unknown>) => string): LoadResult<T> {
   const rows = new Map<string, T>();
   let totalLines = 0;
-  if (!existsSync(path)) return { rows, totalLines };
+  if (!existsSync(path)) {
+    loadCache.delete(path);
+    return { rows, totalLines };
+  }
+  // (size, mtime) cache: serve a clone of the prior fold when the file is unchanged.
+  let fingerprint: { size: number; mtimeMs: number } | null = null;
+  try {
+    const st = statSync(path);
+    fingerprint = { size: st.size, mtimeMs: st.mtimeMs };
+    const cached = loadCache.get(path);
+    if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+      return { rows: new Map(cached.rows as Map<string, T>), totalLines: cached.totalLines };
+    }
+  } catch { /* fall through to a full read — never let stat failure skip the load */ }
   const txt = readFileSync(path, 'utf8');
   for (const line of txt.split('\n')) {
     const trimmed = line.trim();
@@ -280,7 +305,18 @@ function loadJsonl<T>(path: string, idOf: (row: Record<string, unknown>) => stri
       // a full row. Durability beats strictness for an append log.
     }
   }
+  // Cache this fold against the fingerprint we read it at, so an unchanged file
+  // is served from memory next time. Store a clone so a caller mutating the
+  // returned Map can never poison the cache.
+  if (fingerprint) {
+    loadCache.set(path, { ...fingerprint, rows: new Map(rows), totalLines });
+  }
   return { rows, totalLines };
+}
+
+/** Test-only: clear the (size, mtime) load cache between cases. */
+export function __clearFeedbackLoadCacheForTests(): void {
+  loadCache.clear();
 }
 
 /** Resolve a row's primary-key id from the AS-IS field aliases (mirrors importRunner's pickId). */

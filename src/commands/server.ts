@@ -157,6 +157,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
+import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { LiveConfig } from '../config/LiveConfig.js';
@@ -11231,8 +11232,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         // the ack was on disk. Same isBriefAck export feeds both paths now.
         const checkLogForAgentResponse = (logPath: string, topicId: number, sinceIso: string): boolean => {
           try {
-            const content = fs.readFileSync(logPath, 'utf-8');
-            const lines = content.trim().split('\n').slice(-50);
+            // Bounded TAIL read — never the whole file. This only inspects the
+            // last 50 lines, so loading the full multi-MB telegram-messages.jsonl
+            // on every PresenceProxy tier verdict was an event-loop freeze
+            // (2026-06-22 batch). The 512KB window holds far more than 50 lines.
+            const lines = readJsonlTailLastLines(logPath, 50);
             for (const line of lines) {
               try {
                 const msg = JSON.parse(line);

@@ -17,6 +17,7 @@ import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { CommitmentTracker, CommitmentType } from './CommitmentTracker.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import { readJsonlTailLines } from '../utils/jsonl-tail.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -227,8 +228,12 @@ export class CommitmentSentinel {
     if (!fs.existsSync(this.messagesPath)) return [];
 
     try {
-      const content = fs.readFileSync(this.messagesPath, 'utf-8');
-      const lines = content.trim().split('\n');
+      // Bounded TAIL read — never the whole file. This scanner only ever
+      // inspects the last `maxPerScan*10` lines, so loading the full multi-MB
+      // telegram-messages.jsonl on a 5-minute timer was a pure event-loop
+      // freeze (2026-06-22 batch). The 512KB window holds ~2,600 recent lines,
+      // far more than maxPerScan*10, while staying O(window) regardless of size.
+      const lines = readJsonlTailLines(this.messagesPath).lines;
       const messages: TelegramMessage[] = [];
       const maxPerScan = this.config.maxMessagesPerScan ?? 20;
 
