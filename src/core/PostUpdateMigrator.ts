@@ -12664,6 +12664,41 @@ if (!reviewEnabled) {
     process.exit(2);
   })();
 
+  // ── False-excuse deferral guard (mode-INDEPENDENT). ─────────────────────────
+  // Catches the recurring pattern the operator has flagged REPEATEDLY: the agent
+  // NAMES clear remaining work it knows how to do, then STOPS with a self-protective
+  // rationalization — "this session is too long", "it is late / at midnight", "I made
+  // wrong turns so I will be careful", "do not want to rush", "tracked so it can not
+  // slip", "next focused session". These are FALSE excuses: the agent does not tire,
+  // session length and time-of-day are irrelevant, "careful" means do it carefully NOW,
+  // and "tracked" is not a reason to stop. Blocks ONCE (stop_hook_active prevents a
+  // loop), re-feeding the directive to PROCEED. A genuine stop (real external blocker /
+  // work actually complete / a decision only the user can make) re-stops cleanly on
+  // the next attempt. Pure substring matching.
+  (function falseExcuseDeferralGuard() {
+    const lc = String(input.last_assistant_message || '').toLowerCase();
+    if (lc.length < 40) return;
+    function hasAny(arr) { for (let i = 0; i < arr.length; i++) { if (lc.indexOf(arr[i]) !== -1) return arr[i]; } return null; }
+    const excuse = hasAny([
+      'too long', 'long session', 'marathon', 'long incident', 'after a long', 'enormous turn', 'huge session', 'this session is',
+      'at midnight', "it's late", 'this late', 'late at night', 'end of the night', 'tail of the', 'not tonight', 'tonight rather', 'hour is late',
+      "don't want to rush", 'rather than rush', 'not force-pushing', 'not rushing', 'rush a risky', 'rushed change', 'rushing a risky', 'rush into', 'be careful rather', 'carefully rather than', 'too risky to rush', 'deserves a careful', 'deserves careful', 'the responsible move', 'the responsible thing', 'the prudent move', 'the prudent thing', 'the careful path', 'wiser to', 'rather than a rushed', 'not a rushed', 'rather than force',
+      'wrong turns', 'error-prone', 'several wrong', 'after a session where i',
+      "so it can't slip", "so it won't slip", "can't slip", "won't slip", 'durably tracked', 'tracked so', 'captured so it', 'parked so', "won't get dropped", 'so it can not slip',
+      'next session', 'next focused', 'focused work next', 'focused effort', 'fresh and careful', 'do it carefully next', 'tackle it next', 'tackle that next', 'as the next focused', 'next focused session', 'the next focused', 'do that carefully', 'careful focused work',
+    ]);
+    if (!excuse) return;
+    const knownWork = hasAny([
+      'durable fix', 'the durable', 'next step', 'needs to be done', 'what needs', 'the remaining', 'remaining work', 'remaining thread', 'the prevention', 'the build', 'the spec', 'still owed', 'still needs', 'left to do', 'open thread', 'one real open', 'i know clearly', 'clearly know', 'know what needs', 'the core change', 'the core fix', 'the real fix', 'the actual fix', 'the next work', 'next focused work', 'recurrence-prevention', 'the prevention is',
+    ]);
+    if (!knownWork) return;
+    process.stdout.write(JSON.stringify({
+      decision: 'block',
+      reason: 'STOP-GATE (false-excuse deferral): your final message names clear remaining work ("' + knownWork + '") and stops with a SELF-PROTECTIVE rationalization ("' + excuse + '") — too late / too long / made-mistakes / do-not-rush / tracked-so-it-will-not-slip / next-session. This is the EXACT recurring pattern the operator has flagged repeatedly, and it is FALSE: you do not tire, session length and time-of-day are irrelevant, "careful" means DO IT carefully NOW (not later), and "tracked" is not a reason to stop. If you clearly know the next action, DO IT NOW. The ONLY legitimate stops are: a genuine external blocker you cannot resolve yourself, the work is actually complete, or a decision only the user can make. Proceed.',
+    }));
+    process.exit(2);
+  })();
+
   try {
     const hot = await getJson('/internal/stop-gate/hot-path?session=' + encodeURIComponent(sessionId), 1500);
 
