@@ -46,8 +46,11 @@ describe('Activity-aware session-timeout gate', () => {
     // signal of work defers the kill. Since task #77 the text check reads the
     // blank-fill-immune MEANINGFUL tail (captureMeaningfulTail), not raw
     // physical rows — tall-pane trailing blanks no longer blind the gate.
-    expect(SM_SOURCE).toMatch(/ageGateOutput\s*=\s*this\.captureMeaningfulTail/);
-    expect(SM_SOURCE).toMatch(/ageGateHasProcs\s*=\s*this\.hasActiveProcesses/);
+    // The reaper hot-path now awaits the async-aware MaybeAsync dispatchers
+    // (tmux Event-Loop Resilience Increment 1) — same capture, never blocks
+    // the event loop when the tmux server is slow.
+    expect(SM_SOURCE).toMatch(/ageGateOutput\s*=\s*await\s+this\.captureMeaningfulTailMaybeAsync/);
+    expect(SM_SOURCE).toMatch(/ageGateHasProcs\s*=\s*await\s+this\.hasActiveProcessesMaybeAsync/);
     expect(SM_SOURCE).toMatch(/IDLE_PROMPT_PATTERNS\.some\(p\s*=>\s*ageGateOutput\.includes\(p\)\)/);
   });
 

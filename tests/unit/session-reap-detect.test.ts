@@ -51,8 +51,11 @@ describe('Session reaping and detection', () => {
   describe('detectCompletion', () => {
     it('checks output for completion patterns', () => {
       source = fs.readFileSync(SOURCE_PATH, 'utf-8');
-      expect(source).toContain('completionPatterns.some');
-      expect(source).toContain('output.includes(pattern)');
+      // detectCompletion now delegates to the shared matchesAnyPattern helper
+      // (DRY for the sync/async twins). The helper scans the session's
+      // completion patterns with output.includes — same matching, never drifts.
+      expect(source).toContain('this.matchesAnyPattern(output, this.config.completionPatterns)');
+      expect(source).toContain('patterns.some((pattern) => output.includes(pattern))');
     });
 
     it('returns false if no output captured', () => {
@@ -109,8 +112,11 @@ describe('Session reaping and detection', () => {
   describe('zombie cleanup — process-tree activity check', () => {
     it('checks for active processes before killing', () => {
       source = fs.readFileSync(SOURCE_PATH, 'utf-8');
-      // The zombie cleanup must use hasActiveProcesses to determine true idleness
-      expect(source).toContain('hasActiveProcesses(session.tmuxSession)');
+      // The zombie cleanup must check active processes to determine true idleness
+      // before killing. The reaper hot-path now dispatches through the async-aware
+      // hasActiveProcessesMaybeAsync (tmux Event-Loop Resilience Increment 1) which
+      // routes to the sync hasActiveProcesses or its async twin — behavior identical.
+      expect(source).toContain('hasActiveProcessesMaybeAsync(session.tmuxSession)');
     });
 
     it('only kills when both idle prompt AND no active processes', () => {
