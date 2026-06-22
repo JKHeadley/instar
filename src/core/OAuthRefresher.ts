@@ -41,12 +41,25 @@
  * network, and a deterministic clock in tests.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { CredentialWriteFunnel, credentialWriteFunnel } from './CredentialWriteFunnel.js';
+
+/** Promisified async exec for the non-blocking keychain read (mirrors the sync `security` spawn). */
+const execFileAsync = promisify(execFile);
+
+/**
+ * Bounds any `security` keychain spawn so a slow/contended `securityd` can never freeze the event
+ * loop indefinitely. The macOS keychain read/write is an out-of-process spawn; under multi-agent
+ * `securityd` contention an un-timeout'd SYNC spawn blocked the event loop 4–13s every cycle
+ * (the dashboard-flap / false-sleep incident). 3s is generous for a healthy keychain and a hard
+ * ceiling for a wedged one. The sibling CredentialProvider keychain spawns already set a timeout.
+ */
+const KEYCHAIN_TIMEOUT_MS = 3000;
 
 /** Public Claude Code OAuth token endpoint (from the official client binary). */
 export const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
@@ -85,6 +98,14 @@ export interface ClaudeOauth {
 export interface CredentialStore {
   read(configHome: string): string | null;
   write(configHome: string, rawJson: string): boolean;
+  /**
+   * Optional NON-BLOCKING read. When present, callers on the event-loop hot path (e.g. the
+   * sequential credential-audit loop) should prefer this so a slow/contended `securityd` keychain
+   * read yields the event loop instead of freezing it. Optional so existing mocks that only
+   * implement the sync `read` keep compiling; `readClaudeOauthAsync` falls back to `read` when a
+   * store omits it.
+   */
+  readAsync?(configHome: string): Promise<string | null>;
 }
 
 /** POST-capable fetch surface (distinct from QuotaPoller's GET-only FetchImpl). */
@@ -154,16 +175,46 @@ export const defaultCredentialStore: CredentialStore = {
         const raw = execFileSync(
           'security',
           ['find-generic-password', '-s', claudeCredentialService(configHome), '-w'],
-          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: KEYCHAIN_TIMEOUT_MS },
         ).trim();
         return raw || null;
       } catch {
-        return null; // @silent-fallback-ok: no keychain entry → unreadable
+        return null; // @silent-fallback-ok: no keychain entry / timeout → unreadable (caller retries → needs-reauth)
       }
     }
     try {
       const p = claudeCredentialFilePath(configHome);
       return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
+    } catch {
+      return null; // @silent-fallback-ok: missing/unreadable creds file
+    }
+  },
+  /**
+   * NON-BLOCKING read: the same lookup as `read` but off the event loop. On darwin it uses the
+   * PROMISIFIED async `execFile` (so a slow `securityd` yields instead of freezing the loop); on
+   * non-darwin it uses `fs.promises.readFile`. Same `find-generic-password` args + same 3s timeout
+   * + same null-on-error semantics as the sync read.
+   */
+  async readAsync(configHome: string): Promise<string | null> {
+    if (process.platform === 'darwin') {
+      try {
+        // Promisified `execFile` captures stdout/stderr into buffers (no `stdio` option — stderr is
+        // captured then ignored, matching the sync read's stderr suppression). encoding:'utf-8'
+        // gives a string stdout.
+        const { stdout } = await execFileAsync(
+          'security',
+          ['find-generic-password', '-s', claudeCredentialService(configHome), '-w'],
+          { encoding: 'utf-8', timeout: KEYCHAIN_TIMEOUT_MS },
+        );
+        const raw = stdout.trim();
+        return raw || null;
+      } catch {
+        return null; // @silent-fallback-ok: no keychain entry / timeout → unreadable (caller retries → needs-reauth)
+      }
+    }
+    try {
+      const p = claudeCredentialFilePath(configHome);
+      return await fs.promises.readFile(p, 'utf-8');
     } catch {
       return null; // @silent-fallback-ok: missing/unreadable creds file
     }
@@ -183,11 +234,11 @@ export const defaultCredentialStore: CredentialStore = {
             '-w',
             rawJson,
           ],
-          { stdio: ['ignore', 'ignore', 'ignore'] },
+          { stdio: ['ignore', 'ignore', 'ignore'], timeout: KEYCHAIN_TIMEOUT_MS },
         );
         return true;
       } catch {
-        return false; // @silent-fallback-ok: keychain write failed → caller falls to needs-reauth
+        return false; // @silent-fallback-ok: keychain write failed / timeout → caller falls to needs-reauth
       }
     }
     try {
@@ -207,6 +258,28 @@ export function readClaudeOauth(
   store: CredentialStore = defaultCredentialStore,
 ): ClaudeOauth | null {
   const raw = store.read(configHome);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const oauth = parsed?.claudeAiOauth;
+    return oauth && typeof oauth === 'object' ? (oauth as ClaudeOauth) : null;
+  } catch {
+    return null; // @silent-fallback-ok: unparseable entry
+  }
+}
+
+/**
+ * NON-BLOCKING mirror of `readClaudeOauth`: identical parse logic, but reads the raw blob via the
+ * store's optional `readAsync` (off the event loop) when available, falling back to the sync `read`
+ * for any store that doesn't implement it (backward-compatible). This is the read callers on the
+ * event-loop hot path (e.g. the sequential credential-audit loop) should use so a slow/contended
+ * `securityd` keychain read yields the loop instead of freezing it.
+ */
+export async function readClaudeOauthAsync(
+  configHome: string,
+  store: CredentialStore = defaultCredentialStore,
+): Promise<ClaudeOauth | null> {
+  const raw = store.readAsync ? await store.readAsync(configHome) : store.read(configHome);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;

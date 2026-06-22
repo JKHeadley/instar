@@ -118,6 +118,8 @@ export function defaultTokenResolver(account: SubscriptionAccount): string | nul
   if (account.provider !== 'anthropic' || account.framework !== 'claude-code') {
     return null;
   }
+  // Single periodic SYNC keychain read, now bounded by OAuthRefresher's 3s timeout — kept sync on
+  // purpose: making it async would ripple through SubscriptionAccount token resolution needlessly.
   const oauth = readClaudeOauth(account.configHome);
   const tok = oauth?.accessToken;
   return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
