@@ -14,7 +14,10 @@ A clear, ordered ladder for handling a rate limit, from gentlest to last-resort:
 1. **Back off** — wait a moment and try the SAME provider again (it usually clears in seconds).
    "Slow but correct" beats "fast but switched."
 2. **Swap account** — if you have more than one login for the same provider (e.g. two Claude
-   accounts), try the other account, staying on the best provider.
+   accounts), try the other account, staying on the best provider. *(This step is a LATER version —
+   for a single internal call the agent uses one fixed login, so per-call account-switching is
+   new machinery; account-switching already works at the session level today, so this first
+   version skips it and goes straight to step 3.)*
 3. **Swap framework** — only now switch to a different AI tool (Claude → Codex → Gemini).
 4. **Queue it** — if the work can wait (a background check, not something you're waiting on),
    put it in line and retry shortly instead of giving up.
@@ -23,6 +26,13 @@ A clear, ordered ladder for handling a rate limit, from gentlest to last-resort:
    until the real AI comes back.
 
 The golden rule: **prefer slowing down over falling back, and never quietly stay broken.**
+
+**One important nuance (from review):** "slow down" only applies to *background* work the agent
+isn't waiting on. When the agent is *synchronously waiting* on a call (a safety gate), slowing it
+down would just make the agent hang — so a waited-on gate keeps its current fast behavior (switch
+quickly, and if all switches fail, stop safely — never guess with a rule-of-thumb). The gentle
+ladder (back off, then switch, then queue) is for the background calls where waiting a few seconds
+is fine.
 
 ## What already exists (so this is an extension, not a rebuild)
 
