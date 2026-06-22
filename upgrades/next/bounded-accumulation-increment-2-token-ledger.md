@@ -1,0 +1,46 @@
+<!-- bump: minor -->
+<!-- change_type: feature -->
+
+## What Changed
+
+The token-usage ledger (`token-ledger.db`) was the single biggest unbounded store on disk —
+observed at 256 MB — because it kept every token-usage event forever with no trimming. This adds
+the Bounded Accumulation standard's retention to it: events older than a configurable window
+(default 30 days) are deleted in small batches off the busy path, and freed space is reclaimed
+incrementally (no slow, locking full-database rewrite). It ships **off by default** — the ledger
+is read-only observability that can be re-derived from the underlying transcripts, so trimming is
+opt-in per agent.
+
+## What to Tell Your User
+
+If your agent's token-usage database has grown large, you can now cap it: turn on retention and it
+keeps the last 30 days (configurable) of token-usage history instead of everything, forever.
+Nothing changes unless you enable it. The historical token totals you see in the dashboard stay
+accurate within the retention window; older raw events are dropped (they can be re-scanned from
+the Claude Code transcripts if needed).
+
+## Summary of New Capabilities
+
+- `storage.retention.tokenLedger` config: `{ enabled?: boolean (default false), maxAgeMs?: number
+  (default 30d) }`.
+- `TokenLedger` gains a batched, bounded-per-call `pruneOlderThan` + `incrementalVacuum` +
+  `pruneToRetention`, and sets `auto_vacuum=INCREMENTAL` on fresh databases so retention can
+  reclaim disk without a full VACUUM (the existing oversized file reclaims after the one-time
+  Increment-3 cleanup; until then retention still bounds its row count).
+- `TokenLedgerPoller` drives the prune on a 6-hour sub-cadence (the transcript scan stays at its
+  normal cadence), draining a large first-time backlog gradually so it never blocks the loop in
+  one statement.
+
+## Evidence
+
+**Before:** `token-ledger.db` had no DELETE/VACUUM anywhere (confirmed in `TokenLedger.ts`); it
+only ever grew (256 MB observed on Echo, 2026-06-21). `ResourceLedger` already had
+`pruneOlderThan`, proving token-ledger was the lone unbounded SQLite store.
+
+**After:** with retention enabled, `pruneToRetention(now)` deletes `token_events` where
+`ts < now − maxAgeMs` in bounded batches and reclaims pages; with it disabled (the default) it is
+a no-op. Reproduced by unit tests: `token-ledger-retention.test.ts` (prunes old / keeps fresh;
+no-op when disabled; batches and reports a remaining backlog) and `token-ledger-poller-retention.test.ts`
+(prunes on the 6h sub-cadence not every scan; drains a backlog across ticks; a prune error is
+reported and never throws out of the tick). No regression to the existing poller cadence
+(`token-ledger-poller-idle.test.ts` green).

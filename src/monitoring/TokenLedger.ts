@@ -256,6 +256,16 @@ export interface TokenLedgerOptions {
    */
   maxFilesPerScan?: number;
   /**
+   * Bounded Accumulation retention (Increment 2). When `enabled`, token_events older
+   * than `maxAgeMs` are pruned in bounded batches off the hot path (driven by the
+   * poller via {@link TokenLedger.pruneToRetention}). Ships dark (default disabled):
+   * the 256MB ledger is read-only observability, so retention is opt-in. On a FRESH
+   * DB `auto_vacuum=INCREMENTAL` lets the prune reclaim disk; the existing un-converted
+   * file only reclaims after the Increment-3 one-time VACUUM (prune still bounds the
+   * row count going forward).
+   */
+  retention?: { enabled?: boolean; maxAgeMs?: number };
+  /**
    * Yield to the event loop every N files within a scan. Default 25.
    * Even with maxFilesPerScan, a 500-file batch on slow disks can block for
    * seconds without yielding.
@@ -313,6 +323,8 @@ export class TokenLedger {
   private claudeProjectsDir: string;
   private maxFileAgeMs: number;
   private maxFilesPerScan: number;
+  private retentionEnabled: boolean;
+  private retentionMaxAgeMs: number;
   private yieldEveryNFiles: number;
   private asyncYieldFn: () => Promise<void>;
   /** Background attribution-backfill timer (async strategy); cleared on close(). */
@@ -335,6 +347,11 @@ export class TokenLedger {
     this.claudeProjectsDir = opts.claudeProjectsDir;
     this.maxFileAgeMs = opts.maxFileAgeMs && opts.maxFileAgeMs > 0 ? opts.maxFileAgeMs : 0;
     this.maxFilesPerScan = opts.maxFilesPerScan && opts.maxFilesPerScan > 0 ? opts.maxFilesPerScan : 500;
+    this.retentionEnabled = opts.retention?.enabled === true;
+    this.retentionMaxAgeMs =
+      opts.retention?.maxAgeMs && opts.retention.maxAgeMs > 0
+        ? opts.retention.maxAgeMs
+        : 30 * 24 * 60 * 60 * 1000; // 30d default (registry derived-token-ledger maxAgeMs)
     this.yieldEveryNFiles = opts.yieldEveryNFiles && opts.yieldEveryNFiles > 0 ? opts.yieldEveryNFiles : 25;
     this.asyncYieldFn = opts.asyncYieldFn ?? (() => new Promise<void>(resolve => setImmediate(resolve)));
     if (opts.dbPath !== ':memory:') {
@@ -355,6 +372,14 @@ export class TokenLedger {
     );
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
+    // Bounded Accumulation (Increment 2): enable INCREMENTAL auto-vacuum so a
+    // retention prune can reclaim disk via incremental_vacuum without a full
+    // (locking, whole-file-rewriting) VACUUM. This takes effect ONLY on a FRESH DB
+    // (set before any table is created, below); on an existing file it is a safe
+    // no-op (auto_vacuum is fixed until a one-time VACUUM converts it — that
+    // conversion is the operator-gated Increment-3 cleanup). The prune still bounds
+    // the row count on the existing file; only disk reclaim waits for the VACUUM.
+    try { this.db.pragma('auto_vacuum = INCREMENTAL'); } catch { /* @silent-fallback-ok: a pragma failure must never break ledger init (observability path); retention just won't auto-reclaim. */ }
     // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown via
     // closeAllSqlite(). The registry's at-most-once closed-set + this idempotent
     // closeFn make an explicit unregister unnecessary for this lifetime singleton.
@@ -1355,6 +1380,60 @@ export class TokenLedger {
       firstTs: Number(r.firstTs) || 0,
       lastTs: Number(r.lastTs) || 0,
     }));
+  }
+
+  /**
+   * Bounded Accumulation §4 — prune token_events older than `cutoffMs` in BOUNDED
+   * batches, so a large backlog is spread across calls instead of blocking the event
+   * loop in one synchronous DELETE. Returns { deleted, more } — `more` is true if the
+   * per-call batch cap was hit and another call would prune further. Fail-open
+   * (housekeeping must never throw into the poller).
+   */
+  pruneOlderThan(cutoffMs: number, opts?: { batchSize?: number; maxBatches?: number }): { deleted: number; more: boolean } {
+    if (this.closed) return { deleted: 0, more: false };
+    const batchSize = opts?.batchSize && opts.batchSize > 0 ? opts.batchSize : 5000;
+    const maxBatches = opts?.maxBatches && opts.maxBatches > 0 ? opts.maxBatches : 20;
+    let deleted = 0;
+    let more = false;
+    try {
+      const del = this.db.prepare(
+        `DELETE FROM token_events WHERE request_id IN (SELECT request_id FROM token_events WHERE ts < ? LIMIT ?)`,
+      );
+      for (let b = 0; b < maxBatches; b++) {
+        const n = Number(del.run(cutoffMs, batchSize).changes ?? 0);
+        deleted += n;
+        if (n < batchSize) { more = false; break; }
+        more = true; // hit a full batch — more may remain for the next call
+      }
+      return { deleted, more };
+    } catch {
+      // @silent-fallback-ok: retention prune is best-effort. A failed prune leaves
+      // older rows for the next tick; it must never throw into the poller's cadence.
+      return { deleted, more };
+    }
+  }
+
+  /** Reclaim up to `pages` freed pages (no-op unless auto_vacuum=INCREMENTAL is active). Fail-open. */
+  incrementalVacuum(pages = 1000): void {
+    if (this.closed) return;
+    try {
+      this.db.pragma(`incremental_vacuum(${Math.max(1, Math.floor(pages))})`);
+    } catch {
+      // @silent-fallback-ok: disk reclaim is best-effort; a no-op on a non-auto_vacuum DB is expected.
+    }
+  }
+
+  /**
+   * Driven by the poller each tick when retention is enabled: prune events older than
+   * the configured maxAgeMs (bounded per call) and, if anything was deleted, reclaim a
+   * bounded number of pages. No-op when retention is disabled (ships dark). `nowMs` is
+   * injectable for tests.
+   */
+  pruneToRetention(nowMs: number, opts?: { batchSize?: number; maxBatches?: number }): { deleted: number; more: boolean } {
+    if (!this.retentionEnabled) return { deleted: 0, more: false };
+    const res = this.pruneOlderThan(nowMs - this.retentionMaxAgeMs, opts);
+    if (res.deleted > 0) this.incrementalVacuum();
+    return res;
   }
 
   close(): void {

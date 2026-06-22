@@ -920,6 +920,9 @@ export class AgentServer {
           maxFileAgeMs: 30 * 24 * 60 * 60 * 1000, // 30 days
           maxFilesPerScan: 500,
           yieldEveryNFiles: 25,
+          // Bounded Accumulation (Increment 2): per-store retention, dark by default.
+          // The poller drives pruneToRetention on a sub-cadence; a no-op while disabled.
+          retention: options.config.storage?.retention?.tokenLedger,
         });
       }
     } catch (err) {

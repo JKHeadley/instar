@@ -3163,6 +3163,17 @@ export interface InstarConfig {
   };
   /** Update configuration */
   updates?: UpdateConfig;
+  /**
+   * Bounded Accumulation retention (Increment 2). Per-store retention enablement —
+   * ships DARK (each store defaults disabled); enabling a store opts it into the
+   * standard's bounded retention. Spec: docs/specs/bounded-accumulation-standard.md.
+   */
+  storage?: {
+    retention?: {
+      /** The 256MB token-ledger SQLite store. enabled:false (dark) by default. */
+      tokenLedger?: { enabled?: boolean; maxAgeMs?: number };
+    };
+  };
   /** Publishing (Telegraph) config */
   publishing?: PublishingConfig;
   /** Cloudflare Tunnel config */

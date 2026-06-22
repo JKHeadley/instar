@@ -1,0 +1,23 @@
+{
+  "ts": "2026-06-22T00:35:56.869Z",
+  "slug": "bounded-accumulation-increment-2-token-ledger",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/TokenLedger.ts matches token handling",
+    "safety-invariant proximity: src/monitoring/TokenLedgerPoller.ts matches token handling",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 140,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1241
+    ],
+    "notes": "Increment 2a of the Bounded Accumulation standard shipped in #1241 (the standard + Increment 1 substrate). This retrofits the first real store (token-ledger.db, 256MB — the lone unbounded SQLite store; ResourceLedger already pruned) onto the standard's SQLite retention class, behind a dark-by-default flag."
+  },
+  "verdict": "pass"
+}
