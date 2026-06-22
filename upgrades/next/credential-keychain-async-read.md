@@ -1,0 +1,44 @@
+<!-- bump: patch -->
+
+# Credential keychain read no longer freezes the event loop
+
+## What Changed
+
+The macOS keychain credential read (`OAuthRefresher.defaultCredentialStore.read`) was a synchronous
+`execFileSync('security', …)` with no timeout, run on the server's single event loop. The
+credential-audit loop reads all of an agent's claude account slots sequentially through it, so when
+several co-resident agents contend on one `securityd`, each read stalled seconds and the loop froze
+4–13s every ~30–65s — dropping the dashboard websocket (the "Disconnected" flapping) and false-firing
+the SleepWakeDetector (a ~0-CPU I/O-wait block the CPU check can't see). This is the SECOND
+event-loop blocker behind the dashboard flapping; the tmux Event-Loop Resilience fix (v1.3.643)
+removed the first (the tmux calls), this removes the keychain one.
+
+The read now has an async, off-loop variant (`readAsync`, promisified `execFile`, 3s timeout) used on
+the audit hot path (`CredentialIdentityOracle.resolveSlotTenant` awaits it, so each slot read yields
+the loop), plus a `timeout: 3000` on the remaining sync read/write as a bound for any non-hot-path
+caller. The sibling `CredentialProvider.ts` already set a keychain timeout; OAuthRefresher was missed.
+
+## What to Tell Your User
+
+If your dashboard kept showing "Disconnected" even after the tmux fix, this is the rest of the cause:
+a slow shared macOS keychain was freezing the server loop. After this update the dashboard stays
+connected under multi-agent load, and the agent stops occasionally misreporting itself as having gone
+to sleep.
+
+## Summary of New Capabilities
+
+- Async, timeout-bounded keychain credential read (`CredentialStore.readAsync`, optional + backward
+  compatible); the credential-audit hot path reads off the event loop.
+- A 3s timeout on the remaining synchronous keychain read/write — an unbounded `securityd` stall can
+  no longer wedge the loop (a timeout maps to needs-reauth, retried next cycle).
+- Removes the second event-loop blocker behind the dashboard "disconnected" flapping + the
+  SleepWakeDetector false-wakes.
+
+## Evidence
+
+Root cause diagnosed by a live `/usr/bin/sample` of the running server during a freeze (1567/1567
+main-thread samples in `SyncProcessRunner::Spawn → kevent` with `com.apple.security` loaded) +
+correlation probes catching freezes ~64s apart. Fix covered by a new async-read test suite (parity
+with the sync read, fallback-to-sync for stores without `readAsync`, and a deferred-promise test
+proving `resolveSlotTenant` awaits the async path); 83/83 tests across the credential suites green,
+tsc clean, no-silent-fallbacks ratchet + sync-subprocess chokepoint lint green.
