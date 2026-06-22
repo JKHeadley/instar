@@ -38,10 +38,16 @@ tracking.**
   (default 5000, `server.ts:4999`), `onDegrade` per swap, then `throw` (fail closed). Non-gating →
   `throw err` → caller's heuristic (no herd). The `catch` after `primary.evaluate()` (L203-205) is
   the ladder seam.
-- **`src/core/CircuitBreakingIntelligenceProvider.ts` + `LlmCircuitBreaker.ts`** — `onRateLimited`
-  OPENS the per-framework breaker (no same-provider retry); a subsequent `evaluate()` is SHED via
+- **`src/core/CircuitBreakingIntelligenceProvider.ts` + `src/core/LlmCircuitBreaker.ts`** —
+  `onRateLimited` OPENS the breaker (no same-provider retry); a subsequent `evaluate()` is SHED via
   `breaker.acquire()`→`allow:false`→`LlmCircuitOpenError` until the open window elapses. The breaker
-  ALREADY has a bounded wait-and-retry primitive: `acquireOrWait(rateLimitWaitMs)`.
+  is **ACCOUNT-GLOBAL** (one shared breaker per account pauses every LLM feature; a non-default
+  routed framework has its own separate breaker built in `buildProvider`). It ALREADY has a bounded
+  wait-and-retry primitive — and the SEAM the router can reach is `options.rateLimitWaitMs`:
+  `CircuitBreakingIntelligenceProvider.evaluate()` (src/core/, ~L184-200) already calls
+  `acquireOrWait(rateLimitWaitMs)` when the caller sets that option. **The router holds NO breaker
+  reference** (it only sees `IntelligenceProvider` handles) — so deferrable backoff is realized by
+  the router SETTING `options.rateLimitWaitMs` on the retry, NOT by a router→breaker call.
 - **`src/monitoring/LlmQueue.ts:82`** — `enqueue(lane, fn: (signal: AbortSignal) => Promise<string>,
   costCents=0)`; priority-laned; enforces a DAILY-CENTS cap (throws `'LLM daily spend cap exceeded'`)
   and an interactive-reserve guard — an enqueue can be REJECTED. Used by callers, not the router.
@@ -55,8 +61,10 @@ tracking.**
 
 ### The gaps this spec closes (and the one it defers)
 
-1. **No backoff-before-swap for DEFERRABLE work** — drive the breaker's `acquireOrWait` (NOT a
-   parallel sleep that races the open window) for deferrable calls.
+1. **No backoff-before-swap for DEFERRABLE work** — the router sets `options.rateLimitWaitMs` so the
+   provider-layer `acquireOrWait` performs the bounded wait (NOT a parallel sleep that races the open
+   window) for deferrable calls. The wait is account-global-breaker-scoped (the scope the call routes
+   to), which is legitimate "slow down."
 2. **No queue/defer rung** — wire `LlmQueue` for deferrable calls (handling enqueue-rejection).
 3. **Never-silent not guaranteed** — DegradationReporter has no recover/escalate lifecycle.
 4. **DEFERRED to a tracked follow-up (not v1):** account-swap for an internal call (rung b). It is
@@ -79,11 +87,13 @@ when consumed, jump straight to fail-closed. If the fail-closed propagates to a 
 gating: the total budget + never-silent tracking; the fast-swap behavior is UNCHANGED.
 
 ### 3b. DEFERRABLE call (background, not awaited) — the full gentle ladder
-1. **Backoff (NEW):** on a rate-limit, drive the breaker's `acquireOrWait(min(retryAfterMs,
-   deferrableBackoffCeilingMs))` — slow down and retry the SAME provider, honoring the server's
-   `retryAfterMs` (clamped to the ceiling; an over-ceiling retry-after for a deferrable call MAY
-   wait the full hint up to a hard `deferrableMaxWaitMs`). This reuses the breaker's open-window
-   timing rather than racing it.
+1. **Backoff (NEW):** on a rate-limit, set `options.rateLimitWaitMs = min(retryAfterMs,
+   deferrableBackoffCeilingMs)` on the retry to `primary.evaluate()`, so the provider-layer's
+   existing `acquireOrWait` performs the bounded wait (the router holds no breaker — see §2). This
+   slows down and retries the SAME provider, honoring the server's `retryAfterMs` (clamped to the
+   ceiling; an over-ceiling retry-after for a deferrable call MAY wait the full hint up to a hard
+   `deferrableMaxWaitMs`). It reuses the (account-global) breaker's open-window timing rather than
+   racing it with a parallel sleep.
 2. **Framework-swap (EXISTING):** the failureSwap tail.
 3. **Queue (NEW):** if still failing, `LlmQueue.enqueue(lane, signal => provider.evaluate(prompt,
    {...,signal}))` for a bounded retry window with **rate-aware, jittered drain pacing** (honor the
@@ -105,7 +115,13 @@ Extend `DegradationReporter` with an open-degradation lifecycle — designed to 
   cap (same class as `MAX_EVENTS`); over the cap → oldest evicted with a one-line log (never
   unbounded growth).
 - **Auto-resolve** on the next SUCCESSFUL real-LLM call for that `(component, framework)` — record
-  the degraded duration. O(1) map mutation; NO full-map serialize per open/resolve.
+  the degraded duration. This requires a NEW success hook: the router has only `onDegrade` today, so
+  this spec adds a paired `onResolved(component, framework)` callback wired into the router's success
+  returns (the `return await primary.evaluate(...)` paths AND the default-provider return) — net-new
+  wiring, named here per the extend-not-rebuild discipline. The open-map mutation on open/resolve is
+  O(1) (no full-map serialize). NOTE: the existing `DegradationReporter.persistToDisk()` does an
+  O(N) read-parse-write per report — that pre-existing disk path is OUT OF SCOPE here; §4 adds no new
+  O(N) path, but does not claim to fix the reporter's existing one.
 - **Liveness-gated escalation:** a degradation OPEN longer than `degradationEscalateMs` (default
   15m) AND with ≥1 real retry attempt since open raises ONE deduped, age-escalating attention item.
   A degradation with ZERO retry attempts since open (a run-once / idle component that is simply
@@ -126,8 +142,9 @@ Extend `DegradationReporter` with an open-degradation lifecycle — designed to 
   live-on-dev / dark-on-fleet (the known instar-dev pattern — round-1). Ladder fully off =
   EXACTLY today's framework-swap-only behavior.
 - **D2 Backoff bounds (DEFERRABLE only).** base 500ms, factor 2, max 3 attempts,
-  `deferrableBackoffCeilingMs` 8000, `deferrableMaxWaitMs` 60000, full jitter; drive
-  `breaker.acquireOrWait`, do NOT sleep-race the breaker. Gating calls have NO backoff.
+  `deferrableBackoffCeilingMs` 8000, `deferrableMaxWaitMs` 60000, full jitter; realized by setting
+  `options.rateLimitWaitMs` (the provider-layer `acquireOrWait` seam, §2), do NOT sleep-race the
+  breaker, and do NOT call a breaker from the router (it holds none). Gating calls have NO backoff.
 - **D3 `gatingLadderBudgetMs` = 6000** — a single hard wall-clock budget for the whole gating
   failure path; consumed → fail closed. **D3 is a LOAD-BEARING correctness decision (responsiveness
   of awaited gates), NOT a dark-flag-tunable cheap tag** (round-1 contest).
@@ -160,7 +177,9 @@ per-machine degradation could double-alert on a 2-machine setup for one provider
 a minor local-dedup limitation (noted, not coalesced in v1).
 
 ## 7. Testing (three tiers, NON-NEGOTIABLE)
-- **Unit:** rung (a) drives `acquireOrWait` (no sleep-race) and only on deferrable; the gating path
+- **Unit:** rung (a) sets `options.rateLimitWaitMs` (the provider-layer wait seam, no sleep-race,
+  no router→breaker call) and only on deferrable; auto-resolve fires via the new `onResolved` hook on
+  the next success; the gating path
   has NO backoff and obeys `gatingLadderBudgetMs`; queue used only when deferrable and `gating&&
   deferrable ⇒ NOT queued`; an enqueue REJECTION falls through to heuristic (never dropped); §4
   opens→auto-resolves on next success, escalates only with ≥1 retry, TTL-auto-closes a run-once
