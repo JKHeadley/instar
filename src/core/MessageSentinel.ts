@@ -29,6 +29,7 @@
  */
 
 import type { IntelligenceProvider } from './types.js';
+import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -587,8 +588,24 @@ export class MessageSentinel {
         action: this.categoryToAction(parsed.category, message),
         reason: `LLM classification: ${parsed.category}${parsed.exact ? '' : ' (extracted)'}`,
       };
-    } catch {
-      // LLM failure → pass through (don't block on evaluation errors)
+    } catch (err) {
+      // Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION):
+      // a capacity shed (host spawn cap saturated) must NOT auto-pass as
+      // 'normal'. The deterministic emergency-stop pre-check (fastClassify,
+      // Layer 1) already ran BEFORE this LLM call and is exempt from the cap, so
+      // a genuine "stop everything" was never gated here. For an AMBIGUOUS
+      // message that we could not LLM-classify under capacity pressure, HOLD
+      // (pause the session) rather than pass it through un-reviewed — the safe
+      // do-not-auto-pass direction.
+      if (isCapacityUnavailable(err)) {
+        return {
+          category: 'pause',
+          confidence: 0.4,
+          action: { type: 'pause-session' },
+          reason: 'LLM classification unavailable (spawn capacity saturated) — held (fail-closed) instead of auto-passing',
+        };
+      }
+      // Any other LLM failure → pass through (don't block on evaluation errors)
       return {
         category: 'normal',
         confidence: 0.3,

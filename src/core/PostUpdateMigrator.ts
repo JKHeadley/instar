@@ -6991,6 +6991,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Multi-transport mesh comms section');
     }
 
+    // Fork-Bomb Spawn Cap (forkbomb-prevention-simple) — Agent Awareness + Migration
+    // Parity: existing agents learn the host-wide concurrent-LLM-subprocess cap (ON by
+    // default, never dark), the /spawn-limiter read surface, the env/config tuning knobs,
+    // and the proactive "are we protected against a fork-bomb?" trigger via this appended
+    // section. Content-sniffed on a stable heading → idempotent.
+    if (!content.includes('Fork-Bomb Spawn Cap')) {
+      content += `\n**Fork-Bomb Spawn Cap (host-wide concurrent-LLM-subprocess ceiling)** — A SAFETY FLOOR that ships ON for every agent (never dark): a host-local counting semaphore bounds how many \`claude -p\`/\`codex exec\` subprocesses run AT ONCE across every compliant Instar process on the host (default 8). It is the structural answer to the 2026-06-20 OOM fork-bomb (~230-289 concurrent spawns ≈ 90-115GB). Every LLM provider rides the spawn-cap funnel (\`buildIntelligenceProvider\`); a saturated cap makes new spawns wait a bounded time, then shed — and a capacity shed of a SAFETY-GATING call fails CLOSED (held), never auto-passes. A per-agent single-instance lock removes the duplicate-server-instance multiplier.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/spawn-limiter\` → \`{ cap, liveHolders, available, saturated, waiters, acquireMs, waitersMax }\` (Registry First — read it, never guess).\n- Tune via \`.instar/config.json\` → \`intelligence.spawnCap\` (\`maxConcurrent\`, \`acquireMs\`, \`waitersMax\`) or env (\`INSTAR_HOST_SPAWN_MAX\`, \`INSTAR_SPAWN_ACQUIRE_MS\`, \`INSTAR_SPAWN_WAITERS_MAX\`). Restart sessions/server to apply.\n- **When to use** (PROACTIVE): "are we protected against a fork-bomb / OOM?" / "how many LLM spawns are running right now?" / "why did a gate hold under load?" → \`GET /spawn-limiter\`. (Spec: \`docs/specs/forkbomb-prevention-simple.md\`; constitution: "Bounded Blast Radius".)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Fork-Bomb Spawn Cap section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);

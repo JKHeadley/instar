@@ -173,21 +173,26 @@ exit 0
   });
 
   it('cleans up the per-call out-dir on success', async () => {
+    // Snapshot the PRE-EXISTING out-dirs first — other tests in this file (and
+    // other codex test files in the shared vitest pool) legitimately leave
+    // out-dirs on their error/timeout paths, and they share os.tmpdir(). The
+    // assertion must be scoped to the out-dir THIS call created, not the global
+    // population (the old <10s-mtime heuristic flaked when a sibling test ran
+    // within the window).
+    const listOutDirs = (): Set<string> =>
+      new Set(
+        fs
+          .readdirSync(os.tmpdir())
+          .filter((n) => n.startsWith('instar-codex-out-'))
+          .map((n) => path.join(os.tmpdir(), n)),
+      );
+    const before = listOutDirs();
     const provider = new CodexCliIntelligenceProvider({ codexPath: writeFakeCodex() });
     await provider.evaluate('p');
-    const leftovers = fs
-      .readdirSync(os.tmpdir())
-      .filter((n) => n.startsWith('instar-codex-out-'))
-      .map((n) => path.join(os.tmpdir(), n))
-      .filter((p) => {
-        try {
-          // Only dirs created in the last 10s by this test run matter.
-          return Date.now() - fs.statSync(p).mtimeMs < 10_000;
-        } catch {
-          return false;
-        }
-      });
-    expect(leftovers).toEqual([]);
+    // Only NEW out-dirs (created by THIS call) must be gone — pre-existing ones
+    // from sibling tests are not this test's concern.
+    const newLeftovers = [...listOutDirs()].filter((p) => !before.has(p));
+    expect(newLeftovers).toEqual([]);
   });
 });
 

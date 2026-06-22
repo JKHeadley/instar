@@ -22,6 +22,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
+import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { PrHandLease } from '../core/PrHandLease.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
@@ -2994,6 +2996,18 @@ export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
   ensureStateDir(config.stateDir);
 
+  // ── Fork-bomb prevention P1 (forkbomb-prevention-simple §D-CAP) ──
+  // Inject the operator-configured spawn-cap knobs into the host-wide spawn
+  // semaphore singleton at the very top of boot (before any provider is built),
+  // so every `claude -p`/`codex exec` spawn this process makes is bounded. A
+  // safety FLOOR — read with a plain `??` default (env > config > 8), never the
+  // dev-agent gate; it ships ON for every agent, never dark.
+  configureHostSpawnSemaphore({
+    maxConcurrent: config.intelligence?.spawnCap?.maxConcurrent,
+    acquireMs: config.intelligence?.spawnCap?.acquireMs,
+    waitersMax: config.intelligence?.spawnCap?.waitersMax,
+  });
+
   // LiveConfig: dynamic config re-reading for long-running server process.
   // Solves the "Written But Not Re-Read" class of bugs — sessions modify
   // config.json but the server process never picks up the changes.
@@ -3121,6 +3135,27 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Set up file logging for observability
     setupServerLog(config.stateDir);
+
+    // ── Fork-bomb prevention P2 — single-instance lock (forkbomb-prevention-simple §P2) ──
+    // Refuse to start a DUPLICATE server instance of this agent on this host
+    // (the 3× launchd/fleet/tmux multiplier that made the 2026-06-20 fork-bomb
+    // catastrophic). A normal restart hands off (the outgoing instance's exit
+    // handler frees the lock within a bounded grace); only a genuine duplicate
+    // is refused. A standby on a DIFFERENT host with its own state dir boots
+    // freely. Override with INSTAR_ALLOW_SECOND_INSTANCE=1.
+    const singleInstanceLock = new SingleInstanceLock({ stateDir: config.stateDir });
+    const lockResult = await singleInstanceLock.acquire();
+    if (!lockResult.acquired) {
+      console.error(
+        pc.red(
+          `Refusing to start: another instance of this agent is already running ` +
+          `(${lockResult.reason}). This is the fork-bomb single-instance guard. ` +
+          `Set INSTAR_ALLOW_SECOND_INSTANCE=1 to start a deliberate second instance.`,
+        ),
+      );
+      process.exit(1);
+    }
+    installReleaseHandlers(singleInstanceLock);
 
     // ── Boot health beacon (topic 21816 root cause #1 — Liveness Before Load) ──
     // The heavy boot below (TopicMemory/SemanticMemory load + session reconcile)
@@ -19099,6 +19134,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         const closed = closeAllSqlite();
         console.log(`[shutdown] closed ${closed} sqlite handle(s)`);
       } catch { /* best effort */ }
+      // Fork-bomb P2: free the single-instance lock so a clean restart hands off
+      // immediately (the process 'exit' handler is the last-resort net).
+      try { singleInstanceLock.release(); } catch { /* best effort on teardown */ }
       process.exit(0);
     };
 

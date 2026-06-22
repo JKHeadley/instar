@@ -1,0 +1,100 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: minor -->
+<!-- Valid values: patch, minor, major -->
+<!-- minor = new feature (the host-wide spawn cap) + a SEV-1 fix, backwards-compatible -->
+
+## What Changed
+
+Fork-bomb prevention — the SIMPLE design (`docs/specs/forkbomb-prevention-simple.md`).
+On 2026-06-20 the Instar server fork-bombed its macOS host into OOM **twice**
+(~230-289 concurrent `claude -p` ≈ 90-115GB): `evaluate()` spawned one LLM
+subprocess per call with **zero** concurrency control, `CoherenceGate` fanned ~10
+reviewers in parallel per message, and up to three server instances each
+re-flooded. This release adds the three structural primitives that make that
+physically impossible:
+
+- **P1 — Host-wide concurrent-spawn cap (the PRIMARY control).** A host-local
+  counting semaphore (`src/core/hostSpawnSemaphore.ts`) bounds how many LLM
+  subprocesses run **at once** across every compliant Instar process on the host
+  (default **8**). It uses a holder-SET model (count live holder records under an
+  exclusive flock, not decrement/increment counter math) so it is crash-safe by
+  construction — a double-release is a no-op, a pid-reuse can't steal a slot, a
+  partial write is discarded, a crashed holder is reclaimed (pid-dead AND
+  heartbeat-stale, **this host only**; a foreign-hostname holder is NEVER
+  reclaimed; a `df -P` host-local-disk check gates reclaim, fail-closed). The cap
+  is enforced by a per-`evaluate()` wrapper provider
+  (`src/core/SpawnCapIntelligenceProvider.ts`) installed at **every** return arm
+  of `buildIntelligenceProvider` (the factory funnel) — so CoherenceGate's
+  shared-instance fan-out is bound per call. A lint
+  (`scripts/lint-no-unbounded-llm-spawn.js`) forward-guards any new provider
+  constructed outside the funnel.
+- **P2 — Single-instance lock (`src/core/SingleInstanceLock.ts`).** Refuses a
+  duplicate server instance of the same agent on a host (the 3× launchd/fleet/tmux
+  multiplier), with a bounded deploy-handoff grace so a normal restart hands off
+  cleanly. Foreign-host locks are never reclaimed; `INSTAR_ALLOW_SECOND_INSTANCE=1`
+  overrides for a deliberate second instance.
+- **P3 — Bounded ingress.** A saturated cap makes a spawn request poll-retry up to
+  `acquireMs` (default 5000ms, ~100ms interval, no in-memory waiter queue so no
+  heap growth), bounded by a concurrent-poller ceiling (`waitersMax`, default 64).
+  On genuine exhaustion the call throws a typed `LlmCapacityUnavailableError`. The
+  **four safety-gating seams** fail CLOSED on that shed instead of auto-passing:
+  `MessageSentinel.classify` (held, not `normal`), `InputGuard.reviewTopicCoherence`
+  (flagged `suspicious`, not `coherent`), `MessagingToneGate.review` (held
+  `pass:false`), and the outbound `CoherenceGate` reviewer path (block-the-turn
+  `pass:false`). The deterministic emergency-stop keyword pre-check runs **before**
+  the LLM classifier and is **exempt** from the cap — a "stop everything" halt
+  always halts.
+
+The cap is a **SAFETY FLOOR**: it ships **ON by default** for every agent (read
+with a plain `?? default`, never a dev gate), tunable via `intelligence.spawnCap`
+(`maxConcurrent`/`acquireMs`/`waitersMax`) or env (`INSTAR_HOST_SPAWN_MAX`,
+`INSTAR_SPAWN_ACQUIRE_MS`, `INSTAR_SPAWN_WAITERS_MAX`). A new `GET /spawn-limiter`
+route reports live holder count, cap, available slots, saturation, and waiters. A
+conservative OS-level `NumberOfProcesses` ceiling (512) is added to the launchd
+plist as a host-global belt under the semaphore. A new constitutional standard —
+**"Bounded Blast Radius"** — lands in `docs/STANDARDS-REGISTRY.md` with its lint +
+burst-invariant ratchet in the same PR.
+
+## What to Tell Your User
+
+- **Fork-bomb protection is on**: "I now have a hard ceiling on how much work I can
+  run at the same time, so I can never flood your machine into running out of
+  memory again — there's a safe limit (8 by default) that's always on, plus a guard
+  that stops a duplicate of me from starting up. You can ask me 'are we protected
+  against a fork-bomb?' or 'how many tasks am I running right now?' any time."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Host-wide concurrent-LLM-spawn cap (SEV-1 OOM fix) | Automatic — on by default (limit 8); tune with `intelligence.spawnCap` or env |
+| Spawn-cap status | `GET /spawn-limiter` |
+| Single-instance lock (no duplicate server) | Automatic at server boot; override with `INSTAR_ALLOW_SECOND_INSTANCE=1` |
+| Fail-closed gating under capacity pressure | Automatic — the four inbound/outbound safety gates hold instead of auto-passing |
+
+## Evidence
+
+This release fixes a SEV-1 (full host OOM ×2 on 2026-06-20). Evidence:
+
+- **Reproduction → fix mechanism.** The incident driver — one `claude -p` per
+  `evaluate()` with no concurrency control, fanned ~10-wide by CoherenceGate — is
+  now bound at the factory funnel: every provider `buildIntelligenceProvider`
+  returns is wrapped per-call by `SpawnCapIntelligenceProvider`, which acquires a
+  host-wide slot before the inner spawn and releases it in `finally`.
+- **Burst-invariant ratchet** (`tests/unit/host-spawn-semaphore-burst-invariant.test.ts`):
+  10,000 churned acquire/release attempts NEVER let live holders exceed the cap;
+  a TRUE multi-process test forks 12 OS processes racing for 3 slots and observes
+  ≤3 successes (the cross-process flock holds the cap). This is the standing
+  Bounded-Accumulation proof that the OOM vector cannot recur.
+- **Four fail-closed seams** (`tests/unit/spawn-cap-fail-closed-gates.test.ts`): a
+  capacity shed at each gating seam is asserted to HOLD (not produce
+  `normal`/`coherent`/`pass:true`), while a generic LLM error still fails open —
+  proving capacity is the only new hold. Emergency-stop is asserted exempt
+  (classified by the deterministic fast-path before any LLM call).
+- **E2E lifecycle** (`tests/e2e/spawn-cap-forkbomb-lifecycle.test.ts`):
+  `GET /spawn-limiter` is alive (200, cap 8, on by default) on a production-init
+  server, and a second single-instance-lock acquisition while a live holder exists
+  is refused (the duplicate-flood guard), while a clean release hands off.
+- All three test tiers green; `tsc --noEmit` clean; the new lint + the
+  `no-silent-llm-fallback` + `no-silent-fallbacks` ratchets green.

@@ -425,6 +425,31 @@ export class CoherenceGate {
       }
     }
 
+    // ── Step 8a: Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION) ──
+    // A reviewer whose LLM call was SHED because the host spawn cap was saturated
+    // returns `capacityUnavailable: true` (NOT a benign fail-open abstain). This
+    // is the 4th fail-closed seam: the outbound path is NOT already fail-closed
+    // (its ALL_ABSTAIN branch fails OPEN for internal channels, returning
+    // pass:true). Under capacity pressure, HOLD the turn (pass:false) so the
+    // existing response-review.js exit(2) fires — an UN-reviewed outbound message
+    // is never delivered just because the reviewers couldn't spawn. observeOnly
+    // is a deliberate non-enforcing mode (logs, never blocks except PEL), so it
+    // is respected here too.
+    if (!observeOnly && settled.some((r) => r.capacityUnavailable)) {
+      const capacityViolations: AuditViolation[] = settled
+        .filter((r) => r.capacityUnavailable)
+        .map((r) => ({ reviewer: r.reviewer, severity: 'block' as const, issue: r.issue, suggestion: r.suggestion, latencyMs: r.latencyMs }));
+      this.logAudit(sessionId, context, 'block-capacity', capacityViolations, 'Spawn capacity saturated — held (fail-closed)');
+      return {
+        pass: false,
+        feedback: '[unreviewed] Response held — review capacity temporarily saturated (host spawn cap). Retry shortly.',
+        issueCategories: ['INFRASTRUCTURE'],
+        retryCount: retryState.retryCount,
+        _auditViolations: capacityViolations,
+        _outcome: 'block-capacity',
+      };
+    }
+
     // ── Step 8b: Check for research trigger signals ────────────
     let researchTriggered = false;
     for (const result of settled) {

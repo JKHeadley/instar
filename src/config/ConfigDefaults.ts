@@ -29,6 +29,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   models: {
     tierEscalation: DEFAULT_TIER_ESCALATION_CONFIG,
   },
+  // Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE
+  // design, docs/specs/forkbomb-prevention-simple.md §D-CAP). A SAFETY FLOOR:
+  // ON by default fleet-wide — a safety floor that ships dark is no floor. The
+  // values are read at call sites with a plain `?? default` (env > config > the
+  // hardcoded default), so absence is already safe; seeding them here just
+  // materializes the operator-tunable knobs. applyDefaults is add-missing-only,
+  // so an operator's hand-tuned value is NEVER overwritten on migration.
+  intelligence: {
+    spawnCap: {
+      maxConcurrent: 8,
+      acquireMs: 5000,
+      waitersMax: 64,
+    },
+  },
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,

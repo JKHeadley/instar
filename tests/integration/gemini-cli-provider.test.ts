@@ -20,6 +20,7 @@ import { CapabilityFlag } from '../../src/providers/capabilities.js';
 import { buildIntelligenceProvider } from '../../src/core/intelligenceProviderFactory.js';
 import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
+import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
 describe('gemini-cli — registry (parity-harness surface)', () => {
@@ -58,8 +59,13 @@ describe('gemini-cli — registry (parity-harness surface)', () => {
 
 describe('gemini-cli — the ALIVE path (buildIntelligenceProvider)', () => {
   function inner(p: IntelligenceProvider | null): IntelligenceProvider {
+    // The factory wraps every provider in TWO universal funnels (fork-bomb
+    // prevention, forkbomb-prevention-simple §P1): the circuit breaker (OUTER)
+    // around the host-wide spawn cap (MIDDLE) around the actual provider (INNER).
     expect(p).toBeInstanceOf(CircuitBreakingIntelligenceProvider);
-    return (p as unknown as { inner: IntelligenceProvider }).inner;
+    const spawnCap = (p as unknown as { inner: IntelligenceProvider }).inner;
+    expect(spawnCap).toBeInstanceOf(SpawnCapIntelligenceProvider);
+    return (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
   }
 
   it('returns a circuit-breaker-wrapped GeminiCliIntelligenceProvider with a supplied binary path', () => {

@@ -1736,6 +1736,23 @@ ${argsXml}
     </dict>
     <key>ThrottleInterval</key>
     <integer>10</integer>
+    <!-- Fork-bomb prevention belt (forkbomb-prevention-simple §D-CAP): an
+         OS-level NumberOfProcesses ceiling under the host-wide spawn-cap
+         semaphore (the PRIMARY control). Generous + conservative (512) — it
+         bounds a non-compliant runaway that bypasses the funnel without
+         affecting normal operation (normal instar runs far fewer subprocesses).
+         This is the host-GLOBAL belt the funnel's per-process honesty can't
+         provide; it never substitutes for the spawn cap, it backstops it. -->
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfProcesses</key>
+        <integer>512</integer>
+    </dict>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfProcesses</key>
+        <integer>512</integer>
+    </dict>
 </dict>
 </plist>`;
 

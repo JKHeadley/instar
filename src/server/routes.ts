@@ -10,6 +10,8 @@ import type { Request as ExpressRequest, Response as ExpressResponse } from 'exp
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { classifyActionClaim } from '../core/action-claim.js';
+import { getHostSpawnSemaphore, configuredSpawnAcquireMs, configuredSpawnWaitersMax } from '../core/hostSpawnSemaphore.js';
+import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
@@ -7369,6 +7371,32 @@ export function createRoutes(ctx: RouteContext): Router {
       limit,
       samples: ctx.resourceLedger.recentSamples({ sinceMs, limit, source }),
     });
+  });
+
+  // ── Fork-bomb prevention: host-wide spawn-cap status (forkbomb-prevention-simple §P1/§P3) ──
+  // Read-only observability over the host-wide concurrent-LLM-subprocess cap.
+  // Reports the live holder count (this host + foreign, never-reclaimed), the
+  // cap, the bounded-acquire budget, and the live concurrent-poller count
+  // (P3 waiters). Always available — the cap is a safety floor that ships ON.
+  router.get('/spawn-limiter', (_req, res) => {
+    try {
+      const status = getHostSpawnSemaphore().status();
+      res.json({
+        cap: status.cap,
+        liveHolders: status.liveHolders,
+        localHolders: status.localHolders,
+        foreignHolders: status.foreignHolders,
+        available: Math.max(0, status.cap - status.liveHolders),
+        saturated: status.liveHolders >= status.cap,
+        waiters: activeSpawnPollers(),
+        acquireMs: configuredSpawnAcquireMs(),
+        waitersMax: configuredSpawnWaitersMax(),
+        holdersPath: status.holdersPath,
+      });
+    } catch (err) {
+      // Observability must never throw — report an honest error rather than 500.
+      res.status(500).json({ error: 'spawn-limiter status unavailable', detail: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ── Approval-as-Data (docs/specs/AUTONOMOUS-OPERATION-JUDGMENT-AND-APPROVAL-AS-DATA-SPEC.md, Part B / Phase 2) ──

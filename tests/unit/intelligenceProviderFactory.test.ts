@@ -14,18 +14,29 @@ import { CodexCliIntelligenceProvider } from '../../src/core/CodexCliIntelligenc
 import { ClaudeCliIntelligenceProvider } from '../../src/core/ClaudeCliIntelligenceProvider.js';
 import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
+import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
-// The factory wraps every provider in the account-global rate-limit circuit
-// breaker (CircuitBreakingIntelligenceProvider). Assert both that the result
-// is wrapped AND that the correct framework provider is underneath.
+// The factory wraps every provider in TWO universal funnels (fork-bomb
+// prevention, forkbomb-prevention-simple §P1): the account-global rate-limit
+// circuit breaker (OUTER, CircuitBreakingIntelligenceProvider) around the
+// host-wide spawn cap (MIDDLE, SpawnCapIntelligenceProvider) around the actual
+// framework provider (INNER). Assert the full chain: breaker → spawn-cap → provider.
 function expectWraps(
   p: IntelligenceProvider | null,
   Inner: new (...args: never[]) => IntelligenceProvider,
 ): void {
   expect(p).toBeInstanceOf(CircuitBreakingIntelligenceProvider);
-  const inner = (p as unknown as { inner: IntelligenceProvider }).inner;
+  const spawnCap = (p as unknown as { inner: IntelligenceProvider }).inner;
+  expect(spawnCap).toBeInstanceOf(SpawnCapIntelligenceProvider);
+  const inner = (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
   expect(inner).toBeInstanceOf(Inner);
+}
+
+/** Unwrap both funnel layers (breaker → spawn-cap) to reach the actual provider. */
+function innermost(p: IntelligenceProvider | null): IntelligenceProvider {
+  const spawnCap = (p as unknown as { inner: IntelligenceProvider }).inner;
+  return (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
 }
 
 describe('buildIntelligenceProvider', () => {
@@ -60,7 +71,7 @@ describe('buildIntelligenceProvider', () => {
       quotaStateFile: '/tmp/gemini-quota-state.json',
     });
     expectWraps(p, GeminiCliIntelligenceProvider);
-    const inner = (p as unknown as { inner: GeminiCliIntelligenceProvider }).inner;
+    const inner = innermost(p);
     expect((inner as unknown as { capacityPolicy?: { quotaStateFile?: string } }).capacityPolicy?.quotaStateFile)
       .toBe('/tmp/gemini-quota-state.json');
   });

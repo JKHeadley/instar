@@ -119,6 +119,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'spawnLimiter',
+    prefixes: ['/spawn-limiter'],
+    description: 'Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE design, docs/specs/forkbomb-prevention-simple.md). A SAFETY FLOOR that ships ON for every agent (never dark): a host-local counting semaphore bounds how many `claude -p`/`codex exec` subprocesses run AT ONCE across every compliant Instar process on the host (default 8), the chokepoint for the 2026-06-20 OOM fork-bomb. GET /spawn-limiter reports the live holder count, the cap, available slots, saturation, the live concurrent-poller count (P3 bounded ingress), and the acquire budget. Tune via intelligence.spawnCap.* or env (INSTAR_HOST_SPAWN_MAX / INSTAR_SPAWN_ACQUIRE_MS / INSTAR_SPAWN_WAITERS_MAX). When asked "are we capped against a fork-bomb?" / "how many LLM spawns are running right now?" → read this.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /spawn-limiter'],
+    }),
+  },
+  {
     key: 'multiMachinePool',
     prefixes: ['/pool'],
     description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',

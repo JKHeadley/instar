@@ -3153,6 +3153,24 @@ export interface InstarConfig {
        * injected sentinel and the REPL would otherwise never be reaped. */
       maxReroutedLifetimeMinutes?: number;
     };
+    /**
+     * Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE
+     * design, docs/specs/forkbomb-prevention-simple.md §D-CAP). A SAFETY FLOOR:
+     * read with a plain `?? default` (env > this config > the hardcoded default),
+     * NEVER `resolveDevAgentGate` — it ships ON for every agent, never dark. The
+     * cap bounds how many `claude -p`/`codex exec` subprocesses run AT ONCE
+     * across every compliant Instar process on the host (the primary control for
+     * the 2026-06-20 OOM fork-bomb). Env overrides: INSTAR_HOST_SPAWN_MAX,
+     * INSTAR_SPAWN_ACQUIRE_MS, INSTAR_SPAWN_WAITERS_MAX.
+     */
+    spawnCap?: {
+      /** Concurrent-spawn cap across the whole host. Default 8. */
+      maxConcurrent?: number;
+      /** Bounded-acquire poll budget (ms) before a saturated call sheds. Default 5000. */
+      acquireMs?: number;
+      /** Concurrent-poller ceiling (bounds the waiters, no queue-node heap). Default 64. */
+      waitersMax?: number;
+    };
   };
   /**
    * Agent-level set of frameworks this install actively uses. Drives

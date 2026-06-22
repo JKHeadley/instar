@@ -62,7 +62,7 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'core/ProjectDriftChecker.ts': 'returns empty drift — advisory project-drift signal, no gated action',
   'core/CompletionEvaluator.ts': 'fail-open returns met:false ("keep working") / stopAllowed:true — conservative; gates autonomous completion in the benign direction',
   'core/ContextualEvaluator.ts': 'routes failure through handleEvaluationError — advisory contextual evaluation',
-  'core/CoherenceReviewer.ts': 'returns failOpen (no opinion) — advisory reviewer; high-stakes reviewers carry a deterministic floor',
+  'core/CoherenceReviewer.ts': 'returns failOpen (no opinion) on a transport error — advisory reviewer; a SPAWN-CAPACITY shed (LlmCapacityUnavailableError) instead returns pass:false/capacityUnavailable (fail-CLOSED — forkbomb-prevention-simple §D-DISPOSITION), which CoherenceGate._evaluate blocks the turn on',
   'core/TopicIntentExtractor.ts': 'returns [] — advisory topic-intent extraction',
   'memory/TopicSummarizer.ts': 'returns partial results — advisory topic summary',
   'security/LLMSanitizer.ts': 'fails SAFE — default catch returns sanitized:"" (empty, the safest result); only returns original when the caller explicitly opts in',

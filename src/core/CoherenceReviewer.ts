@@ -8,6 +8,7 @@
 
 import crypto from 'node:crypto';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
+import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +41,15 @@ export interface ReviewResult {
   reviewer: string;
   /** Latency in ms */
   latencyMs: number;
+  /**
+   * True if THIS reviewer's LLM call was SHED because the host spawn cap was
+   * saturated (fork-bomb prevention P3, forkbomb-prevention-simple
+   * §D-DISPOSITION). The OUTBOUND CoherenceGate._evaluate treats ANY
+   * capacity-unavailable reviewer result as a fail-CLOSED block-the-turn
+   * (pass=false) — NOT a benign abstain that fails open — so an unreviewed
+   * outbound turn is held under capacity pressure rather than delivered.
+   */
+  capacityUnavailable?: boolean;
 }
 
 export interface ReviewContext {
@@ -169,11 +179,26 @@ export abstract class CoherenceReviewer {
         reviewer: this.name,
         latencyMs,
       };
-    } catch {
-      // Fail-open: reviewer error = no opinion
+    } catch (err) {
       const latencyMs = Date.now() - start;
       this.metrics.totalLatencyMs += latencyMs;
       this.metrics.errorCount++;
+      // Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION):
+      // a capacity shed (host spawn cap saturated) is NOT a benign abstain. Tag
+      // the result so CoherenceGate._evaluate blocks the turn (pass=false)
+      // rather than letting an UN-reviewed outbound message fail open.
+      if (isCapacityUnavailable(err)) {
+        return {
+          pass: false,
+          severity: 'block',
+          issue: 'Outbound coherence review unavailable — host spawn capacity saturated.',
+          suggestion: 'Held (fail-closed) under load; retry shortly.',
+          reviewer: this.name,
+          latencyMs,
+          capacityUnavailable: true,
+        };
+      }
+      // Fail-open: reviewer error = no opinion
       return {
         pass: true,
         severity: 'warn',

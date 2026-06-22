@@ -86,6 +86,10 @@ const ALLOWLIST = new Set([
   // Same bootstrap-escape pattern (june15-headless-spawn-reroute funnel
   // lint) — read-only `git diff --cached --name-only` only.
   'scripts/lint-no-unfunneled-headless-launch.js',
+  // Same bootstrap-escape pattern (fork-bomb spawn-cap funnel lint) —
+  // read-only `git diff --cached --name-only` for --staged. Cannot depend on
+  // the TS funnel because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-no-unbounded-llm-spawn.js',
   // Same bootstrap-escape pattern (Step 4b credential-write funnel lint) —
   // read-only `git diff --cached --name-only` for --staged. Cannot depend on
   // the TS funnel because TS is not compiled when the lint runs in pre-push.

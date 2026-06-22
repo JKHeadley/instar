@@ -1,0 +1,520 @@
+/**
+ * hostSpawnSemaphore — P1 of the SIMPLE fork-bomb prevention design.
+ *
+ * Spec: docs/specs/forkbomb-prevention-simple.md (§P1, §P3, §D-CAP).
+ * Source postmortem: the-portal/docs/postmortems/2026-06-20-echo-instar-forkbomb-oom.md.
+ *
+ * THE PRIMARY CONTROL. A single host-local COUNTING SEMAPHORE that bounds how
+ * many LLM subprocesses ("claude -p" / "codex exec" / …) run AT ONCE across
+ * EVERY compliant Instar agent + server instance on this host. The 2026-06-20
+ * incident fork-bombed a 128GB macOS host into OOM twice (~230-289 concurrent
+ * `claude -p` ≈ 90-115GB) because `evaluate()` spawned one subprocess per call
+ * with ZERO concurrency control and CoherenceGate fans ~10 reviewers in
+ * parallel per message. This bounds that.
+ *
+ * MECHANISM — a holder-SET model (NOT decrement/increment counter math):
+ *   A host-local file (`~/.instar/host-spawn-holders.json`, NOT a synced
+ *   volume), guarded by an exclusive O_CREAT|O_EXCL lock (the in-tree
+ *   ProjectRoundLock pattern). The cap is enforced by COUNTING LIVE holder
+ *   records — never by mutating a shared integer:
+ *     - acquire(id): under the lock, prune dead holders, and if
+ *       liveHolders < cap append `{id, pid, hostname, heartbeat}` (atomic
+ *       temp+rename) → true; else false.
+ *     - release(id): under the lock, remove THIS id.
+ *   Crash-safe by construction: a double-release is a no-op (id already gone),
+ *   a pid-reuse can't steal a slot (unique id, not pid), a partial write is
+ *   discarded (temp+rename), a crashed holder is reclaimed by prune-dead
+ *   (pid not alive AND heartbeat stale, on THIS host only).
+ *
+ * HOST-LOCAL-LOCK CONTRACT (mirrors ResumeQueue.ts, the 2026-06-15 lesson):
+ *   - A FOREIGN-hostname holder is NEVER pruned/reclaimed (refuse-loud — a
+ *     pid check is meaningless cross-host on a shared volume).
+ *   - A `df -P` host-local-disk confirmation gates reclaim (fail-closed: if we
+ *     cannot positively confirm the holders file is on a local disk, we NEVER
+ *     prune a holder — we only ever decline to reclaim, never decline to bound).
+ *
+ * BOUNDED INGRESS (P3) lives in the wrapper (SpawnCapIntelligenceProvider) via
+ * poll-retry against `acquire()` — this module is the pure counting primitive.
+ */
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { isAlive } from './ProjectRoundLock.js';
+
+/** One live holder of a spawn slot. */
+export interface SpawnHolder {
+  /** Unique per-acquire id (NOT the pid — pid-reuse must not steal a slot). */
+  id: string;
+  pid: number;
+  hostname: string;
+  /** ms epoch of the last heartbeat (acquire time, refreshed by long holders). */
+  heartbeat: number;
+}
+
+interface HoldersFile {
+  version: 1;
+  holders: SpawnHolder[];
+}
+
+/** Heartbeat staleness window — a holder is reclaim-eligible (pid dead OR, on a
+ * provably host-local disk, heartbeat older than this) only past it. Kept long
+ * (a slow `claude -p` cold-start + run can legitimately exceed a minute), and
+ * pid-liveness is the PRIMARY signal — heartbeat staleness is secondary and
+ * only consulted when the pid is also gone. */
+export const HOLDER_STALE_MS = 5 * 60_000;
+
+/**
+ * FD1 (from ResumeQueue) — is `p` on a HOST-LOCAL filesystem? FAIL-CLOSED:
+ * anything we cannot positively confirm as local returns false, so a holder on
+ * a genuine shared/network volume is NEVER reclaimed (the two-hosts-one-volume
+ * corruption the host-lock invariant protects against). `df -P` device-column
+ * classification — re-implemented here (not imported from monitoring/) so
+ * core/ never depends on monitoring/.
+ */
+export function isPathHostLocalDefault(p: string): boolean {
+  let out: string;
+  try {
+    // lint-allow-sync-spawn: a bounded (3s) one-shot host-FS classification, run
+    // ONCE per process and then MEMOIZED (HostSpawnSemaphore._fsLocalCache) — it
+    // never runs on the hot acquire() fan-out path. Mirrors ResumeQueue's
+    // isStateDirHostLocalDefault host-lock contract; a path's FS type can't
+    // change at runtime, so there is nothing to re-probe.
+    out = execFileSync('df', ['-P', p], { timeout: 3000, encoding: 'utf-8' });
+  } catch {
+    // @silent-fallback-ok: df unavailable/failed ⇒ cannot confirm local ⇒
+    // fail-closed to NOT-local (the safe direction: never reclaim on doubt).
+    return false;
+  }
+  const lines = out.trim().split('\n');
+  if (lines.length < 2) return false; // unparseable → fail-closed
+  const source = lines[1]?.trim().split(/\s+/)[0] ?? '';
+  return classifyDfSourceLocal(source);
+}
+
+/** Pure FD1 classifier over the `df -P` device-source column. FAIL-CLOSED. */
+export function classifyDfSourceLocal(source: string): boolean {
+  if (!source) return false;
+  if (source.startsWith('//')) return false; // SMB/CIFS //host/share → network
+  if (/^[^/][^:]*:/.test(source)) return false; // NFS host:/path → network
+  if (source.startsWith('/dev/')) return true; // a real block device → local
+  return false; // map/tmpfs/anything unrecognized → fail-closed
+}
+
+export interface HostSpawnSemaphoreDeps {
+  /** Absolute path to the holders file. Default `~/.instar/host-spawn-holders.json`. */
+  holdersPath?: string;
+  /** Concurrent-spawn cap. Default resolved by `resolveSpawnCap()`. */
+  cap?: number;
+  now?: () => number;
+  hostname?: () => string;
+  /** pid liveness probe (tests override). */
+  pidAlive?: (pid: number) => boolean;
+  /** Host-local FS probe (tests override; default `isPathHostLocalDefault`). */
+  isPathHostLocal?: (p: string) => boolean;
+  /** Unique-id generator (tests override for determinism). */
+  genId?: () => string;
+}
+
+/**
+ * Resolve the concurrent-spawn cap. Precedence (D-CAP):
+ *   INSTAR_HOST_SPAWN_MAX env  >  config intelligence.spawnCap.maxConcurrent  >  8.
+ * A safety FLOOR — read with a plain `??` default, NEVER resolveDevAgentGate
+ * (it is ON by default, ships never-dark). A non-positive / non-finite value
+ * is ignored (falls through to the next source) so a typo can't disable the cap.
+ */
+export function resolveSpawnCap(configCap?: number, env: NodeJS.ProcessEnv = process.env): number {
+  const fromEnv = env['INSTAR_HOST_SPAWN_MAX'];
+  if (fromEnv !== undefined) {
+    const n = Number(fromEnv);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  if (typeof configCap === 'number' && Number.isFinite(configCap) && configCap > 0) {
+    return Math.floor(configCap);
+  }
+  return 8;
+}
+
+/**
+ * Resolve the bounded-acquire poll budget in ms (P3). Precedence (D-CAP):
+ *   INSTAR_SPAWN_ACQUIRE_MS env  >  config intelligence.spawnCap.acquireMs  >  5000.
+ * Read with a plain `??` default (safety floor, never resolveDevAgentGate).
+ */
+export function resolveSpawnAcquireMs(configMs?: number, env: NodeJS.ProcessEnv = process.env): number {
+  const fromEnv = env['INSTAR_SPAWN_ACQUIRE_MS'];
+  if (fromEnv !== undefined) {
+    const n = Number(fromEnv);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  if (typeof configMs === 'number' && Number.isFinite(configMs) && configMs >= 0) {
+    return Math.floor(configMs);
+  }
+  return 5000;
+}
+
+/**
+ * Resolve the concurrent-pollers ceiling (P3). Precedence (D-CAP):
+ *   INSTAR_SPAWN_WAITERS_MAX env  >  config intelligence.spawnCap.waitersMax  >  64.
+ */
+export function resolveSpawnWaitersMax(configMax?: number, env: NodeJS.ProcessEnv = process.env): number {
+  const fromEnv = env['INSTAR_SPAWN_WAITERS_MAX'];
+  if (fromEnv !== undefined) {
+    const n = Number(fromEnv);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  if (typeof configMax === 'number' && Number.isFinite(configMax) && configMax > 0) {
+    return Math.floor(configMax);
+  }
+  return 64;
+}
+
+export interface SpawnSemaphoreStatus {
+  cap: number;
+  /** Live holders after pruning, this host + foreign. */
+  liveHolders: number;
+  /** Holders whose hostname is THIS host. */
+  localHolders: number;
+  /** Holders whose hostname is a DIFFERENT host (never reclaimed). */
+  foreignHolders: number;
+  holdersPath: string;
+}
+
+/**
+ * Host-wide counting semaphore over LLM-subprocess spawns. One instance per
+ * process is fine — the cross-process coordination is the file + flock, not
+ * the object. Stateless beyond the file.
+ */
+export class HostSpawnSemaphore {
+  private readonly holdersPath: string;
+  private readonly cap: number;
+  private readonly now: () => number;
+  private readonly host: string;
+  private readonly pidAlive: (pid: number) => boolean;
+  private readonly isPathHostLocal: (p: string) => boolean;
+  private readonly genId: () => string;
+  /** Memoized host-local determination (a fixed path's FS type can't change at
+   * runtime; the `df -P` probe is expensive + synchronous, so it runs ONCE per
+   * instance — never per acquire() on the hot fan-out path). */
+  private _fsLocalCache: boolean | undefined;
+
+  constructor(deps: HostSpawnSemaphoreDeps = {}) {
+    this.holdersPath = deps.holdersPath ?? defaultHoldersPath();
+    this.cap = deps.cap ?? resolveSpawnCap();
+    this.now = deps.now ?? (() => Date.now());
+    this.host = (deps.hostname ?? (() => os.hostname()))();
+    this.pidAlive = deps.pidAlive ?? isAlive;
+    this.isPathHostLocal = deps.isPathHostLocal ?? isPathHostLocalDefault;
+    this.genId =
+      deps.genId ??
+      (() => `${this.host}:${process.pid}:${this.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`);
+  }
+
+  getCap(): number {
+    return this.cap;
+  }
+
+  /**
+   * Try to take a slot under id `id`. Returns true if a slot was appended
+   * (liveHolders < cap after pruning), false if the host is at the cap.
+   * Holds the exclusive flock for the whole read-prune-decide-write window.
+   */
+  acquire(id: string): boolean {
+    return this.withLock(() => {
+      const file = this.readHolders();
+      const live = this.pruneDead(file.holders);
+      if (live.length >= this.cap) {
+        // At the cap — write back the pruned set (cheap GC) but take no slot.
+        this.writeHolders({ version: 1, holders: live });
+        return false;
+      }
+      // Crash-safe: an id already present (a retry that already landed) is a
+      // no-op-append, not a duplicate slot.
+      if (!live.some((h) => h.id === id)) {
+        live.push({ id, pid: process.pid, hostname: this.host, heartbeat: this.now() });
+      }
+      this.writeHolders({ version: 1, holders: live });
+      return true;
+    }, /* fallbackOnLockFail */ false);
+  }
+
+  /** Release the slot held under `id`. A double-release / unknown id is a no-op. */
+  release(id: string): void {
+    this.withLock(() => {
+      const file = this.readHolders();
+      const remaining = file.holders.filter((h) => h.id !== id);
+      // Opportunistically GC dead holders on release too (cheap, keeps the file small).
+      const live = this.pruneDead(remaining);
+      this.writeHolders({ version: 1, holders: live });
+      return undefined;
+    }, /* fallbackOnLockFail */ undefined);
+  }
+
+  /** Refresh a long-held slot's heartbeat so a slow legit spawn is never reclaimed. */
+  heartbeat(id: string): void {
+    this.withLock(() => {
+      const file = this.readHolders();
+      let changed = false;
+      for (const h of file.holders) {
+        if (h.id === id) {
+          h.heartbeat = this.now();
+          changed = true;
+        }
+      }
+      if (changed) this.writeHolders(file);
+      return undefined;
+    }, /* fallbackOnLockFail */ undefined);
+  }
+
+  /** Read-only status (count of live holders after a prune). Best-effort: never throws. */
+  status(): SpawnSemaphoreStatus {
+    let live: SpawnHolder[] = [];
+    try {
+      live = this.withLock(() => {
+        const file = this.readHolders();
+        const pruned = this.pruneDead(file.holders);
+        this.writeHolders({ version: 1, holders: pruned });
+        return pruned;
+      }, /* fallbackOnLockFail */ this.readHolders().holders);
+    } catch {
+      // @silent-fallback-ok: status is observability — a read error reports
+      // zero holders rather than throwing into the /spawn-limiter route.
+      live = [];
+    }
+    const localHolders = live.filter((h) => h.hostname === this.host).length;
+    return {
+      cap: this.cap,
+      liveHolders: live.length,
+      localHolders,
+      foreignHolders: live.length - localHolders,
+      holdersPath: this.holdersPath,
+    };
+  }
+
+  // ── Internals ─────────────────────────────────────────────────────
+
+  /**
+   * Prune dead holders. A holder is reclaimable ONLY if:
+   *   - it is on THIS host (a foreign-hostname holder is NEVER reclaimed —
+   *     refuse-loud — the cross-host shared-volume hazard), AND
+   *   - its pid is no longer alive (PRIMARY signal), AND
+   *   - its heartbeat is stale past HOLDER_STALE_MS (SECONDARY signal — a slow
+   *     spawn whose pid is alive is NEVER reclaimed regardless of heartbeat).
+   * AND a `df -P` host-local confirmation gates ALL reclaim (fail-closed: if we
+   * cannot confirm the holders file is on a local disk, we keep ALL holders —
+   * over-counting is the safe direction for a cap; it never under-bounds).
+   */
+  private pruneDead(holders: SpawnHolder[]): SpawnHolder[] {
+    if (this._fsLocalCache === undefined) {
+      this._fsLocalCache = this.isPathHostLocal(path.dirname(this.holdersPath));
+    }
+    const fsLocal = this._fsLocalCache;
+    if (!fsLocal) {
+      // Cannot confirm host-local → reclaim NOTHING (fail-closed). Still return
+      // the well-formed set so the file stays clean.
+      return holders.filter((h) => isWellFormedHolder(h));
+    }
+    const nowMs = this.now();
+    return holders.filter((h) => {
+      if (!isWellFormedHolder(h)) return false; // drop garbage rows
+      if (h.hostname !== this.host) return true; // foreign — NEVER reclaimed (keep)
+      const pidDead = !this.pidAlive(h.pid);
+      const heartbeatStale = nowMs - h.heartbeat >= HOLDER_STALE_MS;
+      // Reclaim only when BOTH dead AND stale (pid primary, heartbeat secondary).
+      const reclaim = pidDead && heartbeatStale;
+      return !reclaim;
+    });
+  }
+
+  private readHolders(): HoldersFile {
+    try {
+      const raw = fs.readFileSync(this.holdersPath, 'utf-8');
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object' || !Array.isArray(obj.holders)) {
+        return { version: 1, holders: [] };
+      }
+      return { version: 1, holders: obj.holders.filter(isWellFormedHolder) };
+    } catch {
+      // @silent-fallback-ok: a missing/corrupt holders file is an EMPTY set —
+      // the safe direction is to bound from zero, never to crash the spawn path.
+      return { version: 1, holders: [] };
+    }
+  }
+
+  private writeHolders(file: HoldersFile): void {
+    this.ensureDir();
+    const body = JSON.stringify(file);
+    const tmp = `${this.holdersPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const fd = fs.openSync(tmp, 'wx', 0o600);
+      fs.writeSync(fd, body);
+      fs.closeSync(fd);
+      fs.renameSync(tmp, this.holdersPath); // atomic on the same filesystem
+    } catch (err) {
+      try {
+        SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'HostSpawnSemaphore.writeHolders:cleanup-tmp' });
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Run `fn` while holding the exclusive O_CREAT|O_EXCL lock on `<holdersPath>.lock`.
+   * On a lock-contention failure (another process holds it), returns
+   * `fallbackOnLockFail` — for `acquire`, fallback=false is the SAFE direction
+   * (refuse the slot under contention rather than over-grant past the cap).
+   * The lock is short-held (a file read + JSON parse + write) so contention is
+   * brief; a crashed lock-holder's stale lock is reclaimed by pid-death.
+   */
+  private withLock<T>(fn: () => T, fallbackOnLockFail: T): T {
+    this.ensureDir();
+    const lockPath = `${this.holdersPath}.lock`;
+    const deadline = this.now() + 2000; // bounded spin — never block the event loop forever
+    // Spin-acquire the lock with a tiny busy-wait; the critical section is sub-ms.
+    for (;;) {
+      let fd: number | null = null;
+      try {
+        fd = fs.openSync(lockPath, 'wx', 0o600); // O_CREAT|O_EXCL
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: this.now() }));
+      } catch (err) {
+        const e = err as NodeJS.ErrnoException;
+        if (e.code === 'EEXIST') {
+          // Lock held. Reclaim it if its holder's pid is dead (crash-safe).
+          if (this.reclaimStaleLock(lockPath)) continue;
+          if (this.now() >= deadline) return fallbackOnLockFail; // give up safely
+          busyWaitTiny();
+          continue;
+        }
+        // Any other open error — fail to the safe fallback rather than throw.
+        if (fd !== null) {
+          try { fs.closeSync(fd); } catch { /* ignore */ }
+        }
+        return fallbackOnLockFail;
+      }
+      try {
+        return fn();
+      } finally {
+        try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing an already-closed/invalid fd on lock-release is benign */ }
+        try {
+          SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'HostSpawnSemaphore.withLock:release' });
+        } catch {
+          /* @silent-fallback-ok: a missing lock on release is fine — release is idempotent */
+        }
+      }
+    }
+  }
+
+  /** Remove the lock file if its recorded holder pid is dead (crash recovery). */
+  private reclaimStaleLock(lockPath: string): boolean {
+    try {
+      const raw = fs.readFileSync(lockPath, 'utf-8');
+      const obj = JSON.parse(raw);
+      const pid = typeof obj?.pid === 'number' ? obj.pid : null;
+      if (pid !== null && this.pidAlive(pid)) return false; // live holder — wait
+      // Dead (or unparseable) lock holder — reclaim.
+      SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'HostSpawnSemaphore.reclaimStaleLock' });
+      return true;
+    } catch {
+      // @silent-fallback-ok: a read/parse failure on the lock means we couldn't
+      // confirm a live holder; treat as reclaimable so a corrupt lock can't wedge
+      // the cap permanently. The O_EXCL re-create still races safely.
+      try {
+        SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'HostSpawnSemaphore.reclaimStaleLock:corrupt' });
+        return true;
+      } catch {
+        // @silent-fallback-ok: couldn't remove the corrupt lock (a race with
+        // another reclaimer) — report not-reclaimed; the caller waits + retries.
+        return false;
+      }
+    }
+  }
+
+  private ensureDir(): void {
+    const dir = path.dirname(this.holdersPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+/** Default holders file path: `~/.instar/host-spawn-holders.json` (host-local). */
+export function defaultHoldersPath(): string {
+  return path.join(os.homedir(), '.instar', 'host-spawn-holders.json');
+}
+
+function isWellFormedHolder(h: unknown): h is SpawnHolder {
+  if (!h || typeof h !== 'object') return false;
+  const r = h as Record<string, unknown>;
+  return (
+    typeof r.id === 'string' &&
+    typeof r.pid === 'number' &&
+    typeof r.hostname === 'string' &&
+    typeof r.heartbeat === 'number'
+  );
+}
+
+/** A sub-millisecond busy-wait so the spin-lock doesn't peg a core. */
+function busyWaitTiny(): void {
+  const end = Date.now() + 1;
+  while (Date.now() < end) {
+    /* spin ~1ms */
+  }
+}
+
+// ── Process-wide singleton ────────────────────────────────────────────
+//
+// The cross-process coordination is the FILE; this singleton just avoids
+// re-resolving deps per call within one process. Config-cap is injected once
+// at boot via `configureHostSpawnSemaphore`; absent that, the env/8 default holds.
+
+let _singleton: HostSpawnSemaphore | null = null;
+let _configuredCap: number | undefined;
+let _configuredAcquireMs: number | undefined;
+let _configuredWaitersMax: number | undefined;
+
+/** Operator config for the spawn cap (intelligence.spawnCap.*). All optional. */
+export interface SpawnCapConfig {
+  maxConcurrent?: number;
+  acquireMs?: number;
+  waitersMax?: number;
+}
+
+/**
+ * Inject the config-resolved spawn-cap knobs once at server boot (server.ts).
+ * Idempotent: re-resolves the singleton so a later getter sees the configured
+ * cap. The env vars still win inside the `resolve*` helpers.
+ */
+export function configureHostSpawnSemaphore(cfg?: SpawnCapConfig): void {
+  _configuredCap = cfg?.maxConcurrent;
+  _configuredAcquireMs = cfg?.acquireMs;
+  _configuredWaitersMax = cfg?.waitersMax;
+  _singleton = new HostSpawnSemaphore({ cap: resolveSpawnCap(_configuredCap) });
+}
+
+/** The process-wide semaphore. Lazily constructed with env/config/8 cap. */
+export function getHostSpawnSemaphore(): HostSpawnSemaphore {
+  if (!_singleton) {
+    _singleton = new HostSpawnSemaphore({ cap: resolveSpawnCap(_configuredCap) });
+  }
+  return _singleton;
+}
+
+/** Config-aware acquire-budget resolver (env > injected config > 5000). */
+export function configuredSpawnAcquireMs(): number {
+  return resolveSpawnAcquireMs(_configuredAcquireMs);
+}
+
+/** Config-aware waiters-ceiling resolver (env > injected config > 64). */
+export function configuredSpawnWaitersMax(): number {
+  return resolveSpawnWaitersMax(_configuredWaitersMax);
+}
+
+/** Test seam — reset the singleton + injected config. */
+export function _resetHostSpawnSemaphoreForTest(): void {
+  _singleton = null;
+  _configuredCap = undefined;
+  _configuredAcquireMs = undefined;
+  _configuredWaitersMax = undefined;
+}

@@ -25,6 +25,7 @@ import { describe, it, expect } from 'vitest';
 import { buildIntelligenceProvider } from '../../src/core/intelligenceProviderFactory.js';
 import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
+import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
 import { detectGeminiPath } from '../../src/core/Config.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
@@ -47,8 +48,13 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
     }
 
     expect(provider).not.toBeNull();
+    // The factory wraps every provider in TWO universal funnels (fork-bomb
+    // prevention, forkbomb-prevention-simple §P1): circuit breaker (OUTER) →
+    // host-wide spawn cap (MIDDLE) → actual provider (INNER).
     expect(provider).toBeInstanceOf(CircuitBreakingIntelligenceProvider);
-    const inner = (provider as unknown as { inner: IntelligenceProvider }).inner;
+    const spawnCap = (provider as unknown as { inner: IntelligenceProvider }).inner;
+    expect(spawnCap).toBeInstanceOf(SpawnCapIntelligenceProvider);
+    const inner = (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
     expect(inner).toBeInstanceOf(GeminiCliIntelligenceProvider);
   });
 

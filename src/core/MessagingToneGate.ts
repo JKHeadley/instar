@@ -20,6 +20,7 @@
 
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
+import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
 
 /**
  * This is the outbound message gate — the highest-value coherence-critical
@@ -55,6 +56,14 @@ export interface ToneReviewResult {
    * by `review()` itself.
    */
   budgetExceeded?: boolean;
+  /**
+   * True if the review was HELD because the host spawn cap was saturated
+   * (fork-bomb prevention P3, forkbomb-prevention-simple §D-DISPOSITION). A
+   * capacity shed of this gating call fails CLOSED (pass=false / hold), NOT
+   * fail-open — so an outbound message is held, not auto-delivered, when the
+   * tone authority could not run under capacity pressure.
+   */
+  capacityUnavailable?: boolean;
 }
 
 const VALID_RULES = new Set([
@@ -305,7 +314,21 @@ export class MessagingToneGate {
         suggestion: parsed.suggestion,
         latencyMs: Date.now() - start,
       };
-    } catch {
+    } catch (err) {
+      // Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION):
+      // a capacity shed (host spawn cap saturated) HOLDS the outbound message
+      // (pass=false) instead of fail-opening it — the do-not-auto-deliver
+      // direction when the tone authority could not run under capacity pressure.
+      if (isCapacityUnavailable(err)) {
+        return {
+          pass: false,
+          rule: 'CAPACITY_UNAVAILABLE',
+          issue: 'Outbound tone review unavailable — host spawn capacity saturated.',
+          suggestion: 'Held (fail-closed) under load; retry shortly.',
+          latencyMs: Date.now() - start,
+          capacityUnavailable: true,
+        };
+      }
       // Fail-open: LLM unavailable / timeout / error
       return {
         pass: true,
