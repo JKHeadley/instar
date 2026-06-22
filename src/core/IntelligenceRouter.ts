@@ -88,10 +88,35 @@ export interface IntelligenceRouterOptions {
   buildProvider: (framework: IntelligenceFramework) => IntelligenceProvider | null;
   /** Optional: invoked when a routed call degrades to the default framework (for DegradationReporter). */
   onDegrade?: (info: RouterDegradeInfo) => void;
+  /**
+   * Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md), RESOLVED at the
+   * construction site (the dev-agent gate is applied there, so `*Enabled` are already the
+   * gate-resolved booleans). Absent ⇒ no ladder (today's framework-swap-only behavior). The ladder
+   * is path-dependent: a GATING call stays fast under `gatingLadderBudgetMs`; only a DEFERRABLE call
+   * gets the backoff rung. (Queue + never-silent rungs land in later increments.)
+   */
+  ladder?: {
+    /** Hard total wall-clock budget (ms) for the whole GATING failure path; exceeded ⇒ fail closed. */
+    gatingLadderBudgetMs: number;
+    /** Whether the DEFERRABLE backoff rung is enabled (gate-resolved). */
+    backoffEnabled: boolean;
+    backoff: { baseMs: number; factor: number; maxAttempts: number; ceilingMs: number; maxWaitMs: number };
+  };
 }
 
 interface CachedFramework {
   provider: IntelligenceProvider | null; // null = built but unavailable (binary missing)
+}
+
+/**
+ * Is this a rate-limit / usage-limit / 429 error? The circuit-breaking provider wraps these as a
+ * `RateLimitError` (name-checked, no import needed); we also duck-type the message so a provider
+ * that throws a plain Error on a limit is still recognized. Used by the deferrable backoff rung to
+ * decide whether to slow-down-and-retry (a rate-limit) vs proceed to the swap (a hard error).
+ */
+function isRateLimitError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  return e.name === 'RateLimitError' || /rate.?limit|usage.?limit|too many requests|\b429\b/i.test(e.message);
 }
 
 export class IntelligenceRouter implements IntelligenceProvider {
@@ -198,12 +223,39 @@ export class IntelligenceRouter implements IntelligenceProvider {
     // "No Silent Degradation to Brittle Fallback": swap-before-fail-closed, scoped
     // tightly so a rate-limited framework can't dump its whole load onto another.
     const gating = options?.attribution?.gating === true;
-    const swapTargets = gating && cfg.failureSwap ? cfg.failureSwap : [];
+    // DEFERRABLE = background work not synchronously awaited. gating ALWAYS dominates (an awaited gate
+    // can never be deferred/queued — the structural invariant). Resilient Degradation Ladder §3.
+    const deferrable = !gating && options?.attribution?.deferrable === true;
+    const ladder = this.opts.ladder;
+    // Framework-swap applies to a gating OR a deferrable call (both ladder paths include it).
+    const swapTargets = (gating || deferrable) && cfg.failureSwap ? cfg.failureSwap : [];
+    // GATING budget: a single hard wall-clock deadline over the whole gating failure path so an
+    // awaited gate stays responsive (no stacking rungs). Deferrable calls are not budgeted this way.
+    const gatingDeadlineAt = gating && ladder ? Date.now() + ladder.gatingLadderBudgetMs : undefined;
 
+    let err: unknown;
     try {
       return await primary.evaluate(prompt, options);
-    } catch (err) {
-      if (swapTargets.length === 0) throw err; // not gating / no swap configured ⇒ today's behavior
+    } catch (firstErr) {
+      err = firstErr;
+      // RUNG (a) — DEFERRABLE backoff: slow down and retry the SAME provider BEFORE swapping, by
+      // setting options.rateLimitWaitMs so the provider-layer acquireOrWait waits for the breaker
+      // window (the router holds no breaker — spec §2). Bounded + jittered; a non-rate-limit error
+      // stops the backoff and proceeds to the swap.
+      if (deferrable && ladder?.backoffEnabled && isRateLimitError(err)) {
+        const b = ladder.backoff;
+        for (let attempt = 0; attempt < b.maxAttempts; attempt++) {
+          const delay = Math.min(b.baseMs * Math.pow(b.factor, attempt), b.ceilingMs);
+          const jittered = Math.min(Math.floor(delay * (0.5 + Math.random() * 0.5)), b.maxWaitMs);
+          try {
+            return await primary.evaluate(prompt, { ...(options ?? {}), rateLimitWaitMs: jittered });
+          } catch (retryErr) {
+            err = retryErr;
+            if (!isRateLimitError(retryErr)) break; // a hard error → stop backing off, go to swap
+          }
+        }
+      }
+      if (swapTargets.length === 0) throw err; // not gating/deferrable, or no swap configured ⇒ today's behavior
       // §4.5 bounded per-attempt swap timeout: a positive cap races each attempt so a
       // slow-but-not-erroring provider is abandoned at the cap (total swap latency ≤
       // cap × (1 + tail.length)) instead of stacking long waits and re-creating the
@@ -217,6 +269,10 @@ export class IntelligenceRouter implements IntelligenceProvider {
         ? { ...(options ?? {}), timeoutMs: cap }
         : options;
       for (const target of swapTargets) {
+        // GATING budget: if the awaited gate's total wall-clock budget is consumed, stop swapping
+        // and fail closed now (responsiveness over completeness — spec §3a). Deferrable calls have
+        // no such deadline (gatingDeadlineAt is undefined for them).
+        if (gatingDeadlineAt !== undefined && Date.now() > gatingDeadlineAt) break;
         if (target === framework) continue; // don't retry the framework that just failed
         const tp = this.resolveProvider(target);
         if (!tp) continue; // target binary missing → skip

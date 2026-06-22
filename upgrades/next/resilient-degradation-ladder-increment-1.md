@@ -1,0 +1,46 @@
+<!-- bump: minor -->
+<!-- change_type: feature -->
+
+## What Changed
+
+When your agent's AI provider hits a rate limit, it has to decide what to do next. Until now it
+switched to a different AI provider right away. The operator's rule is gentler: for *background*
+work, first slow down and retry the same provider; only switch if that doesn't clear it. And a call
+the agent is *waiting on* (a safety gate) should stay responsive — switch fast and stop safely,
+never hang.
+
+This adds the first slice of that "degradation ladder," **off by default** (and on for the dev agent
+first). For a background call that hits a rate limit, the agent now backs off and retries the same
+provider before switching. For an awaited gate, the whole failure-handling path is capped by a
+single short time budget so the agent never stalls — it switches fast and, if every switch fails,
+stops safely (it never falls back to a dumb rule-of-thumb on a gate). When the feature is off, the
+behavior is exactly what it was before.
+
+## What to Tell Your User
+
+Nothing changes unless you turn it on. Once on, your agent rides out a rate limit more gracefully on
+its background work (a brief wait-and-retry instead of an immediate provider switch), while keeping
+the calls you're actually waiting on fast and safe. The queue step and the "never silently stuck"
+tracker from the full design land in later updates.
+
+## Summary of New Capabilities
+
+- `intelligence.degradationLadder` config: `{ gatingLadderBudgetMs (default 6000), backoff: {
+  enabled (dev-gated), baseMs, factor, maxAttempts, ceilingMs, maxWaitMs } }`.
+- A new `attribution.deferrable` flag marking a call as background (not synchronously awaited) — only
+  deferrable calls get the backoff rung; a `gating` call is always treated as non-deferrable.
+- `IntelligenceRouter` now: backs off + retries the same provider on a rate-limit for deferrable
+  calls (via `options.rateLimitWaitMs`) before switching; caps an awaited gate's whole failure path
+  with a single wall-clock budget (responsiveness); applies framework-swap to deferrable calls too.
+- Dark/dev-gated (`resolveDevAgentGate` + a `DEV_GATED_FEATURES` entry): live on the dev agent,
+  dark on the fleet; absent ⇒ exactly today's framework-swap-only behavior.
+
+## Evidence
+
+**Before:** the router's gating-failure `catch` swapped frameworks immediately on any failure with
+no same-provider retry and no total time budget (a gating call could ride the full per-attempt cap ×
+chain length). **After:** a deferrable rate-limited call backs off and retries the same provider
+first; a gating call has no backoff and its whole failure path is capped at 6s. Reproduced by
+`tests/unit/degradation-ladder.test.ts` (8 cases covering both sides of each boundary), with the
+ladder-absent case asserting byte-for-byte today's behavior. The existing swap-loop tests
+(`provider-fallback-swap-timeout.test.ts`) are unaffected; full lint + tsc green.
