@@ -164,7 +164,7 @@ function monotonicNow(): number {
     if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
       return performance.now();
     }
-  } catch { /* environments without performance API */ }
+  } catch { /* @silent-fallback-ok: environment-capability probe, not a degradation — a runtime without the `performance` API falls back to `Date.now()`; a clock-source probe is low-risk and not a reportable degradation. */ }
   return Date.now();
 }
 
@@ -177,6 +177,20 @@ function monotonicNow(): number {
 const RESTART_QUEUE_MAX_ENTRIES = 1000;
 const RESTART_QUEUE_MAX_BYTES = 5 * 1024 * 1024; // 5 MiB
 const RESTART_QUEUE_REL_PATH = path.join('remediation', 'degradations-queue.jsonl');
+
+/**
+ * An open heuristic-fallback degradation (Resilient Degradation Ladder §4). Keyed on
+ * (component, framework). `retryAttempts` is the LIVENESS signal — the number of times a
+ * real-LLM call for this key was attempted and STILL failed since it opened; 0 means the
+ * component degraded once and hasn't tried again (idle/run-once, not stuck → TTL-close).
+ */
+interface OpenDegradation {
+  component: string;
+  framework: string;
+  openedAt: number;
+  retryAttempts: number;
+  lastEscalatedAt: number | null;
+}
 
 export class DegradationReporter {
   private static instance: DegradationReporter | null = null;
@@ -205,6 +219,21 @@ export class DegradationReporter {
 
   // Dedup: track last alert time per feature to avoid spamming Telegram
   private lastAlertTime: Map<string, number> = new Map();
+
+  // ── Never-silent degradation lifecycle (Resilient Degradation Ladder §4) ──────
+  // Tracks open heuristic-fallback degradations so one can NEVER silently persist
+  // indefinitely (the operator's principle). Designed to NOT repeat the 2026-06-21
+  // wedge: bounded (MAX_OPEN), O(1) per open/resolve (no full-map serialize), the
+  // escalation sweep NEVER calls report()/reportEvent()/gateHealthAlert (it surfaces
+  // via telegramSender directly), and it is liveness-gated (a run-once/idle component
+  // auto-closes via TTL rather than escalating a false alarm).
+  private openDegradations: Map<string, OpenDegradation> = new Map();
+  private neverSilentEnabled = false;
+  private neverSilentEscalateMs = 15 * 60_000; // 15m before a persistent open escalates
+  private neverSilentTtlMs = 30 * 60_000;       // idle/run-once auto-close window
+  private neverSilentMaxOpen = 500;             // hard cap on the open map (anti-wedge)
+  /** Injectable clock for the lifecycle (testing). Default Date.now. */
+  private neverSilentNow: () => number = () => Date.now();
 
   // F-3 additions ─────────────────────────────────────────────
   // The Remediator dispatch hook (F-8 wires the consumer). When set, the
@@ -289,6 +318,111 @@ export class DegradationReporter {
    */
   registerHealer(feature: string, healer: SelfHealer): void {
     this.healers.set(feature, healer);
+  }
+
+  // ── Never-silent degradation lifecycle (Resilient Degradation Ladder §4) ──────
+
+  /** Configure (and enable) never-silent tracking. Called once at server startup with the
+   *  dev-gate-resolved `enabled`. `now` is injectable for tests. */
+  configureNeverSilent(opts: {
+    enabled: boolean;
+    escalateMs?: number;
+    ttlMs?: number;
+    maxOpen?: number;
+    now?: () => number;
+  }): void {
+    this.neverSilentEnabled = opts.enabled === true;
+    if (opts.escalateMs && opts.escalateMs > 0) this.neverSilentEscalateMs = opts.escalateMs;
+    if (opts.ttlMs && opts.ttlMs > 0) this.neverSilentTtlMs = opts.ttlMs;
+    if (opts.maxOpen && opts.maxOpen > 0) this.neverSilentMaxOpen = opts.maxOpen;
+    if (opts.now) this.neverSilentNow = opts.now;
+    this.openDegradations.clear(); // fresh config = fresh state (startup is empty; gives test isolation)
+  }
+
+  private nsKey(component: string, framework: string): string {
+    return component + '::' + framework;
+  }
+
+  /**
+   * A heuristic fallback fired for (component, framework) — open a degradation, or if one is
+   * already open, increment its retry-attempts (the liveness signal: it tried again and STILL
+   * failed → stuck). Bounded by MAX_OPEN (oldest evicted), O(1). No-op when disabled.
+   */
+  openDegradation(component: string, framework: string): void {
+    if (!this.neverSilentEnabled) return;
+    const k = this.nsKey(component, framework);
+    const existing = this.openDegradations.get(k);
+    if (existing) {
+      existing.retryAttempts++; // a re-attempt that also fell to heuristic = it's genuinely stuck
+      return;
+    }
+    if (this.openDegradations.size >= this.neverSilentMaxOpen) {
+      const oldest = this.openDegradations.keys().next().value; // Map preserves insertion order
+      if (oldest !== undefined) this.openDegradations.delete(oldest);
+    }
+    this.openDegradations.set(k, {
+      component, framework, openedAt: this.neverSilentNow(), retryAttempts: 0, lastEscalatedAt: null,
+    });
+  }
+
+  /**
+   * A real-LLM call for (component, framework) SUCCEEDED — auto-resolve the open degradation
+   * (the never-silent recovery). Returns the degraded duration (ms) or null if none was open.
+   * O(1). No-op when disabled.
+   */
+  resolveDegradation(component: string, framework: string): number | null {
+    if (!this.neverSilentEnabled) return null;
+    const k = this.nsKey(component, framework);
+    const d = this.openDegradations.get(k);
+    if (!d) return null;
+    this.openDegradations.delete(k);
+    return this.neverSilentNow() - d.openedAt;
+  }
+
+  /** Count of currently-open degradations (observability). */
+  openDegradationCount(): number {
+    return this.openDegradations.size;
+  }
+
+  /**
+   * Level-triggered sweep (timer-driven): escalate a degradation OPEN past escalateMs that has
+   * genuinely retried (≥1), and TTL-auto-close an idle/run-once one (0 retries past ttlMs). Deduped
+   * per episode (re-escalates only after another full window). REENTRANCY-SAFE: it NEVER calls
+   * report()/reportEvent()/gateHealthAlert — it surfaces via telegramSender directly (the 2026-06-21
+   * wedge was that recursion). No-op when disabled.
+   */
+  sweepOpenDegradations(): void {
+    if (!this.neverSilentEnabled) return;
+    const now = this.neverSilentNow();
+    for (const [k, d] of this.openDegradations) {
+      const age = now - d.openedAt;
+      if (d.retryAttempts === 0) {
+        // Idle / run-once: degraded once, never retried → done, not stuck. Auto-close at the TTL.
+        if (age > this.neverSilentTtlMs) this.openDegradations.delete(k);
+        continue;
+      }
+      if (age > this.neverSilentEscalateMs &&
+          (d.lastEscalatedAt === null || now - d.lastEscalatedAt > this.neverSilentEscalateMs)) {
+        d.lastEscalatedAt = now;
+        this.escalatePersistentDegradation(d, age);
+      }
+    }
+  }
+
+  /** Surface a persistent-degradation attention item DIRECTLY (fixed template, no toneGate, no
+   *  report — reentrancy-safe per §4). Best-effort; never throws into the sweep. */
+  private escalatePersistentDegradation(d: OpenDegradation, ageMs: number): void {
+    try {
+      if (!this.telegramSender || this.alertTopicId === null) return;
+      const mins = Math.round(ageMs / 60_000);
+      const msg =
+        `⚠ ${d.component} has been on its heuristic fallback for ~${mins}m — the real-LLM path ` +
+        `(${d.framework}) hasn't recovered. It auto-clears the next time an LLM call for it succeeds.`;
+      void this.telegramSender(this.alertTopicId, msg);
+    } catch {
+      // @silent-fallback-ok: escalation is best-effort; a send failure must never throw into the
+      // level-triggered sweep (which would stall the timer). The next sweep retries.
+    }
   }
 
   /**

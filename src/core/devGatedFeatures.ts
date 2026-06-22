@@ -379,7 +379,13 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     name: 'degradationLadderBackoff',
     configPath: 'intelligence.degradationLadder.backoff.enabled',
     description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',
-    justification: 'Internal-call routing only; behavior-preserving when off (absent ladder = EXACTLY today\'s framework-swap-only behavior). On a dev agent it runs live: backoff only adds bounded, jittered waits to DEFERRABLE (non-awaited, background) calls on a rate-limit, and the gating budget only caps the awaited-gate failure path at 6s — MORE responsive, never less safe (a gate still fails closed, never degrades to a heuristic). No spend increase (same call count or fewer), no destructive action, no egress. Queue + never-silent rungs land in later increments.',
+    justification: 'Internal-call routing only; behavior-preserving when off (absent ladder = EXACTLY today\'s framework-swap-only behavior). On a dev agent it runs live: backoff only adds bounded, jittered waits to DEFERRABLE (non-awaited, background) calls on a rate-limit, and the gating budget only caps the awaited-gate failure path at 6s — MORE responsive, never less safe (a gate still fails closed, never degrades to a heuristic). No spend increase (same call count or fewer), no destructive action, no egress. Queue rung lands in a later increment.',
+  },
+  {
+    name: 'degradationLadderNeverSilent',
+    configPath: 'intelligence.degradationLadder.neverSilent.enabled',
+    description: 'Resilient Degradation Ladder §4 — never-silent degradation tracking: a non-gating call that exhausts the ladder (→ caller heuristic) opens a tracked degradation; a successful real-LLM answer auto-resolves it; a genuinely-stuck one (≥1 retry, open past 15m) escalates ONE deduped attention item; a run-once/idle one TTL-auto-closes (no false alarm).',
+    justification: 'Observe-and-escalate only — opens/resolves an in-memory map and, on a genuinely-stuck degradation, sends ONE deduped fixed-template attention line. Designed to NOT repeat the 2026-06-21 DegradationReporter wedge: bounded (MAX_OPEN), O(1) per open/resolve, the sweep NEVER calls report()/reportEvent()/gateHealthAlert (it surfaces via telegramSender directly), liveness-gated (a run-once component auto-closes, never escalates). No spend, no destructive action; the only egress is the deduped escalation line the operator explicitly wants ("never silently degraded"). No-op when off.',
   },
 ];
 

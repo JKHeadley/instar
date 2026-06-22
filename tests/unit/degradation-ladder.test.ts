@@ -134,3 +134,43 @@ describe('Resilient Degradation Ladder — IntelligenceRouter', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('Resilient Degradation Ladder — never-silent hooks (§4)', () => {
+  it('onResolved fires on a successful call with (component, framework)', async () => {
+    const resolved: Array<[string, string]> = [];
+    const primary: IntelligenceProvider = { async evaluate() { return 'ok'; } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({}), buildProvider: () => null,
+      onResolved: (c, f) => resolved.push([c, f]),
+    });
+    await router.evaluate('x', { attribution: { component: 'Comp' } });
+    expect(resolved).toEqual([['Comp', 'claude-code']]);
+  });
+
+  it('onHeuristicFallthrough fires when a NON-gating call exhausts (caller will use its heuristic)', async () => {
+    const fell: Array<[string, string]> = [];
+    const primary: IntelligenceProvider = { async evaluate() { throw new Error('down'); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({}), buildProvider: () => null,
+      onHeuristicFallthrough: (c, f) => fell.push([c, f]),
+    });
+    await expect(router.evaluate('x', { attribution: { component: 'Adv' } })).rejects.toThrow();
+    expect(fell).toEqual([['Adv', 'claude-code']]);
+  });
+
+  it('onHeuristicFallthrough does NOT fire for a GATING call (fail closed is not a heuristic)', async () => {
+    const fell: Array<[string, string]> = [];
+    const primary: IntelligenceProvider = { async evaluate() { throw new Error('down'); } };
+    const swap: IntelligenceProvider = { async evaluate() { throw new Error('swap down'); } };
+    const router = new IntelligenceRouter({
+      defaultProvider: primary, defaultFramework: 'claude-code',
+      resolveConfig: () => ({ failureSwap: ['codex-cli'] }),
+      buildProvider: (fw: IntelligenceFramework) => (fw === 'codex-cli' ? swap : null),
+      onHeuristicFallthrough: (c, f) => fell.push([c, f]),
+    });
+    await expect(router.evaluate('x', GATING)).rejects.toThrow();
+    expect(fell).toEqual([]); // gating → fail closed, never a heuristic-fallthrough
+  });
+});

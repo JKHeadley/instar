@@ -89,6 +89,15 @@ export interface IntelligenceRouterOptions {
   /** Optional: invoked when a routed call degrades to the default framework (for DegradationReporter). */
   onDegrade?: (info: RouterDegradeInfo) => void;
   /**
+   * Never-silent tracking (Resilient Degradation Ladder §4). `onHeuristicFallthrough` fires when a
+   * NON-gating call exhausts the ladder and throws (the caller will use its heuristic) — the
+   * DegradationReporter opens/refreshes a degradation. `onResolved` fires on a SUCCESSFUL real-LLM
+   * answer for that (component, framework) — the reporter auto-resolves any open degradation. Both
+   * are no-ops downstream when never-silent tracking is disabled, so the router calls them freely.
+   */
+  onHeuristicFallthrough?: (component: string, framework: string) => void;
+  onResolved?: (component: string, framework: string) => void;
+  /**
    * Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md), RESOLVED at the
    * construction site (the dev-agent gate is applied there, so `*Enabled` are already the
    * gate-resolved booleans). Absent ⇒ no ladder (today's framework-swap-only behavior). The ladder
@@ -235,7 +244,9 @@ export class IntelligenceRouter implements IntelligenceProvider {
 
     let err: unknown;
     try {
-      return await primary.evaluate(prompt, options);
+      const mainResult = await primary.evaluate(prompt, options);
+      this.opts.onResolved?.(component ?? '(none)', framework); // a real answer → auto-resolve any open degradation
+      return mainResult;
     } catch (firstErr) {
       err = firstErr;
       // RUNG (a) — DEFERRABLE backoff: slow down and retry the SAME provider BEFORE swapping, by
@@ -248,14 +259,21 @@ export class IntelligenceRouter implements IntelligenceProvider {
           const delay = Math.min(b.baseMs * Math.pow(b.factor, attempt), b.ceilingMs);
           const jittered = Math.min(Math.floor(delay * (0.5 + Math.random() * 0.5)), b.maxWaitMs);
           try {
-            return await primary.evaluate(prompt, { ...(options ?? {}), rateLimitWaitMs: jittered });
+            const boResult = await primary.evaluate(prompt, { ...(options ?? {}), rateLimitWaitMs: jittered });
+            this.opts.onResolved?.(component ?? '(none)', framework); // recovered on backoff → auto-resolve
+            return boResult;
           } catch (retryErr) {
             err = retryErr;
             if (!isRateLimitError(retryErr)) break; // a hard error → stop backing off, go to swap
           }
         }
       }
-      if (swapTargets.length === 0) throw err; // not gating/deferrable, or no swap configured ⇒ today's behavior
+      if (swapTargets.length === 0) {
+        // Non-gating ⇒ the caller will swallow this into its heuristic — track it (never-silent).
+        // Gating ⇒ this is a fail-closed, NOT a heuristic, so it is not tracked.
+        if (!gating) this.opts.onHeuristicFallthrough?.(component ?? '(none)', framework);
+        throw err; // not gating/deferrable, or no swap configured ⇒ today's behavior
+      }
       // §4.5 bounded per-attempt swap timeout: a positive cap races each attempt so a
       // slow-but-not-erroring provider is abandoned at the cap (total swap latency ≤
       // cap × (1 + tail.length)) instead of stacking long waits and re-creating the
@@ -299,6 +317,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
             to: target,
             reason: `failure-swap: '${framework}' failed (${err instanceof Error ? err.message : 'error'}); served by '${target}'`,
           });
+          this.opts.onResolved?.(component ?? '(none)', framework); // real answer via swap → auto-resolve
           return result;
         } catch (attemptErr) {
           // A timed-out attempt emits a distinct degrade reason so the cap firing is
@@ -320,7 +339,9 @@ export class IntelligenceRouter implements IntelligenceProvider {
         }
       }
       // Every swap target is also down → re-throw so the (gating) caller fails CLOSED,
-      // never silently degrading to a brittle heuristic.
+      // never silently degrading to a brittle heuristic. A NON-gating caller WILL swallow this into
+      // its heuristic, so track it (never-silent §4); a gating fail-closed is not a heuristic.
+      if (!gating) this.opts.onHeuristicFallthrough?.(component ?? '(none)', framework);
       throw err;
     }
   }

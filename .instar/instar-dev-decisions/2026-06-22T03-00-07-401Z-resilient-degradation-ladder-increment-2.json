@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-22T03:00:07.401Z",
+  "slug": "resilient-degradation-ladder-increment-2",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1243
+    ],
+    "notes": "Increment 2 of the degradation ladder (#3), building on the ladder core shipped in #1243. Adds the never-silent tracking — the half of the operator's principle that says a fallback must never silently persist. The §4 design (bounded, reentrancy-safe, liveness-gated) is the direct response to the 2026-06-21 DegradationReporter event-loop wedge this extends."
+  },
+  "verdict": "blocked"
+}

@@ -5031,6 +5031,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             } catch { /* never break the LLM path on a degradation report */ }
           },
+          // Never-silent tracking (Resilient Degradation Ladder §4): a non-gating call that
+          // exhausts the ladder (→ caller heuristic) opens a tracked degradation; a successful
+          // real-LLM answer auto-resolves it. No-ops downstream when neverSilent is disabled.
+          onHeuristicFallthrough: (component, framework) => {
+            try { DegradationReporter.getInstance().openDegradation(component, framework); }
+            catch { /* @silent-fallback-ok: a never-silent tracking hook must NEVER throw into the LLM call path; a failed open just skips this tracking tick (the next fallthrough re-opens). */ }
+          },
+          onResolved: (component, framework) => {
+            try { DegradationReporter.getInstance().resolveDegradation(component, framework); }
+            catch { /* @silent-fallback-ok: a never-silent tracking hook must NEVER throw into the LLM call path; a failed resolve just leaves the open degradation for the next success/sweep. */ }
+          },
         });
       } catch (err) {
         console.warn(`[server] IntelligenceRouter failed to initialize, using unrouted provider: ${err}`);
@@ -18506,6 +18517,24 @@ export async function startServer(options: StartOptions): Promise<void> {
         // ops-pager output. See upgrades/side-effects/agent-health-alert-authority-routing.md.
         toneGate: messagingToneGate ?? null,
       });
+      // Never-silent degradation tracking (Resilient Degradation Ladder §4): dev-gated
+      // (live-on-dev / dark-on-fleet via resolveDevAgentGate). When enabled, a timer drives the
+      // level-triggered sweep that escalates a genuinely-stuck heuristic-fallback and TTL-closes an
+      // idle one. The sweep NEVER calls report() — reentrancy-safe (the 2026-06-21 wedge).
+      const nsCfg = config.intelligence?.degradationLadder?.neverSilent;
+      const nsEnabled = resolveDevAgentGate(nsCfg?.enabled, config);
+      degradationReporter.configureNeverSilent({
+        enabled: nsEnabled,
+        escalateMs: nsCfg?.escalateMs,
+        maxOpen: nsCfg?.maxOpen,
+      });
+      if (nsEnabled) {
+        const nsSweepTimer = setInterval(() => {
+          try { degradationReporter.sweepOpenDegradations(); }
+          catch { /* @silent-fallback-ok: the never-silent sweep is best-effort level-triggered housekeeping; a single failed tick must not stall the timer (the next tick re-sweeps the same open map). */ }
+        }, 60_000);
+        nsSweepTimer.unref?.();
+      }
     }
 
     // Tier-2 live-mode wire-up (SELF-HEALING-REMEDIATOR-V2-SPEC §A57).
