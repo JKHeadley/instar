@@ -393,6 +393,29 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Resilient Degradation Ladder §3b.3 — the DEFERRABLE queue rung: a non-gating call that exhausts framework-swap WAITS for capacity in a dedicated LlmQueue (the enqueued provider.evaluate honors the account-global breaker retryAfterMs) instead of dropping straight to the caller heuristic; an enqueue rejection (daily-cap/reserve) or queued-call failure falls through to the heuristic, never dropped. Includes the opt-in §3c herd-pacing gap (drainMinGapMs, 0/off by default).',
     justification: 'Internal-call routing only; behavior-preserving when off (no llmQueue injected ⇒ the rung is a no-op ⇒ EXACTLY today\'s heuristic-on-exhaustion behavior). On a dev agent it runs live on DEFERRABLE (non-awaited, background) calls ONLY — a GATING call NEVER reaches the queue rung (structural: deferrable = !gating && deferrable; D5). The dedicated queue is bounded (maxConcurrent 1, its own small daily cap so it cannot starve interactive callers) and each enqueued call is timeout-bounded; it adds bounded WAITS, not new calls — no spend increase (same call count or fewer), no destructive action, no egress. Reuses the existing wedge-safe LlmQueue.',
   },
+  // ── tmux Event-Loop Resilience, Increment 1 (tmux-event-loop-resilience-spec).
+  //    The three gates ride the developmentAgent dark-feature gate: each ConfigDefaults
+  //    sub-block OMITS `enabled` (NOT hardcoded false — #1001), so resolveDevAgentGate
+  //    flips them LIVE on a dev agent / DARK on the fleet. All three are non-destructive
+  //    and behavior-preserving (or strictly-safer) when off. ──
+  {
+    name: 'tmuxResilienceAsyncHotPath',
+    configPath: 'monitoring.tmuxResilience.asyncHotPath.enabled',
+    description: 'tmux Event-Loop Resilience (A) — the bounded async tmux hot path + tri-state classifier that stops a slow/wedged shared tmux server from blocking the event loop or spuriously reaping a live session.',
+    justification: 'Behavior-preserving when off (D1/D6 — the off path is today\'s sync behavior byte-for-byte). When live the on-path is bounded (9s + SIGKILL per call) and CAPPED — single-flight coalescing per (op,session) + a max-in-flight ceiling mean it can never fan out MORE subprocesses than today, only fewer. Destructive actions become strictly POSITIVE-signal-gated: an indeterminate (slow/timed-out) tmux probe PRESERVES the session (never reaps), so the on-path is strictly safer than the current false-on-timeout reap. No egress, no third-party spend, no LLM, no new destructive action.',
+  },
+  {
+    name: 'tmuxResilienceInFlightMarker',
+    configPath: 'monitoring.tmuxResilience.inFlightMarker.enabled',
+    description: 'tmux Event-Loop Resilience (B) — the in-flight-sync-op marker that lets SleepWakeDetector tell a ~0-CPU synchronous tmux/tunnel block apart from a real OS sleep (the block burns ~0 CPU so the CPU check can\'t see it).',
+    justification: 'Signal-only — it changes ONLY the stall-vs-wake classification of a drift, never blocks/rewrites a message and never takes a destructive action. Both-directions-safe via the 2× per-call-timeout TTL self-heal: a leaked marker is auto-reset so a real multi-minute sleep that began mid-op re-classifies as a wake once the TTL expires, and the observable staleMarker counter surfaces any self-heal. Every read fails closed (a marker-read error is treated as not-in-flight). No egress, no spend, no destructive action.',
+  },
+  {
+    name: 'tmuxResilienceLatencyGuard',
+    configPath: 'monitoring.degradedTmuxGuard.enabled',
+    description: 'tmux Event-Loop Resilience (C) — the DegradedTmuxGuard: a signal-only watcher that raises ONE deduped agent-health Attention item when the shared tmux server is degraded (slow sync calls / event-loop stalls). NEVER kills the shared socket.',
+    justification: 'Observe-and-escalate only. Bounded by construction — a fixed-capacity O(1) modulo-write ring (never an unbounded array), load-gated (suppressed above a 1-min-load-per-core threshold so a busy multi-agent box does not false-fire) and N-cycle corroborated before any escalation. Signal vs Authority: the ONLY automated action is ONE deduped, NORMAL-priority agent-health Attention item; any actual tmux refresh is an explicit operator Y/N, never auto-performed. Registered in GUARD_MANIFEST with a pure in-memory getter (no I/O on the guard-status read). No spend, no egress beyond the operator-facing dedup line, no destructive action.',
+  },
 ];
 
 /**

@@ -61,6 +61,15 @@ const ALLOWLIST = new Set([
   'src/core/SafeFsExecutor.ts',
   'tests/unit/SafeGitExecutor.test.ts',
   'tests/unit/SafeFsExecutor.test.ts',
+  // tmux-event-loop-resilience Increment 1 tests: per-test cleanup of
+  // mkdtempSync dirs under os.tmpdir() (the cross-process marker round-trip
+  // needs a real on-disk mirror dir; the e2e needs a throwaway stateDir). The
+  // targets are os.tmpdir paths, never the source tree. Routing through
+  // SafeFsExecutor.safeRmSync would write an audit entry per teardown call —
+  // worse noise than a scoped allowlist entry for a test's own tmpdir cleanup.
+  // (Spec: docs/specs/tmux-event-loop-resilience.md, Step 8.)
+  'tests/unit/InFlightSyncOpMarker.test.ts',
+  'tests/e2e/tmux-resilience-lifecycle.test.ts',
   // The lint rule itself runs before SafeGitExecutor.ts is compiled, so it
   // needs direct execSync as a bootstrap escape. The single git call here is
   // a read-only `git diff --cached --name-only` for staged-file detection.
@@ -96,6 +105,11 @@ const ALLOWLIST = new Set([
   // instar#1069) — read-only `git diff --cached --name-only` for --staged.
   // Cannot depend on the TS funnel because TS is not compiled at pre-push.
   'scripts/lint-no-mainthread-cartographer-walk.js',
+  // Same bootstrap-escape pattern (tmux sync-subprocess chokepoint lint,
+  // docs/specs/tmux-event-loop-resilience.md) — a read-only `git ls-files` /
+  // `git diff --cached --name-only` for staged-file detection. Cannot depend on
+  // the TS funnel because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-sync-subprocess-chokepoint.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',

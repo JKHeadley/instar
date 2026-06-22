@@ -96,4 +96,58 @@ describe('SleepWakeDetector — CPU-busy drift is an event-loop block, not sleep
     }).not.toThrow();
     expect(wakes.length).toBe(1); // degraded safely to the load-guard path
   });
+
+  // ── Ordering precedence: the CPU-busy check runs BEFORE the in-flight-marker branch ──
+  //
+  // Both Gate-B discriminators can be "armed" at once (the marker gate ON + a sync op in
+  // flight) while the process is ALSO CPU-bound. The CPU-busy check must win — it is the
+  // accurate signal for a CPU-spinning block — so the drift is labeled via the CPU path,
+  // not double-counted by the marker branch. This guards the documented ordering invariant
+  // at the cpu-block boundary (the marker branch is inserted AFTER the CPU return).
+  describe('ordering vs the in-flight-marker branch', () => {
+    function makeWithMarker(marker: { inFlight: boolean; depth: number; stale: boolean }) {
+      let cpuMicros = 0;
+      const wakes: WakeEvent[] = [];
+      const stalls: StallEvent[] = [];
+      const detector = new SleepWakeDetector({
+        checkIntervalMs: 1000,
+        driftThresholdMs: 5000,
+        minWakeIntervalMs: 0,
+        loadAvgProvider: () => [0, 0, 0],
+        cpuUsageProvider: () => cpuMicros,
+        inFlightMarkerEnabled: true, // (B) gate ON
+        syncOpMarkerProvider: () => marker,
+      });
+      detector.on('wake', (e) => wakes.push(e));
+      detector.on('stall', (e) => stalls.push(e));
+      detector.start();
+      const simulateGap = (gapMs: number, cpuBurnedMs: number) => {
+        vi.setSystemTime(new Date(Date.now() + gapMs));
+        cpuMicros += cpuBurnedMs * 1000;
+        vi.advanceTimersByTime(1000);
+      };
+      return { detector, wakes, stalls, simulateGap };
+    }
+
+    it('CPU-spinning drift + marker inFlight:true → exactly ONE stall, labeled via the CPU path', () => {
+      const { stalls, wakes, simulateGap } = makeWithMarker({ inFlight: true, depth: 1, stale: false });
+      simulateGap(14_000, 14_000); // CPU-bound the whole gap AND a marked op in flight
+
+      expect(stalls.length).toBe(1); // not two — the CPU return short-circuits before the marker branch
+      expect(wakes.length).toBe(0);
+      expect(stalls[0].cpuBusyRatio).toBeGreaterThanOrEqual(0.5); // the CPU path's high ratio, not ~0
+    });
+
+    it('~0-CPU drift + marker inFlight:true → STALL via the marker branch (CPU path declines)', () => {
+      // The mirror case: with no CPU burned the CPU check declines, so the marker branch
+      // is what catches the I/O-wait block. Together with the case above this pins down
+      // exactly which branch fires on each side of the CPU boundary.
+      const { stalls, wakes, simulateGap } = makeWithMarker({ inFlight: true, depth: 1, stale: false });
+      simulateGap(14_000, 0); // ~0 CPU, op in flight
+
+      expect(stalls.length).toBe(1);
+      expect(wakes.length).toBe(0);
+      expect(stalls[0].cpuBusyRatio).toBeLessThan(0.5); // I/O-wait block ratio, not the CPU path's
+    });
+  });
 });

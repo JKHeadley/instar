@@ -45,6 +45,51 @@ describe('DEV_GATED_FEATURES — both-sides wiring (live on dev, dark on fleet)'
     });
   }
 
+  // ── tmux Event-Loop Resilience, Increment 1 — the three new dev-gated flags.
+  //    The per-feature loop above ALREADY exercises both sides (live-on-dev /
+  //    dark-on-fleet) for every registry entry; this block pins the three by
+  //    name so a future delete of an entry fails loudly here, not just by a drop
+  //    in the loop count. ──
+  describe('tmux-resilience flags are registered and resolve both-sides', () => {
+    const TMUX_CONFIG_PATHS = [
+      'monitoring.tmuxResilience.asyncHotPath.enabled', // (A)
+      'monitoring.tmuxResilience.inFlightMarker.enabled', // (B)
+      'monitoring.degradedTmuxGuard.enabled', // (C) — guard-manifest-keyed
+    ] as const;
+
+    for (const configPath of TMUX_CONFIG_PATHS) {
+      it(`${configPath} is present in DEV_GATED_FEATURES exactly once`, () => {
+        const matches = DEV_GATED_FEATURES.filter(f => f.configPath === configPath);
+        expect(matches.length, `${configPath} entry count`).toBe(1);
+      });
+
+      it(`${configPath} resolves LIVE on dev and DARK on fleet`, () => {
+        const devCfg = buildConfig(true);
+        const fleetCfg = buildConfig(false);
+        expect(
+          resolveDevAgentGate(
+            getConfigByPath(devCfg, configPath) as boolean | undefined,
+            devCfg as { developmentAgent?: boolean },
+          ),
+        ).toBe(true);
+        expect(
+          resolveDevAgentGate(
+            getConfigByPath(fleetCfg, configPath) as boolean | undefined,
+            fleetCfg as { developmentAgent?: boolean },
+          ),
+        ).toBe(false);
+      });
+    }
+
+    it('the three flags map to the named features (tmuxResilienceAsyncHotPath / InFlightMarker / LatencyGuard)', () => {
+      const byPath = new Map(DEV_GATED_FEATURES.map(f => [f.configPath, f.name]));
+      expect(byPath.get('monitoring.tmuxResilience.asyncHotPath.enabled')).toBe('tmuxResilienceAsyncHotPath');
+      expect(byPath.get('monitoring.tmuxResilience.inFlightMarker.enabled')).toBe('tmuxResilienceInFlightMarker');
+      // (C) uses the standalone degradedTmuxGuard path but the LatencyGuard feature name.
+      expect(byPath.get('monitoring.degradedTmuxGuard.enabled')).toBe('tmuxResilienceLatencyGuard');
+    });
+  });
+
   it('has teeth — a regressed hardcoded `enabled: false` default would FAIL the live-on-dev assertion (the #1001 mechanism)', () => {
     // Simulate the literal #1001 bug: a dev-gated feature's default hardcodes
     // enabled:false. Inject it at a registered path on a dev-agent config and

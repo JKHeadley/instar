@@ -303,6 +303,17 @@ export class TelegramLifeline {
       projectName: this.projectConfig.projectName,
       port: this.projectConfig.port,
       stateDir: this.projectConfig.stateDir,
+      // Amplifier #2 (spec §A.5): the supervisor defers a restart while an in-flight
+      // sync-op marker is set. The supervisor is config-less, so the developmentAgent
+      // dark-gate is resolved HERE (TelegramLifeline has projectConfig) and passed as a
+      // plain boolean. Ships dark on the fleet / live on a dev agent; an explicit
+      // monitoring.tmuxResilience.inFlightMarker.enabled in config always wins.
+      // `stateDir` above lets the supervisor's default inflightMarkerProvider bind to
+      // the right mirror file.
+      inflightDeferEnabled: resolveDevAgentGate(
+        this.projectConfig.monitoring?.tmuxResilience?.inFlightMarker?.enabled,
+        this.projectConfig,
+      ),
     });
 
     // Load persisted rate limit state (survives process restarts)

@@ -2709,7 +2709,9 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!sessionId) return undefined;
     let tmuxSession: string | null = null;
     try {
-      const running = ctx.sessionManager.listRunningSessions();
+      // Read-only resolution — use the cache so a degraded shared tmux can't block this
+      // request path on per-session sync isSessionAlive probes (A1 hardening).
+      const running = ctx.sessionManager.getCachedRunningSessions().sessions;
       const match = running.find((s) => s.claudeSessionId === sessionId);
       tmuxSession = match?.tmuxSession ?? null;
     } catch { /* @silent-fallback-ok: GAP-B — session-manager read failure leaves tmuxSession null; the resolver returns undefined and getHotPathState falls back to the legacy paths (explicit unresolved-topic handling, never a silent false). */
@@ -4180,7 +4182,9 @@ export function createRoutes(ctx: RouteContext): Router {
   // ── Status ──────────────────────────────────────────────────────
 
   router.get('/status', (_req, res) => {
-    const sessions = ctx.sessionManager.listRunningSessions();
+    // Read-only status — serve from the cache so a degraded shared tmux can't wedge /status
+    // (and every concurrent request) on per-session sync isSessionAlive probes (A1 hardening).
+    const sessions = ctx.sessionManager.getCachedRunningSessions().sessions;
     const schedulerStatus = ctx.scheduler?.getStatus() ?? null;
 
     res.json({
@@ -12781,7 +12785,7 @@ export function createRoutes(ctx: RouteContext): Router {
             ? ctx.telegram?.getSessionForTopic?.(topicNum) ?? null
             : null;
           const srcSession = srcSessionName
-            ? ctx.sessionManager.listRunningSessions().find(
+            ? ctx.sessionManager.getCachedRunningSessions().sessions.find(
                 (s) => s.name === srcSessionName || s.tmuxSession === srcSessionName,
               ) ?? null
             : null;
@@ -16057,7 +16061,9 @@ export function createRoutes(ctx: RouteContext): Router {
     let tmuxSession: string | undefined;
 
     // Strategy 1: look up by instar session ID or Claude session ID
-    const sessions = ctx.sessionManager.listRunningSessions();
+    // Read-only lookup — serve from the cache so a degraded shared tmux can't block this
+    // request path on per-session sync isSessionAlive probes (A1 hardening).
+    const sessions = ctx.sessionManager.getCachedRunningSessions().sessions;
     const session = sessions.find(s =>
       s.id === instar_sid || s.claudeSessionId === session_id
     );
@@ -24427,8 +24433,10 @@ export function createRoutes(ctx: RouteContext): Router {
       }
 
       // Find target session — use specified, or most recent interactive
+      // Read-only lookup — serve from the cache so a degraded shared tmux can't block this
+      // request path on per-session sync isSessionAlive probes (A1 hardening).
       let deliveredToSession: string | undefined;
-      const sessions = ctx.sessionManager.listRunningSessions();
+      const sessions = ctx.sessionManager.getCachedRunningSessions().sessions;
       const interactiveSessions = sessions.filter(s => !s.jobSlug);
 
       if (targetSession) {

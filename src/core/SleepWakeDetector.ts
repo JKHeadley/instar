@@ -55,6 +55,7 @@
 
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
+import { readSyncOpMarker } from './InFlightSyncOpMarker.js';
 
 export interface SleepWakeDetectorConfig {
   /** How often to check for drift (ms). Default: 2000 */
@@ -125,6 +126,25 @@ export interface SleepWakeDetectorConfig {
    * `process.cpuUsage()` user + system. Used to compute CPU burned across a drift gap.
    */
   cpuUsageProvider?: () => number;
+  /**
+   * Injectable in-flight-sync-op marker reader (testing). Default reads the process-wide
+   * `InFlightSyncOpMarker` singleton. Reports whether ANY synchronous subprocess/blocking
+   * op (tmux, /bin/sleep, tunnel, any sync spawn) is in flight on the event loop RIGHT NOW.
+   * This is the PRIMARY discriminator for the ~0-CPU I/O-WAIT block the CPU check above
+   * cannot see: a sync-spawn wait burns ~0 CPU in the parent → cpuBusyRatio ≈ 0 → the drift
+   * would otherwise fall through to a FALSE wake. `stale` (older than 2× the per-op timeout)
+   * means the marker leaked — it is ignored so a real multi-minute sleep that began mid-op
+   * re-classifies as a wake once the TTL expires (the both-directions safety).
+   */
+  syncOpMarkerProvider?: () => { inFlight: boolean; depth: number; stale: boolean };
+  /**
+   * Gate (B): when true, a ~0-CPU drift while a sync subprocess op is in flight (and not
+   * stale) is classified as an event-loop BLOCK (a `stall`) rather than a sleep wake.
+   * Resolved server-side from `monitoring.tmuxResilience.inFlightMarker.enabled` via the
+   * dev-agent gate. Default `false` ⇒ the marker branch is inert and behavior is byte-for-byte
+   * today's (D6 observable-equivalence when off).
+   */
+  inFlightMarkerEnabled?: boolean;
 }
 
 export interface WakeEvent {
@@ -193,6 +213,10 @@ export class SleepWakeDetector extends EventEmitter {
   private now: () => number;
   private cpuBlockBusyRatio: number;
   private cpuUsageProvider: () => number;
+  /** Gate (B) flag — when false the in-flight-marker branch is inert (today's behavior). */
+  private inFlightMarkerEnabled: boolean;
+  /** In-flight-sync-op marker reader — the ~0-CPU I/O-wait block discriminator. */
+  private syncOpMarker: () => { inFlight: boolean; depth: number; stale: boolean };
   /** Cumulative process CPU (µs) sampled at the previous tick — drives the per-process
    *  CPU-busy-through-the-gap discriminator that separates a real sleep from a block. */
   private lastCpuMicros = 0;
@@ -215,6 +239,13 @@ export class SleepWakeDetector extends EventEmitter {
     this.cpuBlockBusyRatio = config.cpuBlockBusyRatio ?? 0.5;
     this.cpuUsageProvider =
       config.cpuUsageProvider ?? (() => { const c = process.cpuUsage(); return c.user + c.system; });
+    this.inFlightMarkerEnabled = config.inFlightMarkerEnabled ?? false;
+    this.syncOpMarker =
+      config.syncOpMarkerProvider ??
+      (() => {
+        const m = readSyncOpMarker();
+        return { inFlight: m.inFlight, depth: m.depth, stale: m.stale };
+      });
     this.lastTick = this.now();
     this.lastCpuMicros = this.readCpuMicros();
   }
@@ -266,6 +297,37 @@ export class SleepWakeDetector extends EventEmitter {
           timestamp: new Date(now).toISOString(),
         } as StallEvent);
         return;
+      }
+
+      // In-flight-sync-op marker — the PRIMARY discriminator for the ~0-CPU I/O-WAIT block
+      // the CPU check above cannot see. A synchronous subprocess wait (tmux/tunnel/sleep)
+      // burns ~0 CPU in the parent, so cpuBusyRatio ≈ 0 and this drift would otherwise fall
+      // through to the load guards / a FALSE wake. If a sync subprocess op is in flight
+      // (depth>0) and NOT stale, the loop is BLOCKED waiting on that op — an event-loop
+      // BLOCK, not sleep. Runs AFTER the CPU check (a CPU-spinning block still labels via the
+      // accurate CPU path above) and BEFORE the burst/load/recurring/cooldown guards (so a
+      // marked I/O block never reaches emit('wake')). A STALE marker (older than 2×timeout —
+      // a leaked depth) is ignored so a real multi-minute sleep that began mid-op
+      // re-classifies as a wake once the TTL expires (the both-directions safety; depth>0
+      // alone would permanently mislabel a real sleep and starve the wake-reaper of sleep
+      // credit). Gated behind monitoring.tmuxResilience.inFlightMarker.enabled — when off the
+      // branch is skipped and behavior is byte-for-byte today's.
+      if (this.inFlightMarkerEnabled) {
+        const marker = this.readMarkerSafely();
+        if (marker.inFlight && !marker.stale) {
+          this.recordSuppression('event-loop-block', sleepDuration, loadRatio, now);
+          console.warn(
+            `[SleepWakeDetector] Drift ~${sleepDuration}s while ${marker.depth} sync subprocess ` +
+              `op(s) in flight (cpuBusyRatio ${Math.round(cpuBusyRatio * 100)}% — I/O-wait block, ` +
+              `~0 CPU) — event-loop BLOCK, not sleep. Emitting stall, suppressing wake.`,
+          );
+          this.emit('stall', {
+            stallSeconds: sleepDuration,
+            cpuBusyRatio,
+            timestamp: new Date(now).toISOString(),
+          } as StallEvent);
+          return;
+        }
       }
 
       // Consecutive-drift burst = sustained CPU starvation, not sleep. A genuine sleep
@@ -363,6 +425,19 @@ export class SleepWakeDetector extends EventEmitter {
       return Number.isFinite(v) ? v : this.lastCpuMicros;
     } catch {
       return this.lastCpuMicros;
+    }
+  }
+
+  /** Read the in-flight-sync-op marker defensively. A provider error yields a safe "no op
+   *  in flight" reading, so a marker-read failure can NEVER crash the tick (it runs inside
+   *  setInterval) nor force a false BLOCK classification — it just disables this one
+   *  discriminator for that tick (the drift falls through to the CPU + load guards). Mirrors
+   *  readCpuMicros()'s fail-safe direction. */
+  private readMarkerSafely(): { inFlight: boolean; depth: number; stale: boolean } {
+    try {
+      return this.syncOpMarker();
+    } catch {
+      return { inFlight: false, depth: 0, stale: false };
     }
   }
 

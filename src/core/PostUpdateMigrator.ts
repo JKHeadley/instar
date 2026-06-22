@@ -265,6 +265,47 @@ export function migrateConfigSelfUnblockChecklistDevGate(config: Record<string, 
   return patched;
 }
 
+/**
+ * tmux Event-Loop Resilience, Increment 1 (tmux-event-loop-resilience-spec): the THREE
+ * dev-gated `enabled` flags OMIT `enabled` in ConfigDefaults so resolveDevAgentGate
+ * resolves them (live-on-dev, dark fleet). An existing agent that ran an interim build
+ * with a hardcoded `enabled: false` per sub-block carries an explicit `false`, which
+ * (being explicit) would keep the gate DARK even on a dev agent. Strip a default-shaped
+ * `false` per sub-block so the gate resolves correctly:
+ *   - monitoring.tmuxResilience.asyncHotPath.enabled   (A)
+ *   - monitoring.tmuxResilience.inFlightMarker.enabled  (B)
+ *   - monitoring.degradedTmuxGuard.enabled              (C)
+ * Rules per sub-block: absent → no-op; `=== false` → STRIP (default-shaped force-dark);
+ * `=== true` → leave it (an operator's explicit fleet-flip wins). No migration ever
+ * WRITES `enabled` (that re-introduces #1001). Idempotent — a second run finds nothing
+ * default-shaped to strip. (CMT-1438 trigger-free comment slug.)
+ */
+export function migrateConfigTmuxResilienceDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  let patched = false;
+  // Resolve each (parent, leaf) sub-block: (A)/(B) live under tmuxResilience, (C) is standalone.
+  const tmuxResilience = monitoring.tmuxResilience as Record<string, unknown> | undefined;
+  const blocks: Array<Record<string, unknown> | undefined> = [
+    tmuxResilience && typeof tmuxResilience === 'object'
+      ? (tmuxResilience.asyncHotPath as Record<string, unknown> | undefined)
+      : undefined,
+    tmuxResilience && typeof tmuxResilience === 'object'
+      ? (tmuxResilience.inFlightMarker as Record<string, unknown> | undefined)
+      : undefined,
+    monitoring.degradedTmuxGuard as Record<string, unknown> | undefined,
+  ];
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+    if (!Object.prototype.hasOwnProperty.call(block, 'enabled')) continue;
+    // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+    if (block.enabled !== false) continue;
+    delete block.enabled;
+    patched = true;
+  }
+  return patched;
+}
+
 /** The 7 stateSync memory stores re-gated to the developmentAgent gate on 2026-06-13. */
 const STATE_SYNC_DEV_GATED_STORES = [
   'preferences',
@@ -8030,6 +8071,18 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped monitoring.blockerLedger.{selfUnblockChecklist,durableVaultSession}.enabled=false so the developmentAgent gate resolves them (live-on-dev, dark fleet)');
     } else {
       result.skipped.push('config.json: monitoring.blockerLedger self-unblock dev-gates already correct (omitted or operator-set)');
+    }
+
+    // tmux Event-Loop Resilience, Increment 1: the THREE dev-gated flags
+    // (monitoring.tmuxResilience.{asyncHotPath,inFlightMarker}.enabled +
+    // monitoring.degradedTmuxGuard.enabled) OMIT `enabled`. Strip a default-shaped
+    // `false` per sub-block so the developmentAgent gate resolves them (live-on-dev,
+    // dark fleet); no migration ever WRITES `enabled` (#1001). Idempotent.
+    if (migrateConfigTmuxResilienceDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.tmuxResilience.{asyncHotPath,inFlightMarker}.enabled=false + monitoring.degradedTmuxGuard.enabled=false so the developmentAgent gate resolves them (live-on-dev, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.tmuxResilience / degradedTmuxGuard dev-gates already correct (omitted or operator-set)');
     }
 
     // The 7 multiMachine.stateSync.* memory stores re-gated to the developmentAgent gate

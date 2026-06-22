@@ -1,0 +1,65 @@
+<!-- bump: minor -->
+
+# tmux Event-Loop Resilience — the server never freezes on a slow shared terminal manager
+
+## What Changed
+
+The instar server makes frequent calls to `tmux` (the terminal multiplexer that
+holds every agent session). Those calls were SYNCHRONOUS — they blocked the
+server's single event loop until tmux answered. All agents on one machine share
+ONE tmux server, so when it got slow under load a single call could freeze the
+whole server for ~15 seconds. Two user-visible things broke as a result: the
+dashboard's live connection dropped (it showed "disconnected"), and the ~0-CPU
+freeze was MISREAD as the machine going to sleep (a false sleep/wake event).
+
+This change makes the hot path non-blocking and adds three defenses — all
+dev-gated, meaning they run LIVE on development agents (where the bug was
+diagnosed) and ship DARK on the fleet for a graduated rollout:
+
+- The frequent tmux calls now run asynchronously with a hard timeout, and the
+  dashboard's and sessions' reads are served from a cache that can never hang on
+  tmux.
+- An in-flight-operation marker lets the sleep detector tell a real freeze apart
+  from a real sleep, so a slow tmux call is no longer misreported as sleep. The
+  lifeline reads the same marker cross-process, so it won't restart a
+  busy-but-alive server.
+- A signal-only "degraded tmux" guard watches for a persistently slow tmux server
+  and surfaces it on `/guards` — without ever killing anything.
+
+Crucially, a tmux call that times out is treated as INDETERMINATE (keep the
+session) — never as "the session is dead" — so a slow tmux can never cause a live
+session to be wrongly reaped.
+
+## What to Tell Your User
+
+For most agents nothing changes yet — this ships disabled on the fleet and is
+being soaked on development agents first. On a development agent the visible win
+is that the dashboard stops randomly showing "disconnected" and the agent stops
+occasionally misreporting itself as having gone to sleep — both were caused by a
+busy shared terminal manager freezing the server loop.
+
+## Summary of New Capabilities
+
+- Async, timeout-bounded tmux on the server hot path; dashboard + session reads
+  served from a non-blocking cache that can't hang on a slow tmux.
+- Tri-state tmux outcome (success / definitely-absent / indeterminate); a timeout
+  KEEPS the session (never a false reap under load).
+- In-flight-sync-op marker as the block-vs-sleep discriminator — works
+  cross-process so the lifeline won't restart a busy-but-alive server.
+- Signal-only `DegradedTmuxGuard` (bounded-accumulation ring, load-gated, never
+  kills tmux) surfacing a persistently degraded tmux server via `GET /guards`.
+- All three behind dev-gated flags (`monitoring.tmuxResilience.*`,
+  `monitoring.degradedTmuxGuard`): live on development agents, dark on the fleet.
+
+## Evidence
+
+Reproduced and guarded by a 3-tier suite (307 tests): InFlightSyncOpMarker
+round-trip + TTL self-heal; SleepWakeDetector block-vs-sleep on both sides of the
+boundary; SessionManager async tri-state (timeout ⇒ indeterminate KEEP, the
+no-false-reap regression guard); wake-handler + ServerSupervisor amplifier guards;
+DegradedTmuxGuard bounded-accumulation burst-invariant (10,000 samples, ring
+length never exceeds windowSize); an integration slow-stub (a ~15s tmux stub
+proves `/health` and `/sessions` never hang and zero sessions are reaped); and an
+e2e dev-gate lifecycle (the three flags resolve live-on-dev / dark-on-fleet, the
+guard reports alive not missing). `tsc`, `lint-sync-subprocess-chokepoint`,
+`lint-guard-manifest`, and the `no-silent-fallbacks` ratchet are all green.

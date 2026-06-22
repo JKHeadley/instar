@@ -4275,6 +4275,58 @@ export interface MonitoringConfig {
     cadenceMinutes?: number;
   };
   /**
+   * tmux Event-Loop Resilience, Increment 1 (docs/specs/tmux-event-loop-resilience-spec.md).
+   * (A) the async tmux hot path + (B) the in-flight-sync-op marker. Each sub-block's
+   * `enabled` is DEV-GATED (OMITTED in ConfigDefaults so resolveDevAgentGate decides —
+   * LIVE on a dev agent, DARK on the fleet); only the tuning knobs are persisted. (A) is
+   * behavior-preserving when off; (B) is signal-only (changes only stall-vs-wake
+   * classification, both-directions-safe via the 2× TTL self-heal).
+   */
+  tmuxResilience?: {
+    /** (A) the bounded async tmux wrapper + tri-state classifier. */
+    asyncHotPath?: {
+      /** Live-on-dev / dark-fleet — OMITTED so resolveDevAgentGate decides. */
+      enabled?: boolean;
+      /** Per-call SIGKILL-bounded timeout in ms (default 9000). */
+      timeoutMs?: number;
+      /** Max concurrent in-flight hot-path tmux calls before fail-closed-to-keep (default 4). */
+      maxInFlight?: number;
+    };
+    /** (B) the in-flight-sync-op marker that discriminates a ~0-CPU I/O block from sleep. */
+    inFlightMarker?: {
+      /** Live-on-dev / dark-fleet — OMITTED so resolveDevAgentGate decides. */
+      enabled?: boolean;
+      /** A marker older than this × the per-call timeout is STALE (self-heal; default 2). */
+      staleTtlFactor?: number;
+    };
+  };
+  /**
+   * DegradedTmuxGuard (C) — signal-only watcher that raises ONE deduped agent-health
+   * Attention item when the shared tmux server is degraded (slow sync calls / event-loop
+   * stalls). NEVER kills the shared socket (operator-authorized refresh only). DEV-GATED +
+   * GUARD_MANIFEST-keyed: `enabled` is OMITTED in ConfigDefaults so resolveDevAgentGate
+   * decides (LIVE on dev / DARK on fleet). Bounded ring O(1), load-gated, N-cycle
+   * corroborated. Spec: docs/specs/tmux-event-loop-resilience-spec.md.
+   */
+  degradedTmuxGuard?: {
+    /** Live-on-dev / dark-fleet — OMITTED so resolveDevAgentGate decides. */
+    enabled?: boolean;
+    /** Fixed-capacity latency ring length (default 64). */
+    windowSize?: number;
+    /** EWMA smoothing factor for the slow-call latency average (default 0.3). */
+    ewmaAlpha?: number;
+    /** A tmux call at/over this ms counts as slow (default 9000 — the (A) timeout). */
+    slowCallThresholdMs?: number;
+    /** Consecutive degraded cycles before an episode opens (default 3). */
+    episodeCorroborationCycles?: number;
+    /** Suppress corroboration above this 1-min-load-per-core (busy-box clause; default 1.5). */
+    loadGateMaxLoadPerCore?: number;
+    /** Re-raise an open episode with escalated age after this many ms (default 1_800_000). */
+    episodeEscalateIntervalMs?: number;
+    /** Post-refresh window whose samples are excluded from corroboration (default 60_000). */
+    settleWindowMs?: number;
+  };
+  /**
    * AutonomousLivenessReconciler — level-triggered self-heal for an autonomous
    * run marked active (with time remaining) but with no live session ("dead but
    * marked active"). DEV-GATED: `enabled` OMITTED in ConfigDefaults so the

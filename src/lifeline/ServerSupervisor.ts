@@ -29,6 +29,12 @@ import { SleepWakeDetector } from '../core/SleepWakeDetector.js';
 import { cpuLoadRatio, DEFAULT_MAX_LOAD_RATIO } from '../core/cpuStarvation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+// Cross-process reader for the in-flight-sync-op marker mirror file (amplifier #2,
+// spec §A.5). Dependency-light (fs+path only) so the lifeline process never loads
+// the server module graph — the in-memory marker singleton is dead across the
+// process boundary, so the supervisor reads the file the server's SessionManager
+// mirrors on every depth transition.
+import { defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 
 /** Execute a shell command safely, returning stdout. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -269,6 +275,19 @@ export class ServerSupervisor extends EventEmitter {
   private recentLoadRatios: number[] = [];
   private lastStarvationCheckFailures = 0; // detect a failure-streak reset to drop stale samples
   private lastSustainedLoadRatio = 0; // windowed max from the most recent defer check (for the log line)
+  // In-flight-sync-op restart-defer guard (amplifier #2, spec §A.5). A synchronous
+  // tmux/tunnel block burns ~0 CPU in the server process — so the CPU-starvation
+  // guard above CANNOT see it, and the supervisor would force-restart a server that
+  // is merely wedged inside a SIGKILL-bounded sync subprocess wait (dropping the
+  // in-flight message). The marker is the cross-process signal: the server mirrors
+  // an in-flight-op depth/timestamp to a file on every depth transition; the
+  // supervisor reads it here. Gated behind the dev-resolved flag (off ⇒ legacy);
+  // bounded by the SAME starvationRestartThreshold hard cap as the CPU defer; the
+  // marker's own 2×timeout TTL self-heal keeps a leaked marker from blinding the
+  // supervisor forever (a stale marker reads !inFlight ⇒ restart proceeds).
+  private readonly inflightMarkerProvider: () => { inFlight: boolean; ageMs: number; stale: boolean } | null;
+  private readonly inflightDeferEnabled: boolean;
+  private inflightDeferCount = 0; // observability: how many ticks the marker held off a restart
   private stateDir: string | null;
 
   // Planned restart / maintenance wait — suppress alerts during expected downtime
@@ -332,6 +351,21 @@ export class ServerSupervisor extends EventEmitter {
     loadRatioProvider?: () => number;
     /** Sustained-failure threshold before the one-per-episode slow-retry escalation. Default: 12h. */
     slowRetryEscalateAfterMs?: number;
+    /**
+     * Cross-process in-flight-sync-op marker reader (amplifier #2, spec §A.5).
+     * Injectable for tests; defaults to `defaultInflightMarkerReader(stateDir)`,
+     * which reads the mirror file the server writes. Returns null on an
+     * absent/unparseable marker ⇒ fail-OPEN (the supervisor restarts a genuinely
+     * dead server).
+     */
+    inflightMarkerProvider?: () => { inFlight: boolean; ageMs: number; stale: boolean } | null;
+    /**
+     * When true, the supervisor defers a restart while an in-flight sync-op marker
+     * is set (and not stale). Resolved via the developmentAgent dark-gate in
+     * TelegramLifeline (the supervisor is config-less) and passed as a plain
+     * boolean. Default false ⇒ legacy behavior (no inflight defer).
+     */
+    inflightDeferEnabled?: boolean;
   }) {
     super();
     this.projectDir = options.projectDir;
@@ -341,6 +375,12 @@ export class ServerSupervisor extends EventEmitter {
     this.tmuxPath = detectTmuxPath();
     this.serverSessionName = `${this.projectName}-server`;
     this.loadRatioProvider = options.loadRatioProvider ?? (() => cpuLoadRatio());
+    // Amplifier #2 wiring (spec §A.5). The default reader is bound to THIS
+    // supervisor's stateDir (already assigned above) so it reads the mirror file
+    // the server writes. `inflightDeferEnabled` is resolved upstream (TelegramLifeline
+    // has projectConfig; the supervisor is config-less) and passed as a plain boolean.
+    this.inflightMarkerProvider = options.inflightMarkerProvider ?? defaultInflightMarkerReader(this.stateDir);
+    this.inflightDeferEnabled = options.inflightDeferEnabled ?? false;
     this.sentinelEscalation = new SlowRetrySentinelEscalation({
       escalateAfterMs: options.slowRetryEscalateAfterMs,
     });
@@ -1904,10 +1944,21 @@ export class ServerSupervisor extends EventEmitter {
       if (this.consecutiveFailures === this.unhealthyThreshold) {
         console.log(`[Supervisor] Health check failed but server process is alive — waiting for ${effectiveThreshold} consecutive failures before restart (${this.consecutiveFailures}/${effectiveThreshold})`);
       }
-    } else if (this.deferRestartForCpuStarvation()) {
-      // Box is CPU-starved — bouncing the server won't help, it only drops the
-      // in-flight message. Defer; the next healthy tick resets the counter.
-      if (this.consecutiveFailures === effectiveThreshold) {
+    } else if (this.deferRestartForCpuStarvation() || this.deferRestartForInflightSyncOp()) {
+      // Defer the restart — either the box is CPU-starved OR a synchronous tmux/tunnel
+      // op is in flight on the server's event loop (a ~0-CPU I/O-wait block the CPU
+      // guard can't see). In both cases bouncing the server won't help — it only drops
+      // the in-flight message and loops. Defer; the next healthy tick resets the counter.
+      //
+      // `||` ORDER IS LOAD-BEARING: deferRestartForCpuStarvation() has side effects
+      // (it samples + accumulates recentLoadRatios / lastSustainedLoadRatio on EVERY
+      // call), so it MUST stay the LEFT operand — short-circuiting it would freeze the
+      // windowed-load bookkeeping the starvation log + threshold rely on. The inflight
+      // defer is a pure read with no such side effect, so it is correct on the right.
+      // This CPU-starvation log only fires when the windowed load actually exceeded the
+      // threshold (the genuine CPU-starved cause); when the defer was instead due to the
+      // in-flight marker, deferRestartForInflightSyncOp() already emitted its own log line.
+      if (this.consecutiveFailures === effectiveThreshold && this.lastSustainedLoadRatio > this.maxLoadRatio) {
         console.log(`[Supervisor] Server alive but unresponsive (${this.consecutiveFailures} checks) AND the box is CPU-starved (sustained load ratio ${this.lastSustainedLoadRatio.toFixed(2)} > ${this.maxLoadRatio} over the last ~${this.loadSampleWindow * 10}s) — DEFERRING restart; restarting a starved server only drops in-flight messages. Will force-restart at ${this.starvationRestartThreshold} checks (~${this.starvationRestartThreshold * 10}s) if it persists.`);
       }
     } else {
@@ -1951,6 +2002,42 @@ export class ServerSupervisor extends EventEmitter {
 
     if (this.consecutiveFailures >= this.starvationRestartThreshold) return false; // hard cap — restart even if starved
     return this.lastSustainedLoadRatio > this.maxLoadRatio;
+  }
+
+  /**
+   * True when we should hold off restarting an alive-but-unresponsive server
+   * because a SYNCHRONOUS subprocess op (a tmux/tunnel call) is in flight on the
+   * server's event loop — the ~0-CPU I/O-wait block the CPU-starvation guard
+   * cannot see (a sync-spawn wait burns ~0 CPU in the parent, so the load ratio
+   * stays low and `deferRestartForCpuStarvation()` returns false). Restarting in
+   * that window only drops the in-flight message and loops; the bounded 9s+SIGKILL
+   * per-call timeout means the block self-clears, so deferring is the right call.
+   *
+   * The signal is the cross-process marker mirror file the server writes on every
+   * in-flight-op depth transition; the supervisor reads it (the in-memory marker
+   * singleton is dead across the process boundary). Bounded the SAME way as the
+   * CPU defer — once the unresponsive streak reaches `starvationRestartThreshold`
+   * we restart regardless (the server may be genuinely hung, not merely blocked).
+   * Both-directions-safe: a marker older than 2×timeout reads `stale` (the marker's
+   * own TTL self-heal) ⇒ no defer, and a null/throwing read fails OPEN to restart —
+   * so a leaked or unreadable marker can never wedge the supervisor into never
+   * restarting a truly dead server.
+   */
+  private deferRestartForInflightSyncOp(): boolean {
+    if (!this.inflightDeferEnabled) return false; // gate off ⇒ legacy (no inflight defer)
+    if (this.consecutiveFailures >= this.starvationRestartThreshold) return false; // SAME hard cap as the CPU defer
+    let m: { inFlight: boolean; ageMs: number; stale: boolean } | null = null;
+    try {
+      m = this.inflightMarkerProvider();
+    } catch {
+      return false; // fail-OPEN to restart — an unreadable marker never blocks recovery of a dead server
+    }
+    if (!m || !m.inFlight || m.stale) return false;
+    this.inflightDeferCount += 1;
+    if (this.consecutiveFailures === this.processAliveThreshold) {
+      console.log(`[Supervisor] Server alive but unresponsive (${this.consecutiveFailures} checks) AND an in-flight sync-op marker is set (ageMs=${m.ageMs}) — DEFERRING restart; a synchronous tmux/tunnel block burns ~0 CPU so the CPU-starvation guard can't see it. Will force-restart at ${this.starvationRestartThreshold} checks if it persists.`);
+    }
+    return true;
   }
 
   private handleUnhealthy(): void {

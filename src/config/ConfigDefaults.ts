@@ -57,6 +57,35 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // detects cross-topic work overlap, and emits ONE deduped in-process councilor
     // nudge (signal-only; never gates). docs/specs/parallel-activity-coherence.md.
     parallelWorkSentinel: {},
+    // tmux Event-Loop Resilience, Increment 1 (tmux-event-loop-resilience-spec).
+    // The (A) async hot path + (B) in-flight-sync-op marker. DEV-GATED: each
+    // sub-block's `enabled` is deliberately OMITTED so resolveDevAgentGate decides
+    // — LIVE on a developmentAgent (dogfood), DARK on the fleet. NEVER hardcode
+    // `enabled: false` here (#1001 — it would dark dev agents too). Only the tuning
+    // knobs are defaulted; applyDefaults() stays add-missing-only so an operator's
+    // explicit `enabled` is never overwritten on migration. (A) is behavior-
+    // preserving when off (today's sync path); (B) is signal-only (changes only
+    // stall-vs-wake classification, both-directions-safe via the 2× TTL self-heal).
+    tmuxResilience: {
+      asyncHotPath: { timeoutMs: 9000, maxInFlight: 4 },
+      inFlightMarker: { staleTtlFactor: 2 },
+    },
+    // DegradedTmuxGuard (C) — signal-only watcher that raises ONE deduped agent-health
+    // Attention item when the shared tmux server is degraded (slow sync calls / event-
+    // loop stalls). NEVER kills the shared socket (operator-authorized refresh only).
+    // DEV-GATED + GUARD_MANIFEST-keyed on monitoring.degradedTmuxGuard.enabled: the
+    // flag is OMITTED so resolveDevAgentGate decides — LIVE on a developmentAgent, DARK
+    // on the fleet. NEVER hardcode `enabled: false` here (#1001). Bounded ring O(1),
+    // load-gated, N-cycle corroborated. Only the tuning knobs are defaulted.
+    degradedTmuxGuard: {
+      windowSize: 64,
+      ewmaAlpha: 0.3,
+      slowCallThresholdMs: 9000,
+      episodeCorroborationCycles: 3,
+      loadGateMaxLoadPerCore: 1.5,
+      episodeEscalateIntervalMs: 1_800_000,
+      settleWindowMs: 60_000,
+    },
     // AutonomousLivenessReconciler — a level-triggered self-heal for an autonomous
     // run marked active (with time remaining) but with NO live session ("dead but
     // marked active"). DEV-GATED: `enabled` is deliberately OMITTED so

@@ -217,6 +217,24 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Detects agent worktrees with uncommitted work whose owning session died + settled.',
   },
   {
+    // tmux Event-Loop Resilience (C). `enabled` is deliberately OMITTED from
+    // ConfigDefaults — the runtime resolves it through the developmentAgent
+    // dark-feature gate (dark on the fleet, live on a dev agent). defaultEnabled:false
+    // reflects the fleet default. NO expectedTickMs: it is EVENT-DRIVEN (fed by
+    // (A)'s tmux-call latency + (B)'s 'stall' events), so a quiet/healthy tmux is
+    // not stale — setting expectedTickMs would derive a false on-stale. expectRuntime:
+    // true REQUIRES the server-boot guardRegistry.register callsite (a pure in-memory
+    // guardStatus getter); an enabled-but-unregistered guard reports `missing`.
+    key: 'monitoring.degradedTmuxGuard.enabled',
+    kind: 'config',
+    configPath: 'monitoring.degradedTmuxGuard.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: true,
+    component: 'DegradedTmuxGuard',
+    description: 'Signal-only watcher: raises ONE deduped agent-health Attention item when the shared tmux server is degraded (slow sync calls / event-loop stalls). NEVER kills the shared socket.',
+  },
+  {
     key: 'monitoring.mcpProcessReaper.enabled',
     kind: 'config',
     configPath: 'monitoring.mcpProcessReaper.enabled',

@@ -2,11 +2,13 @@
 title: "tmux Event-Loop Resilience — never block the server loop on a slow shared tmux server"
 slug: "tmux-event-loop-resilience"
 author: "echo"
+parent-principle: "Structure beats Willpower"
 review-convergence: "2026-06-22T07:29:44.034Z"
 review-iterations: 2
 review-completed-at: "2026-06-22T07:29:44.034Z"
 review-report: "docs/specs/reports/tmux-event-loop-resilience-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
+approved: true
 single-run-completable: true
 frontloaded-decisions: 7
 cheap-to-change-tags: 0
@@ -146,7 +148,7 @@ automatic. (D) socket isolation changes a host-local resource only.
 
 ## Frontloaded Decisions
 
-- **D1 — (A) conversion strategy + scope (named, not deferred):** `...Async` twin behind ONE wrapper
+- **D1 — (A) conversion strategy + scope (named + fully in-scope here):** `...Async` twin behind ONE wrapper
   (off=existing sync byte-identical, on=async); request/health/dashboard routes are cache-served and
   issue NO live tmux call; only the serialized monitor tick + explicit operator actions issue live
   calls; EXCLUDE the send-keys/`/bin/sleep` injection sequence; `timeoutMs` 9000 + `killSignal

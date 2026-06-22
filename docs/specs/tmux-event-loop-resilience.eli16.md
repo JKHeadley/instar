@@ -1,5 +1,10 @@
 # tmux Event-Loop Resilience — ELI16
 
+**Status:** Converged (2-round multi-reviewer + cross-model) and approved 2026-06-22.
+Increment 1 (this build) = the async, non-blocking hot path + the block-vs-sleep
+marker + the signal-only degraded-tmux guard, all dev-gated (live on development
+agents, dark on the fleet). Per-agent tmux socket isolation is Increment 2.
+
 Your AI agents on one computer all share a single behind-the-scenes "session manager" program called
 tmux — it's what runs each agent's terminal sessions. Think of it like one shared receptionist
 handling phone calls for several offices in the same building.

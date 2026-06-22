@@ -8,14 +8,18 @@
  *   topic message → find/spawn session → inject message → session replies via [telegram:N]
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// (A.5) wake-handler amplifier guard — the post-wake tmux re-validation is bounded
+// async (9s + SIGKILL) instead of a sync execFileSync that can wedge the event loop.
+const execFileAsync = promisify(execFile);
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
@@ -43,6 +47,7 @@ import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
+import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 import { StateManager } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
@@ -4536,7 +4541,56 @@ export async function startServer(options: StartOptions): Promise<void> {
         ? { subscriptionReroutedLifetimeMinutes: subscriptionPathCfg.maxReroutedLifetimeMinutes }
         : {}),
     };
-    const sessionManager = new SessionManager(sessionManagerConfig, state);
+    // ── (A)/(C) tmux event-loop resilience wiring (threaded through SessionManager opts) ──
+    // SessionManager construction (here) PRECEDES the telegram/guardRegistry/sleepWakeDetector
+    // wiring the (C) guard's notify path needs, and SessionManager takes the guard as a
+    // readonly constructor arg — so the guard is built HERE with a LATE-BOUND raiseAttention
+    // (a closure over a mutable holder), then the holder + the stall listener + the guard-
+    // registry getter are wired later (the §C block before sleepWakeDetector.start()). When
+    // the dev-gate resolves off, tmuxAsyncEnabled is false ⇒ SessionManager's tmux callsites
+    // stay on today's sync byte-for-byte path (D6) and the guard never fires.
+    const _tmuxAsyncEnabled = resolveDevAgentGate(config.monitoring?.tmuxResilience?.asyncHotPath?.enabled, config);
+    const _degradedTmuxEnabled = resolveDevAgentGate(config.monitoring?.degradedTmuxGuard?.enabled, config);
+    // Wire the cross-process marker MIRROR (the WRITER side, owned by this server process).
+    // The stateDir here is byte-identical to the one TelegramLifeline passes to ServerSupervisor
+    // (both resolve from loadConfig(projectDir).stateDir), so writer and cross-process reader
+    // agree on <stateDir>/state/tmux-inflight-sync-op.json. This un-inerts BOTH amplifier #2
+    // (ServerSupervisor.deferRestartForInflightSyncOp) AND the wake-handler marker short-circuit:
+    // without it mirrorStateDir stays null, the mirror file is never written, and every
+    // cross-process read returns null. callTimeoutMs keeps the marker stale-TTL tracking the
+    // same per-call timeout SessionManager uses (so a tuned timeout doesn't make the marker
+    // self-heal early). The mirror is signal-only and harmless when no flag reads it.
+    configureSyncOpMarker({
+      stateDir: config.stateDir,
+      callTimeoutMs: config.monitoring?.tmuxResilience?.asyncHotPath?.timeoutMs,
+    });
+    // The late-bound notify sink — set in the §C wiring block once telegram exists. Until
+    // then (and on a non-telegram install) it is a no-op, so an early episode is dropped
+    // rather than thrown (signal-only).
+    let _degradedTmuxRaise:
+      | ((ep: import('../monitoring/DegradedTmuxGuard.js').DegradedTmuxEpisode) => void)
+      | null = null;
+    const { DegradedTmuxGuard: _DegradedTmuxGuardCtor } = await import('../monitoring/DegradedTmuxGuard.js');
+    // Cache the core count ONCE (stable for the process lifetime) — the guard's loadPerCore
+    // provider is called on every (non-settle-window) evaluate() i.e. potentially N+ times per
+    // monitor tick, and os.cpus() allocates a per-core array each call (a throughput smell on
+    // the busy multi-agent host this guard targets). os.loadavg() is a cheap syscall; read only
+    // loadavg[0]/cachedCores per call, matching sampleHostPressureInputs' loadPerCore exactly.
+    const _degradedTmuxCores = os.cpus()?.length ?? 0;
+    const degradedTmuxGuard = new _DegradedTmuxGuardCtor(
+      { ...config.monitoring?.degradedTmuxGuard, enabled: _degradedTmuxEnabled },
+      {
+        raiseAttention: (ep) => _degradedTmuxRaise?.(ep),
+        loadPerCore: () => (_degradedTmuxCores > 0 ? os.loadavg()[0] / _degradedTmuxCores : 0),
+        now: () => Date.now(),
+      },
+    );
+    const sessionManager = new SessionManager(sessionManagerConfig, state, {
+      tmuxAsyncEnabled: _tmuxAsyncEnabled,
+      degradedTmuxGuard,
+      tmuxCallTimeoutMs: config.monitoring?.tmuxResilience?.asyncHotPath?.timeoutMs,
+      tmuxMaxInFlight: config.monitoring?.tmuxResilience?.asyncHotPath?.maxInFlight,
+    });
     // Wire the SAME TTL-cached SDK-credit reader PR1's routing policy uses, so
     // the reroute 'auto' decision and the intelligence-funnel routing share one
     // credit source and can't drift (june15-headless-spawn-reroute, PR2). Only
@@ -12117,6 +12171,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       minWakeIntervalMs: sleepWakeCfg?.minWakeIntervalMs,
       recentDriftWindowMs: sleepWakeCfg?.recentDriftWindowMs,
       recentDriftLoadFloor: sleepWakeCfg?.recentDriftLoadFloor,
+      // (B) in-flight-sync-op marker — when on, a ~0-CPU drift while a sync subprocess
+      // op is in flight (depth>0, not stale) classifies as an event-loop BLOCK (emits
+      // `stall`, suppresses the false wake) instead of a wake. developmentAgent gate:
+      // LIVE on a dev agent / DARK on the fleet. Off ⇒ today's behavior byte-for-byte (D6).
+      inFlightMarkerEnabled: resolveDevAgentGate(
+        config.monitoring?.tmuxResilience?.inFlightMarker?.enabled,
+        config,
+      ),
     });
     // §P0 #9 (SE-8): give the scheduler's wake-reaper a cumulative-sleep view
     // (not the single last sleep event) so a job that spanned multiple sleeps
@@ -12124,8 +12186,38 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (scheduler) {
       scheduler.setCumulativeSleepProvider((a, b) => sleepWakeDetector.getCumulativeSleepMsBetween(a, b));
     }
+    // (A.5) wake-handler amplifier guard — resolved once. When LIVE, a spurious wake
+    // produced by an in-flight sync subprocess op (an event-loop BLOCK, not a suspend)
+    // is short-circuited at entry, and a low-confidence wake skips the heavy
+    // tunnel/tmux recovery cascade — the recovery storm that piled more load on the host
+    // and re-wedged it. developmentAgent gate: LIVE on a dev agent / DARK on the fleet;
+    // when off the handler is byte-for-byte today's behavior (D6).
+    const _tmuxAsyncHotPathWakeGuard = resolveDevAgentGate(
+      config.monitoring?.tmuxResilience?.asyncHotPath?.enabled,
+      config,
+    );
     sleepWakeDetector.on('wake', async (event: { sleepDurationSeconds: number; timestamp: string; lowConfidence?: boolean }) => {
       console.log(`[SleepWake] Wake detected after ~${event.sleepDurationSeconds}s sleep`);
+
+      // (A.5) Marker short-circuit (residual guard): a sync subprocess op is in flight
+      // RIGHT NOW (the cross-process mirror reports inFlight, not stale) → this "wake" is
+      // an event-loop BLOCK, not a real suspend. (B) already classifies a depth>0 gap as a
+      // `stall` (never a `wake`), so this is the belt-and-suspenders for the moderate-
+      // confidence band: do the minimum and return before any recovery cascade.
+      if (_tmuxAsyncHotPathWakeGuard) {
+        try {
+          const marker = defaultInflightMarkerReader(config.stateDir)();
+          if (marker?.inFlight) {
+            console.log(
+              `[SleepWake] Wake fired while a sync subprocess op is in flight (ageMs=${marker.ageMs}) — ` +
+                `event-loop BLOCK, not a suspend. Skipping recovery cascade.`,
+            );
+            return;
+          }
+        } catch {
+          /* @silent-fallback-ok — a marker-read failure falls through to the normal handler */
+        }
+      }
 
       // Checkpoint SQLite WAL files to flush stale locks from pre-sleep connections
       try { topicMemory?.checkpoint(); } catch { /* non-critical */ }
@@ -12138,13 +12230,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         void _inboundQueue?.onWake(event.sleepDurationSeconds * 1000, event.lowConfidence ? 'low' : 'high');
       } catch { /* the backstop tick covers a missed wake trigger */ }
 
-      // Re-validate tmux sessions
+      // Re-validate tmux sessions — bounded async (9s + SIGKILL) under the amplifier
+      // guard so a wedged tmux can't block the event loop here; informational only, so a
+      // timeout/reject is swallowed.
+      // NOTE: a low-confidence-wake producer (which would let this skip the heavy
+      // tunnel/tmux recovery cascade) is a FUTURE increment — Increment 1 covers the
+      // event-loop-block case via the in-flight marker short-circuit above, so the dead
+      // `event.lowConfidence` cascade-skip branch (no producer in SleepWakeDetector) was
+      // removed rather than ship a guard that can never fire.
       try {
         const tmuxPath = detectTmuxPath();
         if (tmuxPath) {
-          const { execFileSync } = await import('child_process');
-          const result = execFileSync(tmuxPath, ['list-sessions'], { encoding: 'utf-8', timeout: 5000 }).trim();
-          console.log(`[SleepWake] tmux sessions after wake: ${result.split('\n').length}`);
+          if (_tmuxAsyncHotPathWakeGuard) {
+            const { stdout } = await execFileAsync(tmuxPath, ['list-sessions'], {
+              encoding: 'utf-8',
+              timeout: 9000,
+              killSignal: 'SIGKILL',
+            });
+            console.log(`[SleepWake] tmux sessions after wake: ${stdout.trim().split('\n').length}`);
+          } else {
+            const { execFileSync } = await import('child_process');
+            const result = execFileSync(tmuxPath, ['list-sessions'], { encoding: 'utf-8', timeout: 5000 }).trim();
+            console.log(`[SleepWake] tmux sessions after wake: ${result.split('\n').length}`);
+          }
         }
       } catch {
         console.warn('[SleepWake] tmux check failed after wake');
@@ -12246,6 +12354,67 @@ export async function startServer(options: StartOptions): Promise<void> {
         );
       }
     });
+
+    // ── (C) DegradedTmuxGuard — signal-only degraded-shared-tmux watcher (wiring) ──
+    // The guard was CONSTRUCTED at the SessionManager site (it is a readonly constructor
+    // dep of SessionManager, which precedes this block) with a late-bound raiseAttention.
+    // Here we finish the wiring now that telegram/guardRegistry/sleepWakeDetector exist:
+    // set the notify sink, attach the (B) `stall` listener, and register the runtime getter.
+    // SIGNAL-ONLY: any actual tmux refresh is the operator's explicit Y/N; the guard NEVER
+    // kills the shared socket (a kill-server would restart EVERY agent on the machine).
+    // developmentAgent gate: LIVE on a dev agent / DARK on the fleet. Non-fatal wiring.
+    try {
+      // Register the runtime getter FIRST — before the notify-sink bind / stall-listener
+      // attach — so a throw in that later wiring can't strip the getter and leave an
+      // enabled-but-unregistered expectRuntime:true guard reporting phantom `missing` on
+      // /guards. The getter only needs `degradedTmuxGuard`, which already exists from the
+      // SessionManager-site construction.
+      guardRegistry.register('monitoring.degradedTmuxGuard.enabled', () => degradedTmuxGuard.guardStatus());
+      const _degradedTmuxMid = _meshSelfId ?? coordinator.identity?.machineId ?? 'local';
+      // Bind the notify sink (was a no-op until telegram existed).
+      _degradedTmuxRaise = telegram
+        ? (ep) => {
+            // Resolve the machine nickname from the pool registry (single-machine ⇒ the id).
+            const nick =
+              (_listPoolMachines?.() ?? []).find((m) => m.machineId === _degradedTmuxMid)?.nickname ??
+              _degradedTmuxMid;
+            const ageMin = Math.round(ep.ageMs / 60_000);
+            void telegram.createAttentionItem({
+              id: `degraded-tmux:${_degradedTmuxMid}:${ep.id}`,
+              title: `Slow terminal server on "${nick}"`,
+              summary:
+                'The shared terminal server has been slow to respond — sessions may feel sluggish. ' +
+                'Refreshing it (your call) usually clears it.',
+              description:
+                `The shared tmux server on ${nick} has been responding slowly ` +
+                `(~${ep.ewmaMs}ms average over ${ep.consecutiveSlowCycles} corroborating cycles` +
+                `${ageMin > 0 ? `, persisting ~${ageMin}m` : ''}). This can make every session feel sluggish. ` +
+                'Restarting the tmux server (an operator action) usually clears it — I never do that automatically ' +
+                'because it would restart every agent on this machine.',
+              category: 'agent-health',
+              priority: 'NORMAL',
+              lane: 'agent-health',
+              healthKey: `degraded-tmux:${_degradedTmuxMid}`,
+              sourceContext: `degraded-tmux:${_degradedTmuxMid}`,
+            });
+          }
+        : null;
+      // (B) feed — a `stall` is one corroborating slow cycle. Attach BEFORE start() so no
+      // emit is missed. Swallow any throw — a guard fault must never crash the detector.
+      sleepWakeDetector.on('stall', (e) => {
+        try {
+          degradedTmuxGuard.onStall(e);
+        } catch {
+          /* @silent-fallback-ok — signal-only; a guard fault never crashes the detector */
+        }
+      });
+      if (_degradedTmuxEnabled) {
+        console.log(pc.green('  DegradedTmuxGuard enabled (degraded-shared-tmux watcher — signal-only)'));
+      }
+    } catch (e) {
+      console.error('  DegradedTmuxGuard wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
+    }
+
     sleepWakeDetector.start();
 
     // Project Map + Coherence Gate — spatial awareness and pre-action verification

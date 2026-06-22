@@ -22,6 +22,8 @@ import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
+import type { DegradedTmuxGuard } from '../monitoring/DegradedTmuxGuard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -238,6 +240,40 @@ export interface SessionManagerEvents {
   rateLimitedAtIdle: [sessionName: string];
 }
 
+/**
+ * Tri-state outcome of a hot-path tmux call (tmux-event-loop-resilience §A).
+ * Modeled on SessionLivenessOracle.classify: `success` and `definitely-absent`
+ * are the ONLY positive signals; everything else (timeout, server-unreachable,
+ * unknown error) is `indeterminate` — and a destructive action keyed on a tmux
+ * read must treat `indeterminate` as KEEP (never reap). A timeout becomes
+ * `indeterminate`, NEVER `definitely-absent`.
+ */
+type TmuxOutcome =
+  | { state: 'success'; stdout: string }
+  | { state: 'definitely-absent'; reason: string }
+  | { state: 'indeterminate'; reason: string };
+
+/** Options threaded from server boot — the resolved (A)/(C) gate wiring.
+ *  All optional so the (40+) existing 2-arg constructor callers (and every
+ *  off-path/test caller) keep today's behavior byte-for-byte: tmuxAsyncEnabled
+ *  defaults false ⇒ the legacy sync hot path runs unchanged. */
+export interface SessionManagerOptions {
+  /** (A) — when true, monitorTick drives the bounded async tmux hot-path twins
+   *  and isSessionAliveAsync returns tri-state. Resolved server-side via
+   *  resolveDevAgentGate(monitoring.tmuxResilience.asyncHotPath.enabled). */
+  tmuxAsyncEnabled?: boolean;
+  /** (C) latency feed — the async wrapper reports each call's duration+outcome.
+   *  Optional-chained, so (A) can land before the (C) guard is wired. */
+  degradedTmuxGuard?: DegradedTmuxGuard;
+  /** Per-call SIGKILL-bounded timeout for the async wrapper (ms). Server boot
+   *  threads monitoring.tmuxResilience.asyncHotPath.timeoutMs; absent ⇒ 9000. */
+  tmuxCallTimeoutMs?: number;
+  /** Max concurrent in-flight hot-path tmux calls before fail-closed-to-keep.
+   *  Server boot threads monitoring.tmuxResilience.asyncHotPath.maxInFlight;
+   *  absent ⇒ TMUX_MAX_INFLIGHT_DEFAULT (8). */
+  tmuxMaxInFlight?: number;
+}
+
 export class SessionManager extends EventEmitter {
   private config: SessionManagerConfig;
   private state: StateManager;
@@ -381,6 +417,25 @@ export class SessionManager extends EventEmitter {
   private _cachedRunningCount = 0;
   private _cachedRunningSessions: Session[] = [];
 
+  /** (A) tmux-event-loop-resilience — the bounded async hot path.
+   *  When false (the default + every off-path/test caller) the legacy sync hot
+   *  path runs byte-for-byte; monitorTick never touches the async wrapper. */
+  private readonly tmuxAsyncEnabled: boolean;
+  /** (C) latency feed — optional-chained so (A) lands independently of the guard. */
+  private readonly degradedTmuxGuard?: DegradedTmuxGuard;
+  /** Per-call SIGKILL-bounded timeout for the async wrapper (ms). */
+  private readonly tmuxCallTimeoutMs: number;
+  /** Max concurrent in-flight hot-path tmux calls; (N+1)th fails CLOSED to KEEP. */
+  private readonly tmuxMaxInFlight: number;
+  /** Single-flight coalescing: in-flight async tmux calls keyed by `${op}:${session}`
+   *  so a destructive op (kill) can NEVER coalesce with a concurrent read of the
+   *  same session (a silent correctness hole). */
+  private readonly tmuxInflight = new Map<string, Promise<TmuxOutcome>>();
+  /** Live count of in-flight async tmux calls — the max-in-flight ceiling. */
+  private tmuxInflightCount = 0;
+  /** Fallback ceiling when no maxInFlight is threaded from server boot. */
+  private static readonly TMUX_MAX_INFLIGHT_DEFAULT = 8;
+
   /** Worktree manager — when set, spawnSession resolves an isolated worktree per topic. */
   private worktreeManager: import('./WorktreeManager.js').WorktreeManager | null = null;
   private buildContextStore: SessionBuildContextStore | null = null;
@@ -409,10 +464,22 @@ export class SessionManager extends EventEmitter {
    *  present, else `<projectDir>/.instar`). */
   private vaultStateDir: string;
 
-  constructor(config: SessionManagerConfig, state: StateManager) {
+  constructor(config: SessionManagerConfig, state: StateManager, opts: SessionManagerOptions = {}) {
     super();
     this.config = config;
     this.state = state;
+    // (A)/(C) tmux-event-loop-resilience wiring — resolved server-side and threaded
+    // in. Absent (every 2-arg/test caller) ⇒ the legacy sync hot path runs unchanged.
+    this.tmuxAsyncEnabled = opts.tmuxAsyncEnabled === true;
+    this.degradedTmuxGuard = opts.degradedTmuxGuard;
+    this.tmuxCallTimeoutMs =
+      typeof opts.tmuxCallTimeoutMs === 'number' && Number.isFinite(opts.tmuxCallTimeoutMs) && opts.tmuxCallTimeoutMs > 0
+        ? opts.tmuxCallTimeoutMs
+        : 9000;
+    this.tmuxMaxInFlight =
+      typeof opts.tmuxMaxInFlight === 'number' && Number.isFinite(opts.tmuxMaxInFlight) && opts.tmuxMaxInFlight > 0
+        ? opts.tmuxMaxInFlight
+        : SessionManager.TMUX_MAX_INFLIGHT_DEFAULT;
     // Durable in-flight inject ledger (finding 8d300555) — records survive a
     // server restart in the spawn→ready→inject window; recoverPendingInjects()
     // sweeps them at boot. Mock StateManagers in tests may lack baseDir —
@@ -465,6 +532,82 @@ export class SessionManager extends EventEmitter {
    *  the alive/dead/indeterminate verdicts deterministically. */
   setLivenessOracle(oracle: SessionLivenessOracle): void {
     this._livenessOracle = oracle;
+  }
+
+  /**
+   * The SOLE funnel for hot-path tmux calls (tmux-event-loop-resilience §A).
+   * Tri-state, modeled on SessionLivenessOracle.classify: `success` and
+   * `definitely-absent` are the only POSITIVE signals; everything else —
+   * timeout, server-unreachable, unknown error — is `indeterminate`, and a
+   * caller keying a destructive action on the result MUST treat `indeterminate`
+   * as KEEP (never reap). A timeout becomes `indeterminate`, NEVER
+   * `definitely-absent`.
+   *
+   * `killSignal: 'SIGKILL'` is essential — a plain `timeout` sends SIGTERM,
+   * which a wedged tmux ignores, so the call would never actually return inside
+   * the bound. SIGKILL guarantees the 9s ceiling. Reuses the module-level
+   * `execFileAsync` (no second promisify). The `observeTmuxCall` calls feed the
+   * (C) DegradedTmuxGuard latency signal; optional-chained so (A) is independent
+   * of whether (C) is wired yet (until then the calls are a no-op).
+   */
+  private async tmuxExecAsync(args: string[], opts: { timeoutMs?: number } = {}): Promise<TmuxOutcome> {
+    const timeout = opts.timeoutMs ?? this.tmuxCallTimeoutMs;
+    const t0 = Date.now();
+    try {
+      const { stdout } = await execFileAsync(this.config.tmuxPath, args, { timeout, killSignal: 'SIGKILL' });
+      this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, 'success');
+      return { state: 'success', stdout };
+    } catch (err) {
+      const e =
+        err && typeof err === 'object'
+          ? (err as { stderr?: string; message?: string; killed?: boolean; signal?: string })
+          : {};
+      const msg = (e.stderr || e.message || String(err)).toString();
+      // A definitive negative: the tmux server answered and named the session
+      // absent. Treated as a SUCCESSFUL probe for latency (the call returned fast
+      // with a real answer; it is not a slow/degraded call).
+      if (/can't find session|no such session|no server running|session not found/i.test(msg)) {
+        this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, 'success');
+        return { state: 'definitely-absent', reason: msg.slice(0, 120) };
+      }
+      // Everything else is indeterminate. A SIGKILL (our timeout) sets
+      // killed===true / signal==='SIGKILL' — flag it as a killed-client so the
+      // guard counts the degraded-call signal distinctly from a generic error.
+      const killed = e.killed === true || e.signal === 'SIGKILL' || /SIGKILL/.test(msg);
+      this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, killed ? 'killed-client' : 'indeterminate');
+      return { state: 'indeterminate', reason: msg.slice(0, 120) };
+    }
+  }
+
+  /**
+   * Single-flight + max-in-flight wrapper around `tmuxExecAsync` (§A).
+   * Coalesces concurrent calls per `(op, tmuxSession)` so a tick that probes the
+   * same session twice issues ONE subprocess; the key MUST include the op so a
+   * destructive op never shares an in-flight Promise with a read of the same
+   * session. When the live in-flight count is at the ceiling, resolves
+   * `{state:'indeterminate', reason:'max-inflight'}` WITHOUT spawning — fail
+   * CLOSED toward KEEP, never toward reap, and a hard cap on how many
+   * subprocesses the hot path can fan out (never MORE than today).
+   */
+  private async tmuxExecCoalesced(
+    op: string,
+    tmuxSession: string,
+    args: string[],
+    opts: { timeoutMs?: number } = {},
+  ): Promise<TmuxOutcome> {
+    const key = `${op}:${tmuxSession}`;
+    const existing = this.tmuxInflight.get(key);
+    if (existing) return existing;
+    if (this.tmuxInflightCount >= this.tmuxMaxInFlight) {
+      return { state: 'indeterminate', reason: 'max-inflight' };
+    }
+    this.tmuxInflightCount += 1;
+    const p = this.tmuxExecAsync(args, opts).finally(() => {
+      this.tmuxInflight.delete(key);
+      this.tmuxInflightCount = Math.max(0, this.tmuxInflightCount - 1);
+    });
+    this.tmuxInflight.set(key, p);
+    return p;
   }
 
   /** Effective idle-at-prompt kill threshold (config override or hardcoded default) */
@@ -1139,7 +1282,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
 
         const alive = await this.isSessionAliveAsync(session.tmuxSession);
-        if (!alive) {
+        // (A) tri-state: ONLY a definitive `false` (dead) marks the session
+        // completed. `'indeterminate'` (slow/timed-out tmux) does NOT — it falls
+        // through to be re-checked next tick rather than reaping a live session.
+        if (alive === false) {
+          // CAS re-read after the await: an operator kill (or another killer)
+          // can land mid-probe, so re-read the live record before mutating it —
+          // mirrors terminateSession's status CAS. If it already drifted off
+          // 'running', another writer owns the transition; skip this inline
+          // mark-completed (which lacks terminateSession's own CAS guard).
+          const fresh = this.state.getSession(session.id);
+          if (!fresh || fresh.status !== 'running') {
+            continue;
+          }
           // Check if this session had a pending Telegram injection that never got a response
           const pendingInjection = this.pendingInjections.get(session.tmuxSession);
           if (pendingInjection) {
@@ -1152,14 +1307,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
               injectedAt: pendingInjection.injectedAt,
             });
           }
-          session.status = 'completed';
-          session.endedAt = new Date().toISOString();
-          this.state.saveSession(session);
-          this.emit('sessionComplete', session);
+          fresh.status = 'completed';
+          fresh.endedAt = new Date().toISOString();
+          this.state.saveSession(fresh);
+          this.emit('sessionComplete', fresh);
           continue;
         }
 
-        this.recordBuildContext(session.tmuxSession);
+        await this.recordBuildContextMaybeAsync(session.tmuxSession);
 
         // ── Rerouted-interactive completion branch (june15-headless-spawn-
         // reroute, PR2 O1) ──
@@ -1176,7 +1331,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // maps only 'killed' → 'timeout'). A sentinel completion is a clean
           // finish, NOT a timeout.
           if (!this.config.protectedSessions.includes(session.tmuxSession) &&
-              this.detectSessionCompletion(session)) {
+              await this.detectSessionCompletionMaybeAsync(session)) {
             console.log(`[SessionManager] Rerouted session "${session.name}" completed (sentinel detected). Reaping as success.`);
             await this.terminateSession(session.id, 'sentinel-complete', {
               finalStatus: 'completed',
@@ -1222,7 +1377,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (session.framework === 'gemini-cli') {
           const pendingInjection = this.pendingInjections.get(session.tmuxSession);
           if (pendingInjection) {
-            const pane = this.captureOutput(session.tmuxSession, 400) || '';
+            const pane = (await this.captureOutputMaybeAsync(session.tmuxSession, 400)) || '';
             const marker = `[telegram:${pendingInjection.topicId}`;
             const markerIdx = pane.lastIndexOf(marker);
             if (markerIdx >= 0) {
@@ -1243,7 +1398,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Check for completion patterns even while session appears alive
         // (catches sessions where Claude finished but tmux is still open)
         if (!this.config.protectedSessions.includes(session.tmuxSession) &&
-            this.detectCompletion(session.tmuxSession)) {
+            await this.detectCompletionMaybeAsync(session.tmuxSession)) {
           console.log(`[SessionManager] Session "${session.name}" completed (pattern detected). Cleaning up.`);
           // Emit beforeSessionKill so listeners (TopicResumeMap, SlackAdapter) can save resume UUIDs
           this.emit('beforeSessionKill', session);
@@ -1278,9 +1433,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const limit = maxMinutes + buffer;
           if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)) {
             // Activity check — defer kill if the session is doing real work.
-            const ageGateOutput = this.captureMeaningfulTail(session.tmuxSession, 5);
+            const ageGateOutput = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 5);
             const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p));
-            const ageGateHasProcs = this.hasActiveProcesses(session.tmuxSession);
+            const ageGateHasProcs = await this.hasActiveProcessesMaybeAsync(session.tmuxSession);
             // Transcript-activity backstop (2026-06-13 incident): the pane+procs
             // check is BLIND to MCP/tool work. A session driving Playwright (or any
             // MCP server) runs that work OUT of the tmux process tree, and between
@@ -1363,19 +1518,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Skip sessions the SessionReaper has leased for a two-phase reap — it
         // is the single actor on them while reaping (§3.6).
         if (!this.config.protectedSessions.includes(session.tmuxSession) && !this.isReaping(session.id)) {
-          const output = this.captureMeaningfulTail(session.tmuxSession, 5);
+          const output = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 5);
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
           // ── Prompt Gate: feed captured output to InputDetector ──
           if (this.promptDetector && output) {
-            const fullOutput = this.captureOutput(session.tmuxSession, 50);
+            const fullOutput = await this.captureOutputMaybeAsync(session.tmuxSession, 50);
             if (fullOutput) {
               this.promptDetector.onCapture(session.tmuxSession, fullOutput);
             }
           }
 
           // Two conditions must BOTH be true for idle: prompt pattern + no active processes
-          const isActuallyIdle = isIdleAtPrompt && !this.hasActiveProcesses(session.tmuxSession);
+          const isActuallyIdle = isIdleAtPrompt && !(await this.hasActiveProcessesMaybeAsync(session.tmuxSession));
 
           if (isActuallyIdle) {
             const now = Date.now();
@@ -1388,11 +1543,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // the Enter key sent after the paste end sequence doesn't register.
               // Re-send Enter to unstick it. Only try once per session to avoid loops.
               if (!this.pasteRetried.has(session.id)) {
-                const recentForPaste = this.captureOutput(session.tmuxSession, 15);
+                const recentForPaste = await this.captureOutputMaybeAsync(session.tmuxSession, 15);
                 if (recentForPaste && /\[Pasted text #\d+\]/.test(recentForPaste)) {
                   this.pasteRetried.add(session.id);
                   console.log(`[SessionManager] Session "${session.name}" has unsubmitted pasted text — resending Enter.`);
-                  this.sendKey(session.tmuxSession, 'Enter');
+                  await this.sendKeyMaybeAsync(session.tmuxSession, 'Enter');
                   this.idlePromptSince.delete(session.id); // Reset idle timer
                   continue; // Skip to next session
                 }
@@ -1403,7 +1558,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // inject a nudge to get it working again instead of waiting 15m to kill.
               const nudgeTotal = this.errorNudgeTotal.get(session.id) ?? 0;
               if (shouldErrorNudge(this.errorNudgedSessions.has(session.id), nudgeTotal)) {
-                const recentOutput = this.captureOutput(session.tmuxSession, 30);
+                const recentOutput = await this.captureOutputMaybeAsync(session.tmuxSession, 30);
                 if (recentOutput) {
                   // Server-side throttle ("Server is temporarily limiting
                   // requests · not your usage limit") gets a DIFFERENT path:
@@ -1891,7 +2046,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         : undefined;
 
     try {
-      execFileSync(this.config.tmuxPath, [
+      // §B in-flight marker: this spawn is EXCLUDED from §A async conversion
+      // (its synchronous timing is part of the spawn contract) but still funnels
+      // through withSyncOp so a drift during the blocking spawn is classed as an
+      // event-loop BLOCK, not sleep.
+      withSyncOp(() => execFileSync(this.config.tmuxPath, [
         'new-session', '-d',
         '-s', tmuxSession,
         '-c', resolvedCwd,
@@ -1931,13 +2090,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
         ...headlessSpec.argv,
-      ], { encoding: 'utf-8' });
+      ], { encoding: 'utf-8' }));
 
       // Increase tmux scrollback buffer for dashboard history support
       try {
-        execFileSync(this.config.tmuxPath, [
+        withSyncOp(() => execFileSync(this.config.tmuxPath, [
           'set-option', '-t', `=${tmuxSession}:`, 'history-limit', '50000',
-        ], { encoding: 'utf-8', timeout: 5000 });
+        ], { encoding: 'utf-8', timeout: 5000 }));
       } catch {
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
@@ -2171,7 +2330,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       (this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store';
 
     try {
-      execFileSync(this.config.tmuxPath, [
+      // §B: excluded from §A async conversion (spawn timing is contractual) but
+      // funnels through withSyncOp so a drift during this blocking spawn reads as
+      // an event-loop BLOCK, not sleep.
+      withSyncOp(() => execFileSync(this.config.tmuxPath, [
         'new-session', '-d',
         '-s', tmuxSession,
         '-c', resolvedCwd,
@@ -2211,12 +2373,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
         ...launchSpec.argv,
-      ], { encoding: 'utf-8' });
+      ], { encoding: 'utf-8' }));
 
       try {
-        execFileSync(this.config.tmuxPath, [
+        withSyncOp(() => execFileSync(this.config.tmuxPath, [
           'set-option', '-t', `=${tmuxSession}:`, 'history-limit', '50000',
-        ], { encoding: 'utf-8', timeout: 5000 });
+        ], { encoding: 'utf-8', timeout: 5000 }));
       } catch {
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
@@ -2305,11 +2467,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     // Verify Claude process is running inside the tmux session
     try {
-      const paneInfo = execFileSync(
+      const paneInfo = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
         { encoding: 'utf-8', timeout: 5000 }
-      ).trim();
+      )).trim();
       const [paneCmd, startCmd] = paneInfo.split('||');
       // Claude Code runs as 'claude' or 'node' process
       if (paneCmd && (paneCmd.includes('claude') || paneCmd.includes('node'))) {
@@ -2336,6 +2498,32 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Pure classification of a `pane_current_command||pane_start_command` reading
+   * into alive/dead — shared by the SYNC `isSessionAlive`, the legacy async
+   * body, and the tri-state async body so the bare-shell/claude/node logic can
+   * NEVER drift across the three callers. Returns the same verdicts as the
+   * original inline code, including the bare-shell log line.
+   */
+  private classifyPaneCommand(tmuxSession: string, paneInfo: string): boolean {
+    const [paneCmd, startCmd] = paneInfo.split('||');
+    if (paneCmd && (paneCmd.includes('claude') || paneCmd.includes('node'))) {
+      return true;
+    }
+    if (paneCmd === 'bash' || paneCmd === 'zsh' || paneCmd === 'sh') {
+      if (startCmd && startCmd !== paneCmd) {
+        return true;
+      }
+      console.log(`[SessionManager] Session "${tmuxSession}" has bare shell (${paneCmd}) — marking dead. start_command: ${startCmd}`);
+      return false;
+    }
+    // Unknown command — log it and assume alive
+    if (paneCmd) {
+      console.log(`[SessionManager] Session "${tmuxSession}" has unknown pane command: "${paneCmd}" — assuming alive`);
+    }
+    return true;
+  }
+
+  /**
    * Check if a session is still running by checking tmux AND verifying
    * that the Claude process is running inside (async version).
    * Used by the monitoring loop to avoid blocking the event loop.
@@ -2343,44 +2531,60 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Previously only checked `tmux has-session` which missed zombie sessions
    * where tmux was alive but Claude had exited — causing stuck sessions
    * that blocked the scheduler for hours.
+   *
+   * (A) tmux-event-loop-resilience: when `tmuxAsyncEnabled`, this returns a
+   * TRI-STATE — `boolean | 'indeterminate'` — through the bounded, SIGKILL-
+   * capped wrapper. A slow/timed-out `has-session` resolves to `'indeterminate'`
+   * (the caller must NOT reap), NEVER to `false` ("dead"). This closes the
+   * latent spurious-reap bug where a busy tmux's timeout was mapped to `false`
+   * → marked-completed → killed a live session. When OFF, the legacy body runs
+   * byte-for-byte (including the false-on-timeout reap).
    */
-  private async isSessionAliveAsync(tmuxSession: string): Promise<boolean> {
-    try {
-      await execFileAsync(this.config.tmuxPath, ['has-session', '-t', `=${tmuxSession}`], {
-        timeout: 5000,
-      });
-    } catch {
-      // tmux session doesn't exist — it's dead
-      return false;
-    }
-
-    // Verify Claude process is alive inside (matches sync isSessionAlive logic)
-    try {
-      const { stdout } = await execFileAsync(
-        this.config.tmuxPath,
-        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
-        { timeout: 5000 }
-      );
-      const paneInfo = stdout.trim();
-      const [paneCmd, startCmd] = paneInfo.split('||');
-      if (paneCmd && (paneCmd.includes('claude') || paneCmd.includes('node'))) {
-        return true;
-      }
-      if (paneCmd === 'bash' || paneCmd === 'zsh' || paneCmd === 'sh') {
-        if (startCmd && startCmd !== paneCmd) {
-          return true;
-        }
-        console.log(`[SessionManager] Session "${tmuxSession}" has bare shell (${paneCmd}) — marking dead. start_command: ${startCmd}`);
+  private async isSessionAliveAsync(tmuxSession: string): Promise<boolean | 'indeterminate'> {
+    if (!this.tmuxAsyncEnabled) {
+      // ── Legacy body, byte-for-byte (today's false-on-timeout behavior). ──
+      try {
+        await execFileAsync(this.config.tmuxPath, ['has-session', '-t', `=${tmuxSession}`], {
+          timeout: 5000,
+        });
+      } catch {
+        // tmux session doesn't exist — it's dead
         return false;
       }
-      // Unknown command — log it and assume alive
-      if (paneCmd) {
-        console.log(`[SessionManager] Session "${tmuxSession}" has unknown pane command: "${paneCmd}" — assuming alive`);
+      try {
+        const { stdout } = await execFileAsync(
+          this.config.tmuxPath,
+          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
+          { timeout: 5000 }
+        );
+        return this.classifyPaneCommand(tmuxSession, stdout.trim());
+      } catch {
+        // @silent-fallback-ok: legacy off-path body, byte-for-byte. An unprobeable
+        // display-message (the session exists but the pane read failed/timed out) ⇒ assume
+        // ALIVE — the safe direction (never spuriously reap a live session over a probe blip).
+        return true;
       }
-      return true;
-    } catch {
-      return true;
     }
+
+    // ── (A) tri-state path. ──
+    const has = await this.tmuxExecCoalesced('has-session', tmuxSession, [
+      'has-session',
+      '-t',
+      `=${tmuxSession}`,
+    ]);
+    if (has.state === 'definitely-absent') return false; // genuinely dead
+    if (has.state === 'indeterminate') return 'indeterminate'; // slow tmux ⇒ NEVER 'dead'
+
+    // Verify Claude process is alive inside (matches sync isSessionAlive logic).
+    const disp = await this.tmuxExecCoalesced('display-message', tmuxSession, [
+      'display-message',
+      '-t',
+      `=${tmuxSession}:`,
+      '-p',
+      '#{pane_current_command}||#{pane_start_command}',
+    ]);
+    if (disp.state !== 'success') return true; // unprobeable ⇒ assume alive (preserves the legacy catch)
+    return this.classifyPaneCommand(tmuxSession, disp.stdout.trim());
   }
 
   /**
@@ -2409,9 +2613,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.emit('beforeSessionKill', session);
 
       try {
-        execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
+        // §B: kill is EXCLUDED from §A async conversion but funnels through
+        // withSyncOp so a drift during the blocking kill reads as a block, not sleep.
+        withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
           encoding: 'utf-8',
-        });
+        }));
       } catch {
         // Session might already be dead
       }
@@ -2441,69 +2647,159 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * terminal output patterns, topic bindings, or subagent trackers. If the process
    * tree shows work happening, the session is active. Period.
    */
+  /**
+   * Pure descendant-tree analysis — shared by the sync `hasActiveProcesses` and
+   * its async twin so the parsing/tree-walk/baseline-filter logic can NEVER
+   * drift between paths (Map 2 risk #5). Given the pane shell PID and raw
+   * `ps -eo pid,ppid,command` output, returns whether any non-baseline,
+   * non-Claude descendant process is running.
+   */
+  private computeHasActiveProcesses(panePid: string, psOutput: string): boolean {
+    // Build a map of PID → { ppid, command }
+    const processes = new Map<string, { ppid: string; command: string }>();
+    for (const line of psOutput.split('\n').slice(1)) { // skip header
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (match) {
+        processes.set(match[1], { ppid: match[2], command: match[3] });
+      }
+    }
+
+    // Walk the tree: find all descendants of panePid
+    const descendants: Array<{ pid: string; command: string }> = [];
+    const queue = [panePid];
+    while (queue.length > 0) {
+      const parentPid = queue.shift()!;
+      for (const [pid, info] of processes) {
+        if (info.ppid === parentPid && pid !== panePid) {
+          descendants.push({ pid, command: info.command });
+          queue.push(pid);
+        }
+      }
+    }
+
+    // Filter out baseline processes
+    const activeProcesses = descendants.filter(p => {
+      return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
+    });
+
+    // The Claude Code node process itself is always running — that's the main process.
+    // We care about processes BEYOND Claude itself and its baseline children.
+    // Claude's main process is the direct child of the pane PID.
+    // Filter it out: it's typically `node` or `claude` running the main Claude binary.
+    const nonClaude = activeProcesses.filter(p => {
+      const proc = processes.get(p.pid);
+      // Direct child of pane PID running claude/node is the main process
+      if (proc?.ppid === panePid) {
+        return !/\bclaude\b/.test(p.command) && !/\bnode\b.*\bclaude\b/.test(p.command);
+      }
+      return true;
+    });
+
+    return nonClaude.length > 0;
+  }
+
   hasActiveProcesses(tmuxSession: string): boolean {
     try {
       // Get the tmux pane's shell PID
-      const panePid = execFileSync(
+      const panePid = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_pid}'],
         { encoding: 'utf-8', timeout: 5000 }
-      ).trim();
+      )).trim();
 
       if (!panePid || !/^\d+$/.test(panePid)) return false;
 
       // Get all descendant processes of the pane PID
       // Use ps to find all processes whose parent is in our tree
-      const psOutput = execFileSync(
+      const psOutput = withSyncOp(() => execFileSync(
         'ps', ['-eo', 'pid,ppid,command'],
         { encoding: 'utf-8', timeout: 5000 }
-      );
+      ));
 
-      // Build a map of PID → { ppid, command }
-      const processes = new Map<string, { ppid: string; command: string }>();
-      for (const line of psOutput.split('\n').slice(1)) { // skip header
-        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
-        if (match) {
-          processes.set(match[1], { ppid: match[2], command: match[3] });
-        }
-      }
-
-      // Walk the tree: find all descendants of panePid
-      const descendants: Array<{ pid: string; command: string }> = [];
-      const queue = [panePid];
-      while (queue.length > 0) {
-        const parentPid = queue.shift()!;
-        for (const [pid, info] of processes) {
-          if (info.ppid === parentPid && pid !== panePid) {
-            descendants.push({ pid, command: info.command });
-            queue.push(pid);
-          }
-        }
-      }
-
-      // Filter out baseline processes
-      const activeProcesses = descendants.filter(p => {
-        return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
-      });
-
-      // The Claude Code node process itself is always running — that's the main process.
-      // We care about processes BEYOND Claude itself and its baseline children.
-      // Claude's main process is the direct child of the pane PID.
-      // Filter it out: it's typically `node` or `claude` running the main Claude binary.
-      const nonClaude = activeProcesses.filter(p => {
-        const proc = processes.get(p.pid);
-        // Direct child of pane PID running claude/node is the main process
-        if (proc?.ppid === panePid) {
-          return !/\bclaude\b/.test(p.command) && !/\bnode\b.*\bclaude\b/.test(p.command);
-        }
-        return true;
-      });
-
-      return nonClaude.length > 0;
+      return this.computeHasActiveProcesses(panePid, psOutput);
     } catch {
       // If we can't check processes, assume active (fail-safe: don't kill)
       return true;
     }
+  }
+
+  /**
+   * Async twin of hasActiveProcesses (§A) — the tmux list-panes goes through the
+   * bounded wrapper and the non-tmux `ps` fork runs on `execFileAsync` (so the
+   * whole probe is off the event loop). The fail-safe is preserved EXACTLY: an
+   * indeterminate list-panes, an unparseable pane PID, OR any failure resolves
+   * to TRUE (assume active — never kill on an unprobeable process tree). The
+   * pure tree-walk is the SAME `computeHasActiveProcesses` the sync path uses.
+   */
+  private async hasActiveProcessesAsync(tmuxSession: string): Promise<boolean> {
+    try {
+      const panes = await this.tmuxExecCoalesced('list-panes', tmuxSession, [
+        'list-panes',
+        '-t',
+        `=${tmuxSession}:`,
+        '-F',
+        '#{pane_pid}',
+      ]);
+      // Indeterminate (slow/timed-out tmux) ⇒ fail-safe TRUE (don't kill). A
+      // definitive-absent / parse failure of the pane PID is "no pane PID" ⇒
+      // false, matching the sync version's `return false` on a bad PID.
+      if (panes.state === 'indeterminate') return true;
+      if (panes.state === 'definitely-absent') return false;
+      const panePid = panes.stdout.trim();
+      if (!panePid || !/^\d+$/.test(panePid)) return false;
+
+      const { stdout: psOutput } = await execFileAsync('ps', ['-eo', 'pid,ppid,command'], {
+        timeout: 5000,
+        killSignal: 'SIGKILL',
+      });
+
+      return this.computeHasActiveProcesses(panePid, psOutput);
+    } catch {
+      // If we can't check processes, assume active (fail-safe: don't kill)
+      return true;
+    }
+  }
+
+  // ── (§A) hot-path dispatchers: monitorTick awaits these. When
+  // `tmuxAsyncEnabled` they run the bounded async twins (off the event loop);
+  // when OFF they call the EXACT sync method, so the off-path is byte-for-byte
+  // today's behavior (the await on an already-resolved value is a microtask, no
+  // semantic change). Kept tiny so the conversion at each monitorTick callsite
+  // is a one-line substitution. ────────────────────────────────────────────
+  private async captureOutputMaybeAsync(tmuxSession: string, lines?: number): Promise<string | null> {
+    return this.tmuxAsyncEnabled
+      ? this.captureOutputAsync(tmuxSession, lines)
+      : this.captureOutput(tmuxSession, lines);
+  }
+  private async captureMeaningfulTailMaybeAsync(tmuxSession: string, lines: number): Promise<string | null> {
+    return this.tmuxAsyncEnabled
+      ? this.captureMeaningfulTailAsync(tmuxSession, lines)
+      : this.captureMeaningfulTail(tmuxSession, lines);
+  }
+  private async hasActiveProcessesMaybeAsync(tmuxSession: string): Promise<boolean> {
+    return this.tmuxAsyncEnabled
+      ? this.hasActiveProcessesAsync(tmuxSession)
+      : this.hasActiveProcesses(tmuxSession);
+  }
+  private async detectCompletionMaybeAsync(tmuxSession: string): Promise<boolean> {
+    return this.tmuxAsyncEnabled
+      ? this.detectCompletionAsync(tmuxSession)
+      : this.detectCompletion(tmuxSession);
+  }
+  private async detectSessionCompletionMaybeAsync(session: Session): Promise<boolean> {
+    return this.tmuxAsyncEnabled
+      ? this.detectSessionCompletionAsync(session)
+      : this.detectSessionCompletion(session);
+  }
+  private async recordBuildContextMaybeAsync(tmuxSession: string): Promise<void> {
+    return this.tmuxAsyncEnabled
+      ? this.recordBuildContextAsync(tmuxSession)
+      : void this.recordBuildContext(tmuxSession);
+  }
+  private async sendKeyMaybeAsync(tmuxSession: string, key: string): Promise<boolean> {
+    return this.tmuxAsyncEnabled
+      ? this.sendKeyAsync(tmuxSession, key)
+      : this.sendKey(tmuxSession, key);
   }
 
   /**
@@ -2523,17 +2819,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   descendantCpuSeconds(tmuxSession: string): number {
     try {
-      const panePid = execFileSync(
+      const panePid = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_pid}'],
         { encoding: 'utf-8', timeout: 5000 },
-      ).trim();
+      )).trim();
       if (!panePid || !/^\d+$/.test(panePid)) return 0;
 
-      const psOutput = execFileSync(
+      const psOutput = withSyncOp(() => execFileSync(
         'ps', ['-eo', 'pid,ppid,time,command'],
         { encoding: 'utf-8', timeout: 5000 },
-      );
+      ));
       const procs = new Map<string, { ppid: string; time: string; command: string }>();
       for (const line of psOutput.split('\n').slice(1)) {
         const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
@@ -2582,11 +2878,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     for (const s of running) {
       try {
-        const panePid = execFileSync(
+        const panePid = withSyncOp(() => execFileSync(
           this.config.tmuxPath,
           ['list-panes', '-t', `=${s.tmuxSession}:`, '-F', '#{pane_pid}'],
           { encoding: 'utf-8', timeout: 5000 },
-        ).trim();
+        )).trim();
         if (panePid && /^\d+$/.test(panePid)) {
           out.push({ id: s.id, pid: Number(panePid) });
         }
@@ -2643,11 +2939,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // raw bytes returned here are consumed by callers (sentinels, watchdog)
       // that own the actual state-detection patterns and their canary/registry
       // coverage. This method is the transport layer.
-      return execFileSync(
+      return withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['capture-pane', '-t', `=${tmuxSession}:`, '-p', '-S', `-${lines}`],
         { encoding: 'utf-8', timeout: 5000 }
-      );
+      ));
     } catch {
       // @silent-fallback-ok — capture output, null handled by caller
       return null;
@@ -2668,6 +2964,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   captureMeaningfulTail(tmuxSession: string, lines: number): string | null {
     const raw = this.captureOutput(tmuxSession, Math.max(lines * 4, 50));
+    if (raw === null) return null;
+    return meaningfulTail(raw, lines);
+  }
+
+  /**
+   * Async twin of captureOutput (§A hot path) — bounded, SIGKILL-capped
+   * capture-pane through the single-flight wrapper. Any non-success outcome
+   * (indeterminate/absent/timeout) resolves to `null`, exactly like the sync
+   * version's catch — the caller's null handling is byte-for-byte preserved.
+   */
+  private async captureOutputAsync(tmuxSession: string, lines: number = 100): Promise<string | null> {
+    const out = await this.tmuxExecCoalesced('capture-pane', tmuxSession, [
+      'capture-pane',
+      '-t',
+      `=${tmuxSession}:`,
+      '-p',
+      '-S',
+      `-${lines}`,
+    ]);
+    return out.state === 'success' ? out.stdout : null;
+  }
+
+  /** Async twin of captureMeaningfulTail — async capture, SAME pure trim/tail. */
+  private async captureMeaningfulTailAsync(tmuxSession: string, lines: number): Promise<string | null> {
+    const raw = await this.captureOutputAsync(tmuxSession, Math.max(lines * 4, 50));
     if (raw === null) return null;
     return meaningfulTail(raw, lines);
   }
@@ -2707,11 +3028,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   private currentPaneCwd(tmuxSession: string): string | null {
     try {
-      const out = execFileSync(
+      const out = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['display-message', '-p', '-t', `=${tmuxSession}:`, '#{pane_current_path}'],
         { encoding: 'utf-8', timeout: 2000 },
-      ).trim();
+      )).trim();
       return out || null;
     } catch {
       // @silent-fallback-ok — cwd tracking is best-effort enrichment for respawn recovery
@@ -2719,9 +3040,40 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
   }
 
+  /**
+   * Async twin of currentPaneCwd (§A) — preserves the LIGHTER 2000ms budget the
+   * sync version uses (cwd tracking is best-effort enrichment, not a liveness
+   * probe). A distinct op key (`display-message-cwd`) keeps single-flight from
+   * coalescing this `pane_current_path` probe with the liveness
+   * `pane_current_command` probe of the same session. Non-success ⇒ null.
+   */
+  private async currentPaneCwdAsync(tmuxSession: string): Promise<string | null> {
+    const out = await this.tmuxExecCoalesced(
+      'display-message-cwd',
+      tmuxSession,
+      ['display-message', '-p', '-t', `=${tmuxSession}:`, '#{pane_current_path}'],
+      { timeoutMs: 2000 },
+    );
+    if (out.state !== 'success') return null;
+    const trimmed = out.stdout.trim();
+    return trimmed || null;
+  }
+
   private recordBuildContext(tmuxSession: string): void {
     if (!this.buildContextStore) return;
     const currentCwd = this.currentPaneCwd(tmuxSession);
+    if (!currentCwd) return;
+    try {
+      this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
+    } catch (err) {
+      console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Async twin of recordBuildContext — async cwd probe, SAME persistence. */
+  private async recordBuildContextAsync(tmuxSession: string): Promise<void> {
+    if (!this.buildContextStore) return;
+    const currentCwd = await this.currentPaneCwdAsync(tmuxSession);
     if (!currentCwd) return;
     try {
       this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
@@ -2768,11 +3120,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     let resolved: IntelligenceFramework | null = null;
     try {
-      const out = execFileSync(
+      const out = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['show-environment', '-t', `=${tmuxSession}`, 'INSTAR_FRAMEWORK'],
         { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
-      ).trim();
+      )).trim();
       const value = out.startsWith('INSTAR_FRAMEWORK=') ? out.slice('INSTAR_FRAMEWORK='.length) : '';
       if (value === 'claude-code' || value === 'codex-cli') {
         resolved = value;
@@ -2795,16 +3147,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Send text literally, then Enter separately. `--` terminates option
       // parsing so input can never be interpreted as a send-keys flag
       // (FABLE-MODEL-ESCALATION-SPEC §5.3 hardening; safe for all callers).
-      execFileSync(
+      withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['send-keys', '-t', `=${tmuxSession}:`, '-l', '--', input],
         { encoding: 'utf-8', timeout: 5000 }
-      );
-      execFileSync(
+      ));
+      withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'],
         { encoding: 'utf-8', timeout: 5000 }
-      );
+      ));
       return true;
     } catch {
       // @silent-fallback-ok — send-keys boolean return
@@ -2819,15 +3171,36 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   sendKey(tmuxSession: string, key: string): boolean {
     try {
-      execFileSync(
-        this.config.tmuxPath,
-        ['send-keys', '-t', `=${tmuxSession}:`, key],
-        { encoding: 'utf-8', timeout: 5000 }
+      withSyncOp(() =>
+        execFileSync(
+          this.config.tmuxPath,
+          ['send-keys', '-t', `=${tmuxSession}:`, key],
+          { encoding: 'utf-8', timeout: 5000 }
+        )
       );
       return true;
     } catch {
       // @silent-fallback-ok — send-key boolean return
       return false;
+    }
+  }
+
+  /**
+   * Async twin of sendKey (§A) — bounded, SIGKILL-capped send-keys. This is a
+   * WRITE, so it is NOT single-flight-coalesced (two Enter presses must each
+   * fire — coalescing would silently swallow one); it still respects the
+   * max-in-flight ceiling (fail CLOSED ⇒ report not-sent) and feeds (C). Used by
+   * the paste-retry path only — NOT the injection send-keys sequence (which
+   * stays synchronous because its timing IS the correctness mechanism).
+   */
+  private async sendKeyAsync(tmuxSession: string, key: string): Promise<boolean> {
+    if (this.tmuxInflightCount >= this.tmuxMaxInFlight) return false;
+    this.tmuxInflightCount += 1;
+    try {
+      const out = await this.tmuxExecAsync(['send-keys', '-t', `=${tmuxSession}:`, key]);
+      return out.state === 'success';
+    } finally {
+      this.tmuxInflightCount = Math.max(0, this.tmuxInflightCount - 1);
     }
   }
 
@@ -3029,15 +3402,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Pure completion-pattern scan — shared by the sync detect methods and their
+   * async twins so the `.includes()` matching can NEVER drift between paths.
+   * `output === null` (an unreadable capture) is NOT a completion.
+   */
+  private matchesAnyPattern(output: string | null, patterns: readonly string[]): boolean {
+    if (!output) return false;
+    return patterns.some((pattern) => output.includes(pattern));
+  }
+
+  /**
    * Detect if a session has completed by checking output patterns.
    */
   detectCompletion(tmuxSession: string): boolean {
     const output = this.captureOutput(tmuxSession, 30);
-    if (!output) return false;
+    return this.matchesAnyPattern(output, this.config.completionPatterns);
+  }
 
-    return this.config.completionPatterns.some(pattern =>
-      output.includes(pattern)
-    );
+  /** Async twin of detectCompletion — bounded capture, identical pattern scan. */
+  private async detectCompletionAsync(tmuxSession: string): Promise<boolean> {
+    const output = await this.captureOutputAsync(tmuxSession, 30);
+    return this.matchesAnyPattern(output, this.config.completionPatterns);
   }
 
   /**
@@ -3054,8 +3439,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const patterns = session.completionPatterns;
     if (!patterns || patterns.length === 0) return false;
     const output = this.captureOutput(session.tmuxSession, 30);
-    if (!output) return false;
-    return patterns.some((pattern) => output.includes(pattern));
+    return this.matchesAnyPattern(output, patterns);
+  }
+
+  /** Async twin of detectSessionCompletion — bounded capture, identical scan. */
+  private async detectSessionCompletionAsync(session: Session): Promise<boolean> {
+    const patterns = session.completionPatterns;
+    if (!patterns || patterns.length === 0) return false;
+    const output = await this.captureOutputAsync(session.tmuxSession, 30);
+    return this.matchesAnyPattern(output, patterns);
   }
 
   /**
@@ -3077,9 +3469,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Kill the tmux session if it's still hanging around
         if (this.isSessionAlive(session.tmuxSession)) {
           try {
-            execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
+            withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
               encoding: 'utf-8',
-            });
+            }));
           } catch { /* ignore */ }
         }
       }
@@ -3425,13 +3817,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         console.log(`[SessionManager] Spawning interactive session "${tmuxSession}" (framework: ${framework})`);
       }
 
-      execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' });
+      withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
 
       // Increase tmux scrollback buffer for dashboard history support
       try {
-        execFileSync(this.config.tmuxPath, [
+        withSyncOp(() => execFileSync(this.config.tmuxPath, [
           'set-option', '-t', `=${tmuxSession}:`, 'history-limit', '50000',
-        ], { encoding: 'utf-8', timeout: 5000 });
+        ], { encoding: 'utf-8', timeout: 5000 }));
       } catch {
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
@@ -3687,7 +4079,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Kill existing triage session if present (triage sessions are ephemeral)
     if (this.tmuxSessionExists(tmuxSession)) {
       try {
-        execFileSync(this.config.tmuxPath, ['kill-session', '-t', tmuxSession], { encoding: 'utf-8' });
+        withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', tmuxSession], { encoding: 'utf-8' }));
       } catch {
         // Best-effort
       }
@@ -3726,13 +4118,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         console.log(`[SessionManager] Resuming triage session: ${options.resumeSessionId}`);
       }
 
-      execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' });
+      withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
 
       // Increase tmux scrollback buffer for dashboard history support
       try {
-        execFileSync(this.config.tmuxPath, [
+        withSyncOp(() => execFileSync(this.config.tmuxPath, [
           'set-option', '-t', `=${tmuxSession}:`, 'history-limit', '50000',
-        ], { encoding: 'utf-8', timeout: 5000 });
+        ], { encoding: 'utf-8', timeout: 5000 }));
       } catch {
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
@@ -4205,40 +4597,45 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        // §B: the injection send-keys + /bin/sleep stay SYNCHRONOUS — their
+        // synchronous timing IS the correctness mechanism (D1) and so are EXCLUDED
+        // from §A async conversion — but every blocking call funnels through
+        // withSyncOp so a sleep/wake drift across this sequence reads as an
+        // event-loop BLOCK, not sleep.
         if (text.includes('\n')) {
           // Multi-line: use bracketed paste mode.
           // The terminal (and Claude Code's readline) treats everything between
           // \e[200~ and \e[201~ as a single paste — newlines are literal, not Enter.
           // This completely avoids load-buffer/paste-buffer and their TCC prompts.
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
+          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
             encoding: 'utf-8', timeout: 5000,
-          });
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
+          }));
+          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
             encoding: 'utf-8', timeout: 10000,
-          });
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
+          }));
+          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
             encoding: 'utf-8', timeout: 5000,
-          });
-          execFileSync('/bin/sleep', [postPasteDelaySec], { timeout: 4000 });
+          }));
+          withSyncOp(() => execFileSync('/bin/sleep', [postPasteDelaySec], { timeout: 4000 }));
           for (let i = 0; i < enterPresses; i++) {
-            execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
+            withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
               encoding: 'utf-8', timeout: 5000,
-            });
+            }));
             if (i < enterPresses - 1) {
-              try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }
+              try { withSyncOp(() => execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })); } catch { /* ignore */ }
             }
           }
         } else {
           // Single-line: simple send-keys
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
+          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
             encoding: 'utf-8', timeout: 10000,
-          });
+          }));
           for (let i = 0; i < enterPresses; i++) {
-            execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
+            withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
               encoding: 'utf-8', timeout: 5000,
-            });
+            }));
             if (i < enterPresses - 1) {
-              try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }
+              try { withSyncOp(() => execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })); } catch { /* ignore */ }
             }
           }
         }
@@ -4267,7 +4664,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // tmux send-keys. Converting to async would require changing the call chain
           // through multiple callers. The 300ms pause is brief and only hits on failure
           // (max once per injection), so the event loop impact is negligible in practice.
-          try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }
+          try { withSyncOp(() => execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })); } catch { /* ignore */ }
           continue;
         }
         DegradationReporter.getInstance().report({
@@ -4479,16 +4876,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const target = `=${tmuxSession}:`;
     const tmuxPath = this.config.tmuxPath;
     try {
+      // §B: the stuck-input recovery send-keys stay sync (escalating timing IS the
+      // mechanism) but funnel through withSyncOp for the marker.
       if (attempt === 0 || attempt === 1) {
-        execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
+        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
       } else if (attempt === 2) {
         // Escalate: literal carriage-return — bypasses any Enter-specific consumer.
-        execFileSync(tmuxPath, ['send-keys', '-t', target, 'C-m'], { encoding: 'utf-8', timeout: 5000 });
+        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'C-m'], { encoding: 'utf-8', timeout: 5000 }));
       } else {
         // Final attempt: Enter, brief sleep, Enter — covers sub-second consume races.
-        execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
-        try { execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 }); } catch { /* @silent-fallback-ok — sleep is best-effort */ }
-        execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
+        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
+        try { withSyncOp(() => execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 })); } catch { /* @silent-fallback-ok — sleep is best-effort */ }
+        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
       }
     } catch (err) {
       console.error(`[SessionManager] fireStuckInputRecovery error for "${tmuxSession}" attempt ${attempt}: ${err instanceof Error ? err.message : err}`);
@@ -4544,12 +4943,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       console.log(`[SessionManager] Consent dialog detected in "${tmuxSession}" — auto-accepting`);
       try {
         // Press Down to select "Yes, I accept", then Enter to confirm
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Down'], {
+        withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Down'], {
           encoding: 'utf-8', timeout: 5000,
-        });
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'], {
+        }));
+        withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'], {
           encoding: 'utf-8', timeout: 5000,
-        });
+        }));
       } catch {
         // Best-effort — if this fails, the session will be stuck but not crashed
       }
@@ -4619,11 +5018,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   tmuxSessionExists(name: string): boolean {
     try {
-      execFileSync(this.config.tmuxPath, ['has-session', '-t', `=${name}`], {
+      // §B: request-route existence check stays sync (§A excludes it) but funnels
+      // through withSyncOp for the in-flight marker.
+      withSyncOp(() => execFileSync(this.config.tmuxPath, ['has-session', '-t', `=${name}`], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 5000,
-      });
+      }));
       return true;
     } catch {
       // @silent-fallback-ok — session existence check

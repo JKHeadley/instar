@@ -195,4 +195,35 @@ describe('lint-guard-manifest', () => {
       expect((entry.component ?? '').length, `${entry.key} component length`).toBeGreaterThan(0);
     }
   });
+
+  // ── tmux Event-Loop Resilience, Increment 1: the (C) DegradedTmuxGuard entry ──
+  describe('DegradedTmuxGuard manifest entry (tmux Event-Loop Resilience C)', () => {
+    it('appears in GUARD_MANIFEST exactly ONCE and NOT in NOT_A_GUARD (no dual classification)', () => {
+      const manifestMatches = GUARD_MANIFEST.filter(e => e.component === 'DegradedTmuxGuard');
+      expect(manifestMatches.length, 'GUARD_MANIFEST DegradedTmuxGuard count').toBe(1);
+      expect(notAGuardComponents().has('DegradedTmuxGuard'), 'must not be in NOT_A_GUARD').toBe(false);
+    });
+
+    it('is keyed on monitoring.degradedTmuxGuard.enabled with expectRuntime:true + a configPath + NO expectedTickMs (event-driven)', () => {
+      const entry = GUARD_MANIFEST.find(e => e.component === 'DegradedTmuxGuard')!;
+      expect(entry).toBeDefined();
+      expect(entry.key).toBe('monitoring.degradedTmuxGuard.enabled');
+      expect(entry.configPath).toBe('monitoring.degradedTmuxGuard.enabled');
+      expect(entry.kind).toBe('config');
+      expect(entry.process).toBe('server');
+      // expectRuntime:true REQUIRES the server-boot guardRegistry.register callsite to exist.
+      expect(entry.expectRuntime).toBe(true);
+      // defaultEnabled reflects the fleet default (dev-gate resolves the live value).
+      expect(entry.defaultEnabled).toBe(false);
+      // EVENT-DRIVEN (fed by (A)'s latency + (B)'s 'stall' events) — an expectedTickMs
+      // would derive a false `on-stale` on a quiet/healthy tmux, so it must be omitted.
+      expect(entry.expectedTickMs).toBeUndefined();
+    });
+
+    it('the real lint stays clean with the DegradedTmuxGuard entry present (single-line component literal, classified once)', () => {
+      const { code, out } = runLint([]);
+      expect(out).toContain('clean');
+      expect(code).toBe(0);
+    });
+  });
 });
