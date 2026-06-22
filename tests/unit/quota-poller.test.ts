@@ -196,16 +196,17 @@ describe('QuotaPoller', () => {
   });
 
   // ── default token resolver: deterministic branch ──────────────────
-  it('defaultTokenResolver returns null for non-anthropic / non-claude-code accounts', () => {
-    expect(defaultTokenResolver({ ...ACCT, provider: 'openai', framework: 'codex-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
-    expect(defaultTokenResolver({ ...ACCT, framework: 'pi-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
+  // defaultTokenResolver is ASYNC (the keychain read runs off the event loop), so these await it.
+  it('defaultTokenResolver returns null for non-anthropic / non-claude-code accounts', async () => {
+    expect(await defaultTokenResolver({ ...ACCT, provider: 'openai', framework: 'codex-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
+    expect(await defaultTokenResolver({ ...ACCT, framework: 'pi-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
   });
 
-  it('defaultTokenResolver never returns a non-oauth token (file path, non-darwin only)', () => {
+  it('defaultTokenResolver never returns a non-oauth token (file path, non-darwin only)', async () => {
     if (process.platform === 'darwin') return; // keychain path not hermetically testable
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'chome-'));
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'not-an-oauth-token' } }));
-    const tok = defaultTokenResolver({ ...ACCT, configHome: home, status: 'active', enrolledAt: '', version: 1 });
+    const tok = await defaultTokenResolver({ ...ACCT, configHome: home, status: 'active', enrolledAt: '', version: 1 });
     expect(tok).toBeNull(); // rejected: doesn't start with sk-ant-oat
     try { SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/quota-poller.test.ts:home-cleanup' }); } catch { /* @silent-fallback-ok */ }
   });

@@ -18,8 +18,10 @@ import { describe, it, expect } from 'vitest';
 import {
   readClaudeOauth,
   readClaudeOauthAsync,
+  refreshClaudeToken,
   defaultCredentialStore,
   type CredentialStore,
+  type RefreshFetch,
 } from '../../src/core/OAuthRefresher.js';
 import { CredentialIdentityOracle, type OracleFetch } from '../../src/core/CredentialIdentityOracle.js';
 
@@ -98,14 +100,92 @@ describe('readClaudeOauthAsync', () => {
   });
 });
 
-describe('defaultCredentialStore exposes readAsync', () => {
+describe('defaultCredentialStore exposes readAsync + writeAsync', () => {
   it('defaultCredentialStore.readAsync is a function', () => {
     expect(typeof defaultCredentialStore.readAsync).toBe('function');
+  });
+
+  it('defaultCredentialStore.writeAsync is a function', () => {
+    expect(typeof defaultCredentialStore.writeAsync).toBe('function');
   });
 
   it('still exposes the sync read + write (backward-compatible surface)', () => {
     expect(typeof defaultCredentialStore.read).toBe('function');
     expect(typeof defaultCredentialStore.write).toBe('function');
+  });
+});
+
+describe('refreshClaudeToken prefers the async keychain read+write (off the event loop)', () => {
+  function fetchRefreshOk(): RefreshFetch {
+    return async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        access_token: 'sk-ant-oat0-NEW',
+        refresh_token: 'sk-ant-ort0-NEW',
+        expires_in: 3600,
+      }),
+    });
+  }
+
+  it('uses readAsync for the read and writeAsync for the write when BOTH are present', async () => {
+    const calls: string[] = [];
+    const store: CredentialStore = {
+      read: () => {
+        calls.push('read-sync');
+        return oauthBlob();
+      },
+      write: () => {
+        calls.push('write-sync');
+        return true;
+      },
+      readAsync: async () => {
+        calls.push('read-async');
+        return oauthBlob();
+      },
+      writeAsync: async () => {
+        calls.push('write-async');
+        return true;
+      },
+    };
+
+    const res = await refreshClaudeToken(HOME, { store, fetchImpl: fetchRefreshOk(), now: () => 0 });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.accessToken).toBe('sk-ant-oat0-NEW');
+    // The sync read/write primitives (the loop-freezing ones) must NEVER be touched on this path.
+    expect(calls).toContain('read-async');
+    expect(calls).toContain('write-async');
+    expect(calls).not.toContain('read-sync');
+    expect(calls).not.toContain('write-sync');
+  });
+
+  it('falls back to the sync read/write for a legacy store without the async methods', async () => {
+    const calls: string[] = [];
+    const store: CredentialStore = {
+      read: () => {
+        calls.push('read-sync');
+        return oauthBlob();
+      },
+      write: () => {
+        calls.push('write-sync');
+        return true;
+      },
+    };
+    const res = await refreshClaudeToken(HOME, { store, fetchImpl: fetchRefreshOk(), now: () => 0 });
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual(['read-sync', 'write-sync']);
+  });
+
+  it('a write-async failure (false) maps to write-failed, never corrupting the result', async () => {
+    const store: CredentialStore = {
+      read: () => oauthBlob(),
+      write: () => true,
+      readAsync: async () => oauthBlob(),
+      writeAsync: async () => false, // keychain write failed/timed out
+    };
+    const res = await refreshClaudeToken(HOME, { store, fetchImpl: fetchRefreshOk(), now: () => 0 });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe('write-failed');
   });
 });
 

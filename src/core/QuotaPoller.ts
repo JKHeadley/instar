@@ -40,15 +40,23 @@ import type {
   AccountQuotaSnapshot,
 } from './SubscriptionPool.js';
 import {
-  readClaudeOauth,
+  readClaudeOauthAsync,
   refreshClaudeToken,
   expandHome,
   type RefreshResult,
 } from './OAuthRefresher.js';
 import type { CredentialLocationGate } from './CredentialLocationGate.js';
 
-/** Injectable token resolver — returns an account's OAuth access token or null. */
-export type TokenResolver = (account: SubscriptionAccount) => string | null;
+/**
+ * Injectable token resolver — returns an account's OAuth access token or null.
+ * The default (`defaultTokenResolver`) is ASYNC so the per-account keychain read happens OFF the
+ * event loop (a slow/contended `securityd` read used to freeze the loop every poll cycle — the
+ * dashboard-flap / false-sleep residual). `pollAccount` `await`s the result, so a SYNC resolver
+ * (e.g. a test stub returning a plain string) is equally valid — hence the union return type.
+ */
+export type TokenResolver = (
+  account: SubscriptionAccount,
+) => string | null | Promise<string | null>;
 
 /**
  * Injectable account refresher — exchanges a config home's stored refresh token
@@ -114,13 +122,17 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
  * is still returned here (it's a valid string) — expiry is detected by the usage
  * read's 401 and recovered by the refresher, not by this resolver.
  */
-export function defaultTokenResolver(account: SubscriptionAccount): string | null {
+export async function defaultTokenResolver(
+  account: SubscriptionAccount,
+): Promise<string | null> {
   if (account.provider !== 'anthropic' || account.framework !== 'claude-code') {
     return null;
   }
-  // Single periodic SYNC keychain read, now bounded by OAuthRefresher's 3s timeout — kept sync on
-  // purpose: making it async would ripple through SubscriptionAccount token resolution needlessly.
-  const oauth = readClaudeOauth(account.configHome);
+  // Single periodic keychain read per poll cycle, bounded by OAuthRefresher's 3s timeout AND run
+  // OFF the event loop via `readClaudeOauthAsync` (promisified `security` spawn). The earlier sync
+  // read blocked the loop for the full spawn duration each cycle — under multi-agent `securityd`
+  // contention that was seconds, and across N accounts a burst (the residual freeze this fixes).
+  const oauth = await readClaudeOauthAsync(account.configHome);
   const tok = oauth?.accessToken;
   return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
 }
@@ -315,7 +327,7 @@ export class QuotaPoller {
     // the slot home moves), so pool.update + logging still name the right account.
     const slotAccount = this.accountForReads(account);
 
-    const token = this.tokenResolver(slotAccount);
+    const token = await this.tokenResolver(slotAccount);
     if (!token) {
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
       return null;

@@ -1,0 +1,49 @@
+<!-- bump: patch -->
+
+# The remaining timer-driven keychain reads no longer freeze the event loop
+
+## What Changed
+
+The first keychain fix (PR #1248) took the credential-AUDIT keychain read off the event loop. A live
+`/usr/bin/sample` of the running server then found THREE MORE timer-driven synchronous macOS keychain
+reads still blocking the loop — all on the QuotaManager / QuotaPoller poll path, which runs every ~60s
+(and as often as ~10s at the critical quota tier — the source of the longer freezes). This converts
+all three to async (promisified `execFile`), completing the keychain class:
+
+- `KeychainCredentialProvider.readCredentials` — was `execFileSync` on an already-`async` method (the
+  sync call made the `async` a lie); now `await execFileAsync`, same args + same 10s timeout.
+- `QuotaPoller.defaultTokenResolver` — the per-account keychain read in `pollAll`; now `await`s the
+  async read the first fix added. The `TokenResolver` type widened to accept a `Promise` so a sync test
+  stub stays valid.
+- `OAuthRefresher.refreshClaudeToken` — the 401-path read-merge-write now prefers the async read AND a
+  new optional `writeAsync` (promisified `add-generic-password`, same 3s timeout). Both fall back to
+  the sync `read`/`write` for any store that doesn't implement the async variant.
+
+Behavior-preserving (same args, timeouts, and null/false-on-error semantics); 258 tests green.
+
+## What to Tell Your User
+
+If your dashboard still flapped "Disconnected" or the agent still occasionally misreported itself as
+asleep after the first keychain fix, this is the rest of the cause: the periodic quota-poll keychain
+reads were still freezing the server loop. After this update those run off the loop too, so the
+dashboard stays connected under multi-agent keychain contention. Note honestly: there is ALSO a
+separate, non-keychain freeze still being fixed (a large-JSON file read) — not part of this change.
+
+## Summary of New Capabilities
+
+- The QuotaManager collection-cycle keychain read (`KeychainCredentialProvider.readCredentials`) runs
+  off the event loop (the sync call on an already-`async` method is gone).
+- The QuotaPoller per-account token resolver reads the keychain off the loop; the refresh path's
+  read-merge-write reads AND writes off the loop via the existing async read + a new optional
+  `writeAsync` keychain write.
+- Completes the keychain class of the dashboard "disconnected" flapping + SleepWakeDetector false-wakes
+  begun by the tmux Event-Loop Resilience fix (v1.3.643) and the first keychain fix (PR #1248).
+
+## Evidence
+
+Root cause diagnosed by a live `/usr/bin/sample` of the running server during a freeze (main-thread
+samples in the `security` keychain spawn on the quota-poll timer). Covered by a new
+`credential-provider-async-read` test suite plus extended `oauth-refresher-async-read` and updated
+`quota-poller` suites (28 tests in the three targeted files, parity with the sync paths + fallback to
+sync for stores without the async variant); 258 tests green across the affected suites, tsc clean,
+no-silent-fallbacks ratchet + sync-subprocess chokepoint lint green.

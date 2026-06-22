@@ -106,6 +106,15 @@ export interface CredentialStore {
    * store omits it.
    */
   readAsync?(configHome: string): Promise<string | null>;
+  /**
+   * Optional NON-BLOCKING write. Mirror of `readAsync` for the write half of the refresh
+   * read-merge-write: a slow/contended `securityd` keychain WRITE (`add-generic-password`) is an
+   * out-of-process spawn that, run synchronously, blocked the event loop just like the read — and
+   * the refresh path issues a read AND a write per cycle. When present, `refreshClaudeToken` prefers
+   * this so the write yields the loop instead of freezing it. Optional so existing mocks that only
+   * implement the sync `write` keep compiling; the refresher falls back to `write` when omitted.
+   */
+  writeAsync?(configHome: string, rawJson: string): Promise<boolean>;
 }
 
 /** POST-capable fetch surface (distinct from QuotaPoller's GET-only FetchImpl). */
@@ -250,6 +259,43 @@ export const defaultCredentialStore: CredentialStore = {
       return false; // @silent-fallback-ok: file write failed
     }
   },
+  /**
+   * NON-BLOCKING write: the same `add-generic-password` keychain write as `write` but off the event
+   * loop (PROMISIFIED `execFile` on darwin, `fs.promises` on non-darwin). Same args, same 3s timeout,
+   * same false-on-error semantics. Lets the refresh write yield a slow `securityd` instead of freezing
+   * the loop — the write half of the read-merge-write the QuotaPoller's refresher runs per cycle.
+   */
+  async writeAsync(configHome: string, rawJson: string): Promise<boolean> {
+    if (process.platform === 'darwin') {
+      try {
+        await execFileAsync(
+          'security',
+          [
+            'add-generic-password',
+            '-U', // update the existing entry in place
+            '-a',
+            os.userInfo().username,
+            '-s',
+            claudeCredentialService(configHome),
+            '-w',
+            rawJson,
+          ],
+          { timeout: KEYCHAIN_TIMEOUT_MS },
+        );
+        return true;
+      } catch {
+        return false; // @silent-fallback-ok: keychain write failed / timeout → caller falls to needs-reauth
+      }
+    }
+    try {
+      const p = claudeCredentialFilePath(configHome);
+      await fs.promises.mkdir(path.dirname(p), { recursive: true });
+      await fs.promises.writeFile(p, rawJson, { mode: 0o600 });
+      return true;
+    } catch {
+      return false; // @silent-fallback-ok: file write failed
+    }
+  },
 };
 
 /** Parse the `claudeAiOauth` block out of a config home's credential store. */
@@ -309,7 +355,10 @@ export async function refreshClaudeToken(
   const clientId = deps.clientId ?? CLAUDE_CODE_CLIENT_ID;
   const funnel = deps.funnel ?? credentialWriteFunnel;
 
-  const raw = store.read(configHome);
+  // NON-BLOCKING read: prefer the store's async keychain read so a slow/contended `securityd`
+  // yields the event loop instead of freezing it (this runs per-account on the QuotaPoller timer).
+  // Falls back to the sync `read` for any store that doesn't implement `readAsync` (test mocks).
+  const raw = store.readAsync ? await store.readAsync(configHome) : store.read(configHome);
   if (!raw) return { ok: false, reason: 'read-failed' };
   let parsed: Record<string, unknown>;
   try {
@@ -380,8 +429,14 @@ export async function refreshClaudeToken(
   // NOT a corruption — it is "busy, retry": surface 'write-skipped' so the QuotaPoller treats it
   // as no-snapshot-this-cycle, NEVER needs-reauth. The exchange already succeeded; the existing
   // (still-valid) credential is untouched.
+  // NON-BLOCKING write: prefer the store's async keychain write (off the event loop) so the write
+  // half of this read-merge-write yields a slow `securityd` instead of freezing the loop. Falls back
+  // to the sync `write` for any store that doesn't implement `writeAsync` (test mocks). The funnel's
+  // per-slot lock already serializes against a concurrent swap/refresh on the SAME slot regardless.
   const writeOutcome = await funnel.withSlotLock(credentialSlotKey(configHome), () =>
-    store.write(configHome, JSON.stringify(updatedRaw)),
+    store.writeAsync
+      ? store.writeAsync(configHome, JSON.stringify(updatedRaw))
+      : store.write(configHome, JSON.stringify(updatedRaw)),
   );
   if (!writeOutcome.ran) {
     return { ok: false, reason: 'write-skipped' };
