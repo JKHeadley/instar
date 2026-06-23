@@ -576,6 +576,30 @@ export class UpdateChecker {
   }
 
   /**
+   * Read the LIVE version of the shadow install on disk, UNCACHED.
+   *
+   * Distinct from getInstalledVersion(), which caches the version the running
+   * process booted with. After a successful apply the shadow on disk holds the
+   * new version; if it later REVERTS (e.g., crash-loop collateral or a partial
+   * re-install) while `lastAppliedVersion` still records the new version, the
+   * updater is "stranded" — it believes it is current and stops re-applying.
+   * Comparing this live read against lastAppliedVersion surfaces that strand.
+   * Returns null when the shadow package.json cannot be read.
+   */
+  getShadowInstalledVersion(): string | null {
+    try {
+      const pkgPath = path.join(
+        this.stateDir, 'shadow-install', 'node_modules', 'instar', 'package.json'
+      );
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        return typeof pkg.version === 'string' ? pkg.version : null;
+      }
+    } catch { /* @silent-fallback-ok — shadow version read is best-effort */ }
+    return null;
+  }
+
+  /**
    * Run a command asynchronously, returning trimmed stdout.
    */
   private execAsync(cmd: string, args: string[], timeoutMs: number): Promise<string> {
