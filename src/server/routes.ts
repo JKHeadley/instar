@@ -2284,7 +2284,12 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
 
-    const degradations = DegradationReporter.getInstance().getEvents();
+    // Only RECENT degradations count toward health status + the reported count/summary.
+    // Events are append-only and never self-clear, so a single old transient fallback
+    // would otherwise pin the dashboard "Degraded" badge red for the whole process
+    // lifetime even after recovery (a persistent problem keeps re-reporting, so it stays
+    // inside the window). See DegradationReporter.getRecentEvents.
+    const degradations = DegradationReporter.getInstance().getRecentEvents();
     let isDegraded = sessionExhausted || totalFailures >= 5 || degradations.length > 0;
 
     const base: Record<string, unknown> = {
