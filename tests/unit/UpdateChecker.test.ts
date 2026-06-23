@@ -30,6 +30,36 @@ describe('UpdateChecker', () => {
     });
   });
 
+  describe('getShadowInstalledVersion', () => {
+    const writeShadowPkg = (version: unknown) => {
+      const dir = path.join(tmpDir, 'shadow-install', 'node_modules', 'instar');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version }));
+    };
+
+    it('reads the LIVE version from the shadow install on disk', () => {
+      writeShadowPkg('1.2.3');
+      expect(checker.getShadowInstalledVersion()).toBe('1.2.3');
+    });
+
+    it('reflects a CHANGED (reverted) shadow version — it is uncached', () => {
+      writeShadowPkg('1.3.648');
+      expect(checker.getShadowInstalledVersion()).toBe('1.3.648');
+      // Simulate the shadow reverting on disk (the strand condition).
+      writeShadowPkg('1.3.647');
+      expect(checker.getShadowInstalledVersion()).toBe('1.3.647');
+    });
+
+    it('returns null when the shadow install is absent', () => {
+      expect(checker.getShadowInstalledVersion()).toBeNull();
+    });
+
+    it('returns null when the shadow package.json has no version', () => {
+      writeShadowPkg(undefined);
+      expect(checker.getShadowInstalledVersion()).toBeNull();
+    });
+  });
+
   describe('getLastCheck', () => {
     it('returns null when no check has been performed', () => {
       expect(checker.getLastCheck()).toBeNull();

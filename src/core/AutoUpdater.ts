@@ -387,7 +387,23 @@ export class AutoUpdater {
       // This prevents the update→restart→detect→update→restart loop.
       if (this.lastAppliedVersion === info.latestVersion) {
         const deferral = this.getActiveRestartDeferral(info.latestVersion);
-        if (deferral) {
+        // STRAND DETECTION: lastAppliedVersion records this version as applied, but
+        // confirm against the LIVE shadow-disk version. If the shadow reverted
+        // (crash-loop collateral / partial re-install) the record is stale and the
+        // agent is permanently stuck — the loop-breaker will never re-apply. Surface
+        // it LOUDLY instead of the benign "awaiting restart" message, which would
+        // otherwise mask the strand forever. (Observe-only — auto-re-apply self-heal
+        // is a bounded follow-up; here we just diagnose + alert.)
+        const shadowVersion = this.updateChecker.getShadowInstalledVersion();
+        const isStrand = shadowVersion !== null && shadowVersion !== this.lastAppliedVersion;
+        if (isStrand) {
+          console.warn(
+            `[AutoUpdater] STRAND — lastAppliedVersion records v${this.lastAppliedVersion} applied, ` +
+            `but the shadow install on disk only has v${shadowVersion} (the apply was lost/reverted). ` +
+            `The agent is stuck on v${info.currentVersion} and will NOT auto-recover until re-applied ` +
+            `(POST /updates/apply, or reinstall the shadow).`
+          );
+        } else if (deferral) {
           console.log(
             `[AutoUpdater] Skipping — v${info.latestVersion} is installed in the shadow install ` +
             `(at ${this.lastApply}) but the running process is still v${info.currentVersion}. ` +
@@ -403,8 +419,14 @@ export class AutoUpdater {
         // Only notify once about the mismatch
         if (!this.notifiedVersionMismatch) {
           this.notifiedVersionMismatch = info.latestVersion;
-          // Check if restart is actively deferred — if so, clarify that's the reason
-          if (deferral) {
+          if (isStrand) {
+            await this.notify(
+              `Heads up — an update to v${this.lastAppliedVersion} was recorded as installed, but it's ` +
+              `not actually on disk (it reverted), so I'm stuck on v${info.currentVersion} and won't ` +
+              `auto-update until it's re-applied. Nothing is broken, but I won't pick up new versions until this is fixed.`
+            );
+          } else if (deferral) {
+            // Check if restart is actively deferred — if so, clarify that's the reason
             await this.notify(
               `v${info.latestVersion} is downloaded and waiting for a restart — still running v${info.currentVersion}. ` +
               `Restart is being held back by ${deferral.reason}. ` +
