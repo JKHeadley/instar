@@ -3928,6 +3928,14 @@
           renderSessionList();
           break;
 
+        case 'paste_delivered':
+        case 'paste_acknowledged':
+          // Drop-zone paste refresh. Handled here (in the live ws router) so it
+          // survives reconnects — the old parse-time addEventListener attached to a
+          // null ws and threw "Cannot read properties of null (reading 'onmessage')".
+          loadDzHistory();
+          break;
+
         case 'output':
           if (msg.session === activeSession) {
             renderTerminalOutput(msg.data);
@@ -4774,7 +4782,7 @@
       if (!token) return;
       fetch('/whatsapp/qr', { headers: { 'Authorization': `Bearer ${token}` } })
         .then(r => {
-          if (r.status === 503) { waConfigured = false; updateWaButton(); return null; }
+          if (r.status === 503) { waConfigured = false; updateWaButton(); stopWaPolling(); return null; } // WhatsApp adapter absent — stop the 3s poll (it was spamming the console with ~20 503s/min)
           if (!r.ok) {
             // Surface auth/error state in QR panel instead of failing silently
             const msg = document.getElementById('waQrMsg');
@@ -9283,19 +9291,11 @@
       if (!document.hidden) pollVitalSigns();
     });
 
-    // Listen for WebSocket paste events
-    const origWsOnMessage = ws?.onmessage;
-    if (typeof ws !== 'undefined') {
-      const origOnMessage = ws.onmessage;
-      ws.addEventListener('message', function(event) {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'paste_delivered' || msg.type === 'paste_acknowledged') {
-            loadDzHistory();
-          }
-        } catch {}
-      });
-    }
+    // (WebSocket paste events — paste_delivered / paste_acknowledged — are handled in
+    //  handleMessage() above. The previous parse-time addEventListener here ran before
+    //  connectWebSocket() assigned ws, so ws was null and "ws.onmessage" threw a
+    //  TypeError on every load; routing it through the main ws handler also survives
+    //  reconnects.)
 
   </script>
 </body>

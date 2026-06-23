@@ -515,4 +515,55 @@ describe('DegradationReporter', () => {
 
     vi.restoreAllMocks();
   });
+
+  // getRecentEvents — drives the /health status (and the dashboard "Degraded" badge).
+  // Events are append-only and never self-clear, so /health windows them: an old
+  // transient fallback that hasn't recurred must stop marking the system degraded,
+  // while a persistent (re-reported) problem stays visible.
+  describe('getRecentEvents (health-status windowing)', () => {
+    const evt = { primary: 'p', fallback: 'f', reason: 'r', impact: 'i' };
+
+    it('keeps recent events and ages out old ones (default 30-min window)', () => {
+      vi.useFakeTimers();
+      try {
+        const reporter = DegradationReporter.getInstance();
+        reporter.configure({ stateDir: tmpDir, agentName: 'test-agent', instarVersion: '0.9.17' });
+
+        vi.setSystemTime(new Date('2026-06-22T00:00:00.000Z'));
+        reporter.report({ feature: 'OldFallback', ...evt });
+
+        vi.setSystemTime(new Date('2026-06-22T00:45:00.000Z')); // 45 min later
+        reporter.report({ feature: 'RecentFallback', ...evt });
+
+        // The full log always retains every event…
+        expect(reporter.getEvents()).toHaveLength(2);
+        // …but only the one inside the 30-min window counts toward health.
+        const recent = reporter.getRecentEvents();
+        expect(recent).toHaveLength(1);
+        expect(recent[0].feature).toBe('RecentFallback');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('honors an explicit window + now (within → counts, past → aged out)', () => {
+      const reporter = DegradationReporter.getInstance();
+      reporter.configure({ stateDir: tmpDir, agentName: 'test-agent', instarVersion: '0.9.17' });
+      reporter.report({ feature: 'F', ...evt });
+      const t = Date.parse(reporter.getEvents()[0].timestamp);
+
+      expect(reporter.getRecentEvents(30 * 60 * 1000, t + 10 * 60 * 1000)).toHaveLength(1);
+      expect(reporter.getRecentEvents(30 * 60 * 1000, t + 31 * 60 * 1000)).toHaveLength(0);
+    });
+
+    it('keeps an event whose timestamp cannot be parsed (fail-safe: surface, never hide)', () => {
+      const reporter = DegradationReporter.getInstance();
+      reporter.configure({ stateDir: tmpDir, agentName: 'test-agent', instarVersion: '0.9.17' });
+      reporter.report({ feature: 'F', ...evt });
+      // Corrupt the stored timestamp to an unparseable value.
+      (reporter as unknown as { events: Array<{ timestamp: string }> }).events[0].timestamp = 'not-a-date';
+      // Even far past any window, an unparseable-timestamp event is still surfaced.
+      expect(reporter.getRecentEvents(1, Date.now() + 10_000_000)).toHaveLength(1);
+    });
+  });
 });

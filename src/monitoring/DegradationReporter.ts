@@ -195,6 +195,14 @@ interface OpenDegradation {
 export class DegradationReporter {
   private static instance: DegradationReporter | null = null;
 
+  /**
+   * Window used by getRecentEvents() for /health status. A degradation older than
+   * this that hasn't recurred no longer marks the system degraded (events never
+   * self-clear). 30 min: long enough that a real, recurring problem stays visible,
+   * short enough that a one-off transient fallback clears the badge after recovery.
+   */
+  static readonly HEALTH_WINDOW_MS = 30 * 60 * 1000;
+
   private events: DegradationEvent[] = [];
   /** Reentrancy guard for gateHealthAlert (event-loop WEDGE fix, 2026-06-21). */
   private _gatingHealthAlert = false;
@@ -631,6 +639,27 @@ export class DegradationReporter {
    */
   getEvents(): DegradationEvent[] {
     return [...this.events];
+  }
+
+  /**
+   * Get degradation events reported within the last `windowMs` (default 30 min).
+   *
+   * The /health status uses THIS rather than getEvents() so the dashboard "Degraded"
+   * badge reflects CURRENT health. Events are append-only and never self-clear, so
+   * without a window a single transient fallback (e.g. one benign fail-open) would pin
+   * the badge red for the entire process lifetime even after recovery. A persistent
+   * problem keeps re-reporting, so it stays inside the window and still shows. An event
+   * whose timestamp can't be parsed is KEPT (fail-safe: surface it, never hide it).
+   */
+  getRecentEvents(
+    windowMs: number = DegradationReporter.HEALTH_WINDOW_MS,
+    now: number = Date.now(),
+  ): DegradationEvent[] {
+    const cutoff = now - windowMs;
+    return this.events.filter((e) => {
+      const t = Date.parse(e.timestamp);
+      return Number.isNaN(t) || t >= cutoff;
+    });
   }
 
   /**
