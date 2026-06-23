@@ -2096,4 +2096,108 @@ describe('LifelineProbes', () => {
     }));
     expect(probes[0].prerequisites()).toBe(false);
   });
+
+  // ── On-start review (boot-staleness fix) ────────────────────────────
+  // The 6h interval never fires on an agent that restarts more often than scheduleMs,
+  // so the displayed review went stale (observed: stuck for days at a pre-restart
+  // boot). start() now runs one review shortly after boot, gated on the last review
+  // being stale enough so a restart loop doesn't pile up reviews.
+  describe('on-start review', () => {
+    function seedReviewTimestamp(dir: string): Promise<number> {
+      // Seed a real review (real timers) and return its timestamp ms.
+      const seed = new SystemReviewer({ enabled: true, reviewOnStart: false }, makeDeps(dir));
+      seed.register(makePassingProbe('test.a'));
+      return seed.review({ tiers: [1] }).then(() => {
+        const ts = Date.parse(seed.getLatest()!.timestamp);
+        seed.stop();
+        return ts;
+      });
+    }
+
+    it('runs a review shortly after start() when there is no prior review', async () => {
+      vi.useFakeTimers();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-onstart-none-'));
+      try {
+        const rev = new SystemReviewer(
+          { enabled: true, reviewOnStart: true, initialReviewDelayMs: 1000 },
+          makeDeps(dir),
+        );
+        rev.register(makePassingProbe('test.a'));
+        const spy = vi.spyOn(rev, 'review').mockResolvedValue(undefined as never);
+        rev.start();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(spy).not.toHaveBeenCalled(); // before the delay
+        await vi.advanceTimersByTimeAsync(600);
+        expect(spy).toHaveBeenCalledTimes(1); // after the delay
+        rev.stop();
+      } finally {
+        vi.useRealTimers();
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test:onstart-none' });
+      }
+    });
+
+    it('runs the on-start review when the last review is stale', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-onstart-stale-'));
+      const seededTs = await seedReviewTimestamp(dir);
+      vi.useFakeTimers();
+      vi.setSystemTime(seededTs + 2 * 60 * 60 * 1000); // 2h later > 1h staleAfter
+      try {
+        const rev = new SystemReviewer(
+          { enabled: true, reviewOnStart: true, initialReviewDelayMs: 1000, initialReviewStaleAfterMs: 3_600_000 },
+          makeDeps(dir),
+        );
+        rev.register(makePassingProbe('test.a'));
+        const spy = vi.spyOn(rev, 'review').mockResolvedValue(undefined as never);
+        rev.start();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(spy).toHaveBeenCalledTimes(1);
+        rev.stop();
+      } finally {
+        vi.useRealTimers();
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test:onstart-stale' });
+      }
+    });
+
+    it('skips the on-start review when the last review is fresh', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-onstart-fresh-'));
+      const seededTs = await seedReviewTimestamp(dir);
+      vi.useFakeTimers();
+      vi.setSystemTime(seededTs + 10 * 60 * 1000); // 10 min later < 1h staleAfter
+      try {
+        const rev = new SystemReviewer(
+          { enabled: true, reviewOnStart: true, initialReviewDelayMs: 1000, initialReviewStaleAfterMs: 3_600_000 },
+          makeDeps(dir),
+        );
+        rev.register(makePassingProbe('test.a'));
+        const spy = vi.spyOn(rev, 'review').mockResolvedValue(undefined as never);
+        rev.start();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(spy).not.toHaveBeenCalled(); // fresh → skipped
+        rev.stop();
+      } finally {
+        vi.useRealTimers();
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test:onstart-fresh' });
+      }
+    });
+
+    it('does not run the on-start review when reviewOnStart is false', async () => {
+      vi.useFakeTimers();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-onstart-off-'));
+      try {
+        const rev = new SystemReviewer(
+          { enabled: true, reviewOnStart: false, initialReviewDelayMs: 1000 },
+          makeDeps(dir),
+        );
+        rev.register(makePassingProbe('test.a'));
+        const spy = vi.spyOn(rev, 'review').mockResolvedValue(undefined as never);
+        rev.start();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(spy).not.toHaveBeenCalled();
+        rev.stop();
+      } finally {
+        vi.useRealTimers();
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test:onstart-off' });
+      }
+    });
+  });
 });

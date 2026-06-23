@@ -5300,6 +5300,16 @@ export interface MonitoringConfig {
     alertCooldownMs?: number;
     /** Probe IDs to skip (default: []) */
     disabledProbes?: string[];
+    /**
+     * Run one review shortly after boot, in addition to the scheduleMs interval
+     * (default: true). Without it, the long interval never fires on an agent that
+     * restarts more often than scheduleMs, so the displayed review goes stale.
+     */
+    reviewOnStart?: boolean;
+    /** Delay after boot before the on-start review (ms, default: 30s) */
+    initialReviewDelayMs?: number;
+    /** Skip the on-start review if the last review is younger than this (ms, default: 1h) */
+    initialReviewStaleAfterMs?: number;
   };
   /** Opt-in anonymous telemetry — sends usage heartbeats to help improve Instar */
   telemetry?: TelemetryConfig;

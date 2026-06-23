@@ -134,6 +134,21 @@ export interface SystemReviewerConfig {
   alertCooldownMs: number;
   /** Probes to skip (by probe ID) */
   disabledProbes: string[];
+  /**
+   * Run one review shortly after start() (in addition to the scheduleMs interval).
+   * Without this, the long interval (default 6h) never fires on an agent that
+   * restarts more often than scheduleMs (updates, recovery bounces) — the timer
+   * resets each boot, so the displayed review goes stale (observed: a review stuck
+   * for days at the pre-restart boot). Default: true.
+   */
+  reviewOnStart: boolean;
+  /** Delay after start() before the on-start review runs (ms). Keeps boot fast. Default: 30s */
+  initialReviewDelayMs: number;
+  /**
+   * Skip the on-start review if the last persisted review is younger than this (ms),
+   * so a restart loop doesn't pile up reviews. Default: 1h.
+   */
+  initialReviewStaleAfterMs: number;
 }
 
 export interface ReviewOptions {
@@ -162,6 +177,9 @@ export const DEFAULT_SYSTEM_REVIEWER_CONFIG: SystemReviewerConfig = {
   alertOnCritical: true,
   alertCooldownMs: 3_600_000, // 1 hour
   disabledProbes: [],
+  reviewOnStart: true,
+  initialReviewDelayMs: 30_000, // 30s after start
+  initialReviewStaleAfterMs: 3_600_000, // 1 hour
 };
 
 // ── Dependencies ──────────────────────────────────────────────────
@@ -228,6 +246,7 @@ export class SystemReviewer extends EventEmitter {
   private deadLetterFile: string;
   private reviewInProgress = false;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private initialTimer: ReturnType<typeof setTimeout> | null = null;
   private lastAlertTimes: Map<string, number> = new Map();
 
   constructor(config: Partial<SystemReviewerConfig>, deps: SystemReviewerDeps) {
@@ -618,6 +637,34 @@ export class SystemReviewer extends EventEmitter {
 
     // Don't prevent process exit
     if (this.timer.unref) this.timer.unref();
+
+    // On-start review (in addition to the interval). The long scheduleMs interval
+    // (default 6h) never fires on an agent that restarts more often than scheduleMs
+    // — the timer resets each boot — so the displayed review goes stale. Run one
+    // shortly after boot, gated on the last review being stale enough so a restart
+    // loop doesn't pile up reviews. Delayed + unref'd so it never slows boot.
+    if (this.config.reviewOnStart && this.shouldRunInitialReview()) {
+      this.initialTimer = setTimeout(() => {
+        void this.review({ tiers: this.config.scheduledTiers }).catch((err) => { // @silent-fallback-ok — dead-letter file IS the degradation path (independent of DegradationReporter by design)
+          const error = err instanceof Error ? err : new Error(String(err));
+          this.writeDeadLetter('initial-review-error', error.message, error.stack);
+        });
+      }, this.config.initialReviewDelayMs);
+      if (this.initialTimer.unref) this.initialTimer.unref();
+    }
+  }
+
+  /**
+   * Whether the on-start review should run: only when the last persisted review is
+   * absent or older than initialReviewStaleAfterMs (avoids review-spam on restart
+   * loops). An unparseable timestamp is treated as stale (run it — fail toward fresh).
+   */
+  private shouldRunInitialReview(now: number = Date.now()): boolean {
+    const latest = this.getLatest();
+    if (!latest) return true;
+    const last = Date.parse(latest.timestamp);
+    if (Number.isNaN(last)) return true;
+    return now - last >= this.config.initialReviewStaleAfterMs;
   }
 
   /** Stop the review timer */
@@ -625,6 +672,10 @@ export class SystemReviewer extends EventEmitter {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.initialTimer) {
+      clearTimeout(this.initialTimer);
+      this.initialTimer = null;
     }
   }
 
