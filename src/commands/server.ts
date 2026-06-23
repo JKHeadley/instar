@@ -13468,6 +13468,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           alertOnCritical: systemReviewConfig?.alertOnCritical,
           alertCooldownMs: systemReviewConfig?.alertCooldownMs,
           disabledProbes: systemReviewConfig?.disabledProbes,
+          reviewOnStart: systemReviewConfig?.reviewOnStart,
+          initialReviewDelayMs: systemReviewConfig?.initialReviewDelayMs,
+          initialReviewStaleAfterMs: systemReviewConfig?.initialReviewStaleAfterMs,
         },
         {
           stateDir: config.stateDir,
