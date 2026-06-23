@@ -3350,13 +3350,13 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // ── Worktree Monitoring ───────────────────────────────────────
 
-  router.get('/hooks/worktrees', (_req, res) => {
+  router.get('/hooks/worktrees', async (_req, res) => {
     if (!ctx.worktreeMonitor) {
       res.status(503).json({ error: 'WorktreeMonitor not initialized' });
       return;
     }
 
-    const report = ctx.worktreeMonitor.scanWorktrees();
+    const report = await ctx.worktreeMonitor.scanWorktrees();
     res.json(report);
   });
 
