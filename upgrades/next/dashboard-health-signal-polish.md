@@ -1,0 +1,25 @@
+## What Changed
+
+Three small, pre-existing dashboard issues, found while verifying the dashboard-freeze fix (#1253). None affect the dashboard connection.
+
+1. The dashboard polled the WhatsApp QR endpoint every 3s and never stopped when WhatsApp wasn't configured — the route answers 503, but the poll kept firing, piling ~20 console 503 errors/min into the browser for the whole session. It now stops the poll on the first 503.
+2. A parse-time script block attached a WebSocket "message" listener to `ws` before `connectWebSocket()` had assigned it, so `ws` was null and `ws.onmessage` threw "Cannot read properties of null (reading 'onmessage')" on every page load (and the paste-panel refresh it enabled never actually worked). Paste handling moved into the main `handleMessage` switch — no more error, and it now survives reconnects.
+3. The `/health` "Degraded" badge turned orange whenever any degradation event had ever been recorded, and those events never self-clear — so one transient/benign fallback pinned the badge red for the whole process lifetime even after recovery. `/health` now counts only degradations from the last 30 minutes (`DegradationReporter.getRecentEvents`); a persistent problem keeps re-reporting so it stays visible, a one-off ages out. An unparseable timestamp is kept (fail-safe). The full degradation log and the mark-reported path are unchanged, and on a Telegram agent the `status` field never gated restarts.
+
+## Evidence
+
+Observed live on this agent (Echo) while verifying #1253:
+
+1. **WhatsApp poll spam** — Before: with no WhatsApp adapter configured, the browser console accumulated repeated `GET /whatsapp/qr 503` errors at the 3s poll cadence (~20/min) for the whole session. After: the poll stops on the first 503 (`stopWaPolling()`), so the console stays clean.
+2. **On-load null deref** — Before: `Uncaught TypeError: Cannot read properties of null (reading 'onmessage')` fired at `dashboard:~9289` on every page load (the block ran at parse time, before `connectWebSocket()` assigned `ws`), and the paste-panel refresh it was meant to wire never ran. After: paste events are handled in `handleMessage`; the parse-time block is gone, so the load-time TypeError no longer occurs.
+3. **Stuck "Degraded" badge** — Before: `curl /health` on a healthy box returned `{"status":"degraded","degradations":2,...}` where both events were a benign `"Stop event allowed without authority ruling … fail-open"` recorded earlier in the boot — never cleared, pinning the badge red. After (unit-proven, `tests/unit/degradation-reporter.test.ts`): `getRecentEvents()` returns only events within the 30-min window, so once those benign events age out `status` returns to `ok`; a re-reported (persistent) degradation stays inside the window and keeps the badge red.
+
+## What to Tell Your User
+
+If your dashboard's health badge was stuck on "Degraded" even though everything looked fine, that's fixed — it now reflects current health and clears once a transient blip has passed (a real, ongoing problem still shows). You won't notice the other two fixes directly: they quietly remove browser-console noise and an on-load error. (A separate, deeper item — a "system review" panel showing days-old data because it never re-runs — is tracked separately.)
+
+## Summary of New Capabilities
+
+- `DegradationReporter.getRecentEvents(windowMs = 30min, now)` — a time-windowed view of degradation events. `/health` uses it for `status` + the reported count/summary, so the dashboard "Degraded" badge reflects CURRENT health rather than any-event-ever-recorded. The full append-only log (`getEvents`) and the mark-reported path are untouched.
+- Dashboard: the WhatsApp QR poll stops on a 503 (adapter absent) — removes ~20 console 503s/min of noise.
+- Dashboard: paste WebSocket events (`paste_delivered` / `paste_acknowledged`) are handled in the main message router — removes the on-load null-deref TypeError and makes the paste-panel refresh survive reconnects.
