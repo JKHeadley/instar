@@ -940,12 +940,30 @@ export class ResumeQueue {
     };
   }
 
-  /** True when a LIVE (non-dry-run) queued entry exists for this tmux session
-   *  — feeds the notifier's "restart is queued" line (R1.2). */
+  /** OWNERSHIP predicate — true when a LIVE (non-dry-run) queued entry exists
+   *  for this tmux session, REGARDLESS of pause state. Intentionally
+   *  paused-BLIND: a paused queue still OWNS its frozen entries (the drainer
+   *  skips them precisely because they are paused), so the PromiseBeacon I2
+   *  double-spawn coordination guard (server.ts) must read THIS to keep
+   *  deferring to the queue while paused — flipping it false during a pause
+   *  would let an escalation re-spawn a revive the queue was meant to own.
+   *  (honest-session-state-surfaces Finding (c): do NOT add a paused check here.) */
   hasLiveQueuedEntryFor(tmuxSession: string): boolean {
     if (this.cfg.dryRun || this.disabledReason || !this.cfg.enabled) return false;
     return this.state.entries.some(
       (e) => e.tmuxSession === tmuxSession && (e.status === 'queued' || e.status === 'starting'),
     );
+  }
+
+  /** CLAIMABILITY predicate — true when a live queued entry exists AND the queue
+   *  is NOT paused, i.e. a revival will actually happen soon. Feeds the
+   *  user-facing "A restart is queued — I'll bring it back" copy (ReapNotifier):
+   *  while the queue is paused (e.g. an emergency stop) the entry will NOT revive
+   *  until the queue resumes, so the claim would be a promise the queue cannot
+   *  currently keep. Distinct from hasLiveQueuedEntryFor (ownership), which the
+   *  I2 double-spawn guard reads and which stays true while paused.
+   *  (honest-session-state-surfaces Finding (c).) */
+  hasClaimableQueuedEntryFor(tmuxSession: string): boolean {
+    return this.hasLiveQueuedEntryFor(tmuxSession) && !this.isPaused();
   }
 }
