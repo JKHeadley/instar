@@ -1,0 +1,34 @@
+---
+user_announcement:
+  - audience: agent-only
+    maturity: stable
+    summary: "The user-channel test harness can now run its 'no spurious background message' (absence) proof over a REAL Telegram/Slack channel, not just a fake driver."
+---
+
+## What Changed
+
+The live-test harness gained the ability to run its **absence proof** — "after this conversation, prove the agent sent NO unwanted background message (e.g. the false throttle nudge)" — over a **real** Telegram or Slack channel. Previously that assertion only worked against a simulated driver; the production channel driver had no way to collect a window of channel messages, so a real-channel absence scenario was reported as unverifiable.
+
+A new `collectMessages` step (on the Telegram and Slack live senders, exposed through `RealChannelDriver`) polls the channel's history over a window and gathers every agent-authored message, so the harness can prove none of them matches a forbidden pattern. Because the only dangerous failure of an absence proof is a silent **false PASS**, every way the read could be incomplete is forced to BLOCK ("can't verify") instead of passing:
+
+- a **paginated/truncated** read (more messages than one page) → BLOCKED;
+- an **edited** message can't launder its earlier text away (every version is kept);
+- a **Slack background post** under a `bot_id` (not a user id) is now matched;
+- a **failed** history read → BLOCKED;
+- a reused, long-lived demo channel no longer trips a false "too busy" alarm (the Telegram check is bounded to where the test message sits in history).
+
+## Evidence
+
+- **Reproduction (the gap):** before this change, an absence scenario pointed at a real Telegram/Slack channel returned `BLOCKED — driver does not support collectMessages`; the proof could only be exercised against the fake driver in `rate-limit-false-positive-prevention.test.ts`.
+- **Before → after (the false-PASS holes, found in review):** a naive `collectMessages` that returned a single 100-entry page, kept last-write-wins text, matched Slack by user id only, and ignored failed reads would PASS an absence scenario even when a spurious message existed (on a paginated read, an edited message, a `bot_id` post, or a failed read). After: each of those four paths now produces BLOCKED, proven by dedicated tests (`Telegram: a FULL page … → AbsenceUnverifiableError`, `Telegram: … marker IN-PAGE does NOT block`, `Slack: ok:false → AbsenceUnverifiableError`, `Slack: next_cursor → AbsenceUnverifiableError`, `Slack: bot_id … IS collected`, `harness: a SAFE absence scenario on a NON-demo channel is refused`).
+- **Verified:** 22 unit tests across the collect path (both sides of every guard boundary), no regression across the existing harness/sender/gate suites, clean typecheck. Multi-angle spec review (6 internal lenses + 2 non-Claude models, 3 rounds) converged with zero material findings.
+
+## What to Tell Your User
+
+Nothing changes in day-to-day use — this is testing infrastructure that runs before code ships, not something on the live conversation path. The benefit is indirect: the "no surprise background message" guarantee can now be proven over a real channel, and it refuses to give a green light it can't actually justify — one more way a feature side-effect is caught before it reaches the fleet.
+
+## Summary of New Capabilities
+
+- `RealChannelDriver.collectMessages` + `SurfaceSender.collectMessages` on the Telegram and Slack live senders — collect a window of agent-authored channel messages for the harness absence assertion.
+- A second typed harness signal, `AbsenceUnverifiableError`: a sender raises it for an incomplete/failed read so the harness records BLOCKED (never a false PASS); `DriverCapabilityError` stays the capability-layer "no collector on this surface" signal; a plain error stays a FAIL.
+- Absence scenarios are demo-channel-only (a whole-history read never touches a live operator channel).

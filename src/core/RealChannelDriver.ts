@@ -21,6 +21,7 @@
  * rather than throwing the whole scenario — the SEND/REPLY evidence is still recorded.
  */
 
+import { DriverCapabilityError } from './LiveTestHarness.js';
 import type { ChannelDriver, SendResult, ReplyResult } from './LiveTestHarness.js';
 import type { Surface } from './LiveTestArtifactStore.js';
 import type { DemoChannelRegistry } from './DemoChannelRegistry.js';
@@ -31,6 +32,14 @@ export interface SurfaceSender {
   send(channelId: string, text: string): Promise<SendResult>;
   /** Await the agent's reply after `afterMessageId` (null on timeout). No responder id — the driver stamps that. */
   awaitReply(channelId: string, opts: { timeoutMs: number; afterMessageId?: string }): Promise<Omit<ReplyResult, 'responderMachineId'> | null>;
+  /**
+   * OPTIONAL — collect EVERY agent-authored message on the channel within `windowMs`
+   * after `afterMessageId` (the surface's OUTBOUND, the class a spurious background
+   * nudge belongs to). Backs the harness ABSENCE assertion over a REAL channel. A
+   * sender that omits this makes its surface unverifiable for absence (the driver
+   * raises DriverCapabilityError → harness BLOCKED, never a false PASS).
+   */
+  collectMessages?(channelId: string, opts: { windowMs: number; afterMessageId?: string }): Promise<Array<Omit<ReplyResult, 'responderMachineId'>>>;
 }
 
 export interface RealChannelDriverDeps {
@@ -85,5 +94,21 @@ export class RealChannelDriver implements ChannelDriver {
       responderMachineId = undefined;
     }
     return { ...reply, responderMachineId };
+  }
+
+  async collectMessages(surface: Surface, channelId: string, opts: { windowMs: number; afterMessageId?: string }): Promise<ReplyResult[]> {
+    const sender = this.senderFor(surface);
+    if (!sender.collectMessages) {
+      // The surface is wired, but its sender can't collect history — the absence
+      // assertion is unverifiable HERE. Raise the typed capability error so the harness
+      // records BLOCKED (driver-unsupported), never a false PASS and never a FAIL that
+      // would wrongly read as "the agent sent a spurious message".
+      throw new DriverCapabilityError(`sender for surface "${surface}" does not implement collectMessages`);
+    }
+    const msgs = await sender.collectMessages(channelId, opts);
+    // The absence assertion checks message TEXT only; responder-machine attribution is
+    // unnecessary here (and would cost one placement read per message). Return the
+    // agent-authored messages as ReplyResult with responderMachineId left undefined.
+    return msgs.map(m => ({ ...m }));
   }
 }

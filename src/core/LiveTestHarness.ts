@@ -48,6 +48,33 @@ export interface ChannelDriver {
   collectMessages?(surface: Surface, channelId: string, opts: { windowMs: number; afterMessageId?: string }): Promise<ReplyResult[]>;
 }
 
+/**
+ * Thrown by a driver whose `collectMessages` exists at the object level but cannot
+ * serve a SPECIFIC surface (e.g. RealChannelDriver implements collectMessages, but the
+ * sender wired for `dashboard` has no history to collect). The harness maps THIS error
+ * to BLOCKED (driver-unsupported) rather than FAIL — an absence assertion the driver
+ * genuinely cannot make on this surface is unverifiable, not a failure. Any OTHER throw
+ * remains a loud FAIL (a real driver error must not be silently downgraded).
+ */
+export class DriverCapabilityError extends Error {
+  constructor(message: string) { super(message); this.name = 'DriverCapabilityError'; }
+}
+
+/**
+ * Thrown by a SENDER's `collectMessages` when it read the channel but CANNOT guarantee
+ * it saw every message in the window — a paginated/truncated history read (a full page
+ * came back, so more may exist) or a failed read. An absence proof over an incomplete
+ * read would silently false-PASS (the spurious nudge could be on the page we never
+ * fetched), so the harness maps THIS to BLOCKED, never PASS. Distinct from
+ * DriverCapabilityError (which is the capability LAYER saying a surface has no collector
+ * at all): senders raise THIS for an incomplete read; only RealChannelDriver raises
+ * DriverCapabilityError for a missing method. A real transport error stays a plain Error
+ * (→ FAIL).
+ */
+export class AbsenceUnverifiableError extends Error {
+  constructor(message: string) { super(message); this.name = 'AbsenceUnverifiableError'; }
+}
+
 export type Volatility = 'safe' | 'volatile' | 'permission';
 
 export interface HarnessScenario {
@@ -126,9 +153,13 @@ export class LiveTestHarness {
    */
   async run(matrix: HarnessMatrix, opts: { runId?: string } = {}): Promise<{ artifact: LiveTestArtifact; entry: ReturnType<LiveTestArtifactStore['write']> }> {
     // §5.3 PRE-FLIGHT: refuse the whole run if a volatile/permission scenario points
-    // at a non-demo channel — before a single message is sent.
+    // at a non-demo channel — before a single message is sent. An ABSENCE scenario
+    // (absenceWindowMs != null) is ALSO demo-only regardless of its `safe` tag: it polls
+    // the channel's whole agent-outbound history into the harness/logs, so a `safe` tag
+    // must not let it read a live (operator) channel's content (security review FD-2).
     for (const s of matrix.scenarios) {
-      if (s.volatility !== 'safe' && !this.d.driver.isDemoChannel(s.surface, s.channelId)) {
+      const requiresDemo = s.volatility !== 'safe' || s.absenceWindowMs != null;
+      if (requiresDemo && !this.d.driver.isDemoChannel(s.surface, s.channelId)) {
         throw new HarnessVolatileChannelError(s.id, s.surface, s.channelId);
       }
     }
@@ -181,8 +212,15 @@ export class LiveTestHarness {
         }
         return { ...base, verdict: 'PASS', evidence };
       } catch (err) {
-        // @silent-fallback-ok: not a silent fallback — a driver error is SURFACED as a
-        // FAIL verdict (with the error in blockedReason) that the LiveTestGate consumes
+        if (err instanceof DriverCapabilityError || err instanceof AbsenceUnverifiableError) {
+          // Either the surface has no collector (DriverCapabilityError) or the read could
+          // not be proven complete (AbsenceUnverifiableError — truncated/paginated/failed
+          // history). Both make the absence assertion unverifiable → BLOCKED (named),
+          // never a silent PASS over an incomplete read and never a misleading FAIL.
+          return { ...base, verdict: 'BLOCKED', blockedKind: 'platform-error', blockedReason: `absence unverifiable on surface "${s.surface}": ${err.message}` };
+        }
+        // @silent-fallback-ok: not a silent fallback — a real driver error is SURFACED as
+        // a FAIL verdict (with the error in blockedReason) that the LiveTestGate consumes
         // and VETOES on. The error is escalated, not swallowed; this is the loud path.
         return { ...base, verdict: 'FAIL', blockedReason: `driver error: ${err instanceof Error ? err.message : String(err)}` };
       }
