@@ -636,11 +636,14 @@ export class QuotaCollector extends EventEmitter {
           errors.push(`OAuth collection failed: ${msg}`);
 
           // Circuit breaker: track consecutive 429s to prevent runaway polling
-          if (msg.includes('429')) {
+          const is429 = msg.includes('429');
+          let breakerJustTripped = false;
+          if (is429) {
             this.oauthConsecutive429s++;
             if (this.oauthConsecutive429s >= QuotaCollector.OAUTH_429_TRIP_COUNT) {
               this.oauthBackoffUntil = Date.now() + QuotaCollector.OAUTH_BACKOFF_MS;
               const backoffMin = Math.round(QuotaCollector.OAUTH_BACKOFF_MS / 60000);
+              breakerJustTripped = true;
               errors.push(
                 `OAuth circuit breaker tripped after ${this.oauthConsecutive429s} consecutive 429s — ` +
                 `pausing OAuth for ${backoffMin} minutes`,
@@ -648,13 +651,23 @@ export class QuotaCollector extends EventEmitter {
             }
           }
 
-          DegradationReporter.getInstance().report({
-            feature: 'QuotaCollector.collect.oauth',
-            primary: 'Collect quota data from Anthropic OAuth API',
-            fallback: 'Falling back to JSONL-based estimation (lower confidence)',
-            reason: `OAuth failed: ${msg}`,
-            impact: 'Quota data may be estimated rather than authoritative',
-          });
+          // A single/transient OAuth 429 (especially `retry-after: 0`) is a
+          // meter-endpoint blip, not a genuine degradation — the JSONL-estimate
+          // fallback is invisible to the user. Reporting one per poll spammed the
+          // DEGRADATION log (716 lines in the 2026-06-24 incident) and read like a
+          // real rate limit. Only surface a 429 to DegradationReporter once the
+          // circuit breaker actually trips (sustained throttling). Non-429 errors
+          // (401/5xx/network) report immediately as before. The error is still
+          // recorded in `errors[]`, so quota accounting/observability is unchanged.
+          if (!is429 || breakerJustTripped) {
+            DegradationReporter.getInstance().report({
+              feature: 'QuotaCollector.collect.oauth',
+              primary: 'Collect quota data from Anthropic OAuth API',
+              fallback: 'Falling back to JSONL-based estimation (lower confidence)',
+              reason: `OAuth failed: ${msg}`,
+              impact: 'Quota data may be estimated rather than authoritative',
+            });
+          }
 
           // 401 means token expired — emit event
           if (msg.includes('401')) {

@@ -113,6 +113,16 @@ export interface CompactionSentinelDeps {
   deferIf?: (sessionName: string) => boolean;
 
   /**
+   * Returns false when this session is NOT a legitimate recovery target — unknown,
+   * or status ∈ {completed, failed, killed}, or no longer in the running set. The
+   * `PreCompact` trigger reports EVERY session in the topic→session map (including
+   * finished ones the map never cleaned up), so without this guard a finished
+   * session gets a recovery injected against it. Dep ABSENT ⇒ today's behavior.
+   * (Companion to the same guard on RateLimitSentinel — live incident 2026-06-24.)
+   */
+  isSessionRecoverable?: (sessionName: string) => boolean;
+
+  /**
    * Is the session actively working RIGHT NOW (mid-turn)? When this returns
    * true the sentinel will NOT inject/re-inject a recovery prompt — it waits
    * another verify window instead, up to `maxWorkingDefers`. This is the fix
@@ -218,6 +228,14 @@ export class CompactionSentinel extends EventEmitter {
 
     if (this.active.has(sessionName)) {
       return; // Recovery already in flight — ignore duplicate trigger.
+    }
+    // A finished/killed session is never a recovery target. The PreCompact trigger
+    // enumerates the whole topic→session map (which is not cleaned up on completion),
+    // so a finished session can be reported here; injecting a recovery into it is the
+    // false-positive class this guard closes (live incident 2026-06-24).
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(sessionName)) {
+      console.log(`[Sentinel] ignoring ${trigger} for "${sessionName}" — not a live recovery target (finished/killed/unknown)`);
+      return;
     }
     if (this.deferIf?.(sessionName)) {
       return; // Another recovery (e.g. rate-limit) owns this session — bidirectional defer.

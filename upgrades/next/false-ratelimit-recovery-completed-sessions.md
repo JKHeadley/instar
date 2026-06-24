@@ -1,0 +1,73 @@
+---
+user_announcement:
+  - audience: user
+    maturity: stable
+    summary: "Stopped phantom 'the throttle should have cleared — please continue' messages that fired on sessions that had already finished."
+  - audience: agent-only
+    maturity: stable
+    summary: "Live-test harness can now assert the ABSENCE of a spurious background message over a window."
+---
+
+## What Changed
+
+A shared safety helper that rescues sessions blocked by an AI-provider throttle was
+mis-firing: a session that had already FINISHED sits idle with the old throttle message
+still on its screen, so the helper kept trying to "rescue" a session that was simply
+done and pinged the user with *"the temporary server throttle should have cleared —
+please continue where you left off."* Because the helper is shared, the false alarm
+showed up fleet-wide (it was also seen on AI Guy).
+
+The fix makes a finished/killed session structurally incapable of being a rescue target:
+the helper now checks the session is still running at every point it can act (when it
+decides to rescue, before each retry, AND before the "did it respond?" check) and bails
+out silently if the session ended. When a session completes, the helpers stop watching
+it immediately. A separate noisy "rate limit" log that fired on harmless quota-meter
+hiccups is also quieted (it now only logs on a sustained problem).
+
+It also adds a reusable prevention capability: the user-channel test harness can now
+prove that NO unwanted background message (like the false throttle nudge) appears over a
+time window — so this class of "a background feature messages you by mistake" is caught
+by the ship gate before it reaches the fleet.
+
+## Evidence
+
+**Reproduction (observed incident, 2026-06-24, topic 28130):** the Mac Mini's Claude
+account was quota-walled, so its session for the topic finished. The finished session
+sat idle with a throttle line still on its terminal; the RateLimitSentinel read that
+stale scrollback, classified the done session as "throttled," and began resume attempts
+that produced repeated *"the temporary server throttle should have cleared — please
+continue where you left off."* nudges across every topic the Mini owned. Server logs
+corroborated the second trigger: 716 "rate limit" hits were almost entirely
+`QuotaCollector.collect.oauth: OAuth usage returned 429 retry-after: 0` — the quota-meter
+endpoint briefly saying no, not a real rate limit (a genuine limit carries a meaningful
+retry-after). One healthy working session was false-flagged 54 times, confirming the
+detector — not any one agent — was the cause (it also surfaced on AI Guy).
+
+**Before:** a completed session, having no new terminal output, was indistinguishable
+from a throttled one and stayed a recovery target indefinitely (never cleared from the
+topic map) → repeated phantom nudges; junk `retry-after:0` 429s logged as rate limits.
+
+**After (verified):** the new `isSessionRecoverable` guard NO-OPS recovery for any session
+not in the live running set, at all three fire points (decide-to-rescue, pre-retry,
+pre-verify) — proven both-sides by `RateLimitSentinel-recoverable-guard` /
+`CompactionSentinel-recoverable-guard` unit tests; the finished-during-verify race is
+reproduced and locked by a dedicated test; the absence-assertion integration test drives
+a regressed build (false nudge reintroduced) and confirms the done gate VETOES it. The
+`retry-after:0` 429 is reclassified as a transient blip (log-level only). 16 unit + 2
+integration tests, no regression across the existing watcher/quota/harness suites, clean
+typecheck.
+
+## What to Tell Your User
+
+You should stop seeing phantom "throttle cleared, continue" messages that don't match
+anything actually happening in your session. Real throttles are still handled — genuine
+rescues still run and still tell you. Nothing you need to do; it takes effect on update.
+
+## Summary of New Capabilities
+
+- Finished/killed sessions can no longer trigger a false throttle/error recovery, and a
+  rescue whose session ends mid-flight stops silently instead of sending a stray
+  "still can't get through" message.
+- (Agent/dev) The live-test harness gained an absence-assertion: a scenario can drive a
+  real conversation and assert that no message matching a pattern arrives within a
+  window, with the result feeding the existing "is this done?" gate.
