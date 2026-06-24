@@ -10016,10 +10016,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // calls that used to live here. Dedupes across the three triggers and
     // vetoes zombie cleanup while a recovery is in flight.
     const { CompactionSentinel } = await import('../monitoring/CompactionSentinel.js');
+    // A session is a legitimate recovery target ONLY while it is in the running
+    // set. A finished/failed/killed session drops out of listRunningSessions(),
+    // so this is the structural guard that stops both sentinels from "recovering"
+    // a session that is simply done — the false-positive that spammed the user
+    // with throttle-resume nudges on a finished session (live incident 2026-06-24).
+    const isSessionRecoverable = (sessionName: string): boolean =>
+      sessionManager.listRunningSessions().some(s => s.tmuxSession === sessionName);
+
     const compactionSentinel = new CompactionSentinel(
       {
         recoverFn: recoverCompactedSession,
         projectDir: config.projectDir,
+        isSessionRecoverable,
         getClaudeSessionId: (sessionName: string) => {
           const session = sessionManager.listRunningSessions()
             .find(s => s.tmuxSession === sessionName);
@@ -10117,6 +10126,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         notifyFn: rateLimitNotify,
         projectDir: config.projectDir,
         getClaudeSessionId: getClaudeSessionIdForName,
+        isSessionRecoverable,
         // #33 codex parity: for codex sessions, recovery-verification reads the newest
         // codex rollout (account-wide throttle → newest-rollout growth = cleared) and
         // the user-facing messages use OpenAI wording.
@@ -10155,6 +10165,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the whole transient-API class is the 2026-05-29 future-proofing ask (topic 13481).
     sessionManager.on('apiErrorAtIdle', (sessionName: string) => {
       rateLimitSentinel.report(sessionName, 'idle-error', { errorClass: 'transient-api' });
+    });
+    // When a session completes, immediately clear any in-flight recovery for it in
+    // BOTH sentinels. The recoverability guard already blocks NEW recoveries on a
+    // finished session and aborts an in-flight one at its next tick; clearing here
+    // frees the recovery slot (and lifts the zombie-kill veto) immediately instead
+    // of waiting for that tick — and is the explicit completion-cleanup the prior
+    // code lacked (clear() existed but had zero callers). (live incident 2026-06-24)
+    // clear() on both sentinels is a pure synchronous timer-cancel + Map.delete that
+    // cannot throw, so no defensive try/catch is needed here (a wrapper would only be a
+    // silent fallback the no-silent-fallbacks ratchet flags — see the methods).
+    sessionManager.on('sessionComplete', (session) => {
+      rateLimitSentinel.clear(session.tmuxSession);
+      compactionSentinel.clear(session.tmuxSession);
     });
     // #33 codex parity: the two triggers above read CLAUDE panes / claude-PID watchdog,
     // so a codex session throttled by OpenAI is invisible to them. This poll reads the

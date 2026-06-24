@@ -1,0 +1,634 @@
+🔒 Running pre-push gate (NEXT.md + version check)...
+
+  Pre-Push Gate
+  ────────────────────────────────────────
+
+  ⚠️  package.json version (1.3.655) matches the latest published guide (1.3.655). Did you forget to bump the version? Run: npm version patch|minor|major
+
+🔒 Running pre-push fixture-pollution guard...
+🧪 Running smoke tier (tests affected by changes vs resolved base)...
+   Full suite runs in CI | Force full locally: INSTAR_PRE_PUSH_FULL=1 git push
+
+> instar@1.3.655 test:smoke
+> node scripts/pre-push-smoke.mjs
+
+🧪 Running smoke tier against JKHeadley/main (branch upstream); changed files: 22.
+🧪 Smoke affected set: 29 test files / 262 test cases.
+
+ RUN  v2.1.9 /Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection
+
+ ✓ tests/integration/realtime-wiring.test.ts (21 tests) 522ms
+   ✓ Phase 8 export verification > AgentBus class is exported from index 493ms
+stderr | tests/unit/quota-collector.test.ts > QuotaCollector > falls back to JSONL when OAuth fails
+[DEGRADATION] QuotaCollector.collect.oauth: OAuth failed: OAuth usage returned 500
+  Primary: Collect quota data from Anthropic OAuth API
+  Fallback: Falling back to JSONL-based estimation (lower confidence)
+  Impact: Quota data may be estimated rather than authoritative
+
+stderr | tests/unit/quota-collector.test.ts > QuotaCollector > respects request budget
+[DEGRADATION] QuotaCollector.collect.oauth: OAuth failed: Request budget exhausted for current window
+  Primary: Collect quota data from Anthropic OAuth API
+  Fallback: Falling back to JSONL-based estimation (lower confidence)
+  Impact: Quota data may be estimated rather than authoritative
+
+stderr | tests/unit/quota-collector.test.ts > QuotaCollector > OAuth circuit breaker > trips after 3 consecutive 429 responses
+[DEGRADATION] QuotaCollector.collect.oauth: OAuth failed: OAuth usage returned 429 retry-after: 0
+  Primary: Collect quota data from Anthropic OAuth API
+  Fallback: Falling back to JSONL-based estimation (lower confidence)
+  Impact: Quota data may be estimated rather than authoritative
+
+stderr | tests/unit/quota-collector.test.ts > QuotaCollector > OAuth circuit breaker > skips OAuth when circuit breaker is open
+[DEGRADATION] QuotaCollector.collect.oauth: OAuth failed: OAuth usage returned 429 retry-after: 0
+  Primary: Collect quota data from Anthropic OAuth API
+  Fallback: Falling back to JSONL-based estimation (lower confidence)
+  Impact: Quota data may be estimated rather than authoritative
+
+ ✓ tests/unit/quota-collector.test.ts (53 tests) 62ms
+ ✓ tests/unit/coherence-gate-escalation.test.ts (24 tests) 22ms
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > emits compaction:detected on first report and calls recoverFn
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > dedupes reports within the dedupe window
+[Sentinel] detected compaction on "s1" via PreCompact; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > separate sessions recover independently
+[Sentinel] detected compaction on "session-a" via watchdog-poll; baseline jsonl: a.jsonl size=100
+[Sentinel] detected compaction on "session-b" via watchdog-poll; baseline jsonl: a.jsonl size=100
+[Sentinel] inject-attempted on "session-a" (attempt 1/3, accepted=true)
+[Sentinel] inject-attempted on "session-b" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > emits compaction:recovered when jsonl grows within the verify window
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > emits compaction:recovered when jsonl grows within the verify window
+[Sentinel] recovered "s1" after 1 attempt(s) (jsonl grew by 400 bytes)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > retries when jsonl does not grow, up to maxInjectAttempts
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+[Sentinel] retry "s1" (attempt 1/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "s1" (attempt 2/3, accepted=true)
+[Sentinel] retry "s1" (attempt 2/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "s1" (attempt 3/3, accepted=true)
+
+stderr | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > retries when jsonl does not grow, up to maxInjectAttempts
+[Sentinel] failed "s1": no jsonl growth after 3 attempts (75000ms total wait)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > STANDS DOWN (never force-injects) when the defer budget is exhausted but the session is STILL actively working
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "s1" actively working — deferring inject (defer 1/2); NOT re-injecting
+[Sentinel] "s1" actively working — deferring inject (defer 2/2); NOT re-injecting
+[Sentinel] "s1" still actively working after 2 defers — standing down, NOT forcing an inject (session is alive + working; no resume nudge needed)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > stops retrying as soon as jsonl grows (recovers on attempt 2)
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+[Sentinel] retry "s1" (attempt 1/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "s1" (attempt 2/3, accepted=true)
+[Sentinel] recovered "s1" after 2 attempt(s) (jsonl grew by 300 bytes)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > isRecoveryActive returns true during recovery and false after success
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+[Sentinel] recovered "s1" after 1 attempt(s) (jsonl grew by 400 bytes)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > finalizes as failed when recoverFn returns false
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=false)
+
+stderr | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > finalizes as failed when recoverFn returns false
+[Sentinel] failed "s1": recoverFn declined (no pending work or session gone)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > treats recoverFn throwing as acceptance=false and finalizes
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=false)
+
+stderr | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > treats recoverFn throwing as acceptance=false and finalizes
+[Sentinel] recoverFn threw on "s1" (attempt 1): Error: kaboom
+    at /Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/tests/unit/CompactionSentinel.test.ts:212:33
+    at file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:146:14
+    at file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:533:11
+    at runWithTimeout (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:39:7)
+    at runTest (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1056:17)
+    at runSuite (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1205:15)
+    at runSuite (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1205:15)
+    at runFiles (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1262:5)
+    at startTests (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1271:3)
+    at file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/vitest/dist/chunks/runBaseTests.3qpJUEJM.js:126:11
+[Sentinel] failed "s1": recoverFn declined (no pending work or session gone)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > handles the no-jsonl case without crashing
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: none size=n/a
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+[Sentinel] retry "s1" (attempt 1/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "s1" (attempt 2/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > uses claudeSessionId to target the exact jsonl when available
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: abc-123.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+[Sentinel] retry "s1" (attempt 1/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "s1" (attempt 2/3, accepted=true)
+[Sentinel] recovered "s1" after 2 attempt(s) (jsonl grew by 300 bytes)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > falls back to newest jsonl when the stored claudeSessionId transcript is missing (phantom uuid)
+[CompactionSentinel] stale claudeSessionId for "echo-api-errors" (563a7027-432d-4b46-9706-caf43daa1016.jsonl missing) — falling back to newest jsonl in project root
+[Sentinel] detected compaction on "echo-api-errors" via watchdog-poll; baseline jsonl: live-conversation.jsonl size=100
+[Sentinel] inject-attempted on "echo-api-errors" (attempt 1/3, accepted=true)
+[CompactionSentinel] stale claudeSessionId for "echo-api-errors" (563a7027-432d-4b46-9706-caf43daa1016.jsonl missing) — falling back to newest jsonl in project root
+[Sentinel] recovered "echo-api-errors" after 1 attempt(s) (jsonl grew by 800 bytes)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > detects growth via mtime change on a fixed-size jsonl
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+[Sentinel] recovered "s1" after 1 attempt(s) (jsonl grew by 0 bytes)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > clear() removes active state
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > allows re-recovery after a previous recovery finalizes
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+[Sentinel] recovered "s1" after 1 attempt(s) (jsonl grew by 300 bytes)
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=400
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > stop() cleans up all state and timers
+[Sentinel] detected compaction on "a" via watchdog-poll; baseline jsonl: a.jsonl size=100
+[Sentinel] detected compaction on "b" via watchdog-poll; baseline jsonl: a.jsonl size=100
+[Sentinel] inject-attempted on "a" (attempt 1/3, accepted=true)
+[Sentinel] inject-attempted on "b" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > busy-session defer guard > defers the first inject while actively working — never calls recoverFn
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "s1" actively working — deferring inject (defer 1/4); NOT re-injecting
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > busy-session defer guard > injects once the session stops working
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "s1" actively working — deferring inject (defer 1/4); NOT re-injecting
+[Sentinel] retry "s1" (attempt 0/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > busy-session defer guard > recovers WITHOUT injecting if the session emits while we defer (jsonl grows)
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "s1" actively working — deferring inject (defer 1/4); NOT re-injecting
+[Sentinel] recovered "s1" after 0 attempt(s) (jsonl grew by 400 bytes)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > busy-session defer guard > caps consecutive defers at maxWorkingDefers then STANDS DOWN (never force-injects a still-working session)
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "s1" actively working — deferring inject (defer 1/4); NOT re-injecting
+[Sentinel] "s1" actively working — deferring inject (defer 2/4); NOT re-injecting
+[Sentinel] "s1" actively working — deferring inject (defer 3/4); NOT re-injecting
+[Sentinel] "s1" actively working — deferring inject (defer 4/4); NOT re-injecting
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > busy-session defer guard > caps consecutive defers at maxWorkingDefers then STANDS DOWN (never force-injects a still-working session)
+[Sentinel] "s1" still actively working after 4 defers — standing down, NOT forcing an inject (session is alive + working; no resume nudge needed)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > busy-session defer guard > maxWorkingDefers=0 disables deferral (injects immediately even while working)
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel.test.ts > CompactionSentinel > busy-session defer guard > with no isActivelyWorking dep, never defers (backward compatible)
+[Sentinel] detected compaction on "s1" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "s1" (attempt 1/3, accepted=true)
+
+ ✓ tests/unit/CompactionSentinel.test.ts (24 tests) 40ms
+stdout | tests/integration/quota-manager-wiring.test.ts > QuotaManager Integration > event subscribers receive threshold crossings
+[QuotaNotifier] Weekly quota is at 88%. Only high-priority and critical jobs will run now. Let me know if you want to adjust the thresholds.
+
+stdout | tests/integration/quota-manager-wiring.test.ts > QuotaManager Integration > polling status returns correct state
+[QuotaManager] Started adaptive polling loop
+[QuotaManager] Stopped
+
+ ✓ tests/integration/quota-manager-wiring.test.ts (8 tests) 50ms
+stderr | tests/integration/quota-collection.test.ts > Quota Collection (integration) > OAuth 500 triggers JSONL fallback with real file parsing
+[DEGRADATION] QuotaCollector.collect.oauth: OAuth failed: OAuth usage returned 500
+  Primary: Collect quota data from Anthropic OAuth API
+  Fallback: Falling back to JSONL-based estimation (lower confidence)
+  Impact: Quota data may be estimated rather than authoritative
+
+ ✓ tests/integration/quota-collection.test.ts (9 tests) 43ms
+stderr | tests/e2e/quota-collection-lifecycle.test.ts > Quota Collection Lifecycle (e2e) > handles complete token loss gracefully — no credentials, no JSONL
+[quota] No quota state file found — all jobs will run (fail-open)
+
+ ✓ tests/e2e/quota-collection-lifecycle.test.ts (6 tests) 19ms
+stdout | tests/e2e/quota-manager-lifecycle.test.ts > QuotaManager E2E Lifecycle > full lifecycle: normal → high usage → threshold events → migration → cooldown
+[QuotaNotifier] Weekly quota is at 75%. Low-priority jobs will be held back from here. You can adjust these thresholds in config if you want different cutoffs.
+[QuotaNotifier] Weekly quota is at 88%. Only high-priority and critical jobs will run now. Let me know if you want to adjust the thresholds.
+
+stdout | tests/e2e/quota-manager-lifecycle.test.ts > QuotaManager E2E Lifecycle > tracker-only mode works without collector
+[QuotaManager] Started (tracker-only mode, no collector)
+[QuotaManager] Stopped
+
+stdout | tests/e2e/quota-manager-lifecycle.test.ts > QuotaManager E2E Lifecycle > notification retry survives initial failure
+[QuotaManager] Started (tracker-only mode, no collector)
+[QuotaManager] Stopped
+
+stdout | tests/e2e/quota-manager-lifecycle.test.ts > QuotaManager E2E Lifecycle > JSONL data does not trigger migration by default
+[QuotaNotifier] We've hit the weekly quota limit (138.8%). No new sessions will start until the quota resets.
+
+ ✓ tests/e2e/quota-manager-lifecycle.test.ts (4 tests) 11390ms
+   ✓ QuotaManager E2E Lifecycle > JSONL data does not trigger migration by default 11378ms
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > emits detected + sends the immediate "backing off" notice, but does NOT resume yet
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > re-engages only AFTER the first backoff interval (quota-burn guard)
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > re-engages only AFTER the first backoff interval (quota-burn guard)
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/6, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > recovers when jsonl grows within the verify window after the nudge
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/6, accepted=true)
+[RateLimitSentinel] recovered "s1" after 1 attempt(s) (jsonl grew by 700 bytes)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > falls back to newest jsonl when the stored claudeSessionId transcript is missing (phantom uuid)
+[RateLimitSentinel] stale claudeSessionId for "echo-api-errors" (563a7027-432d-4b46-9706-caf43daa1016.jsonl missing) — falling back to newest jsonl in project root
+[RateLimitSentinel] detected throttle error on "echo-api-errors" via watchdog-poll; baseline jsonl=live-conversation.jsonl size=100
+[RateLimitSentinel] resume-attempted on "echo-api-errors" (attempt 1/6, accepted=true)
+[RateLimitSentinel] stale claudeSessionId for "echo-api-errors" (563a7027-432d-4b46-9706-caf43daa1016.jsonl missing) — falling back to newest jsonl in project root
+[RateLimitSentinel] recovered "echo-api-errors" after 1 attempt(s) (jsonl grew by 800 bytes)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > still prefers the exact uuid transcript when it exists — sibling growth alone does not count
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=my-uuid.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/2, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > escalates after maxAttempts with no jsonl growth
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > escalates after maxAttempts with no jsonl growth
+[RateLimitSentinel] resume-attempted on "s1" (attempt 2/3, accepted=true)
+[RateLimitSentinel] resume-attempted on "s1" (attempt 3/3, accepted=true)
+
+stderr | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > escalates after maxAttempts with no jsonl growth
+[RateLimitSentinel] escalated "s1": no jsonl growth after 3 attempts over 1m
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > escalates immediately if resumeFn declines (no pending work / session gone)
+[RateLimitSentinel] detected throttle error on "s1" via idle-error; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/6, accepted=false)
+
+stderr | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > escalates immediately if resumeFn declines (no pending work / session gone)
+[RateLimitSentinel] escalated "s1": resumeFn declined (no pending work or session gone)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > dedupes reports while a recovery is active
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > isRecoveryActive is true during recovery, false before and after
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/6, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > does not spam check-ins: spaced by checkInEveryMs
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/10, accepted=true)
+[RateLimitSentinel] resume-attempted on "s1" (attempt 2/10, accepted=true)
+[RateLimitSentinel] resume-attempted on "s1" (attempt 3/10, accepted=true)
+[RateLimitSentinel] resume-attempted on "s1" (attempt 4/10, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > sends a check-in once spacing has elapsed
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/10, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > listActive surfaces state + nextBackoffMs for the status endpoint
+[RateLimitSentinel] detected throttle error on "s1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > separate sessions recover independently
+[RateLimitSentinel] detected throttle error on "a" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] detected throttle error on "b" via idle-error; baseline jsonl=foo.jsonl size=100
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > errorClass: 'transient-api' > uses the FAST first backoff (5s, not the 30s throttle schedule)
+[RateLimitSentinel] detected transient-api error on "s1" via idle-error; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/6, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > errorClass: 'transient-api' > sends a transient-API-worded notice (not the throttle wording)
+[RateLimitSentinel] detected transient-api error on "s1" via idle-error; baseline jsonl=foo.jsonl size=100
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > errorClass: 'transient-api' > rides the full lifecycle: backoff → resume → verify(jsonl growth) → recovered
+[RateLimitSentinel] detected transient-api error on "s1" via idle-error; baseline jsonl=foo.jsonl size=100
+[RateLimitSentinel] resume-attempted on "s1" (attempt 1/6, accepted=true)
+[RateLimitSentinel] recovered "s1" after 1 attempt(s) (jsonl grew by 4900 bytes)
+
+stdout | tests/unit/RateLimitSentinel.test.ts > RateLimitSentinel > errorClass: 'transient-api' > records its errorClass + listActive reflects the short schedule
+[RateLimitSentinel] detected transient-api error on "s1" via idle-error; baseline jsonl=foo.jsonl size=100
+
+ ✓ tests/unit/RateLimitSentinel.test.ts (20 tests) 30ms
+stdout | tests/e2e/live-test-capstone-alive.test.ts > Live-User-Channel Proof capstone runner — E2E (feature is alive)
+[instar] Server listening on 127.0.0.1:61298
+[instar] Dashboard: http://127.0.0.1:61298/dashboard
+[instar] burn-detection auto-heal system started
+[instar] Server listening on 127.0.0.1:61299
+[instar] Dashboard: http://127.0.0.1:61299/dashboard
+[instar] burn-detection auto-heal system started
+
+stderr | tests/e2e/live-test-capstone-alive.test.ts > Live-User-Channel Proof capstone runner — E2E (feature is alive)
+[instar] model-tier escalation init failed (non-fatal): TypeError: options.sessionManager.on is not a function
+    at new AgentServer (/Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/src/server/AgentServer.ts:2010:30)
+    at /Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/tests/e2e/live-test-capstone-alive.test.ts:109:21
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at callSuiteHook (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:964:22)
+    at runSuite (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1175:29)
+    at runSuite (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1205:15)
+    at runFiles (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1262:5)
+    at startTests (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1271:3)
+    at file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/vitest/dist/chunks/runBaseTests.3qpJUEJM.js:126:11
+    at withEnv (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/vitest/dist/chunks/runBaseTests.3qpJUEJM.js:90:5)
+[instar] credential-coherence: 4 identity surface(s) diverge from the agent's repo-local identity (see .instar/audit/credential-resolution.jsonl)
+[instar] model-tier escalation init failed (non-fatal): TypeError: options.sessionManager.on is not a function
+    at new AgentServer (/Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/src/server/AgentServer.ts:2010:30)
+    at /Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/tests/e2e/live-test-capstone-alive.test.ts:121:18
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at callSuiteHook (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:964:22)
+    at runSuite (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1175:29)
+    at runSuite (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1205:15)
+    at runFiles (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1262:5)
+    at startTests (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1271:3)
+    at file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/vitest/dist/chunks/runBaseTests.3qpJUEJM.js:126:11
+    at withEnv (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/vitest/dist/chunks/runBaseTests.3qpJUEJM.js:90:5)
+[instar] credential-coherence: 4 identity surface(s) diverge from the agent's repo-local identity (see .instar/audit/credential-resolution.jsonl)
+
+stderr | tests/e2e/live-test-capstone-alive.test.ts > Live-User-Channel Proof capstone runner — E2E (feature is alive) > (a) WIRED: the capstone route runs the matrix, returns 200, records a signed artifact
+[auth] deprecation: bearer-only request to /live-test/multi-machine-capstone from ::ffff:127.0.0.1 — clients must send X-Instar-AgentId header. (deduped 1/hour per source)
+
+ ✓ tests/e2e/live-test-capstone-alive.test.ts (4 tests) 622ms
+ ✓ tests/integration/live-test-capstone-route.test.ts (7 tests) 93ms
+stdout | tests/e2e/rate-limit-sentinel-lifecycle.test.ts > RateLimitSentinel E2E lifecycle
+[instar] Server listening on 127.0.0.1:0
+[instar] Dashboard: http://127.0.0.1:0/dashboard
+[instar] burn-detection auto-heal system started
+
+stderr | tests/e2e/rate-limit-sentinel-lifecycle.test.ts > RateLimitSentinel E2E lifecycle
+[instar] model-tier escalation init failed (non-fatal): TypeError: options.sessionManager.on is not a function
+    at new AgentServer (/Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/src/server/AgentServer.ts:2010:30)
+    at /Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/tests/e2e/rate-limit-sentinel-lifecycle.test.ts:100:14
+    at runWithTimeout (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:39:7)
+    at callSuiteHook (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:964:28)
+    at runSuite (file:///Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection/node_modules/@vitest/runner/dist/index.js:1175:35)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+[instar] credential-coherence: 4 identity surface(s) diverge from the agent's repo-local identity (see .instar/audit/credential-resolution.jsonl)
+
+stderr | tests/e2e/rate-limit-sentinel-lifecycle.test.ts > RateLimitSentinel E2E lifecycle > Phase 1: Feature is alive (not 503, enabled:true) > GET /rate-limit/status returns 200 with enabled:true
+[auth] deprecation: bearer-only request to /rate-limit/status from ::ffff:127.0.0.1 — clients must send X-Instar-AgentId header. (deduped 1/hour per source)
+
+stdout | tests/e2e/rate-limit-sentinel-lifecycle.test.ts > RateLimitSentinel E2E lifecycle > Phase 2: Active recovery is observable on the wire > a reported throttle appears in /rate-limit/status with the documented shape
+[RateLimitSentinel] detected throttle error on "e2e-sess" via watchdog-poll; baseline jsonl=session.jsonl size=100
+
+ ✓ tests/e2e/rate-limit-sentinel-lifecycle.test.ts (4 tests) 145ms
+ ✓ tests/unit/LiveTestHarness.test.ts (6 tests) 13ms
+stderr | tests/unit/topic-operator-polling-bind.test.ts > polling-path operator auto-bind (increment 2e) > getter THROWS → caught, routing continues (fail-soft)
+[telegram] topic-operator auto-bind error (non-fatal): boom
+
+stderr | tests/unit/topic-operator-polling-bind.test.ts > polling-path operator auto-bind (increment 2e) > store.setOperator THROWS → caught, routing continues (fail-soft)
+[telegram] topic-operator auto-bind error (non-fatal): disk full
+
+ ✓ tests/unit/topic-operator-polling-bind.test.ts (6 tests) 8ms
+ ✓ tests/unit/rate-limit-false-positive-matrix.test.ts (6 tests) 11ms
+stdout | tests/e2e/compaction-busy-defer-lifecycle.test.ts > compaction busy-defer E2E — real disk + real timers > never injects while working, then recovers when the JSONL grows on disk
+[Sentinel] detected compaction on "sess" via watchdog-poll; baseline jsonl: sess.jsonl size=100
+[Sentinel] "sess" actively working — deferring inject (defer 1/8); NOT re-injecting
+
+stdout | tests/e2e/compaction-busy-defer-lifecycle.test.ts > compaction busy-defer E2E — real disk + real timers > never injects while working, then recovers when the JSONL grows on disk
+[Sentinel] "sess" actively working — deferring inject (defer 2/8); NOT re-injecting
+
+stdout | tests/e2e/compaction-busy-defer-lifecycle.test.ts > compaction busy-defer E2E — real disk + real timers > never injects while working, then recovers when the JSONL grows on disk
+[Sentinel] "sess" actively working — deferring inject (defer 3/8); NOT re-injecting
+
+stdout | tests/e2e/compaction-busy-defer-lifecycle.test.ts > compaction busy-defer E2E — real disk + real timers > never injects while working, then recovers when the JSONL grows on disk
+[Sentinel] "sess" actively working — deferring inject (defer 4/8); NOT re-injecting
+
+stdout | tests/e2e/compaction-busy-defer-lifecycle.test.ts > compaction busy-defer E2E — real disk + real timers > never injects while working, then recovers when the JSONL grows on disk
+[Sentinel] "sess" actively working — deferring inject (defer 5/8); NOT re-injecting
+
+stdout | tests/e2e/compaction-busy-defer-lifecycle.test.ts > compaction busy-defer E2E — real disk + real timers > never injects while working, then recovers when the JSONL grows on disk
+[Sentinel] recovered "sess" after 0 attempt(s) (jsonl grew by 500 bytes)
+
+stdout | tests/e2e/compaction-busy-defer-lifecycle.test.ts > compaction busy-defer E2E — real disk + real timers > idle-from-start session injects (recovery still works when genuinely stuck)
+[Sentinel] detected compaction on "sess" via watchdog-poll; baseline jsonl: sess.jsonl size=100
+[Sentinel] inject-attempted on "sess" (attempt 1/3, accepted=true)
+
+ ✓ tests/e2e/compaction-busy-defer-lifecycle.test.ts (4 tests) 343ms
+   ✓ compaction busy-defer E2E — real disk + real timers > never injects while working, then recovers when the JSONL grows on disk 315ms
+stdout | tests/unit/RateLimitSentinel-recoverable-guard.test.ts > RateLimitSentinel — isSessionRecoverable guard (false-positive on finished sessions) > NO-OPS when the session is not recoverable (finished/killed/unknown) — no notice, no recovery
+[RateLimitSentinel] ignoring idle-error for "echo-topic-28130" — not a live recovery target (finished/killed/unknown)
+
+stdout | tests/unit/RateLimitSentinel-recoverable-guard.test.ts > RateLimitSentinel — isSessionRecoverable guard (false-positive on finished sessions) > PROCEEDS normally when the session IS recoverable (genuine throttle still recovers)
+[RateLimitSentinel] detected throttle error on "echo-topic-28130" via idle-error; baseline jsonl=none size=n/a
+
+stdout | tests/unit/RateLimitSentinel-recoverable-guard.test.ts > RateLimitSentinel — isSessionRecoverable guard (false-positive on finished sessions) > dep ABSENT preserves prior behavior (recovers anything reported) — regression lock
+[RateLimitSentinel] detected throttle error on "echo-topic-28130" via idle-error; baseline jsonl=none size=n/a
+
+stdout | tests/unit/RateLimitSentinel-recoverable-guard.test.ts > RateLimitSentinel — isSessionRecoverable guard (false-positive on finished sessions) > ABORTS SILENTLY when the session finishes mid-backoff — no escalation ping, emits aborted
+[RateLimitSentinel] detected throttle error on "echo-topic-28130" via idle-error; baseline jsonl=none size=n/a
+[RateLimitSentinel] aborted "echo-topic-28130": session no longer recoverable (finished/killed during backoff)
+
+stdout | tests/unit/RateLimitSentinel-recoverable-guard.test.ts > RateLimitSentinel — isSessionRecoverable guard (false-positive on finished sessions) > ABORTS when the session finishes during the VERIFY window — no escalation ping (the finished-mid-verify hole)
+[RateLimitSentinel] detected throttle error on "echo-topic-28130" via idle-error; baseline jsonl=none size=n/a
+[RateLimitSentinel] resume-attempted on "echo-topic-28130" (attempt 1/6, accepted=true)
+[RateLimitSentinel] aborted "echo-topic-28130": session no longer recoverable (finished/killed during verify window)
+
+ ✓ tests/unit/RateLimitSentinel-recoverable-guard.test.ts (5 tests) 5ms
+stdout | tests/integration/compaction-busy-defer-wiring.test.ts > CompactionSentinel × SessionManager — busy-session defer wiring > defers (no inject) while the real SessionManager reports the session mid-turn
+[Sentinel] detected compaction on "echo-sess" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "echo-sess" actively working — deferring inject (defer 1/5); NOT re-injecting
+
+stdout | tests/integration/compaction-busy-defer-wiring.test.ts > CompactionSentinel × SessionManager — busy-session defer wiring > injects once the real SessionManager reports the session idle
+[Sentinel] detected compaction on "echo-sess" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "echo-sess" actively working — deferring inject (defer 1/5); NOT re-injecting
+[Sentinel] retry "echo-sess" (attempt 0/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "echo-sess" (attempt 1/3, accepted=true)
+
+stdout | tests/integration/compaction-busy-defer-wiring.test.ts > CompactionSentinel × SessionManager — busy-session defer wiring > injects immediately when the session is idle from the start (unchanged path)
+[Sentinel] detected compaction on "echo-sess" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "echo-sess" (attempt 1/3, accepted=true)
+
+stdout | tests/integration/compaction-busy-defer-wiring.test.ts > CompactionSentinel × SessionManager — busy-session defer wiring > defers while a real child process is running even with no footer
+[Sentinel] detected compaction on "echo-sess" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] "echo-sess" actively working — deferring inject (defer 1/5); NOT re-injecting
+
+ ✓ tests/integration/compaction-busy-defer-wiring.test.ts (4 tests) 11ms
+ ✓ tests/integration/topic-operator-polling-bind.test.ts (3 tests) 7ms
+stdout | tests/integration/rate-limit-status-routes.test.ts > RateLimitSentinel routes + wiring (integration) > GET /rate-limit/status reflects an active recovery
+[RateLimitSentinel] detected throttle error on "sess-1" via watchdog-poll; baseline jsonl=foo.jsonl size=100
+
+stdout | tests/integration/rate-limit-status-routes.test.ts > RateLimitSentinel routes + wiring (integration) > composed recovery-checker is true when EITHER sentinel owns the session
+[RateLimitSentinel] detected throttle error on "x" via idle-error; baseline jsonl=foo.jsonl size=100
+[Sentinel] detected compaction on "y" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "y" (attempt 1/3, accepted=true)
+
+stdout | tests/integration/rate-limit-status-routes.test.ts > RateLimitSentinel routes + wiring (integration) > rate-limit sentinel defers when compaction recovery owns the session
+[Sentinel] detected compaction on "z" via watchdog-poll; baseline jsonl: foo.jsonl size=100
+[Sentinel] inject-attempted on "z" (attempt 1/3, accepted=true)
+
+ ✓ tests/integration/rate-limit-status-routes.test.ts (4 tests) 32ms
+ ✓ tests/integration/rate-limit-false-positive-prevention.test.ts (2 tests) 9ms
+ ✓ tests/unit/LiveTestRunner.test.ts (5 tests) 7ms
+stdout | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > recovers a codex session when the newest rollout GROWS (account throttle cleared)
+[RateLimitSentinel] detected throttle error on "codey-1" via codex-usage-poll; baseline jsonl=rollout-2026-05-31T09-00-00-aaaa1111-0000-0000-0000-000000000001.jsonl size=100
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 1/6, accepted=true)
+[RateLimitSentinel] recovered "codey-1" after 1 attempt(s) (jsonl grew by 800 bytes)
+
+stdout | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > escalates a codex session when the rollout never grows (still throttled)
+[RateLimitSentinel] detected throttle error on "codey-1" via codex-usage-poll; baseline jsonl=rollout-2026-05-31T09-00-00-aaaa1111-0000-0000-0000-000000000001.jsonl size=100
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 1/6, accepted=true)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 2/6, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > escalates a codex session when the rollout never grows (still throttled)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 3/6, accepted=true)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 4/6, accepted=true)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 5/6, accepted=true)
+
+stderr | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > escalates a codex session when the rollout never grows (still throttled)
+[RateLimitSentinel] escalated "codey-1": no jsonl growth after 6 attempts over 21m
+
+stdout | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > escalates a codex session when the rollout never grows (still throttled)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 6/6, accepted=true)
+
+stdout | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > vendor wording: codex throttle notices say OpenAI / status.openai.com, never Anthropic
+[RateLimitSentinel] detected throttle error on "codey-1" via codex-usage-poll; baseline jsonl=rollout-2026-05-31T09-00-00-aaaa1111-0000-0000-0000-000000000001.jsonl size=100
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 1/6, accepted=true)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 2/6, accepted=true)
+
+stderr | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > vendor wording: codex throttle notices say OpenAI / status.openai.com, never Anthropic
+[RateLimitSentinel] escalated "codey-1": no jsonl growth after 6 attempts over 21m
+
+stdout | tests/unit/RateLimitSentinel-codex-recovery.test.ts > RateLimitSentinel — codex recovery via newest rollout (#33) > vendor wording: codex throttle notices say OpenAI / status.openai.com, never Anthropic
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 3/6, accepted=true)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 4/6, accepted=true)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 5/6, accepted=true)
+[RateLimitSentinel] resume-attempted on "codey-1" (attempt 6/6, accepted=true)
+
+ ✓ tests/unit/RateLimitSentinel-codex-recovery.test.ts (3 tests) 19ms
+ ✓ tests/unit/fix-command-routing.test.ts (17 tests) 2ms
+stdout | tests/integration/rate-limit-recovery-sentinel-lifecycle.test.ts > RateLimitSentinel × recovery factory — non-topic-bound lifecycle > recovers a non-topic-bound session: internal nudge + lifeline notice + recovered
+[RateLimitSentinel] detected throttle error on "dev-window" via idle-error; baseline jsonl=sess.jsonl size=100
+
+stdout | tests/integration/rate-limit-recovery-sentinel-lifecycle.test.ts > RateLimitSentinel × recovery factory — non-topic-bound lifecycle > recovers a non-topic-bound session: internal nudge + lifeline notice + recovered
+[RateLimitSentinel] resume-attempted on "dev-window" (attempt 1/6, accepted=true)
+
+stdout | tests/integration/rate-limit-recovery-sentinel-lifecycle.test.ts > RateLimitSentinel × recovery factory — non-topic-bound lifecycle > recovers a non-topic-bound session: internal nudge + lifeline notice + recovered
+[RateLimitSentinel] recovered "dev-window" after 1 attempt(s) (jsonl grew by 500 bytes)
+
+stdout | tests/integration/rate-limit-recovery-sentinel-lifecycle.test.ts > RateLimitSentinel × recovery factory — non-topic-bound lifecycle > no topic AND no lifeline → records recovery-unreachable, never silent
+[RateLimitSentinel] detected throttle error on "orphan" via idle-error; baseline jsonl=sess.jsonl size=100
+
+stdout | tests/integration/rate-limit-recovery-sentinel-lifecycle.test.ts > RateLimitSentinel × recovery factory — non-topic-bound lifecycle > no topic AND no lifeline → records recovery-unreachable, never silent
+[RateLimitSentinel] resume-attempted on "orphan" (attempt 1/6, accepted=true)
+
+ ✓ tests/integration/rate-limit-recovery-sentinel-lifecycle.test.ts (2 tests) 1318ms
+   ✓ RateLimitSentinel × recovery factory — non-topic-bound lifecycle > recovers a non-topic-bound session: internal nudge + lifeline notice + recovered 911ms
+   ✓ RateLimitSentinel × recovery factory — non-topic-bound lifecycle > no topic AND no lifeline → records recovery-unreachable, never silent 406ms
+ ✓ tests/unit/index-exports.test.ts (3 tests) 399ms
+   ✓ Package exports (src/index.ts) > exports all core classes 398ms
+stdout | tests/unit/CompactionSentinel-codex.test.ts > CompactionSentinel — codex recovery via newest rollout > recovers a codex session when its newest ROLLOUT jsonl grows
+[Sentinel] detected compaction on "codey-1" via watchdog-poll; baseline jsonl: rollout-2026-05-31T09-00-00-aaaa1111-0000-0000-0000-000000000001.jsonl size=100
+[Sentinel] inject-attempted on "codey-1" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel-codex.test.ts > CompactionSentinel — codex recovery via newest rollout > recovers a codex session when its newest ROLLOUT jsonl grows
+[Sentinel] recovered "codey-1" after 1 attempt(s) (jsonl grew by 500 bytes)
+
+stdout | tests/unit/CompactionSentinel-codex.test.ts > CompactionSentinel — codex recovery via newest rollout > fails a codex session when the rollout never grows (no recovery)
+[Sentinel] detected compaction on "codey-1" via watchdog-poll; baseline jsonl: rollout-2026-05-31T09-00-00-aaaa1111-0000-0000-0000-000000000001.jsonl size=100
+[Sentinel] inject-attempted on "codey-1" (attempt 1/3, accepted=true)
+[Sentinel] retry "codey-1" (attempt 1/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "codey-1" (attempt 2/3, accepted=true)
+[Sentinel] retry "codey-1" (attempt 2/3 produced no output, re-injecting)
+[Sentinel] inject-attempted on "codey-1" (attempt 3/3, accepted=true)
+
+stderr | tests/unit/CompactionSentinel-codex.test.ts > CompactionSentinel — codex recovery via newest rollout > fails a codex session when the rollout never grows (no recovery)
+[Sentinel] failed "codey-1": no jsonl growth after 3 attempts (75000ms total wait)
+
+ ✓ tests/unit/CompactionSentinel-codex.test.ts (2 tests) 11ms
+ ✓ tests/unit/sentinel-recoverable-wiring.test.ts (3 tests) 2ms
+stdout | tests/unit/CompactionSentinel-recoverable-guard.test.ts > CompactionSentinel — isSessionRecoverable guard > NO-OPS for a non-recoverable (finished/killed) session — no recovery injected
+[Sentinel] ignoring PreCompact for "echo-topic-28130" — not a live recovery target (finished/killed/unknown)
+
+ ✓ tests/unit/CompactionSentinel-recoverable-guard.test.ts (3 tests) 3ms
+stdout | tests/unit/CompactionSentinel-recoverable-guard.test.ts > CompactionSentinel — isSessionRecoverable guard > PROCEEDS for a recoverable session — recovery starts
+[Sentinel] detected compaction on "echo-topic-28130" via PreCompact; baseline jsonl: none size=n/a
+[Sentinel] inject-attempted on "echo-topic-28130" (attempt 1/3, accepted=true)
+
+stdout | tests/unit/CompactionSentinel-recoverable-guard.test.ts > CompactionSentinel — isSessionRecoverable guard > dep ABSENT preserves prior behavior — regression lock
+[Sentinel] detected compaction on "echo-topic-28130" via PreCompact; baseline jsonl: none size=n/a
+[Sentinel] inject-attempted on "echo-topic-28130" (attempt 1/3, accepted=true)
+
+
+ Test Files  29 passed (29)
+      Tests  262 passed (262)
+   Start at  14:19:30
+   Duration  34.97s (transform 21ms, setup 22ms, collect 2.95s, tests 15.24s, environment 2ms, prepare 660ms)
+
+JSON report written to /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-pre-push-smoke-zxV1ii/vitest-results.json
+🔒 Running path-scoped e2e gate...
+🧪 pre-push e2e scope: changed files touch tests/e2e/threadline/ — running their e2e suite(s)...
+   Opt out: INSTAR_PRE_PUSH_E2E_SKIP=1 git push (CI still runs the full e2e job)
+
+ RUN  v2.1.9 /Users/justin/.instar/agents/echo/.worktrees/fix-false-ratelimit-detection
+
+ ✓ tests/e2e/threadline/RESTServerE2E.test.ts (24 tests) 30ms
+ ✓ tests/e2e/threadline/conversation-keystone-wiring.test.ts (7 tests) 9ms
+stdout | tests/e2e/threadline/WarmSessionA2AE2E.test.ts > Warm-Session A2A — E2E lifecycle > two messages on one thread → SAME warm session (continuity); evict → next resumes via #746
+[ThreadlineRouter] Warm (keep-alive) session echo-warm-1 admitted for thread c299c60e-6ae8-45a6-b3c4-d87464e03ee8 (peer fp-dawn-peer)
+[ThreadlineRouter] Injected message into live session echo-warm-1 for thread c299c60e-6ae8-45a6-b3c4-d87464e03ee8
+[ThreadlineRouter] Live-session injection failed for thread c299c60e-6ae8-45a6-b3c4-d87464e03ee8 (echo-warm-1): Session not alive. Falling back to resume/spawn.
+
+ ✓ tests/e2e/threadline/WarmSessionA2AE2E.test.ts (1 test) 10ms
+ ✓ tests/e2e/threadline/TrustBootstrapE2E.test.ts (27 tests) 110ms
+ ✓ tests/e2e/threadline/OpenClawBridgeE2E.test.ts (33 tests) 113ms
+ ✓ tests/e2e/threadline/collaboration-surfacing-wiring.test.ts (5 tests) 8ms
+ ✓ tests/e2e/threadline/ThreadlineMCPE2E.test.ts (15 tests) 99ms
+ ✓ tests/e2e/threadline/ThreadlineE2E.test.ts (57 tests) 215ms
+ ✓ tests/e2e/threadline/A2AE2E.test.ts (31 tests) 274ms
+ ✓ tests/e2e/threadline/ThreadlineFullStack.test.ts (50 tests) 224ms
+ ✓ tests/e2e/threadline/AbuseDetectionE2E.test.ts (5 tests) 336ms
+   ✓ Abuse Detection E2E > metrics record message routing 309ms
+ ✓ tests/e2e/threadline/A2ABridgeE2E.test.ts (17 tests) 550ms
+   ✓ A2A Bridge E2E > Task lifecycle > task status reflects pending while waiting for agent 307ms
+ ✓ tests/e2e/threadline/RelayE2E.test.ts (17 tests) 581ms
+ ✓ tests/e2e/threadline/DuplicateIdentityResolveE2E.test.ts (1 test) 332ms
+   ✓ Threadline duplicate-identity resolution — E2E (live vs dead echo) > a sender resolves the name "echo" to the LIVE registration when a dead twin also exists 319ms
+ ✓ tests/e2e/threadline/send-honest-error-e2e.test.ts (1 test) 50ms
+ ✓ tests/e2e/threadline/identity-discovery-wiring.test.ts (2 tests) 703ms
+   ✓ Threadline identity-discovery wiring — advertised fp == relay-registered fp > advertises the exact fingerprint the relay client registers with 368ms
+   ✓ Threadline identity-discovery wiring — advertised fp == relay-registered fp > omits fingerprint + publicKey and does not throw when no routing identity exists 335ms
+ ✓ tests/e2e/threadline/OfflineQueueE2E.test.ts (8 tests) 15675ms
+   ✓ Offline Queue E2E > message queuing for offline agents > queues message when recipient is offline and delivers on reconnect 514ms
+   ✓ Offline Queue E2E > message queuing for offline agents > queues multiple messages and delivers in order 534ms
+   ✓ Offline Queue E2E > queue limits > rejects when per-sender-per-recipient limit exceeded 415ms
+   ✓ Offline Queue E2E > TTL expiry > expired messages are not delivered on reconnect 6522ms
+   ✓ Offline Queue E2E > TTL expiry > sender receives delivery_expired notification 6521ms
+   ✓ Offline Queue E2E > health endpoint with queue stats > includes offline queue stats in health response 320ms
+   ✓ Offline Queue E2E > edge cases > direct delivery when recipient is online (no queuing) 316ms
+   ✓ Offline Queue E2E > edge cases > messages from multiple senders to same offline recipient 520ms
+ ✓ tests/e2e/threadline/ThreadlineRelayComprehensive.test.ts (32 tests) 16904ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 1: Full encrypted message lifecycle > encrypts, routes through relay, and decrypts with real crypto 418ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 1: Full encrypted message lifecycle > encrypted message queued offline, delivered on reconnect, decryptable 511ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 2: Multi-agent encrypted mesh > three agents exchange encrypted messages in a triangle pattern 534ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 3: Displacement with queued message delivery > displaced client reconnects and receives queued messages 835ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 4: Discovery and presence across multiple agents > discovers agents with different capabilities and visibility 322ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 4: Discovery and presence across multiple agents > presence subscriptions fire for connect and disconnect 914ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 5: Admin ban/unban during active messaging > banning stops message routing, unbanning restores it 825ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 6: Offline queue with abuse detection > queued messages are tracked in metrics 412ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 7: Rapid connect/disconnect cycles > handles 5 rapid reconnections without state corruption 944ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 8: Concurrent multi-agent messaging > handles 4 agents sending messages simultaneously 719ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 10: Queue TTL expiry for encrypted messages > expired encrypted messages are purged and not delivered 4522ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 12: Edge cases > agent can send message to itself 410ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 12: Edge cases > handles invalid JSON frames without crashing 411ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 12: Edge cases > message to non-existent agent is queued 411ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 13: Bulk offline delivery from multiple senders > delivers messages from 3 senders when recipient comes online 717ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 14: Bidirectional encrypted conversation > two agents exchange encrypted messages back and forth 629ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 15: Queue overflow under pressure > respects per-sender limit and returns queue_full 624ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 17: Tampered message detection > decryption fails when message is tampered 415ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 18: Server state consistency > presence is cleaned up after disconnect 309ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 18: Server state consistency > connections count goes to zero when all clients disconnect 312ms
+   ✓ Threadline Relay Comprehensive E2E > Scenario 20: Complete pipeline test > full lifecycle: connect → discover → encrypt → route → queue → deliver → admin verify 831ms
+
+ Test Files  18 passed (18)
+      Tests  333 passed (333)
+   Start at  14:20:06
+   Duration  17.40s (transform 2.06s, setup 0ms, collect 5.05s, tests 36.22s, environment 2ms, prepare 973ms)
+
+✅ Scoped e2e suite passed.
+Everything up-to-date

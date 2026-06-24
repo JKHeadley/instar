@@ -35,6 +35,17 @@ export interface ChannelDriver {
   send(surface: Surface, channelId: string, text: string): Promise<SendResult>;
   /** Await the agent's reply (resolves null on timeout). */
   awaitReply(surface: Surface, channelId: string, opts: { timeoutMs: number; afterMessageId?: string }): Promise<ReplyResult | null>;
+  /**
+   * OPTIONAL — collect EVERY message that lands on the channel within a window
+   * (after `afterMessageId`). Backs ABSENCE assertions: "after X, no message
+   * matching <pattern> arrives within the window". A single awaitReply can't prove
+   * absence (it returns the first reply, and a spurious background nudge may land
+   * AFTER a legitimate reply). A driver that does not implement this makes an
+   * absence scenario BLOCKED (driver-unsupported), never a silent pass. The fix
+   * this enables to test: a finished session must emit ZERO throttle-resume nudges
+   * (live incident 2026-06-24).
+   */
+  collectMessages?(surface: Surface, channelId: string, opts: { windowMs: number; afterMessageId?: string }): Promise<ReplyResult[]>;
 }
 
 export type Volatility = 'safe' | 'volatile' | 'permission';
@@ -48,8 +59,27 @@ export interface HarnessScenario {
   channelId: string;
   /** The user message to send. */
   input: string;
-  /** Deterministic expectations checked against the captured reply. */
-  expect: { replyContains?: string; replyNotEmpty?: boolean; responderMachine?: string };
+  /**
+   * Deterministic expectations checked against the captured reply (or, for an
+   * absence scenario, against every message collected over `absenceWindowMs`).
+   * - replyContains / replyNotEmpty / responderMachine: assert the reply.
+   * - replyMustNotContain: the (first) reply must NOT contain this substring.
+   * - noMessageMatching: ABSENCE — paired with `absenceWindowMs`, asserts NO
+   *   message landing on the channel within the window contains this substring.
+   */
+  expect: {
+    replyContains?: string;
+    replyNotEmpty?: boolean;
+    responderMachine?: string;
+    replyMustNotContain?: string;
+    noMessageMatching?: string;
+  };
+  /**
+   * When set, this is an ABSENCE scenario: after sending `input`, the harness
+   * collects every message on the channel for this many ms and asserts none match
+   * `expect.noMessageMatching`. Requires a driver implementing `collectMessages`.
+   */
+  absenceWindowMs?: number;
   timeoutMs?: number;
 }
 
@@ -126,6 +156,38 @@ export class LiveTestHarness {
     const timeoutMs = s.timeoutMs ?? this.d.defaultTimeoutMs ?? 30_000;
     const maxRetries = this.d.maxReplyRetries ?? 2;
     const base: ScenarioRow = { id: s.id, description: s.description, surface: s.surface, riskCategory: s.riskCategory, verdict: 'FAIL' };
+
+    // ── ABSENCE scenario: assert NO message matching the pattern lands within the
+    // window (the structural way to catch a spurious background message — e.g. a
+    // throttle-resume nudge fired against a finished session).
+    if (s.absenceWindowMs != null) {
+      const pattern = s.expect.noMessageMatching;
+      if (!pattern) {
+        return { ...base, verdict: 'BLOCKED', blockedKind: 'operator-waiver', blockedReason: 'absence scenario missing expect.noMessageMatching' };
+      }
+      if (!this.d.driver.collectMessages) {
+        // Never silently pass — an absence assertion an unsupported driver cannot
+        // make is BLOCKED with a named reason, not a PASS.
+        return { ...base, verdict: 'BLOCKED', blockedKind: 'platform-error', blockedReason: 'driver does not support collectMessages (absence assertion unverifiable)' };
+      }
+      try {
+        const sent = await this.d.driver.send(s.surface, s.channelId, s.input);
+        const collected = await this.d.driver.collectMessages(s.surface, s.channelId, { windowMs: s.absenceWindowMs, afterMessageId: sent.messageId });
+        const offending = collected.find(m => m.text.includes(pattern));
+        const evidence = { channelId: s.channelId, messageIds: [sent.messageId, ...collected.map(m => m.messageId)] };
+        if (offending) {
+          this.log(`scenario ${s.id} FAIL: spurious message matched "${pattern}": ${JSON.stringify(offending.text.slice(0, 120))}`);
+          return { ...base, verdict: 'FAIL', evidence, blockedReason: `spurious message matched "${pattern}"` };
+        }
+        return { ...base, verdict: 'PASS', evidence };
+      } catch (err) {
+        // @silent-fallback-ok: not a silent fallback — a driver error is SURFACED as a
+        // FAIL verdict (with the error in blockedReason) that the LiveTestGate consumes
+        // and VETOES on. The error is escalated, not swallowed; this is the loud path.
+        return { ...base, verdict: 'FAIL', blockedReason: `driver error: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+
     try {
       const sent = await this.d.driver.send(s.surface, s.channelId, s.input);
       let reply: ReplyResult | null = null;
@@ -142,6 +204,7 @@ export class LiveTestHarness {
       const failures: string[] = [];
       if (s.expect.replyContains && !reply.text.includes(s.expect.replyContains)) failures.push(`reply missing "${s.expect.replyContains}"`);
       if (s.expect.replyNotEmpty && reply.text.trim() === '') failures.push('reply empty');
+      if (s.expect.replyMustNotContain && reply.text.includes(s.expect.replyMustNotContain)) failures.push(`reply unexpectedly contained "${s.expect.replyMustNotContain}"`);
       if (s.expect.responderMachine && reply.responderMachineId !== s.expect.responderMachine) failures.push(`responder ${reply.responderMachineId ?? 'unknown'} ≠ expected ${s.expect.responderMachine}`);
       if (failures.length) {
         this.log(`scenario ${s.id} FAIL: ${failures.join('; ')}`);
