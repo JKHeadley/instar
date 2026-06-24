@@ -153,3 +153,38 @@ export function evaluateThrottleSettle(
   }
   return { decision: 'waiting', next: prev };
 }
+
+export type IdleThrottleAction = 'emit' | 'wait' | 'fall-through';
+
+/**
+ * The SessionManager idle-monitor's SETTLE-GATED decision for a session whose recent
+ * output already matched a throttle string. Today the idle path emits `rateLimitedAtIdle`
+ * on that single glance — which false-fires on a transient throttle that has already
+ * cleared, or a throttle line still scrolled in the buffer of a session that has since
+ * moved on. This re-checks the settled-lines window with the SAME discipline the
+ * SessionWatchdog already uses (`evaluateThrottleSettle`: throttle present AND pane
+ * byte-identical across polls = the turn genuinely ended on the throttle), and returns:
+ *   - 'emit'         : settled → hand to recovery now (clear tracking).
+ *   - 'wait'         : throttle present but pane still changing / not settled long enough
+ *                      → recheck next idle tick, do NOT emit yet (carry `nextState`).
+ *   - 'fall-through' : no throttle in the settled window → not a current throttle; clear
+ *                      tracking and let the caller continue to its generic-error check.
+ *
+ * Pure + clock-injected (no tmux) so the new decision is fully unit-testable. STRICTLY
+ * more conservative than the legacy immediate emit — it can only ever emit LESS often,
+ * never more — so it cannot create a recovery it didn't already make. Gated behind the
+ * dark `monitoring.idleThrottleSettleGate` flag; the deeper redesign (unifying the idle +
+ * watchdog detection paths, and distinguishing an active-tail throttle from old
+ * scrollback) stays a tracked follow-up.
+ */
+export function nextIdleThrottleAction(
+  snapshot: string | null | undefined,
+  prev: ThrottleSettleState | undefined,
+  now: number,
+  opts?: { settleMs?: number; captureLines?: number },
+): { action: IdleThrottleAction; nextState: ThrottleSettleState | undefined } {
+  const { decision, next } = evaluateThrottleSettle(snapshot, prev, now, opts);
+  if (decision === 'settled') return { action: 'emit', nextState: undefined };
+  if (decision === 'waiting') return { action: 'wait', nextState: next };
+  return { action: 'fall-through', nextState: undefined }; // 'no-throttle'
+}

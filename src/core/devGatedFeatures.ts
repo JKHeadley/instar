@@ -248,6 +248,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Coordinates the operator\'s OWN machines only — no external egress, no third-party spend, no destructive fs/git action. Parts A/B add TWO fenced-epoch CAS callsites to the EXISTING replicated ownership lifecycle (the same SessionOwnershipRegistry.cas + emitPlacement path the user-move release/transfer already use): every write is best-effort, CAS-fenced at epoch+1, loses safely to a higher epoch, and is NEVER forced (force-claim stays the reconciler\'s death-evidence verb). Part D\'s ownerOf read is a SIGNAL that only ever WITHHOLDS a local re-run / forwards to the owner — it can never cause a new kill or a new send (strictly reduces double-dispatch). Single-machine agents are a strict no-op (_meshSelfId null short-circuits every gate). Runs live (no destructive write warrants a dry-run) on dev / dark on fleet. Spec\'s fleet-promotion exit is an evidence-gated dev soak.',
   },
   {
+    name: 'idleThrottleSettleGate',
+    configPath: 'monitoring.idleThrottleSettleGate.enabled',
+    description:
+      'Idle-monitor throttle settle-gate (false-ratelimit-recovery follow-up, CMT-1785) — the SessionManager idle-monitor gates its `rateLimitedAtIdle` hand-off behind the SAME settle discipline the SessionWatchdog already uses (throttle present AND pane byte-identical across polls = the turn genuinely ended on the throttle), instead of firing on a single glance at a throttle string that may be stale scrollback or a just-cleared transient throttle.',
+    justification:
+      'STRICTLY more conservative than the legacy behavior — it can only ever emit `rateLimitedAtIdle` LESS often, never more, so it cannot create a recovery that did not already happen; the genuine-throttle case still settles and hands off (after a bounded settle wait the watchdog also backstops). Pure decision extracted to `nextIdleThrottleAction` (unit-tested without tmux). No external egress, no third-party spend, no destructive action, no new authority — it only WITHHOLDS a spurious recovery signal. Reversible (flip the flag → legacy immediate emit). Runs live (no destructive write warrants a dry-run) on dev / dark on fleet; the deeper two-path detection unification stays a tracked follow-up.',
+  },
+  {
     name: 'canonicalHistoryConversationDiscipline',
     configPath: 'threadline.canonicalHistory.conversationDiscipline.enabled',
     description:

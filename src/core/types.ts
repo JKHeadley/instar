@@ -4238,6 +4238,16 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * DARK-FLAGGED (DEV_GATED_FEATURES idleThrottleSettleGate; CMT-1785 follow-up):
+   * settle-gate the SessionManager idle-monitor's `rateLimitedAtIdle` hand-off so it
+   * requires the throttle to be present AND the pane byte-identical across polls
+   * (the watchdog's discipline), instead of firing on a single glance at a possibly
+   * stale/transient throttle line. `enabled` OMITTED ⇒ dev-agent live / dark-fleet.
+   */
+  idleThrottleSettleGate?: {
+    enabled?: boolean;
+  };
+  /**
    * honest-session-state-surfaces Finding (b): lift the Tier-3 honest
    * stuck-state classification into PresenceProxy Tier 1 / Tier 2 standby —
    * so a live-but-failing session (rate-limited / policy-wedge / context-wedge /

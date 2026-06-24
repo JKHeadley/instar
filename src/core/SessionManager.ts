@@ -53,7 +53,7 @@ export interface SessionDiagnostics {
   suggestions: string[];
 }
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { detectRateLimited } from '../monitoring/rateLimitDetection.js';
+import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
 
@@ -272,6 +272,14 @@ export interface SessionManagerOptions {
    *  Server boot threads monitoring.tmuxResilience.asyncHotPath.maxInFlight;
    *  absent ⇒ TMUX_MAX_INFLIGHT_DEFAULT (8). */
   tmuxMaxInFlight?: number;
+  /** DARK-FLAGGED: when true, the idle-monitor gates the `rateLimitedAtIdle` emit
+   *  behind the SAME settle discipline the SessionWatchdog already uses (a throttle
+   *  must be present AND the pane byte-identical across polls before handing to
+   *  recovery), instead of firing on a single glance. Strictly more conservative —
+   *  can only emit LESS often. Resolved server-side via
+   *  resolveDevAgentGate(monitoring.idleThrottleSettleGate.enabled). Absent ⇒ legacy
+   *  immediate emit, unchanged. */
+  idleThrottleSettleGate?: boolean;
 }
 
 export class SessionManager extends EventEmitter {
@@ -421,6 +429,10 @@ export class SessionManager extends EventEmitter {
    *  When false (the default + every off-path/test caller) the legacy sync hot
    *  path runs byte-for-byte; monitorTick never touches the async wrapper. */
   private readonly tmuxAsyncEnabled: boolean;
+  /** DARK-FLAGGED idle-monitor throttle settle-gate (see SessionManagerOptions). */
+  private readonly idleThrottleSettleGate: boolean;
+  /** Per-session settle tracking for the dark idle-throttle settle-gate (tmuxSession → state). */
+  private readonly idleThrottleSettle = new Map<string, ThrottleSettleState>();
   /** (C) latency feed — optional-chained so (A) lands independently of the guard. */
   private readonly degradedTmuxGuard?: DegradedTmuxGuard;
   /** Per-call SIGKILL-bounded timeout for the async wrapper (ms). */
@@ -471,6 +483,11 @@ export class SessionManager extends EventEmitter {
     // (A)/(C) tmux-event-loop-resilience wiring — resolved server-side and threaded
     // in. Absent (every 2-arg/test caller) ⇒ the legacy sync hot path runs unchanged.
     this.tmuxAsyncEnabled = opts.tmuxAsyncEnabled === true;
+    this.idleThrottleSettleGate = opts.idleThrottleSettleGate === true;
+    // UNCONDITIONAL cleanup of the dark idle-throttle settle map on completion — NOT gated
+    // on setPromptDetector() (a bare/test wiring may never call it), so a session killed
+    // while mid-'wait' can't leak its settle entry.
+    this.on('sessionComplete', (session: Session) => { this.idleThrottleSettle.delete(session.tmuxSession); });
     this.degradedTmuxGuard = opts.degradedTmuxGuard;
     this.tmuxCallTimeoutMs =
       typeof opts.tmuxCallTimeoutMs === 'number' && Number.isFinite(opts.tmuxCallTimeoutMs) && opts.tmuxCallTimeoutMs > 0
@@ -1569,6 +1586,37 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
           if (isActuallyIdle) {
             const now = Date.now();
+            // DARK-FLAGGED idle-throttle settle-gate (monitoring.idleThrottleSettleGate):
+            // runs on EVERY idle tick (NOT just the first) so the pane can be re-sampled
+            // across polls to reach 'settled' — mirroring the SessionWatchdog's per-tick
+            // settle loop. When enabled this OWNS the rate-limit hand-off (the first-idle-
+            // tick block below fires the legacy immediate emit only when the flag is OFF).
+            // A throttle string alone can linger in a session's scrollback after the
+            // throttle cleared; requiring the pane byte-identical across polls (a working
+            // session animates its spinner) proves the turn genuinely ended on the throttle.
+            // Strictly more conservative than the legacy single-glance emit.
+            if (this.idleThrottleSettleGate) {
+              const settledSnapshot = await this.captureOutputMaybeAsync(session.tmuxSession, RATE_LIMIT_SETTLED_CAPTURE_LINES);
+              const { action, nextState } = nextIdleThrottleAction(
+                settledSnapshot,
+                this.idleThrottleSettle.get(session.tmuxSession),
+                now,
+              );
+              if (action === 'emit') {
+                this.idleThrottleSettle.delete(session.tmuxSession);
+                this.emit('rateLimitedAtIdle', session.tmuxSession);
+                continue; // Settled → sentinel owns recovery.
+              }
+              if (action === 'wait') {
+                if (nextState) this.idleThrottleSettle.set(session.tmuxSession, nextState);
+                continue; // Not settled yet — re-sample next idle tick; do NOT emit, and
+                          // (like the watchdog's 'waiting') do not run the generic-error
+                          // nudge or idle-kill while a throttle is present-but-unsettled.
+              }
+              // 'fall-through': no current throttle in the settled window (a stale buffer
+              // line) → clear tracking and proceed to the normal idle machinery below.
+              this.idleThrottleSettle.delete(session.tmuxSession);
+            }
             if (!this.idlePromptSince.has(session.id)) {
               this.idlePromptSince.set(session.id, now);
 
@@ -1603,7 +1651,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
                   // the single-nudge token, so a later generic API error can
                   // still get its one nudge. The sentinel dedupes the re-emits
                   // that persist while the throttle string stays on the pane.
-                  if (detectRateLimited(recentOutput)) {
+                  if (detectRateLimited(recentOutput) && !this.idleThrottleSettleGate) {
+                    // Legacy (flag OFF): hand straight to the RateLimitSentinel on a single
+                    // glance. When the settle-gate is ON, the per-idle-tick settle check
+                    // above (which re-samples the pane every tick to reach 'settled') OWNS
+                    // this hand-off — so we deliberately do NOT also fire the immediate emit
+                    // here, which would defeat the gate.
                     this.emit('rateLimitedAtIdle', session.tmuxSession);
                     continue; // Skip to next session — sentinel owns recovery.
                   }
@@ -1683,6 +1736,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             // is NOT cleared here — it's the lifetime runaway cap.)
             this.idlePromptSince.delete(session.id);
             this.errorNudgedSessions.delete(session.id);
+            this.idleThrottleSettle.delete(session.tmuxSession); // session moved on — reset the settle clock
           }
         }
       }

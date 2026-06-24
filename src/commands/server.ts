@@ -4690,6 +4690,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       degradedTmuxGuard,
       tmuxCallTimeoutMs: config.monitoring?.tmuxResilience?.asyncHotPath?.timeoutMs,
       tmuxMaxInFlight: config.monitoring?.tmuxResilience?.asyncHotPath?.maxInFlight,
+      // DARK-FLAGGED (DEV_GATED_FEATURES idleThrottleSettleGate): settle-gate the
+      // idle-monitor's rateLimitedAtIdle hand-off. `enabled` OMITTED from defaults ⇒
+      // dev-agent live / dark-fleet.
+      idleThrottleSettleGate: resolveDevAgentGate(config.monitoring?.idleThrottleSettleGate?.enabled, config),
     });
     // Wire the SAME TTL-cached SDK-credit reader PR1's routing policy uses, so
     // the reroute 'auto' decision and the intelligence-funnel routing share one
