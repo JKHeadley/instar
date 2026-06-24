@@ -62,7 +62,7 @@ import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/Tel
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
-import { wrapIntelligenceWithCircuitBreaker } from '../core/CircuitBreakingIntelligenceProvider.js';
+import { wrapIntelligenceWithCircuitBreaker, getFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { configureLlmCircuitBreaker, llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import { computeSelfQuotaState } from '../core/selfQuotaState.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
@@ -108,7 +108,7 @@ import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
-import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints } from '../core/MeshUrlAdvertiser.js';
+import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
 import { relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
@@ -126,7 +126,7 @@ import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
 import { LeaseCoordinator, type LeaseStore } from '../core/LeaseCoordinator.js';
 import { isPeerPresumedDead } from '../core/leaseLiveness.js';
 import { readPollActive, pidAlive as pollPidAlive } from '../core/pollIntent.js';
-import { checkMultiMachineConfigCoherence } from '../core/configCoherence.js';
+import { checkMultiMachineConfigCoherence, checkMeshLiveStateCoherence, MESH_WARMUP_GRACE_MS, type MeshLiveState } from '../core/configCoherence.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
 import { PeerEndpointRecorder } from '../core/PeerEndpointRecorder.js';
 import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
@@ -4186,6 +4186,33 @@ export async function startServer(options: StartOptions): Promise<void> {
     // construction (far below) can wire the /api/lease[/pull] receivers to real registry fns.
     let peerEndpointRecorder: PeerEndpointRecorder | undefined;
     let getSelfMeshEndpoints: (() => import('../core/types.js').MeshEndpoint[] | undefined) | undefined;
+    // mesh-coherence-live-state-honesty (Fix (b) / Decision #5): the resolved server bind host,
+    // a BOOT CONSTANT. Declared `let` at OUTER scope (the same scope as getSelfMeshEndpoints)
+    // and assigned inside the mesh-init block so the peerPresenceTimer closure (far below) can
+    // reach it — a const inside the block would be UNREACHABLE from the timer.
+    let meshResolvedBindHost: string | undefined;
+    // mesh-coherence-live-state-honesty (Fix (b) / Decision #6): transition-only emit state +
+    // capped-backoff failure state for the periodic live-coherence check, at outer scope so the
+    // peerPresenceTimer closure persists them across ticks.
+    //   _meshCoherenceLastCodes: the SET of codes emitted on the previous tick — a code logs
+    //     ONLY on absent→present; a LEVEL-TRIGGERED reset clears a code when its divergence
+    //     resolves, so a later recurrence logs fresh (one line per divergence episode).
+    //   _meshCoherenceEmitCounts: per-code re-emit tally enforcing the optional emitCap ceiling.
+    //   _meshCoherenceConsecFailures/_meshCoherenceTicksSinceAttempt: capped consecutive-failure
+    //     backoff so a sustained-corrupt registry does not re-throw-and-swallow every 30s.
+    //   _meshCoherenceFailing: a healthy→failing LATCH so the 'error' metric is TRANSITION-GATED
+    //     (one row when the read STARTS failing, not one per attempt).
+    let _meshCoherenceLastCodes = new Set<string>();
+    const _meshCoherenceEmitCounts = new Map<string, number>();
+    let _meshCoherenceConsecFailures = 0;
+    let _meshCoherenceTicksSinceAttempt = 0;
+    let _meshCoherenceFailing = false;
+    // Half-open breaker (all three brakes): BACKOFF (a read failure trips it to ≤1 attempt per
+    // MAX_BACKOFF_TICKS×30s ≈ 10min), BREAKER (the failing-latch + backoff; a successful read
+    // CLOSES it), CAP (MAX_BACKOFF_TICKS floors the re-probe rate; the 'error' metric is
+    // transition-gated). Deliberately HALF-OPEN (re-probing), NOT hard-STOP: a signal-only
+    // honesty observer that STOPS attempting goes BLIND if the registry recovers.
+    const MAX_BACKOFF_TICKS = 20;
     let leaseCoordinatorRef: LeaseCoordinator | undefined;
     let liveTailBuffer: LiveTailBuffer | undefined;
     let liveTailSendTransport: HttpLiveTailTransport | undefined;
@@ -4345,6 +4372,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         // and the LIVE meshTransport gate. Shared by the receiver routes (sender/puller
         // direction) and the transport's pull-RESPONSE path (holder direction).
         getSelfMeshEndpoints = () => idMgr.getMachineEndpoints(selfMachineId);
+        // mesh-coherence-live-state-honesty (Fix (b) / Decision #5): assign the resolved bind
+        // host from the SAME meshBindActive expression the AgentServer bind callsite uses
+        // (server.ts construction → AgentServer.ts:3469). boundHost is a BOOT CONSTANT (the bind
+        // cannot change without a restart — which is exactly the b.1 divergence), so a single
+        // boot-scope assignment is the live truth.
+        {
+          const meshBindActiveForCoherence =
+            coordinator.managers.identityManager.hasIdentity() &&
+            config.multiMachine?.meshTransport?.enabled !== false;
+          meshResolvedBindHost = resolveMeshBindHost({
+            configHost: config.host,
+            meshBindActive: meshBindActiveForCoherence,
+            meshBindHostOverride: config.multiMachine?.meshTransport?.bindHost,
+          });
+        }
         peerEndpointRecorder = new PeerEndpointRecorder({
           getPeerEndpoints: (id) => idMgr.getMachineEndpoints(id),
           updateMachineEndpoints: (id, eps) => idMgr.updateMachineEndpoints(id, eps),
@@ -18189,7 +18231,66 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           });
           void peerPresencePuller.pullOnce();
-          const peerPresenceTimer = setInterval(() => { void peerPresencePuller.pullOnce(); }, 30_000);
+          const peerPresenceTick = (): void => {
+            void peerPresencePuller.pullOnce();
+            // mesh-coherence-live-state-honesty (Fix (b)): the periodic, signal-only live-vs-config
+            // mesh coherence recheck. Dev-gated dark (resolveDevAgentGate on the nested ?.enabled).
+            if (resolveDevAgentGate(config.monitoring?.meshCoherenceLiveCheck?.enabled, config)) {
+              // Backoff: after a failure, skip up to min(consecFailures, MAX_BACKOFF_TICKS) ticks
+              // before retrying. A SUCCESSFUL tick resets the counters (auto-recover).
+              const backoffTicks = Math.min(_meshCoherenceConsecFailures, MAX_BACKOFF_TICKS);
+              if (_meshCoherenceConsecFailures > 0 && _meshCoherenceTicksSinceAttempt < backoffTicks) {
+                _meshCoherenceTicksSinceAttempt += 1;
+              } else {
+                _meshCoherenceTicksSinceAttempt = 0;
+                // Resolve the tuning knobs (both are actually READ): warmupGraceMs overrides the
+                // b.2 grace; emitCap (if set) hard-caps re-emits per code per process.
+                const warmupGraceMs =
+                  config.monitoring?.meshCoherenceLiveCheck?.warmupGraceMs ?? MESH_WARMUP_GRACE_MS;
+                const emitCap = config.monitoring?.meshCoherenceLiveCheck?.emitCap; // undefined ⇒ unbounded
+                const recorder = getFeatureMetricsRecorder();
+                // THROW-SAFETY (Decision #11): the live registry read can throw on a corrupt /
+                // mid-write registry. A signal-only check must NEVER crash the tick. On any read
+                // failure emit a TRANSITION-GATED 'error' metric row, advance the backoff, and
+                // do NOT touch the transition state (fail toward silence).
+                try {
+                  const live: MeshLiveState = {
+                    boundHost: meshResolvedBindHost,
+                    selfEndpoints: getSelfMeshEndpoints?.() ?? [],
+                    uptimeMs: process.uptime() * 1000,
+                  };
+                  const warnings = checkMeshLiveStateCoherence(config.multiMachine, true, live, warmupGraceMs);
+                  const nowCodes = new Set(warnings.map((w) => w.code));
+                  let firedThisTick = false;
+                  for (const w of warnings) {
+                    if (!_meshCoherenceLastCodes.has(w.code)) {        // TRANSITION-ONLY (absent→present)
+                      const count = _meshCoherenceEmitCounts.get(w.code) ?? 0;
+                      if (emitCap === undefined || count < emitCap) {  // emitCap is READ here
+                        console.log(pc.yellow(`  ⚠ mesh-live-coherence [${w.code}]: ${w.message}`));
+                        _meshCoherenceEmitCounts.set(w.code, count + 1);
+                        firedThisTick = true;
+                      }
+                    }
+                  }
+                  recorder?.record({ feature: 'mesh-coherence-live', kind: 'event', outcome: firedThisTick ? 'fired' : 'noop' });
+                  _meshCoherenceLastCodes = nowCodes;                  // LEVEL-TRIGGERED reset
+                  _meshCoherenceConsecFailures = 0;                    // SUCCESS resets the backoff
+                  _meshCoherenceFailing = false;                       // clear the latch
+                } catch {
+                  // @silent-fallback-ok: signal-only honesty observer; a registry read error must
+                  // never crash the tick. TRANSITION-GATED observability — emit ONE 'error' row on
+                  // the healthy→failing transition (not every attempt), leave the divergence
+                  // transition state untouched (fail toward silence), and advance the backoff.
+                  if (!_meshCoherenceFailing) {
+                    recorder?.record({ feature: 'mesh-coherence-live', kind: 'event', outcome: 'error' });
+                    _meshCoherenceFailing = true;
+                  }
+                  _meshCoherenceConsecFailures += 1;
+                }
+              }
+            }
+          };
+          const peerPresenceTimer = setInterval(peerPresenceTick, 30_000);
           if (typeof peerPresenceTimer.unref === 'function') peerPresenceTimer.unref();
 
           const { resolveSessionPoolStage: _resolveSessionPoolStage } = await import('../core/inboundQueueConfig.js');

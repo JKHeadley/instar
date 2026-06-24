@@ -323,6 +323,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Boot health beacon — a minimal /health responder during the heavy boot phase.',
     justification: 'D4-verified read-only: binds a localhost-only inbound /health socket during boot and cleanly releases it before the real server binds; zero outbound (no fetch/Telegram), no spend, no destructive action.',
   },
+  {
+    name: 'meshCoherenceLiveCheck',
+    configPath: 'monitoring.meshCoherenceLiveCheck.enabled',
+    description: 'Periodic mesh config-vs-live-state coherence check (signal-only log warnings; per-feature metric). Spec: docs/specs/mesh-coherence-live-state-honesty.md.',
+    justification: 'Signal-only periodic log line; reads only own config + own registry self-entry (boolean presence) + own resolved bind host; no egress, no spend, no mutation, no destructive action — safe to soak live on a dev agent. Transition-only emit + capped half-open-breaker backoff bound the output; the live read is throw-wrapped (fails toward silence).',
+  },
   // ── multi-machine replicated-store memory family (WS2.1–WS2.6) — the 7 stateSync
   //    stores, MOVED from DARK_GATE_EXCLUSIONS on 2026-06-13 per operator directive
   //    topic 13481 ("NOTHING should ship dark on development agents — every

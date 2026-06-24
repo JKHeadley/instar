@@ -5424,6 +5424,17 @@ export interface MonitoringConfig {
      *  analyst ran — the deliberate reversal of over-silence (default true). */
     digestEvenWhenCalm?: boolean;
   };
+  /** Periodic mesh config-vs-live-state coherence check (signal-only log warnings).
+   *  Dev-gated dark: `enabled` OMITTED ⇒ resolveDevAgentGate (live-on-dev / dark-fleet).
+   *  Spec: docs/specs/mesh-coherence-live-state-honesty.md. */
+  meshCoherenceLiveCheck?: {
+    enabled?: boolean;
+    /** Override MESH_WARMUP_GRACE_MS (default 120000) for the b.2 gate. */
+    warmupGraceMs?: number;
+    /** Hard ceiling on coherence lines logged per process (default: unbounded;
+     *  transition-only already bounds normal operation). */
+    emitCap?: number;
+  };
 }
 
 export type TelemetryLevel = 'basic' | 'usage';
