@@ -21,7 +21,12 @@
  */
 
 import type { SurfaceSender } from './RealChannelDriver.js';
+import { AbsenceUnverifiableError } from './LiveTestHarness.js';
 import type { SendResult, ReplyResult } from './LiveTestHarness.js';
+
+/** History page size + the absolute ceiling on an absence-collection window. */
+const HISTORY_LIMIT = 100;
+const MAX_WINDOW_MS = 300_000;
 
 /** Minimal Slack client surface this sender needs (matches SlackApiClient.call). */
 export interface SlackCaller {
@@ -38,6 +43,14 @@ export interface SlackLiveSenderDeps {
   api: SlackCaller;
   /** The agent's (Echo's) Slack bot user id — awaitReply waits for a reply authored by THIS id. */
   agentBotUserId: string;
+  /**
+   * OPTIONAL — the agent's Slack app `bot_id`. A message posted by the agent's BACKGROUND
+   * path (incoming-webhook / app post) can carry `bot_id` with NO `user` field; matching
+   * on `agentBotUserId` alone would then SKIP it → a spurious background nudge would be
+   * missed by the absence proof (false PASS). When set, a message authored by EITHER the
+   * agent's user id OR this bot_id counts as agent-outbound. (Lessons-review FD-3.)
+   */
+  agentBotId?: string;
   /** Poll cadence while awaiting a reply. Default 2000ms. */
   pollIntervalMs?: number;
   /** Injected for tests; defaults to real timers / clock. */
@@ -81,12 +94,69 @@ export class SlackLiveSender implements SurfaceSender {
     return null;
   }
 
+  /** A message is agent-outbound if it is from the agent's user id OR its app bot_id. */
+  private isAgentAuthored(m: { user?: string; bot_id?: string }): boolean {
+    if (m.user === this.d.agentBotUserId) return true;
+    if (this.d.agentBotId && m.bot_id === this.d.agentBotId) return true;
+    return false;
+  }
+
+  /**
+   * Collect EVERY agent-authored message strictly after `after`, polling across the
+   * window so a nudge landing LATE (after a legitimate reply) is still seen. Returned
+   * oldest-first. Backs the absence assertion over a real Slack channel.
+   *
+   * Soundness for an ABSENCE proof (an under-collection here is a silent false-PASS):
+   * - **Failed read:** `ok === false` (auth revoked / not_in_channel) throws — never a
+   *   vacuous PASS over a read that returned nothing because it FAILED.
+   * - **Truncation guard:** a `next_cursor` (more pages exist) or a full page
+   *   (>= HISTORY_LIMIT) means the read may be incomplete → AbsenceUnverifiableError →
+   *   harness BLOCKED, never a false PASS over an unread page.
+   * - **Anti-laundering:** ALL text VERSIONS per ts are kept (an edit can't launder a
+   *   nudge out). **Identity:** user id OR app bot_id (a background nudge may have only
+   *   bot_id). **Bounded window:** clamped to MAX_WINDOW_MS.
+   */
+  async collectMessages(channelId: string, opts: { windowMs: number; afterMessageId?: string }): Promise<Array<Omit<ReplyResult, 'responderMachineId'>>> {
+    const after = opts.afterMessageId;
+    const deadline = this.now() + Math.min(Math.max(0, opts.windowMs), MAX_WINDOW_MS);
+    const pollMs = this.d.pollIntervalMs ?? 2000;
+    const seen = new Map<string, Set<string>>(); // ts → every text version observed
+    for (let first = true; first || this.now() < deadline; first = false) {
+      const res = await this.d.api.call('conversations.history', {
+        channel: channelId,
+        ...(after ? { oldest: after, inclusive: false } : {}),
+        limit: HISTORY_LIMIT,
+      });
+      if (res.ok === false) {
+        throw new AbsenceUnverifiableError(`conversations.history failed for ${channelId} (ok=false) — cannot prove absence over a failed read`);
+      }
+      const messages = res.messages ?? [];
+      const nextCursor = (res.response_metadata as { next_cursor?: string } | undefined)?.next_cursor;
+      if ((nextCursor && nextCursor.length > 0) || messages.length >= HISTORY_LIMIT) {
+        throw new AbsenceUnverifiableError(`${channelId} history read is paginated/truncated (cursor or full ${HISTORY_LIMIT}-page) — cannot prove completeness`);
+      }
+      for (const m of messages) {
+        if (!m.ts) continue;                       // skip a malformed entry
+        if (after && !(m.ts > after)) continue;    // strictly after the prompt
+        if (!this.isAgentAuthored(m)) continue;    // agent OUTBOUND only (user id OR bot_id)
+        const set = seen.get(m.ts) ?? new Set<string>();
+        set.add(m.text ?? '');
+        seen.set(m.ts, set);
+      }
+      if (this.now() >= deadline) break;
+      await this.sleep(pollMs);
+    }
+    return [...seen.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .flatMap(([ts, texts]) => [...texts].map(text => ({ messageId: ts, text })));
+  }
+
   /** Find the FIRST agent-authored message strictly after `after` (oldest-first). */
   private async findAgentReply(channelId: string, after?: string): Promise<{ text: string; messageId: string } | null> {
     const res = await this.d.api.call('conversations.history', {
       channel: channelId,
       ...(after ? { oldest: after, inclusive: false } : {}),
-      limit: 100,
+      limit: HISTORY_LIMIT,
     });
     const messages = res.messages ?? [];
     // conversations.history returns newest-first; scan oldest-first so we return the
@@ -94,7 +164,7 @@ export class SlackLiveSender implements SurfaceSender {
     const oldestFirst = [...messages].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
     for (const m of oldestFirst) {
       if (after && !(m.ts > after)) continue; // strictly-after guard (belt + suspenders vs `oldest`)
-      if (m.user !== this.d.agentBotUserId) continue; // only the AGENT's reply
+      if (!this.isAgentAuthored(m)) continue; // only the AGENT's reply (user id OR bot_id)
       const text = m.text ?? '';
       return { text, messageId: m.ts };
     }

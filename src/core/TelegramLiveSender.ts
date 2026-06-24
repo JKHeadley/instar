@@ -17,7 +17,12 @@
  */
 
 import type { SurfaceSender } from './RealChannelDriver.js';
+import { AbsenceUnverifiableError } from './LiveTestHarness.js';
 import type { SendResult, ReplyResult } from './LiveTestHarness.js';
+
+/** History page size + the absolute ceiling on an absence-collection window. */
+const HISTORY_LIMIT = 100;
+const MAX_WINDOW_MS = 300_000;
 
 /** The subset of TelegramAdapter.getTopicHistory's LogEntry this sender reads. */
 export interface TelegramHistoryEntry {
@@ -75,6 +80,59 @@ export class TelegramLiveSender implements SurfaceSender {
     }
     this.log(`no agent reply in topic ${topic} within ${opts.timeoutMs}ms`);
     return null;
+  }
+
+  /**
+   * Collect EVERY agent-authored message in the topic strictly after `afterMessageId`,
+   * polling across the window so a nudge that lands LATE (after a legitimate reply) is
+   * still seen. Returned oldest-first. Backs the absence assertion.
+   *
+   * Soundness for an ABSENCE proof (an under-collection here is a silent false-PASS):
+   * - **Anti-laundering:** ALL distinct text VERSIONS of a messageId are kept (not
+   *   last-write-wins), so an edit that rewrites a spurious nudge to benign text cannot
+   *   launder it out of the proof — every observed version is returned and matched.
+   * - **Truncation guard:** a poll returning a FULL page (>= HISTORY_LIMIT) means the
+   *   read may be truncated (a nudge could be on an unread page) → AbsenceUnverifiableError
+   *   → the harness records BLOCKED, never a false PASS over an incomplete read.
+   * - **Bounded window:** windowMs is clamped to MAX_WINDOW_MS (caps real-API poll count).
+   */
+  async collectMessages(channelId: string, opts: { windowMs: number; afterMessageId?: string }): Promise<Array<Omit<ReplyResult, 'responderMachineId'>>> {
+    const topic = this.topicNum(channelId);
+    const afterId = opts.afterMessageId != null ? Number(opts.afterMessageId) : -Infinity;
+    const deadline = this.now() + Math.min(Math.max(0, opts.windowMs), MAX_WINDOW_MS);
+    const pollMs = this.d.pollIntervalMs ?? 2000;
+    const seen = new Map<number, Set<string>>(); // messageId → every text version observed
+    for (let first = true; first || this.now() < deadline; first = false) {
+      const entries = await this.d.getHistory(topic, HISTORY_LIMIT);
+      // Telegram getTopicHistory returns the most-recent HISTORY_LIMIT entries of the
+      // topic's WHOLE lifetime (a tail, NOT bounded to the marker like Slack's `oldest`).
+      // So a full page only means the read is TRUNCATED when its OLDEST entry is still
+      // AFTER the marker — i.e. the marker scrolled off the page, so post-marker messages
+      // between the marker and the page's oldest may be unread. If the oldest in-page
+      // entry is <= the marker, the marker (or older) is in-page → every post-marker
+      // message is present → complete, even on a long-lived demo topic with >100 lifetime
+      // messages. (Round-2 review: a bare `length >= LIMIT` wrongly blocked any reused topic.)
+      if (entries.length >= HISTORY_LIMIT) {
+        const ids = entries.map(e => e.messageId).filter(n => Number.isFinite(n));
+        const oldestInPage = ids.length ? Math.min(...ids) : -Infinity;
+        if (oldestInPage > afterId) {
+          throw new AbsenceUnverifiableError(`topic ${topic} full ${HISTORY_LIMIT}-entry page is entirely after the marker — the marker scrolled off, post-marker messages may be unread (cannot prove completeness)`);
+        }
+      }
+      for (const e of entries) {
+        if (!Number.isFinite(e.messageId)) continue; // skip a malformed entry, never a junk key
+        if (e.messageId <= afterId) continue;        // strictly after the prompt we sent
+        if (e.fromUser) continue;                    // agent OUTBOUND only (the background-nudge class)
+        const set = seen.get(e.messageId) ?? new Set<string>();
+        set.add(e.text ?? '');
+        seen.set(e.messageId, set);
+      }
+      if (this.now() >= deadline) break;
+      await this.sleep(pollMs);
+    }
+    return [...seen.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .flatMap(([messageId, texts]) => [...texts].map(text => ({ messageId: String(messageId), text })));
   }
 
   private async findAgentReply(topicId: number, afterId: number): Promise<{ text: string; messageId: string } | null> {
