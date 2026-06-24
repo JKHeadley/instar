@@ -146,6 +146,12 @@ The durable record of operator approvals (PIN-gated decisions like mandate issua
 ### MeshUrlAdvertiser
 Keeps each machine's reachable URL fresh in the machines registry. Tunnel URLs rotate (quick tunnels get a new hostname every restart), so peers would otherwise keep dialing a dead address; the advertiser publishes the current URL on a cadence and peers pick it up on their next presence pull. The reason "the Mini moved networks" doesn't mean "the Mini vanished."
 
+### PeerEndpointRecorder
+The single chokepoint that records a peer's *fast ropes* (Tailscale/LAN endpoints) into this machine's registry. On a git-less personal 2-machine setup the registry-sync git channel never runs, so each machine only ever learned the other's flaky Cloudflare URL — and the lease, forced onto that one rope, would false-flip `holdsLease` on a Cloudflare hiccup and freeze session revival. `PeerEndpointRecorder` closes that by carrying each machine's validated self-endpoints inside the already-signed lease RPC bodies (broadcast, pull request, and pull *response*) and recording them against the **authenticated** sender — never a self-asserted body field; the pull-response path records only after the responder identity is cryptographically verified. It is idempotent (skips an unchanged set), and absence is a no-op, never a wipe. Gated dark behind `multiMachine.meshTransport.enabled`; the resolver remains the dial-time authority.
+
+### MeshEndpointValidator
+The shared, defense-in-depth validator both `PeerEndpointRecorder` (ingest) and `PeerEndpointResolver` (dial-time) run an advertised endpoint set through before trusting it: per-kind host rules (Tailscale `100.64/10` CGNAT, LAN RFC-1918, Cloudflare public HTTPS) with loopback/link-local/metadata addresses rejected, a `MAX_ENDPOINTS` cap, a URL-length bound, and drop-element-and-log on any bad entry (fail-closed). Validation is hardening, not authority — a spoofed endpoint that slips a check still becomes a *failed rope* the resolver demotes, never a trusted one.
+
 ### LiveConfig
 Watches `config.json` every 5 seconds for changes. When a value changes, it emits events so other systems can hot-reload without a server restart.
 

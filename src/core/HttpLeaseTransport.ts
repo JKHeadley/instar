@@ -20,6 +20,7 @@
 import { signRequest, verifyLeaseAck, verifyLeaseAckIdentity, newReqNonce, type LeaseAck } from '../server/machineAuth.js';
 import { PeerFailureLogGate } from './PeerFailureLogGate.js';
 import type { PeerEndpointResolver, ResolvedEndpoint } from './PeerEndpointResolver.js';
+import type { PeerEndpointRecorder } from './PeerEndpointRecorder.js';
 import type { LeaseTransport } from './LeaseCoordinator.js';
 import type { LeaseRecord, MeshEndpoint } from './types.js';
 
@@ -85,6 +86,23 @@ export interface HttpLeaseTransportDeps {
   meshTransportEnabled?: () => boolean;
   /** Hedge delay before firing the remaining ropes in parallel. Default 1500ms. */
   hedgeDelayMs?: number;
+  /**
+   * mesh-endpoint-http-propagation — this machine's OWN validated self-endpoints,
+   * carried INSIDE the signed lease RPC body (broadcast + pull request bodies, and
+   * the pull RESPONSE the holder serves) so a git-less peer learns our fast ropes
+   * over the lease channel instead of via the inert git registry-sync path. Absent
+   * (or returns undefined/[]) ⇒ the field is simply omitted (un-upgraded behavior).
+   */
+  getSelfEndpoints?: () => MeshEndpoint[] | undefined;
+  /**
+   * mesh-endpoint-http-propagation — the chokepoint that records a peer's advertised
+   * endpoints into THIS machine's registry. Used on the pull RESPONSE path: after a
+   * CONFIRMED pull (responder identity cryptographically verified by interpretResponse),
+   * the holder's endpoints from the response body are recorded against the dialed
+   * `peer.machineId` (the verified responder). Absent ⇒ pull-response recording is a
+   * no-op (the receiver routes still record request-direction endpoints).
+   */
+  peerEndpointRecorder?: PeerEndpointRecorder;
 }
 
 export class HttpLeaseTransport implements LeaseTransport {
@@ -162,6 +180,15 @@ export class HttpLeaseTransport implements LeaseTransport {
     sentEpoch: number | null,
   ): Promise<{ confirmed: boolean; lease: LeaseRecord | null }> {
     const fetchImpl = this.d.fetchImpl ?? fetch;
+    // mesh-endpoint-http-propagation — carry our own validated self-endpoints inside
+    // the SIGNED body (covered by signRequest's body hash). Omit the field entirely
+    // when we have none, so an un-upgraded peer sees byte-for-byte today's body.
+    const selfEndpoints = this.d.getSelfEndpoints?.();
+    const withSelf =
+      Array.isArray(selfEndpoints) && selfEndpoints.length > 0
+        ? { ...bodyBase, endpoints: selfEndpoints }
+        : bodyBase;
+    bodyBase = withSelf;
     if (!this.meshOn()) {
       return this.legacyDial(peer, path, bodyBase, fetchImpl);
     }
@@ -244,6 +271,14 @@ export class HttpLeaseTransport implements LeaseTransport {
       const folded = data?.lease ?? null;
       if (!ackCapable) return { confirmed: true, lease: folded }; // legacy 2xx
       const idOk = verifyLeaseAckIdentity(data?.ack, data?.sig, peer.machineId, sentReqNonce, peer.publicKeyPem as string);
+      // mesh-endpoint-http-propagation (pull RESPONSE, the live-bug fix): record the
+      // HOLDER's advertised endpoints ONLY when the responder identity is verified
+      // (idOk). Bound to the DIALED `peer.machineId` — never a self-asserted body
+      // field — so a compromised responder can't inject a third machine's ropes. The
+      // recorder is itself gated (meshTransport), validating, and idempotent.
+      if (idOk && this.d.peerEndpointRecorder) {
+        this.d.peerEndpointRecorder.record(peer.machineId, data?.endpoints);
+      }
       return { confirmed: idOk, lease: idOk ? folded : null };
     }
     // /api/lease (broadcast) — epoch-equality confirmation.
@@ -404,6 +439,8 @@ interface MeshAckResponse {
   lease?: LeaseRecord | null;
   ack?: LeaseAck;
   sig?: string;
+  /** mesh-endpoint-http-propagation — the holder's advertised endpoints (pull RESPONSE). */
+  endpoints?: unknown;
 }
 
 /** Combine two AbortSignals — aborts when either does (Node 20.3+ AbortSignal.any, with fallback). */
