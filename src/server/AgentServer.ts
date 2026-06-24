@@ -515,6 +515,17 @@ export class AgentServer {
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
     /**
+     * mesh-endpoint-http-propagation — records a peer's advertised mesh endpoints
+     * (carried in the signed lease RPC body) into this machine's registry, bound to
+     * the authenticated sender. Wired into the /api/lease + /api/lease/pull receivers.
+     */
+    peerEndpointRecorder?: import('../core/PeerEndpointRecorder.js').PeerEndpointRecorder;
+    /**
+     * mesh-endpoint-http-propagation — this machine's own validated self-endpoints,
+     * served in the /api/lease/pull RESPONSE so a pulling peer learns our fast ropes.
+     */
+    getSelfMeshEndpoints?: () => import('../core/types.js').MeshEndpoint[] | undefined;
+    /**
      * Serve this machine's current effective-view signed lease for an active PULL
      * (POST /api/lease/pull, Cross-Machine Coherence). Returns the signed lease (may
      * name a third machine — re-served) or null. Wired to LeaseCoordinator.currentLease().
@@ -829,6 +840,8 @@ export class AgentServer {
           : undefined,
         onHandoffBegin: options.onHandoffBegin,
         onReplyMarker: options.onReplyMarker,
+        peerEndpointRecorder: options.peerEndpointRecorder,
+        getSelfMeshEndpoints: options.getSelfMeshEndpoints,
       });
       this.app.use(machineRoutes);
     }

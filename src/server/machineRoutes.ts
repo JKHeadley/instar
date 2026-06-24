@@ -107,6 +107,19 @@ export interface MachineRouteContext {
    * via applyRemoteReplyMarker so a post-handoff redelivery of that event is deduped.
    */
   onReplyMarker?: (marker: unknown, fromMachineId: string) => void;
+  /**
+   * mesh-endpoint-http-propagation — records a peer's advertised mesh endpoints (carried
+   * inside the signed lease RPC body) into THIS machine's registry. Bound to the
+   * AUTHENTICATED sender (`auth.machineId`), gated by `meshTransport`, validated +
+   * idempotent. Absent ⇒ recording is a strict no-op (the lease handling is unchanged).
+   */
+  peerEndpointRecorder?: import('../core/PeerEndpointRecorder.js').PeerEndpointRecorder;
+  /**
+   * mesh-endpoint-http-propagation — this machine's OWN validated self-endpoints, served
+   * in the `/api/lease/pull` RESPONSE so the PULLER (which dials us) learns our fast
+   * ropes. Absent / returns undefined ⇒ the field is omitted (un-upgraded behavior).
+   */
+  getSelfMeshEndpoints?: () => import('../core/types.js').MeshEndpoint[] | undefined;
 }
 
 // ── Route Factory ──────────────────────────────────────────────────
@@ -143,6 +156,11 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       res.status(403).json({ error: 'Lease holder does not match authenticated machine' });
       return;
     }
+    // mesh-endpoint-http-propagation — record the authenticated SENDER's advertised
+    // endpoints (carried inside this signed body). Bound to `auth.machineId` (the
+    // holder-match above already proved the sender owns the lease it broadcasts). The
+    // recorder is gated/validating/idempotent — a strict no-op when meshTransport is off.
+    ctx.peerEndpointRecorder?.record(auth.machineId, (req.body as { endpoints?: unknown }).endpoints);
     const observedEpoch = ctx.onLeaseReceived?.(lease, auth.machineId);
     // multi-transport-mesh-comms — freshness-bound accept-ack (Decision 9): when
     // the caller supplied a challenge `reqNonce` AND the fold returned a concrete
@@ -167,6 +185,18 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // puller re-verifies via FencedLease.acceptTunnelLease, so there is NO
   // holder==responder guard here (that guard is push-only).
   router.post('/api/lease/pull', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    // mesh-endpoint-http-propagation — record the authenticated PULLER's advertised
+    // endpoints (carried inside this signed body), bound to `auth.machineId`. There is
+    // no holder-match on the pull path, but machine-auth proves WHO the puller is, so
+    // binding to the authenticated sender is sound. Gated/validating/idempotent no-op.
+    ctx.peerEndpointRecorder?.record(auth.machineId, (req.body as { endpoints?: unknown }).endpoints);
+    // Our OWN self-endpoints to serve back in the RESPONSE so the puller learns our
+    // fast ropes (the live-bug direction). Omit the field when we have none.
+    const selfEndpoints = ctx.getSelfMeshEndpoints?.();
+    const selfEndpointsField =
+      Array.isArray(selfEndpoints) && selfEndpoints.length > 0 ? { endpoints: selfEndpoints } : undefined;
     const lease = ctx.onLeasePullRequest ? ctx.onLeasePullRequest() : null;
     // multi-transport-mesh-comms — identity accept-ack on the pull path (Decision 9):
     // prove to the puller that WE are the expected peer answering THIS request, so a
@@ -179,10 +209,10 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       const servedEpoch = lease && typeof (lease as { epoch?: unknown }).epoch === 'number' ? (lease as { epoch: number }).epoch : -1;
       const ack = { machineId: ctx.localMachineId, reqNonce, observedEpoch: servedEpoch };
       const sig = signLeaseAck(ack, ctx.localSigningKeyPem);
-      res.json({ lease: lease ?? null, ack, sig });
+      res.json({ lease: lease ?? null, ack, sig, ...selfEndpointsField });
       return;
     }
-    res.json({ lease: lease ?? null });
+    res.json({ lease: lease ?? null, ...selfEndpointsField });
   });
 
   // ── POST /api/live-tail — Receive an encrypted live-tail flush (spec §8 G3b/c) ──

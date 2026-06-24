@@ -148,3 +148,115 @@ describe('HttpLeaseTransport — un-upgraded (non-ack-capable) peer back-compat'
     expect(await t.broadcast(mkLease(7))).toBe(true); // 2xx accepted (no ack required)
   });
 });
+
+// ── mesh-endpoint-http-propagation — sender body + pull-response recording ──
+
+import { PeerEndpointRecorder } from '../../src/core/PeerEndpointRecorder.js';
+
+const ackPeer: LeasePeer = { machineId: PEER_ID, url: 'https://peer.dawn-tunnel.dev', endpoints: [TS, CF], publicKeyPem: peerKeys.publicKey, meshAckCapable: true };
+const SELF_EPS: MeshEndpoint[] = [{ kind: 'tailscale', url: 'http://100.64.165.27:4042' }, { kind: 'lan', url: 'http://192.168.87.60:4042' }];
+
+/** A fetch that captures the bodies it was sent (to assert the signed self-endpoints field). */
+function capturingFetch(behavior: (url: string) => string = () => 'ok') {
+  const bodies: any[] = [];
+  const fn = (async (url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body ?? '{}')));
+    const b = behavior(url);
+    if (b === 'down') return { ok: false, status: 502, json: async () => null } as unknown as Response;
+    const body = JSON.parse(String(init?.body ?? '{}'));
+    const ack: LeaseAck = { machineId: PEER_ID, reqNonce: body.reqNonce, observedEpoch: 7 };
+    const sig = signLeaseAck(ack, peerKeys.privateKey);
+    // The holder serves its OWN endpoints back in the pull RESPONSE.
+    return { ok: true, status: 200, json: async () => ({ ok: true, ack, sig, lease: mkLease(7), endpoints: SELF_EPS }) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return { fn, bodies };
+}
+
+describe('HttpLeaseTransport — sender carries self-endpoints in the signed body', () => {
+  function mkSendingTransport(fetchImpl: typeof fetch, selfEps?: MeshEndpoint[]) {
+    const resolver = new PeerEndpointResolver({ config: resolverCfg() });
+    return new HttpLeaseTransport({
+      selfMachineId: 'm_self',
+      signingKeyPem: generateSigningKeyPair().privateKey,
+      peers: () => [ackPeer],
+      nextSequence: () => 1,
+      fetchImpl,
+      resolver,
+      meshTransportEnabled: () => true,
+      hedgeDelayMs: 10,
+      requestTimeoutMs: 30_000,
+      getSelfEndpoints: () => selfEps,
+    });
+  }
+
+  it('broadcast body includes this machine\'s self-endpoints', async () => {
+    const { fn, bodies } = capturingFetch();
+    const t = mkSendingTransport(fn, SELF_EPS);
+    await t.broadcast(mkLease(7));
+    expect(bodies[0].endpoints).toEqual(SELF_EPS);
+  });
+
+  it('pull request body includes this machine\'s self-endpoints', async () => {
+    const { fn, bodies } = capturingFetch();
+    const t = mkSendingTransport(fn, SELF_EPS);
+    await t.pullPeer(ackPeer);
+    expect(bodies[0].endpoints).toEqual(SELF_EPS);
+  });
+
+  it('an un-upgraded sender (no self-endpoints) OMITS the field', async () => {
+    const { fn, bodies } = capturingFetch();
+    const t = mkSendingTransport(fn, undefined);
+    await t.broadcast(mkLease(7));
+    expect('endpoints' in bodies[0]).toBe(false);
+  });
+});
+
+describe('HttpLeaseTransport — pull RESPONSE records the holder endpoints (verified responder)', () => {
+  function mkPullingTransport(fetchImpl: typeof fetch, recorder: PeerEndpointRecorder) {
+    const resolver = new PeerEndpointResolver({ config: resolverCfg() });
+    return new HttpLeaseTransport({
+      selfMachineId: 'm_self',
+      signingKeyPem: generateSigningKeyPair().privateKey,
+      peers: () => [ackPeer],
+      nextSequence: () => 1,
+      fetchImpl,
+      resolver,
+      meshTransportEnabled: () => true,
+      hedgeDelayMs: 10,
+      requestTimeoutMs: 30_000,
+      peerEndpointRecorder: recorder,
+    });
+  }
+
+  it('records the holder\'s endpoints against the dialed peer on a confirmed pull', async () => {
+    const store: Record<string, MeshEndpoint[]> = {};
+    const recorder = new PeerEndpointRecorder({
+      getPeerEndpoints: (id) => store[id],
+      updateMachineEndpoints: (id, eps) => { store[id] = eps; },
+      meshTransportEnabled: () => true,
+    });
+    const { fn } = capturingFetch();
+    const t = mkPullingTransport(fn, recorder);
+    await t.pullPeer(ackPeer);
+    expect(store[PEER_ID]).toEqual(SELF_EPS);
+  });
+
+  it('does NOT record when the responder identity fails (stranger ack)', async () => {
+    const store: Record<string, MeshEndpoint[]> = {};
+    const recorder = new PeerEndpointRecorder({
+      getPeerEndpoints: (id) => store[id],
+      updateMachineEndpoints: (id, eps) => { store[id] = eps; },
+      meshTransportEnabled: () => true,
+    });
+    // stranger: ack signed by a different key ⇒ interpretResponse returns unconfirmed ⇒ no record
+    const strangerFetch = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      const ack: LeaseAck = { machineId: PEER_ID, reqNonce: body.reqNonce, observedEpoch: 7 };
+      const sig = signLeaseAck(ack, generateSigningKeyPair().privateKey);
+      return { ok: true, status: 200, json: async () => ({ ok: true, ack, sig, lease: mkLease(7), endpoints: SELF_EPS }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const t = mkPullingTransport(strangerFetch, recorder);
+    expect(await t.pullPeer(ackPeer)).toBeNull();
+    expect(store[PEER_ID]).toBeUndefined();
+  });
+});
