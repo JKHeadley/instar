@@ -63,7 +63,14 @@ about on its own:
   process death and reboots; the slow but trustworthy source.
 - **`HttpLeaseTransport`** -- the low-latency authoritative copy of the lease
   that travels over the encrypted machine-to-machine tunnel, so the standby
-  sees an awake-machine demotion within seconds rather than minutes.
+  sees an awake-machine demotion within seconds rather than minutes. On a
+  git-less personal setup it also carries each machine's *fast ropes*
+  (Tailscale/LAN endpoints) inside the signed lease body, so a peer learns how
+  to reach you fast instead of being stuck on the flaky Cloudflare rope —
+  `PeerEndpointRecorder` records them against the authenticated sender (and, on
+  the pull *response*, only after the responder identity is cryptographically
+  verified), `MeshEndpointValidator` screens every advertised endpoint first,
+  and the whole path is gated dark behind `multiMachine.meshTransport.enabled`.
 
 ### Planned handoff — "now you take it"
 
