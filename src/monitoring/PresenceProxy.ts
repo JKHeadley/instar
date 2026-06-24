@@ -27,6 +27,13 @@ import { looksActivelyWorking } from './sentinelWiring.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+/**
+ * Sentinel returned by maybeStuckMessage (Finding b) meaning "the session is
+ * stuck, but a recovery sentinel owns the user voice — send NOTHING this fire"
+ * (the one-voice silent-suppress, distinct from null = "not stuck, normal path").
+ */
+const PRESENCE_SUPPRESS = Symbol('presence-proxy-suppress');
+
 export interface PresenceProxyConfig {
   stateDir: string;
   intelligence: IntelligenceProvider;
@@ -121,6 +128,20 @@ export interface PresenceProxyConfig {
    * (the honest classifier is then the only voice, which is still correct).
    */
   isStuckRecoveryActive?: (sessionName: string) => boolean;
+
+  /**
+   * honest-session-state-surfaces Finding (b): when true, the honest stuck
+   * classification (rate-limited / policy-wedge / context-wedge /
+   * context-too-long) is lifted into Tier 1 and Tier 2 — so a live-but-failing
+   * session is reported with its REAL reason at the 20s / 2-minute marks instead
+   * of "actively working" (the classifier already runs at Tier 3 only). Signal
+   * only: it only substitutes which message string is sent (or sends none, when
+   * a recovery sentinel owns the voice); it NEVER alters the tier schedule,
+   * gates, or initiates recovery. Resolved at construction from the dev-gated
+   * `monitoring.standbyHonestyTiers.enabled` flag. Absent/false → Tier 1/2
+   * byte-identical to today.
+   */
+  standbyHonestyTiers?: boolean;
 
   // Timer config
   tier1DelayMs?: number;       // Default: 20000
@@ -1067,6 +1088,51 @@ export class PresenceProxy {
     }
   }
 
+  // ─── Honest stuck-state pre-check (Finding b) ──────────────────────────
+  //
+  // honest-session-state-surfaces Finding (b): lift the Tier-3 honest
+  // classification into Tier 1 / Tier 2. Reuses the SAME tail-gated
+  // classifyStuckSignature on the SAME sanitized snapshot — no new detector,
+  // no new parse surface. Returns one of three outcomes:
+  //   - a string   → the session is stuck (no recovery owner): send THIS line
+  //                   in place of the would-be LLM/"working" copy.
+  //   - SUPPRESS    → the session is stuck BUT a recovery sentinel owns the
+  //                   voice: send NO message this fire (one-voice silent-suppress,
+  //                   mirroring Tier 3's silent `return` at the same condition).
+  //                   It does NOT fall through to the "actively working" copy.
+  //   - null        → not stuck (or flag off / no snapshot): normal LLM path,
+  //                   unchanged.
+  // Scheduling is NEVER altered by this pre-check (see "Scheduling is never
+  // gated" in the spec) — the caller continues exactly as today in all cases.
+  // No-leak: emits ONLY `StuckClassification.message` verbatim with the tier
+  // prefix — never concatenates pane-derived text.
+  private maybeStuckMessage(
+    snapshot: string | null,
+    sessionName: string,
+    tierLabel: 1 | 2,
+  ): string | typeof PRESENCE_SUPPRESS | null {
+    if (!this.config.standbyHonestyTiers) return null;
+    if (!snapshot) return null;
+    let stuck;
+    try {
+      stuck = classifyStuckSignature(snapshot);
+    } catch {
+      // Fail toward today's behavior — never fabricate an honest claim.
+      return null;
+    }
+    if (!stuck) return null;
+    // A recovery sentinel already messaging about this stuck state owns the
+    // voice — mirror Tier 3's silent return (suppress, do NOT fall through to
+    // the "actively working" fallback, which would re-introduce the lie).
+    if (this.config.isStuckRecoveryActive?.(sessionName)) {
+      return PRESENCE_SUPPRESS;
+    }
+    const prefix = tierLabel === 1
+      ? `${this.prefix} `
+      : `${this.prefix} 2-minute update — `;
+    return `${prefix}${stuck.message}`;
+  }
+
   // ─── Tier 1: Status Update ─────────────────────────────────────────────
 
   private async fireTier1(topicId: number, state: PresenceState): Promise<void> {
@@ -1130,7 +1196,25 @@ export class PresenceProxy {
       return;
     }
 
-    if (!snapshot || snapshot.trim().length < 10) {
+    // ── Honest stuck-state pre-check (Finding b) ──
+    // If the live tail shows a known "alive but failing every turn" signature,
+    // surface the REAL reason instead of "actively working" — at Tier 1 too,
+    // not only Tier 3. Substitutes the message string only; scheduling is
+    // unchanged below. SUPPRESS = a recovery sentinel owns the voice → send
+    // nothing this fire, but still schedule Tier 2.
+    const honest1 = this.maybeStuckMessage(snapshot, state.sessionName, 1);
+    if (honest1 === PRESENCE_SUPPRESS) {
+      if (state.cancelled) return;
+      state.tier1FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier2 = this.tier2DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier2 > 0) this.scheduleTier(topicId, 2, remainingToTier2);
+      return;
+    }
+
+    if (typeof honest1 === 'string') {
+      message = honest1;
+    } else if (!snapshot || snapshot.trim().length < 10) {
       message = `${this.prefix} ${this.config.agentName} is active but hasn't produced visible output yet. Your message has been delivered.`;
     } else {
       try {
@@ -1232,27 +1316,46 @@ export class PresenceProxy {
       }
     }
 
+    // ── Honest stuck-state pre-check (Finding b) ──
+    // Same lift as Tier 1: surface the REAL reason instead of "is still
+    // working" at the 2-minute mark. Substitutes the message string only;
+    // Tier 3 is still scheduled below in every branch (never gated).
+    const honest2 = this.maybeStuckMessage(snapshot, state.sessionName, 2);
+    if (honest2 === PRESENCE_SUPPRESS) {
+      if (state.cancelled) return;
+      state.tier2FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier3 = this.tier3DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier3 > 0) this.scheduleTier(topicId, 3, remainingToTier3);
+      return;
+    }
+
     // Check if output changed since Tier 1
     const outputChanged = state.tier1SnapshotHash !== hash;
 
     let message: string;
 
-    try {
-      const summary = await this.callLlm(
-        this.buildTier2Prompt(state, snapshot, outputChanged),
-        { model: this.config.tier2Model ?? 'fast', maxTokens: 500 },
-        'low',
-        this.config.llmTimeoutMs?.t2 ?? 15_000,
-      );
-      state.llmCallCount++;
-      state.lastLlmCallAt = Date.now();
+    if (typeof honest2 === 'string') {
+      // Honest stuck reason — skip the LLM path entirely.
+      message = honest2;
+    } else {
+      try {
+        const summary = await this.callLlm(
+          this.buildTier2Prompt(state, snapshot, outputChanged),
+          { model: this.config.tier2Model ?? 'fast', maxTokens: 500 },
+          'low',
+          this.config.llmTimeoutMs?.t2 ?? 15_000,
+        );
+        state.llmCallCount++;
+        state.lastLlmCallAt = Date.now();
 
-      const guard = guardProxyOutput(summary);
-      message = guard.safe
-        ? `${this.prefix} 2-minute update — ${summary}`
-        : `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Output has changed since the last check.' : 'Output appears unchanged — may be waiting on a long operation.'}`;
-    } catch {
-      message = `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Making progress — output has changed.' : 'Output unchanged — possibly waiting on a long operation.'}`;
+        const guard = guardProxyOutput(summary);
+        message = guard.safe
+          ? `${this.prefix} 2-minute update — ${summary}`
+          : `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Output has changed since the last check.' : 'Output appears unchanged — may be waiting on a long operation.'}`;
+      } catch {
+        message = `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Making progress — output has changed.' : 'Output unchanged — possibly waiting on a long operation.'}`;
+      }
     }
 
     if (state.cancelled) return;

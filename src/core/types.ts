@@ -4238,6 +4238,19 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * honest-session-state-surfaces Finding (b): lift the Tier-3 honest
+   * stuck-state classification into PresenceProxy Tier 1 / Tier 2 standby —
+   * so a live-but-failing session (rate-limited / policy-wedge / context-wedge /
+   * context-too-long) is reported with its REAL reason at the 20s / 2-minute
+   * marks instead of "actively working". Signal-only (changes the message text
+   * only; never gates/recovers). OMITTED from ConfigDefaults → resolved via the
+   * dev-agent gate (live on a dev agent, dark on the fleet). When absent/false,
+   * Tier 1/2 copy is byte-identical to today.
+   */
+  standbyHonestyTiers?: {
+    enabled?: boolean;
+  };
+  /**
    * CollaborationRedriveEngine — proactively re-engage a counterpart that
    * has gone silent on an open threadline-reply commitment. Ships OFF.
    * Spec: docs/specs/collaboration-redrive-on-counterpart-silence.md.

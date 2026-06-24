@@ -7216,7 +7216,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     // Wired by the resume-queue boot block (Part B) once the queue exists;
     // stays false (no "restart queued" lines) until then or in dry-run.
+    // OWNERSHIP predicate (paused-BLIND) — read by the PromiseBeacon I2
+    // double-spawn coordination guard (must keep deferring to the queue while
+    // paused). Distinct from resumeClaimableForSession below.
     let resumeQueuedForSession: (tmuxSession: string) => boolean = () => false;
+    // CLAIMABILITY predicate (paused-AWARE) — read by the ReapNotifier
+    // "restart is queued" copy (honest-session-state-surfaces Finding (c)): a
+    // paused queue won't revive yet, so the claim is suppressed while paused.
+    let resumeClaimableForSession: (tmuxSession: string) => boolean = () => false;
     const reapNotifier = new ReapNotifier(
       {
         resolveTopic: (tmuxSession) => {
@@ -7241,7 +7248,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         recordNotify: (e) => reapLog.recordNotify(e),
         quietHoursEndAt: (now) => notificationBatcher.quietHoursEndAt(now),
         summaryReleaseAt: (now) => notificationBatcher.nextSummaryReleaseAt(now),
-        resumeQueuedFor: (tmuxSession) => resumeQueuedForSession(tmuxSession),
+        // Finding (c): the user-facing "restart is queued" copy reads the
+        // CLAIMABILITY predicate (false while paused), NOT the ownership one.
+        resumeQueuedFor: (tmuxSession) => resumeClaimableForSession(tmuxSession),
         // Honest-recycle (honest-session-recycle-spec): tell ReapNotifier whether
         // this session's topic has an ACTIVE autonomous run (and how long is left),
         // so an age-limit RECYCLE of a still-active run reads as a continuation
@@ -7498,7 +7507,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       } else {
         // Feed the notifier's "restart is queued" line (live, non-dry-run only).
         const rq = resumeQueue;
+        // OWNERSHIP (paused-blind) → I2 double-spawn guard at :11980.
         resumeQueuedForSession = (tmuxSession) => rq.hasLiveQueuedEntryFor(tmuxSession);
+        // CLAIMABILITY (paused-aware) → ReapNotifier "restart is queued" copy.
+        resumeClaimableForSession = (tmuxSession) => rq.hasClaimableQueuedEntryFor(tmuxSession);
 
         const resolveTopicForTmux = (tmuxSession: string): number | null => {
           try {
@@ -11560,6 +11572,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Reuses the same composed checker the SessionReaper uses for its veto.
           isStuckRecoveryActive: (sessionName) =>
             wedgeRecoveryActive?.(sessionName) ?? false,
+          // honest-session-state-surfaces Finding (b): lift the Tier-3 honest
+          // stuck classification into Tier 1 / Tier 2. Dev-gated dark — live on
+          // a development agent, dark on the fleet (the flag is OMITTED from
+          // ConfigDefaults so it resolves through the dev-agent gate). Signal
+          // only — changes the standby MESSAGE TEXT, never the schedule/recovery.
+          standbyHonestyTiers: resolveDevAgentGate(
+            config.monitoring?.standbyHonestyTiers?.enabled,
+            config,
+          ),
           // Shared LLM queue (interactive lane) — cross-monitor concurrency
           // and daily-spend-cap with PromiseBeacon.
           sharedLlmQueue,
