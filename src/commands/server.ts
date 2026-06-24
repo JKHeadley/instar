@@ -40,7 +40,7 @@ import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs } from '../core/AutonomousSessions.js';
 import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
-import { gapBEligibleForTopic, recentUserMessageFromHistory, resolveGapBInjectionGate, decideGapBInjection } from '../core/gapBCommitmentEvidence.js';
+import { gapBEligibleForTopic, recentUserMessageFromHistory, recentUserMessageAtFromHistory, resolveGapBInjectionGate, decideGapBInjection } from '../core/gapBCommitmentEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
 import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
 import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
@@ -15021,6 +15021,90 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // ── Post-transfer closeout correctness (F1) ───────────────────────────────
+    // closeoutLivenessGate: when on, the post-transfer closeout no longer
+    // terminates the live local session on a stale/unverified ownership record —
+    // it verifies the owning machine ACTUALLY has a live session for the topic via
+    // a machine-local liveness snapshot before shedding the leftover. Ships dark
+    // fleet-wide, LIVE on a dev agent via resolveDevAgentGate. When OFF the snapshot
+    // is never built and the new deps are left absent (closeout byte-identical).
+    // Spec: docs/specs/post-transfer-closeout-correctness.md.
+    const _closeoutLivenessGate = resolveDevAgentGate(
+      config.monitoring?.sessionReaper?.closeoutLivenessGate, config,
+    );
+    let _closeoutSnapshot: import('../monitoring/closeoutLivenessSnapshot.js').CloseoutLivenessSnapshot | undefined;
+    // The combined ATOMIC owner read the gated closeout consumes — ONE registry
+    // read returning the STABLE machineId (liveness key) AND the display label
+    // (audit text), guaranteeing they describe the same owner from one instant.
+    const _topicOwnerElsewhereInfo = (topicId: number): { machineId: string; displayName: string } | null => {
+      try {
+        const reg = sessionOwnershipRegistry;
+        const self = _meshSelfId;
+        if (!reg || !self) return null;
+        const machineId = reg.ownerOf(String(topicId));
+        if (!machineId || machineId === self) return null;
+        const displayName = machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machineId;
+        return { machineId, displayName };
+      } catch { return null; /* @silent-fallback-ok — pool not wired yet → rule inert (withhold) */ }
+    };
+    if (_closeoutLivenessGate) {
+      const { CloseoutLivenessSnapshot } = await import('../monitoring/closeoutLivenessSnapshot.js');
+      const _reaperTick = config.monitoring?.sessionReaper?.tickIntervalSec ?? 120;
+      _closeoutSnapshot = new CloseoutLivenessSnapshot(
+        {
+          resolvePeerUrls: () => _resolvePeerUrls?.() ?? [],
+          // Reuse the proven per-peer GET /sessions fetch primitive (5s timeout,
+          // same shape as the pool route's fan-out). Rejects on any failure so the
+          // entry ages to stale → 'unknown' (fail-closed).
+          fetchPeerSessions: async (peer) => {
+            const r = await fetch(`${peer.url}/sessions`, {
+              headers: { Authorization: `Bearer ${config.authToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return (await r.json()) as import('../monitoring/closeoutLivenessSnapshot.js').PeerSessionLike[];
+          },
+          // Owner set = distinct machineId of every owned-elsewhere topic that has
+          // a live LOCAL leftover here (the exact set the closeout could act on).
+          ownerSet: () => {
+            const owners = new Set<string>();
+            try {
+              for (const s of sessionManager.listRunningSessions()) {
+                const t = _resolveTopic(s.tmuxSession);
+                if (t == null) continue;
+                const info = _topicOwnerElsewhereInfo(t);
+                if (info) owners.add(info.machineId);
+              }
+            } catch { /* @silent-fallback-ok — degrade to whatever was already pending */ }
+            return [...owners];
+          },
+          now: () => Date.now(),
+          raiseAttention: (item) => {
+            try {
+              if (!telegram) return;
+              void telegram.createAttentionItem({
+                id: item.id, title: item.title, summary: item.summary, description: item.description,
+                category: 'sessions', priority: 'NORMAL',
+                sourceContext: 'session-reaper:closeout-snapshot-breaker',
+              }).catch(() => { /* @silent-fallback-ok — best-effort escalation */ });
+            } catch { /* @silent-fallback-ok — telegram not wired (TDZ) → audit-only */ }
+          },
+          audit: reaperAuditSink(config.stateDir),
+        },
+        { tickIntervalSec: _reaperTick },
+      );
+      // Level-triggered on the reaper cadence with ±10% jitter (anti-herd). Async
+      // refresh; the closeout always reads the PREVIOUS snapshot, never a fetch it
+      // triggers this tick. A thrown pass is swallowed (previous snapshot ages to
+      // stale → 'unknown'); the loop is never wedged.
+      const _jitter = 1 + (Math.random() * 0.2 - 0.1);
+      const _snapshotTimer = setInterval(() => {
+        void _closeoutSnapshot!.refresh().catch(() => { /* @silent-fallback-ok — bad pass ages to stale → unknown */ });
+      }, Math.round(_reaperTick * 1000 * _jitter));
+      if (typeof _snapshotTimer.unref === 'function') _snapshotTimer.unref();
+      console.log(pc.green('  SessionReaper closeoutLivenessGate ON (post-transfer closeout liveness-gated — live)'));
+    }
+
     const sessionReaper = new SessionReaper(
       {
         ...reapGuardDeps,
@@ -15064,6 +15148,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         terminate: (id, reason, opts) =>
           sessionManager.terminateSession(id, reason, {
             bypassActiveProcessKeep: opts?.bypassActiveProcessKeep,
+            bypassRecentUserMessageForConfirmedMove: opts?.bypassRecentUserMessageForConfirmedMove,
+            workEvidence: opts?.workEvidence,
           }),
         markReaping: (id) => sessionManager.markReaping(id),
         clearReaping: (id) => sessionManager.clearReaping(id),
@@ -15086,6 +15172,24 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!owner || owner === self) return null;
             return machinePoolRegistry?.getCapacity(owner)?.nickname ?? owner;
           } catch { return null; /* @silent-fallback-ok — pool not wired yet → rule inert */ }
+        },
+        // Post-transfer closeout correctness (F1): the ATOMIC combined owner read
+        // the gated closeout uses (stable machineId + display label from ONE
+        // registry read). Always constructed (a pure read helper); the closeout
+        // only consults it on the gated path. Returns null when the pool is dark.
+        topicOwnerElsewhereInfo: _topicOwnerElsewhereInfo,
+        // Post-transfer closeout correctness (F1): the liveness verdict, read from
+        // the machine-local snapshot (NOT a live per-tick fetch). Injected ONLY
+        // when the gate resolved on (the snapshot exists); absent ⇒ gate inert.
+        remoteOwnerHasLiveSession: _closeoutSnapshot?.remoteOwnerHasLiveSession,
+        // Post-transfer closeout correctness (F1, Part E): the LOCAL-receipt ts of
+        // the bound topic's newest user message — same history source the
+        // recent-user-message KEEP-guard reads. Backs the freshest-interaction veto.
+        recentUserMessageAt: (topicId) => {
+          try {
+            if (!telegram) return null;
+            return recentUserMessageAtFromHistory(telegram.getTopicHistory(topicId, 50));
+          } catch { return null; /* @silent-fallback-ok — no history → withhold the bypass (safe) */ }
         },
         // WS1.3: pin-conflict do-not-act — a pin naming THIS machine while the
         // owner is elsewhere means the reconciler is bringing the topic back;
@@ -15130,6 +15234,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Observe-only busy-orphan detection rides the same dev-gate (dark fleet,
           // live on dev agents). Zero risk — it never changes a keep/kill verdict.
           busyOrphanDetection: resolveDevAgentGate(rcfg.busyOrphanDetection, config),
+          // Post-transfer closeout correctness (F1): the liveness gate rides the
+          // SAME dev-gate (dark fleet, live on dev agents). Resolved once here so
+          // the reaper's gated/legacy branch matches the snapshot construction
+          // above (both read resolveDevAgentGate(...closeoutLivenessGate)).
+          closeoutLivenessGate: _closeoutLivenessGate,
         };
       })(),
     );

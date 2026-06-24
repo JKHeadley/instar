@@ -4756,6 +4756,17 @@ export interface MonitoringConfig {
     /** Consecutive ticks a topic must be observed owned-elsewhere before the
      *  closeout fires (absorbs transfer races). Default 2 (~4 min). */
     topicMovedConfirmTicks?: number;
+    /** Post-transfer closeout CORRECTNESS gate (F1,
+     *  docs/specs/post-transfer-closeout-correctness.md). When on, the closeout
+     *  verifies the owning machine ACTUALLY has a live session for the topic
+     *  before shedding the local leftover — never terminating the sole live
+     *  worker on a stale/unverified ownership record (false/unknown/dep-absent →
+     *  WITHHOLD, fail-closed). Also re-keys the closeout breaker counters on the
+     *  stable TOPIC id and adds the narrow `bypassRecentUserMessageForConfirmedMove`
+     *  on a liveness-confirmed move. OMITTED here (NOT hardcoded) so
+     *  resolveDevAgentGate resolves it LIVE on a dev agent / DARK on the fleet
+     *  (registered in DEV_GATED_FEATURES). When OFF the closeout is byte-identical. */
+    closeoutLivenessGate?: boolean;
   };
   /**
    * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing

@@ -65,6 +65,27 @@ export function recentUserMessageFromHistory(
   return false;
 }
 
+/**
+ * Local-receipt timestamp (ms) of the NEWEST user message in `history`, or null
+ * when there is none / none parses. SAME source as `recentUserMessageFromHistory`
+ * so the Part E freshest-interaction veto (post-transfer-closeout-correctness)
+ * shares the basis the `recent-user-message` KEEP-guard already uses (local-receipt
+ * clock). Used to decide whether a pre-move "recent" message predates the liveness
+ * snapshot.
+ */
+export function recentUserMessageAtFromHistory(
+  history: readonly RecencyLogEntry[],
+): number | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const entry = history[i];
+    if (!entry.fromUser) continue;
+    const ts = Date.parse(entry.timestamp);
+    if (!Number.isFinite(ts)) continue;
+    return ts; // newest user message scanning backwards
+  }
+  return null;
+}
+
 /** The minimal slice of CommitmentTracker this predicate reads. */
 export interface GapBCommitmentSource {
   /** Active commitments bound to a topic (pending/verified/violated, not expired). */

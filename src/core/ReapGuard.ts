@@ -98,44 +98,82 @@ export class ReapGuard {
    * subprocess fork (process tree / main-process probe) so a guarded session is
    * rejected without paying for a capture.
    *
+   * `bypassedReasons` (post-transfer closeout correctness, Part E): an optional
+   * set of keep-reasons to TREAT AS BYPASSED. When the cascade would return a
+   * reason that is in this set, it is SKIPPED — evaluation continues to the
+   * lower-priority guards — so the returned reason is the first keep-reason that
+   * is NOT bypassed, or `null` if every remaining guard clears. This is what lets
+   * a narrow bypass flag (e.g. `bypassRecentUserMessageForConfirmedMove`) lift
+   * EXACTLY ONE reason while every OTHER KEEP-guard is still re-checked — the
+   * contract the spec promises. An empty/absent set is byte-identical to the
+   * legacy single-eval behavior, and the priority order of the non-bypassed
+   * reasons is preserved exactly. `protected` is #1 and must never be supplied as
+   * bypassable — the cascade still evaluates it first, so it always wins.
+   *
    * Never throws — a thrown signal source is caught and resolved to KEEP
    * ('guard-error'), because we can never reason about a session we cannot
    * inspect, and the safe answer is always "keep".
    */
-  blockedReason(session: Session): ReapKeepReason | null {
+  blockedReason(session: Session, bypassedReasons?: ReadonlySet<string> | readonly string[]): ReapKeepReason | null {
     try {
-      return this.evaluate(session);
+      let bypassed: ReadonlySet<string> | undefined;
+      if (bypassedReasons instanceof Set) {
+        bypassed = bypassedReasons.size > 0 ? bypassedReasons : undefined;
+      } else if (Array.isArray(bypassedReasons) && bypassedReasons.length > 0) {
+        bypassed = new Set(bypassedReasons);
+      }
+      return this.evaluate(session, bypassed);
     } catch {
       return { reason: 'guard-error', confidence: 'low' };
     }
   }
 
-  private evaluate(session: Session): ReapKeepReason | null {
-    const keep = (reason: string, confidence: ReapConfidence = 'high'): ReapKeepReason => ({
-      reason,
-      confidence,
-    });
+  private evaluate(session: Session, bypassed?: ReadonlySet<string>): ReapKeepReason | null {
+    // `keep(reason)` returns the KEEP verdict UNLESS `reason` is in the bypassed
+    // set — in which case it returns `null`, signalling the caller to SKIP this
+    // guard and continue down the cascade to the lower-priority guards. This is
+    // the mechanism that makes a narrow bypass re-check every OTHER guard
+    // (Part E): a bypassed reason no longer short-circuits the cascade.
+    const keep = (reason: string, confidence: ReapConfidence = 'high'): ReapKeepReason | null =>
+      bypassed?.has(reason) ? null : { reason, confidence };
 
     // ── Cheap, in-memory guards first (no subprocess fork) ──
-    // A. Protected set.
-    if (this.deps.protectedSessions().includes(session.tmuxSession)) return keep('protected');
+    // A. Protected set. (#1 — never bypassable; `bypassed` is built by the
+    //    authority from narrow flags that never include 'protected'.)
+    if (this.deps.protectedSessions().includes(session.tmuxSession)) {
+      const k = keep('protected');
+      if (k) return k;
+    }
     // M. Spawn grace — a freshly-spawned session that hasn't had time to produce
     //    output yet must not be reaped. Skipped when minAgeMs is 0.
     if (this.opts.minAgeMs > 0 && session.startedAt) {
       const ageMs = this.now() - Date.parse(session.startedAt);
-      if (!(ageMs >= this.opts.minAgeMs)) return keep('spawn-grace');
+      if (!(ageMs >= this.opts.minAgeMs)) {
+        const k = keep('spawn-grace');
+        if (k) return k;
+      }
     }
     // G. Recovery in flight — a kill-to-respawn is mid-flight; never race it.
-    if (this.deps.isRecoveryActive(session)) return keep('recovery-in-flight');
+    if (this.deps.isRecoveryActive(session)) {
+      const k = keep('recovery-in-flight');
+      if (k) return k;
+    }
     // H. Pending injection (a message is waiting to be delivered to the session).
-    if (this.deps.hasPendingInjection(session.tmuxSession)) return keep('pending-injection');
+    if (this.deps.hasPendingInjection(session.tmuxSession)) {
+      const k = keep('pending-injection');
+      if (k) return k;
+    }
     // Relay lease (an agent-to-agent relay holds this session).
-    if (this.deps.isRelayLeaseActive(session.id)) return keep('relay-lease');
+    if (this.deps.isRelayLeaseActive(session.id)) {
+      const k = keep('relay-lease');
+      if (k) return k;
+    }
 
     const topicId = this.deps.topicBinding(session.tmuxSession);
     // I. Recent user interaction on the bound topic.
     if (topicId != null && this.deps.recentUserMessage(topicId, this.opts.recentUserWindowMs)) {
-      return keep('recent-user-message');
+      const k = keep('recent-user-message');
+      if (k) return k;
     }
     // J. Open commitment on the bound topic — but only while still recently active.
     //    Guard I above already kept on a message within `recentUserWindowMs`; this
@@ -147,23 +185,38 @@ export class ReapGuard {
     //    all idle-session reaping.)
     if (this.opts.protectOpenCommitments && topicId != null && this.deps.activeCommitmentForTopic(topicId)) {
       if (this.deps.recentUserMessage(topicId, this.opts.staleCommitmentWindowMs)) {
-        return keep('open-commitment');
+        const k = keep('open-commitment');
+        if (k) return k;
       }
       // else: stale commitment — do not veto; continue to activeness guards.
     }
     // K. Active subagent spawned by this session.
-    if (this.deps.activeSubagentCount(session.claudeSessionId) > 0) return keep('active-subagent');
+    if (this.deps.activeSubagentCount(session.claudeSessionId) > 0) {
+      const k = keep('active-subagent');
+      if (k) return k;
+    }
     // L. Structural long-work (build / autonomous) on the topic/project.
-    if (this.deps.buildOrAutonomousActive(topicId)) return keep('structural-long-work');
+    if (this.deps.buildOrAutonomousActive(topicId)) {
+      const k = keep('structural-long-work');
+      if (k) return k;
+    }
 
     // ── Activeness (positive-evidence) — may fork a subprocess ──
     // C. Process tree: any non-baseline child ⇒ working.
-    if (this.deps.hasActiveProcesses(session.tmuxSession)) return keep('active-process');
+    if (this.deps.hasActiveProcesses(session.tmuxSession)) {
+      const k = keep('active-process');
+      if (k) return k;
+    }
     // C(main). Main-process CPU/IO delta. undefined ⇒ cannot inspect ⇒ KEEP (low).
     if (this.deps.mainProcessActive) {
       const mp = this.deps.mainProcessActive(session.tmuxSession);
-      if (mp === undefined) return keep('process-uninspectable', 'low');
-      if (mp === true) return keep('main-process-active');
+      if (mp === undefined) {
+        const k = keep('process-uninspectable', 'low');
+        if (k) return k;
+      } else if (mp === true) {
+        const k = keep('main-process-active');
+        if (k) return k;
+      }
     }
 
     // All stateless guards clear. (The reaper layers transcript-growth +

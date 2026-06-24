@@ -983,6 +983,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
       bypassRecoveryFlag?: boolean;
       bypassActiveProcessKeep?: boolean;
       /**
+       * Post-transfer closeout correctness (F1, Part E): a NARROW keep-reason
+       * bypass that lifts ONLY the `recent-user-message` keep-reason (mirroring
+       * `bypassActiveProcessKeep`). The SessionReaper sets it ONLY on a
+       * liveness-CONFIRMED genuine move (Part C `true`) whose freshest LOCAL user
+       * message PREDATES the liveness snapshot — so a duplicate leftover with a
+       * stale pre-move "recent" message can actually shed. Every OTHER KEEP-guard
+       * (active-subagent, open-commitment, recovery-in-flight, …) is re-checked
+       * fresh and still vetoes. Spec: docs/specs/post-transfer-closeout-correctness.md.
+       */
+      bypassRecentUserMessageForConfirmedMove?: boolean;
+      /**
        * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
        * KILLER's decision point — the only moment the work was observable (the
        * quota-shed migrator computes it BEFORE its Ctrl+C grace round tears the
@@ -1035,7 +1046,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // death-spiral the purge guards against. A proven-dead session has no
       // liveness to protect, so skip the guard. Lease + protected + CAS still apply.
       if (!opts?.knownDead) {
-        const blocked = this.reapGuard?.blockedReason(session);
+        // Build the set of keep-reasons the active bypass flags TREAT AS BYPASSED,
+        // then ask the guard for the first keep-reason that is NOT bypassed. This
+        // re-checks EVERY other guard (the contract the spec's Part E promises):
+        // lifting one named reason no longer masks a lower-priority guard, because
+        // `blockedReason` now skips the bypassed reason and keeps evaluating down
+        // the cascade. `protected` (#1) is never added here and so always wins.
+        const bypassedReasons: string[] = [];
+        if (opts?.bypassRecoveryFlag) bypassedReasons.push('recovery-in-flight');
+        if (opts?.bypassActiveProcessKeep) bypassedReasons.push('active-process');
+        if (opts?.bypassRecentUserMessageForConfirmedMove) bypassedReasons.push('recent-user-message');
+        const blocked = this.reapGuard?.blockedReason(
+          session,
+          bypassedReasons.length > 0 ? bypassedReasons : undefined,
+        );
         // `bypassRecoveryFlag` (UNIFIED-SESSION-LIFECYCLE §P0 #8): the recovery
         // engine itself sets the recovery-in-flight flag synchronously before
         // its kill-to-respawn, so the guard would otherwise refuse the
@@ -1060,11 +1084,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // KEEP-guard (recent-user-message, open-commitment, active-subagent,
         // main-process-active, …) is re-checked fresh and still vetoes. Spec:
         // docs/specs/reaper-active-process-relaxation-parity.md.
-        const bypassThis = !!(
-          (opts?.bypassRecoveryFlag && blocked?.reason === 'recovery-in-flight') ||
-          (opts?.bypassActiveProcessKeep && blocked?.reason === 'active-process')
-        );
-        if (blocked && !bypassThis) {
+        // `bypassRecentUserMessageForConfirmedMove` (post-transfer closeout
+        // correctness, Part E): the SessionReaper has CONFIRMED (via the liveness
+        // snapshot) that this topic genuinely moved to a live remote owner AND
+        // that the bound topic's freshest LOCAL user message predates that
+        // liveness evidence — so the `recent-user-message` veto is a stale-recent
+        // false positive on a true duplicate leftover. Like the bypasses above it
+        // lifts ONLY its one named reason; every other KEEP-guard still vetoes.
+        //
+        // The bypass is now applied INSIDE `blockedReason` (via `bypassedReasons`
+        // above): a bypassed reason is skipped and the cascade continues, so
+        // `blocked` is already the first NON-bypassed keep-reason (or null). No
+        // post-hoc single-reason match is needed — that old match-one logic was
+        // the masking bug (a higher-priority bypassed reason hid a lower-priority
+        // live guard). If `blocked` is non-null here, it is a guard that genuinely
+        // vetoes the kill, so withhold with that reason.
+        if (blocked) {
           this.emit('reapBlocked', { session, reason, skipped: blocked.reason, origin });
           return { terminated: false, skipped: blocked.reason };
         }

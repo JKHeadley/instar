@@ -145,6 +145,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Per-branch PR-push lease so two of the agent’s own concurrent sessions can’t push competing commits to the same branch (spec: parallel-hand-pr-lease).',
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the PreToolUse hook + the /pr-leases/evaluate route run the FULL decision loop and AUDIT every would-deny, but the route returns decision:allow (wouldDeny flag) while dryRun holds, so NO push is ever blocked until a deliberate dryRun:false. Coordinates the agent’s OWN cooperating hands only — never authority over a principal, never external egress; every uncertainty (corrupt state, server down, hook crash, no branch key) fails OPEN (allows the push). No spend, no destructive action while the canary holds. Same dogfooding posture as topicProfiles / credentialRepointing.',
   },
+  {
+    name: 'closeoutLivenessGate',
+    configPath: 'monitoring.sessionReaper.closeoutLivenessGate',
+    description: 'Post-transfer closeout correctness (F1) — the SessionReaper closeout liveness gate: never terminate the live local session on a stale/unverified ownership record (spec: post-transfer-closeout-correctness).',
+    justification: 'STRICTLY MORE CONSERVATIVE: the gate can only ever WITHHOLD a kill the closeout would otherwise have attempted (every uncertainty — false/unknown/dep-absent/throw — fails CLOSED to WITHHOLD), except the one liveness-CONFIRMED genuine-move case where it lets a true duplicate shed via a narrow audited keep-reason bypass. The terminate still routes through the guarded terminateSession authority (signal-vs-authority: the liveness reading only changes the DECISION to attempt, never bypasses a guard wholesale). The liveness snapshot reuses the existing GET /sessions fan-out (5s-timeout, owner-scoped) — no new endpoint, no extra fleet polling when the gate is off (the refresher is constructed ONLY when resolved on), machine-local (not replicated), no spend. Dogfooded live-on-dev before any fleet flip; the dev-gate per-machine resolution is CORRECT here because the closeout is a per-machine janitor making its OWN independently-safe decision (it never corrupts cross-machine state).',
+  },
   // ── multi-machine seamlessness coherence layers (WS3 / WS1.3 / WS4.1 / WS4.3),
   //    MOVED from hardcoded `false` in ConfigDefaults on 2026-06-13 per operator
   //    directive topic 13481 ("NOTHING should ship dark on development agents —

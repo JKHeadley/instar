@@ -231,4 +231,114 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(r).toEqual({ terminated: false, skipped: 'recent-user-message' });
     expect(state.getSession(s.id)!.status).toBe('running');
   });
+
+  // ── bypassRecentUserMessageForConfirmedMove (post-transfer closeout, Part E) ──
+  // The narrow keep-reason bypass the SessionReaper sets ONLY on a liveness-
+  // confirmed genuine move whose freshest LOCAL user message predates the snapshot.
+  // Lifts ONLY `recent-user-message`; every other guard is re-checked and vetoes.
+  // Spec: docs/specs/post-transfer-closeout-correctness.md.
+  it('without the bypass, a recent-user-message keep vetoes the closeout terminate', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, topicBinding: () => 1, recentUserMessage: () => true }));
+    const s = await spawn('move-1');
+    const r = await manager.terminateSession(s.id, 'topic moved');
+    expect(r).toEqual({ terminated: false, skipped: 'recent-user-message' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('bypassRecentUserMessageForConfirmedMove:true lifts ONLY recent-user-message ⇒ terminates', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, topicBinding: () => 1, recentUserMessage: () => true }));
+    const s = await spawn('move-2');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    expect(r.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed');
+  });
+
+  it('bypassRecentUserMessageForConfirmedMove does NOT lift active-process (still vetoes)', async () => {
+    // active-process is armed; the move bypass is scoped to recent-user-message
+    // only, so this session must still be KEPT.
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => true }));
+    const s = await spawn('move-3');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    expect(r).toEqual({ terminated: false, skipped: 'active-process' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('bypassRecentUserMessageForConfirmedMove does NOT lift active-subagent (still vetoes)', async () => {
+    manager.setReapGuard(guardWith({
+      hasActiveProcesses: () => false,
+      activeSubagentCount: () => 2, // a live subagent — must still veto
+    }));
+    const s = await spawn('move-4');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    expect(r.terminated).toBe(false);
+    expect(r.skipped).toBe('active-subagent');
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  // ── Co-occurrence masking regression (the Part E defect) ─────────────────────
+  // The bug: `recent-user-message` (#6) co-occurring with a LOWER-priority guard.
+  // blockedReason returns the highest-priority reason FIRST; the old impl matched
+  // that ONE reason against the bypass, lifted it, and NEVER re-checked the lower
+  // guard → a live-working session was terminated. The fix re-checks ALL other
+  // guards: the bypass skips recent-user-message and the cascade falls through to
+  // the live lower-priority guard, which still vetoes. These FAIL on the old code.
+  it('recent-user-message + active-subagent + bypass ⇒ withheld with active-subagent (not terminated)', async () => {
+    // recent-user-message (#6) is the highest-priority hit and is bypassed; an
+    // active subagent (#8) is live and MUST still veto the kill.
+    manager.setReapGuard(guardWith({
+      hasActiveProcesses: () => false,
+      topicBinding: () => 1,
+      recentUserMessage: () => true, // #6 — bypassed
+      activeSubagentCount: () => 2,  // #8 — live, must win
+    }));
+    const s = await spawn('move-cooc-1');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    expect(r).toEqual({ terminated: false, skipped: 'active-subagent' });
+    expect(state.getSession(s.id)!.status).toBe('running'); // live session preserved
+  });
+
+  it('recent-user-message + open-commitment + bypass ⇒ withheld with open-commitment (not terminated)', async () => {
+    // recent-user-message (#6) bypassed; an open commitment (#7) on the bound
+    // topic — still recently active within the stale window — MUST still veto.
+    manager.setReapGuard(guardWith({
+      hasActiveProcesses: () => false,
+      topicBinding: () => 1,
+      recentUserMessage: () => true,        // #6 — bypassed (and satisfies the
+                                            // stale-commitment recency window too)
+      activeCommitmentForTopic: () => true, // #7 — open commitment, must win
+    }));
+    const s = await spawn('move-cooc-2');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    expect(r).toEqual({ terminated: false, skipped: 'open-commitment' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('recent-user-message ALONE + bypass ⇒ DOES terminate (positive case stays green)', async () => {
+    // No lower-priority guard is live, so once recent-user-message is bypassed the
+    // whole cascade clears and the genuine-move leftover sheds.
+    manager.setReapGuard(guardWith({
+      hasActiveProcesses: () => false,
+      topicBinding: () => 1,
+      recentUserMessage: () => true, // the ONLY live guard, and it is bypassed
+    }));
+    const s = await spawn('move-cooc-3');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    expect(r.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed');
+  });
+
+  // ── Analogous masking case for bypassActiveProcessKeep + main-process-active ──
+  // active-process (#10) co-occurring with main-process-active (#11). The old impl
+  // masked #11 (blockedReason returned #10, bypass lifted it, #11 never re-checked).
+  // The fix re-checks #11, which still vetoes. FAILS on the old code.
+  it('active-process + main-process-active + bypassActiveProcessKeep ⇒ withheld with main-process-active', async () => {
+    manager.setReapGuard(guardWith({
+      hasActiveProcesses: () => true,        // #10 — bypassed
+      mainProcessActive: () => true,         // #11 — live, must win
+    }));
+    const s = await spawn('ap-cooc-1');
+    const r = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    expect(r).toEqual({ terminated: false, skipped: 'main-process-active' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
 });
