@@ -1,0 +1,92 @@
+---
+user_announcement:
+  # Ships DARK on the fleet (dev-agent gated) and is internal ownership-lifecycle
+  # plumbing — NOT a user-facing capability. agent-only + experimental: it must
+  # never be narrated to a user as a finished feature (maturity-honesty standard).
+  - audience: agent-only
+    maturity: experimental
+    headline: "Ownership Follows Live Work (release-on-complete + claim-on-spawn + recovery gate)"
+    body: "Internal multi-machine ownership-record self-correction. Dark on the fleet, live on dev agents only. No user-facing surface."
+---
+# Ownership Follows Live Work (release-on-complete + claim-on-spawn + double-dispatch recovery gate)
+
+## What Changed
+
+The multi-machine `SessionOwnership` record can drift away from where the live
+session actually is, leaving a stale `active(owner=this-machine)` label after a
+transferred-here session completes. PR #1258 (`post-transfer-closeout-correctness`)
+*stopped the harm* by liveness-gating the `SessionReaper` closeout so it never
+kills a live local session on a stale label — a compensating control. This change
+removes the stale record itself, so the dangerous state can't arise:
+
+- **Part A — release-on-complete.** On the `sessionComplete` event, the owning
+  machine issues a `release` CAS for a topic-owned session it actively owns, so the
+  record advances to `released` (→ `ownerOf` reads null) instead of being stuck
+  `active`. Guarded by a session-identity check (FD9): the release is WITHHELD if a
+  DIFFERENT live session is bound to the topic — compared by the stable per-instance
+  key `startedAt`, NOT the reusable tmux name — closing the same-machine A∥B
+  "released record, live session" race the adversarial reviewer caught. Withheld on
+  every uncertainty (unresolvable topic, unprovable instance identity, registry
+  throw, CAS-lost).
+- **Part B — claim-on-spawn.** The autonomous respawn path (which bypasses the
+  router's claim) issues a fenced-epoch `place → claim` so ownership follows the
+  live session onto this machine. It NEVER force-claims a peer-owned topic (force is
+  reserved for the reconciler's death-evidence path) — a post-gate owned-elsewhere
+  race withholds + records one neutral audit row. A lost CAS is a no-op (the spawn
+  still runs; the existing reconciler/applier converge).
+- **Part D — double-dispatch recovery gate.** The single ungated recovery funnel
+  `SessionRecovery.checkAndRecover` (and the lease-gated `recoverStuckMessages`) now
+  consults per-topic ownership before re-running locally. A reachable-peer owner →
+  forward to the owner (don't re-run); an unreachable-peer owner → withhold (the
+  message rides the durable inbound queue); a null/self owner → re-run locally. The
+  registry-read-error path is deliberately fail-OPEN (re-run locally) and labeled as
+  such, emitting a `recovery-gate-registry-unknown` telemetry row so the tradeoff is
+  measured before any fleet promotion.
+
+All three parts ride ONE dark flag `multiMachine.ownershipFollowsLiveWork`, OMITTED
+from `ConfigDefaults` so `resolveDevAgentGate` resolves it LIVE on a dev agent / DARK
+on the fleet. With the flag OFF (or a single-machine agent — `_meshSelfId` null), the
+behavior is byte-identical to before: no release-on-complete, no claim-on-spawn, and
+the recovery paths run their existing logic with no ownership consultation.
+
+## Evidence
+
+- `npx tsc --noEmit` — clean.
+- Full repo lint suite (`npm run lint`) — green (incl. `lint-cas-emit-placement`:
+  12 CAS sites all paired; `lint-dev-agent-dark-gate`; `lint-no-direct-destructive`).
+- 66 new tests across all three tiers, all green:
+  - Unit: `tests/unit/ownershipFollowsLiveWork.test.ts` (26 — Part A/B pure helpers
+    both-sides incl. FD9 same-machine A∥B clobber + not-yet-bound; FD10 nonce
+    collision-resistance; the A∥B and B∥transfer fenced-epoch races against the real
+    registry FSM) + `tests/unit/ownershipFollowsLiveWork-recovery-gate.test.ts` (10 —
+    Part D every ownership state + the fail-open-but-counted telemetry assertion) +
+    `tests/unit/stuck-message-recovery.test.ts` (3 added — the third Part-D site).
+  - Integration: `tests/integration/ownership-follows-live-work.test.ts` (6 — the
+    Part D gate wired with the REAL `MachinePoolRegistry` online signal; Part A/B
+    against the real registry).
+  - E2E: `tests/e2e/ownership-follows-live-work-lifecycle.test.ts` (7 — flag
+    resolution alive-on-dev / dark-on-fleet through the REAL ConfigDefaults +
+    `resolveDevAgentGate`; the PR #1258 stale-record lifecycle regression fixed at
+    the source).
+- Legacy regression suites green (no breakage): SessionOwnership, SessionOwnershipRegistry,
+  SessionRecovery, the three session-reaper suites (the PR #1258 area), OwnershipReconciler,
+  OwnershipApplier, devGatedFeatures-wiring (validates the new dev-gated entry).
+- Spec: `docs/specs/ownership-follows-live-work.md` (converged 3 rounds, codex-cli:gpt-5.5
+  external reviewer; 11 frontloaded decisions). Convergence report sibling.
+
+## What to Tell Your User
+
+Nothing yet — this ships dark on the fleet (live only on development agents for
+dogfooding) and is internal plumbing with no user-facing surface. The fleet flip is
+an evidence-gated dev soak, tracked separately (see the spec's fleet-promotion
+acceptance criteria). Do NOT narrate it as a finished capability.
+
+## Summary of New Capabilities
+
+- The multi-machine ownership record self-corrects toward where the live work is:
+  a completed session releases, an autonomous spawn claims, and a non-router recovery
+  path forwards (instead of double-dispatching) a topic this machine no longer owns.
+- Purely additive and dev-agent-gated; flag OFF / single-machine = byte-identical to
+  today. Every ownership write is the existing fenced-epoch CAS, best-effort, never
+  forced; Part D's ownership read is a signal that can only ever withhold a local
+  re-run or forward to the owner — never a new kill or send.

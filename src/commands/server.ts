@@ -25,6 +25,7 @@ import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
@@ -7874,6 +7875,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const sess = sessionManager.listRunningSessions().find((s) => s.tmuxSession === newSession);
                   if (sess) { sess.endedMidWork = true; state.saveSession(sess); }
                 } catch { /* @silent-fallback-ok: best-effort midWork tag; a failure must never undo the successful respawn (the run is alive, which is the goal). */ }
+                // Ownership Follows Live Work — Part B (claim-on-spawn, FD2): this
+                // autonomous respawn bypasses route() (which is what normally claims),
+                // so ownership would stay on whatever machine last held it. Issue the
+                // fenced-epoch place→claim onto THIS machine. The helper is a strict
+                // no-op when the flag is OFF / single-machine, and best-effort (a lost
+                // CAS / owned-by-peer race withholds — never undoes the live spawn).
+                _claimOwnershipForAutonomousSpawn?.(topicId);
               },
               claimInflight: (topicId) => {
                 if (livenessInflight.has(topicId)) return false; // CAS: someone holds it
@@ -9032,6 +9040,64 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
             }
             return { cleared: false, reason: 'timeout' };
+          },
+          // ── Part D: double-dispatch recovery gate (ownership-follows-live-work) ──
+          // Injected primitives so checkAndRecover consults per-topic ownership
+          // before re-running locally. All read the late-bound registry/pool deps
+          // (sessionOwnershipRegistry @ ~15976, _meshSelfId, machinePoolRegistry @
+          // ~15703) — these closures fire at runtime, after those are assigned.
+          // Strict no-op when the flag resolves OFF / single-machine.
+          ownershipFollowsLiveWork: () =>
+            resolveDevAgentGate(
+              (config.multiMachine as { ownershipFollowsLiveWork?: boolean } | undefined)?.ownershipFollowsLiveWork,
+              config,
+            ),
+          ownerOfTopic: (topicId) => {
+            // ownReg.ownerOf — MAY THROW (the gate's fail-OPEN registry-unknown
+            // branch). NO catch here: a throw must propagate so the gate takes its
+            // labeled fail-open path (catching here would mask it).
+            const reg = sessionOwnershipRegistry;
+            if (!reg) return null; // pool dark / single-machine → no peer can own it
+            return reg.ownerOf(String(topicId));
+          },
+          selfMachineId: () => _meshSelfId,
+          // Owner-reachability — the SAME shared helper the third Part-D site
+          // (recoverStuckMessages) uses, so the two gates can never diverge. MAY
+          // THROW: the gate treats a throw as the unreachable-peer branch (the
+          // record names a peer). NO catch here (propagate to the gate's handler).
+          isOwnerReachable: (owner) => isOwnerReachableShared(owner),
+          forwardPendingInboundViaRoute: async (topicId) => {
+            // Forward the topic's ALREADY-DURABLE pending inbound through the
+            // existing durable-inbound-queue drain (which routes via route() +
+            // applies isRemotelyHandled at dispatch). When the durable queue is not
+            // wired (the common case today), there is no durable pending inbound to
+            // forward → nonePending:true (the gate withholds the local respawn; the
+            // leftover idle session is converged by the existing reaper/reconciler).
+            const q = _inboundQueue;
+            if (!q) return { forwarded: 0, nonePending: true };
+            const sk = String(topicId);
+            let hasPending = false;
+            try { hasPending = q.hasQueued(sk); } catch { hasPending = false; }
+            if (!hasPending) return { forwarded: 0, nonePending: true };
+            try {
+              const summary = await q.onOwnershipTransition(sk);
+              return { forwarded: summary?.dispatched ?? 0, nonePending: false };
+            } catch {
+              // @silent-fallback-ok — the drain is best-effort; route()'s own ledger
+              // owns delivery + exactly-once. There WAS pending, so nonePending:false.
+              return { forwarded: 0, nonePending: false };
+            }
+          },
+          emitRecoveryGateTelemetry: (row) => {
+            // ONE neutral observational row to the machine-local sentinel audit so
+            // the fail-OPEN tradeoff is MEASURED (the fleet-promotion gate reads it).
+            try {
+              const auditPath = path.join(config.stateDir, 'logs', 'sentinel-events.jsonl');
+              fs.appendFileSync(
+                auditPath,
+                JSON.stringify({ ts: new Date().toISOString(), ...row }) + '\n',
+              );
+            } catch { /* @silent-fallback-ok — telemetry is observability; never affects the recovery decision */ }
           },
         },
       );
@@ -15678,6 +15744,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Self-attests hardware + records a self-heartbeat so GET /pool + the Machines tab show
     // this machine online with its specs; peer liveness is fed from MachineHeartbeat.
     let machinePoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | undefined;
+    // Ownership Follows Live Work — Part D shared owner-reachability helper (FD/
+    // decision-completeness #4 unification). "reachable peer" = the SAME signal the
+    // router uses (`machinePoolRegistry.getCapacity(owner)?.online === true`, the
+    // isMachineAlive seam). Used by BOTH Part-D gates — the SessionRecovery deps
+    // (checkAndRecover) and the recoverStuckMessages site — so the two can NEVER
+    // make divergent reachability calls. A function declaration (hoisted) so both
+    // callsites — one textually before this line — resolve it; it reads
+    // machinePoolRegistry by closure at call time. THROWS-by-propagation are the
+    // caller's unreachable-peer branch; here we only return the boolean (an absent
+    // registry / unknown machine → false = treat as unreachable, the safe side).
+    function isOwnerReachableShared(owner: string): boolean {
+      const cap = machinePoolRegistry?.getCapacity(owner);
+      return cap?.online === true;
+    }
+    void isOwnerReachableShared; // referenced from the late deps closures (hoisted)
     try {
       const poolMod = await import('../core/MachinePoolRegistry.js');
       const osMod = await import('node:os');
@@ -15946,6 +16027,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     // git-backed store swaps in for the Track-H proof (the registry is store-agnostic).
     let meshRpcDispatcher: import('../core/MeshRpc.js').MeshRpcDispatcher | undefined;
     let sessionOwnershipRegistry: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | undefined;
+    /**
+     * Ownership Follows Live Work — Part B (claim-on-spawn). Assigned inside the
+     * durable-ownership wiring block (where `ownReg`/`emitPlacement`/`_meshSelfId`
+     * are in lexical scope) and CALLED from the AutonomousLivenessReconciler
+     * `respawn` closure (defined ~7900, invoked at runtime AFTER this is wired).
+     * Null until wired and a strict no-op when the flag resolves OFF or
+     * `_meshSelfId` is null (single-machine). The closure issues a fenced-epoch
+     * `place → claim` so ownership follows the live autonomous session onto THIS
+     * machine; it NEVER force-claims a peer-owned topic (FD3) and a lost CAS is a
+     * no-op (the spawn still runs; the reconciler/applier converge — FD11).
+     */
+    let _claimOwnershipForAutonomousSpawn: ((topicId: number) => void) | null = null;
     try {
       const meshMod = await import('../core/MeshRpc.js');
       const idMod = await import('../core/MachineIdentity.js');
@@ -16312,6 +16405,163 @@ export async function startServer(options: StartOptions): Promise<void> {
             });
           } catch { /* observability never endangers the observed */ }
         };
+
+        // ── Ownership Follows Live Work (docs/specs/ownership-follows-live-work.md) ──
+        // Parts A + B wire HERE, inside the durable-ownership block, because this is
+        // the only scope where `ownReg`, `emitPlacement`, and `_meshSelfId` are all in
+        // lexical view. The spec's anchor (server.ts:13247, "alongside the existing
+        // sessionComplete handler") assumed `ownReg`/`_meshSelfId` were in scope there
+        // — they are NOT (they are declared in this nested try-block, textually after).
+        // Registering Part A's `sessionComplete` listener here (a session listener may
+        // be added at any point during init) keeps the release logic where its deps
+        // live; Part B is exposed via the hoisted `_claimOwnershipForAutonomousSpawn`
+        // so the reconciler `respawn` closure (defined ~7900, before this block) can
+        // reach it. (Anchor correction recorded in the implementation summary.)
+        {
+          const ownershipFollowsLiveWork = resolveDevAgentGate(
+            (config.multiMachine as { ownershipFollowsLiveWork?: boolean } | undefined)?.ownershipFollowsLiveWork,
+            config,
+          );
+
+          // ── Part A: release-on-complete ──────────────────────────────────────
+          // On the SessionManager 'sessionComplete' event, if THIS machine is the
+          // topic's `active` owner AND no DIFFERENT live session is bound to the
+          // topic, issue a `release` CAS so the record advances to `released` instead
+          // of being stuck `active` (the stale label PR #1258's closeout defends
+          // against). Fail-closed/withhold on EVERY uncertainty. The flag gate is
+          // re-read here so a session listener registered once at boot is inert when
+          // the feature resolves OFF (byte-identical legacy behavior).
+          sessionManager.on('sessionComplete', (session: import('../core/types.js').Session) => {
+            try {
+              if (!ownershipFollowsLiveWork || !_meshSelfId) return; // single-machine / dark = strict no-op
+              const tmux = session.tmuxSession || session.name;
+              if (!tmux) return;
+              // Resolve the topicId from the completing session's tmux name. A throw
+              // or empty result → SKIP (fail-closed toward NOT releasing): a topicId
+              // we cannot resolve is a record we cannot prove is ours (adversarial X2).
+              let topicId: number | null = null;
+              try {
+                const t = telegram?.getTopicForSession(tmux);
+                if (t != null) {
+                  const n = typeof t === 'number' ? t : Number(t);
+                  topicId = Number.isFinite(n) ? n : null;
+                }
+              } catch { topicId = null; /* @silent-fallback-ok — unresolvable topic → unbound → skip (no release), the deliberate fail-closed direction (adversarial X2) */ }
+              if (topicId == null) return; // no topic binding → not topic-owned → skip
+              const sk = String(topicId);
+
+              // Resolve the CURRENT live session's stable instance key for the
+              // session-identity guard (FD9). `telegram.getSessionForTopic` returns
+              // the live session NAME (an anchor correction vs the spec's pseudocode,
+              // which assumed it returned a Session); resolve that name to the
+              // running Session and read its `startedAt` (the stable per-instance
+              // key — tmux NAMES are reused across respawn). `undefined` means
+              // "couldn't enumerate / no live session" → handled fail-closed below.
+              let liveStartedAt: string | null | undefined = null; // null = no live session bound
+              try {
+                const liveName = telegram?.getSessionForTopic?.(topicId) ?? null;
+                if (liveName) {
+                  const liveSess = sessionManager
+                    .listRunningSessions()
+                    .find((s) => s.tmuxSession === liveName || s.name === liveName);
+                  // A bound name with no running Session (already gone) → no DIFFERENT
+                  // live session (null). A running Session → its startedAt (may be
+                  // missing on a legacy record → unprovable → withhold via the helper).
+                  liveStartedAt = liveSess ? (liveSess.startedAt ?? '') : null;
+                }
+              } catch {
+                // @silent-fallback-ok — cannot enumerate live sessions for the
+                // identity guard → FAIL-CLOSED. Pass an empty-string key so the
+                // helper's unprovable-identity branch withholds the release.
+                liveStartedAt = '';
+              }
+
+              // (a) owner === self AND (b) status === active AND (c) the session-
+              // identity guard — all resolved by the single-sourced pure helper.
+              const rec = (() => { try { return ownReg.read(sk); } catch { return undefined; /* @silent-fallback-ok — registry unreadable → caller withholds the release (fail-closed); a read error must never break the completion path */ } })();
+              if (rec === undefined) return; // registry unreadable → withhold (fail-closed)
+              if (!shouldReleaseOnComplete({
+                enabled: ownershipFollowsLiveWork,
+                selfMachineId: _meshSelfId,
+                record: rec,
+                completingStartedAt: session.startedAt,
+                liveStartedAt,
+              })) return;
+              const prevOwner = rec!.ownerMachineId;
+              const r = ownReg.cas(
+                { type: 'release', machineId: _meshSelfId },
+                { sessionKey: sk, sender: _meshSelfId, nonce: ownershipNonce(_meshSelfId, 'rel-complete', sk) },
+              );
+              // MANDATORY pairing — scripts/lint-cas-emit-placement.js fails CI on an
+              // unpaired cas(). Records 'released' into the coherence journal so the
+              // release replicates exactly like the user-move release does. A lost CAS
+              // (peer advanced the epoch first) is a no-op here — we never retry/force.
+              emitPlacement(sk, r, 'released', prevOwner);
+            } catch {
+              // @silent-fallback-ok — release-on-complete is best-effort housekeeping
+              // (FD1); a throw must never break the completion path. The existing
+              // reconciler/applier + PR #1258 closeout still handle a missed release.
+            }
+          });
+
+          // ── Part B: claim-on-spawn (assign the hoisted helper) ───────────────
+          // After an autonomous respawn (the path that genuinely bypasses route()),
+          // issue a fenced-epoch `place → claim` so ownership follows the live session
+          // onto THIS machine. Owned-by-peer is NOT force-claimed (FD3): the
+          // reconciler already gates respawn on topicOwnerElsewhere, so the
+          // owned-by-peer case should not reach here; if a post-gate race does, the
+          // claim is withheld and ONE neutral audit row records the divergence.
+          _claimOwnershipForAutonomousSpawn = (topicId: number): void => {
+            try {
+              if (!ownershipFollowsLiveWork || !_meshSelfId) return; // single-machine / dark = no-op
+              const sk = String(topicId);
+              let cur: import('../core/SessionOwnership.js').SessionOwnershipRecord | null;
+              try { cur = ownReg.read(sk); } catch { return; /* registry unreadable → withhold (fail-closed) */ }
+              const plan = planClaimOnSpawn({ enabled: ownershipFollowsLiveWork, selfMachineId: _meshSelfId, record: cur });
+              if (plan.action === 'noop') return; // already ours / dark → nothing to do
+              if (plan.action === 'place-then-claim') {
+                // never-seen / released → place then claim onto self.
+                const prev0 = cur?.ownerMachineId;
+                const rp = ownReg.cas(
+                  { type: 'place', machineId: _meshSelfId },
+                  { sessionKey: sk, sender: _meshSelfId, nonce: ownershipNonce(_meshSelfId, 'auto-place', sk) },
+                );
+                emitPlacement(sk, rp, 'placed', prev0);
+                if (rp.ok) {
+                  const rc = ownReg.cas(
+                    { type: 'claim', machineId: _meshSelfId },
+                    { sessionKey: sk, sender: _meshSelfId, nonce: ownershipNonce(_meshSelfId, 'auto-claim', sk) },
+                  );
+                  emitPlacement(sk, rc, 'placed', _meshSelfId);
+                }
+                // place lost (a peer advanced first) → claim NOT attempted; the
+                // session still runs locally and the reconciler/applier converge (FD11).
+                return;
+              }
+              // plan.action === 'audit-owned-elsewhere': owned by a PEER → do NOT
+              // force-claim (FD3, fail-closed). This should not occur on the
+              // reconciler path (its topicOwnerElsewhere gate already filters it); a
+              // post-gate race lands ONE neutral, non-directional audit row to the
+              // machine-local liveness log.
+              try {
+                const auditPath = path.join(config.stateDir, 'logs', 'autonomous-liveness.jsonl');
+                fs.appendFileSync(
+                  auditPath,
+                  JSON.stringify({
+                    ts: new Date().toISOString(),
+                    kind: 'auto-spawn-owned-elsewhere',
+                    topicId,
+                    owner: plan.owner,
+                    status: plan.status,
+                  }) + '\n',
+                );
+              } catch { /* @silent-fallback-ok — observational audit; never break the spawn */ }
+            } catch {
+              // @silent-fallback-ok — claim-on-spawn is best-effort (FD1/FD11); a throw
+              // must never undo the successful spawn (the run is alive, which is the goal).
+            }
+          };
+        }
         // The §L3 ownership commands, routed from MeshRpc to the registry CAS.
         const ownAction = (
           cmd: import('../core/MeshRpc.js').MeshCommand,
@@ -18726,6 +18976,31 @@ export async function startServer(options: StartOptions): Promise<void> {
             epoch: coordinator.getLeaseEpoch(),
             maxProcessingMs: seamlessness.maxProcessingMs,
             reinject: reinjectStuck,
+            // Part D, third site (ownership-follows-live-work): per-topic owner check
+            // ON TOP of the existing machine-level holdsLease() gate. SKIP a topic
+            // owned by a REACHABLE peer (leave its stuck messages in the ledger for
+            // the owner to drain). Flag-gated; every uncertainty resolves to the SAFE
+            // side (not-owned-elsewhere → re-feed as today). Uses the SAME shared
+            // reachability helper as the checkAndRecover Part-D gate.
+            ownerElsewhereReachable: (topic) => {
+              try {
+                const on = resolveDevAgentGate(
+                  (config.multiMachine as { ownershipFollowsLiveWork?: boolean } | undefined)?.ownershipFollowsLiveWork,
+                  config,
+                );
+                if (!on) return false; // dark / legacy → no ownership check
+                const reg = sessionOwnershipRegistry;
+                const self = _meshSelfId;
+                if (!reg || !self) return false; // single-machine → no peer can own it
+                const owner = reg.ownerOf(String(topic));
+                if (!owner || owner === self) return false; // unowned / ours → re-feed as today
+                return isOwnerReachableShared(owner); // peer + reachable → skip (owner drains it)
+              } catch {
+                // @silent-fallback-ok — any uncertainty → SAFE side (re-feed as
+                // today). Never WITHHOLD a re-feed on a registry/pool blip.
+                return false;
+              }
+            },
             logger: (m) => console.log(pc.dim(`  ${m}`)),
           });
           // Gap #2 (wedge-recovery-drops-messages): an entry whose re-run budget is

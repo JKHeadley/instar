@@ -116,7 +116,72 @@ export interface SessionRecoveryDeps {
     fromUser: boolean;
     timestamp: string | number | Date;
   }>;
+
+  // ── Part D: double-dispatch recovery gate (docs/specs/ownership-follows-live-work.md) ──
+  // Injected primitives that let `checkAndRecover` consult per-topic ownership
+  // BEFORE re-running a recovery locally, so a machine that no longer owns a topic
+  // FORWARDS to the owner instead of double-dispatching the same inbound. All
+  // optional — when absent (or `ownershipFollowsLiveWork()` resolves false) the
+  // gate is a strict no-op and the existing recovery logic runs unchanged (the
+  // byte-identical legacy path). The decision logic lives in `checkAndRecover` so
+  // both sides of every ownership state are unit-testable here.
+
+  /** The dev-gated flag (resolveDevAgentGate). False / absent ⇒ gate is a no-op. */
+  ownershipFollowsLiveWork?: () => boolean;
+  /**
+   * `ownReg.ownerOf(String(topicId))` — the topic's owner machine id, or null
+   * when no record / released. MAY THROW (registry unreadable); the gate treats a
+   * throw as the fail-OPEN registry-unknown branch (re-run locally + telemetry),
+   * distinct from a reachability throw (which names a peer → withhold).
+   */
+  ownerOfTopic?: (topicId: number) => string | null;
+  /** This machine's mesh id (null when single-machine / not yet resolved). */
+  selfMachineId?: () => string | null;
+  /**
+   * Is the (peer) owner machine reachable right now?
+   * `machinePoolRegistry.getCapacity(owner)?.online === true`. MAY THROW /
+   * be indeterminate → the gate treats that as the UNREACHABLE-peer branch
+   * (withhold the local re-run; the record NAMES a peer, so we don't
+   * double-dispatch) — NOT the fail-open registry-unknown branch.
+   */
+  isOwnerReachable?: (owner: string) => boolean;
+  /**
+   * Forward the topic's ALREADY-DURABLE pending inbound through the existing
+   * route() drain (FIFO, never a fabricated message). Returns the count forwarded
+   * + a `nonePending` flag (true ⇒ nothing to serve; the gate withholds the local
+   * respawn and emits no forward). Ordering + exactly-once are the queue drain's +
+   * route()'s per-event-id ledger's responsibility — the gate adds neither.
+   */
+  forwardPendingInboundViaRoute?: (topicId: number) => Promise<{ forwarded: number; nonePending: boolean }>;
+  /**
+   * Emit ONE neutral observational telemetry row for the fail-OPEN /
+   * reachability-unknown branches (`recovery-gate-registry-unknown` /
+   * `recovery-gate-reachability-unknown`) to the machine-local sentinel-events
+   * audit, so the fail-open tradeoff is MEASURED (the fleet-promotion gate reads
+   * it), not assumed. Best-effort; a throw never affects the recovery decision.
+   */
+  emitRecoveryGateTelemetry?: (row: {
+    kind: 'recovery-gate-registry-unknown' | 'recovery-gate-reachability-unknown';
+    topicId: number;
+    decision: 're-run-local' | 'withhold';
+    reason: string;
+  }) => void;
 }
+
+/**
+ * Part D decision (docs/specs/ownership-follows-live-work.md). The MIXED safe
+ * direction, named honestly per ownership state:
+ *  - `proceed`   → re-run locally (owner === self, or null/released, or the
+ *    fail-OPEN registry-unknown branch — re-running cannot double-dispatch when
+ *    nobody else owns it, and a dead conversation is a worse failure than a rare
+ *    double-reply on an UNKNOWN-ownership registry blip).
+ *  - `forward`   → owner is a REACHABLE peer: do NOT re-run; forward to the owner.
+ *  - `withhold`  → owner is an UNREACHABLE peer (incl. reachability throw): the
+ *    record names a peer, so withhold the local re-run; the message rides the
+ *    durable inbound queue / forward path (bounded by that queue's TTL +
+ *    loss-notice — never an unbounded hold, never a silent strand).
+ */
+export type OwnershipRecoveryDecision = 'proceed' | 'forward' | 'withhold';
 
 // ============================================================================
 // SessionRecovery Class
@@ -154,6 +219,44 @@ export class SessionRecovery extends EventEmitter {
     if (!this.config.enabled) {
       return { recovered: false, failureType: null, message: 'Recovery disabled' };
     }
+
+    // ── Part D: double-dispatch recovery gate (ownership-follows-live-work) ──────
+    // BEFORE any recovery sub-path respawns/re-injects, consult per-topic ownership.
+    // A `forward`/`withhold` decision means another machine owns this topic (or its
+    // owner is briefly unreachable) — re-running here would double-dispatch the same
+    // inbound. Strict no-op when the flag is OFF / deps absent (legacy behavior).
+    const ownershipDecision = this.decideOwnershipForRecovery(topicId);
+    if (ownershipDecision === 'forward') {
+      // Reachable peer owns the topic: do NOT recover locally — forward the topic's
+      // pending inbound through route() (which re-resolves the live owner + applies
+      // isRemotelyHandled at dispatch). No pending inbound ⇒ nothing to serve; the
+      // leftover idle session is converged by the existing reaper/reconciler.
+      let forwarded = 0;
+      let nonePending = true;
+      try {
+        const r = await this.deps.forwardPendingInboundViaRoute?.(topicId);
+        if (r) { forwarded = r.forwarded; nonePending = r.nonePending; }
+      } catch { /* @silent-fallback-ok — forward is best-effort; route()'s own ledger owns delivery + exactly-once */ }
+      return {
+        recovered: false,
+        failureType: null,
+        message: nonePending
+          ? `Recovery skipped — topic ${topicId} owned by a reachable peer and no pending inbound to forward`
+          : `Recovery forwarded — topic ${topicId} owned by a reachable peer; ${forwarded} pending inbound routed to the owner`,
+      };
+    }
+    if (ownershipDecision === 'withhold') {
+      // Unreachable peer owns the topic (incl. reachability-throw): WITHHOLD the
+      // local re-run. The message is NOT lost — it rides the existing durable inbound
+      // queue / forward path; if the owner stays dark the ownership reconciler +
+      // failover (force-claim on death evidence) eventually move ownership.
+      return {
+        recovered: false,
+        failureType: null,
+        message: `Recovery withheld — topic ${topicId} owned by an unreachable peer; the message rides the durable inbound queue (not re-run locally to avoid double-dispatch)`,
+      };
+    }
+    // ownershipDecision === 'proceed' → fall through to today's recovery logic.
 
     const processAlive = this.deps.isSessionAlive(sessionName);
 
@@ -208,6 +311,74 @@ export class SessionRecovery extends EventEmitter {
     }
 
     return { recovered: false, failureType: null, message: 'No mechanical failure detected' };
+  }
+
+  /**
+   * Part D decision logic (docs/specs/ownership-follows-live-work.md). Resolves the
+   * per-topic ownership state into a recovery direction. The safe direction is
+   * MIXED and named honestly per state (NOT uniformly fail-closed):
+   *  - owner === self / null / released → `proceed` (re-run locally; no competing
+   *    owner can double-dispatch, and NOT re-running would silently drop the recovery).
+   *  - owner === reachable peer → `forward` (the owner serves it; double-dispatch avoided).
+   *  - owner === unreachable peer (incl. `isOwnerReachable` THROW / indeterminate) →
+   *    `withhold` (the record NAMES a peer, so the safe direction is no-double-dispatch).
+   *  - `ownerOf` THROWS / registry unreadable → `proceed` — **fail-OPEN, labeled as
+   *    such** + a `recovery-gate-registry-unknown` telemetry row: we have NO owner
+   *    evidence at all, and a dead conversation is a worse failure than a rare
+   *    double-reply. (A *persistent* registry failure degrades to the OLD
+   *    double-dispatch-prone behavior — an already-broken state, not a new regression.)
+   */
+  private decideOwnershipForRecovery(topicId: number): OwnershipRecoveryDecision {
+    // Flag OFF / deps absent → strict no-op (legacy behavior: always proceed).
+    if (!this.deps.ownershipFollowsLiveWork || !this.deps.ownershipFollowsLiveWork()) return 'proceed';
+    if (!this.deps.ownerOfTopic || !this.deps.selfMachineId) return 'proceed';
+
+    const self = this.deps.selfMachineId();
+    if (!self) return 'proceed'; // single-machine / mesh id not resolved → no peer can own it
+
+    let owner: string | null;
+    try {
+      owner = this.deps.ownerOfTopic(topicId);
+    } catch {
+      // ownerOf THREW / registry unreadable → FAIL-OPEN (re-run locally), labeled
+      // as such + measured. We have NO owner evidence (distinct from a reachability
+      // throw, where the record DID name a peer). A registry read error is rare +
+      // transient; a recovery path that silently does nothing on a blip is the worse
+      // failure (a dead conversation). The fleet-promotion gate reads this count.
+      try {
+        this.deps.emitRecoveryGateTelemetry?.({
+          kind: 'recovery-gate-registry-unknown',
+          topicId,
+          decision: 're-run-local',
+          reason: 'ownerOf threw / registry unreadable — fail-open to conversation continuity',
+        });
+      } catch { /* @silent-fallback-ok — telemetry is observability; never affects the decision */ }
+      return 'proceed';
+    }
+
+    if (owner === null) return 'proceed'; // released / never-seen → no competing owner
+    if (owner === self) return 'proceed'; // we own it → re-run is correct (today's behavior)
+
+    // owner is a PEER. Reachable → forward; unreachable / indeterminate → withhold.
+    let reachable: boolean;
+    try {
+      reachable = this.deps.isOwnerReachable ? this.deps.isOwnerReachable(owner) : false;
+    } catch {
+      // isOwnerReachable THREW / indeterminate for a PEER-owned record → treat as the
+      // UNREACHABLE-peer branch (withhold), NOT a local re-run: the record NAMES a
+      // peer, so the safe direction is no-double-dispatch (distinct from the
+      // ownerOf-throw case above where we had no owner evidence at all). Measured.
+      try {
+        this.deps.emitRecoveryGateTelemetry?.({
+          kind: 'recovery-gate-reachability-unknown',
+          topicId,
+          decision: 'withhold',
+          reason: 'isOwnerReachable threw / indeterminate for a peer-owned record — withhold (record names a peer)',
+        });
+      } catch { /* @silent-fallback-ok — telemetry is observability; never affects the decision */ }
+      return 'withhold';
+    }
+    return reachable ? 'forward' : 'withhold';
   }
 
   /**

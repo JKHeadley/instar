@@ -230,6 +230,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The durable store is a per-session atomic JSON write (a cache of journal-decided ownership, not a new authority); the applier only ADOPTS a placement strictly newer than local via fast-forward CAS (it can never clobber a fresher local decision) and runs OFF the routing hot path on an interval; fully reversible (flip back to InMemory — the journal remains the source of truth); single-machine = no-op (no peer placements to apply). No destructive action, no third-party spend. Runs live (dryRun N/A — no destructive write to gate) on dev / dark on fleet.',
   },
   {
+    name: 'ownershipFollowsLiveWork',
+    configPath: 'multiMachine.ownershipFollowsLiveWork',
+    description: 'Ownership Follows Live Work (docs/specs/ownership-follows-live-work.md) — the ownership-record correction PR #1258 deferred: release-on-complete (A) + claim-on-autonomous-spawn (B) + a per-topic double-dispatch recovery gate (D), so the SessionOwnership record self-corrects toward where the live session actually is.',
+    justification: 'Coordinates the operator\'s OWN machines only — no external egress, no third-party spend, no destructive fs/git action. Parts A/B add TWO fenced-epoch CAS callsites to the EXISTING replicated ownership lifecycle (the same SessionOwnershipRegistry.cas + emitPlacement path the user-move release/transfer already use): every write is best-effort, CAS-fenced at epoch+1, loses safely to a higher epoch, and is NEVER forced (force-claim stays the reconciler\'s death-evidence verb). Part D\'s ownerOf read is a SIGNAL that only ever WITHHOLDS a local re-run / forwards to the owner — it can never cause a new kill or a new send (strictly reduces double-dispatch). Single-machine agents are a strict no-op (_meshSelfId null short-circuits every gate). Runs live (no destructive write warrants a dry-run) on dev / dark on fleet. Spec\'s fleet-promotion exit is an evidence-gated dev soak.',
+  },
+  {
     name: 'canonicalHistoryConversationDiscipline',
     configPath: 'threadline.canonicalHistory.conversationDiscipline.enabled',
     description:

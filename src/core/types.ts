@@ -2335,6 +2335,21 @@ export interface MultiMachineConfig {
    */
   coherenceJournal?: CoherenceJournalUserConfig;
   /**
+   * Ownership Follows Live Work (docs/specs/ownership-follows-live-work.md) — the
+   * defense-in-depth correction that makes the SessionOwnership RECORD track where
+   * the live work actually is: a session that COMPLETES releases (Part A), an
+   * autonomous session that SPAWNS claims (Part B), and a non-router recovery path
+   * gates on per-topic ownership before re-running (Part D). DELIBERATELY OMITTED
+   * from ConfigDefaults so resolveDevAgentGate decides at runtime (LIVE on a dev
+   * agent / DARK on the fleet) — a literal `false` would force-dark the dev agent.
+   * OFF (or single-machine, `_meshSelfId` null) = byte-identical legacy behavior:
+   * no release-on-complete, no claim-on-spawn, recovery runs its existing logic.
+   * Every new ownership write is the existing fenced-epoch CAS, best-effort, never
+   * forced; Part D's `ownerOf` read is a SIGNAL (forward-vs-rerun), never a new
+   * authority. Registered in DEV_GATED_FEATURES (not DARK_GATE_EXCLUSIONS).
+   */
+  ownershipFollowsLiveWork?: boolean;
+  /**
    * Replicated-store foundation (multi-machine-replicated-store-foundation.md
    * §10). The substrate that lets independent stores (preferences, relationships,
    * learnings, …) replicate via flag-gated, flag-coherence-gated journal-kind

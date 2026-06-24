@@ -231,6 +231,58 @@ describe('stuck-message recovery — boot wiring integrity', () => {
 });
 
 /**
+ * Part D, third site (docs/specs/ownership-follows-live-work.md): the
+ * `ownerElsewhereReachable` per-topic gate ON TOP of the existing machine-level
+ * holdsLease() gate. A topic owned by a REACHABLE peer is SKIPPED — its stuck
+ * messages stay IN the durable ledger UNTOUCHED so the owner drains them.
+ */
+describe('recoverStuckMessages — Part D per-topic owner gate', () => {
+  it('SKIPS a topic owned by a reachable peer (entry left untouched in the ledger, never re-injected)', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const reinjected: unknown[] = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: () => reinjected.push(1),
+      ownerElsewhereReachable: (topic) => topic === TOPIC, // a reachable peer owns it
+    });
+    expect(res.recovered).toBe(0);
+    expect(res.skipped).toBe(1);
+    expect(reinjected).toHaveLength(0);
+    // UNTOUCHED: still 'processing', attempts NOT bumped, NOT abandoned/committed.
+    const entry = led.get(KEY)!;
+    expect(entry.attempts).toBe(1);
+    expect(entry.state).toBe('processing');
+  });
+
+  it('does NOT skip a topic this machine owns / unowned (re-feeds as today)', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const reinjected: Array<[string, string, string]> = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: (t, k, text) => reinjected.push([t, k, text]),
+      ownerElsewhereReachable: () => false, // not owned by a reachable peer
+    });
+    expect(res.recovered).toBe(1);
+    expect(reinjected).toEqual([[TOPIC, KEY, 'do the thing']]);
+  });
+
+  it('regression-lock: with NO ownerElsewhereReachable dep (flag off / legacy), re-feeds exactly as today', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const reinjected: Array<[string, string, string]> = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: (t, k, text) => reinjected.push([t, k, text]),
+      // ownerElsewhereReachable absent → no ownership check
+    });
+    expect(res.recovered).toBe(1);
+    expect(reinjected).toHaveLength(1);
+  });
+});
+
+/**
  * Wiring-integrity: the forward route must CAPTURE the sender into the ledger at
  * ingress — otherwise a recovery re-run has nothing to replay as and falls back
  * to "Unknown". Source-level guard against the capture silently regressing.
