@@ -37,7 +37,8 @@ export type StuckKind =
   | 'rate-limited'      // Claude/provider usage or capacity limit — will clear on its own
   | 'policy-wedge'      // AUP-rejection loop — needs a fresh session (transcript poisoned)
   | 'context-wedge'     // thinking-block-400 — needs a fresh session (transcript corrupted)
-  | 'context-too-long'; // conversation exceeded the context window — needs a fresh session
+  | 'context-too-long'  // conversation exceeded the context window — needs a fresh session
+  | 'approval-prompt-waiting'; // framework approval prompt on the pane — the PermissionPromptAutoResolver clears it; NEVER surfaced to the user (PresenceProxy suppresses unconditionally)
 
 export interface StuckClassification {
   kind: StuckKind;
@@ -88,6 +89,18 @@ function anyMatch(text: string, patterns: readonly RegExp[]): RegExp | null {
   for (const p of patterns) if (p.test(text)) return p;
   return null;
 }
+
+/** A live, focused framework approval MENU on the pane — a glyph/❯-cursor-led
+ *  numbered option line PLUS a generic blocking affordance. PROSE-AGNOSTIC by
+ *  design (so a future prompt whose wording DRIFTS is still named). This only
+ *  NAMES the state; the PermissionPromptAutoResolver is the authoritative
+ *  detector that actually answers the prompt and raises the Terminal defect. */
+const APPROVAL_MENU_OPTION_PATTERN = /(?:^|\n)\s*[❯>●○◉]\s*\d+\.\s/;
+const APPROVAL_MENU_AFFORDANCE_PATTERNS: readonly RegExp[] = [
+  /Esc to cancel/i,
+  /Do you want to proceed/i,
+  /manual approval required/i,
+];
 
 /** Extract a human reset hint ("resets 10:30pm", "resets in 5m") if present. */
 export function extractResetHint(text: string): string | undefined {
@@ -158,6 +171,20 @@ export function classifyStuckSignature(
       message:
         "This conversation got too long for one session. I'm starting a fresh session with your recent history — " +
         "please resend your last message if I don't pick it up.",
+    };
+  }
+
+  // Framework approval prompt parked on the pane (a glyph-led focused menu + a
+  // blocking affordance). Prose-agnostic, so a drifted/unrecognized prompt is
+  // still NAMED. Purely observability: the PermissionPromptAutoResolver
+  // auto-answers it, and PresenceProxy suppresses this kind unconditionally, so
+  // it is NEVER surfaced to the user (the sole user-facing surface is the
+  // resolver's Terminal Attention defect). Lowest precedence — a real wedge /
+  // rate-limit / context-too-long wins if co-present.
+  if (APPROVAL_MENU_OPTION_PATTERN.test(tail) && anyMatch(tail, APPROVAL_MENU_AFFORDANCE_PATTERNS)) {
+    return {
+      kind: 'approval-prompt-waiting',
+      message: 'A framework approval prompt appeared and is being auto-cleared.',
     };
   }
 

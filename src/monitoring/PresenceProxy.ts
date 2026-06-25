@@ -1121,6 +1121,12 @@ export class PresenceProxy {
       return null;
     }
     if (!stuck) return null;
+    // The framework approval-prompt class is NEVER surfaced to the user — the
+    // PermissionPromptAutoResolver auto-clears it, and only if it genuinely
+    // cannot does it raise a Terminal Attention defect (the sole surface).
+    // Suppress here UNCONDITIONALLY (a consumer policy, not a classifier
+    // contract inversion), with no lifecycle gap.
+    if (stuck.kind === 'approval-prompt-waiting') return PRESENCE_SUPPRESS;
     // A recovery sentinel already messaging about this stuck state owns the
     // voice — mirror Tier 3's silent return (suppress, do NOT fall through to
     // the "actively working" fallback, which would re-introduce the lie).
@@ -1484,6 +1490,17 @@ export class PresenceProxy {
     if (snapshot) {
       const stuck = classifyStuckSignature(snapshot);
       if (stuck) {
+        // Framework approval-prompt: NEVER surfaced to the user, NEVER 'dead'
+        // (so it is not respawned). The PermissionPromptAutoResolver owns
+        // clearing it; the only user-facing surface is its Terminal defect.
+        // Unconditional suppression (consumer policy), with no lifecycle gap.
+        if (stuck.kind === 'approval-prompt-waiting') {
+          state.tier3Assessment = 'waiting';
+          state.tier3Summary = 'approval-prompt (auto-clearing)';
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          return;
+        }
         if (state.cancelled) {
           this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
           return;

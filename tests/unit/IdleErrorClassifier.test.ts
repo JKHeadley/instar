@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { classifyIdleError } from '../../src/core/IdleErrorClassifier.js';
-import { stripLineLead, wasGlyphLed, liveTail } from '../../src/core/paneTail.js';
+import { stripLineLead, wasGlyphLed, liveTail, leadGlyphsOf } from '../../src/core/paneTail.js';
 
 // The production pattern set (kept in sync via the production-wiring integration test).
 const PATTERNS = [
@@ -139,5 +139,21 @@ describe('paneTail helpers', () => {
     expect(wasGlyphLed('  ⎿  API Error: x')).toBe(true);
     expect(wasGlyphLed('API Error: x')).toBe(false);
     expect(wasGlyphLed('  plain content')).toBe(false);
+  });
+  it('leadGlyphsOf returns the U+276F run for a ❯-led line so a caller can test for the selector cursor', () => {
+    // The ❯ selector cursor specifically (what the approval-prompt resolver needs).
+    expect(leadGlyphsOf('❯ 1. Yes')).toBe('❯ ');
+    expect(leadGlyphsOf('❯ 1. Yes').includes('❯')).toBe(true);
+  });
+  it('leadGlyphsOf returns empty for a column-0 line', () => {
+    expect(leadGlyphsOf('1. Yes')).toBe('');
+    expect(leadGlyphsOf('plain content')).toBe('');
+  });
+  it("leadGlyphsOf for a box-drawing-led / whitespace-led line's run contains no U+276F", () => {
+    expect(leadGlyphsOf('  2. No')).toBe('  ');
+    expect(leadGlyphsOf('  2. No').includes('❯')).toBe(false);
+    // box-drawing lead glyph (│ U+2502) — a run, but not the ❯ selector.
+    expect(leadGlyphsOf('│ content').includes('❯')).toBe(false);
+    expect(leadGlyphsOf('│ content').length).toBeGreaterThan(0);
   });
 });

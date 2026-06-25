@@ -165,6 +165,21 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Detects sessions frozen mid-task (active work gone silent).',
   },
   {
+    key: 'monitoring.permissionPromptAutoResolver.enabled',
+    kind: 'config',
+    // NB: there is NO persisted `enabled` for this floor (a stale `false` could
+    // re-disable the very safety it provides — the trap that caused the bug). The
+    // posture key is COMPUTED in extractGuardPosture from inverted `emergencyDisable`,
+    // defaulting on; this configPath matches that computed key.
+    configPath: 'monitoring.permissionPromptAutoResolver.enabled',
+    defaultEnabled: true,
+    expectedTickMs: 5_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'PermissionPromptAutoResolver',
+    description: 'Always-on floor that auto-answers a framework approval prompt (the cd-redirection wedge); never silently disableable.',
+  },
+  {
     key: 'monitoring.contextWedgeSentinel.enabled',
     kind: 'config',
     configPath: 'monitoring.contextWedgeSentinel.enabled',

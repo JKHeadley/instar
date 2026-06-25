@@ -57,3 +57,16 @@ export function wasGlyphLed(line: string): boolean {
   const m = LEAD_RE.exec(line);
   return m ? GLYPH_RE.test(m[0]) : false;
 }
+
+/**
+ * Return the leading run matched by `LEAD_RE` (the ANSI-SGR | whitespace | lead-glyph
+ * run), i.e. the separated leading glyph run. Where `wasGlyphLed` only answers "did
+ * SOME glyph lead the line?", this EXPOSES the lead so a caller can test for a
+ * SPECIFIC glyph — e.g. whether the U+276F (❯) selector cursor led the line, not
+ * merely "some glyph". Empty string when there is no leading run. Pure; idempotent
+ * over the lead (re-running on the returned run yields the run itself).
+ */
+export function leadGlyphsOf(line: string): string {
+  const m = LEAD_RE.exec(line);
+  return m ? m[0] : '';
+}

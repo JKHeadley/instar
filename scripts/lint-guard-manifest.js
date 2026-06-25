@@ -96,6 +96,7 @@ const ADDITIONAL_CANDIDATES = [
   'OwnerHoldVerdict',      // multiMachine.sessionPool.holdForStability.enabled (effective-state getter, §4.2)
   'CoherenceJournal',      // multiMachine.coherenceJournal.enabled
   'PromptGate',            // monitoring.promptGate.enabled
+  'PermissionPromptAutoResolver', // monitoring.permissionPromptAutoResolver.enabled (computed from emergencyDisable; filename doesn't match the *Sentinel/*Guard pattern)
 ];
 
 const MIN_REASON_NON_WS = 12;
