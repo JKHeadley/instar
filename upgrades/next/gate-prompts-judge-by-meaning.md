@@ -1,0 +1,25 @@
+## What Changed
+
+The outbound tone gate's behavioral rules (B15–B18 — the "don't quit on yourself / don't call a doable thing impossible / don't park your work on the user" rules) now judge by **meaning**, not by matching a fixed list of literal phrases. Previously B15's prompt told the LLM to block only if the message contained an exact phrase from a list, so a reworded self-stop ("fresh focus, not tired at the tail of a long run") walked straight through. The rule now states the *intent* and judges any paraphrase, with an explicit reason-gate (the agent-state reason is controlling; every carve-out is subordinate to it) and a structured-intermediate the model fills so the verdict is derived from its own reasoning.
+
+Alongside it:
+- A new constitution standard, **"Intelligent Prompts — An LLM Gate Must Not String-Match"** (`docs/STANDARDS-REGISTRY.md`), enforced by a forward CI ratchet (`tests/unit/gate-prompts-judge-by-meaning.test.ts`) keyed off a machine-readable `RULE_CLASSES` registry.
+- A deterministic **agent-state signal** (the session clock) fed into B15 so a "near the limit" claim is judged against ground truth (time-box claims only).
+- The gate now **fails CLOSED** (holds the message — never silently delivers) on every no-verdict path: an invalid/empty rule citation (re-prompt then hold), unparseable output (retry then hold), provider exhaustion, and the route-budget slow-timeout (the easiest bypass). Operator kill-switch: `messaging.toneGate.failClosedOnExhaustion` (default true).
+- B1–B7 (literal-artifact detectors) keep matching in-prompt for now — tracked migration to detect-outside-feed-signal is CMT-1793; the codebase-wide convergent audit of the two standards is CMT-1794.
+
+## Evidence
+
+- New + updated tests, all green: the ratchet (8), the reason-gate / structured-intermediate / agentState (15), budget fail-closed (1 new), awareness migration (2), updated existing tone-gate suites (B15/B16/B17/B18/health-alerts/MessagingToneGate, 131), and the route-level integration test (4: paraphrased-incident suppressed, structured-derivation suppressed, fail-closed-holds end-to-end, completion delivers). `npx tsc --noEmit` clean (0 errors).
+- 5-round spec-converge + closing cross-model pass; the Standards-Conformance Gate returns 0 findings on the spec. Convergence report: `docs/specs/reports/gate-prompts-judge-by-meaning-not-literal-lists-convergence.md`.
+- Side-effects review (8 questions + Phase-5 second-pass): `upgrades/side-effects/gate-prompts-judge-by-meaning.md`.
+
+## What to Tell Your User
+
+Your messages still pass the same outbound safety gate — it's just smarter now. It catches the "I'll pick this up fresh later" self-stop pattern however it's worded, instead of only when an exact phrase appears, and it holds (rather than silently sends) a message if the gate can't reach a verdict. Nothing you do changes; the gate is more reliable.
+
+## Summary of New Capabilities
+
+- Constitution standard "Intelligent Prompts — An LLM Gate Must Not String-Match" + its CI ratchet.
+- Config: `messaging.toneGate.failClosedOnExhaustion` (default true) — kill-switch to revert the exhaustion/timeout paths to fail-open without a deploy.
+- The outbound tone gate now judges its behavioral rules by meaning and fails closed on any no-verdict path.

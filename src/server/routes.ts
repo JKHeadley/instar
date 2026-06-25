@@ -1819,6 +1819,28 @@ export function createRoutes(ctx: RouteContext): Router {
         configuredBudget > 0
           ? configuredBudget
           : OUTBOUND_GATE_REVIEW_BUDGET_MS;
+      // §Design 1a: deterministic agent-state signal (session clock), read
+      // IN-PROCESS (not an HTTP self-call) and keyed on this topic, so B15 can
+      // judge a "near the time limit" claim against ground truth. Fail-open-skip
+      // on any error — absent signal ⇒ B15 falls back to meaning-only.
+      let agentState: { sessionElapsedMs: number; sessionRemainingMs: number | null; isTimeBoxed: boolean } | undefined;
+      try {
+        if (options.topicId != null) {
+          const clock = readSessionClocks(ctx.config.stateDir, Date.now(), String(options.topicId))[0];
+          if (clock) {
+            agentState = {
+              sessionElapsedMs: Math.round((clock.elapsedSeconds ?? 0) * 1000),
+              sessionRemainingMs: clock.remainingSeconds == null ? null : Math.round(clock.remainingSeconds * 1000),
+              isTimeBoxed: clock.status !== 'unbounded' && clock.remainingSeconds != null,
+            };
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — the agentState signal is advisory context, not a
+        // gating decision; its absence is handled (B15 judges by meaning). A
+        // clock-read error must never block an outbound message.
+        agentState = undefined;
+      }
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -1826,8 +1848,15 @@ export function createRoutes(ctx: RouteContext): Router {
           signals,
           targetStyle: ctx.config.messagingStyle,
           messageKind: options.messageKind,
+          agentState,
         }),
         gateBudgetMs,
+        undefined,
+        undefined,
+        // §Design 6 kill-switch: the slow-timeout fails CLOSED by default; set
+        // messaging.toneGate.failClosedOnExhaustion:false to revert to fail-open.
+        ((ctx.config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean } } }).messaging?.toneGate
+          ?.failClosedOnExhaustion) !== false,
       );
 
       // Structured observability: log every decision the authority made. This is

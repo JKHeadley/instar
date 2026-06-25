@@ -181,8 +181,9 @@ describe('MessagingToneGate — B17_FALSE_BLOCKER', () => {
     expect(result.pass).toBe(true);
   });
 
-  it('preserves drift detection — an invented rule id still fails open', async () => {
+  it('preserves drift detection — an invented rule id re-prompts then fails CLOSED', async () => {
     // Adding B17 must not widen the gate to accept any rule the LLM invents.
+    // Drift now HOLDS (fail-closed, §Design 6), not fail-open.
     const { provider } = captureProvider({
       pass: false,
       rule: 'B18_NOT_A_REAL_RULE',
@@ -191,8 +192,7 @@ describe('MessagingToneGate — B17_FALSE_BLOCKER', () => {
     });
     const gate = new MessagingToneGate(provider);
     const result = await gate.review('Whatever.', { channel: 'telegram' });
-    expect(result.pass).toBe(true);
-    expect(result.invalidRule).toBe(true);
-    expect(result.failedOpen).toBe(true);
+    expect(result.pass).toBe(false);
+    expect(result.failedClosed).toBe(true);
   });
 });

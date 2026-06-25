@@ -74,7 +74,9 @@ describe('MessagingToneGate — B18_AUTONOMY_STOP', () => {
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate.', { channel: 'telegram' });
     // The LLM must be told B18 is a citable rule id, else it would never cite it.
-    expect(getPrompt()).toMatch(/B17,?\s*or\s*B18/);
+    // The enumeration now runs through B20 ("…B17, B18, B19, or B20").
+    expect(getPrompt()).toMatch(/B17,\s*B18/);
+    expect(getPrompt()).toMatch(/or\s*B20/);
   });
 
   it('accepts B18 as a valid rule id without fail-opening (no invalidRule flag)', async () => {

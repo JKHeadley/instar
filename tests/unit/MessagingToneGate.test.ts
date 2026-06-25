@@ -157,7 +157,10 @@ describe('MessagingToneGate', () => {
   });
 
   describe('reasoning-discipline enforcement', () => {
-    it('fails open when the LLM tries to block with an invented rule id', async () => {
+    it('fails CLOSED (re-prompt then hold) when the LLM tries to block with an invented rule id', async () => {
+      // Spec §Design 6: a wanted-block mis-citing a rule re-prompts once; if the
+      // model still cites garbage it HOLDS (fail-closed), never silently passes —
+      // the fix for the old fail-open that could re-launder a real B15 block.
       const provider = mockProvider(() =>
         JSON.stringify({
           pass: false,
@@ -168,12 +171,12 @@ describe('MessagingToneGate', () => {
       );
       const gate = new MessagingToneGate(provider);
       const result = await gate.review('Some technical message', { channel: 'telegram' });
-      expect(result.pass).toBe(true);
-      expect(result.failedOpen).toBe(true);
-      expect(result.invalidRule).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+      expect((provider.evaluate as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2); // one re-prompt
     });
 
-    it('fails open when the LLM tries to block without citing any rule', async () => {
+    it('fails CLOSED when the LLM tries to block without citing any rule', async () => {
       const provider = mockProvider(() =>
         JSON.stringify({
           pass: false,
@@ -184,9 +187,8 @@ describe('MessagingToneGate', () => {
       );
       const gate = new MessagingToneGate(provider);
       const result = await gate.review('Some technical message', { channel: 'telegram' });
-      expect(result.pass).toBe(true);
-      expect(result.failedOpen).toBe(true);
-      expect(result.invalidRule).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
 
     it('honors a block cited with a valid signal-driven rule (B8)', async () => {
@@ -326,10 +328,20 @@ describe('MessagingToneGate', () => {
     });
   });
 
-  describe('fail-open behavior', () => {
-    it('fails open (pass=true) when the provider throws', async () => {
+  describe('fail-CLOSED behavior (No Silent Degradation §Design 6)', () => {
+    it('fails CLOSED (pass=false, held) when the provider throws', async () => {
       const provider = errorProvider(new Error('network timeout'));
       const gate = new MessagingToneGate(provider);
+
+      const result = await gate.review('some message', { channel: 'telegram' });
+
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+    });
+
+    it('reverts the provider-throw path to fail-open when the kill-switch is off', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider, { failClosedOnExhaustion: false });
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
@@ -337,31 +349,34 @@ describe('MessagingToneGate', () => {
       expect(result.failedOpen).toBe(true);
     });
 
-    it('fails open (pass=true) when the provider returns malformed JSON', async () => {
+    it('fails CLOSED (re-prompt then hold) when the provider returns malformed JSON', async () => {
       const provider = mockProvider(() => 'this is not JSON at all, just prose');
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
-      expect(result.pass).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
 
-    it('fails open (pass=true) when the provider returns JSON with missing pass field', async () => {
+    it('fails CLOSED when the provider returns JSON with missing pass field', async () => {
       const provider = mockProvider(() => JSON.stringify({ verdict: 'block' }));
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
-      expect(result.pass).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
 
-    it('fails open (pass=true) when JSON parse throws (invalid JSON inside braces)', async () => {
+    it('fails CLOSED when JSON parse throws (invalid JSON inside braces)', async () => {
       const provider = mockProvider(() => 'response text {not valid json inside} more text');
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
-      expect(result.pass).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
   });
 
@@ -426,8 +441,9 @@ describe('MessagingToneGate', () => {
       });
 
       expect(capturedPrompt).toContain('RECENT CONVERSATION');
-      expect(capturedPrompt).toContain('USER: explain what happened');
-      expect(capturedPrompt).toContain('AGENT: looking into it');
+      // §Design 4: context bodies are JSON-encoded (boundary-wrapped, untrusted data).
+      expect(capturedPrompt).toContain('USER: "explain what happened"');
+      expect(capturedPrompt).toContain('AGENT: "looking into it"');
     });
 
     it('marks no prior context when recentMessages is omitted', async () => {
@@ -499,19 +515,18 @@ describe('MessagingToneGate', () => {
       expect(result.suggestion).toBe('rephrase');
     });
 
-    it('fails open when LLM blocks but omits the rule field (drift)', async () => {
-      // Historically this test expected the gate to block with empty fields.
-      // Under the signal-vs-authority rework, a block without a rule citation
-      // is treated as reasoning drift and fails open — the authority must
-      // trace its decisions to enumerated rule ids.
+    it('fails CLOSED when LLM blocks but omits the rule field (drift)', async () => {
+      // A block without a rule citation is reasoning drift. Spec §Design 6:
+      // re-prompt once, then HOLD (fail-closed) — never silently pass. (This
+      // superseded the older fail-open behavior, which could re-launder a real
+      // block the model wanted but mis-cited.)
       const provider = mockProvider(() => JSON.stringify({ pass: false }));
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('message', { channel: 'telegram' });
 
-      expect(result.pass).toBe(true);
-      expect(result.failedOpen).toBe(true);
-      expect(result.invalidRule).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
   });
 });

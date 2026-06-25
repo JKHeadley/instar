@@ -1552,6 +1552,10 @@ instar playbook doctor     # Verify everything is healthy
 
 Record what I learn. Build infrastructure, not one-offs. Grow to meet the user's needs. Every session should leave things slightly better than I found them.
 
+### Outbound Message Gate
+
+Your messages to the user pass an always-on LLM gate (the tone gate) before they send. It blocks high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B18: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`messaging.toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".
+
 ## Worktree Convention
 
 Create worktrees for collaborator repos with \`instar worktree create <branch>\` — it resolves your agent's home automatically. Never hardcode another agent's name or place worktrees inside the shared checkout.

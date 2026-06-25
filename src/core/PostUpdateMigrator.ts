@@ -4105,6 +4105,17 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
 
+    // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
+    // Awareness Standard: an agent that doesn't know its messages pass an LLM
+    // gate judging by MEANING will assume a reword evades the self-stop rules.
+    // Framework-agnostic (server-side); the marker is mirrored to the shadows.
+    // Content-sniffed; idempotent.
+    if (!content.includes('### Outbound Message Gate')) {
+      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It blocks high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B18: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`messaging.toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Outbound Message Gate section');
+    }
+
     // Autonomous-run silence backstop (autonomous-progress-heartbeat.md) — Agent
     // Awareness Standard + Migration Parity item 3: existing agents learn the
     // /autonomous-heartbeat surface AND that this is NOT the suppressed
@@ -7209,6 +7220,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // cover the template's bold heading and migrateClaudeMd's H3.
       '**Verified Pairing — is my channel to a peer mutually verified',
       '### Verified Pairing — is my channel to a peer mutually verified',
+      // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration): the
+      // tone gate applies server-side regardless of framework, so a Codex/Gemini
+      // agent must also know its messages are judged by MEANING (paraphrases of
+      // the self-stop anti-patterns are caught) — else it assumes a reword evades
+      // the gate. Mirrored to the shadows like every agent-facing capability.
+      '### Outbound Message Gate',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

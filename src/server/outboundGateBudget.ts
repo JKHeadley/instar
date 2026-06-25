@@ -41,6 +41,13 @@ export async function reviewWithinBudget(
       (t as { unref: () => void }).unref();
     }
   },
+  // §Design 6: when true (the route opts in, gated by the failClosedOnExhaustion
+  // kill-switch), the budget elapsing with NO verdict HOLDS the message
+  // (fail-CLOSED) instead of delivering it ungated. The route-budget timeout is
+  // the easiest gating bypass (attacker-induced latency); a held message is the
+  // safe direction (No Silent Degradation). Default false preserves the legacy
+  // fail-open contract for any other caller / the kill-switch-off path.
+  failClosedOnBudget = false,
 ): Promise<ToneReviewResult> {
   const start = now();
   const BUDGET_EXCEEDED = Symbol('outbound-gate-budget-exceeded');
@@ -51,6 +58,17 @@ export async function reviewWithinBudget(
     ),
   ]);
   if (outcome === BUDGET_EXCEEDED) {
+    if (failClosedOnBudget) {
+      return {
+        pass: false,
+        rule: 'GATE_TIMEOUT',
+        issue: 'Outbound tone review did not produce a verdict within the budget.',
+        suggestion: 'Held (fail-closed) on timeout; the message is queued for retry, not dropped.',
+        latencyMs: now() - start,
+        failedClosed: true,
+        budgetExceeded: true,
+      };
+    }
     return {
       pass: true,
       rule: '',

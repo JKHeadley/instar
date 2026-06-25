@@ -14165,7 +14165,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     let messagingToneGate: import('../core/MessagingToneGate.js').MessagingToneGate | undefined;
     if (sharedIntelligence) {
       const { MessagingToneGate } = await import('../core/MessagingToneGate.js');
-      messagingToneGate = new MessagingToneGate(sharedIntelligence);
+      // Pass a live config getter so the failClosedOnExhaustion kill-switch
+      // (spec §Design 6) is honored without a restart.
+      messagingToneGate = new MessagingToneGate(sharedIntelligence, () => ({
+        failClosedOnExhaustion:
+          (config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean } } }).messaging?.toneGate
+            ?.failClosedOnExhaustion,
+      }));
       console.log(pc.green('  Messaging tone gate: active (Haiku via shared IntelligenceProvider)'));
     } else {
       console.log(pc.yellow('  Messaging tone gate: inactive (no IntelligenceProvider available)'));
