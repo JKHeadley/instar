@@ -1,0 +1,31 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The CMT-1794 fail-open fix (v1) — the systemic "No Silent Degradation" gap the convergent audit found. The coherence reviewers that screen outbound messages (leaked credentials/PII to the wrong recipient, org-constraint violations, fabricated claims, hallucinated URLs) were SILENTLY PASSING the message whenever their own LLM call errored, timed out, or returned unparseable output: the base `CoherenceReviewer.review()` resolved with `pass:true` and `CoherenceGate` counted that errored reviewer as a GENUINE PASS (it only abstain-counted a promise rejection, and `review()` catches internally). So on any LLM blip, the highest-stakes outbound checks were skipped and the message went out unchecked.
+
+v1 (the substance):
+- **Abstain, not silent pass.** `CoherenceReviewer` (and the `escalation-resolution` reviewer's `review()` OVERRIDE — a gap the new ratchet caught) now tag an errored/timeout/unparseable result as `abstained:true` with a STRUCTURED cause (typed-timeout `.code`, never a string-match of the error text). `CoherenceGate` counts an abstain as an abstain (excluded from the pass/block tallies + `passCount`), not a genuine pass.
+- **High-criticality abstain fails CLOSED external.** A floor reviewer (`information-leakage`, `value-alignment`, `claim-provenance`, `url-validity`) that abstains on an EXTERNAL channel routes into the gate's EXISTING `highCritTimeout` fail-closed path (reuse, not a new tier — the convergence caught that the draft's parallel `critical` tier was a no-op). Internal channels stay fail-open-with-report (Decision D — blocking the agent's own control loop on a blip is worse). The floor is a hardcoded, multi-machine-uniform set that config can RAISE but not silently downgrade.
+- **Provider-swap before abstain (§8).** Reviewer calls are now `gating:true`, so the router swaps harness/account before a reviewer abstains — a single-provider blip keeps the review alive; fail-closed engages only on a true multi-provider outage.
+- **Coverage fix (Dec B).** `information-leakage` was skipped for the DEFAULT `primary-user` recipient, so the headline protection never ran on the common path; it now stays enabled for primary-user on EXTERNAL channels (a message to the operator can still leak a third party's PII), keyed on the resolved external flag.
+- **SendGateway Stage-4** thrown-gate-error catch now fails CLOSED on external (was swallow-and-send).
+- **Operator kill-switch** `responseReview.failClosedOnCriticalAbstain` (default true) reverts the fail-closed behavior live, no deploy.
+- **CI ratchet** (`tests/unit/reviewer-fail-closed-ratchet.test.ts`) drives every reviewer subclass through a forced LLM error and fails the build if any returns a verdict without the abstain tag — so a future reviewer/override can't silently reintroduce the fail-open.
+
+v2 refinements are tracked (CMT-1801), all bounded-not-blocking: Dec C short-message critical-only coverage (narrowed by PEL catching credential patterns deterministically), the breaker/hold optimization (the amplification it optimizes is already bounded by the spawn-cap + maxRetries), the kill-switch's true-live server wiring (v1 uses snapshot + safe default), and the integration/e2e tier.
+
+## What to Tell Your User
+
+If your agent ever sent an outbound message during an LLM hiccup that should have been screened (for a leaked credential, a third party's PII, an org-constraint violation, a fabricated claim/link) — that gap is closed. When one of those checks can't run because its own LLM call errors out, the agent now HOLDS the message for a moment (and retries) instead of sending it unchecked — but only for messages going to the outside world, and only on a genuine outage (a one-off blip just swaps to a backup and keeps going). Messages to you directly aren't held (that would risk freezing the agent). If a sustained outage ever made this too cautious, there's a one-flip off-switch that takes effect with no restart.
+
+## Summary of New Capabilities
+
+- `responseReview.failClosedOnCriticalAbstain` (config, default true) — operator kill-switch: revert the new fail-closed-on-critical-reviewer-abstain behavior live, without a deploy. Mirrors `messaging.toneGate.failClosedOnExhaustion`.
+
+## Evidence
+
+- `tests/unit/reviewer-fail-closed-on-abstain.test.ts` (3) — external+all-abstain → fail-closed (the exact bug, previously `pass:true`); internal → pass-with-report; abstain ≠ clean pass.
+- `tests/unit/reviewer-fail-closed-ratchet.test.ts` (10) — every reviewer abstains on a forced LLM error; the review()-override set is locked.
+- 164 tests green across CoherenceReviewer + CoherenceGate + MessageSentinel + spawn-cap + the new files; `npm run build` + `tsc --noEmit` clean.
+- Driven by the converged + approved spec (2-round spec-converge + codex cross-model); the convergence caught a no-op tier and a false rides-retry premise before any code.

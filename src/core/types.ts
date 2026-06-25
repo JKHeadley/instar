@@ -4038,6 +4038,16 @@ export interface ResponseReviewConfig {
   maxRetries?: number;
   /** Per-reviewer criticality levels */
   reviewerCriticality?: Record<string, 'critical' | 'high' | 'medium' | 'low'>;
+  /**
+   * Kill-switch for the reviewer-fail-closed-on-abstain behavior (CMT-1794 §4).
+   * When true (DEFAULT), a high-criticality reviewer that ABSTAINS (LLM
+   * error/timeout/unparseable) on an external channel fails the turn CLOSED
+   * (held). Set false to revert THAT behavior to the prior fail-open without a
+   * deploy (read live via the gate's optional liveConfig getter; a promise
+   * REJECTION keeps its pre-existing unconditional fail-closed). Mirrors
+   * messaging.toneGate.failClosedOnExhaustion.
+   */
+  failClosedOnCriticalAbstain?: boolean;
   /** Threshold for escalating warn-mode violations */
   warnEscalationThreshold?: number;
   /** Per-channel overrides */

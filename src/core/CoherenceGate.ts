@@ -112,6 +112,15 @@ export interface CoherenceGateOptions {
   adaptiveTrust?: { getProfile(): any } | null;
   /** Callback fired when a research agent should be spawned (fire-and-forget). */
   onResearchTriggered?: (context: ResearchTriggerContext) => void;
+  /**
+   * Optional LIVE config getter for the reviewer-fail-closed-on-abstain
+   * kill-switch (CMT-1794 §4). When the server wires this, the gate reads
+   * `failClosedOnCriticalAbstain` per-evaluation so the operator can revert the
+   * fail-closed behavior WITHOUT a restart. When omitted, the gate falls back to
+   * the static `config.failClosedOnCriticalAbstain` snapshot, then to the safe
+   * default (true = fail-closed ON). Additive + backward-compatible.
+   */
+  liveConfig?: () => { failClosedOnCriticalAbstain?: boolean };
 }
 
 // ── Category Mapping (reviewer → generic category for agent feedback) ─
@@ -195,12 +204,14 @@ export class CoherenceGate {
   private researchRateLimiter: ResearchRateLimiter;
   private canonicalState: CanonicalState;
   private onResearchTriggered?: (context: ResearchTriggerContext) => void;
+  private liveConfig?: () => { failClosedOnCriticalAbstain?: boolean };
   private onLedgerEventSink: ((evt: CoherenceGateLedgerEvent) => void) | null = null;
   private static RETENTION_DAYS = 30;
 
   constructor(options: CoherenceGateOptions) {
     this.config = options.config;
     this.stateDir = options.stateDir;
+    this.liveConfig = options.liveConfig;
     this.onResearchTriggered = options.onResearchTriggered;
     this.researchRateLimiter = new ResearchRateLimiter({ stateDir: options.stateDir });
     this.canonicalState = new CanonicalState({ stateDir: path.join(options.stateDir, 'state') });
@@ -400,7 +411,7 @@ export class CoherenceGate {
     }
 
     // ── Step 8: Specialist reviewers (parallel fan-out) ──────────
-    const enabledReviewers = this.getEnabledReviewers(context.channel, recipientType, channelConfig);
+    const enabledReviewers = this.getEnabledReviewers(context.channel, recipientType, channelConfig, isExternal);
     const results = await Promise.allSettled(
       enabledReviewers.map(r => r.review(reviewCtx)),
     );
@@ -412,14 +423,33 @@ export class CoherenceGate {
 
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
-      if (result.status === 'fulfilled') {
+      // ABSTAIN unification (reviewer-fail-closed-on-abstain, CMT-1794): a
+      // reviewer abstains either by REJECTING its promise (legacy) OR by
+      // RESOLVING with `abstained:true` (the new error/timeout/unparseable tag —
+      // review() catches internally so it almost always resolves). BOTH mean "no
+      // opinion": count as an abstain, EXCLUDE from `settled` (so it never
+      // inflates the pass/block tallies, passCount, or the allAbstain
+      // settled.length check), and consult criticality so a high-criticality
+      // abstain on an external channel fails CLOSED via the existing
+      // highCritTimeout path. This is the bug the audit found: an `abstained`
+      // result was previously pushed into `settled` as a genuine PASS.
+      const wasRejection = result.status !== 'fulfilled';
+      const wasAbstainTag = result.status === 'fulfilled' && result.value.abstained === true;
+      if (!wasRejection && !wasAbstainTag) {
         settled.push(result.value);
       } else {
-        // Reviewer failed — treat as abstain
         abstainCount++;
         const reviewerName = enabledReviewers[i].name;
         const criticality = this.resolveCriticality(reviewerName, valueDocs.orgIntent);
-        if (criticality === 'high') {
+        // 'critical' is a legacy config alias for 'high' — BOTH fail closed
+        // (round-2 predicate-normalization: a config-set 'critical' must not
+        // dead-end past the legacy `=== 'high'` check).
+        const failClosing = criticality === 'high' || criticality === 'critical';
+        // Kill-switch (§4) governs ONLY the NEW abstain-TAG-driven fail-closed
+        // (LLM error/timeout/unparseable). A promise REJECTION keeps its
+        // pre-existing UNCONDITIONAL highCritTimeout (that behavior predates this
+        // change and is not what the kill-switch reverts).
+        if (failClosing && (wasRejection || this.getFailClosedOnCriticalAbstain())) {
           highCritTimeout = true;
         }
       }
@@ -711,12 +741,19 @@ export class CoherenceGate {
     channel: string,
     recipientType: string,
     channelConfig: ChannelReviewConfig,
+    isExternal: boolean,
   ): CoherenceReviewer[] {
     const enabled: CoherenceReviewer[] = [];
 
     for (const [name, reviewer] of this.reviewers) {
-      // Skip information-leakage for primary-user
-      if (name === 'information-leakage' && recipientType === 'primary-user') continue;
+      // reviewer-fail-closed-on-abstain Decision B (CMT-1794): information-leakage
+      // was skipped for ALL primary-user messages — but primary-user is the
+      // DEFAULT recipientType, so the headline leak protection never ran on the
+      // common path. A message to the operator on an EXTERNAL channel can still
+      // leak a THIRD party's PII, so keep leak-review ENABLED for primary-user on
+      // external channels; skip it only for genuinely internal/self channels.
+      // (Keyed on the RESOLVED external flag, never the launderable recipientType.)
+      if (name === 'information-leakage' && recipientType === 'primary-user' && !isExternal) continue;
 
       // Skip observe-mode reviewers from blocking pipeline
       const mode = this.getReviewerMode(name);
@@ -754,12 +791,59 @@ export class CoherenceGate {
    *
    * For all other reviewers, falls back to the explicit config or 'standard'.
    */
+  /**
+   * The hardcoded fail-closing FLOOR (reviewer-fail-closed-on-abstain Decision A,
+   * CMT-1794): these high-stakes reviewers resolve to at least 'high', so an
+   * abstain by any of them on an external channel fails CLOSED via highCritTimeout.
+   * Compiled from source ⇒ uniform across machines (no per-machine config
+   * divergence). Config may RAISE a reviewer's tier but may NOT lower a floor
+   * member below 'high' on external channels (a security control must not be
+   * silently downgradable). capability-accuracy is deliberately NOT a floor
+   * member (an over-claim is a correctness warn, not a leak).
+   */
+  private static readonly CRITICAL_FLOOR = new Set([
+    'information-leakage',
+    'value-alignment',
+    'claim-provenance',
+    'url-validity',
+  ]);
+
+  /**
+   * Kill-switch read (reviewer-fail-closed-on-abstain §4): true (DEFAULT) =
+   * fail-closed-on-critical-abstain is ON. Reads LIVE via the optional
+   * liveConfig getter (no restart needed), falling back to the static config
+   * snapshot, then the safe default. A throwing getter falls back to ON.
+   */
+  private getFailClosedOnCriticalAbstain(): boolean {
+    try {
+      if (this.liveConfig) return this.liveConfig().failClosedOnCriticalAbstain !== false;
+    } catch {
+      // @silent-fallback-ok — a throwing config getter is not a gating decision;
+      // fall back to the static config / safe default (fail-closed stays ON).
+    }
+    return this.config.failClosedOnCriticalAbstain !== false;
+  }
+
   private resolveCriticality(
     reviewerName: string,
     orgIntent: OrgIntentReviewContext | null,
   ): 'critical' | 'high' | 'medium' | 'low' | 'standard' {
+    const isFloor = CoherenceGate.CRITICAL_FLOOR.has(reviewerName);
     const explicit = this.config.reviewerCriticality?.[reviewerName];
-    if (explicit) return explicit;
+    if (explicit) {
+      // 'critical' is a legacy config alias for 'high' (predicate-normalization,
+      // round-2 finding) — normalize so the gate only ever sees 'high'.
+      const normalized = explicit === 'critical' ? 'high' : explicit;
+      // FLOOR clamp: config may RAISE but never LOWER a floor member below 'high'.
+      if (isFloor && (normalized === 'medium' || normalized === 'low')) {
+        console.warn(
+          `[CoherenceGate] reviewerCriticality config tried to downgrade floor reviewer '${reviewerName}' to '${normalized}' — clamped to 'high' (a fail-closing floor member cannot be silently downgraded).`,
+        );
+        return 'high';
+      }
+      return normalized;
+    }
+    if (isFloor) return 'high'; // hardcoded floor default (subsumes the value-alignment+orgIntent case)
     if (reviewerName === 'value-alignment' && orgIntent && orgIntent.constraints.length > 0) {
       return 'high';
     }
