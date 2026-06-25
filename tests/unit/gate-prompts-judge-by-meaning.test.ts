@@ -86,10 +86,24 @@ describe('gate-prompts-judge-by-meaning ratchet — An LLM Gate Must Not String-
     expect(/##\s*BLOCK rules — block ONLY if the message contains one of these LITERAL/i.test(headerArea)).toBe(false);
   });
 
-  it('B1–B7 deterministic-detection rules STILL instruct literal matching (the other direction)', () => {
-    // Guard against an accidental drift of B1–B7 to meaning-based (dangerous for them).
-    const headerArea = source.slice(0, source.indexOf('## SIGNAL-DRIVEN'));
-    expect(/literal/i.test(headerArea)).toBe(true);
+  it('B1–B7 are now SIGNAL-DRIVEN (CMT-1793 migration: detector emits a signal, prompt judges in context)', () => {
+    // Post-CMT-1793: every B1–B7 rule is classed signal-driven and its prompt
+    // block references the deterministic ARTIFACT-SIGNAL rather than instructing
+    // the model to literal-scan the candidate itself.
+    for (const r of ['B1_CLI_COMMAND', 'B2_FILE_PATH', 'B3_CONFIG_KEY', 'B4_COPY_PASTE_CODE', 'B5_API_ENDPOINT', 'B6_ENV_VAR', 'B7_CRON_OR_SLUG']) {
+      expect(RULE_CLASSES[r], `${r} should be signal-driven after CMT-1793`).toBe('signal-driven');
+    }
+    const b1b7 = ruleBlocks();
+    // Each block must reference its detector signal (the §Design 8 contract),
+    // not instruct an in-prompt scan.
+    expect(b1b7['B1_CLI_COMMAND']).toMatch(/signal is detected/i);
+    expect(b1b7['B2_FILE_PATH']).toMatch(/signal is detected/i);
+    // No B1–B7 rule may carry a necessary-literal-gate construction now that they
+    // are scanned like every other judgment rule (covered by the scan test above);
+    // here we positively assert the migration's signal-driven framing landed.
+    const artifactHeader = source.slice(source.indexOf('## ARTIFACT rules (B1'), source.indexOf('## SIGNAL-DRIVEN'));
+    expect(/SIGNAL-DRIVEN, judged in context/i.test(artifactHeader)).toBe(true);
+    expect(/do NOT scan the candidate yourself/i.test(artifactHeader)).toBe(true);
   });
 
   it('B15 retains the ordered reason-gate (positive-presence — deleting the keystone fails CI)', () => {
@@ -99,12 +113,13 @@ describe('gate-prompts-judge-by-meaning ratchet — An LLM Gate Must Not String-
     expect(b15).toMatch(/JUDGE BY MEANING/i);
   });
 
-  it('PHASE2_MIGRATION_DEBT is frozen to exactly {B1..B7} and bound to a non-placeholder commitment', () => {
-    expect([...PHASE2_MIGRATION_DEBT.rules].sort()).toEqual(
-      ['B1_CLI_COMMAND', 'B2_FILE_PATH', 'B3_CONFIG_KEY', 'B4_COPY_PASTE_CODE', 'B5_API_ENDPOINT', 'B6_ENV_VAR', 'B7_CRON_OR_SLUG'].sort(),
-    );
-    // Every debt rule must be classed deterministic-detection (cannot park a behavioral rule here).
-    for (const r of PHASE2_MIGRATION_DEBT.rules) expect(RULE_CLASSES[r]).toBe('deterministic-detection');
+  it('PHASE2_MIGRATION_DEBT is now EMPTY (CMT-1793 migration complete) — no rule still parked as in-prompt debt', () => {
+    // The migration landed: B1–B7 are signal-driven, the allowlist is drained.
+    // A non-empty allowlist now would mean a rule regressed to in-prompt debt.
+    expect([...PHASE2_MIGRATION_DEBT.rules]).toEqual([]);
+    // No rule may be classed 'deterministic-detection' anymore (the legacy class
+    // is retired; a rule parked there would be unscanned literal-gate debt).
+    for (const cls of Object.values(RULE_CLASSES)) expect(cls).not.toBe('deterministic-detection');
     expect(PHASE2_MIGRATION_DEBT.commitment).toMatch(/^CMT-\d+$/);
   });
 
