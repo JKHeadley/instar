@@ -3743,6 +3743,76 @@ export class PostUpdateMigrator {
   }
 
   /**
+   * Ensure `permissions.allow` rules exist for the built-in tools that
+   * Task/Agent-spawned subagents use.
+   *
+   * THE BUG THIS CLOSES ("session paused"): the parent session launches with
+   * `--dangerously-skip-permissions`, but a subagent spawned via the Task/Agent
+   * tool does NOT inherit the parent's permission MODE — it only inherits the
+   * permission RULES from `.claude/settings.json` (confirmed against Claude Code
+   * docs: subagents get "independent permissions" / "inherit the parent
+   * conversation's permissions"). So in an unattended autonomous run, the first
+   * Bash call a subagent makes hits the interactive approval dialog, and with no
+   * human at the keyboard the session sits modal-blocked forever —
+   * indistinguishable from "paused". The PermissionRequest auto-approve hook above
+   * is defense-in-depth, but it does not reliably fire for subagent calls; an
+   * inherited allow-rule is the structural lever that always applies.
+   *
+   * SAFETY: this only skips the duplicative interactive PROMPT. Every real
+   * guard is a PreToolUse hook (dangerous-command-guard, external-operation-gate,
+   * external-communication-guard, self-stop-guard, …) and those run on every
+   * tool call REGARDLESS of allow-rules. Allow-rules are not "skip safety" —
+   * they are "skip the human-in-the-loop prompt", which is exactly the friction
+   * that wedges an unattended agent. MCP tools (mcp__*) are intentionally NOT
+   * blanket-allowed here — they are network/external operations governed by the
+   * external-operation-gate, where a plan/approval step is the correct posture.
+   *
+   * Idempotent: only adds tool names that are missing from the existing allow
+   * list, and never touches deny/ask lists or any other permission the operator
+   * configured.
+   */
+  private ensurePermissionAllowRules(
+    settings: Record<string, unknown>,
+    result: MigrationResult,
+  ): boolean {
+    // The built-in tools a subagent uses for local dev work. Bash is the one
+    // that actually wedged sessions; the rest are included so NO local-tool
+    // call can surface a prompt mid-run. Deliberately excludes mcp__* (gated
+    // separately) and any destructive-by-network tool.
+    const SUBAGENT_TOOL_ALLOW = [
+      'Bash',
+      'Read',
+      'Edit',
+      'Write',
+      'Glob',
+      'Grep',
+      'Task',
+      'NotebookEdit',
+      'WebFetch',
+      'WebSearch',
+      'TodoWrite',
+    ];
+
+    if (!settings.permissions || typeof settings.permissions !== 'object') {
+      settings.permissions = {};
+    }
+    const permissions = settings.permissions as Record<string, unknown>;
+    if (!Array.isArray(permissions.allow)) {
+      permissions.allow = [];
+    }
+    const allow = permissions.allow as string[];
+
+    const missing = SUBAGENT_TOOL_ALLOW.filter(tool => !allow.includes(tool));
+    if (missing.length === 0) return false;
+
+    allow.push(...missing);
+    result.upgraded.push(
+      `.claude/settings.json: added permissions.allow rules for subagent tools (${missing.join(', ')})`,
+    );
+    return true;
+  }
+
+  /**
    * Ensure autonomous stop hook is registered and the skill files are deployed.
    * This is the structural enforcement for /autonomous mode — without it,
    * sessions exit normally after each response instead of looping on the task list.
@@ -7915,6 +7985,14 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     // Ensure PermissionRequest auto-approve hook exists — subagents don't inherit
     // --dangerously-skip-permissions, so they'd prompt without this catch-all.
     if (this.ensurePermissionAutoApprove(hooks, result)) {
+      patched = true;
+    }
+
+    // Ensure permissions.allow rules exist for subagent tools. The hook above is
+    // defense-in-depth but does not reliably fire for Task/Agent subagent calls;
+    // an inherited allow-rule is the structural fix for the "session paused" hang
+    // (a subagent Bash call modal-blocking an unattended autonomous run forever).
+    if (this.ensurePermissionAllowRules(settings, result)) {
       patched = true;
     }
 
