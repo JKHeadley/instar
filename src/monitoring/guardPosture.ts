@@ -62,6 +62,25 @@ export function extractGuardPosture(config: unknown): GuardPosture {
     }
   }
 
+  // Computed posture for the always-on permission-prompt floor. It ships with NO
+  // persisted `enabled` BY DESIGN — a stale `false` could re-disable the very safety
+  // it provides (the exact stale-`false` trap that caused the bug it fixes). So the
+  // posture key is DERIVED from inverted `emergencyDisable` (absent ⇒ on): the floor
+  // still shows in /guards and a deliberate `emergencyDisable:true` reads as
+  // enabled→disabled (a tripwire incident), with no persisted boolean that can rot.
+  {
+    const mon = cfg.monitoring;
+    const ppr =
+      mon && typeof mon === 'object' && !Array.isArray(mon)
+        ? (mon as Record<string, unknown>).permissionPromptAutoResolver
+        : undefined;
+    const emergencyDisable =
+      ppr && typeof ppr === 'object' && !Array.isArray(ppr)
+        ? (ppr as Record<string, unknown>).emergencyDisable
+        : undefined;
+    posture['monitoring.permissionPromptAutoResolver.enabled'] = emergencyDisable !== true;
+  }
+
   const scheduler = cfg.scheduler;
   if (scheduler && typeof scheduler === 'object' && !Array.isArray(scheduler)) {
     const enabled = (scheduler as Record<string, unknown>).enabled;

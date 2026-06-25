@@ -1,3 +1,6 @@
+<!-- parent-principle: Structure beats Willpower — the floor is on in code, not behind a
+     flag someone has to remember to enable (a stale "off" flag is what caused the bug). -->
+
 # Framework Permission-Prompt Robustness — Plain-English Overview
 
 > The one-line version: a new safety popup in the coding tool can silently freeze

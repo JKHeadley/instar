@@ -5395,6 +5395,17 @@ export interface MonitoringConfig {
   /** Opt-in anonymous telemetry — sends usage heartbeats to help improve Instar */
   telemetry?: TelemetryConfig;
   /** Prompt Gate — detect and handle interactive prompts in sessions */
+  /**
+   * Permission-Prompt Auto-Resolver — the always-on safety floor that
+   * auto-answers a framework approval prompt Instar cannot otherwise clear.
+   * There is intentionally NO `enabled` flag (a stale persisted `false` could
+   * re-disable the very safety it provides). The only opt-out is the explicit
+   * emergency kill-switch below, which is absent by default (absence ⇒ on).
+   */
+  permissionPromptAutoResolver?: {
+    /** Emergency off-switch. Absent/false ⇒ floor ON. Set true to disable. */
+    emergencyDisable?: boolean;
+  };
   promptGate?: {
     /** Enable prompt detection (default: false) */
     enabled?: boolean;

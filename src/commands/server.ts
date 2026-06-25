@@ -5540,6 +5540,61 @@ export async function startServer(options: StartOptions): Promise<void> {
     // against the declared manifest (missing = a state, never an omission).
     const guardRegistry = new GuardRegistry();
 
+    // ── Permission-Prompt Auto-Resolver (always-on safety floor) ──────────────
+    // Auto-answers a framework approval prompt Instar cannot otherwise clear (the
+    // Claude Code 2.1.176-177 cd-redirection wedge). UNCONDITIONAL — there is NO
+    // enable flag (a stale persisted `false` could re-disable the very safety it
+    // provides; that exact trap is what caused this bug). The only opt-out is
+    // monitoring.permissionPromptAutoResolver.emergencyDisable (absent ⇒ on).
+    {
+      const { PermissionPromptAutoResolver, toPaneTailLines } =
+        await import('../monitoring/PermissionPromptAutoResolver.js');
+      const { looksGeneratingNow } = await import('../monitoring/sentinelWiring.js');
+      const pprAuditPath = path.join(config.sessions.projectDir, 'logs', 'permission-prompt-resolver.jsonl');
+      const permissionPromptResolver = new PermissionPromptAutoResolver({
+        sendKey: (s, k) => sessionManager.sendKey(s, k),
+        reCaptureTail: async (s) => {
+          const t = sessionManager.captureMeaningfulTail(s, 16);
+          return t == null ? null : toPaneTailLines(t);
+        },
+        isGenerating: (text) => looksGeneratingNow(text, 'claude-code'),
+        raiseDefect: (d) => {
+          try {
+            void telegram?.createAttentionItem({
+              id: `perm-prompt:${d.dedupKey}`,
+              title: 'Session wedged on an approval prompt I could not auto-clear',
+              summary: d.reason,
+              description:
+                `Session ${d.sessionName} (${d.layer}) is parked on an approval prompt the ` +
+                `auto-resolver could not clear (the host may have changed its prompt UI). It needs a look.`,
+              category: 'session',
+              priority: 'NORMAL',
+              sourceContext: 'permission-prompt-auto-resolver',
+            });
+          } catch { /* observability must never throw into the floor */ }
+        },
+        appendAudit: (row) => {
+          try {
+            fs.mkdirSync(path.dirname(pprAuditPath), { recursive: true });
+            try {
+              const st = fs.statSync(pprAuditPath);
+              if (st.size > 8 * 1024 * 1024) fs.renameSync(pprAuditPath, `${pprAuditPath}.1`);
+            } catch { /* file may not exist yet */ }
+            fs.appendFileSync(pprAuditPath, `${JSON.stringify(row)}\n`);
+          } catch { /* audit is best-effort; never throw */ }
+        },
+        now: () => Date.now(),
+        emergencyDisabled: () =>
+          config.monitoring?.permissionPromptAutoResolver?.emergencyDisable === true,
+      });
+      guardRegistry.register(
+        'monitoring.permissionPromptAutoResolver.enabled',
+        () => permissionPromptResolver.guardStatus(),
+      );
+      sessionManager.setPermissionPromptResolver(permissionPromptResolver);
+      console.log(pc.green('  Permission-Prompt Auto-Resolver: enabled (always-on safety floor)'));
+    }
+
     let scheduler: JobScheduler | undefined;
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);

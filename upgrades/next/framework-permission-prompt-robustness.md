@@ -1,0 +1,70 @@
+<!-- bump: patch -->
+
+## What Changed
+
+An Instar session could be silently, permanently wedged by an agent-framework approval
+prompt it cannot answer. Claude Code 2.1.176-177 added a hardcoded Bash safety prompt —
+`cd <dir> && <cmd>` combined with a redirect/pipe pops "Do you want to proceed? ❯ 1. Yes
+/ 2. No / Esc to cancel" — that runs BEFORE all permission rules and PermissionRequest
+hooks, so `--dangerously-skip-permissions` and `permissions.allow` cannot suppress it.
+A remote-driven session (Telegram/dashboard) cannot press a terminal key, so it freezes
+while still *looking* busy (PresenceProxy could even report "actively working"). The
+empirically-confirmed reason it bit the fleet: the existing PromptGate/AutoApprover
+pipeline was persisted `enabled:false` on deployed agents (a stale-`false` config wins
+over a newer `true` default), so nothing answered the prompt.
+
+- **New `src/monitoring/PermissionPromptAutoResolver.ts`** — an always-on, deterministic,
+  zero-LLM safety floor driven once per monitoring tick. It detects a live, focused
+  approval menu in a session's tmux tail and sends the approve keystroke itself.
+  - **Layer 2 (auto-answer):** requires ≥2 distinct registered prose patterns AND a live
+    glyph-led `❯`-cursor-on-an-approve-option line at the genuine bottom of the tail
+    while not generating; sends **`Enter`** only (confirm the highlighted "Yes"), with a
+    re-capture-before-send check. Because a text capture cannot *perfectly* distinguish a
+    real TUI selector from displayed content containing the same characters, this is
+    bar-raising mitigation (stated honestly), bounded by Enter-only (a false match is a
+    benign empty submit), a per-episode `MAX_ATTEMPTS=3` (reset-on-clear so distinct
+    prompts are independent), and a terminal defect.
+  - **Layer 3 (broad detector):** a prose-agnostic `detectPersistingMenu` surfaces ANY
+    persisting glyph-led menu the auto-answer declines (cursor-not-on-approve, or a future
+    prompt whose wording drifts) as a single deduped Attention defect — so nothing is ever
+    silently stranded, and it doubles as the prompt-string drift detector.
+- **`src/core/paneTail.ts`** gains a pure `leadGlyphsOf(line)` helper so the detector can
+  test for the `❯` selector glyph (U+276F) specifically.
+- **`StuckSignatureClassifier`** gains an `approval-prompt-waiting` kind; **`PresenceProxy`**
+  never surfaces it as a user message (the sole user-facing surface is the terminal
+  defect), killing the false "actively working" report for a prompt-wedged session.
+- **The floor is unconditional — no persisted `enabled:true` to rot to `false`** (the
+  exact trap that caused the bug). The only opt-out is `monitoring.permissionPromptAutoResolver.emergencyDisable`
+  (absent ⇒ on). A computed guard-posture key (`guardPosture.ts`) + a runtime
+  `guardStatus()` + a `GUARD_MANIFEST` entry make a disabled floor a visible incident in
+  `GET /guards`.
+- Existing wedged sessions recover automatically: the server restart that deploys the
+  update restarts the monitor loop, which auto-clears any session currently parked on the
+  prompt. No new setting, no manual step.
+
+The resolver answers a UI-flow prompt only; it never widens what commands are allowed
+(the destructive `dangerous-command-guard` denylist remains an independent guard). The
+auto-approve is accepted under the operator full-machine-access trust model. Converged
+through 6 spec-review rounds (6 internal reviewers + codex/gemini cross-model).
+
+## What to Tell Your User
+
+Your agent will no longer get silently stuck on a pop-up it can't answer. A recent
+update to the coding tool added a safety pop-up ("Do you want to proceed? Yes / No") that
+freezes the session, because nobody can press a key on it from your phone — and there's no
+setting to turn it off. Now a small always-on layer answers that pop-up itself, only ever
+pressing the harmless "Yes", and it's built into the code with no on/off switch that could
+get stuck "off" (a stuck-off setting is exactly what caused the freeze). If it ever hits a
+pop-up it genuinely can't clear (say a future version changes the wording), it stops and
+sends you one "please take a look" notice instead of freezing silently. Nothing for you to
+do; your agent just stays reachable.
+
+## Summary of New Capabilities
+
+- An always-on safety floor that auto-answers an un-answerable framework approval prompt,
+  so a remote-driven session is never silently wedged.
+- Honest, bounded detection (live glyph-led menu, Enter-only, re-capture, attempt cap) +
+  a prose-agnostic backstop so a drifted/unrecognized prompt surfaces rather than strands.
+- Visible in `GET /guards` (`on-confirmed`); an audit trail at
+  `logs/permission-prompt-resolver.jsonl` (matched-pattern names only, never raw tail);
+  emergency opt-out via `monitoring.permissionPromptAutoResolver.emergencyDisable`.

@@ -4114,6 +4114,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Real-Check Verification section');
     }
 
+    // Permission-Prompt Floor (spec: framework-permission-prompt-robustness) — Agent
+    // Awareness Standard + Migration Parity: existing agents learn that an always-on
+    // floor auto-answers a framework approval prompt the host can't otherwise clear,
+    // why it has no enable flag, and the two proactive Q&A triggers. Content-sniffed.
+    if (!content.includes('Permission-Prompt Floor')) {
+      content += `\n### Permission-Prompt Floor (you are never blocked by a framework approval prompt)\n\nAn always-on safety floor (\`PermissionPromptAutoResolver\`) auto-answers a framework approval prompt your host cannot otherwise clear — e.g. Claude Code 2.1.176-177's \`cd\`-with-redirect "Do you want to proceed? ❯ 1. Yes / 2. No" prompt, which runs before all permission rules so \`--dangerously-skip-permissions\` does NOT suppress it. It presses the approve key (\`Enter\`) itself, so a remote-driven session is never silently wedged on a terminal Y/N you can't answer from Telegram/dashboard. It is ON in code with NO enable flag — a stale persisted \`false\` could re-disable the very safety it provides (the exact trap that caused this bug), so the only opt-out is \`monitoring.permissionPromptAutoResolver.emergencyDisable\` (absent ⇒ on). If it genuinely cannot clear a prompt (a host UI change / unrecognized menu), it raises ONE Attention item — it never freezes silently. Visible in \`GET /guards\` (\`on-confirmed\`); audit at \`logs/permission-prompt-resolver.jsonl\` (matched-pattern names only, never raw pane text).\n- **When the user asks** (PROACTIVE): "why did my session auto-continue past a Yes/No prompt?" → the floor auto-answered it (a low-level command/tool prompt is never the user's decision; the agent has full machine access). "why did I get a 'wedged on an approval prompt' notice?" → the floor couldn't auto-clear it; the prompt's wording may have changed (a drift signal worth a look).\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Permission-Prompt Floor section');
+    }
+
     // Playwright Profile Registry (spec: playwright-profile-registry.md) — Agent
     // Awareness Standard + Migration Parity item 3: existing agents learn the
     // /playwright-profiles surface (list / session-context / create / assign /

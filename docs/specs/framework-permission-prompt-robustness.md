@@ -3,6 +3,7 @@ title: Framework Permission-Prompt Robustness — Instar is never blocked by an 
 slug: framework-permission-prompt-robustness
 author: echo
 date: 2026-06-25
+parent-principle: "Structure beats Willpower"
 status: draft
 approved: true
 approved-basis: "operator HARD-REQUIREMENT autonomous-mission pre-approval (2026-06-25); convergence report surfaced for visibility; change is internal/additive/reversible (emergencyDisable off-switch)"

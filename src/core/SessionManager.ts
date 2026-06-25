@@ -57,6 +57,7 @@ import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_L
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
+import { toPaneTailLines, type PermissionPromptAutoResolver } from '../monitoring/PermissionPromptAutoResolver.js';
 
 const execFileAsync = promisify(execFile);
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
@@ -367,6 +368,7 @@ export class SessionManager extends EventEmitter {
 
   /** Prompt Gate InputDetector — monitors terminal output for interactive prompts */
   private promptDetector?: InputDetector;
+  private permissionPromptResolver?: PermissionPromptAutoResolver;
 
   /** Sessions with active relay leases (prompt relayed, waiting for response) — extends idle timeout */
   private relayLeases = new Map<string, number>(); // session ID → lease expiry timestamp
@@ -914,6 +916,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Set the always-on Permission-Prompt Auto-Resolver (the safety floor that
+   * auto-answers a framework approval prompt Instar cannot otherwise clear).
+   * When set, monitorTick() pre-gates each running session's tail and hands a
+   * candidate to it. Unconditional by design — there is no enable flag.
+   */
+  setPermissionPromptResolver(resolver: PermissionPromptAutoResolver): void {
+    this.permissionPromptResolver = resolver;
+  }
+
+  /**
    * Grant a relay lease to a session — extends idle timeout while waiting for
    * a Telegram relay response. Prevents the zombie killer from killing sessions
    * that are legitimately waiting for user input.
@@ -1331,6 +1343,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.monitoringInProgress = true;
     try {
       const running = this.state.listSessions({ status: 'running' });
+      // Sweep the permission-prompt resolver's bounded state once per tick
+      // (evict entries for sessions no longer running + per-entry TTL).
+      try {
+        this.permissionPromptResolver?.sweep(new Set(running.map(s => s.tmuxSession)));
+      } catch { /* sweep must never throw into the monitor loop */ }
       for (const session of running) {
         // Grace period: don't check sessions that started less than 15 seconds ago.
         // Claude Code takes several seconds to start — the process might not be
@@ -1578,6 +1595,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // is the single actor on them while reaping (§3.6).
         if (!this.config.protectedSessions.includes(session.tmuxSession) && !this.isReaping(session.id)) {
           const output = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 5);
+
+          // ── Permission-Prompt Auto-Resolver (always-on safety floor) ──
+          // Cheap pre-gate on the already-captured 5-line tail, keyed on the
+          // MENU SHAPE (a glyph/❯-led numbered option, or a generic blocking
+          // affordance — all bottom-anchored, so reliably in the last 5 lines).
+          // Only on a hit do a fuller capture + evaluate, so the common
+          // (no-menu) case adds ZERO extra captures.
+          if (this.permissionPromptResolver && output &&
+              /(?:[>❯●○◉]\s*)?\d+\.\s|Esc to cancel|Do you want to proceed/i.test(output)) {
+            try {
+              const full = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 16);
+              if (full) {
+                await this.permissionPromptResolver.evaluate(session.tmuxSession, toPaneTailLines(full));
+              }
+            } catch { /* resolver must never throw into the monitor loop */ }
+          }
+
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
           // ── Prompt Gate: feed captured output to InputDetector ──
