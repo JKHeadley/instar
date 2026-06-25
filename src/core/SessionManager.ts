@@ -54,6 +54,7 @@ export interface SessionDiagnostics {
 }
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
+import { classifyIdleError } from './IdleErrorClassifier.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
 
@@ -150,7 +151,7 @@ export const IDLE_PROMPT_PATTERNS = [
  * Patterns in terminal output that indicate an API or tool error caused the session to stop.
  * When detected at the idle prompt, we nudge the session to continue instead of killing it.
  */
-const TERMINAL_ERROR_PATTERNS = [
+export const TERMINAL_ERROR_PATTERNS = [
   'API Error:',
   'invalid_request_error',
   'Could not process',
@@ -398,6 +399,11 @@ export class SessionManager extends EventEmitter {
    *  autonomous run that hit a SECOND transient API error was never re-nudged and
    *  silently stranded at the prompt. The runaway cap lives in errorNudgeTotal.) */
   private errorNudgedSessions = new Set<string>();
+  /** Per-session once-per-idle-episode guard for the idle-error classify audit record
+   *  (CMT-1785). Armed on the first classify of an episode; cleared in BOTH the
+   *  active-session re-arm block AND sessionComplete (full errorNudgedSessions lifecycle
+   *  parity — clearing only at re-arm would leak entries for sessions reaped while idle). */
+  private idleErrorClassified = new Set<string>();
 
   /** Total error-nudges issued per session (never cleared until sessionComplete).
    *  Bounds runaway: even with per-episode re-arming, a session stuck in a tight
@@ -901,6 +907,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       detector.cleanup(session.tmuxSession);
       this.relayLeases.delete(session.id);
       this.errorNudgedSessions.delete(session.id);
+      this.idleErrorClassified.delete(session.id);
       this.errorNudgeTotal.delete(session.id);
       this.pasteRetried.delete(session.id);
     });
@@ -1641,7 +1648,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // inject a nudge to get it working again instead of waiting 15m to kill.
               const nudgeTotal = this.errorNudgeTotal.get(session.id) ?? 0;
               if (shouldErrorNudge(this.errorNudgedSessions.has(session.id), nudgeTotal)) {
-                const recentOutput = await this.captureOutputMaybeAsync(session.tmuxSession, 30);
+                // 45 rows (RATE_LIMIT_SETTLED_CAPTURE_LINES), not 30: Claude Code's input
+                // box + footer + tips render 15-25 rows BELOW the API-error line, so a
+                // 30-row capture can miss the error entirely (the 2026-05-30 incident; the
+                // same reason detectRateLimited/SessionWatchdog capture 45). The classifier
+                // tail-gates within this; detectRateLimited only inspects its own last ~20
+                // lines, so the wider capture is a no-op for it (CMT-1785).
+                const recentOutput = await this.captureOutputMaybeAsync(session.tmuxSession, RATE_LIMIT_SETTLED_CAPTURE_LINES);
                 if (recentOutput) {
                   // Server-side throttle ("Server is temporarily limiting
                   // requests · not your usage limit") gets a DIFFERENT path:
@@ -1660,7 +1673,30 @@ rm()  { "${shimRunner}" rm  "$@"; }
                     this.emit('rateLimitedAtIdle', session.tmuxSession);
                     continue; // Skip to next session — sentinel owns recovery.
                   }
-                  const hasError = TERMINAL_ERROR_PATTERNS.some(p => recentOutput.includes(p));
+                  // CMT-1785: tail-gated + frame-discriminated classify replaces the bare
+                  // buffer-wide `.includes()` (which fired on stale-scrollback + quoted
+                  // content). A SIGNAL feeding the existing apiErrorAtIdle authority; the
+                  // match set is a strict subset of the old bare match, so it can only
+                  // SUPPRESS spurious fires, never add one.
+                  const idleErr = classifyIdleError(recentOutput, TERMINAL_ERROR_PATTERNS);
+                  const hasError = idleErr.isTerminalError;
+                  // Structured observability (once per idle episode): record fired vs
+                  // suppressed so a wave of suppressions on genuine errors (the under-fire
+                  // risk) is observable. Armed here; cleared with errorNudgedSessions.
+                  if (!this.idleErrorClassified.has(session.id)) {
+                    const bareCandidate = TERMINAL_ERROR_PATTERNS.some(p => recentOutput.includes(p));
+                    if (idleErr.isTerminalError || bareCandidate) {
+                      this.idleErrorClassified.add(session.id);
+                      console.log(`[SessionManager] ${JSON.stringify({
+                        event: 'idle-error-classify',
+                        session: session.name,
+                        result: idleErr.isTerminalError ? 'fired' : 'suppressed',
+                        matchedPattern: idleErr.matchedPattern,
+                        tailDepthFromEnd: idleErr.tailDepthFromEnd,
+                        reason: idleErr.isTerminalError ? undefined : 'no-frame-or-outside-tail',
+                      })}`);
+                    }
+                  }
                   if (hasError) {
                     // Arm the per-episode guard (re-armed on recovery — see the
                     // "Session is active" branch). Prevents per-tick re-emit/re-nudge.
@@ -1736,6 +1772,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             // is NOT cleared here — it's the lifetime runaway cap.)
             this.idlePromptSince.delete(session.id);
             this.errorNudgedSessions.delete(session.id);
+            this.idleErrorClassified.delete(session.id); // CMT-1785: re-arm the once-per-episode classify audit
             this.idleThrottleSettle.delete(session.tmuxSession); // session moved on — reset the settle clock
           }
         }

@@ -31,6 +31,7 @@
  */
 
 import { classifyWedgeTail } from './ContextWedgeSentinel.js';
+import { liveTail as sharedLiveTail } from '../core/paneTail.js';
 
 export type StuckKind =
   | 'rate-limited'      // Claude/provider usage or capacity limit — will clear on its own
@@ -76,10 +77,11 @@ const NORMAL_COMPACTION_TAIL_PATTERNS: readonly RegExp[] = [
   /compaction recovery/i,
 ];
 
-/** The last `tailLines` non-empty, trimmed lines of a capture, joined. */
+/** The last `tailLines` non-empty, trimmed lines of a capture, joined.
+ *  Delegates to the shared paneTail.liveTail (CMT-1785: one definition of the live
+ *  tail) and joins to preserve this module's byte-identical string-matching behavior. */
 function liveTail(text: string, tailLines: number): string {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  return lines.slice(-tailLines).join('\n');
+  return sharedLiveTail(text, tailLines).join('\n');
 }
 
 function anyMatch(text: string, patterns: readonly RegExp[]): RegExp | null {
