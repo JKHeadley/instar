@@ -62,7 +62,11 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'core/ProjectDriftChecker.ts': 'returns empty drift — advisory project-drift signal, no gated action',
   'core/CompletionEvaluator.ts': 'fail-open returns met:false ("keep working") / stopAllowed:true — conservative; gates autonomous completion in the benign direction',
   'core/ContextualEvaluator.ts': 'routes failure through handleEvaluationError — advisory contextual evaluation',
-  'core/CoherenceReviewer.ts': 'returns failOpen (no opinion) on a transport error — advisory reviewer; a SPAWN-CAPACITY shed (LlmCapacityUnavailableError) instead returns pass:false/capacityUnavailable (fail-CLOSED — forkbomb-prevention-simple §D-DISPOSITION), which CoherenceGate._evaluate blocks the turn on',
+  // core/CoherenceReviewer.ts REMOVED from REVIEWED_ADVISORY (reviewer-fail-closed-on-abstain,
+  // CMT-1794): it no longer silently degrades — it now carries gating:true (the router
+  // swaps before abstaining) AND tags abstains so CoherenceGate fails CLOSED on a
+  // high-criticality abstain external. The "no stale entries" check below enforces this
+  // removal (it now hasMarker).
   'core/TopicIntentExtractor.ts': 'returns [] — advisory topic-intent extraction',
   'memory/TopicSummarizer.ts': 'returns partial results — advisory topic summary',
   'security/LLMSanitizer.ts': 'fails SAFE — default catch returns sanitized:"" (empty, the safest result); only returns original when the caller explicitly opts in',

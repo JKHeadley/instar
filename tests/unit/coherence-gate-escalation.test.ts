@@ -25,6 +25,22 @@ import {
 } from '../../src/index.js';
 import type { CapabilityRegistry, CommonBlocker } from '../../src/index.js';
 
+// A mock IntelligenceProvider whose reviewers all PASS. Post the IntelligenceProvider
+// lockdown, reviewers route through `intelligence.evaluate` (NOT the legacy `fetch`),
+// so a gate constructed WITHOUT a provider makes every reviewer abstain — and after
+// reviewer-fail-closed-on-abstain (CMT-1794) an abstain on an external channel fails
+// CLOSED (held), which shadows the deterministic escalation verdict these tests assert.
+// Wiring a pass-returning provider lets the non-escalation reviewers pass so the
+// escalation logic (and pass-through) is what's actually tested (these tests passed
+// by ACCIDENT on the old no-provider fail-open).
+// A FRESH provider per call — a module-level shared mock would be reset by the
+// afterEach vi.restoreAllMocks(), making it a no-op for every test after the first.
+function makePassIntel(): import('../../src/core/types.js').IntelligenceProvider {
+  return {
+    evaluate: async () => JSON.stringify({ pass: true, severity: 'warn', issue: '', suggestion: '' }),
+  } as unknown as import('../../src/core/types.js').IntelligenceProvider;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -251,6 +267,7 @@ describe('CoherenceGate — escalation context wiring', () => {
       const gate = new CoherenceGate({
         stateDir: tmpDir,
         config: {},
+        intelligence: makePassIntel(),
       });
 
       const result = await gate.evaluate({
@@ -295,6 +312,7 @@ describe('CoherenceGate — escalation context wiring', () => {
       const gate = new CoherenceGate({
         stateDir: tmpDir,
         config: {},
+        intelligence: makePassIntel(),
       });
 
       const result = await gate.evaluate({
@@ -477,6 +495,7 @@ describe('CoherenceGate — escalation context wiring', () => {
       const gate = new CoherenceGate({
         stateDir: tmpDir,
         config: {},
+        intelligence: makePassIntel(),
         onResearchTriggered: (ctx) => { researchCalls.push(ctx); },
       });
 
@@ -556,6 +575,7 @@ describe('CoherenceGate — escalation context wiring', () => {
       const gate = new CoherenceGate({
         stateDir: tmpDir,
         config: {},
+        intelligence: makePassIntel(),
       });
 
       const result = await gate.evaluate({
