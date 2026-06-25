@@ -121,6 +121,11 @@ describe('Feature Delivery Completeness', () => {
     // When you add a new CLAUDE.md section to templates.ts, add a key phrase here.
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
+      // gate-prompts-judge-by-meaning §Migration: the Outbound Message Gate
+      // awareness section. Full parity — templates.ts generateClaudeMd + migrator
+      // migrateClaudeMd + migrateFrameworkShadowCapabilities markers[] (so a
+      // Codex/Gemini agent also learns its messages are judged by MEANING).
+      '### Outbound Message Gate',
       'Self-Discovery',
       'Publishing',
       'Private Viewing',

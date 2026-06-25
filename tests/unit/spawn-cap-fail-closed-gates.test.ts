@@ -87,11 +87,18 @@ describe('Fork-bomb P3 — four fail-CLOSED gate seams under capacity shed', () 
     expect(r.capacityUnavailable).toBe(true);
   });
 
-  it('3b. MessagingToneGate: a GENERIC LLM error still fails open (pass:true)', async () => {
+  it('3b. MessagingToneGate: a GENERIC LLM error now fails CLOSED (No-Silent-Degradation §Design 6)', async () => {
+    // CONTRACT CHANGE (gate-prompts-judge-by-meaning §Design 6): the delivery-path
+    // tone gate's provider-exhaustion path was flipped fail-OPEN → fail-CLOSED. A
+    // single erroring provider exhausts the swap chain → HOLD (pass:false), never a
+    // silent deliver. (`failClosedOnExhaustion` defaults to true.) The sentinel /
+    // input-guard generic-error paths above STILL fail open — only the outbound
+    // tone gate changed, because a held outbound message is recoverable via the
+    // existing retry path while a blocked inbound classification is more disruptive.
     const gate = new MessagingToneGate(erroring);
     const r = await gate.review('some outbound message', { channel: 'telegram' });
-    expect(r.pass).toBe(true);
-    expect(r.failedOpen).toBe(true);
+    expect(r.pass).toBe(false);
+    expect(r.failedClosed).toBe(true);
   });
 
   it('4. CoherenceReviewer.review: a capacity shed BLOCKS (pass:false), not pass:true', async () => {

@@ -1649,6 +1649,16 @@ export function createRoutes(ctx: RouteContext): Router {
       allowDuplicate?: boolean;
       allowLocalhostLink?: boolean;
       messageKind?: MessageKind;
+      // §Design 6: the route-budget slow-review timeout fails CLOSED by DEFAULT
+      // (the safe direction — attacker-induced latency must not silently bypass
+      // the gate). An automated / fixed-template send whose availability matters
+      // MORE than gating it (post-update: a "I'm back up" notice must not be held
+      // because the gate is slow) passes `false` to fail OPEN on the slow path.
+      // Default-closed (not default-open opt-in) so a NEW conversational caller is
+      // safe-by-construction — it cannot silently regress to fail-open by
+      // forgetting to opt in. Also gated by the global failClosedOnExhaustion
+      // kill-switch (false reverts every path to fail-open without a deploy).
+      failClosedOnBudgetTimeout?: boolean;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -1853,10 +1863,15 @@ export function createRoutes(ctx: RouteContext): Router {
         gateBudgetMs,
         undefined,
         undefined,
-        // §Design 6 kill-switch: the slow-timeout fails CLOSED by default; set
-        // messaging.toneGate.failClosedOnExhaustion:false to revert to fail-open.
-        ((ctx.config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean } } }).messaging?.toneGate
-          ?.failClosedOnExhaustion) !== false,
+        // §Design 6: the slow-review timeout fails CLOSED by default (the safe
+        // direction). Two independent ways to fail OPEN instead: (a) the per-call
+        // opt-out — an automated/fixed-template send (post-update) that must stay
+        // available passes failClosedOnBudgetTimeout:false; (b) the global operator
+        // kill-switch messaging.toneGate.failClosedOnExhaustion:false (reverts every
+        // path live, no deploy). Both must allow fail-closed for it to engage.
+        ((options.failClosedOnBudgetTimeout ?? true) &&
+          ((ctx.config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean } } }).messaging?.toneGate
+            ?.failClosedOnExhaustion) !== false),
       );
 
       // Structured observability: log every decision the authority made. This is
@@ -1907,6 +1922,7 @@ export function createRoutes(ctx: RouteContext): Router {
       allowDuplicate?: boolean;
       allowLocalhostLink?: boolean;
       messageKind?: MessageKind;
+      failClosedOnBudgetTimeout?: boolean;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -10488,6 +10504,12 @@ export function createRoutes(ctx: RouteContext): Router {
         topicId: updatesTopicId,
         allowDebugText: updateAllowDebugText,
         allowDuplicate: updateAllowDuplicate,
+        // §Design 6 availability carve-out: post-update is an automated,
+        // fixed-template channel (release/"I'm back up" notices). A slow gate
+        // must NOT hold these — they fail OPEN on the budget timeout. Real
+        // verdicts (a fast block) still hold; only the no-verdict-in-time path
+        // delivers. (Block/allow on a returned verdict is unchanged.)
+        failClosedOnBudgetTimeout: false,
       })
     )
       return;

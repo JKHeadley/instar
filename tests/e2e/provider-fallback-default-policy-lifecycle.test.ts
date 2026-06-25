@@ -138,18 +138,21 @@ describe('Wiring-integrity (M11): a gating CALLER receives the router re-throw w
     await expect(router.evaluate('x', gating)).rejects.toThrow();
 
     // Assert AT A REAL GATING CALLER: MessagingToneGate (the tonight-incident gate)
-    // routes through the router and receives the throw in its own catch. Its documented
-    // policy for a delivery-path tone gate is fail-OPEN (failedOpen:true) — the
+    // routes through the router and receives the throw in its own catch. The
     // wiring-integrity point is that the throw REACHES the caller (the router did not
     // swallow it into a brittle heuristic), so the caller's OWN fail policy decides.
+    // CONTRACT CHANGE (gate-prompts-judge-by-meaning §Design 6): the delivery-path
+    // tone gate's policy on an EXHAUSTED swap chain is now fail-CLOSED (hold) — a
+    // dropped gating verdict is never silently delivered (No Silent Degradation).
+    // failClosedOnExhaustion defaults to true.
     const toneGate = new MessagingToneGate(router);
     const result = await toneGate.review('hello there', {
       channel: 'telegram',
       recentMessages: [],
       signals: {},
     } as any);
-    expect(result.failedOpen).toBe(true);
-    expect(result.pass).toBe(true); // tone gate fails open — but only AFTER the throw reached it
+    expect(result.failedClosed).toBe(true);
+    expect(result.pass).toBe(false); // tone gate now HOLDS on exhaustion — but only AFTER the throw reached it
   });
 
   it('a FAIL-CLOSED gating caller propagates the throw (does not silently pass)', async () => {
