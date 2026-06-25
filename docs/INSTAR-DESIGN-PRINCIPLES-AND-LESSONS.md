@@ -514,6 +514,8 @@ These are patterns Instar has *already built infrastructure for*. Any new spec t
 
 **Backtrack-tell:** hardcoded tool-name table with no canary against the running framework binary.
 
+**Parent principle:** **P20 (Verify the State, Not Its Symbol)** — L5 is the parser-scoped special case of that broader standard; the canary/drift requirement is P20 mode C (a single-source map diverging from a plural territory) applied to version-string parsers.
+
 ---
 
 ### L6. Side-effects review gate (seven canonical dimensions)
@@ -922,11 +924,29 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 **Earned from:** One day (2026-06-05), three same-shaped incidents on the live fleet: the reaper age-gate re-requesting a vetoed kill every 5s forever (17,503 identical requests — #863); the live-tail streamer re-reading the 75k-line message log per topic per 5s tick and hot-retrying rejected flushes — its own cost froze the event loop, which staled mesh timestamps, which caused the very rejections it retried (#867); and the topic-spam flood family (P17). Per Distrust Temporary Success: three recurrences in one day is one missing standard, not three bugs.
 
+### P20. Verify the State, Not Its Symbol (a detector confirms the state, never a symbol of it; absence ≠ the alarm)
+
+**Statement:** A detector, gate, verifier, or sentinel must confirm the **state of the world** it claims to detect — never accept a **symbol** of that state (a string, label, marker, filename, or the mere presence/absence of a proxy signal) as proof the state holds. The failure runs both ways: the *presence* of a symbol is not the condition being true, and the *absence* of a signal is not the condition being true. Missing evidence resolves to **unknown**, and unknown fails toward the **least-harmful** action *for that detector* — which is not always "closed" (a security gate's unknown → block; a notice/recovery sentinel's unknown → stay quiet, because the nag IS the harm).
+
+**Source:** constitution article "Verify the State, Not Its Symbol" (Substrate); proposed + ratified by Justin 2026-06-24 (topic 16566). Parent principle of L5 (state-detection robustness) and the AUP-wedge note. Full analysis: `docs/specs/blindspot-class-symbol-vs-state.md`.
+
+**Translation:**
+- For every detector/gate/verifier in a spec, ask the three questions: **(A)** does it fire on a *corroborated* signal causally tied to the real state (a second signal an impostor state can't fake), or on a bare symbol's presence? **(B)** can the detector's input channel be written into incidentally by its own subject (the agent's own work / the thing it monitors)? If so, read a channel the subject can't pollute (a structured exit state, not free terminal text). **(C)** does it name which fail-direction is least-harmful, fail that way on *unknown*, and resolve its evidence by the real (often plural) location — so a genuine not-found is *unknown*, never the alarming state?
+- A brittle signal is still required to be a *correct* signal — this is orthogonal to *Signal vs Authority* (P2), which only governs who may BLOCK.
+- "Fail closed" is not universal — derive the least-harmful direction per detector and state it.
+
+**Enforcement (structural):**
+- ENFORCEMENT FIRST: the crystallizing instance is fixed in `docs/specs/ratelimit-sentinel-false-positive-hardening.md` (corroborated idle-error fire + account-home, fail-safe-by-direction verifier).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer asks the three questions of every spec's detectors.
+- Next surface (tracked): a `no-uncorroborated-symbol-fire`-style CI ratchet for detector callsites that fire on a bare substring with no second-signal corroboration, mirroring `no-silent-llm-fallback.test.ts`.
+
+**Earned from:** The crystallizing instance, not the first — 2026-06-24 (topic 16566): the RateLimitSentinel fired "this turn died on an API error" because the words `API Error:` were on the pane (put there by the session *investigating* API errors), then cried wolf for 11 min because its verifier looked in one Claude home while the session ran under another account home (absence-of-file read as never-recovered). The detector that diagnosed the bug was tripped by the bug, live. The class had recurred under disguises — the 2026-06-06 stale-pointer crying-wolf (mode C), the AUP-rejection wedge (mode B, a CLAUDE.md note only), and L5's origin (mode C for parsers). Per *Distrust Temporary Success*: four-plus recurrences is one missing standard, not four bugs.
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P19):
+For each Part 1 principle (P1-P20):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
