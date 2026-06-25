@@ -64,6 +64,12 @@ Build of the converged spec `docs/specs/framework-permission-prompt-robustness.m
 
 ## Tests
 
+**No-silent-fallbacks ratchet:** the resolver's re-capture-before-send guard carries an
+`@silent-fallback-ok` marker — a re-capture failure is not a silent degradation; it
+aborts the send and is recorded as `race-aborted` in the resolver audit. The redundant
+outer `sweep` guard in `monitorTick` was dropped (the resolver's `sweep` is internally
+guarded). Net ratchet delta: 0 (count stays at the baseline).
+
 3 tiers green: unit (resolver 34 + classifier 4 + guardPosture 5 + PresenceProxy 3),
 integration 4 (DI seam → exactly one Enter + audit privacy + no-send-when-generating +
 no-send-when-emergency-disabled + guardStatus reflects the off-switch), e2e 4

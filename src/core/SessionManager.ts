@@ -1343,11 +1343,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.monitoringInProgress = true;
     try {
       const running = this.state.listSessions({ status: 'running' });
-      // Sweep the permission-prompt resolver's bounded state once per tick
-      // (evict entries for sessions no longer running + per-entry TTL).
-      try {
-        this.permissionPromptResolver?.sweep(new Set(running.map(s => s.tmuxSession)));
-      } catch { /* sweep must never throw into the monitor loop */ }
+      // Sweep the permission-prompt resolver's bounded state once per tick (evict
+      // entries for ended sessions + per-entry TTL). The resolver's sweep is internally
+      // guarded (it never throws into the monitor loop), so no outer guard is needed.
+      this.permissionPromptResolver?.sweep(new Set(running.map(s => s.tmuxSession)));
       for (const session of running) {
         // Grace period: don't check sessions that started less than 15 seconds ago.
         // Claude Code takes several seconds to start — the process might not be

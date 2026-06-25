@@ -529,6 +529,9 @@ export class PermissionPromptAutoResolver {
     try {
       recap = await this.deps.reCaptureTail(session);
     } catch {
+      // @silent-fallback-ok — a re-capture failure is NOT a silent degradation: the
+      // send is aborted and the outcome is recorded as 'race-aborted' in the resolver
+      // audit (logs/permission-prompt-resolver.jsonl) below, not swallowed.
       recap = null;
     }
     if (!recap) {
