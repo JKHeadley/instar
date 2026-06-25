@@ -33,8 +33,13 @@ function noopDeps(emergencyDisabled = false) {
 
 describe('E2E — permission-prompt floor is alive by default', () => {
   it('guard posture computes the floor ON for a default config', () => {
-    expect(extractGuardPosture({})[KEY]).toBe(true);
+    // A realistic config always has a `monitoring` block; the floor reads ON from
+    // it with NO persisted `enabled` field (the no-stale-trap design).
     expect(extractGuardPosture({ monitoring: {} })[KEY]).toBe(true);
+    // A bare `{}` has no monitoring block at all — the degenerate case — so it
+    // adds no spurious floor key (consistent with the GuardPostureTripwire
+    // "empty/garbage config ⇒ empty posture" robustness invariant).
+    expect(extractGuardPosture({})[KEY]).toBeUndefined();
   });
 
   it('a constructed resolver reports guardStatus().enabled === true by default', () => {

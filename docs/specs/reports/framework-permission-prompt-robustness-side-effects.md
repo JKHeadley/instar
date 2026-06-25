@@ -24,7 +24,11 @@ Build of the converged spec `docs/specs/framework-permission-prompt-robustness.m
 - **`src/monitoring/PresenceProxy.ts`** — both `classifyStuckSignature` consumers
   suppress the new kind unconditionally (consumer policy; no classifier-contract
   inversion). Existing 11 + 14 tests pass.
-- **`src/monitoring/guardPosture.ts`** — a computed posture key (no persisted `enabled`).
+- **`src/monitoring/guardPosture.ts`** — a computed posture key (no persisted `enabled`),
+  scoped to a present `monitoring` block so a degenerate empty config (`{}`) adds NO spurious
+  posture entry — preserving the GuardPostureTripwire "empty/garbage config ⇒ empty posture"
+  robustness invariant. Every real agent carries a `monitoring` block, so the floor is always
+  present in production posture.
 - **`src/monitoring/guardManifest.ts`** — a `GUARD_MANIFEST` entry.
 - **`scripts/lint-guard-manifest.js`** — adds the component to `ADDITIONAL_CANDIDATES`.
 - **`src/core/PostUpdateMigrator.ts`** — a content-sniffed `migrateClaudeMd` section
@@ -75,3 +79,16 @@ integration 4 (DI seam → exactly one Enter + audit privacy + no-send-when-gene
 no-send-when-emergency-disabled + guardStatus reflects the off-switch), e2e 4
 (feature-alive: posture + guardStatus ON by default, OFF only on explicit
 emergencyDisable). tsc clean; full lint suite clean.
+
+**CI-fix follow-up (post-merge-prep):** a full-unit-suite run surfaced three tests the
+local pre-push subset missed: (1) `GuardPostureTripwire` "empty/garbage config ⇒ empty
+posture" — the computed floor key was added unconditionally, so it appeared for `{}`;
+fixed by scoping the key to a present `monitoring` block (above). (2) The floor's own
+`guardPosture-permission-prompt` + `permission-prompt-floor-alive` empty-config
+assertions were reconciled to that scoping (the always-on proof now lives in the
+`monitoring:{}` cases; a bare `{}` adds no spurious key). (3) `feature-delivery-completeness`
+required the `migrateClaudeMd` "Permission-Prompt Floor" section be registered in
+`legacyMigratorSections` (migrator-only awareness; the `generateClaudeMd` template parity
+remains the tracked minor follow-up). `src/data/builtin-manifest.json` is a gitignored,
+build-time-generated artifact — its "up-to-date" check fails only on a stale local copy
+(CI regenerates it fresh) and is not a source change here.

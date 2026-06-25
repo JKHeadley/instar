@@ -70,15 +70,17 @@ export function extractGuardPosture(config: unknown): GuardPosture {
   // enabled→disabled (a tripwire incident), with no persisted boolean that can rot.
   {
     const mon = cfg.monitoring;
-    const ppr =
-      mon && typeof mon === 'object' && !Array.isArray(mon)
-        ? (mon as Record<string, unknown>).permissionPromptAutoResolver
-        : undefined;
-    const emergencyDisable =
-      ppr && typeof ppr === 'object' && !Array.isArray(ppr)
-        ? (ppr as Record<string, unknown>).emergencyDisable
-        : undefined;
-    posture['monitoring.permissionPromptAutoResolver.enabled'] = emergencyDisable !== true;
+    // Only surface the floor's computed posture when a `monitoring` config block
+    // exists (every real agent has one). A degenerate config with no monitoring
+    // block produces NO spurious posture entry (so extractGuardPosture({}) === {}).
+    if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+      const ppr = (mon as Record<string, unknown>).permissionPromptAutoResolver;
+      const emergencyDisable =
+        ppr && typeof ppr === 'object' && !Array.isArray(ppr)
+          ? (ppr as Record<string, unknown>).emergencyDisable
+          : undefined;
+      posture['monitoring.permissionPromptAutoResolver.enabled'] = emergencyDisable !== true;
+    }
   }
 
   const scheduler = cfg.scheduler;

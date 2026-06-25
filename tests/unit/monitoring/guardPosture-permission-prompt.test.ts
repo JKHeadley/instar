@@ -43,8 +43,16 @@ describe('extractGuardPosture — permissionPromptAutoResolver floor', () => {
     expect(posture[KEY]).toBe(true);
   });
 
-  it('no persisted `enabled` is ever required — the key is present even with an empty config', () => {
-    const posture = extractGuardPosture({});
-    expect(posture[KEY]).toBe(true);
+  it('a degenerate config with no monitoring block adds no spurious floor key', () => {
+    // The floor's always-on / no-persisted-`enabled` design is proven by the
+    // `monitoring:{}` cases above: the key reads ON from just a monitoring block,
+    // with no `enabled` field anywhere. A bare `{}` (or undefined/null) has no
+    // monitoring block at all, so — consistent with the GuardPostureTripwire
+    // "empty/garbage config ⇒ empty posture" robustness invariant — it adds NO
+    // spurious floor key. (Every real agent has a monitoring block, so the floor
+    // is always present in production posture.)
+    expect(extractGuardPosture({})).toEqual({});
+    expect(extractGuardPosture(undefined)).toEqual({});
+    expect(extractGuardPosture(null)).toEqual({});
   });
 });
