@@ -288,6 +288,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Signal-only local recorder + ONE deduped attention item; reads git status/diff + lsof read-only; no egress, no spend, no destructive action. The optional preservation is a NON-destructive patch write (git diff → a state-dir file) behind an off-by-default preserveWork sub-flag — it never mutates the worktree, its index, or any ref.',
   },
   {
+    name: 'strandedTopicSentinel',
+    configPath: 'monitoring.strandedTopicSentinel.enabled',
+    description:
+      'Stranded-inbound detector (stranded-inbound-self-heal) — surfaces a Telegram/Slack topic whose owner machine is online-by-heartbeat but unable to serve (quota-walled or adapter-disconnected) while a healthy machine holds the lease, so inbound is silently dead for that topic. Raises ONE aggregated attention item per (owner-machine, stranding window).',
+    justification:
+      'PURE SIGNAL — its sole output is an advisory attention item; it MUTATES NOTHING (no ownership CAS, no pin write, no session kill, no direct user message). Lease-holder is the sole actor and a single-machine agent is a strict no-op, so across machines exactly one raises the item (no duplicate-voice). Synchronous + LLM-free + acquires NO spawn-cap slot (asserted by test); reads only the in-memory ownership cache + the replicated heartbeat pool view, with an explicit fail-closed staleness bound (every uncertainty — missing field, stale beat, underivable scope, pool view unavailable — routes to SKIP, never manufactures a strand). It can only ever ADD an attention item, already bounded by the existing AttentionTopicGuard flood ceiling. No egress beyond the operator-facing item, no spend, no destructive action. Runs live (no destructive write warrants a dry-run) on dev / dark on fleet. Auto-failover is a tracked v2 with named prerequisites.',
+  },
+  {
     name: 'yieldSafety',
     configPath: 'monitoring.yieldSafety.enabled',
     description:

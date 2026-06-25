@@ -217,6 +217,23 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Detects agent worktrees with uncommitted work whose owning session died + settled.',
   },
   {
+    // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
+    // it through the developmentAgent dark-feature gate (dark on the fleet, live on
+    // a dev agent). defaultEnabled:false reflects the fleet default. expectRuntime:
+    // true REQUIRES the server-boot guardRegistry.register callsite (a pure
+    // in-memory guardStatus getter); an enabled-but-unregistered guard reports
+    // `missing`. expectedTickMs derives the on-stale threshold (5×).
+    key: 'monitoring.strandedTopicSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.strandedTopicSentinel.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'StrandedTopicSentinel',
+    description: 'Pure-signal detector: surfaces a topic whose owner machine is online-but-unable-to-serve (quota-walled / adapter-disconnected) while a healthy machine holds the lease, so inbound is silently dead. Raises ONE aggregated attention item; MUTATES NOTHING.',
+  },
+  {
     // tmux Event-Loop Resilience (C). `enabled` is deliberately OMITTED from
     // ConfigDefaults — the runtime resolves it through the developmentAgent
     // dark-feature gate (dark on the fleet, live on a dev agent). defaultEnabled:false

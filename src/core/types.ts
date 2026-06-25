@@ -4925,6 +4925,28 @@ export interface MonitoringConfig {
     maxFlagsPerPass?: number;
   };
   /**
+   * StrandedTopicSentinel (stranded-inbound-self-heal) — a pure-signal detector
+   * that surfaces a Telegram/Slack topic whose owner machine is online-by-
+   * heartbeat but unable to serve (quota-walled or adapter-disconnected) while a
+   * healthy machine holds the lease, so inbound is silently dead for that topic.
+   * Raises ONE aggregated attention item per (owner-machine, stranding window);
+   * MUTATES NOTHING (no ownership CAS, no pin write, no session kill). `enabled`
+   * is OMITTED from ConfigDefaults so the developmentAgent dark-feature gate
+   * decides (LIVE on dev, DARK on fleet). Registered in DEV_GATED_FEATURES.
+   * GET /guards row + lastTickAt liveness.
+   */
+  strandedTopicSentinel?: {
+    enabled?: boolean;
+    /** Tick cadence (ms). Default 60s. */
+    tickMs?: number;
+    /** Dwell the unable-to-serve condition must hold before emitting (ms). Default 30s. */
+    dwellMs?: number;
+    /** A beat older than this is not a genuine rich beat (ms). Default 45s. */
+    freshnessBoundMs?: number;
+    /** Owner must have zero stranded topics for N consecutive ticks before its window closes. Default 3. */
+    clearAfterTicks?: number;
+  };
+  /**
    * Build-Session Yield Safety (ACT-839; spec BUILD-SESSION-YIELD-SAFETY-SPEC).
    * A reaped session whose worktree holds uncommitted work becomes resume-
    * eligible (a new `uncommitted-worktree-work` WorkEvidence value, collected

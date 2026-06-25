@@ -71,6 +71,13 @@ export interface SessionOwnershipStore {
    * freshly-reread record) if a peer advanced first (non-fast-forward reject).
    */
   casWrite(candidate: SessionOwnershipRecord): { ok: boolean; observed: SessionOwnershipRecord | null };
+  /**
+   * Every known record from the store's in-memory cache (StrandedTopicSentinel
+   * scan). Optional: a store that can't enumerate cheaply omits it and the
+   * registry's `all()` reads empty. Both shipped stores (InMemory + Local)
+   * implement it.
+   */
+  all?(): SessionOwnershipRecord[];
 }
 
 export interface SessionOwnershipRegistryDeps {
@@ -111,6 +118,16 @@ export class SessionOwnershipRegistry {
 
   read(sessionKey: string): SessionOwnershipRecord | null {
     return this.d.store.read(sessionKey);
+  }
+
+  /**
+   * Every known ownership record from the underlying store's in-memory cache
+   * (StrandedTopicSentinel scan — stranded-inbound-self-heal). A store without an
+   * `all()` (none ship today) reads as empty: the sentinel then has nothing to
+   * scan (the safe direction — it can only raise an item it has evidence for).
+   */
+  all(): SessionOwnershipRecord[] {
+    return this.d.store.all?.() ?? [];
   }
 
   /** The current owner machine of a session (null if none / released). */

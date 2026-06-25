@@ -291,6 +291,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       preserveWork: false,
       maxFlagsPerPass: 10,
     },
+    // StrandedTopicSentinel (stranded-inbound-self-heal): a PURE-SIGNAL detector
+    // that surfaces a topic whose owner machine is online-by-heartbeat but unable
+    // to serve (quota-walled or adapter-disconnected) while a healthy machine
+    // holds the lease, so inbound is silently dead for that topic. Raises ONE
+    // aggregated attention item per (owner-machine, stranding window); MUTATES
+    // NOTHING. `enabled` is OMITTED so the runtime resolves it through the
+    // standard developmentAgent dark-feature gate (resolveDevAgentGate): LIVE on a
+    // dev agent, DARK on the fleet. Registered in DEV_GATED_FEATURES; GET /guards.
+    strandedTopicSentinel: {
+      tickMs: 60_000,
+      dwellMs: 30_000,
+      freshnessBoundMs: 45_000,
+      clearAfterTicks: 3,
+    },
     // Build-Session Yield Safety (ACT-839): a reaped session with uncommitted
     // worktree work becomes resume-eligible + gets a tracked commit-or-preserve
     // obligation. `enabled` is OMITTED so the developmentAgent dark-feature gate

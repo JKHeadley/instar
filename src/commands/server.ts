@@ -18860,6 +18860,62 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
+
+    // ── StrandedTopicSentinel (stranded-inbound-self-heal) — PURE SIGNAL ──────
+    // Detects a topic whose owner machine is online-by-heartbeat but unable to
+    // serve (quota-walled or adapter-disconnected) while a healthy machine holds
+    // the lease, so inbound is silently dead for that topic. Raises ONE
+    // aggregated agent-health attention item per (owner-machine, stranding
+    // window); MUTATES NOTHING (no ownership CAS, no pin write, no session kill).
+    // developmentAgent dark-feature gate: LIVE on a dev agent, DARK on the fleet.
+    // Lease-holder is the sole actor; single-machine = strict no-op. GET /guards.
+    // Wired here (late) because it depends on machinePoolRegistry +
+    // sessionOwnershipRegistry + _meshSelfId, all assigned during pool boot.
+    const _strandedEnabled = resolveDevAgentGate(config.monitoring?.strandedTopicSentinel?.enabled, config);
+    if (_strandedEnabled && machinePoolRegistry && sessionOwnershipRegistry) {
+      try {
+        const { StrandedTopicSentinel } = await import('../monitoring/StrandedTopicSentinel.js');
+        const _ownReg = sessionOwnershipRegistry;
+        const _poolReg = machinePoolRegistry;
+        const _nickById = (id: string): string =>
+          (_listPoolMachines?.() ?? []).find((m) => m.machineId === id)?.nickname ?? id;
+        const strandedSentinel = new StrandedTopicSentinel(
+          {
+            listOwnershipRecords: () => _ownReg.all(),
+            listCapacities: () => _poolReg.getCapacities(),
+            selfMachineId: () => _meshSelfId,
+            holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : coordinator.holdsLease()),
+            raiseAttention: (item) => {
+              if (!telegram) return;
+              void telegram.createAttentionItem({
+                id: item.id,
+                title: item.title,
+                summary: item.summary,
+                description: item.description,
+                category: item.category,
+                priority: item.priority,
+                sourceContext: item.sourceContext,
+                lane: item.lane,
+                healthKey: item.healthKey,
+              });
+            },
+            nicknameOf: _nickById,
+            now: () => Date.now(),
+          },
+          { ...config.monitoring?.strandedTopicSentinel, enabled: _strandedEnabled },
+        );
+        strandedSentinel.start();
+        guardRegistry.register('monitoring.strandedTopicSentinel.enabled', () => strandedSentinel.guardStatus());
+        console.log(pc.green('  StrandedTopicSentinel enabled (online-but-unable-to-serve detector — pure signal)'));
+      } catch (e) {
+        // @silent-fallback-ok — optional dev-gated, pure-signal feature: a wiring
+        // failure is logged (console.error, NOT silent) and is non-fatal BY DESIGN
+        // — the monitoring sentinel must never crash server boot. Nothing to
+        // degrade-report or fall back to; the server runs without the detector.
+        console.error('  StrandedTopicSentinel wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
+      }
+    }
+
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
