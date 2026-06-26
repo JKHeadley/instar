@@ -140,6 +140,15 @@ export interface ResumeQueueDrainerConfig {
   /** Master off-switch for Layer 2 (the bounded behavior change). Layer 1 (the
    *  paused-with-waiting-work alert) is unaffected and always on. */
   autoResumeStalePause: boolean;
+  /**
+   * "The Agent Is Always Reachable" G2 (spec: agent-always-reachable). When a
+   * revival is HELD by the pressure gate (calm-ticks) and the oldest waiting
+   * entry has been queued longer than this, surface ONE plain-English
+   * `pressure-held` notice (NOT silence, NOT the 24h ttl-expired) so the user
+   * learns a topic is held under load with guidance — closing the topic-28744
+   * silent-no-revival gap. 0 disables the notice.
+   */
+  pressureHeldNoticeMs: number;
 }
 
 export const DEFAULT_RESUME_DRAINER_CONFIG: ResumeQueueDrainerConfig = {
@@ -153,6 +162,7 @@ export const DEFAULT_RESUME_DRAINER_CONFIG: ResumeQueueDrainerConfig = {
   tier1DeadlineMs: 5_000,
   staleEmergencyPauseAutoResumeMin: 60,
   autoResumeStalePause: true,
+  pressureHeldNoticeMs: 20 * 60_000, // ~2 reaper ticks — surface a pressure-held revival, never silent
 };
 
 export class ResumeQueueDrainer {
@@ -165,6 +175,9 @@ export class ResumeQueueDrainer {
   private consecutiveFailures = 0;
   private breakerOpenUntil = 0;
   private lastGateBlock = '';
+  /** G2 (agent-always-reachable): episode flag so a pressure-held revival surfaces
+   *  ONE notice per held episode, reset when the gate clears. */
+  private pressureHeldNotified = false;
   /** would-resume audited once per entry in dry-run. */
   private dryRunAudited = new Set<string>();
   /**
@@ -280,12 +293,38 @@ export class ResumeQueueDrainer {
           this.deps.audit({ event: 'gates-blocked', gate, tier, calmTicks: this.calmTicks });
           this.lastGateBlock = gate;
         }
+        // G2 (agent-always-reachable): a PRESSURE-held revival must NOT be silent.
+        // When the calm-ticks (pressure) gate holds a revival and the oldest READY
+        // entry has waited past the notice window, surface ONE plain-English notice
+        // through the DETERMINISTIC raiseAggregated funnel (a system notice, never
+        // the tone-gated reply path that could itself be held by the same pressure),
+        // then suppress until the gate clears. Closes the topic-28744 silent-no-revival gap.
+        if (gate === 'calm-ticks') {
+          if (this.cfg.pressureHeldNoticeMs > 0 && !this.pressureHeldNotified && !queue.isDryRun()) {
+            const heldNowIso = new Date(this.now()).toISOString();
+            const ready = queue.nextCandidates().find((e) => !e.nextAttemptAt || e.nextAttemptAt <= heldNowIso);
+            const heldMs = ready ? this.now() - Date.parse(ready.queuedAt) : 0;
+            if (ready && Number.isFinite(heldMs) && heldMs >= this.cfg.pressureHeldNoticeMs) {
+              this.deps.raiseAggregated(
+                'pressure-held',
+                `A session I closed is waiting to come back, but the machine is under memory/CPU pressure, so I'm holding the restart until it eases — I'm not ignoring it. I'm freeing resources in the meantime; message me to retry, or I'll bring it back automatically once there's headroom.`,
+              );
+              this.pressureHeldNotified = true;
+            }
+          }
+        } else {
+          // The hold is no longer pressure (quota/session-cap/etc.) — re-arm the
+          // pressure-held notice for a future pressure episode.
+          this.pressureHeldNotified = false;
+        }
         return { resumed: false, blocked: gate };
       }
       if (this.lastGateBlock) {
         this.deps.audit({ event: 'gates-cleared', calmTicks: this.calmTicks });
         this.lastGateBlock = '';
       }
+      // Pressure (and every other gate) has cleared — re-arm the pressure-held notice.
+      this.pressureHeldNotified = false;
 
       // ONE candidate per tick (R2.4), ordered (R2.5), attempt-backoff honored.
       const nowIso = new Date(this.now()).toISOString();

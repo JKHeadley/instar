@@ -1,0 +1,26 @@
+# The Agent Is Always Reachable — no silent resource rejection (Increment 1: standard + G2)
+
+**Slug:** `agent-always-reachable` · **Maturity:** 🟢 Stable (G2 ships ON, pure-additive) · **Audience:** user
+
+## What Changed
+
+Adds the constitutional standard **"The Agent Is Always Reachable — A Guaranteed Reachability Floor"** and ships its first guarantee, **G2 — no silent resource rejection**. When a closed session is queued to come back but the machine is under memory/CPU pressure, the resume queue used to hold that revival INDEFINITELY and SILENTLY — a whole topic could go quiet with no message and no guidance, and you only found out by noticing the silence (the topic-28744 incident). Now, after a short bounded wait, the agent surfaces ONE plain-English notice explaining the hold and what to do — through the deterministic attention-queue path, so it delivers even when the very pressure it reports would stall a normal LLM-gated reply. The notice fires once per held episode (no spam), respects the existing anti-flood budget, and re-arms for a later episode. It never gates a revival — it only ever ADDS a notice (the safe direction). G1 (the stronger always-one-live-lifeline floor) is the tracked next increment.
+
+## What to Tell Your User
+
+If I ever close a session for resource reasons and can't bring it straight back because the machine is tight on memory or CPU, you now get one clear message — "a session I closed is waiting to come back, but the machine is under pressure, so I'm holding the restart until it eases; I'm freeing resources in the meantime" — instead of a topic just going quiet. It's a heads-up, not a wall: I keep working to free resources and bring the session back automatically once there's headroom, and you can message me to retry. You'll see it at most once per pressure episode, and it respects the anti-spam budget.
+
+## Summary of New Capabilities
+
+- A pressure-held session revival now surfaces ONE plain-English notice after a bounded window (`monitoring.resumeQueue.pressureHeldNoticeMs`, default ~20min) instead of holding silently until a 24h expiry.
+- The notice rides the deterministic attention-queue funnel (the same path as the existing `ttl-expired` notice), so delivery does not depend on LLM availability under the pressure it reports.
+- Deduped per held episode, re-armed when the gate clears, budget-bounded, dry-run-silent. Configurable / disablable via `pressureHeldNoticeMs` (0 disables the notice; it never gates a revival).
+- New constitutional standard in `docs/STANDARDS-REGISTRY.md` — the availability twin of "The Operator Channel Is Sacred."
+
+## Evidence
+
+- `resume-queue-drainer.test.ts` (+6 G2 tests, 61 total pass): emits ONE notice when held past the window; silent below the window; one-per-episode suppression; dry-run silent; no fire on a non-pressure (quota) hold; re-arms after the gate clears for a second episode.
+- `tsc --noEmit` clean.
+- Side-effects: `upgrades/side-effects/agent-always-reachable.md` (+ second-pass review appended).
+- Spec (converged + approved): `docs/specs/agent-always-reachable.md`; ELI16: `docs/specs/agent-always-reachable.eli16.md`.
+- G1 (the liveness floor) is the tracked next increment (CMT-1808).

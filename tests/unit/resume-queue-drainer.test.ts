@@ -732,3 +732,94 @@ describe('ResumeQueueDrainer — GAP-B D9 commitment drain-time re-check (both s
     expect((await h.drainer.tick()).resumed).toBe(true);
   });
 });
+
+describe('ResumeQueueDrainer — G2: no silent pressure-held revival (agent-always-reachable)', () => {
+  const NOTICE_MS = 10_000;
+
+  /** Pressure-held: tier stays moderate (calm-ticks never satisfied) + entry waited past the window. */
+  function heldHarness(over?: Parameters<typeof harness>[0]): Harness {
+    const h = harness({ drainerCfg: { pressureHeldNoticeMs: NOTICE_MS }, ...over });
+    h.setTier('moderate'); // calmTicks resets to 0 every tick ⇒ permanent calm-ticks block
+    return h;
+  }
+
+  it('emits ONE pressure-held notice when a revival is held past the window — never silent', async () => {
+    const h = heldHarness();
+    h.queue.considerEnqueue(candidate()); // queuedAt = now
+    h.advance(NOTICE_MS); // the entry has now waited the full window under pressure
+
+    const r = await h.drainer.tick();
+    expect(r.blocked).toBe('calm-ticks'); // still held — the notice does NOT bypass the gate
+    expect(r.resumed).toBeFalsy();
+
+    const held = h.aggregated.filter((a) => a.kind === 'pressure-held');
+    expect(held).toHaveLength(1);
+    expect(held[0].detail).toContain('under memory/CPU pressure');
+    expect(held[0].detail).toContain('freeing resources');
+  });
+
+  it('does NOT emit while the entry has waited LESS than the window (no premature notice)', async () => {
+    const h = heldHarness();
+    h.queue.considerEnqueue(candidate());
+    h.advance(NOTICE_MS - 1); // one ms short of the window
+
+    await h.drainer.tick();
+    expect(h.aggregated.filter((a) => a.kind === 'pressure-held')).toHaveLength(0);
+  });
+
+  it('suppresses repeats — the notice fires ONCE per pressure episode, not every tick', async () => {
+    const h = heldHarness();
+    h.queue.considerEnqueue(candidate());
+    h.advance(NOTICE_MS);
+
+    await h.drainer.tick();
+    await h.drainer.tick();
+    await h.drainer.tick();
+    expect(h.aggregated.filter((a) => a.kind === 'pressure-held')).toHaveLength(1);
+  });
+
+  it('is SILENT in dry-run (a dry-run queue must never page)', async () => {
+    const h = heldHarness({ queueCfg: { dryRun: true } });
+    h.queue.considerEnqueue(candidate());
+    h.advance(NOTICE_MS);
+
+    await h.drainer.tick();
+    expect(h.aggregated.filter((a) => a.kind === 'pressure-held')).toHaveLength(0);
+  });
+
+  it('does NOT fire for a NON-pressure hold (quota), and re-arms for a later pressure episode', async () => {
+    // Quota-blocked (not calm-ticks): no pressure-held notice even though time has passed.
+    const h = harness({
+      drainerCfg: { pressureHeldNoticeMs: NOTICE_MS },
+      deps: { canSpawnSession: () => false },
+    });
+    h.queue.considerEnqueue(candidate());
+    // Clear the calm-ticks gate FIRST (entry still fresh) so the blocking gate is
+    // purely 'quota' — only THEN age the entry. The notice keys on a calm-ticks
+    // hold, not a quota hold, so a quota-blocked aged entry must stay silent.
+    await warmCalm(h, 3);
+    h.advance(NOTICE_MS);
+    expect((await h.drainer.tick()).blocked).toBe('quota');
+    expect(h.aggregated.filter((a) => a.kind === 'pressure-held')).toHaveLength(0);
+  });
+
+  it('re-arms after the gate clears — a second pressure episode notifies again', async () => {
+    const h = heldHarness();
+    h.queue.considerEnqueue(candidate());
+    h.advance(NOTICE_MS);
+    await h.drainer.tick(); // first notice
+    expect(h.aggregated.filter((a) => a.kind === 'pressure-held')).toHaveLength(1);
+
+    // Pressure eases: warm calm so the gate fully clears and the entry resumes (re-arms the flag).
+    h.setTier('normal');
+    await warmCalm(h, 3); // calm satisfied → resume → pressureHeldNotified reset
+    expect(h.respawns).toHaveLength(1);
+
+    // A NEW held entry under a fresh pressure episode notifies again.
+    h.setTier('moderate');
+    h.queue.considerEnqueue(candidate({ tmuxSession: 'tmux-2', resumeUuid: '22222222-2222-4222-8222-222222222222' }));
+    h.advance(NOTICE_MS);
+    await h.drainer.tick();
+    expect(h.aggregated.filter((a) => a.kind === 'pressure-held')).toHaveLength(2);
+  });
+});

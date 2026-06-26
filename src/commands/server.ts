@@ -7842,6 +7842,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // always on; autoResumeStalePause gates only Layer 2.
             staleEmergencyPauseAutoResumeMin: rqCfg.staleEmergencyPauseAutoResumeMin ?? 60,
             autoResumeStalePause: rqCfg.autoResumeStalePause ?? true,
+            // G2 (agent-always-reachable): a pressure-held revival surfaces ONE
+            // plain-English notice after this window through the SAME deterministic
+            // raiseAggregated funnel (attention queue, never the tone-gated reply
+            // path) — closes the topic-28744 silent-no-revival gap. CODE-defaulted
+            // like the other resumeQueue.* keys.
+            pressureHeldNoticeMs: rqCfg.pressureHeldNoticeMs ?? 20 * 60_000,
           },
         );
         resumeDrainer.start();

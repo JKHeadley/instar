@@ -4898,6 +4898,14 @@ export interface MonitoringConfig {
      */
     autoResumeStalePause?: boolean;
     /**
+     * G2 (agent-always-reachable): how long a pressure-held revival may wait
+     * (calm-ticks gate) before the drainer surfaces ONE plain-English notice via
+     * the deterministic raiseAggregated funnel — never silent (closes topic-28744).
+     * Default ~20min (≈2 reaper ticks). CODE-defaulted in the drainer (absent from
+     * ConfigDefaults). 0 disables the notice (the notice never gates a revival).
+     */
+    pressureHeldNoticeMs?: number;
+    /**
      * FD5 (autonomous-run-outlives-session): auto-heal a stale FOREIGN-host
      * resume-queue lock when it is provably a single-host RENAME (local FS + dead
      * pid + stale heartbeat), instead of disabling the queue. Fleet default FALSE
