@@ -14,6 +14,9 @@ single-run-completable: true
 frontloaded-decisions: 6
 cheap-to-change-tags: 0
 contested-then-cleared: 0
+approved: true
+approved-by: "Echo (per Justin's standing pre-approval for this autonomous run — goal: 'Justin pre-approved all decisions and any spec approvals')"
+approved-at: "2026-06-26"
 ---
 
 # Interactive Priority Lane for the Host Spawn Cap (F5)
