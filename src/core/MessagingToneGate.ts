@@ -21,7 +21,81 @@
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
 import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
-import { detectGateSignals, type GateSignal } from './GateSignalDetectors.js';
+import {
+  detectGateSignals,
+  GATE_SIGNAL_KIND_TO_RULE,
+  type GateSignal,
+} from './GateSignalDetectors.js';
+import { detectInternalIdLeak } from './internal-id-leak.js';
+
+/**
+ * Why the LLM tone authority could not produce a verdict — an INFRA reason
+ * (the backend was unreachable / too slow), distinct from a content verdict.
+ * BOTH manifestations of the same rate-limit outage degrade to the
+ * deterministic floor by default (F4): `provider-error` is the fast throw
+ * (breaker open) inside `review()`; `budget-timeout` is the slow stall raced
+ * out at the outbound route seam (the DOCUMENTED 2026-06-08 production failure).
+ */
+export type DegradeReason = 'provider-error' | 'budget-timeout';
+
+/**
+ * The pure, synchronous deterministic leak floor used on the degraded path
+ * (F4 graceful degradation). NO LLM, NO subprocess — just the B1–B7 artifact
+ * detectors + the internal-id leak detector. Returns the first high-stakes
+ * artifact found (so the degraded path can HOLD it), or null when the text is
+ * clean by deterministic means (so the degraded path can SEND it). The
+ * behavioral rules (B11–B20) require LLM judgment and are deliberately NOT
+ * covered here — a slightly-off-tone message reaching the user beats silence,
+ * but a secret/path/command leak must never escape, even during an outage.
+ */
+export function detectDeterministicLeak(
+  text: string,
+): { rule: string; kind: string } | null {
+  for (const sig of detectGateSignals(text)) {
+    if (sig.detected) {
+      return { rule: GATE_SIGNAL_KIND_TO_RULE[sig.kind], kind: sig.kind };
+    }
+  }
+  if (detectInternalIdLeak(text).leaked) {
+    return { rule: 'B20_INTERNAL_ID_LEAK', kind: 'internal-id-leak' };
+  }
+  return null;
+}
+
+/**
+ * Build the F4 degraded-disposition result for a candidate: run the
+ * deterministic leak floor and SEND if clean / HOLD if it carries a leak. Pure
+ * and shared by BOTH degrade sites — `MessagingToneGate.review()` (provider
+ * throw) and the outbound route seam (`reviewWithinBudget`, slow-stall timeout)
+ * — so the slow and fast manifestations of the same outage degrade identically.
+ * `latencyMs` is supplied by the caller (each site measures its own elapsed).
+ */
+export function buildDegradedToneResult(
+  text: string,
+  latencyMs: number,
+  reason: DegradeReason,
+): ToneReviewResult {
+  const leak = detectDeterministicLeak(text);
+  if (leak) {
+    return {
+      pass: false,
+      rule: leak.rule,
+      issue: `Outbound tone review degraded to the deterministic floor (${reason}) and caught a leak (${leak.kind}).`,
+      suggestion: 'Held on the deterministic floor; revise to remove the leaked artifact, then retry.',
+      latencyMs,
+      failedClosed: true,
+      degradedToDeterministic: true,
+    };
+  }
+  return {
+    pass: true,
+    rule: '',
+    issue: '',
+    suggestion: '',
+    latencyMs,
+    degradedToDeterministic: true,
+  };
+}
 
 /**
  * This is the outbound message gate — the highest-value coherence-critical
@@ -87,6 +161,18 @@ export interface ToneReviewResult {
    * outbound-gate-tiered-fail-direction.
    */
   failedOpenOperatorChannel?: boolean;
+  /**
+   * True when the LLM tone authority was UNAVAILABLE (provider-exhaustion,
+   * capacity-shed, or timeout — an INFRA reason, not a content verdict) and the
+   * review fell through to the in-process deterministic leak floor (B1–B7 +
+   * internal-id) instead of holding unconditionally. The floor needs NO LLM and
+   * NO subprocess, so it runs even under spawn-cap saturation. On this path a
+   * clean message SENDS (pass=true) — closing the F4 "user silently cut off"
+   * gap — while a real leaked artifact still HOLDS (pass=false, failedClosed).
+   * Operators restore pure-hold with `failClosedOnExhaustion: true`.
+   * Spec: docs/specs/tone-gate-graceful-degradation.md (postmortem F4).
+   */
+  degradedToDeterministic?: boolean;
 }
 
 export const VALID_RULES = new Set([
@@ -484,18 +570,25 @@ export class MessagingToneGate {
       rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
       attribution: { component: 'MessagingToneGate', gating: true }, // attribution for /metrics/features
     };
-    // Kill-switch (spec §Design 6): gates ONLY the availability-sensitive paths
-    // (provider-exhaustion + route-budget timeout). Default ON (fail-closed).
     const cfg = this.getConfig();
-    const failClosedOnExhaustion = cfg.failClosedOnExhaustion !== false;
+    // Availability-sensitive disposition (spec §Design 6 + tone-gate-graceful-
+    // degradation F4). THREE-valued — distinguishes "operator forced pure-hold"
+    // from "default degrade-to-deterministic". RAW tri-state (NOT normalized):
+    //   true      → pure-hold (operator restore of the legacy strict behavior)
+    //   false     → fail-open (legacy permissive — send unchecked on outage)
+    //   undefined → DEFAULT: degrade to the in-process deterministic leak floor
+    //               (clean SENDS, leaked artifact HOLDS) — closes the F4 gap.
+    const failClosedOnExhaustion = cfg.failClosedOnExhaustion;
     // operator-channel-sacred (outbound, spec: outbound-gate-tiered-fail-direction):
     // tier the availability-failure fail-direction by the STRUCTURALLY-resolved
     // recipientClass. ONLY an explicit 'tiered' mode + an 'operator' recipient
     // delivers; 'tiered' + dryRun logs would-deliver but still HOLDS; every other
     // mode/recipient keeps today's exact behavior. The tier NEVER touches a real
     // content/B15 BLOCK verdict (that path returns above via interp.kind==='ok').
+    // mode default normalizes undefined→'always' (matching prior behavior) without
+    // collapsing the tri-state above.
     const mode: 'always' | 'tiered' | 'never' =
-      cfg.failClosedMode ?? (failClosedOnExhaustion ? 'always' : 'never');
+      cfg.failClosedMode ?? (cfg.failClosedOnExhaustion !== false ? 'always' : 'never');
     const operatorTier = mode === 'tiered' && context.recipientClass === 'operator';
     const tierDeliver = operatorTier && cfg.toneTierDryRun !== true;
     const dryRunHold = (where: string): void => {
@@ -523,7 +616,10 @@ export class MessagingToneGate {
       // Fork-bomb P3 (forkbomb-prevention-simple §D-DISPOSITION): a capacity shed
       // (host spawn cap saturated) HOLDS — UNLESS tiered-operator, where DELIVERY
       // spawns nothing (the message is already composed), so the fork-bomb floor
-      // is intact and the operator is not sealed out of their own channel.
+      // is intact and the operator is not sealed out of their own channel. This
+      // path is deliberately NOT degraded to the deterministic floor (F4): the
+      // host is too saturated to do extra work and the shed is brief/retryable,
+      // so the P3 invariant (a spawn-cap shed of a gating call fails closed) holds.
       if (isCapacityUnavailable(err)) {
         if (tierDeliver) return this.operatorChannelDeliver(start);
         dryRunHold('capacity-shed');
@@ -536,22 +632,34 @@ export class MessagingToneGate {
           capacityUnavailable: true,
         };
       }
-      // Provider-exhaustion / error path (No Silent Degradation §Design 6):
-      // tier for the operator channel; else fail CLOSED by default; the
-      // kill-switch ('never' mode) reverts to fail-open.
+      // Provider-exhaustion / error path — the SUSTAINED outage class that
+      // silently cut the user off (rate-limit → breaker open → every verdict
+      // dropped). operator-channel-sacred tiers toward DELIVERY for the verified
+      // operator; otherwise THREE-valued (tone-gate-graceful-degradation F4):
+      //   true → pure-hold · false → fail-open · undefined → degrade-to-deterministic.
       if (tierDeliver) return this.operatorChannelDeliver(start);
       dryRunHold('provider-error');
-      if (failClosedOnExhaustion) {
+      if (failClosedOnExhaustion === true) {
+        // Operator override → pure-hold (legacy strict, No Silent Degradation).
         return this.failClosed(start, 'provider-error');
       }
-      return {
-        pass: true,
-        rule: '',
-        issue: '',
-        suggestion: '',
-        latencyMs: Date.now() - start,
-        failedOpen: true,
-      };
+      if (failClosedOnExhaustion === false) {
+        // Operator override → fail-open (legacy permissive: send unchecked).
+        return {
+          pass: true,
+          rule: '',
+          issue: '',
+          suggestion: '',
+          latencyMs: Date.now() - start,
+          failedOpen: true,
+        };
+      }
+      // DEFAULT (F4): degrade to the in-process deterministic leak floor. No LLM,
+      // no subprocess — a clean message SENDS (the user is never silently cut
+      // off during a backend outage); a real leaked artifact still HOLDS. The
+      // SLOW manifestation of this same outage (the gate stalling past the route
+      // budget) degrades identically at the route seam via `reviewWithinBudget`.
+      return buildDegradedToneResult(text, Date.now() - start, 'provider-error');
     }
   }
 

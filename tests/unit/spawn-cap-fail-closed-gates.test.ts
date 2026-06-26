@@ -87,18 +87,27 @@ describe('Fork-bomb P3 — four fail-CLOSED gate seams under capacity shed', () 
     expect(r.capacityUnavailable).toBe(true);
   });
 
-  it('3b. MessagingToneGate: a GENERIC LLM error now fails CLOSED (No-Silent-Degradation §Design 6)', async () => {
-    // CONTRACT CHANGE (gate-prompts-judge-by-meaning §Design 6): the delivery-path
-    // tone gate's provider-exhaustion path was flipped fail-OPEN → fail-CLOSED. A
-    // single erroring provider exhausts the swap chain → HOLD (pass:false), never a
-    // silent deliver. (`failClosedOnExhaustion` defaults to true.) The sentinel /
-    // input-guard generic-error paths above STILL fail open — only the outbound
-    // tone gate changed, because a held outbound message is recoverable via the
-    // existing retry path while a blocked inbound classification is more disruptive.
+  it('3b. MessagingToneGate: a GENERIC LLM error DEGRADES to the deterministic floor — clean SENDS, leak HOLDS (F4)', async () => {
+    // CONTRACT (tone-gate-graceful-degradation, postmortem F4): the delivery-path
+    // tone gate's provider-exhaustion path no longer blunt-holds. By default it
+    // degrades to the in-process deterministic leak floor (NO LLM, NO subprocess)
+    // so a CLEAN message still reaches the user during a backend outage — the bug
+    // that silently cut the user off when claude -p was rate-limited. A real LEAK
+    // still HOLDS on that path, and `failClosedOnExhaustion:true` restores pure-hold.
+    // (Distinct from the capacity-shed P3 path in test 3, which stays pure-hold.)
     const gate = new MessagingToneGate(erroring);
-    const r = await gate.review('some outbound message', { channel: 'telegram' });
-    expect(r.pass).toBe(false);
-    expect(r.failedClosed).toBe(true);
+    const clean = await gate.review('I will push the change for you.', { channel: 'telegram' });
+    expect(clean.pass).toBe(true);
+    expect(clean.degradedToDeterministic).toBe(true);
+
+    const leak = await gate.review('see /Users/justin/.instar/config.json', { channel: 'telegram' });
+    expect(leak.pass).toBe(false);
+    expect(leak.failedClosed).toBe(true);
+
+    const forced = new MessagingToneGate(erroring, { failClosedOnExhaustion: true });
+    const held = await forced.review('I will push the change for you.', { channel: 'telegram' });
+    expect(held.pass).toBe(false);
+    expect(held.failedClosed).toBe(true);
   });
 
   it('4. CoherenceReviewer.review: a capacity shed BLOCKS (pass:false), not pass:true', async () => {

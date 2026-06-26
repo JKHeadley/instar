@@ -17,7 +17,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { reviewWithinBudget } from '../../src/server/outboundGateBudget.js';
-import type { ToneReviewResult } from '../../src/core/MessagingToneGate.js';
+import {
+  buildDegradedToneResult,
+  type ToneReviewResult,
+} from '../../src/core/MessagingToneGate.js';
 import {
   OUTBOUND_GATE_REVIEW_BUDGET_MS,
   OUTBOUND_MESSAGING_TIMEOUT_MS,
@@ -115,6 +118,55 @@ describe('reviewWithinBudget — outbound gate budget', () => {
     expect(result.pass).toBe(false); // HELD, not delivered
     expect(result.failedClosed).toBe(true);
     expect(result.budgetExceeded).toBe(true);
+  });
+
+  // tone-gate-graceful-degradation F4: the SLOW manifestation of the rate-limit
+  // outage (the gate stalling past budget) is the DOCUMENTED 2026-06-08 failure.
+  // By default the route now passes a budgetDegrade callback so the timeout
+  // degrades to the SAME deterministic leak floor as a fast provider throw —
+  // closing the F4 gap for the slow path, not just the fast one.
+  it('DEGRADES and SENDS a clean message on budget-exceed when budgetDegrade is supplied (F4 slow path)', async () => {
+    const neverResolves = new Promise<ToneReviewResult>(() => {});
+    let clock = 1000;
+    const result = await reviewWithinBudget(
+      neverResolves,
+      20_000,
+      () => {
+        const t = clock;
+        clock += 20_000;
+        return t;
+      },
+      immediateSchedule,
+      true, // failClosedOnBudget — budgetDegrade must take PRECEDENCE over it
+      false, // operatorChannelDeliver
+      (latencyMs) => buildDegradedToneResult('I will push the change for you.', latencyMs, 'budget-timeout'),
+    );
+    expect(result.pass).toBe(true); // clean → sent, not silently held
+    expect(result.degradedToDeterministic).toBe(true);
+    expect(result.budgetExceeded).toBe(true);
+  });
+
+  it('DEGRADES and HOLDS a leaked artifact on budget-exceed (F4 leak-safety on the slow path)', async () => {
+    const neverResolves = new Promise<ToneReviewResult>(() => {});
+    let clock = 1000;
+    const result = await reviewWithinBudget(
+      neverResolves,
+      20_000,
+      () => {
+        const t = clock;
+        clock += 20_000;
+        return t;
+      },
+      immediateSchedule,
+      true,
+      false, // operatorChannelDeliver
+      (latencyMs) => buildDegradedToneResult('see /Users/justin/.instar/config.json', latencyMs, 'budget-timeout'),
+    );
+    expect(result.pass).toBe(false); // a real leak is still HELD on the slow path
+    expect(result.failedClosed).toBe(true);
+    expect(result.degradedToDeterministic).toBe(true);
+    expect(result.budgetExceeded).toBe(true);
+    expect(result.rule).toBe('B2_FILE_PATH');
   });
 
   it('records a non-negative latencyMs on the budget-exceeded fail-open', async () => {
