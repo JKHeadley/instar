@@ -64,6 +64,7 @@ import { AgentServer } from '../server/AgentServer.js';
 import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker, getFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
@@ -2247,11 +2248,18 @@ export function wireTelegramRouting(
           respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
             .catch(err => {
               console.error(`[telegram→session] Respawn failed:`, err);
-              const errMsg = err instanceof Error ? err.message : String(err);
-              const userMsg = errMsg.includes('session limit') || errMsg.includes('limit')
-                ? `❌ Session restart failed — session limit reached. Close an existing session or increase maxSessions in your config, then try again.`
-                : `❌ Session restart failed. Try sending your message again in a moment.`;
-              telegram.sendToTopic(topicId, userMsg).catch(() => {});
+              // G1 "Agent Is Always Reachable" corollary (2): no silent resource
+              // rejection. On a restart failure, hand the user WHY + a pointer to the
+              // always-alive Lifeline topic + a copy-paste debug message — on the
+              // deterministic delivery path (sendToTopic, never the LLM tone gate).
+              const { userMessage } = buildColdStartFallbackReply({
+                error: err,
+                topicId,
+                topicName: storedTopicName,
+                lifelineTopicId: telegram.getLifelineTopicId() ?? null,
+                kind: 'restart',
+              });
+              telegram.sendToTopic(topicId, userMessage).catch(() => {});
             })
             .finally(() => {
               spawningTopics.clear(topicId, _spawnTokB);
@@ -2287,11 +2295,18 @@ export function wireTelegramRouting(
         console.log(`[telegram→session] Auto-spawned "${newSessionName}" for topic ${topicId}`);
       }).catch((err) => {
         console.error(`[telegram→session] Auto-spawn failed:`, err);
-        const errMsg = err instanceof Error ? err.message : String(err);
-        const userMsg = errMsg.includes('session limit') || errMsg.includes('limit')
-          ? `❌ Unable to start session — session limit reached. Close an existing session or increase maxSessions in your config, then try again.`
-          : 'Having trouble starting a session right now. Try sending your message again in a moment.';
-        telegram.sendToTopic(topicId, userMsg).catch(() => {});
+        // G1 "Agent Is Always Reachable" corollary (2): no silent resource rejection.
+        // On a cold-start failure, hand the user WHY + a pointer to the always-alive
+        // Lifeline topic + a copy-paste debug message — on the deterministic delivery
+        // path (sendToTopic, never the LLM tone gate that can fail closed under load).
+        const { userMessage } = buildColdStartFallbackReply({
+          error: err,
+          topicId,
+          topicName: spawnName,
+          lifelineTopicId: telegram.getLifelineTopicId() ?? null,
+          kind: 'spawn',
+        });
+        telegram.sendToTopic(topicId, userMessage).catch(() => {});
       }).finally(() => {
         spawningTopics.clear(topicId, _spawnTokC);
       });

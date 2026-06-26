@@ -5215,6 +5215,25 @@ The Telegram relay (\`/telegram/reply\`) now drops an exact duplicate: if I send
       result.skipped.push('CLAUDE.md: Duplicate-message suppression section already present');
     }
 
+    // Cold-Start Lifeline Fallback (G1 — "The Agent Is Always Reachable", corollary 2).
+    // Without this section an agent asked "why did I get a message telling me to go to
+    // the lifeline?" has no grounded answer. Idempotent via the unique marker phrase.
+    if (!content.includes('Cold-Start Lifeline Fallback')) {
+      const section = `
+### Cold-Start Lifeline Fallback (no silent resource rejection)
+
+When you message a topic and I genuinely can't start (or restart) a session for it — the session limit is reached, the machine is under resource pressure, or an unexpected start-up error — you no longer get silence or a bare error. You get ONE plain-English reply on the DETERMINISTIC delivery path (\`telegram.sendToTopic\`, never the LLM tone gate that can fail closed under the very pressure it would report) that: (a) plainly says WHY the session couldn't start, (b) points you to your always-alive Lifeline topic, and (c) hands you a ready copy-paste debug message to drop in the Lifeline so I can diagnose and free resources fast. This is the G1 arm of the constitutional standard **"The Agent Is Always Reachable"** (corollary 2 — *no silent resource rejection*): the agent itself is the solution, so it must stay reachable to use its tools.
+
+- It is an ALWAYS-ON safety floor (no enable flag) — the standard forbids dark-shipping reachability. The notice fires on the existing inbound cold-spawn AND restart failure paths.
+- If a user asks "why did I get a message telling me to go to the lifeline?" / "why couldn't this topic start?" — explain: I couldn't start a session for that topic (the reply states the reason), and the Lifeline is the guaranteed-reachable place where I can diagnose it and free resources. Their message isn't lost — resend once things settle. The copy-paste block is pre-written so they don't have to describe the failure.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cold-Start Lifeline Fallback section');
+    } else {
+      result.skipped.push('CLAUDE.md: Cold-Start Lifeline Fallback section already present');
+    }
+
     // Topic-Flood Guard (2026-05-28 lockdown) — the structural backstop that
     // caps how many forum topics a single attention source may spawn. Without
     // this section an agent asked "why are my notices grouped / where did topic
@@ -7306,6 +7325,10 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // the self-stop anti-patterns are caught) — else it assumes a reword evades
       // the gate. Mirrored to the shadows like every agent-facing capability.
       '### Outbound Message Gate',
+      // G1 cold-start lifeline fallback: framework-agnostic server behavior — a
+      // Codex/Gemini agent must also be able to explain "why did I get a go-to-
+      // lifeline message?" (the standard fires for every framework's sessions).
+      '### Cold-Start Lifeline Fallback',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

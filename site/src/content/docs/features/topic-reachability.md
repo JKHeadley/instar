@@ -40,3 +40,21 @@ conversation, and stays quiet during an emergency stop (re-checking once the sto
 The verifier registers in the guard posture, so `GET /guards` shows whether it is on. Because
 it only watches and never acts, there is nothing to undo if it ever over-alarms — it is a
 smoke alarm, not a firefighter.
+
+## ColdStartFallbackReply — never silence on a failed start
+
+When you message a topic and the agent genuinely cannot **start** (cold spawn) or **restart**
+a session for it — the session limit is reached, the machine is under resource pressure, or an
+unexpected start-up error — you no longer get silence or a bare error. The `ColdStartFallbackReply`
+builder composes ONE plain-English reply on the **deterministic delivery path**
+(`telegram.sendToTopic`, never the LLM tone gate that can fail closed under the very pressure it
+would report) that: (a) says **why** the session couldn't start (classified: session-limit /
+resource-pressure / generic start-failure), (b) points you to your always-alive **Lifeline**
+topic, and (c) hands you a ready **copy-paste debug message** to drop in the Lifeline so the
+agent can diagnose and free resources fast.
+
+This is the user-facing (G1) arm of the constitutional standard *The Agent Is Always Reachable*
+(corollary 2 — no silent resource rejection). It is an **always-on** safety floor (no flag — the
+standard forbids dark-shipping reachability), wired into both inbound failure paths. If the
+failing topic *is* the Lifeline it doesn't send you elsewhere; if no Lifeline is configured it
+still states why and reassures you the message isn't lost.

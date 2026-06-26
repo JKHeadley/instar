@@ -1,0 +1,45 @@
+---
+user_announcement:
+  - audience: user
+    maturity: stable
+    summary: "If a topic can't start a session, you now get a clear reason + a copy-paste line to send to your Lifeline — never silence."
+---
+
+## What Changed
+
+Added the **Cold-Start Lifeline Fallback** — the user-facing (G1) arm of the
+constitutional standard *The Agent Is Always Reachable* (corollary 2: no silent
+resource rejection). When you message a topic and the agent genuinely cannot start
+(cold spawn) or restart a session for it, the previous behavior was a generic, often
+jargon-leaking notice ("increase maxSessions in your config"). Now a small, unit-tested
+message builder classifies WHY the start failed (session limit / resource pressure /
+generic start-up error) and sends, on the deterministic delivery path (never the LLM
+tone gate that can fail closed under load):
+
+1. a plain-English reason,
+2. a pointer to your always-alive Lifeline topic, and
+3. a pre-written copy-paste debug message to drop in the Lifeline so the agent can
+   diagnose and free resources fast.
+
+It is an always-on safety floor (no flag — the standard forbids dark-shipping
+reachability), wired into both inbound failure paths in `server.ts`, with migration
+parity (existing agents get the behavior + a CLAUDE.md explainer; new agents get the
+template section).
+
+## What to Tell Your User
+
+If a topic can't start a session right now, you'll get an honest message that says why,
+points you to your Lifeline topic, and hands you a ready line to paste there so I can
+fix it — you never get silence, and you never have to edit a config file. If a user
+asks "why did I get a message telling me to go to the lifeline?", the answer is: that
+topic couldn't start a session (the message states the reason), and the Lifeline is the
+guaranteed-reachable place where I diagnose it and free resources. Their message isn't
+lost — they can resend once things settle.
+
+## Summary of New Capabilities
+
+- Cold-start / restart session failures now produce a classified, plain-English user
+  reply instead of silence or a bare error.
+- The reply points to the Lifeline topic and includes a copy-paste debug message.
+- Delivered on the deterministic path so resource pressure can't suppress the notice.
+- Always-on (reachability is a floor, not a flag); migration-parity for existing agents.
