@@ -15630,8 +15630,13 @@ export function createRoutes(ctx: RouteContext): Router {
     // check must never block message delivery. Mirrors processUpdate's behavior.
     if (ctx.sentinel) {
       try {
-        const classification = await ctx.sentinel.classify(text);
-        if (classification.category === 'emergency-stop' || classification.category === 'pause') {
+        // Operator-channel-sacred: the single disposition helper decides — a 'pause'
+        // consumes ONLY on a deterministic match; a bare-LLM/capacity-shed 'pause'
+        // (the 2026-06-25 lockout mechanism) routes THROUGH (falls past this block to
+        // normal routing) instead of consuming the operator's message; a long-form
+        // genuine stop is rescued to a kill.
+        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId));
+        if (decision.disposition === 'kill' || decision.disposition === 'pause') {
           // Resolve the topic's session. Prefer the on-disk registry (the
           // persistent source of truth that both polling modes maintain) since
           // a lifeline-owned adapter's in-memory topicToSession map may be empty;
@@ -15647,7 +15652,7 @@ export function createRoutes(ctx: RouteContext): Router {
           if (!sessionName) {
             sessionName = ctx.telegram?.getSessionForTopic(Number(topicId)) ?? null;
           }
-          if (classification.category === 'emergency-stop') {
+          if (decision.disposition === 'kill') {
             if (sessionName) {
               if (ctx.telegram?.onSentinelKillSession) {
                 ctx.telegram.onSentinelKillSession(sessionName); // saves resume UUID + kills
@@ -15667,8 +15672,8 @@ export function createRoutes(ctx: RouteContext): Router {
               ctx.resumeQueue?.cancelByTopic(Number(topicId));
               ctx.operatorStopRecorder?.(Number(topicId));
             } catch { /* the stop must succeed regardless */ }
-            if (classification.reason) {
-              console.log(`[telegram-forward] sentinel stop reason: ${classification.reason}`);
+            if (decision.reason) {
+              console.log(`[telegram-forward] sentinel stop reason: ${decision.reason}`);
             }
             ctx.telegram?.sendToTopic(Number(topicId), sessionName
               ? 'Session terminated.\n\nSend a new message to start a fresh session.'

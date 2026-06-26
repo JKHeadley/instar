@@ -12985,16 +12985,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Wire sentinel into Telegram message flow — intercepts BEFORE session routing.
     // Must be wired AFTER sentinel is created but BEFORE server starts.
     if (sentinel && telegram) {
-      telegram.onSentinelIntercept = async (text: string, _topicId: number) => {
-        const classification = await sentinel.classify(text);
-        if (classification.category === 'emergency-stop' || classification.category === 'pause') {
-          return {
-            category: classification.category,
-            action: classification.action as { type: string; message?: string },
-            reason: classification.reason,
-          };
+      telegram.onSentinelIntercept = async (text: string, topicId: number) => {
+        // Operator-channel-sacred: route the decision through the single disposition
+        // helper so a 'pause' consumes ONLY on a deterministic match — a bare-LLM or
+        // capacity-shed 'pause' routes THROUGH (returns null), never consuming the
+        // operator's message. A long-form genuine stop is rescued to a kill.
+        const decision = await sentinel.decideInboundDisposition(text, topicId);
+        if (decision.disposition === 'kill') {
+          return { category: 'emergency-stop', action: { type: 'kill-session' }, reason: decision.reason };
         }
-        return null; // Normal messages pass through
+        if (decision.disposition === 'pause') {
+          return { category: 'pause', action: { type: 'pause-session' }, reason: decision.reason };
+        }
+        return null; // route-through → normal routing (deliver, don't consume)
       };
       // Durable Inbound Message Queue §3.6: emergency stop reaches custody.
       telegram.onSentinelStopCustody = (topicId: number) => {

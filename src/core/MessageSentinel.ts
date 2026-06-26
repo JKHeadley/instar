@@ -95,6 +95,11 @@ export interface MessageSentinelConfig {
   enabled?: boolean;
   /** Skip LLM classification and use fast-path only (default: false) */
   fastPathOnly?: boolean;
+  /** Operator-channel-sacred circuit-breaker: rolling window (ms, default 600000). */
+  breakerWindowMs?: number;
+  /** Operator-channel-sacred circuit-breaker: max pause-consumes per window before
+   *  it trips and routes further pauses through (default 3). */
+  breakerMaxPerWindow?: number;
 }
 
 export interface SentinelStats {
@@ -298,6 +303,47 @@ export function classifyContinuePingIntent(message: string): ContinuePingIntent 
   return 'intent_a';
 }
 
+// ── Operator-Channel-Sacred: inbound disposition (CMT — topic 28130) ──
+//
+// Standard "The Operator Channel Is Sacred — Critical-Path Gates Fail Toward
+// Delivery" (docs/STANDARDS-REGISTRY.md). A 'pause' classification may CONSUME the
+// operator's inbound message ONLY on a DETERMINISTIC fast-path match — never on a
+// bare-LLM or capacity-shed guess (the LLM self-reports high confidence regardless
+// of correctness; the capacity-shed path defaults to 'pause' under spawn-cap
+// saturation — that is the 2026-06-25 lockout mechanism). A non-deterministic
+// 'pause' routes THROUGH, but first a NON-word-count-gated stop-token scan runs so a
+// long-form genuine "stop" (which the ≤4-word fast-path missed and the LLM may have
+// capacity-shed) still fails toward STOP rather than being silently delivered.
+
+/** Whole-word stop tokens (no word-count gate, anywhere in the message). */
+const STOP_TOKEN_SCAN: readonly RegExp[] = [
+  /\b(stop|abort|cancel|halt|cease|terminate)\b/i,
+  /\bkill\s+(it|this|that|the\s+\w+|everything|session)\b/i,
+];
+
+/**
+ * Non-word-count-gated deterministic scan: does this message contain a genuine
+ * STOP token anywhere? Used before routing a non-deterministic/capacity-shed result
+ * through, so a long-form real stop is never dropped. Slash-stop commands count too.
+ */
+export function hasStopToken(message: string): boolean {
+  const t = (message ?? '').toLowerCase().trim();
+  if (!t) return false;
+  for (const s of SLASH_STOP) if (t === s || t.startsWith(s + ' ')) return true;
+  for (const re of STOP_TOKEN_SCAN) if (re.test(t)) return true;
+  return false;
+}
+
+/** The disposition the inbound consume sites act on (the ONE place the standard lives). */
+export type InboundDisposition = 'kill' | 'pause' | 'route-through';
+export interface InboundDecision {
+  disposition: InboundDisposition;
+  category: SentinelCategory;
+  /** the underlying classification method (audit) */
+  method: 'fast-path' | 'llm' | 'default';
+  reason?: string;
+}
+
 // ── Sentinel Implementation ──────────────────────────────────────────
 
 export class MessageSentinel {
@@ -305,6 +351,15 @@ export class MessageSentinel {
   private stats: SentinelStats;
   private customStopExact: Set<string>;
   private customPauseExact: Set<string>;
+  /** Operator-channel-sacred disposition counters (observability — /metrics/features). */
+  public dispositionStats = { pauseConsumed: 0, pauseRoutedThrough: 0, breakerRecovered: 0, stopRescued: 0 };
+  /** Bounded-blast-radius circuit-breaker: per-topic pause-consume timestamps (rolling window).
+   *  Shared across BOTH inbound consume paths because both use this one MessageSentinel instance.
+   *  In-memory by design: the PRIMARY guard is deterministic-only-consume (below), so a restart
+   *  resetting this can never reintroduce the lockout — the breaker is defense-in-depth only. */
+  private recentPauseConsumes = new Map<number, number[]>();
+  private readonly breakerWindowMs: number;
+  private readonly breakerMaxPerWindow: number;
 
   constructor(config: MessageSentinelConfig = {}) {
     this.config = config;
@@ -323,6 +378,84 @@ export class MessageSentinel {
     this.customPauseExact = new Set(
       (config.customPausePatterns ?? []).map(p => p.toLowerCase().trim())
     );
+    // Circuit-breaker knobs (config-tunable per operator-channel-sacred FD2).
+    this.breakerWindowMs = config.breakerWindowMs ?? 10 * 60 * 1000;
+    this.breakerMaxPerWindow = config.breakerMaxPerWindow ?? 3;
+  }
+
+  /**
+   * Decide what to do with an inbound operator message — the SINGLE place the
+   * "Operator Channel Is Sacred" standard is enforced. Both inbound consume sites
+   * (TelegramAdapter.onSentinelIntercept and routes.ts /internal/telegram-forward)
+   * call this and act on the disposition, so the policy can never diverge between
+   * paths. `topicId` (optional) drives the bounded-blast-radius circuit-breaker.
+   *
+   *  - emergency-stop  → 'kill'  (prefer-stop; its false-positive is RECOVERABLE).
+   *  - pause + fast-path (deterministic match) → 'pause' (consume).
+   *  - pause + non-deterministic (LLM verdict OR capacity-shed) → NEVER consume:
+   *      if the message contains a stop token (long-form stop that bypassed the
+   *      ≤4-word fast-path / was capacity-shed) → 'kill'; else → 'route-through'.
+   *  - circuit-breaker (bounded blast radius): the breaker caps how many times a
+   *      topic can be pause-CONSUMED within the window (breakerMaxPerWindow). Once it
+   *      trips, even a deterministic 'pause' routes THROUGH (auto-recover) — so no
+   *      stream of pauses, deterministic OR not, can permanently seal the operator's
+   *      channel. emergency-stop ('kill') is NEVER gated by the breaker, and a
+   *      route-through ALWAYS delivers — the breaker can only ever convert a
+   *      consume into a delivery, never the reverse. Resets by window expiry.
+   */
+  async decideInboundDisposition(message: string, topicId?: number): Promise<InboundDecision> {
+    const c = await this.classify(message);
+    const method = c.method;
+
+    if (c.category === 'emergency-stop') {
+      return { disposition: 'kill', category: 'emergency-stop', method, reason: c.reason };
+    }
+
+    if (c.category === 'pause') {
+      const deterministic = method === 'fast-path';
+      if (deterministic && !this.breakerTripped(topicId)) {
+        this.recordPauseConsume(topicId);
+        this.dispositionStats.pauseConsumed++;
+        return { disposition: 'pause', category: 'pause', method, reason: c.reason };
+      }
+      // Non-deterministic 'pause' (bare LLM verdict, capacity-shed), OR a deterministic
+      // pause suppressed by the breaker: NEVER consume. First rescue a genuine stop.
+      if (hasStopToken(message)) {
+        this.dispositionStats.stopRescued++;
+        return {
+          disposition: 'kill', category: 'emergency-stop', method,
+          reason: 'stop token present on a non-deterministic/breaker-suppressed result — rescued to STOP (operator-channel-sacred)',
+        };
+      }
+      if (this.breakerTripped(topicId)) this.dispositionStats.breakerRecovered++;
+      this.dispositionStats.pauseRoutedThrough++;
+      return {
+        disposition: 'route-through', category: 'normal', method,
+        reason: 'non-deterministic pause routed through (operator-channel-sacred: never consume a benign message on a brittle/capacity-shed signal)',
+      };
+    }
+
+    return { disposition: 'route-through', category: c.category, method, reason: c.reason };
+  }
+
+  /** Has this topic been pause-consumed more than the cap within the rolling window? */
+  private breakerTripped(topicId?: number): boolean {
+    if (topicId == null) return false;
+    const arr = this.recentPauseConsumes.get(topicId);
+    if (!arr || arr.length === 0) return false;
+    const cutoff = Date.now() - this.breakerWindowMs;
+    const live = arr.filter(t => t >= cutoff);
+    if (live.length !== arr.length) this.recentPauseConsumes.set(topicId, live);
+    return live.length >= this.breakerMaxPerWindow;
+  }
+
+  /** Record a pause-consume timestamp for the breaker. */
+  private recordPauseConsume(topicId?: number): void {
+    if (topicId == null) return;
+    const cutoff = Date.now() - this.breakerWindowMs;
+    const arr = (this.recentPauseConsumes.get(topicId) ?? []).filter(t => t >= cutoff);
+    arr.push(Date.now());
+    this.recentPauseConsumes.set(topicId, arr);
   }
 
   /**
@@ -692,8 +825,11 @@ export class MessageSentinel {
   /**
    * Get current stats.
    */
-  getStats(): SentinelStats {
-    return { ...this.stats };
+  getStats(): SentinelStats & { disposition: typeof MessageSentinel.prototype.dispositionStats } {
+    // dispositionStats surfaced here (operator-channel-sacred observability): the
+    // /sentinel/stats route exposes pause.consumed / .routed-through / breaker.recovered
+    // so "is the gate eating messages?" is a number, not a guess.
+    return { ...this.stats, disposition: { ...this.dispositionStats } };
   }
 
   /**
