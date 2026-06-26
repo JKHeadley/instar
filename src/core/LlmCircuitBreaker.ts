@@ -373,9 +373,9 @@ export class LlmCircuitBreaker {
     this.openUntil = now + this.currentOpenMs;
     this.probeInFlight = false;
     this.log(
-      `[llm-circuit] OPEN: provider rate-limited — pausing ALL LLM-backed work for ~${Math.round(
+      `[llm-circuit] OPEN: provider rate-limited — pausing further calls on THIS provider for ~${Math.round(
         this.currentOpenMs / 1000,
-      )}s (trip #${this.tripCount}); reason: ${this.lastReason}`,
+      )}s (trip #${this.tripCount}); other frameworks have their own breakers; reason: ${this.lastReason}`,
     );
     this.emitTrip({ reason: this.lastReason, retryAfterMs, ts: now, tripCount: this.tripCount });
   }
