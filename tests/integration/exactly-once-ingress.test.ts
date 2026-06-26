@@ -153,11 +153,16 @@ describe('/internal/telegram-forward — exactly-once wiring integrity', () => {
   it('the dedup gate is between the sentinel intercept and the routing call', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'server', 'routes.ts'), 'utf-8');
     const fwdIdx = src.indexOf("router.post('/internal/telegram-forward'");
-    const classifyIdx = src.indexOf('ctx.sentinel.classify(', fwdIdx);
+    // operator-channel-sacred (topic 28130): the forward path now decides the
+    // inbound disposition via decideInboundDisposition (which consults the
+    // sentinel) instead of the old raw `sentinel.classify` — the dedup gate
+    // must still sit AFTER that decision so an emergency-stop is never deduped.
+    const sentinelIdx = src.indexOf('ctx.sentinel.decideInboundDisposition(', fwdIdx);
     const gateIdx = src.indexOf('decideIngress(ctx.messageLedger', fwdIdx);
     const routeIdx = src.indexOf('ctx.telegram.onTopicMessage(message)', fwdIdx);
+    expect(sentinelIdx).toBeGreaterThan(-1);       // sentinel disposition is on the forward path
     expect(gateIdx).toBeGreaterThan(-1);
-    expect(gateIdx).toBeGreaterThan(classifyIdx); // gate AFTER sentinel (stop never deduped)
+    expect(gateIdx).toBeGreaterThan(sentinelIdx);  // gate AFTER sentinel (stop never deduped)
     expect(gateIdx).toBeLessThan(routeIdx);        // gate BEFORE routing (dup never reaches session)
   });
 });
