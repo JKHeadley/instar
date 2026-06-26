@@ -111,7 +111,10 @@ export class EnforcedTerminationWatchdog {
   start(): void {
     if (!this.opts.enabled || this.timer) return;
     const intervalMs = (this.opts.tickIntervalSec ?? 60) * 1000;
-    this.timer = setInterval(() => void this.tick().catch(() => {}), intervalMs);
+    this.timer = setInterval(() => void this.tick().catch(() => {
+      // @silent-fallback-ok: tick() handles its own errors and fails safe toward
+      // NO actuation; a thrown tick must not crash the unref'd timer loop.
+    }), intervalMs);
     if (typeof (this.timer as { unref?: () => void }).unref === 'function') {
       (this.timer as { unref: () => void }).unref();
     }
@@ -138,7 +141,10 @@ export class EnforcedTerminationWatchdog {
     try {
       runs = this.deps.listRuns();
     } catch {
-      return; // can't read state → do nothing (fail-safe: never kill on uncertainty)
+      // @silent-fallback-ok: can't read state → do nothing. Fail-safe is the
+      // SAFE direction for a session-killer (never kill on uncertainty); a louder
+      // surface here would risk noise on a transient read while changing nothing.
+      return;
     }
 
     const overrun = new Map<string, OverrunReason>();
@@ -147,7 +153,9 @@ export class EnforcedTerminationWatchdog {
       try {
         reason = computeOverrun(r, this.cfg, t);
       } catch {
-        reason = null; // a malformed snapshot is not an overrun
+        // @silent-fallback-ok: a malformed snapshot is not an overrun → skip it
+        // (fail-safe: never classify-to-kill on a parse error).
+        reason = null;
       }
       if (reason) {
         overrun.set(r.topicId, reason);

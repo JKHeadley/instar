@@ -8089,6 +8089,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               const sess = sessionManager.listRunningSessions().find((s) => resolveTopicForTmux(s.tmuxSession) === tnum);
               if (sess) { sess.endedMidWork = false; state.saveSession(sess); sessionManager.killSession(sess.id); sessionKilled = true; }
             } catch { /* settle-kill best-effort; the operator-stop record prevents future revival */ }
+            // spec §3: a termination is never silent to the user. Post one plain-English
+            // notice to the run's topic (etTerminate is only ever called outside dryRun, so
+            // this fires only on a REAL stop — "Degradation Is an Event").
+            if (fileDeleted || sessionKilled) {
+              try {
+                notify('SUMMARY', 'enforced-termination',
+                  'I stopped the autonomous run on this topic — it ran past the time budget it was given. ' +
+                  'Anything unfinished is in its notes; tell me to relaunch if you want me to continue.',
+                  tnum);
+              } catch { /* notice best-effort; the stop already happened */ }
+            }
             return fileDeleted || sessionKilled;
           };
           const etWatchdog = new EnforcedTerminationWatchdog(

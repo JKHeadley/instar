@@ -39,3 +39,7 @@ Nothing yet. It ships **switched off everywhere except my own dev setup**, and e
 it only **watches and writes notes** at first — it won't actually stop anything until an
 operator deliberately turns that on after a live test. The point is a safety net against a
 runaway job, built so the net itself can never become a new problem.
+
+If it's ever turned fully on and it does stop a job, you won't be left guessing: it posts a
+plain note to that job's conversation saying it stopped the job because it ran past its time
+budget, and that anything unfinished is in its notes. A stop is never silent.

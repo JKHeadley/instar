@@ -58,8 +58,10 @@ the END of work. Constitution: *The User Experience Is the Product* → sub-stan
 ## What it does NOT do
 
 - Does not touch legacy single-file (non-per-topic) jobs.
-- Does not message the user yet (the spec's §3 plain-English termination notice is a
-  follow-up; until then a kill is audit-only — acceptable while dryRun/dark).
+- A real termination is NOT silent (spec §3): the actuator posts one plain-English notice
+  to the run's topic on a real stop ("I stopped the autonomous run … it ran past its time
+  budget …"). It fires only outside dryRun (etTerminate is never called in dryRun), so a
+  dark/dryRun agent emits nothing. Best-effort (a notice failure never blocks the stop).
 - Does not change the cooperative in-hook duration check; it is the EXTERNAL backstop the
   grace window defers to.
 
@@ -71,5 +73,23 @@ the append-only audit log.
 
 ## Second-pass reviewer verdict
 
-_Pending — required before `dryRun:false` is ever flipped, and the live-flip is itself a
-separate operator-gated step (the spec's §5 livetest battery)._
+**Concur with the review** (independent reviewer, 2026-06-26 — verified the artifact's claims
+against the actual code, not just the prose).
+
+Verified: `computeOverrun` returns null for `!active||paused||moveSuspended` BEFORE any time
+check (enforcedTermination.ts:87); time-budget fires only at `elapsed >= duration+grace`; every
+uncertainty path (listRuns throw, computeOverrun throw, audit throw) fails toward NO actuation;
+the two-tick confirm is genuinely enforced (only `confirmer.reconcile()` output actuates, streak
+resets when a topic drops out); the durable kill composes delete-state-file → recordOperatorStop
+→ rq.cancelByTopic → clear endedMidWork → killSession in that order (server.ts etTerminate),
+mirroring the reconciler's proven settleKill, so a terminated run is not revived; and it is
+genuinely dark (absent from ConfigDefaults → not even constructed on the fleet) + dryRun-first
+(the dryRun path audits then `continue`s, never calling terminate). Cap bounds actuations to 5
+per ~2h window.
+
+Residual observation (NON-blocking, intended semantics): a doubly-corrupt run (unparseable
+`started_at` AND unreadable mtime → fileMtimeMs=0) classifies as past the absolute ceiling and
+fails TOWARD a kill — the deliberate, spec-documented inverse of the 27515 "fails toward
+run-forever" bug. It remains gated behind active+unpaused+not-moving + two-tick confirm + dryRun
++ dev-gate, so it is the intended fail-direction, not a hole — worth keeping visible when the §5
+live-flip battery runs.
