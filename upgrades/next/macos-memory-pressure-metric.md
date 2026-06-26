@@ -1,0 +1,20 @@
+## What Changed
+
+The agent measures how busy the machine's memory is to decide when to close idle sessions and when to bring them back. On macOS it was reading the wrong number — Node's raw "free memory," which macOS deliberately keeps near zero by using the rest for cache and compression. So a perfectly healthy Mac looked permanently out of memory. That made the cleanup close idle sessions too eagerly AND permanently blocked the revival queue from bringing them back — so a topic's session could vanish and never return, with no message to the user.
+
+The fix reads real available memory the way macOS itself does (free plus the reclaimable inactive and purgeable memory, via vm_stat), and the same correct figure on Linux. The correct calculation already existed in the health checker; this lifts it into one shared, tested place and points the cleanup at it. On the machine where this broke, the old reading was 0.17% (false crisis) and the correct reading is about 20% available (healthy), so sessions revive again.
+
+It can only make the cleanup less aggressive and revival more available on macOS — the safe direction — and a separate, larger guarantee (always keep at least one reachable session, and never silently deny a session for resource reasons) is coming next.
+
+## Evidence
+
+- `tests/unit/host-memory-pressure.test.ts` (13): includes REAL captured `vm_stat` from the incident machine — tiny raw free pages but correct available% reads healthy; a genuinely-critical shape reads low; platform-aware; never-throws fallback. 121 existing reaper/memory/resume-queue tests still green (no regression).
+- Convergence (conformance gate + lessons-aware reviewer, no blockers): `docs/specs/reports/macos-memory-pressure-metric-convergence.md`.
+
+## What to Tell Your User
+
+If a topic ever went quiet — you sent messages and got nothing back — one cause was the agent mis-reading its own memory on a Mac and refusing to bring a closed session back. That false alarm is fixed: it now reads real available memory, so sessions get cleaned up and revived based on the true picture.
+
+## Summary of New Capabilities
+
+- Correct, platform-aware host memory-availability measurement (free + reclaimable on macOS; MemAvailable on Linux) feeding the session reaper and revival queue — no more macOS false-critical from raw free pages.
