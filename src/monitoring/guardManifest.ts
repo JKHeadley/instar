@@ -309,6 +309,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Boot-time health beacon endpoint (dev-gated, CMT-1438).',
   },
   {
+    key: 'monitoring.enforcedTermination.enabled',
+    kind: 'config',
+    configPath: 'monitoring.enforcedTermination.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'EnforcedTerminationWatchdog',
+    description: 'External hard-stop for autonomous runs that overrun their budget (dev-gated, F2).',
+  },
+  {
     key: 'monitoring.rateLimitSentinel.enabled',
     kind: 'config',
     configPath: 'monitoring.rateLimitSentinel.enabled',

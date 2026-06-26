@@ -11,6 +11,7 @@ import {
   buildEnforcedTerminationListRuns,
   buildEnforcedTerminationAudit,
 } from '../../src/monitoring/enforcedTerminationWiring.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let stateDir: string;
 
@@ -27,7 +28,7 @@ beforeEach(() => {
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'et-wiring-'));
 });
 afterEach(() => {
-  fs.rmSync(stateDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/enforcedTerminationWiring.test.ts:cleanup' });
 });
 
 describe('buildEnforcedTerminationListRuns', () => {
