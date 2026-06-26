@@ -22,6 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
+import { planInboundLossNotices } from '../core/inboundLossRouting.js';
 import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
@@ -3074,6 +3075,42 @@ export async function startServer(options: StartOptions): Promise<void> {
       const slackAttentionChannel = _notifyState?.get<string>('slack-attention-channel');
       if (slackAttentionChannel) {
         _slackAdapter.sendToChannel(slackAttentionChannel, message).catch(() => { /* @silent-fallback-ok */ });
+      }
+    }
+  }
+
+  /**
+   * F3 (Inbound Delivery Is Sacred): route an inbound-queue loss notice to each
+   * ORIGINATING topic on the proven Telegram path (each loss item's sessionKey
+   * IS the topic id the user messaged from), instead of the single attention
+   * topic that `notify()` SILENTLY DROPS when unset. Items with no resolvable
+   * numeric topic fall back to the attention topic; if THAT is also unset, the
+   * loss is surfaced LOUDLY (console.error) — a lost inbound user message is
+   * NEVER silently expired (the Inbound-Delivery-Is-Sacred corollary). Spec:
+   * docs/specs/inbound-delivery-sacred.md.
+   */
+  function notifyInboundLoss(
+    items: ReadonlyArray<{ sessionKey: string }>,
+    tier: NotificationTier,
+    buildMessage: (count: number) => string,
+  ): void {
+    if (items.length === 0) return;
+    const plan = planInboundLossNotices(items);
+    // Each affected topic gets its OWN notice, in that topic (proven path).
+    for (const { topicId, count } of plan.perTopic) {
+      notify(tier, 'inbound-loss', buildMessage(count), topicId);
+    }
+    if (plan.unresolved > 0) {
+      const attn = _notifyState?.get<number>('agent-attention-topic') ?? 0;
+      if (attn) {
+        notify(tier, 'inbound-loss', buildMessage(plan.unresolved), attn);
+      } else {
+        // No resolvable topic AND no attention topic configured → the one place a
+        // loss could go silent. Surface it LOUDLY instead (never a silent expiry).
+        console.error(
+          `[inbound-loss] ${plan.unresolved} lost inbound message(s) had no resolvable topic and no attention topic is ` +
+          `configured — surfaced loudly per Inbound-Delivery-Is-Sacred (configure an attention topic so these reach you).`,
+        );
       }
     }
   }
@@ -8292,14 +8329,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         hasPisRecord: (sk) => pisRecordsForTopic(sk).length > 0,
         clearPisRecord: (sk) => { for (const r of pisRecordsForTopic(sk)) sweepPis.clear(r.tmuxSession); },
         reportLoss: (items, reason) => {
-          const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
-          notify('SUMMARY', 'inbound-queue',
-            `I didn't get to ${items.length} queued message(s) (${reason}; topics: ${topics}) — resend anything still needed.`);
+          notifyInboundLoss(items, 'SUMMARY', (count) =>
+            `I didn't get to ${count} of your message(s) (${reason}) — resend anything still needed.`);
         },
         reportPossiblyNotInjected: (items) => {
-          const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
-          notify('SUMMARY', 'inbound-queue',
-            `${items.length} message(s) may not have been injected before a crash (topics: ${topics}) — if a message went unanswered, resend it.`);
+          notifyInboundLoss(items, 'SUMMARY', (count) =>
+            `${count} of your message(s) may not have been injected before a crash — if a message went unanswered, resend it.`);
         },
         raiseAttention: (title, body) => notify('IMMEDIATE', 'inbound-queue', `${title}: ${body}`),
         log: (line) => console.log(pc.dim(`  ${line}`)),
@@ -8333,8 +8368,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
             }
             if (dropped.length > 0) {
-              notify('SUMMARY', 'inbound-queue',
-                `I didn't get to ${dropped.length} queued message(s) (the queue is enabled but this machine has no mesh identity, so the drain never started; topics: ${[...new Set(dropped)].join(', ')}) — resend anything still needed.`);
+              notifyInboundLoss(dropped.map((sk) => ({ sessionKey: sk })), 'SUMMARY', (count) =>
+                `I didn't get to ${count} of your message(s) (the queue is enabled but this machine has no mesh identity, so the drain never started) — resend anything still needed.`);
             }
             store.close();
             _sweptInboundStore = null;
@@ -18335,14 +18370,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                     }
                   },
                   reportLoss: (items, reason) => {
-                    const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
-                    notify('SUMMARY', 'inbound-queue',
-                      `I didn't get to ${items.length} queued message(s) (${reason}; topics: ${topics}) — resend anything still needed.`);
+                    notifyInboundLoss(items, 'SUMMARY', (count) =>
+                      `I didn't get to ${count} of your message(s) (${reason}) — resend anything still needed.`);
                   },
                   reportPossiblyNotInjected: (items) => {
-                    const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
-                    notify('SUMMARY', 'inbound-queue',
-                      `${items.length} message(s) may not have been injected (topics: ${topics}) — if a message went unanswered, resend it.`);
+                    notifyInboundLoss(items, 'SUMMARY', (count) =>
+                      `${count} of your message(s) may not have been injected — if a message went unanswered, resend it.`);
                   },
                   log: (line) => console.log(pc.dim(`  ${line}`)),
                   reportDegradation: (reason) => {
