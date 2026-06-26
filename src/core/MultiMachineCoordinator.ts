@@ -204,6 +204,10 @@ export class MultiMachineCoordinator extends EventEmitter {
   private leasePullStartMonoMs: number = 0;
   private watchdogReArmTimes: number[] = [];
   private watchdogDisarmed: boolean = false;
+  // F6 (Degradation Is an Event): per-stall-EPISODE dedup so the FIRST re-arm of a
+  // genuine lease-tick stall surfaces to the user ONCE — not every re-arm (flood),
+  // and not only on the runaway self-disarm. Reset when a real tick resumes.
+  private leaseStallSurfaced: boolean = false;
   /** F3 — per-incarnation latch so a silent standby relinquishes its held lease once. */
   private silentStandbyRelinquished: boolean = false;
 
@@ -1279,6 +1283,24 @@ export class MultiMachineCoordinator extends EventEmitter {
       console.log(`[MultiMachine] lease-tick watchdog: stalled >${cfg.staleMs}ms — re-armed (${this.watchdogReArmTimes.length}/${cfg.maxReArmsPerHour} this hour)`);
       this.emit('tickStallRecovered', { reArmCount: this.watchdogReArmTimes.length });
 
+      // F6 (Degradation Is an Event): surface the FIRST re-arm of THIS stall
+      // episode to the user — the exact 2026-06-25 postmortem gap, where a single
+      // >staleMs lease-tick stall was silently re-armed (log-only / pull-only via
+      // /health) and nobody knew the coordination layer was degraded until
+      // messages disappeared. Deduped per episode (reset when a real tick resumes)
+      // so a single stall surfaces ONCE, not on every re-arm; the runaway
+      // self-disarm below is a separate, louder event.
+      if (!this.leaseStallSurfaced) {
+        this.leaseStallSurfaced = true;
+        DegradationReporter.getInstance().report({
+          feature: 'MultiMachine.leaseTick',
+          primary: 'The mesh "who is in charge" lease tick is the agent\'s coordination heartbeat',
+          fallback: `The lease tick stalled (no advance in >${cfg.staleMs}ms) and the watchdog re-armed it`,
+          reason: 'The coordinator tick loop stalled (transport hang / event-loop pressure); the in-process watchdog recovered it',
+          impact: 'Coordination ran degraded briefly (the awake-machine election may have used a fallback). Recovered; investigate if it recurs.',
+        });
+      }
+
       if (this.watchdogReArmTimes.length > cfg.maxReArmsPerHour) {
         this.watchdogDisarmed = true;
         console.error('[MultiMachine] lease-tick watchdog SELF-DISARMED — re-arming too often; the tick itself is the incident');
@@ -1333,6 +1355,9 @@ export class MultiMachineCoordinator extends EventEmitter {
     // a solo / no-leaseCoordinator agent still advances it and the watchdog never
     // re-arms there (genuine no-op on single-machine agents).
     this.lastTickRunMonoMs = this.monoNowMs();
+    // F6: a real tick ran ⇒ this stall episode is over; re-arm the per-episode
+    // surfacing so a LATER distinct stall surfaces again (not suppressed forever).
+    this.leaseStallSurfaced = false;
     if (!this._identity) return;
     // Independent mode: no failover/demotion logic
     if (this.coordinationMode === 'independent') return;

@@ -329,14 +329,51 @@ describe('MessagingToneGate', () => {
   });
 
   describe('fail-CLOSED behavior (No Silent Degradation §Design 6)', () => {
-    it('fails CLOSED (pass=false, held) when the provider throws', async () => {
+    // F4 graceful degradation (tone-gate-graceful-degradation): the DEFAULT
+    // provider-throw disposition is no longer a blunt hold — it degrades to the
+    // in-process deterministic leak floor so a clean message still reaches the
+    // user during a backend outage (the bug that silently cut the user off when
+    // claude -p was rate-limited). A real leak still HOLDS on that path.
+    it('DEGRADES to the deterministic floor and SENDS a clean message when the provider throws (F4 default)', async () => {
       const provider = errorProvider(new Error('network timeout'));
       const gate = new MessagingToneGate(provider);
 
-      const result = await gate.review('some message', { channel: 'telegram' });
+      const result = await gate.review(
+        'I will run the migration and push the change for you.',
+        { channel: 'telegram' },
+      );
+
+      expect(result.pass).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.failedClosed).toBeFalsy();
+    });
+
+    it('still HOLDS a leaked artifact on the degraded floor when the provider throws (F4 leak-safety)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+
+      // A B2 file-path leak — the deterministic floor must catch it even with no LLM.
+      const result = await gate.review('see /Users/justin/.instar/config.json', {
+        channel: 'telegram',
+      });
 
       expect(result.pass).toBe(false);
       expect(result.failedClosed).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.rule).toBe('B2_FILE_PATH');
+    });
+
+    it('restores pure-hold on a provider throw when failClosedOnExhaustion is true (operator override)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider, { failClosedOnExhaustion: true });
+
+      const result = await gate.review('I will run the migration for you.', {
+        channel: 'telegram',
+      });
+
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+      expect(result.degradedToDeterministic).toBeFalsy();
     });
 
     it('reverts the provider-throw path to fail-open when the kill-switch is off', async () => {

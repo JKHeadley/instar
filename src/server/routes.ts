@@ -59,6 +59,7 @@ import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowl
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
+import { buildDegradedToneResult } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -1056,6 +1057,9 @@ export interface RouteContext {
   autonomousLivenessReconciler?:
     | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
     | null;
+  /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
+   *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
+  enforcedTerminationStatus?: (() => unknown) | null;
   /** Records an operator stop instruction (per-topic, or null = global) so the
    *  drainer's R2.6 operator-stop validation can see stops that post-date an
    *  entry's enqueue. Wired by the boot block alongside the queue. */
@@ -1865,6 +1869,24 @@ export function createRoutes(ctx: RouteContext): Router {
         _toneCfg?.failClosedMode ?? (_toneCfg?.failClosedOnExhaustion === false ? 'never' : 'always');
       const operatorTierDeliver =
         _toneMode === 'tiered' && recipientClass === 'operator' && _toneCfg?.toneTierDryRun !== true;
+      // §Design 6 + tone-gate-graceful-degradation F4. The slow-review timeout is
+      // the SLOW manifestation of the same rate-limit outage as a provider throw,
+      // so it mirrors `review()`'s disposition. Precedence (highest first):
+      //   - operator-tier deliver (operator's own channel, 'tiered', not dryRun) → fail-OPEN, tagged
+      //   - per-call opt-out (automated/fixed-template send) → fail-OPEN (stay available)
+      //   - failClosedOnExhaustion:false (operator kill-switch) → fail-OPEN
+      //   - failClosedOnExhaustion:true  (operator strict)      → pure-HOLD (GATE_TIMEOUT)
+      //   - default (unset)                                     → DEGRADE to the
+      //     deterministic leak floor (clean SENDS, leak HOLDS) — closes the F4 gap
+      //     for the slow path, not just the fast throw.
+      const perCallAllowsClosed = options.failClosedOnBudgetTimeout ?? true;
+      const globalFailClosed = _toneCfg?.failClosedOnExhaustion;
+      // Operator-tier delivery suppresses both fail-closed and degrade (we want OPEN).
+      const budgetFailClosed = !operatorTierDeliver && perCallAllowsClosed && globalFailClosed !== false;
+      const budgetDegrade =
+        budgetFailClosed && globalFailClosed !== true
+          ? (latencyMs: number) => buildDegradedToneResult(text, latencyMs, 'budget-timeout')
+          : undefined;
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -1878,18 +1900,15 @@ export function createRoutes(ctx: RouteContext): Router {
         gateBudgetMs,
         undefined,
         undefined,
-        // §Design 6: the slow-review timeout fails CLOSED by default (the safe
-        // direction). Two independent ways to fail OPEN instead: (a) the per-call
-        // opt-out — an automated/fixed-template send (post-update) that must stay
-        // available passes failClosedOnBudgetTimeout:false; (b) the global operator
-        // kill-switch messaging.toneGate.failClosedOnExhaustion:false (reverts every
-        // path live, no deploy). Both must allow fail-closed for it to engage.
-        // operator-channel-sacred: an operator-tier deliver ALSO opens this seam
-        // (the budget timeout was the path that sealed the operator out under load).
-        (!operatorTierDeliver &&
-          (options.failClosedOnBudgetTimeout ?? true) &&
-          (_toneCfg?.failClosedOnExhaustion) !== false),
+        // §Design 6 + F4: the slow-review timeout disposition mirrors review()'s.
+        // `budgetFailClosed` already folds in (a) the per-call opt-out, (b) the
+        // global kill-switch, and (c) operator-tier delivery (which suppresses
+        // fail-closed so the operator is never sealed out under load). When the
+        // disposition is the default (config unset), `budgetDegrade` is defined and
+        // takes precedence in reviewWithinBudget — degrading to the leak floor.
+        budgetFailClosed,
         operatorTierDeliver,
+        budgetDegrade,
       );
 
       // Structured observability: log every decision the authority made. This is
@@ -4293,6 +4312,15 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousLivenessReconciler.status());
+  });
+
+  // F2 Enforced Termination — external hard-stop status (spec: enforced-termination-watchdog.md).
+  router.get('/autonomous/enforced-termination', (_req, res) => {
+    if (!ctx.enforcedTerminationStatus) {
+      res.status(503).json({ error: 'enforced-termination watchdog not available on this agent' });
+      return;
+    }
+    res.json(ctx.enforcedTerminationStatus());
   });
 
   router.get('/autonomous/can-start', (req, res) => {

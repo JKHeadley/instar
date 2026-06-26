@@ -141,18 +141,33 @@ describe('Wiring-integrity (M11): a gating CALLER receives the router re-throw w
     // routes through the router and receives the throw in its own catch. The
     // wiring-integrity point is that the throw REACHES the caller (the router did not
     // swallow it into a brittle heuristic), so the caller's OWN fail policy decides.
-    // CONTRACT CHANGE (gate-prompts-judge-by-meaning §Design 6): the delivery-path
-    // tone gate's policy on an EXHAUSTED swap chain is now fail-CLOSED (hold) — a
-    // dropped gating verdict is never silently delivered (No Silent Degradation).
-    // failClosedOnExhaustion defaults to true.
+    // CONTRACT (tone-gate-graceful-degradation F4): with failClosedOnExhaustion UNSET
+    // (the default), the delivery-path tone gate DEGRADES to the in-process
+    // deterministic leak floor on an exhausted chain — a CLEAN message SENDS (the user
+    // is never silently cut off) while a real leaked artifact still HOLDS. The throw
+    // having reached the caller is proven by degradedToDeterministic (only the caller's
+    // catch runs the floor). Operators restore pure-hold with failClosedOnExhaustion:true.
     const toneGate = new MessagingToneGate(router);
-    const result = await toneGate.review('hello there', {
-      channel: 'telegram',
-      recentMessages: [],
-      signals: {},
+    const clean = await toneGate.review('hello there', {
+      channel: 'telegram', recentMessages: [], signals: {},
     } as any);
-    expect(result.failedClosed).toBe(true);
-    expect(result.pass).toBe(false); // tone gate now HOLDS on exhaustion — but only AFTER the throw reached it
+    expect(clean.pass).toBe(true); // clean → degrade-SEND, not silenced
+    expect(clean.degradedToDeterministic).toBe(true); // proves the throw reached the caller's floor
+
+    // A real leak on the same exhausted chain still HOLDS — degrade is not a blanket pass.
+    const leak = await toneGate.review('see .instar/config.json', {
+      channel: 'telegram', recentMessages: [], signals: {},
+    } as any);
+    expect(leak.pass).toBe(false);
+    expect(leak.failedClosed).toBe(true);
+
+    // Operator strict override restores pure-hold even for a clean message.
+    const strict = new MessagingToneGate(router, { failClosedOnExhaustion: true });
+    const held = await strict.review('hello there', {
+      channel: 'telegram', recentMessages: [], signals: {},
+    } as any);
+    expect(held.failedClosed).toBe(true);
+    expect(held.pass).toBe(false);
   });
 
   it('a FAIL-CLOSED gating caller propagates the throw (does not silently pass)', async () => {

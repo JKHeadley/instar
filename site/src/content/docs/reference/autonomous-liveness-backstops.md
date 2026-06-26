@@ -55,3 +55,28 @@ Safety mechanisms (hardened across four convergence rounds):
 - Audit: `logs/autonomous-liveness.jsonl`.
 
 Constitutional anchor: **An Autonomous Run Must Outlive Its Session**.
+
+## EnforcedTerminationWatchdog — "alive past its deadline"
+
+The deliberate counterweight to the reconciler: the reconciler keeps a run *alive*;
+the `EnforcedTerminationWatchdog` keeps a run from *outliving its budget*. Born from a
+24h-budget run that reached ~46h (topic 27515, 2026-06-25) because the only deadline
+enforcement was the run's own in-hook Stop-event check — which a wedged/looping session
+never reaches, an unbounded run has no budget for, and an unparseable timestamp fails
+toward keep-running.
+
+The watchdog watches every run from the OUTSIDE. `computeOverrun` fires only on a provable
+overrun — a time budget past its grace, an absolute ceiling (default 26h, which covers
+unbounded runs and unparseable timestamps via file mtime), or an opt-in iteration ceiling —
+and gates out inactive/paused/mid-move runs (it is never a pressure/idle reaper). A
+`TerminationConfirmer` requires the overrun on two consecutive ticks before any kill. The
+durable kill reuses the reconciler's `settleKill` (clear `endedMidWork` → `killSession`)
+plus the state-file delete + operator-stop record + resume-queue cancel, so a terminated
+run is not revived. Every predicate failure fails safe (no kill on uncertainty); a per-window
+cap makes a flapping detector give up loudly rather than kill-loop.
+
+- Read surface: `GET /autonomous/enforced-termination` (503 when dark).
+- Config: `monitoring.enforcedTermination` (`enabled` omitted → dev-gate decides; `dryRun` defaults true; `graceSeconds` 120; `absoluteCeilingSeconds` 26h).
+- Audit: `logs/enforced-termination.jsonl`.
+
+Constitutional anchor: **The User Experience Is the Product** → sub-standard #2 Enforced Termination.

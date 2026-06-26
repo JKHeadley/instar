@@ -8,7 +8,8 @@
  * decision is the load-bearing both-sides-of-boundary semantics.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -195,6 +196,37 @@ describe('MultiMachineCoordinator F1 — tick self-heal', () => {
       c.leaseCoordinator.isHolderHealthy = () => false; // preferred down ⇒ no stranding
       expect(c.shouldDeferToPreferred()).toBe(false);
       coord.stop();
+    });
+  });
+
+  describe('F6 — lease-tick stall surfaces to the user (Degradation Is an Event)', () => {
+    it('surfaces the FIRST re-arm of a stall episode, deduped per episode, re-surfaces after a real tick', () => {
+      const coord = makeCoord(dir, { tickWatchdog: { staleFactorMissedTicks: 2, maxReArmsPerHour: 6 } });
+      const c = coord as any;
+      c.monoNowMs = () => 1_000_000_000;
+      const reportSpy = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+      const leaseTickReports = () =>
+        reportSpy.mock.calls.filter((a) => (a[0] as { feature?: string })?.feature === 'MultiMachine.leaseTick').length;
+      try {
+        // Episode 1: a stall → the FIRST re-arm surfaces once (the 2026-06-25 gap).
+        c.lastTickRunMonoMs = 1;
+        c.runTickWatchdog();
+        expect(leaseTickReports()).toBe(1);
+        // Same episode: another re-arm does NOT re-surface (per-episode dedup, no flood).
+        c.lastTickRunMonoMs = 1;
+        c.runTickWatchdog();
+        expect(leaseTickReports()).toBe(1);
+        // A real tick resumes ⇒ episode over (the dedup flag resets).
+        c.checkHeartbeatAndAct();
+        expect(c.leaseStallSurfaced).toBe(false);
+        // Episode 2: a NEW stall surfaces AGAIN (not suppressed forever).
+        c.lastTickRunMonoMs = 1;
+        c.runTickWatchdog();
+        expect(leaseTickReports()).toBe(2);
+      } finally {
+        reportSpy.mockRestore();
+        coord.stop();
+      }
     });
   });
 });

@@ -20,12 +20,17 @@ const providerError = (): IntelligenceProvider => ({ evaluate: async () => { thr
 const capacityShed = (): IntelligenceProvider => ({ evaluate: async () => { throw new LlmCapacityUnavailableError('spawn cap saturated'); } } as unknown as IntelligenceProvider);
 const unparseable = (): IntelligenceProvider => ({ evaluate: async (_p: string, _o?: IntelligenceOptions) => 'not json at all — no verdict' } as unknown as IntelligenceProvider);
 
-const TIERED: ToneGateConfig = { failClosedMode: 'tiered' };
+// Strict baseline: pins the availability disposition to HOLD so these tests
+// isolate the TIERING boundary (operator delivers vs external/absent holds)
+// independent of the F4 default (which, with failClosedOnExhaustion unset,
+// DEGRADES clean messages — covered in MessagingToneGate.test.ts /
+// outbound-gate-budget.test.ts, and in the F4-interaction test at the bottom).
+const TIERED: ToneGateConfig = { failClosedMode: 'tiered', failClosedOnExhaustion: true };
 
 describe('tone gate — operator-channel availability tiering', () => {
-  // ── DEFAULT (always) mode preserves today's behavior ───────────────────────
-  it("DEFAULT 'always' mode: operator + provider-error → HOLD (no tiering without opt-in)", async () => {
-    const r = await new MessagingToneGate(providerError()).review('status', { channel: 'telegram', recipientClass: 'operator' });
+  // ── 'always' (strict) mode: no tiering without opt-in ──────────────────────
+  it("'always' mode (strict): operator + provider-error → HOLD (no tiering without opt-in)", async () => {
+    const r = await new MessagingToneGate(providerError(), { failClosedOnExhaustion: true }).review('status', { channel: 'telegram', recipientClass: 'operator' });
     expect(r.pass).toBe(false);
     expect(r.failedClosed).toBe(true);
     expect(r.failedOpenOperatorChannel).toBeUndefined();
@@ -84,8 +89,30 @@ describe('tone gate — operator-channel availability tiering', () => {
 
   // ── dryRun: operator availability failure is HELD, would-deliver logged ─────
   it("tiered + dryRun: operator + provider-error → still HELD (would-deliver only logged)", async () => {
-    const r = await new MessagingToneGate(providerError(), { failClosedMode: 'tiered', toneTierDryRun: true }).review('status', { channel: 'telegram', recipientClass: 'operator' });
+    const r = await new MessagingToneGate(providerError(), { failClosedMode: 'tiered', toneTierDryRun: true, failClosedOnExhaustion: true }).review('status', { channel: 'telegram', recipientClass: 'operator' });
     expect(r.pass).toBe(false);
+    expect(r.failedOpenOperatorChannel).toBeUndefined();
+  });
+
+  // ── F4 interaction: operator-tier DELIVER takes precedence over degrade ─────
+  // With failClosedOnExhaustion UNSET, the default availability disposition is
+  // F4 degrade-to-deterministic. But on the operator's own channel in 'tiered'
+  // mode, operator-tier DELIVERY still wins (checked before the degrade), so a
+  // would-be-HELD leak from the operator is delivered (sacred channel), tagged
+  // failedOpenOperatorChannel — NOT degradedToDeterministic.
+  it("F4 interaction: tiered operator + LEAK + provider-error → DELIVER via operator-tier (precedence over degrade)", async () => {
+    const r = await new MessagingToneGate(providerError(), { failClosedMode: 'tiered' }).review('see .instar/config.json', { channel: 'telegram', recipientClass: 'operator' });
+    expect(r.pass).toBe(true);
+    expect(r.failedOpenOperatorChannel).toBe(true);
+    expect(r.degradedToDeterministic).toBeUndefined();
+  });
+  // And the non-operator default (no config) degrades: a clean external message
+  // SENDS via the deterministic floor rather than holding (the F4 fix), without
+  // ever being tagged an operator-tier deliver.
+  it("F4 default (no config): external + clean + provider-error → DEGRADE-SEND (not operator-tier)", async () => {
+    const r = await new MessagingToneGate(providerError()).review('status', { channel: 'telegram', recipientClass: 'external' });
+    expect(r.pass).toBe(true);
+    expect(r.degradedToDeterministic).toBe(true);
     expect(r.failedOpenOperatorChannel).toBeUndefined();
   });
 
