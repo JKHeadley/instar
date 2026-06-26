@@ -75,6 +75,18 @@ export interface ToneReviewResult {
    * re-prompt's benign branches). Spec: gate-prompts-judge-by-meaning §Design 6.
    */
   failedClosed?: boolean;
+  /**
+   * True when an AVAILABILITY failure (capacity-shed / provider-error /
+   * unparseable-after-retry / route-budget-timeout) was tiered toward DELIVERY
+   * because the recipient is the VERIFIED operator's own channel
+   * (operator-channel-sacred, outbound). A NEW disposition DISTINCT from the
+   * legacy benign `failedOpen`: it is AUDITED + surfaced in /metrics/features so
+   * the deliver-on-failure is NEVER silent (the No-Silent-Degradation
+   * reconciliation rests on this). NEVER set for a real content/B15 BLOCK
+   * verdict — only an availability/no-verdict branch is tiered. Spec:
+   * outbound-gate-tiered-fail-direction.
+   */
+  failedOpenOperatorChannel?: boolean;
 }
 
 export const VALID_RULES = new Set([
@@ -391,6 +403,17 @@ export interface ToneReviewContext {
     sessionRemainingMs: number | null;
     isTimeBoxed: boolean;
   };
+  /**
+   * Operator-channel-sacred (outbound) recipient class, resolved STRUCTURALLY at
+   * the route seam from the VERIFIED topic-operator binding + the single-human-
+   * operator check (NEVER from the launderable recipientType, NEVER from content).
+   * Governs ONLY the availability-failure fail-direction: 'operator' may DELIVER
+   * on a no-verdict availability failure (the operator must not be sealed out of
+   * their own channel); 'external' (the DEFAULT on any ambiguity) keeps the
+   * fail-CLOSED hold. Absent ⇒ treated as 'external' (fail-closed). A real content
+   * BLOCK verdict always holds regardless. Spec: outbound-gate-tiered-fail-direction.
+   */
+  recipientClass?: 'operator' | 'external';
 }
 
 /** Tune knobs read live from InstarConfig.messaging.toneGate (spec §Design 6). */
@@ -404,6 +427,23 @@ export interface ToneGateConfig {
    * unparseable output).
    */
   failClosedOnExhaustion?: boolean;
+  /**
+   * Operator-channel-sacred (outbound) tri-state for the availability-failure
+   * fail-direction (spec: outbound-gate-tiered-fail-direction):
+   *  - 'always' (DEFAULT) — today's behavior: availability failures HOLD on every
+   *     channel (preserves existing fail-closed semantics for every agent).
+   *  - 'tiered' — operator-channel availability failures DELIVER; external HOLD.
+   *  - 'never' — availability failures fail OPEN on every channel (legacy escape).
+   * Back-compat: when `failClosedMode` is unset, `failClosedOnExhaustion === false`
+   * maps to 'never', otherwise 'always'. 'tiered' is an EXPLICIT opt-in.
+   */
+  failClosedMode?: 'always' | 'tiered' | 'never';
+  /**
+   * dryRun for `failClosedMode:'tiered'`: when true, an operator-channel
+   * availability failure is LOGGED as would-deliver but still HELD (soak the
+   * classification before any real delivery). No effect outside 'tiered'.
+   */
+  toneTierDryRun?: boolean;
 }
 
 export class MessagingToneGate {
@@ -446,7 +486,23 @@ export class MessagingToneGate {
     };
     // Kill-switch (spec §Design 6): gates ONLY the availability-sensitive paths
     // (provider-exhaustion + route-budget timeout). Default ON (fail-closed).
-    const failClosedOnExhaustion = this.getConfig().failClosedOnExhaustion !== false;
+    const cfg = this.getConfig();
+    const failClosedOnExhaustion = cfg.failClosedOnExhaustion !== false;
+    // operator-channel-sacred (outbound, spec: outbound-gate-tiered-fail-direction):
+    // tier the availability-failure fail-direction by the STRUCTURALLY-resolved
+    // recipientClass. ONLY an explicit 'tiered' mode + an 'operator' recipient
+    // delivers; 'tiered' + dryRun logs would-deliver but still HOLDS; every other
+    // mode/recipient keeps today's exact behavior. The tier NEVER touches a real
+    // content/B15 BLOCK verdict (that path returns above via interp.kind==='ok').
+    const mode: 'always' | 'tiered' | 'never' =
+      cfg.failClosedMode ?? (failClosedOnExhaustion ? 'always' : 'never');
+    const operatorTier = mode === 'tiered' && context.recipientClass === 'operator';
+    const tierDeliver = operatorTier && cfg.toneTierDryRun !== true;
+    const dryRunHold = (where: string): void => {
+      if (operatorTier && cfg.toneTierDryRun === true) {
+        console.warn(`[tone-gate] tiered dryRun: would DELIVER on operator channel (${where}) — HELD in dryRun`);
+      }
+    };
 
     try {
       // First pass.
@@ -458,14 +514,19 @@ export class MessagingToneGate {
         interp = this.interpret(this.parseResponse(await this.provider.evaluate(prompt, opts)), start);
       }
       if (interp.kind === 'ok') return interp.result;
-      // Still a discipline failure after one re-prompt → FAIL-CLOSED (hold).
-      // This is NOT availability-sensitive (the model already failed to produce
-      // a usable verdict), so it is NOT gated by the kill-switch.
+      // Still a discipline failure after one re-prompt → no usable verdict
+      // (availability). Tier for the operator channel; else FAIL-CLOSED (hold).
+      if (tierDeliver) return this.operatorChannelDeliver(start);
+      dryRunHold('unparseable-after-retry');
       return this.failClosed(start, interp.reason);
     } catch (err) {
-      // Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION):
-      // a capacity shed (host spawn cap saturated) HOLDS the outbound message.
+      // Fork-bomb P3 (forkbomb-prevention-simple §D-DISPOSITION): a capacity shed
+      // (host spawn cap saturated) HOLDS — UNLESS tiered-operator, where DELIVERY
+      // spawns nothing (the message is already composed), so the fork-bomb floor
+      // is intact and the operator is not sealed out of their own channel.
       if (isCapacityUnavailable(err)) {
+        if (tierDeliver) return this.operatorChannelDeliver(start);
+        dryRunHold('capacity-shed');
         return {
           pass: false,
           rule: 'CAPACITY_UNAVAILABLE',
@@ -476,7 +537,10 @@ export class MessagingToneGate {
         };
       }
       // Provider-exhaustion / error path (No Silent Degradation §Design 6):
-      // fail CLOSED by default; the kill-switch reverts to fail-open.
+      // tier for the operator channel; else fail CLOSED by default; the
+      // kill-switch ('never' mode) reverts to fail-open.
+      if (tierDeliver) return this.operatorChannelDeliver(start);
+      dryRunHold('provider-error');
       if (failClosedOnExhaustion) {
         return this.failClosed(start, 'provider-error');
       }
@@ -489,6 +553,24 @@ export class MessagingToneGate {
         failedOpen: true,
       };
     }
+  }
+
+  /**
+   * Operator-channel-sacred DELIVER disposition: an availability failure on the
+   * VERIFIED operator's own channel delivers (pass:true) rather than seal the
+   * operator out, tagged `failedOpenOperatorChannel` for audit/metrics (NEVER
+   * silent). Only ever reached from an availability/no-verdict branch — never a
+   * real content/B15 BLOCK verdict.
+   */
+  private operatorChannelDeliver(start: number): ToneReviewResult {
+    return {
+      pass: true,
+      rule: '',
+      issue: '',
+      suggestion: '',
+      latencyMs: Date.now() - start,
+      failedOpenOperatorChannel: true,
+    };
   }
 
   /** Fail-CLOSED disposition (hold) — mirrors the capacity-shed sibling. */

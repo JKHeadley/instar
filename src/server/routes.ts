@@ -58,6 +58,7 @@ import {
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
+import { resolveToneRecipientClass } from './toneRecipientClass.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -1261,6 +1262,7 @@ function hashAuthHeader(header: unknown): string {
   return createHash('sha256').update(header).digest('hex').slice(0, 16);
 }
 
+
 /**
  * Resolve the canonical-main ref a merged PR's commit must be reachable from,
  * for the projects `building → merged` gate (StageTransitionValidator).
@@ -1851,6 +1853,18 @@ export function createRoutes(ctx: RouteContext): Router {
         // clock-read error must never block an outbound message.
         agentState = undefined;
       }
+      // operator-channel-sacred (outbound, spec: outbound-gate-tiered-fail-direction):
+      // resolve the recipient class STRUCTURALLY (verified operator binding +
+      // single-human-operator), and decide whether an availability failure should
+      // DELIVER (operator's own channel, 'tiered' mode, not dryRun) vs HOLD.
+      const recipientClass = resolveToneRecipientClass(ctx.topicOperatorStore, options.topicId);
+      const _toneCfg = (ctx.config as {
+        messaging?: { toneGate?: { failClosedOnExhaustion?: boolean; failClosedMode?: 'always' | 'tiered' | 'never'; toneTierDryRun?: boolean } };
+      }).messaging?.toneGate;
+      const _toneMode: 'always' | 'tiered' | 'never' =
+        _toneCfg?.failClosedMode ?? (_toneCfg?.failClosedOnExhaustion === false ? 'never' : 'always');
+      const operatorTierDeliver =
+        _toneMode === 'tiered' && recipientClass === 'operator' && _toneCfg?.toneTierDryRun !== true;
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -1859,6 +1873,7 @@ export function createRoutes(ctx: RouteContext): Router {
           targetStyle: ctx.config.messagingStyle,
           messageKind: options.messageKind,
           agentState,
+          recipientClass,
         }),
         gateBudgetMs,
         undefined,
@@ -1869,9 +1884,12 @@ export function createRoutes(ctx: RouteContext): Router {
         // available passes failClosedOnBudgetTimeout:false; (b) the global operator
         // kill-switch messaging.toneGate.failClosedOnExhaustion:false (reverts every
         // path live, no deploy). Both must allow fail-closed for it to engage.
-        ((options.failClosedOnBudgetTimeout ?? true) &&
-          ((ctx.config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean } } }).messaging?.toneGate
-            ?.failClosedOnExhaustion) !== false),
+        // operator-channel-sacred: an operator-tier deliver ALSO opens this seam
+        // (the budget timeout was the path that sealed the operator out under load).
+        (!operatorTierDeliver &&
+          (options.failClosedOnBudgetTimeout ?? true) &&
+          (_toneCfg?.failClosedOnExhaustion) !== false),
+        operatorTierDeliver,
       );
 
       // Structured observability: log every decision the authority made. This is
@@ -2263,6 +2281,10 @@ export function createRoutes(ctx: RouteContext): Router {
         failedOpen: entry.result.failedOpen || false,
         invalidRule: entry.result.invalidRule || false,
         budgetExceeded: entry.result.budgetExceeded || false,
+        // operator-channel-sacred (outbound): surface the deliver-on-availability-
+        // failure so it is AUDITED, never silent (the No-Silent-Degradation
+        // reconciliation rests on this being observable).
+        failedOpenOperatorChannel: entry.result.failedOpenOperatorChannel || false,
         latencyMs: entry.result.latencyMs,
         signals: {
           junk: entry.signals.junk?.detected ?? null,

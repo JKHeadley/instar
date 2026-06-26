@@ -48,6 +48,12 @@ export async function reviewWithinBudget(
   // safe direction (No Silent Degradation). Default false preserves the legacy
   // fail-open contract for any other caller / the kill-switch-off path.
   failClosedOnBudget = false,
+  // operator-channel-sacred (outbound, spec: outbound-gate-tiered-fail-direction):
+  // when true, a budget-timeout fail-OPEN (the route already decided to deliver via
+  // failClosedOnBudget=false because this is the verified operator's own channel) is
+  // tagged `failedOpenOperatorChannel` instead of the legacy benign `failedOpen`, so
+  // the deliver-on-timeout is AUDITED (never silent). No effect when holding.
+  operatorChannelDeliver = false,
 ): Promise<ToneReviewResult> {
   const start = now();
   const BUDGET_EXCEEDED = Symbol('outbound-gate-budget-exceeded');
@@ -75,7 +81,9 @@ export async function reviewWithinBudget(
       issue: '',
       suggestion: '',
       latencyMs: now() - start,
-      failedOpen: true,
+      // operator-channel deliver-on-timeout is tagged for audit/metrics; every other
+      // budget fail-open keeps the legacy benign failedOpen tag.
+      ...(operatorChannelDeliver ? { failedOpenOperatorChannel: true } : { failedOpen: true }),
       budgetExceeded: true,
     };
   }
