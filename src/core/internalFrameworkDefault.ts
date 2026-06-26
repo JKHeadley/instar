@@ -37,14 +37,49 @@ export const INTERNAL_FRAMEWORK_PREFERENCE: readonly IntelligenceFramework[] = [
 ] as const;
 
 /**
+ * The LATENCY-SENSITIVE preference chain — used for the `gate` category ONLY.
+ *
+ * A `gate` is a SYNCHRONOUS, action-blocking check (the user-facing
+ * `MessagingToneGate` is the canonical one — a human is waiting for their reply).
+ * The general `INTERNAL_FRAMEWORK_PREFERENCE` puts `codex-cli` first by operator
+ * directive (spread background LOAD off Claude), but codex-cli is the SLOWEST
+ * off-Claude framework (~30s, which exceeds the 20s outbound-gate review budget
+ * and times the gate out — the 2026-06-25 silent-outbound class). For a
+ * latency-sensitive gate the right default is the FASTEST available off-Claude
+ * framework, not the load-spreading order. Ranked fastest→slowest, Claude last.
+ *
+ * This does NOT override the codex-first directive for the BACKGROUND categories
+ * (`sentinel` / `reflector`) — their latency does not block a human, so they keep
+ * the load-spreading order. Only `gate` (where a user waits) goes fastest-first.
+ */
+export const LATENCY_SENSITIVE_FRAMEWORK_PREFERENCE: readonly IntelligenceFramework[] = [
+  'pi-cli',
+  'gemini-cli',
+  'codex-cli',
+  'claude-code',
+] as const;
+
+/** The first framework in `order` that is also present in `active`, else undefined. */
+function firstActiveIn(
+  order: readonly IntelligenceFramework[],
+  active: readonly IntelligenceFramework[],
+): IntelligenceFramework | undefined {
+  return order.find((fw) => active.includes(fw));
+}
+
+/**
  * Compute the default `componentFrameworks` from the active-framework set.
  *
  * @param activeFrameworks the preference chain filtered to frameworks ACTIVE in this
  *   agent, IN PREFERENCE ORDER (the caller filters `INTERNAL_FRAMEWORK_PREFERENCE`
  *   by `buildProvider(fw) !== null`). MUST already be ordered + de-duplicated.
  * @returns the effective `ComponentFrameworksConfig`:
- *   - `categories.{sentinel,gate,reflector}` = `active[0]` (first active off-Claude,
- *     or claude-code if that's all that's active)
+ *   - `categories.{sentinel,reflector}` = `active[0]` (first active off-Claude in the
+ *     codex-first load-spreading order, or claude-code if that's all that's active)
+ *   - `categories.gate` = the FASTEST active off-Claude framework
+ *     (`LATENCY_SENSITIVE_FRAMEWORK_PREFERENCE`: pi → gemini → codex → claude) — the
+ *     gate is synchronous + user-blocking, so it prefers speed over load-spreading.
+ *     Equals `active[0]` when only one off-Claude framework is active (no-op then).
  *   - `failureSwap` = `active.slice(1)` (the ordered tail, claude-code last)
  *   - `fallback: 'default'`
  *
@@ -67,10 +102,18 @@ export function resolveInternalFrameworkDefault(
   }
 
   const primary = active[0];
+  // The `gate` category is LATENCY-SENSITIVE: a synchronous, user-blocking check.
+  // It gets the FASTEST active off-Claude framework (pi → gemini → codex → claude),
+  // NOT the load-spreading codex-first order. `active` is in INTERNAL_FRAMEWORK_
+  // PREFERENCE order, so we re-rank it by the latency order to find the fastest.
+  // Falls back to `primary` if (somehow) no latency-ranked match — keeping the gate
+  // never worse than today. When only one off-Claude framework is active, gatePrimary
+  // === primary (byte-identical to the old behavior).
+  const gatePrimary = firstActiveIn(LATENCY_SENSITIVE_FRAMEWORK_PREFERENCE, active) ?? primary;
   return {
     categories: {
       sentinel: primary,
-      gate: primary,
+      gate: gatePrimary,
       reflector: primary,
       // `job` and `other` are deliberately ABSENT (§4.1).
     },
