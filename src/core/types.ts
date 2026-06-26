@@ -4947,6 +4947,9 @@ export interface MonitoringConfig {
     dryRun?: boolean;
     reapIntervalMs?: number;
     maxReapsPerPass?: number;
+    /** Catch multi-commit squash-merges via GitHub merged-PR state (default true;
+     *  fail-safe to git-cherry-only). Set false to disable the network call. */
+    githubMergeCheck?: boolean;
   };
   /**
    * OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,

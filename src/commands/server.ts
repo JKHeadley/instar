@@ -15717,7 +15717,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { makeAgentWorktreeReaperDeps } = await import('../monitoring/agentWorktreeGit.js');
     const _agentWorktreesDir = path.join(path.dirname(config.stateDir), '.worktrees');
     const agentWorktreeReaper = new AgentWorktreeReaper(
-      makeAgentWorktreeReaperDeps({ instarRepo: config.projectDir, worktreesDir: _agentWorktreesDir }),
+      makeAgentWorktreeReaperDeps({
+        instarRepo: config.projectDir,
+        worktreesDir: _agentWorktreesDir,
+        // Multi-commit squash-merge detection via GitHub merged-PR state (default
+        // on; fail-safe to cherry-only). Off only if explicitly disabled in config.
+        githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+      }),
       config.monitoring?.agentWorktreeReaper,
     );
     agentWorktreeReaper.start();

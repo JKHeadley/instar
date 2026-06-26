@@ -41,6 +41,14 @@ export interface AgentWorktreeReaperConfig {
    * permanently-unremovable worktree can't be retried forever. 0 disables the brake.
    */
   maxReclaimFailuresPerPath: number;
+  /**
+   * When true (default), merged-detection falls back to GitHub merged-PR state to
+   * catch MULTI-COMMIT squash-merges that `git cherry` (patch-id) cannot — the
+   * disk-accumulation root cause where squash-merged worktrees are kept forever.
+   * One `gh` call per sweep, fail-safe to cherry-only (KEEP) on any error. Set
+   * false to disable the network call and restore the legacy cherry-only behavior.
+   */
+  githubMergeCheck: boolean;
 }
 
 export const DEFAULT_AGENT_WORKTREE_REAPER_CONFIG: AgentWorktreeReaperConfig = {
@@ -49,6 +57,7 @@ export const DEFAULT_AGENT_WORKTREE_REAPER_CONFIG: AgentWorktreeReaperConfig = {
   reapIntervalMs: 24 * 3600 * 1000,
   maxReapsPerPass: 20,
   maxReclaimFailuresPerPath: 3,
+  githubMergeCheck: true,
 };
 
 export interface WorktreeInfo {

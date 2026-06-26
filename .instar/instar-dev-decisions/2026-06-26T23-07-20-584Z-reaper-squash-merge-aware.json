@@ -1,0 +1,17 @@
+{
+  "ts": "2026-06-26T23:07:20.584Z",
+  "slug": "reaper-squash-merge-aware",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 106,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}
