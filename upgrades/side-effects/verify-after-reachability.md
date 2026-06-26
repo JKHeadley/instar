@@ -4,12 +4,17 @@
 **Date:** `2026-06-26`
 **Author:** `Echo (instar-dev agent)`
 **Tier:** 2 (converged + approved spec: `docs/specs/verify-after-reachability.md`)
-**Scope of THIS commit:** the two PURE, testable core components + their tests. The
-server wiring (the live `probe`, the `sessionReaped`/release triggers, the dev-gate
-flag + status route + guard registration, and the `spawningTopics` closure→registry
-refactor of the live inbound path) is the explicit NEXT increment — separated because a
-wrong probe would flood false orphans and the message-path refactor must be done with
-focused care, not rushed. <!-- tracked: topic-28744 F7-followup server-integration -->
+**Scope:** the two pure components (first commit) PLUS the server wiring (this commit):
+Piece 1 (`spawningTopics` closure→`SpawningTopicsRegistry` refactor of the live inbound
+path, token-guarded at all 4 callsites) and Piece 2 (the verifier constructed dev-gated,
+triggered by `sessionReaped`, a conservative fail-safe probe, a 15s tick, NORMAL
+attention surfacing, and `guardRegistry` registration). The probe is deliberately
+CONSERVATIVE: a live session ⇒ reachable; a topic stuck-spawning past `stuckSpawnMs` ⇒
+orphan; ANYTHING ELSE ⇒ reachable (the next inbound self-heals) — so it never
+false-orphans an idle kill. The multi-machine released-no-placement + at-capacity orphan
+cases (placement reads) and a dedicated `/topic-reachability` route are a tracked
+follow-up; their absence means LESS coverage, never a false orphan (the probe fails safe
+to reachable). <!-- tracked: topic-28744 F7-followup multimachine-probe-and-route -->
 
 ## What this commit adds
 

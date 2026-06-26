@@ -4,30 +4,33 @@
 
 ## What Changed
 
-Lands the two pure, tested core components of postmortem fix F7 (Blast-Radius /
-Verify-After): `SpawningTopicsRegistry` (a token-tagged, ABA-safe replacement for the
-closure-local spawn-guard Set — `add` returns a token, `clear` is token-guarded, no
-timeout/sweep so the `.finally` stays the sole clearer; `stuckSinceMs` exposes in-flight
-age) and `TopicReachabilityVerifier` (a pure-signal decision core that, given a
-reachability probe, surfaces a genuine orphan as ONE NORMAL attention item — with the
-reachable-honesty guard, grace/coalescing, flap backoff, burst roll-up, and
-pressure/emergency-stop skip + re-sweep). Both mutate nothing; neither is wired into the
-running server yet (inert at runtime). The server integration (live probe + triggers +
-dev-gate flag + status route + guard registration + the inbound-path registry refactor)
-is the tracked next increment.
+Lands postmortem fix F7 (Blast-Radius / Verify-After), dark on the fleet / live on a dev
+agent. Two parts: (1) the live inbound spawn-guard is now a token-tagged
+`SpawningTopicsRegistry` — a hung session start no longer silently wedges a topic forever
+(ABA-safe; the `.finally` stays the sole clearer, no risky auto-clear). (2) a pure-signal
+`TopicReachabilityVerifier`: after a session is killed/reaped, it checks (after a grace
+window) that the conversation can still receive your next message, and if a genuine
+orphan (e.g. a wedged start-up) it surfaces ONE calm NORMAL heads-up. It mutates nothing —
+never kills, spawns, or clears. The probe is conservative + fail-safe (uncertain ⇒
+treated as reachable), so it never cries wolf on a normal idle kill.
 
 ## What to Tell Your User
 
-Nothing yet — this lands internal building blocks for the "did I just break the door?"
-reachability check (postmortem fix #7). They are not wired into the running agent in this
-change, so there is no user-visible behavior change. The user-facing heads-up surfaces in
-the follow-up that wires them in.
+If I ever shut down a conversation's session and it genuinely can't be reached again
+(e.g. a start-up that hung), you now get one calm "this conversation may be unreachable"
+heads-up instead of your messages silently vanishing. Most of the time you see nothing,
+because most kills self-heal on your next message. It only watches — it never tries to
+auto-fix the stuck state (that proved too risky); the mechanical repair stays a tracked
+follow-up. Off on the fleet for now.
 
 ## Summary of New Capabilities
 
-- None at runtime in this change — two new internal components (a token-safe spawn-guard
-  registry and a pure-signal reachability verifier) land under test, inert until the
-  follow-up integration wires them into the server.
+- A hung session start-up can no longer permanently jam a conversation's inbound path
+  (token-tagged spawn guard; ABA-safe).
+- After a destructive session/routing op, a dev agent verifies the topic is still
+  reachable and surfaces a genuine orphan as ONE NORMAL attention item (deduped,
+  flap-backoff-capped, burst-rolled-up, pressure/emergency-stop aware with a re-sweep).
+- Visible in `/guards` (registered). Dark on the fleet (dev-agent gate). Mutates nothing.
 
 ## Evidence
 

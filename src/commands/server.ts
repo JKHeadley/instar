@@ -24,6 +24,8 @@ import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '..
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
 import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
+import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifier.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
@@ -503,6 +505,11 @@ let _fixDeps: FixCommandDeps | null = null;
 // server's store at message-time — the server is constructed long after
 // routing is wired, and the store must be the server's OWN instance.
 let _agentServerRef: import('../server/AgentServer.js').AgentServer | null = null;
+
+// F7: late-bound ref to wireTelegramRouting's spawning-topics registry so the
+// TopicReachabilityVerifier (constructed in the outer scope) can probe whether a topic
+// is stuck-spawning. Assigned inside wireTelegramRouting; null until routing is wired.
+let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
@@ -1902,7 +1909,12 @@ export function wireTelegramRouting(
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
   // arrive faster than the async spawn completes.
-  const spawningTopics = new Set<number>();
+  // F7 Piece 1: token-tagged spawn-guard. `has` guards double-spawn (as the old Set
+  // did); `add` returns a token and `clear` is token-guarded so a late `.finally` from
+  // a superseded spawn cannot delete a newer entry (the ABA fix). A hung spawn keeps its
+  // entry (no timeout/sweep) so the verifier can SURFACE it — never auto-cleared.
+  const spawningTopics = new SpawningTopicsRegistry();
+  _spawningTopicsRegistryRef = spawningTopics; // F7: expose to the outer-scope verifier
 
   telegram.onTopicMessage = async (msg: Message) => {
     const topicId = (msg.metadata?.messageThreadId as number) ?? null;
@@ -2209,7 +2221,7 @@ export function wireTelegramRouting(
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
             return;
           }
-          spawningTopics.add(topicId);
+          const _spawnTokA = spawningTopics.add(topicId);
           // Remove the resume UUID so respawnSessionForTopic doesn't try --resume
           if (_topicResumeMap) {
             _topicResumeMap.remove(topicId);
@@ -2220,7 +2232,7 @@ export function wireTelegramRouting(
               telegram.sendToTopic(topicId, `❌ Fresh session restart failed. Try sending your message again.`).catch(() => {});
             })
             .finally(() => {
-              spawningTopics.delete(topicId);
+              spawningTopics.clear(topicId, _spawnTokA);
             });
         } else if (!isQuotaDeath) {
           // Guard: skip respawn if one is already in progress for this topic.
@@ -2230,7 +2242,7 @@ export function wireTelegramRouting(
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
             return;
           }
-          spawningTopics.add(topicId);
+          const _spawnTokB = spawningTopics.add(topicId);
           telegram.sendToTopic(topicId, `🔄 Session restarting — message queued.`).catch(() => {});
           respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
             .catch(err => {
@@ -2242,7 +2254,7 @@ export function wireTelegramRouting(
               telegram.sendToTopic(topicId, userMsg).catch(() => {});
             })
             .finally(() => {
-              spawningTopics.delete(topicId);
+              spawningTopics.clear(topicId, _spawnTokB);
             });
         }
       }
@@ -2258,7 +2270,7 @@ export function wireTelegramRouting(
         return;
       }
 
-      spawningTopics.add(topicId);
+      const _spawnTokC = spawningTopics.add(topicId);
 
       // Resolve topic name — try in-memory, then active probe, then fallback
       let spawnName = storedTopicName;
@@ -2281,7 +2293,7 @@ export function wireTelegramRouting(
           : 'Having trouble starting a session right now. Try sending your message again in a moment.';
         telegram.sendToTopic(topicId, userMsg).catch(() => {});
       }).finally(() => {
-        spawningTopics.delete(topicId);
+        spawningTopics.clear(topicId, _spawnTokC);
       });
     }
   };
@@ -2373,7 +2385,7 @@ export function wireTelegramRouting(
     }
     if (!handover.commitReceipt()) return { kind: 'handover-refused' };
     if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
-    spawningTopics.add(topicId);
+    const _spawnTokD = spawningTopics.add(topicId);
     try {
       if (targetSession) {
         // Dead session — respawn, AWAITED through the spawn+inject (the PIS
@@ -2389,7 +2401,7 @@ export function wireTelegramRouting(
       // re-inject; honest disposition: delivered-unconfirmed + report (§3.4).
       return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
     } finally {
-      spawningTopics.delete(topicId);
+      spawningTopics.clear(topicId, _spawnTokD);
     }
   };
 }
@@ -8166,7 +8178,83 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       }
     }
+    // ── F7 Verify-After Topic Reachability (PURE SIGNAL, dev-gated dark/fleet) ──
+    // After a destructive mutation it verifies the topic is still inbound-reachable and
+    // SURFACES a genuine orphan (one NORMAL attention item). It mutates NOTHING. The
+    // probe is conservative + fail-safe: a live session ⇒ reachable; a topic stuck-
+    // spawning past stuckSpawnMs (the registry seam) ⇒ orphan; anything else ⇒ reachable
+    // (the next inbound auto-spawns — the self-heal), so it never false-orphans an idle kill.
+    const _trvCfg = (config.monitoring as unknown as Record<string, unknown> | undefined)?.topicReachabilityVerifier as
+      | { enabled?: boolean; graceMs?: number; stuckSpawnMs?: number }
+      | undefined;
+    const _trvEnabled = resolveDevAgentGate(_trvCfg?.enabled, config);
+    const _stuckSpawnMs = _trvCfg?.stuckSpawnMs ?? 180_000;
+    const topicReachabilityVerifier: TopicReachabilityVerifier | null = _trvEnabled
+      ? new TopicReachabilityVerifier({
+          now: () => Date.now(),
+          graceMs: _trvCfg?.graceMs ?? 30_000,
+          probe: (topic) => {
+            try {
+              const session = telegram?.getSessionForTopic(topic);
+              if (session && sessionManager.isSessionAlive(session)) return { reachable: true };
+              const stuckMs = _spawningTopicsRegistryRef?.stuckSinceMs(topic);
+              if (stuckMs !== undefined && stuckMs >= _stuckSpawnMs) return { reachable: false, reason: 'stuck-spawn' };
+              return { reachable: true }; // next inbound auto-spawns (self-heal)
+            } catch {
+              return { reachable: true }; // fail-safe: never false-orphan on a probe error
+            }
+          },
+          surface: (item) => {
+            void telegram
+              ?.createAttentionItem({
+                id: item.key,
+                title: item.rolledUp ? 'Some conversations may be unreachable' : 'A conversation may be unreachable',
+                summary: item.reason,
+                category: 'reachability',
+                priority: 'NORMAL',
+                sourceContext: 'topic-reachability',
+              })
+              .catch(() => {});
+          },
+          pressureCritical: () => {
+            try {
+              return (sessionManager as unknown as { pressureTier?: () => string }).pressureTier?.() === 'critical';
+            } catch {
+              return false;
+            }
+          },
+          emergencyStopActive: () => false, // wired to the operator-halt signal in a follow-up
+        })
+      : null;
+    if (topicReachabilityVerifier) {
+      const _trvTick = setInterval(() => {
+        try {
+          topicReachabilityVerifier.tick();
+        } catch {
+          /* @silent-fallback-ok: a verifier tick error must never crash the server. */
+        }
+      }, 15_000);
+      _trvTick.unref?.();
+      guardRegistry.register('monitoring.topicReachabilityVerifier.enabled', () => ({
+        enabled: true,
+        ...topicReachabilityVerifier.status(),
+      }));
+    }
+
     sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; midWork?: boolean; workEvidence?: string[]; via?: string }) => {
+      // ── F7: schedule a post-grace reachability verify for the affected topic. Both a
+      //    terminal kill AND a recovery-bounce schedule one (a recovery whose respawn
+      //    wedges is exactly the orphan to catch); the verifier's grace lets a normal
+      //    self-heal land first, so a healthy bounce never surfaces. Pure signal. ──
+      if (topicReachabilityVerifier) {
+        try {
+          const rawTrv = telegram?.getTopicForSession(e.session.tmuxSession);
+          const trvTopic = rawTrv == null ? null : Number.isFinite(Number(rawTrv)) ? Number(rawTrv) : null;
+          if (trvTopic != null) topicReachabilityVerifier.recordMutation(trvTopic);
+        } catch {
+          /* @silent-fallback-ok: a verifier trigger error must never affect the reap. */
+        }
+      }
       // ── GAP-B Part B (spec: autonomous-registration-guarantee.md) — the
       //    commitment-evidence BACKSTOP for an UNregistered-but-working autonomous
       //    run. Computed ONCE here (cheap, fail-open) so its verdict feeds BOTH the
