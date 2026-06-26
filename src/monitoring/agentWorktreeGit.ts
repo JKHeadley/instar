@@ -11,7 +11,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { classifyPorcelain } from '../core/worktreeDirtyCheck.js';
 import type { AgentWorktreeReaperDeps, WorktreeInfo } from './AgentWorktreeReaper.js';
+
+/**
+ * Reaper-specific residue denylist (spec: worktree-reaper-untracked-blindspot).
+ * INTENTIONALLY NARROWER than worktreeDirtyCheck's DEFAULT_RESIDUE_DENYLIST: this
+ * list gates an irreversible `git worktree remove`, so it contains ONLY paths that
+ * are unambiguously never user work. It deliberately EXCLUDES the broad
+ * `out/` / `build/` / `coverage/` / `*.log` entries of the shared default — users
+ * legitimately hand-author files under those (a `build/deploy.md`, an `analysis.log`),
+ * and an untracked one of those on a merged worktree must NEVER be silently reaped.
+ * We do NOT mutate DEFAULT_RESIDUE_DENYLIST (it feeds the separate yield-safety
+ * config list + other consumers); the reaper carries its own list.
+ */
+export const REAPER_RESIDUE_DENYLIST: readonly string[] = [
+  'dist/', 'node_modules/', '.cache/', '.turbo/', '*.tsbuildinfo',
+  '.metadata_never_index',          // instar-managed Spotlight-exclusion marker — never work
+  '.instar/instar-dev-traces/',     // instar audit-trace droppings — never work
+];
 
 /** Read-only git executor signature (injected so this module is testable). */
 export type ReadGit = (args: string[], cwd: string) => string;
@@ -156,8 +174,16 @@ export function makeAgentWorktreeReaperDeps(opts: {
     },
 
     isClean: (p: string): boolean => {
-      try { return readGit(['-C', p, 'status', '--porcelain'], p).trim() === ''; }
-      catch { return false; } // cannot determine cleanliness → treat as dirty (KEEP)
+      // Residue-aware via the PURE classifyPorcelain (NOT the fail-OPEN
+      // makeWorktreeDirtyCheck wrapper): a worktree whose only entries are
+      // reaper-residue (build artifacts / instar markers) is clean; ANY
+      // non-residue change — tracked OR a hand-authored untracked file — is dirty.
+      // FAIL-CLOSED on any error: cannot determine cleanliness → treat as dirty
+      // (KEEP). This is the deletion-safe direction (spec
+      // worktree-reaper-untracked-blindspot, convergence BLOCKER): a transient
+      // `git status` failure must never make a worktree look reapable.
+      try { return !classifyPorcelain(readGit(['-C', p, 'status', '--porcelain'], p), REAPER_RESIDUE_DENYLIST); }
+      catch { return false; }
     },
 
     isMerged: (info: WorktreeInfo): boolean => {

@@ -34,6 +34,13 @@ export interface AgentWorktreeReaperConfig {
   reapIntervalMs: number;
   /** Bounded blast radius per pass. */
   maxReapsPerPass: number;
+  /**
+   * Per-path consecutive-removal-failure breaker (No Unbounded Loops standard).
+   * After this many consecutive `removeWorktree` failures for the SAME path, the
+   * reaper stops attempting it (keeps it as `reclaim-failed`) until restart, so a
+   * permanently-unremovable worktree can't be retried forever. 0 disables the brake.
+   */
+  maxReclaimFailuresPerPath: number;
 }
 
 export const DEFAULT_AGENT_WORKTREE_REAPER_CONFIG: AgentWorktreeReaperConfig = {
@@ -41,6 +48,7 @@ export const DEFAULT_AGENT_WORKTREE_REAPER_CONFIG: AgentWorktreeReaperConfig = {
   dryRun: true,
   reapIntervalMs: 24 * 3600 * 1000,
   maxReapsPerPass: 20,
+  maxReclaimFailuresPerPath: 3,
 };
 
 export interface WorktreeInfo {
@@ -86,6 +94,11 @@ export class AgentWorktreeReaper extends EventEmitter {
   private running = false;
   private lastPassAt = 0;
   private reapedLastPass = 0;
+  /** Per-path consecutive removal-failure counts (breaker). Keyed by worktree path;
+   *  cleared on a successful removal of that path. Process-lifetime (resets on restart). */
+  private reclaimFailures = new Map<string, number>();
+  /** Paths whose breaker has tripped + already emitted (emit-once). */
+  private reclaimTripped = new Set<string>();
 
   constructor(deps: AgentWorktreeReaperDeps, cfg?: Partial<AgentWorktreeReaperConfig>) {
     super();
@@ -144,6 +157,13 @@ export class AgentWorktreeReaper extends EventEmitter {
           evaluations.push({ path: info.path, branch: info.branch, verdict: 'keep', reason: 'eval-error' });
           continue;
         }
+        // Per-path failure breaker (No Unbounded Loops): a reap-eligible worktree
+        // whose removal has failed too many times is no longer attempted — surfaced
+        // honestly as keep('reclaim-failed') so the operator sees WHY it persists.
+        if (evaln.verdict === 'reap-eligible' && this.breakerTripped(info.path)) {
+          evaluations.push({ path: info.path, branch: info.branch, verdict: 'keep', reason: 'reclaim-failed' });
+          continue;
+        }
         evaluations.push(evaln);
         if (evaln.verdict !== 'reap-eligible') continue;
         if (reaped.length >= this.cfg.maxReapsPerPass) continue; // blast-radius cap
@@ -151,8 +171,15 @@ export class AgentWorktreeReaper extends EventEmitter {
         try {
           this.deps.removeWorktree(info.path);
           reaped.push(info.path);
+          this.reclaimFailures.delete(info.path); // success → clear the breaker count
+          this.reclaimTripped.delete(info.path);
           this.emit('reaped', info);
         } catch (err) {
+          // @silent-fallback-ok: NOT silent — the removal failure is surfaced via
+          // emit('error') AND recorded for the per-path breaker (which itself
+          // emit('reclaim-breaker')s once on trip). The worktree is simply kept and
+          // retried (bounded by the breaker), the safe direction for a deletion op.
+          this.recordReclaimFailure(info.path);
           this.emit('error', err);
         }
       }
@@ -163,6 +190,25 @@ export class AgentWorktreeReaper extends EventEmitter {
       this.running = false;
     }
     return { ts: this.now(), evaluations, reaped, dryRun: !this.killsEnabled };
+  }
+
+  /** True when this path's removal has failed >= the configured cap (breaker open).
+   *  cap 0 disables the brake (never trips). */
+  private breakerTripped(path: string): boolean {
+    const cap = this.cfg.maxReclaimFailuresPerPath;
+    if (cap <= 0) return false;
+    return (this.reclaimFailures.get(path) ?? 0) >= cap;
+  }
+
+  /** Record one removal failure for a path; emit the breaker-trip ONCE when the cap is reached. */
+  private recordReclaimFailure(path: string): void {
+    const cap = this.cfg.maxReclaimFailuresPerPath;
+    const n = (this.reclaimFailures.get(path) ?? 0) + 1;
+    this.reclaimFailures.set(path, n);
+    if (cap > 0 && n >= cap && !this.reclaimTripped.has(path)) {
+      this.reclaimTripped.add(path);
+      this.emit('reclaim-breaker', { path, failures: n });
+    }
   }
 
   /** Observability snapshot for GET /worktrees/agent-reaper (no side effects). */

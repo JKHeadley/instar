@@ -1,0 +1,19 @@
+## What Changed
+
+The stale-worktree reaper (`AgentWorktreeReaper`) no longer treats harmless leftover files as "uncommitted work." Its cleanliness check now uses the existing residue-aware `classifyPorcelain` with a NARROW, reaper-specific never-work denylist (`dist/`, `node_modules/`, `.cache/`, `.turbo/`, `*.tsbuildinfo`, `.metadata_never_index`, `.instar/instar-dev-traces/`) — fail-CLOSED on any git error (a transient `git status` failure can never make a worktree look reapable). A new per-path reclaim-failure breaker stops retrying a permanently-unremovable worktree forever (surfaced as `keep('reclaim-failed')`).
+
+This fixes unbounded `.worktrees/` growth: on one agent, 246 of 289 worktrees were kept solely because of untracked droppings — overwhelmingly the `.metadata_never_index` Spotlight-exclusion marker that gets dropped into every worktree (so the file added to *reduce* indexing load was *blocking* the cleanup that reduces it). Real work is still always kept: ANY non-residue change — a tracked modification OR a hand-authored untracked file (including under `out/`/`build/`/`coverage/` or a `*.log`, which the narrow list deliberately excludes) — keeps the worktree.
+
+## Evidence
+
+- `tests/unit/agent-worktree-reaper.test.ts` (31 green): residue-only→clean, narrow-residue→clean, tracked-mod→dirty/KEEP, untracked-source→dirty/KEEP, broad-entry (`build/`,`*.log`,`out/`,`coverage/`)→dirty/KEEP, git-error→fail-CLOSED/KEEP, breaker trip+emit-once+clear-on-success.
+- Convergence (adversarial + lessons-aware + conformance gate) caught and resolved a deletion-safety BLOCKER (fail-open→fail-closed) + 2 MAJORs: `docs/specs/reports/worktree-reaper-untracked-blindspot-convergence.md`.
+
+## What to Tell Your User
+
+If your agent's disk fills up with old throwaway worktrees (or a "machine overloaded" warning turns out to be a background file-indexer churning on a huge worktrees folder), the cleanup can now reclaim merged, idle worktrees whose only leftovers are build artifacts or the agent's own marker files — while never touching anything with real unsaved work. It stays off until you turn it on, and it can show you exactly the list it would remove before it deletes anything.
+
+## Summary of New Capabilities
+
+- Residue-aware, fail-closed worktree cleanliness check (a narrow never-delete list) so the cleanup reclaims droppings-only worktrees instead of hoarding them.
+- A per-worktree failure breaker so an un-removable worktree is given up on after a few tries instead of being retried forever.

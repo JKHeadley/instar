@@ -12,7 +12,7 @@ import {
   type AgentWorktreeReaperDeps,
   type WorktreeInfo,
 } from '../../src/monitoring/AgentWorktreeReaper.js';
-import { isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, type ReadGit } from '../../src/monitoring/agentWorktreeGit.js';
+import { isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, REAPER_RESIDUE_DENYLIST, type ReadGit } from '../../src/monitoring/agentWorktreeGit.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -267,5 +267,87 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     expect(verdicts.merged).toBe('reap-eligible');
     expect(verdicts.dirty).not.toBe('reap-eligible');
     expect(verdicts.unmerged).not.toBe('reap-eligible');
+  });
+});
+
+describe('makeAgentWorktreeReaperDeps.isClean — residue-aware + FAIL-CLOSED (worktree-reaper-untracked-blindspot)', () => {
+  // A fake readGit that returns a fixed porcelain for the `status --porcelain` call.
+  const withStatus = (porcelain: string): ReadGit => (args) => {
+    if (args.includes('status')) return porcelain;
+    return '';
+  };
+  const mk = (readGit: ReadGit) =>
+    makeAgentWorktreeReaperDeps({ instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit }).isClean('/repo/.worktrees/a');
+
+  it('CLEAN when the only entry is the instar Spotlight marker (the dominant blocker)', () => {
+    expect(mk(withStatus('?? .metadata_never_index\n'))).toBe(true);
+  });
+  it('CLEAN when entries are only narrow residue (dist/, node_modules/, trace dir)', () => {
+    expect(mk(withStatus('?? dist/\n?? node_modules/\n?? .instar/instar-dev-traces/run.json\n'))).toBe(true);
+  });
+  it('DIRTY (KEEP) on a tracked modification', () => {
+    expect(mk(withStatus(' M src/core/x.ts\n'))).toBe(false);
+  });
+  it('DIRTY (KEEP) on a hand-authored untracked source file (possibly-precious)', () => {
+    expect(mk(withStatus('?? src/newThing.ts\n'))).toBe(false);
+  });
+  it('DIRTY (KEEP) on broad entries the reaper denylist DELIBERATELY excludes (build/, *.log)', () => {
+    // These match DEFAULT_RESIDUE_DENYLIST but NOT REAPER_RESIDUE_DENYLIST — a
+    // user-authored build/deploy.md or analysis.log must never be silently reaped.
+    expect(mk(withStatus('?? build/deploy.md\n'))).toBe(false);
+    expect(mk(withStatus('?? analysis.log\n'))).toBe(false);
+    expect(mk(withStatus('?? out/report.txt\n'))).toBe(false);
+    expect(mk(withStatus('?? coverage/index.html\n'))).toBe(false);
+  });
+  it('FAIL-CLOSED: a git error → DIRTY (KEEP), never "looks clean → reapable" (the convergence BLOCKER)', () => {
+    const throwing: ReadGit = () => { throw new Error('git status failed (lock contention)'); };
+    expect(mk(throwing)).toBe(false);
+  });
+  it('CLEAN on a truly empty worktree (no changes at all)', () => {
+    expect(mk(withStatus(''))).toBe(true);
+  });
+  it('REAPER_RESIDUE_DENYLIST is narrow — excludes the broad user-authorable entries', () => {
+    expect(REAPER_RESIDUE_DENYLIST).toContain('.metadata_never_index');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('out/');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('build/');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('*.log');
+  });
+});
+
+describe('AgentWorktreeReaper — per-path reclaim-failure breaker (No Unbounded Loops)', () => {
+  it('stops attempting a path after the failure cap, surfaces keep(reclaim-failed), emits breaker once', async () => {
+    const removeWorktree = vi.fn(() => { throw new Error('cannot remove (permission)'); });
+    const r = new AgentWorktreeReaper(
+      deps({ removeWorktree }),
+      { enabled: true, dryRun: false, maxReclaimFailuresPerPath: 2 },
+    );
+    const trips: Array<{ path: string; failures: number }> = [];
+    r.on('reclaim-breaker', (e) => trips.push(e));
+    r.on('error', () => { /* swallow expected removal errors */ });
+
+    const p1 = await r.reap(); // fail #1 (count 1)
+    const p2 = await r.reap(); // fail #2 (count 2 == cap → trip)
+    const p3 = await r.reap(); // breaker open → not attempted
+
+    expect(removeWorktree).toHaveBeenCalledTimes(2);              // attempts stopped at the cap
+    expect(p1.evaluations[0].verdict).toBe('reap-eligible');
+    expect(p3.evaluations[0].reason).toBe('reclaim-failed');      // honest observability
+    expect(p3.evaluations[0].verdict).toBe('keep');
+    expect(trips).toHaveLength(1);                                // emitted exactly once
+    expect(trips[0].path).toBe('/wt/a');
+  });
+
+  it('a successful removal clears the breaker count (no false trip from transient failures)', async () => {
+    let calls = 0;
+    const removeWorktree = vi.fn(() => { calls++; if (calls === 1) throw new Error('transient'); });
+    const r = new AgentWorktreeReaper(
+      deps({ removeWorktree }),
+      { enabled: true, dryRun: false, maxReclaimFailuresPerPath: 2 },
+    );
+    r.on('error', () => {});
+    await r.reap();                 // fail #1 (count 1)
+    const ok = await r.reap();      // succeeds → count cleared
+    expect(ok.reaped).toEqual(['/wt/a']);
+    expect(removeWorktree).toHaveBeenCalledTimes(2);
   });
 });
