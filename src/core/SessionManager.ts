@@ -2628,7 +2628,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     try {
       const paneInfo = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
-        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
+        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_dead}||#{pane_current_command}||#{pane_start_command}'],
         { encoding: 'utf-8', timeout: 5000 }
       )).trim();
       const [paneCmd, startCmd] = paneInfo.split('||');
@@ -2664,7 +2664,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * original inline code, including the bare-shell log line.
    */
   private classifyPaneCommand(tmuxSession: string, paneInfo: string): boolean {
-    const [paneCmd, startCmd] = paneInfo.split('||');
+    const [paneDead, paneCmd, startCmd] = paneInfo.split('||');
+    // A dead-but-retained pane (tmux `remain-on-exit on`) keeps reporting its
+    // last command (e.g. "claude") after the process exited, which made instar
+    // read the session as ALIVE forever -> the maxParallelJobs slot was never
+    // freed -> scheduler wedge. Treat pane_dead=1 as dead so the session is
+    // reclaimed. Keys on actual process death, never age/duration.
+    if (paneDead === '1') {
+      console.log(`[SessionManager] Session "${tmuxSession}" pane is dead (pane_dead=1) — marking dead.`);
+      return false;
+    }
     if (paneCmd && (paneCmd.includes('claude') || paneCmd.includes('node'))) {
       return true;
     }
@@ -2713,7 +2722,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         const { stdout } = await execFileAsync(
           this.config.tmuxPath,
-          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
+          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_dead}||#{pane_current_command}||#{pane_start_command}'],
           { timeout: 5000 }
         );
         return this.classifyPaneCommand(tmuxSession, stdout.trim());
@@ -2740,7 +2749,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       '-t',
       `=${tmuxSession}:`,
       '-p',
-      '#{pane_current_command}||#{pane_start_command}',
+      '#{pane_dead}||#{pane_current_command}||#{pane_start_command}',
     ]);
     if (disp.state !== 'success') return true; // unprobeable ⇒ assume alive (preserves the legacy catch)
     return this.classifyPaneCommand(tmuxSession, disp.stdout.trim());
