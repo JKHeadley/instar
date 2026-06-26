@@ -500,6 +500,15 @@ export interface ToneReviewContext {
    * BLOCK verdict always holds regardless. Spec: outbound-gate-tiered-fail-direction.
    */
   recipientClass?: 'operator' | 'external';
+  /**
+   * F5: true when this review gates a SYNCHRONOUS reply to a live inbound turn — a
+   * human is waiting for THIS message. Combined with `recipientClass==='operator'` it
+   * routes the gate's LLM call to the interactive reservation lane in the host spawn
+   * cap so it is not starved by background work. Proactive cadence sends
+   * (PresenceProxy / PromiseBeacon / watchdog) leave it false. Omitted ⇒ false ⇒
+   * background lane (the safe default; the spawn-cap reservation is dark by default).
+   */
+  synchronousReply?: boolean;
 }
 
 /** Tune knobs read live from InstarConfig.messaging.toneGate (spec §Design 6). */
@@ -563,12 +572,22 @@ export class MessagingToneGate {
       context.messageKind,
       context.agentState,
     );
+    // F5: route the operator-facing SYNCHRONOUS reply (a human is waiting) to the
+    // interactive reservation lane in the host spawn cap. Honored only when the
+    // reservation is enabled AND the wrapper's component allowlist passes; otherwise
+    // downgraded to background. Proactive operator sends (no synchronousReply) and
+    // external recipients stay background.
+    const interactiveLane = context.recipientClass === 'operator' && context.synchronousReply === true;
     const opts = {
       model: 'fast' as const,
       maxTokens: 200,
       temperature: 0,
       rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
-      attribution: { component: 'MessagingToneGate', gating: true }, // attribution for /metrics/features
+      attribution: {
+        component: 'MessagingToneGate',
+        gating: true,
+        ...(interactiveLane ? { lane: 'interactive' as const } : {}),
+      }, // attribution for /metrics/features + F5 lane
     };
     const cfg = this.getConfig();
     // Availability-sensitive disposition (spec §Design 6 + tone-gate-graceful-

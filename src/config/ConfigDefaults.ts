@@ -41,6 +41,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxConcurrent: 8,
       acquireMs: 5000,
       waitersMax: 64,
+      // F5 interactive-priority reservation. `enabled` is DELIBERATELY OMITTED so it
+      // rides the dev-agent gate (live-on-dev / dark-fleet); the reserves default 2/2.
+      interactivePriority: {
+        ri: 2,
+        rb: 2,
+      },
     },
   },
   monitoring: {

@@ -94,6 +94,28 @@ describe('Fork-bomb prevention (integration)', () => {
       expect(res.body.available).toBe(0);
       expect(res.body.saturated).toBe(true);
     });
+
+    // NOTE: these assert route WIRING (the F5 fields surface with the right config +
+    // shape). Exact live counts are covered by hostSpawnSemaphore-priority.test.ts with
+    // isolated holders files — the /spawn-limiter route reads the DEFAULT host holders
+    // path, which carries real holders in a non-clean environment, so we don't assert
+    // exact counts here.
+    it('F5: surfaces the interactive-priority config + per-lane count fields when enabled', async () => {
+      configureHostSpawnSemaphore({ maxConcurrent: 8, interactivePriority: { enabled: true, ri: 2, rb: 1 } });
+      const res = await request(appWithRoutes()).get('/spawn-limiter');
+      expect(res.status).toBe(200);
+      expect(res.body.interactivePriority).toMatchObject({ enabled: true, ri: 2, rb: 1 });
+      expect(typeof res.body.liveInteractive).toBe('number');
+      expect(typeof res.body.liveBackground).toBe('number');
+    });
+
+    it('F5: reports enabled:false when interactive-priority is off', async () => {
+      configureHostSpawnSemaphore({ maxConcurrent: 8, interactivePriority: { enabled: false, ri: 2, rb: 2 } });
+      const res = await request(appWithRoutes()).get('/spawn-limiter');
+      expect(res.body.interactivePriority.enabled).toBe(false);
+      expect(res.body.interactivePriority.ri).toBe(0); // clamped to 0 when disabled
+      expect(res.body.interactivePriority.rb).toBe(0);
+    });
   });
 
   describe('N concurrent evaluate() through one shared spawn-capped provider', () => {

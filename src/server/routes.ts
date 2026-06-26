@@ -7492,6 +7492,10 @@ export function createRoutes(ctx: RouteContext): Router {
         acquireMs: configuredSpawnAcquireMs(),
         waitersMax: configuredSpawnWaitersMax(),
         holdersPath: status.holdersPath,
+        // F5 interactive-priority reservation (Registry First: read it, never guess).
+        interactivePriority: status.interactivePriority,
+        liveInteractive: status.liveInteractive,
+        liveBackground: status.liveBackground,
       });
     } catch (err) {
       // Observability must never throw — report an honest error rather than 500.

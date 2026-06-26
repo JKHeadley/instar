@@ -46,6 +46,15 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { isAlive } from './ProjectRoundLock.js';
 
 /** One live holder of a spawn slot. */
+/**
+ * The two reservation lanes (F5, docs/specs/spawn-cap-interactive-priority.md).
+ * `interactive` = a synchronous, user-blocking call (the operator-facing tone gate);
+ * `background` = everything else (sentinels/sweeps/reflectors). A holder with no
+ * lane, or an unrecognized value, is classified `background` (equality, never parse —
+ * a garbage value can never consume the protected interactive reserve).
+ */
+export type SpawnLane = 'interactive' | 'background';
+
 export interface SpawnHolder {
   /** Unique per-acquire id (NOT the pid — pid-reuse must not steal a slot). */
   id: string;
@@ -53,6 +62,45 @@ export interface SpawnHolder {
   hostname: string;
   /** ms epoch of the last heartbeat (acquire time, refreshed by long holders). */
   heartbeat: number;
+  /**
+   * F5 reservation lane (OPTIONAL — never part of isWellFormedHolder, so a record
+   * with a missing/garbage lane is NEVER dropped; it is counted as `background`).
+   * Written only when interactive-priority is enabled; absent otherwise (the
+   * disabled state writes a byte-identical holder file).
+   */
+  lane?: SpawnLane;
+}
+
+/**
+ * F5 symmetric reservation knobs. `Ri` slots are reserved for the interactive lane,
+ * `Rb` for background, both WITHIN the existing total cap `N` (never raising it).
+ * Clamped so `0 ≤ Ri`, `0 ≤ Rb`, `Ri + Rb ≤ N − 1` (≥1 always-contended slot).
+ */
+export interface InteractivePriorityConfig {
+  enabled: boolean;
+  /** interactive reserve (clamped to [0, N-1]). */
+  ri: number;
+  /** background reserve (clamped to [0, N-1-Ri]). */
+  rb: number;
+}
+
+/**
+ * Resolve+clamp `Ri`/`Rb` against the effective cap `N`. Uses `Number.isFinite` and
+ * `>= 0` (NOT the cap's `> 0`) so a legitimate 0 is preserved; NaN/negative fall to
+ * the default. Interactive reserve is honored first (documented priority), background
+ * takes the remainder — guaranteeing both bands and ≥1 contended slot for any N ≥ 1.
+ */
+export function clampInteractiveReserves(
+  cap: number,
+  ri: number | undefined,
+  rb: number | undefined,
+): { ri: number; rb: number } {
+  const n = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 8;
+  const riReq = Number.isFinite(ri) && (ri as number) >= 0 ? Math.floor(ri as number) : 2;
+  const rbReq = Number.isFinite(rb) && (rb as number) >= 0 ? Math.floor(rb as number) : 2;
+  const clampedRi = Math.max(0, Math.min(riReq, n - 1));
+  const clampedRb = Math.max(0, Math.min(rbReq, n - 1 - clampedRi));
+  return { ri: clampedRi, rb: clampedRb };
 }
 
 interface HoldersFile {
@@ -117,6 +165,12 @@ export interface HostSpawnSemaphoreDeps {
   isPathHostLocal?: (p: string) => boolean;
   /** Unique-id generator (tests override for determinism). */
   genId?: () => string;
+  /**
+   * F5 interactive-priority reservation. When `enabled:false` (or absent), `acquire`
+   * ignores the lane and is byte-identical to the all-or-nothing cap (no `lane` is
+   * written to holders). When enabled, the symmetric reserve in §C applies.
+   */
+  interactivePriority?: InteractivePriorityConfig;
 }
 
 /**
@@ -180,6 +234,12 @@ export interface SpawnSemaphoreStatus {
   /** Holders whose hostname is a DIFFERENT host (never reclaimed). */
   foreignHolders: number;
   holdersPath: string;
+  /** F5: interactive-priority reservation state. `enabled:false` ⇒ ri/rb 0 and the
+   * lane counts are over whatever lanes the holders carry (all background when off). */
+  interactivePriority: { enabled: boolean; ri: number; rb: number };
+  /** Live holders classified `interactive` (equality; everything else is background). */
+  liveInteractive: number;
+  liveBackground: number;
 }
 
 /**
@@ -195,6 +255,8 @@ export class HostSpawnSemaphore {
   private readonly pidAlive: (pid: number) => boolean;
   private readonly isPathHostLocal: (p: string) => boolean;
   private readonly genId: () => string;
+  /** F5 reservation config (resolved+clamped once at construction). */
+  private readonly priority: { enabled: boolean; ri: number; rb: number };
   /** Memoized host-local determination (a fixed path's FS type can't change at
    * runtime; the `df -P` probe is expensive + synchronous, so it runs ONCE per
    * instance — never per acquire() on the hot fan-out path). */
@@ -210,10 +272,23 @@ export class HostSpawnSemaphore {
     this.genId =
       deps.genId ??
       (() => `${this.host}:${process.pid}:${this.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`);
+    const ip = deps.interactivePriority;
+    if (ip && ip.enabled === true) {
+      const { ri, rb } = clampInteractiveReserves(this.cap, ip.ri, ip.rb);
+      this.priority = { enabled: true, ri, rb };
+    } else {
+      this.priority = { enabled: false, ri: 0, rb: 0 };
+    }
   }
 
   getCap(): number {
     return this.cap;
+  }
+
+  /** F5: is interactive-priority reservation active on this instance? The wrapper
+   * reads this so its lane-aware ingress stays byte-identical when the feature is off. */
+  interactivePriorityEnabled(): boolean {
+    return this.priority.enabled;
   }
 
   /**
@@ -221,19 +296,40 @@ export class HostSpawnSemaphore {
    * (liveHolders < cap after pruning), false if the host is at the cap.
    * Holds the exclusive flock for the whole read-prune-decide-write window.
    */
-  acquire(id: string): boolean {
+  acquire(id: string, lane: SpawnLane = 'background'): boolean {
     return this.withLock(() => {
       const file = this.readHolders();
       const live = this.pruneDead(file.holders);
+      // The OOM floor — UNCONDITIONAL first predicate of every lane. Never raised by
+      // the reservation; the reserve only SUBDIVIDES within `cap`.
       if (live.length >= this.cap) {
-        // At the cap — write back the pruned set (cheap GC) but take no slot.
         this.writeHolders({ version: 1, holders: live });
         return false;
+      }
+      // F5 symmetric reservation (over the SAME pruned `live` set, this critical
+      // section). Counts are equality-based: a missing/garbage lane → background, so a
+      // malformed holder can never consume the protected interactive reserve.
+      if (this.priority.enabled) {
+        const liveInteractive = live.filter((h) => h.lane === 'interactive').length;
+        const liveBackground = live.length - liveInteractive;
+        if (lane === 'interactive') {
+          if (liveInteractive >= this.cap - this.priority.rb) {
+            this.writeHolders({ version: 1, holders: live });
+            return false;
+          }
+        } else if (liveBackground >= this.cap - this.priority.ri) {
+          this.writeHolders({ version: 1, holders: live });
+          return false;
+        }
       }
       // Crash-safe: an id already present (a retry that already landed) is a
       // no-op-append, not a duplicate slot.
       if (!live.some((h) => h.id === id)) {
-        live.push({ id, pid: process.pid, hostname: this.host, heartbeat: this.now() });
+        const holder: SpawnHolder = { id, pid: process.pid, hostname: this.host, heartbeat: this.now() };
+        // Write `lane` ONLY when the feature is on — disabled state keeps the holder
+        // file byte-identical to today (clean rollback / mixed-version safety).
+        if (this.priority.enabled) holder.lane = lane;
+        live.push(holder);
       }
       this.writeHolders({ version: 1, holders: live });
       return true;
@@ -284,12 +380,16 @@ export class HostSpawnSemaphore {
       live = [];
     }
     const localHolders = live.filter((h) => h.hostname === this.host).length;
+    const liveInteractive = live.filter((h) => h.lane === 'interactive').length;
     return {
       cap: this.cap,
       liveHolders: live.length,
       localHolders,
       foreignHolders: live.length - localHolders,
       holdersPath: this.holdersPath,
+      interactivePriority: { ...this.priority },
+      liveInteractive,
+      liveBackground: live.length - liveInteractive,
     };
   }
 
@@ -473,12 +573,17 @@ let _singleton: HostSpawnSemaphore | null = null;
 let _configuredCap: number | undefined;
 let _configuredAcquireMs: number | undefined;
 let _configuredWaitersMax: number | undefined;
+let _configuredPriority: InteractivePriorityConfig | undefined;
 
 /** Operator config for the spawn cap (intelligence.spawnCap.*). All optional. */
 export interface SpawnCapConfig {
   maxConcurrent?: number;
   acquireMs?: number;
   waitersMax?: number;
+  /** F5 interactive-priority reservation (`intelligence.spawnCap.interactivePriority`).
+   * `enabled` is resolved by the dev-agent gate at the caller (omitted from
+   * ConfigDefaults); when absent here the reservation is OFF (byte-identical). */
+  interactivePriority?: InteractivePriorityConfig;
 }
 
 /**
@@ -490,13 +595,20 @@ export function configureHostSpawnSemaphore(cfg?: SpawnCapConfig): void {
   _configuredCap = cfg?.maxConcurrent;
   _configuredAcquireMs = cfg?.acquireMs;
   _configuredWaitersMax = cfg?.waitersMax;
-  _singleton = new HostSpawnSemaphore({ cap: resolveSpawnCap(_configuredCap) });
+  _configuredPriority = cfg?.interactivePriority;
+  _singleton = new HostSpawnSemaphore({
+    cap: resolveSpawnCap(_configuredCap),
+    interactivePriority: _configuredPriority,
+  });
 }
 
 /** The process-wide semaphore. Lazily constructed with env/config/8 cap. */
 export function getHostSpawnSemaphore(): HostSpawnSemaphore {
   if (!_singleton) {
-    _singleton = new HostSpawnSemaphore({ cap: resolveSpawnCap(_configuredCap) });
+    _singleton = new HostSpawnSemaphore({
+      cap: resolveSpawnCap(_configuredCap),
+      interactivePriority: _configuredPriority,
+    });
   }
   return _singleton;
 }

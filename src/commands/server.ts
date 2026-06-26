@@ -3005,10 +3005,17 @@ export async function startServer(options: StartOptions): Promise<void> {
   // so every `claude -p`/`codex exec` spawn this process makes is bounded. A
   // safety FLOOR — read with a plain `??` default (env > config > 8), never the
   // dev-agent gate; it ships ON for every agent, never dark.
+  // F5 interactive-priority reservation: `enabled` is OMITTED from ConfigDefaults so
+  // it rides the dev-agent gate (live-on-dev / dark-fleet). The reservation only
+  // SUBDIVIDES within the safety cap above — it never raises it. When off, acquire is
+  // byte-identical to the all-or-nothing cap.
+  const _ipCfg = config.intelligence?.spawnCap?.interactivePriority;
+  const _ipEnabled = resolveDevAgentGate(_ipCfg?.enabled, config);
   configureHostSpawnSemaphore({
     maxConcurrent: config.intelligence?.spawnCap?.maxConcurrent,
     acquireMs: config.intelligence?.spawnCap?.acquireMs,
     waitersMax: config.intelligence?.spawnCap?.waitersMax,
+    interactivePriority: { enabled: _ipEnabled, ri: _ipCfg?.ri ?? 2, rb: _ipCfg?.rb ?? 2 },
   });
 
   // LiveConfig: dynamic config re-reading for long-running server process.

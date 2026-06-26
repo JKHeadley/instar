@@ -40,7 +40,22 @@ import {
   getHostSpawnSemaphore,
   configuredSpawnAcquireMs,
   configuredSpawnWaitersMax,
+  type SpawnLane,
 } from './hostSpawnSemaphore.js';
+
+/**
+ * F5: the ONLY components whose `attribution.lane:'interactive'` is honored — a
+ * structural allowlist (docs/specs/spawn-cap-interactive-priority.md §A). Any other
+ * component that sets `lane:'interactive'` (e.g. a future copy-paste onto the
+ * CoherenceReviewer fan-out — the ORIGINAL fork-bomb driver) is DOWNGRADED to
+ * background. The trust model is "instar's own in-process seams set attribution",
+ * never untrusted message content. `MessageSentinel` covers operator-inbound
+ * (incl. emergency-stop); `MessagingToneGate` covers the operator-facing reply.
+ */
+export const INTERACTIVE_LANE_ALLOWLIST: ReadonlySet<string> = new Set(['MessagingToneGate', 'MessageSentinel']);
+
+/** Default reserved interactive-poller waiters, carved OUT of `waitersMax`. */
+export const DEFAULT_INTERACTIVE_WAITERS = 4;
 
 /**
  * Thrown when the host-wide spawn cap is saturated and the bounded-acquire
@@ -82,12 +97,17 @@ export interface SpawnCapProviderDeps {
   genId?: () => string;
   /** Awaitable delay (tests override to avoid real timers). */
   sleep?: (ms: number) => Promise<void>;
+  /** F5: interactive-poller waiters carved OUT of `waitersMax` (default 4). */
+  interactiveWaiters?: number;
 }
 
 // Process-wide count of callers currently POLLING for a slot (P3 waiters bound).
 // A waiter is one in-flight `evaluate()` spinning on acquire; bounding it caps
 // the concurrent already-allocated calls, with no per-waiter queue-node heap.
 let _activePollers = 0;
+// F5: subset of `_activePollers` on the interactive lane. The aggregate is still
+// bounded by `waitersMax` (carve-out, NOT additive) — see evaluate().
+let _activeInteractivePollers = 0;
 
 /** Live count of callers currently polling for a spawn slot (P3 observability). */
 export function activeSpawnPollers(): number {
@@ -97,6 +117,7 @@ export function activeSpawnPollers(): number {
 /** Test seam. */
 export function _resetSpawnPollersForTest(): void {
   _activePollers = 0;
+  _activeInteractivePollers = 0;
 }
 
 export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
@@ -107,6 +128,7 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
   private readonly now: () => number;
   private readonly genId: () => string;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly interactiveWaiters: number;
 
   constructor(
     private readonly inner: IntelligenceProvider,
@@ -120,27 +142,76 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
     this.genId =
       deps.genId ?? (() => `spawn:${process.pid}:${this.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`);
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    // Carve-out, never additive: the interactive reserve is clamped below waitersMax
+    // so the aggregate poller bound stays exactly waitersMax.
+    this.interactiveWaiters = Math.max(0, Math.min(deps.interactiveWaiters ?? DEFAULT_INTERACTIVE_WAITERS, this.waitersMax - 1));
+  }
+
+  /**
+   * F5: resolve the reservation lane from the call's attribution. Returns
+   * `interactive` ONLY when (a) interactive-priority is enabled on the semaphore
+   * (else byte-identical to today — everything background), (b) the caller set
+   * `lane:'interactive'`, AND (c) the caller's component is on the structural
+   * allowlist. Any other case → `background` (the safe default).
+   */
+  private resolveLane(options?: IntelligenceOptions): SpawnLane {
+    if (!this.semaphore.interactivePriorityEnabled()) return 'background';
+    const attr = options?.attribution;
+    if (attr && (attr as { lane?: unknown }).lane === 'interactive' && INTERACTIVE_LANE_ALLOWLIST.has(attr.component)) {
+      return 'interactive';
+    }
+    return 'background';
   }
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const id = this.genId();
     const startedAt = this.now();
+    const lane = this.resolveLane(options);
 
-    // P3 waiters bound — refuse to even start polling past the ceiling. This is
-    // checked BEFORE incrementing so the ceiling is a hard cap on concurrent
-    // pollers. The shed is the same typed error so the gate seams fail closed.
-    if (_activePollers >= this.waitersMax) {
+    // F5 lane-aware ingress — interactive FAST-PATH before the waiters cap: an
+    // interactive caller that can IMMEDIATELY claim free reserved headroom is never
+    // rejected as a "waiter" (the round-1 blocking fix — a background flood filling the
+    // waiters cap must not shed an interactive reply before it reaches its reserve).
+    if (lane === 'interactive' && this.semaphore.acquire(id, 'interactive')) {
+      try {
+        return await this.inner.evaluate(prompt, options);
+      } finally {
+        try {
+          this.semaphore.release(id);
+        } catch {
+          /* @silent-fallback-ok: release self-heals via prune-dead. */
+        }
+      }
+    }
+
+    // P3 waiters bound. When interactive-priority is OFF this is BYTE-IDENTICAL to
+    // today (`_activePollers >= waitersMax` for everyone). When ON it becomes a
+    // CARVE-OUT of waitersMax (never additive; aggregate stays exactly waitersMax):
+    // background is sub-capped so a background flood cannot consume the interactive
+    // waiter reserve; interactive uses the joint total bound only. The shed is the same
+    // typed error so the gate seams fail closed.
+    const priorityOn = this.semaphore.interactivePriorityEnabled();
+    const backgroundPollers = _activePollers - _activeInteractivePollers;
+    if (lane === 'interactive') {
+      if (_activePollers >= this.waitersMax) {
+        throw new LlmCapacityUnavailableError('waiters-full', 0);
+      }
+    } else if (
+      _activePollers >= this.waitersMax ||
+      (priorityOn && backgroundPollers >= this.waitersMax - this.interactiveWaiters)
+    ) {
       throw new LlmCapacityUnavailableError('waiters-full', 0);
     }
 
     _activePollers++;
+    if (lane === 'interactive') _activeInteractivePollers++;
     let acquired = false;
     try {
       // Fast path — try once immediately (no sleep) before entering the poll loop.
-      if (this.semaphore.acquire(id)) {
+      if (this.semaphore.acquire(id, lane)) {
         acquired = true;
       } else {
-        acquired = await this.pollAcquire(id, startedAt);
+        acquired = await this.pollAcquire(id, startedAt, lane);
       }
 
       if (!acquired) {
@@ -151,6 +222,7 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
       return await this.inner.evaluate(prompt, options);
     } finally {
       _activePollers--;
+      if (lane === 'interactive') _activeInteractivePollers--;
       if (acquired) {
         // Crash-safe: release is idempotent (unknown id is a no-op).
         try {
@@ -165,7 +237,7 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
   }
 
   /** Poll the semaphore every `pollIntervalMs` until acquired or the budget elapses. */
-  private async pollAcquire(id: string, startedAt: number): Promise<boolean> {
+  private async pollAcquire(id: string, startedAt: number, lane: SpawnLane = 'background'): Promise<boolean> {
     const deadline = startedAt + this.acquireMs;
     // Defense-in-depth iteration ceiling: the loop is wall-clock bound by
     // `deadline`, but a frozen/non-advancing clock (a test injection, never
@@ -177,7 +249,7 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
       const remaining = deadline - this.now();
       if (remaining <= 0) return false;
       await this.sleep(Math.min(this.pollIntervalMs, remaining));
-      if (this.semaphore.acquire(id)) return true;
+      if (this.semaphore.acquire(id, lane)) return true;
       if (this.now() >= deadline) return false;
     }
     return false;

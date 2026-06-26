@@ -903,6 +903,15 @@ export interface IntelligenceOptions {
      * (today's behavior: no backoff/queue rung).
      */
     deferrable?: boolean;
+    /**
+     * F5 RESERVATION LANE (docs/specs/spawn-cap-interactive-priority.md).
+     * `interactive` requests the user-facing reserved headroom in the host spawn cap
+     * — set ONLY by a synchronous, user-blocking seam (the operator-facing tone gate /
+     * operator-inbound sentinel). It is HONORED only when the caller's component is on
+     * `INTERACTIVE_LANE_ALLOWLIST` AND interactive-priority is enabled; otherwise it is
+     * downgraded to `background` (the safe default). Omitted ⇒ background.
+     */
+    lane?: 'interactive' | 'background';
   };
   /**
    * Optional token-usage callback (Iris-audit item 1, spec
@@ -3185,6 +3194,20 @@ export interface InstarConfig {
       acquireMs?: number;
       /** Concurrent-poller ceiling (bounds the waiters, no queue-node heap). Default 64. */
       waitersMax?: number;
+      /**
+       * F5 interactive-priority reservation (docs/specs/spawn-cap-interactive-priority.md).
+       * SUBDIVIDES the cap into reserved interactive/background headroom so a user-facing
+       * (gate) call is not starved by background work; NEVER raises the total cap.
+       * `enabled` is OMITTED from ConfigDefaults so it rides the dev-agent gate
+       * (live-on-dev / dark-fleet); off ⇒ byte-identical to the all-or-nothing cap.
+       */
+      interactivePriority?: {
+        enabled?: boolean;
+        /** Slots reserved for the interactive lane (clamped to [0, N-1]). Default 2. */
+        ri?: number;
+        /** Slots reserved for background (clamped to [0, N-1-Ri]). Default 2. */
+        rb?: number;
+      };
     };
   };
   /**
