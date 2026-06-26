@@ -17,6 +17,7 @@
  */
 import os from 'node:os';
 import { computePressure, type PressureReading } from './SessionReaper.js';
+import { hostFreeMemPct } from './hostMemoryPressure.js';
 
 /** Per-core load thresholds. Defaults mirror the reaper's historical constants. */
 export interface HostPressureThresholds {
@@ -38,8 +39,12 @@ export interface HostPressureInputs {
 
 /** Sample the raw inputs from the OS. Pure read; never throws. */
 export function sampleHostPressureInputs(): HostPressureInputs {
-  const total = os.totalmem();
-  const freePct = total > 0 ? (os.freemem() / total) * 100 : 100;
+  // freePct is the CORRECTED available-memory percentage (free + inactive +
+  // purgeable on macOS via vm_stat; MemAvailable on Linux) — NOT os.freemem(),
+  // which on macOS reports only raw free pages (~0.1%) and falsely registered as
+  // critical, over-reaping sessions + permanently blocking revival.
+  // Spec: macos-memory-pressure-metric.
+  const freePct = hostFreeMemPct();
   // CPU pressure: 1-min load average ÷ core count. cores unknown ⇒ memory-only.
   const cores = os.cpus()?.length ?? 0;
   const loadPerCore = cores > 0 ? os.loadavg()[0] / cores : null;
