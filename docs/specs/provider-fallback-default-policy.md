@@ -119,6 +119,22 @@ INTERNAL_FRAMEWORK_PREFERENCE = ['codex-cli', 'pi-cli', 'gemini-cli', 'claude-co
 Applies to the **internal, lightweight, high-frequency** categories: `sentinel`,
 `gate`, `reflector`. It does **NOT** apply to `job`, `other`, or spawned
 interactive sessions:
+
+> **Amendment (2026-06-26, Phase-A outbound reliability) — the `gate` category is
+> latency-sensitive and uses a SEPARATE, speed-ranked order.** A `gate` is a
+> *synchronous, action-blocking* check; the user-facing `MessagingToneGate` literally
+> has a human waiting on the reply. The codex-first order above optimizes for
+> *load-spreading* (right for background sentinels/reflectors), but `codex-cli` is the
+> SLOWEST off-Claude framework (~30s, which exceeds the 20s outbound-gate review budget
+> and times the gate out — the 2026-06-25 silent-outbound class). So the `gate`
+> category's PRIMARY is now resolved from a distinct
+> `LATENCY_SENSITIVE_FRAMEWORK_PREFERENCE = ['pi-cli','gemini-cli','codex-cli','claude-code']`
+> (fastest→slowest) — the fastest *active* off-Claude framework. `sentinel`/`reflector`
+> are UNCHANGED (codex-first); only `gate` diverges. `failureSwap` is unchanged
+> (shared tail). When only one off-Claude framework is active, `gate` === the other
+> categories' primary (byte-identical). This narrows, but does not revoke, the
+> codex-first operator directive: it stays in force everywhere a human is *not*
+> synchronously blocked.
 - **`job` is EXCLUDED** (resolves round-1 M3 / Q4). Routing the `job` category
   off-Claude by default would silently FLIP cost-bearing background jobs — most
   importantly the Cartographer freshness sweep (`CartographerSweep`, a `job`) —
@@ -144,8 +160,10 @@ lighter `which <cli>` probe because:
 ```
 const active = INTERNAL_FRAMEWORK_PREFERENCE.filter(fw => isActive(fw));
 // e.g. active = ['codex-cli','gemini-cli','claude-code'] (no PI installed/configured)
+const gatePrimary = LATENCY_SENSITIVE_FRAMEWORK_PREFERENCE.find(fw => active.includes(fw)) ?? active[0];
 componentFrameworks = {
-  categories: { sentinel: active[0], gate: active[0], reflector: active[0] },
+  // sentinel/reflector: codex-first (load-spread); gate: fastest active (here gemini, pi absent)
+  categories: { sentinel: active[0], gate: gatePrimary, reflector: active[0] },
   failureSwap: active.slice(1),   // ['gemini-cli','claude-code']
   fallback: 'default',
 };

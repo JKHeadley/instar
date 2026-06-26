@@ -4,9 +4,10 @@
  *
  * Exercises the real Express route over a real IntelligenceRouter wired with the
  * COMPUTED DEFAULT (no operator componentFrameworks). On a codex-active agent the
- * sentinel/gate/reflector components resolve to the first active off-Claude framework
- * (codex-cli), while `job` stays on the agent default — and a claude-only agent is a
- * no-op (everything stays on the default framework).
+ * sentinel/reflector components resolve to the first active off-Claude framework
+ * (codex-cli, load-spreading), the latency-sensitive `gate` resolves to the FASTEST
+ * active off-Claude framework (pi → gemini → codex), while `job` stays on the agent
+ * default — and a claude-only agent is a no-op (everything stays on the default).
  */
 import { describe, it, expect } from 'vitest';
 import express from 'express';
@@ -64,7 +65,7 @@ function routerWithComputedDefault(activeSet: IntelligenceFramework[]): Intellig
 }
 
 describe('GET /intelligence/routing — provider-fallback default policy (integration)', () => {
-  it('codex-active agent: sentinel/gate/reflector → codex-cli; job → agent default', async () => {
+  it('codex-active agent: sentinel/reflector → codex-cli; gate → gemini (fastest active); job → agent default', async () => {
     const router = routerWithComputedDefault(['codex-cli', 'gemini-cli', 'claude-code']);
     const res = await request(appWith(router)).get('/intelligence/routing');
     expect(res.status).toBe(200);
@@ -73,10 +74,12 @@ describe('GET /intelligence/routing — provider-fallback default policy (integr
     const byComponent = (name: string) =>
       res.body.components.find((c: any) => c.component === name);
 
-    // a sentinel, a gate, and a reflector all route to the first active off-Claude fw.
+    // sentinel + reflector route to the first active off-Claude fw (codex, load-spread).
     expect(byComponent('PresenceProxy')).toMatchObject({ category: 'sentinel', framework: 'codex-cli', available: true });
-    expect(byComponent('PromptGate')).toMatchObject({ category: 'gate', framework: 'codex-cli', available: true });
     expect(byComponent('JobReflector')).toMatchObject({ category: 'reflector', framework: 'codex-cli', available: true });
+    // the GATE is latency-sensitive → fastest active off-Claude (gemini here, pi absent),
+    // NOT the slow codex. This is the Phase-A outbound-reliability fix.
+    expect(byComponent('PromptGate')).toMatchObject({ category: 'gate', framework: 'gemini-cli', available: true });
 
     // a `job` component STAYS on the agent default (job is EXCLUDED from the default).
     const sweep = byComponent('CartographerSweep');
