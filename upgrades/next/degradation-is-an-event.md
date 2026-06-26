@@ -1,0 +1,25 @@
+# Degradation Is an Event (Postmortem F6)
+
+**Slug:** `degradation-is-an-event` · **Maturity:** 🧪 Preview (additive surfacing; multi-machine only) · **Audience:** agent-only
+
+## What Changed
+
+When the mesh "who's-in-charge" lease tick stalls and the in-process watchdog re-arms it, that recovery used to be **silent** (a log line + a `tickStallRecovered` event nobody listened to) — so a >10-min coordination stall was invisible until the user's messages started disappearing (postmortem Failure 6). Now the FIRST re-arm of a stall episode surfaces to the user through the existing `DegradationReporter` path (which already routes to the attention topic), deduped per episode so a single stall surfaces once and a runaway stall remains its own louder self-disarm alarm. The watchdog's recovery decisions are unchanged — only the recovery is made visible.
+
+Constitution: *The User Experience Is the Product* → sub-standard #6. Pure signal-surfacing; no control authority added (the lease-tick re-arm/disarm logic is byte-identical).
+
+## What to Tell Your User
+
+If your multi-machine coordination ever briefly degrades and self-heals, you'll now see a short "this degraded and recovered" note instead of silence — most of the time you'll see nothing, because most of the time nothing stalls. Single-machine setups are unaffected.
+
+## Summary of New Capabilities
+
+- A stalled-and-recovered mesh lease tick surfaces ONE user-visible degradation notice per episode (the previously-silent Failure-6 site).
+- No new config, route, or authority; multi-machine only; single-machine agents are a no-op.
+
+## Evidence
+
+- New unit test in `tests/unit/MultiMachineCoordinator-tickSelfHeal.test.ts`: first re-arm surfaces once, deduped within an episode, resets on a real tick, re-surfaces on a new stall.
+- Full `npm run lint` (tsc + ~20 lint scripts) exits 0.
+- Side-effects review: `upgrades/side-effects/degradation-is-an-event.md` (signal-vs-authority analysis — no control change).
+- Spec: `docs/specs/degradation-is-an-event.md`.
