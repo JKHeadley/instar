@@ -865,6 +865,18 @@ export function loadConfig(projectDir?: string): InstarConfig {
     typeof fileConfig.sessions.componentFrameworks === 'object'
       ? { componentFrameworks: fileConfig.sessions.componentFrameworks }
       : {}),
+    // Per-framework default model pattern (frameworkDefaultModels['pi-cli'] →
+    // the pi-cli provider's required model). SAME LOAD-PATH GAP as componentFrameworks
+    // above (2026-06-25): server.ts reads config.sessions.frameworkDefaultModels to build
+    // the pi-cli provider, but the loader never copied it from the config FILE here — so
+    // the pattern was always undefined at boot, the factory degraded pi-cli to null
+    // ("binary missing / not built"), and pi-cli was silently UNAVAILABLE on every
+    // deployed agent despite a valid binary + config. Pass it through (the factory still
+    // guards each value; an absent/empty pattern degrades per design).
+    ...(fileConfig.sessions?.frameworkDefaultModels &&
+    typeof fileConfig.sessions.frameworkDefaultModels === 'object'
+      ? { frameworkDefaultModels: fileConfig.sessions.frameworkDefaultModels }
+      : {}),
     // pi-cli subscription-guard override (PI-HARNESS-INTEGRATION-SPEC §4.3).
     // Config surface: top-level `piCli.allowAnthropicProviders` — file-config
     // only, deliberately NOT an env var (no per-boot bypass surface).

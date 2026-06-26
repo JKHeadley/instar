@@ -97,6 +97,54 @@ describe('Config', () => {
       SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:componentFrameworks-absent' });
     });
 
+    it('carries sessions.frameworkDefaultModels from config.json into the loaded config (load-path wiring)', () => {
+      // REGRESSION (2026-06-25): the SAME load-path gap class as componentFrameworks
+      // above. server.ts builds the pi-cli provider from
+      // config.sessions.frameworkDefaultModels['pi-cli'] (the required model pattern),
+      // and the docs told users to set it in `.instar/config.json` — but loadConfig
+      // never copied the field from the file, so the pattern was ALWAYS undefined at
+      // boot, the factory degraded pi-cli to null ("binary missing / not built"), and
+      // pi-cli was silently UNAVAILABLE on every deployed agent despite a valid binary.
+      // This is the exact-gap test: a FILE-loaded config must carry the model map.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+
+      const models = { 'pi-cli': 'openai-codex/gpt-5.5', 'gemini-cli': 'gemini-2.5-flash' };
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: {
+            framework: 'claude-code',
+            claudePath: '/usr/local/bin/claude',
+            tmuxPath: '/usr/bin/tmux',
+            frameworkDefaultModels: models,
+          },
+        }),
+      );
+
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.frameworkDefaultModels).toEqual(models);
+      expect(config.sessions.frameworkDefaultModels?.['pi-cli']).toBe('openai-codex/gpt-5.5');
+
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:frameworkDefaultModels' });
+    });
+
+    it('omits frameworkDefaultModels when absent from the file (no phantom field)', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux' },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.frameworkDefaultModels).toBeUndefined();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:frameworkDefaultModels-absent' });
+    });
+
     it('respects sessions.tmuxPath from config.json instead of auto-detecting', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
       const stateDir = path.join(tmpDir, '.instar');
