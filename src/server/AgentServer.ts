@@ -696,6 +696,9 @@ export class AgentServer {
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
+    /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
+     *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
+    enforcedTerminationStatus?: (() => unknown) | null;
     /** Records operator stop instructions for the drainer's R2.6 validation. */
     operatorStopRecorder?: (topicId: number | null) => void;
     /** SleepWakeDetector — timer-drift sleep detection with CPU-starvation guard.
@@ -2254,6 +2257,7 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,

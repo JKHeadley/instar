@@ -1056,6 +1056,9 @@ export interface RouteContext {
   autonomousLivenessReconciler?:
     | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
     | null;
+  /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
+   *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
+  enforcedTerminationStatus?: (() => unknown) | null;
   /** Records an operator stop instruction (per-topic, or null = global) so the
    *  drainer's R2.6 operator-stop validation can see stops that post-date an
    *  entry's enqueue. Wired by the boot block alongside the queue. */
@@ -4293,6 +4296,15 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousLivenessReconciler.status());
+  });
+
+  // F2 Enforced Termination — external hard-stop status (spec: enforced-termination-watchdog.md).
+  router.get('/autonomous/enforced-termination', (_req, res) => {
+    if (!ctx.enforcedTerminationStatus) {
+      res.status(503).json({ error: 'enforced-termination watchdog not available on this agent' });
+      return;
+    }
+    res.json(ctx.enforcedTerminationStatus());
   });
 
   router.get('/autonomous/can-start', (req, res) => {
