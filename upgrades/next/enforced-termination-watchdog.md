@@ -1,0 +1,49 @@
+# Enforced Termination Watchdog (Postmortem F2)
+
+**Slug:** `enforced-termination-watchdog` · **Maturity:** ⚗️ Experimental (ships dark — dev-agent gated, dry-run first) · **Audience:** agent-only
+
+## What Changed
+
+Added `EnforcedTerminationWatchdog` — an external, level-triggered loop that hard-stops an
+autonomous run which has provably overrun its budget. It is the structural counterweight to
+the `AutonomousLivenessReconciler`: that keeps a run *alive* across vessel events; this keeps
+a run from *outliving its budget*. Previously the only deadline enforcement was the run's own
+in-hook Stop-event check — which a wedged/looping session never reaches, an unbounded run has
+no budget for, and an unparseable timestamp fails toward keep-running. That gap let an
+autonomous run with a 24h budget run ~46h (topic 27515, 2026-06-25). The watchdog reuses the
+reconciler's proven `settleKill` path plus the operator-stop record + resume-queue cancel, so
+a terminated run is durable and not revived; it gates out inactive/paused/mid-move runs, fires
+only on a provable overrun, requires a two-tick confirm, fails safe on uncertainty, caps
+actuations per window, and audits every transition to `logs/enforced-termination.jsonl`.
+
+Constitution: *The User Experience Is the Product* → sub-standard #2 (Enforced Termination);
+"Structure beats Willpower" applied to the END of work.
+
+## What to Tell Your User
+
+Nothing yet — this ships **dark on the fleet** (dev-agent gated) and **dry-run first** (it
+logs what it *would* stop and actuates nothing until a deliberate flip). It is a safety
+backstop against a runaway autonomous job blowing past its deadline; it has no user-facing
+behavior until an operator enables and live-tests it. Do not announce it as a finished
+capability.
+
+## Summary of New Capabilities
+
+- `GET /autonomous/enforced-termination` — read-only status (enabled/dryRun, grace +
+  ceiling, lastTickAt, pending topics, terminated/would-terminate/cap-exceeded counts). 503
+  when the watchdog is dark/disabled on the agent.
+- Config: `monitoring.enforcedTermination` (`enabled` omitted = dev-gated dark; `dryRun`
+  default true; `graceSeconds` 120; `absoluteCeilingSeconds` 26h; `maxIterations` opt-in;
+  `tickIntervalSec` 120; `maxTerminationsPerWindow` 5).
+- Guard posture: `monitoring.enforcedTermination.enabled` registered on `GET /guards`.
+- Audit: `logs/enforced-termination.jsonl`.
+
+## Evidence
+
+- 41 unit tests green (pure predicate + two-tick confirm: 21; orchestration incl. dryRun
+  never-actuates / fail-safe / cap: 9; read adapters against real files: 9; route
+  alive 200/503: 2), clean full `tsc`.
+- Side-effects review: `upgrades/side-effects/enforced-termination-watchdog.md` (the
+  KILL-path blast-radius analysis; second-pass reviewer verdict required before any
+  `dryRun:false`).
+- Spec: `docs/specs/enforced-termination-watchdog.md`.
