@@ -136,7 +136,7 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
     // script would still see the production __dirname and walk the production
     // tree — making the integration test sensitive to unrelated changes in
     // the rest of the repo. Copying isolates the test to its scratch dir.
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(
         path.join(ROOT, 'scripts', file),
         path.join(scratch, 'scripts', file),
@@ -314,7 +314,7 @@ describe('Pre-push gate integration — release-note fragments', () => {
       path.join(scratch, 'package.json'),
       JSON.stringify({ name: 'instar-test', version: '0.28.999' }),
     );
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(path.join(ROOT, 'scripts', file), path.join(scratch, 'scripts', file));
     }
   });
