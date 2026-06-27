@@ -94,11 +94,21 @@ describe('DynamicMcpManager — authorization gate (C4: verified, never trusted)
 });
 
 describe('DynamicMcpManager — two-phase commit + rollback (M1/M3)', () => {
-  it('applied: writes un-committed THEN committed, restart in between', async () => {
-    const { deps, rec } = makeDeps();
+  it('applied: COMMITS the new set BEFORE the restart (so the respawn reads it), with NO post-restart commit', async () => {
+    // Regression for the load-ordering bug (live-test 2026-06-27): the spawn builder reads
+    // the COMMITTED loaded-set, so the new set must be committed BEFORE the restart. Pre-fix
+    // wrote it un-committed first ([false, true] with restart between), so the load's own
+    // respawn ignored it and spawned lean — load was a no-op on its own restart. This asserts
+    // the committed=true write now precedes the restart.
+    const order: string[] = [];
+    const { deps, rec } = makeDeps({
+      writeLoadedSet: (_t, servers, committed, reason) => { order.push(`write:${committed}`); rec.writes.push({ servers, committed, reason }); },
+      restartSession: async () => { order.push('restart'); rec.restarts++; return { ok: true }; },
+    });
     await new DynamicMcpManager(deps).requestChange({ topicId: 1, op: 'load', server: 'playwright', actor: { kind: 'agent' } });
-    expect(rec.writes.map((w) => w.committed)).toEqual([false, true]);
-    expect(rec.writes[1].servers.sort()).toEqual(['playwright', 'threadline']);
+    expect(order).toEqual(['write:true', 'restart']); // committed BEFORE the restart; no post-restart commit
+    expect(rec.writes.map((w) => w.committed)).toEqual([true]);
+    expect(rec.writes[0].servers.sort()).toEqual(['playwright', 'threadline']);
     expect(rec.restarts).toBe(1);
   });
 
@@ -106,8 +116,11 @@ describe('DynamicMcpManager — two-phase commit + rollback (M1/M3)', () => {
     const { deps, rec } = makeDeps({ restartSession: async () => ({ ok: false, code: 'rate_limited' }) });
     const r = await new DynamicMcpManager(deps).requestChange({ topicId: 1, op: 'load', server: 'playwright', actor: { kind: 'agent' } });
     expect(r).toEqual({ status: 'restart-failed', code: 'rate_limited' });
-    // un-committed write, then a committed rollback to the ORIGINAL set
-    expect(rec.writes[0]).toMatchObject({ committed: false });
+    // committed the new set, then a committed ROLLBACK to the ORIGINAL set. A failed restart
+    // means no new session came up (restartSession ok ⟺ new session up), so the next spawn
+    // reads the rolled-back prior set — no phantom change survives.
+    expect(rec.writes[0]).toMatchObject({ committed: true });
+    expect(rec.writes[0].servers.sort()).toEqual(['playwright', 'threadline']);
     const last = rec.writes[rec.writes.length - 1];
     expect(last).toMatchObject({ committed: true });
     expect(last.servers).toEqual(['threadline']); // rolled back to prior

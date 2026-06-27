@@ -150,12 +150,20 @@ export class DynamicMcpManager {
     // ── Offload-only: capture heavy child pids BEFORE the kill (C1) ──
     const capturedPids = op === 'offload' ? this.deps.captureHeavyPids(topicId, server) : [];
 
-    // ── Two-phase: write un-committed, restart, commit only on success (M1/M3) ──
-    this.deps.writeLoadedSet(topicId, result.servers, false, op);
+    // ── Commit-before-restart (M1/M3) ──
+    // The spawn builder reads the COMMITTED loaded-set, so the new set MUST be committed
+    // BEFORE the restart, or the restart's own respawn reads the OLD committed state and
+    // spawns from baseline. Pre-fix this wrote the new set UN-committed first, so a LOAD's
+    // own respawn ignored it and came up lean — load was a no-op on its own restart, only
+    // taking effect on a SUBSEQUENT restart (live-test 2026-06-27; offload was unaffected
+    // because lean is also its target). Safety is preserved by the rollback: a non-ok
+    // restart means no new session came up (restartSession returns ok ⟺ the new session is
+    // up), so re-asserting the prior committed set keeps the next spawn on the old set.
+    this.deps.writeLoadedSet(topicId, result.servers, true, op);
     const restart = await this.deps.restartSession(topicId);
     if (!restart.ok) {
-      // Roll back to the prior committed set; the spawn builder already ignores
-      // the un-committed write, but re-asserting the committed truth is cleaner.
+      // Roll back to the prior committed set — a failed restart yields no new session, so
+      // re-asserting the prior committed truth keeps the live/next session on the old set.
       this.deps.writeLoadedSet(topicId, current, true, `${op}-rollback`);
       const code = restart.code ?? 'unknown';
       this.audit({ topicId, op, server, outcome: 'restart-failed', code });
@@ -163,7 +171,8 @@ export class DynamicMcpManager {
       return { status: 'restart-failed', code };
     }
 
-    this.deps.writeLoadedSet(topicId, result.servers, true, op);
+    // The new committed set is already in place; the respawn picked it up. For an offload,
+    // reap the heavy child pids captured before the kill (they reparented to launchd — C1).
     if (op === 'offload' && capturedPids.length > 0) {
       this.deps.reapPids(capturedPids);
     }

@@ -128,14 +128,24 @@ sibling branch and is NOT merged here.)
    (via the reaper's `tmuxPaneMap`/signature scan), before the kill — they will
    be reparented orphans after the restart and must be reaped by captured PID
    (fold C1: see "Offload actually reclaims" below).
-6. Write the new state file with `committed:false` (atomic temp+rename), and the
+6. Write the new state file with `committed:TRUE` (atomic temp+rename), and the
    new filtered `--mcp-config` to a UNIQUE per-restart path (fold m3 — never
    overwrite the file the LIVE old session launched from).
-7. Trigger the restart (see "Restart" below). **Only on a confirmed-scheduled
-   restart** do we flip the state file to `committed:true` (fold M1/M3 — state is
-   committed AFTER the restart is confirmed, never before; the spawn builder
-   ignores an un-committed file, so a restart that fails leaves the live session
-   on its OLD set, not a phantom unapproved change).
+   **COMMIT-BEFORE-RESTART correction (live-test 2026-06-27):** the spawn builder
+   reads the COMMITTED loaded-set, so the new set must be committed BEFORE the
+   restart, or the restart's own respawn reads the prior committed state and spawns
+   from baseline. The original M1/M3 fold committed AFTER the restart (un-committed
+   first) to make a failed restart leave the old set — but that ALSO made the
+   *successful* restart's respawn ignore the un-committed new set, so a LOAD was a
+   no-op on its own restart (it only took effect on a SUBSEQUENT restart), directly
+   contradicting "respawnSessionForTopic ... DOES pick up the new flags" below.
+   Committing before the restart makes the respawn deterministically pick up the new
+   set; the failure-safety is preserved by the rollback in step 7.
+7. Trigger the restart (see "Restart" below). On a **non-ok** restart, roll the
+   state file back to the PRIOR committed set (fold M1/M3): `refreshSession` returns
+   ok ⟺ the new session is up, so a non-ok restart means no new session came up and
+   the next spawn reads the rolled-back prior set — no phantom unapproved change
+   survives, the same safety the original committed-after design targeted.
 8. For an offload, after the respawn is confirmed up, reap the captured orphan
    PIDs directly. Release the lock.
 
@@ -148,8 +158,9 @@ Telegram/Slack-bound sessions; for an UNBOUND/headless session it returns
 (which the autonomous topic sessions in scope here are); on an unbound session
 `requestChange` returns `unsupported-unbound` (no-op, surfaced honestly), never a
 silent failure. A non-`ok` `RefreshResult` (`rate_limited`, `refresh_in_progress`,
-`session_not_found`) is surfaced to the caller AND rolls back step 6 (state stays
-un-committed) — it is never swallowed.
+`session_not_found`) is surfaced to the caller AND rolls back step 6 (re-asserts the
+PRIOR set as `committed:true`, so the next spawn reads the old set) — it is never
+swallowed.
 
 **Offload actually reclaims (fold C1 — THE critical fix).** The reaper's own
 header is explicit: killing a session's pid does NOT cascade to MCP children —
@@ -235,9 +246,11 @@ a one-line warning rather than silently vanishing.
   unreadable but config readable ⇒ lean baseline (NOT full config); only a config
   read failure ⇒ `[]`. Tool-availability preserved AND the panic condition is not
   re-created on a transient error (fold M6).
-- **Two-phase + serialized + atomic-checked restart.** State commits only after a
-  confirmed restart; concurrent requests serialize per-topic; a non-`ok` refresh
-  rolls back and is surfaced (fold M1/M2/M3).
+- **Commit-before-restart + serialized + atomic-checked restart.** State is
+  committed BEFORE the restart so the respawn deterministically reads the new set
+  (live-test correction — committing AFTER left a LOAD a no-op on its own restart);
+  concurrent requests serialize per-topic; a non-`ok` refresh rolls back to the
+  prior committed set and is surfaced (fold M1/M2/M3).
 - **Authority is server-held.** A restart happens only for a re-checked-live
   preapproved topic OR a nonce-matched operator-authenticated approval; an
   agent-supplied `approved:true` is structurally insufficient (fold C4).
