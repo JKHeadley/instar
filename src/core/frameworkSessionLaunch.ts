@@ -177,6 +177,17 @@ export interface InteractiveLaunchOptions {
    */
   configHome?: string;
   /**
+   * Dynamic MCP Lifecycle (claude-code only): the MCP-config CLI flags this
+   * session should launch with — e.g. `['--strict-mcp-config', '--mcp-config',
+   * '<filtered.json>']` to launch with only a lean subset of `.mcp.json`. Built
+   * by `SessionManager.buildSessionMcpFlags` (state-file/baseline resolution,
+   * fail-safe to `[]`). An empty/absent array ⇒ no flags ⇒ Claude reads the full
+   * project `.mcp.json` exactly as today (the dark default). No effect on
+   * non-claude frameworks (their builders ignore it — MCP `--mcp-config` is
+   * Claude-Code-specific). See DYNAMIC-MCP-LIFECYCLE-SPEC.
+   */
+  mcpFlags?: string[];
+  /**
    * Topic Profile §6 — per-topic thinking mode. Mapped per framework:
    *  - claude-code: `--effort <low|medium|high|max>` (the live CLI's verified
    *    launch flag); `off` → MAX_THINKING_TOKENS=0 via envOverrides (the flag
@@ -267,6 +278,13 @@ const claudeCodeBuilder: Builder = (options) => {
   // The login location only — never a token.
   if (options.configHome) {
     envOverrides.CLAUDE_CONFIG_DIR = options.configHome;
+  }
+  // Dynamic MCP Lifecycle (claude-code only): launch with a lean/explicit MCP set
+  // when SessionManager.buildSessionMcpFlags resolved one. Empty/absent ⇒ no flags
+  // ⇒ full project .mcp.json (the dark default). The caller already fail-safed to
+  // [] on any error, so a bad resolution can never strand the launch here.
+  if (Array.isArray(options.mcpFlags) && options.mcpFlags.length > 0) {
+    argv.push(...options.mcpFlags);
   }
   return { argv, envOverrides };
 };
