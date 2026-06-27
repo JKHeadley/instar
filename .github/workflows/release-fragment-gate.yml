@@ -71,6 +71,16 @@ jobs:
           # to flip to blocking once the D3 criterion is met.
           WARN_ONLY: '1'
         run: |
+          # Bootstrap no-op: the checker is loaded from the BASE ref (security:
+          # a PR cannot alter the gate that gates it). The very PR that ADDS or
+          # moves the checker therefore has no checker on base yet — skip
+          # gracefully rather than fail, since the gate cannot apply to the PR
+          # that introduces it. Once merged, base has the script and every later
+          # PR runs the real check.
+          if [ ! -f scripts/check-release-fragment.mjs ]; then
+            echo "::notice::release-fragment-gate: checker not present on the base ref yet (bootstrap PR) — skipping."
+            exit 0
+          fi
           # Read the (trusted-shape, untrusted-content) file list from disk into
           # the env the checker expects — never interpolate it into the shell.
           PR_FILES_JSON="$(cat "$PR_FILES_JSON_PATH")" \
