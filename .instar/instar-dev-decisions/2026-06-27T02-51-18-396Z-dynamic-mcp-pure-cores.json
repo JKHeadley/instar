@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-27T02:51:18.396Z",
+  "slug": "dynamic-mcp-pure-cores",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 242,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "New on-demand MCP-lifecycle feature; supersedes the static #1292 model per the 2026-06-27 design correction."
+  },
+  "verdict": "pass"
+}
