@@ -1,0 +1,49 @@
+---
+user_announcement:
+  - audience: agent-only
+    maturity: preview
+    summary: "A new observe-only per-machine process-footprint monitor (GET /resources/footprint) makes the process climb that preceded the resource panic visible."
+---
+
+## What Changed
+
+Added the **ProcessFootprintMonitor** — the per-machine process-COUNT measurement that was
+MISSING before the 2026-06-26 resource-exhaustion kernel panic. The ResourceLedger samples
+CPU%/RSS but never tracked how many processes were running, so the slow climb (dominated by
+several agent stacks + their heavy, mostly-idle MCP servers — a whole Chromium, an Electron)
+went unwatched until the host hit a kernel limit and panicked.
+
+The monitor samples the agent-relevant processes on an interval, classifies them
+(`agent-cli` / `mcp` / `other-node`), keeps a rolling window for a TREND, and exposes
+`GET /resources/footprint` → `{ enabled, latest: { total, byKind, rssBytes }, trend,
+overThreshold, samples }`. It is **observe-only** (never kills/gates — the reapers own
+reclamation), ships **dark** (rides the developmentAgent gate; 503 when disabled), and the
+threshold heads-up is opt-in (`monitoring.processFootprintMonitor.alertEnabled`,
+measure-first; its attention sink is a tracked follow-up).
+
+## Evidence
+
+**Before:** the panic snapshot showed ~280 node processes on one machine with no surface
+tracking that count — CPU/RSS looked survivable while the process count (and the kernel
+objects it implied) climbed unwatched to the overflow.
+
+**After:** `GET /resources/footprint` returns the live count + per-kind breakdown + trend.
+The e2e lifecycle test boots the REAL AgentServer with `developmentAgent:true` and asserts
+the route is alive (200, real status shape), Bearer-gated, read-only (POST → 404), and that
+a disabled boot 503-stubs it. Unit tests pin the classifier (MCP via signatures / agent CLIs
+/ other-node / not-counted), the bounded window, the rising-trend detection, the alert latch
+(fires once, re-arms with hysteresis), the measure-first default (no alert when off), and the
+fail-safe (a throwing scanner never crashes a sample).
+
+## What to Tell Your User
+
+If a user asks "how many processes am I running?" or "is the footprint climbing toward
+another crash?" → `GET /resources/footprint`. It's the early-warning measurement for the
+process accumulation that caused the panic. It only measures — it never kills anything.
+
+## Summary of New Capabilities
+
+- A per-machine process-footprint count + per-kind breakdown + rolling-window trend.
+- `GET /resources/footprint` read-only status route (Bearer-gated; 503 when disabled).
+- Opt-in threshold heads-up (off by default — measure first).
+- Observe-only, dark by default; fail-safe sampling.

@@ -108,6 +108,7 @@ import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
 import { ParallelActivityIndex } from '../core/ParallelActivityIndex.js';
 import { ParallelWorkSentinel } from '../monitoring/ParallelWorkSentinel.js';
 import { ResourceSampler } from '../monitoring/ResourceSampler.js';
+import { ProcessFootprintMonitor, defaultListProcesses } from '../monitoring/ProcessFootprintMonitor.js';
 import { getLlmCircuitBreaker } from '../core/LlmCircuitBreaker.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
@@ -238,6 +239,9 @@ export class AgentServer {
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
+  /** Per-machine process-footprint monitor (observe-only; the climb-measurement
+   *  missing before the 2026-06-26 resource-exhaustion panic). Dark by default. */
+  private processFootprintMonitor: ProcessFootprintMonitor | null = null;
   /** Approval-as-Data ledger (spec Part B, Phase 2). Read-only observability over
    *  operator approval decisions. Null when stateDir is unavailable. */
   private approvalLedger: ApprovalLedger | null = null;
@@ -1155,6 +1159,35 @@ export class AgentServer {
         this.resourceLedgerPoller = null;
         this.resourceSampler = null;
       }
+    }
+
+    // Per-machine process-footprint monitor — the climb measurement missing before
+    // the 2026-06-26 resource-exhaustion panic (steady-state process accumulation,
+    // dominated by idle MCP servers, went unwatched until the host hit a kernel
+    // limit). OBSERVE-ONLY: it samples the process count on a multi-minute interval
+    // and exposes a trend; it never kills/gates (the reapers own reclamation). Rides
+    // the dev-agent dark gate (ON for dev agents, OFF on the fleet). The threshold
+    // heads-up is opt-in (`alertEnabled`, default false — measure first); wiring its
+    // emitAttention sink to the aggregated attention surface is a tracked follow-up.
+    try {
+      const pfCfg = (options.config as {
+        monitoring?: { processFootprintMonitor?: {
+          enabled?: boolean; sampleIntervalMs?: number; windowSamples?: number;
+          alertThreshold?: number; alertEnabled?: boolean;
+        } };
+      }).monitoring?.processFootprintMonitor;
+      // Only construct when enabled (dev-gate resolves it) — a disabled monitor is
+      // null so `/resources/footprint` 503s, matching the ResourceLedger contract.
+      if (resolveDevAgentGate(pfCfg?.enabled, options.config)) {
+        this.processFootprintMonitor = new ProcessFootprintMonitor(
+          { listProcesses: defaultListProcesses },
+          { ...(pfCfg ?? {}), enabled: true },
+        );
+        this.processFootprintMonitor.start();
+      }
+    } catch (err) {
+      console.warn('[instar] process-footprint-monitor init failed (non-fatal):', err);
+      this.processFootprintMonitor = null;
     }
 
     // Approval-as-Data ledger (docs/specs/AUTONOMOUS-OPERATION-JUDGMENT-AND-APPROVAL-AS-DATA-SPEC.md,
@@ -2194,6 +2227,7 @@ export class AgentServer {
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
       resourceLedger: this.resourceLedger,
+      processFootprintMonitor: this.processFootprintMonitor,
       approvalLedger: this.approvalLedger,
       topicOperatorStore: this.topicOperatorStore,
       coordination: this.coordination,
