@@ -1,0 +1,21 @@
+{
+  "ts": "2026-06-27T02:26:24.579Z",
+  "slug": "mcp-session-profiles",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 123,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1291
+    ],
+    "notes": "Follow-up to the 2026-06-26 resource-exhaustion panic. #1290 fixed the disk arm; #1291 added the process-footprint MEASUREMENT. This is the first REDUCER: heavy idle MCP servers (Chromium/Electron) stacked across sessions were a dominant footprint; per-session profiles cut the baseline by launching each topic with only the servers it needs. Lever 2 (idle-live offload) follows."
+  },
+  "verdict": "pass"
+}

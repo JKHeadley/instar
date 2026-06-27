@@ -69,6 +69,7 @@ import {
   resolveInteractiveFramework,
   resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
+import { resolveMcpProfileServers, filterMcpConfig, type McpJson } from './sessionMcpProfile.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
@@ -3724,6 +3725,33 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Per-session MCP profile (dynamic-MCP-lifecycle lever 1). Resolves the topic's
+   * MCP profile and, when one is configured, writes a filtered `.mcp.json` (only
+   * the profiled servers) to a per-session file and returns the launch flags
+   * `['--strict-mcp-config', '--mcp-config', <path>]`. Returns [] (full project
+   * `.mcp.json`, byte-for-byte today) when the feature is off, the topic has no
+   * profile, or on ANY error — the fail-safe, deletion-of-tools-averse direction.
+   */
+  private buildSessionMcpProfileFlags(topicId: number | undefined): string[] {
+    try {
+      const servers = resolveMcpProfileServers(topicId, this.config.mcpProfiles);
+      if (servers === null) return []; // no profile ⇒ full .mcp.json (default)
+      const mcpJsonPath = path.join(this.config.projectDir, '.mcp.json');
+      let full: McpJson;
+      try { full = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8')) as McpJson; }
+      catch { return []; } // no/unreadable .mcp.json ⇒ nothing to filter ⇒ default
+      const filtered = filterMcpConfig(full, servers);
+      const outDir = path.join(this.config.projectDir, '.instar', 'state', 'session-mcp-config');
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, `mcp-${topicId}-${Date.now()}.json`);
+      fs.writeFileSync(outPath, JSON.stringify(filtered, null, 2));
+      return ['--strict-mcp-config', '--mcp-config', outPath];
+    } catch {
+      return []; // @silent-fallback-ok — any failure ⇒ full .mcp.json (never strands a session without its tools)
+    }
+  }
+
+  /**
    * Spawn an interactive Claude Code session (no -p prompt — opens at the REPL).
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
@@ -3912,6 +3940,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // only; the builder validates the enum + drops an unknown value).
       ...(options?.effort ? { effort: options.effort } : {}),
     });
+
+    // Per-session MCP profile (dynamic-MCP-lifecycle lever 1, claude-code only):
+    // when this topic has an explicit lean profile, launch with ONLY those MCP
+    // servers (a filtered .mcp.json via --strict-mcp-config) instead of the full
+    // project set — cutting the heavy idle-MCP footprint that dominated the
+    // 2026-06-26 resource panic. Default NO-OP: returns [] when the feature is off,
+    // the topic has no profile, or on any error → the spawn is byte-for-byte
+    // unchanged (Claude reads the full .mcp.json as today).
+    if (framework === 'claude-code') {
+      const mcpProfileFlags = this.buildSessionMcpProfileFlags(options?.telegramTopicId);
+      if (mcpProfileFlags.length > 0) launchSpec.argv.push(...mcpProfileFlags);
+    }
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.

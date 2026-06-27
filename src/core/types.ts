@@ -161,6 +161,19 @@ export interface SessionManagerConfig {
   /** Path to tmux binary */
   tmuxPath: string;
   /**
+   * Per-session MCP profiles (dynamic-MCP-lifecycle lever 1): launch a topic's
+   * interactive session with ONLY its profiled MCP servers (a filtered .mcp.json)
+   * instead of the full project set, cutting the heavy idle-MCP footprint. DARK by
+   * default; absence / no topic entry = the full .mcp.json unchanged. See
+   * `src/core/sessionMcpProfile.ts`.
+   */
+  mcpProfiles?: {
+    /** Master switch (default off). */
+    enabled?: boolean;
+    /** Per-topic allow-list of MCP server names (keys in .mcp.json). */
+    topicServers?: Record<string, string[]>;
+  };
+  /**
    * Override for Claude Code's own internal retry count
    * (CLAUDE_CODE_MAX_RETRIES env), injected at spawn. When set, raises how
    * long Claude rides out a transient throttle/overload before surfacing the
