@@ -914,6 +914,8 @@ export interface RouteContext {
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
+  /** Per-machine process-footprint monitor (observe-only; dark by default). */
+  processFootprintMonitor: import('../monitoring/ProcessFootprintMonitor.js').ProcessFootprintMonitor | null;
   /** Approval-as-Data ledger (spec Part B / Phase 2). Records operator approval
    *  decisions + per-class agreement ratios. Null when stateDir is unavailable. */
   approvalLedger: import('../core/ApprovalLedger.js').ApprovalLedger | null;
@@ -7471,6 +7473,18 @@ export function createRoutes(ctx: RouteContext): Router {
       limit,
       samples: ctx.resourceLedger.recentSamples({ sinceMs, limit, source }),
     });
+  });
+
+  // Per-machine process-footprint monitor status (observe-only; the climb
+  // measurement missing before the 2026-06-26 resource-exhaustion panic). 503
+  // when the monitor is disabled/dark (monitoring.processFootprintMonitor). Never
+  // gates — read-only.
+  router.get('/resources/footprint', (_req, res) => {
+    if (!ctx.processFootprintMonitor) {
+      res.status(503).json({ error: 'process-footprint monitor unavailable (disabled or not initialized)' });
+      return;
+    }
+    res.json(ctx.processFootprintMonitor.status());
   });
 
   // ── Fork-bomb prevention: host-wide spawn-cap status (forkbomb-prevention-simple §P1/§P3) ──

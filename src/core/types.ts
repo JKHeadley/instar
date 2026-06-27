@@ -4618,6 +4618,23 @@ export interface MonitoringConfig {
     retentionDays?: number;
   };
   /**
+   * ProcessFootprintMonitor — observe-only per-machine process-count measurement
+   * (the climb signal missing before the 2026-06-26 resource-exhaustion panic).
+   * `enabled` undefined resolves via the developmentAgent gate (live on echo, dark
+   * on the fleet); `false` → null + `/resources/footprint` 503s. Never gates.
+   */
+  processFootprintMonitor?: {
+    enabled?: boolean;
+    /** Sampling cadence (ms) (default: 5min). */
+    sampleIntervalMs?: number;
+    /** Rolling-window size for the trend (default: 288 = 24h at 5-min cadence). */
+    windowSamples?: number;
+    /** Process count at/over which the (opt-in) heads-up fires (default: 220; 0 disables). */
+    alertThreshold?: number;
+    /** Opt-in heads-up — measure first (default: false). */
+    alertEnabled?: boolean;
+  };
+  /**
    * ActiveWorkSilenceSentinel — topic-independent watchdog: a session that was
    * actively producing output goes silent for N minutes. Covers the gap left
    * by SessionWatchdog (needs a running child), SessionMonitor (topic-bound

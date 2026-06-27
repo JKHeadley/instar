@@ -349,6 +349,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'CPU/memory sampling + rate-limit-event ledger (read-only observability).',
   },
   {
+    key: 'monitoring.processFootprintMonitor.enabled',
+    kind: 'config',
+    configPath: 'monitoring.processFootprintMonitor.enabled',
+    defaultEnabled: false, // dark on the fleet; ON for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'ProcessFootprintMonitor',
+    description: 'Per-machine process-footprint count + trend (observe-only; the climb measurement missing before the 2026-06-26 panic).',
+  },
+  {
     key: 'monitoring.memoryMonitoring',
     kind: 'config',
     configPath: 'monitoring.memoryMonitoring',
