@@ -163,4 +163,82 @@ describe('/mcp/* routes', () => {
       expect(r.body.status).toBe('needs-approval');
     });
   });
+
+  describe('TAP surface — /mcp/approval-link + GET/POST /mcp/approve/:requestId', () => {
+    const PIN = '424242';
+
+    it('503 on every tap route when the feature is disabled', async () => {
+      const app = appWith(makeService({}, false), path.join(dir, '.instar'));
+      expect((await request(app).post('/mcp/approval-link').send({ topicId: 5, server: 'playwright', nonce: 'x' })).status).toBe(503);
+      expect((await request(app).get('/mcp/approve/anything')).status).toBe(503);
+      expect((await request(app).post('/mcp/approve/anything').send({ pin: PIN })).status).toBe(503);
+    });
+
+    it('approval-link validates input (missing nonce ⇒ 400)', async () => {
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'));
+      const r = await request(app).post('/mcp/approval-link').send({ topicId: 5, server: 'playwright' });
+      expect(r.status).toBe(400);
+    });
+
+    it('the GET approval page renders details but NEVER the nonce', async () => {
+      const svc = makeService({}, true, /*preapproved*/ false);
+      const app = appWith(svc, path.join(dir, '.instar'));
+      const need = await request(app).post('/mcp/load').send({ topicId: 7, server: 'playwright' });
+      const nonce = need.body.nonce as string;
+      const link = await request(app).post('/mcp/approval-link').send({ topicId: 7, kind: 'load', server: 'playwright', nonce });
+      expect(link.status).toBe(200);
+      const requestId = link.body.requestId as string;
+      expect(requestId).toBeTruthy();
+      expect(link.body.path).toBe(`/mcp/approve/${requestId}`);
+      const page = await request(app).get(`/mcp/approve/${requestId}`);
+      expect(page.status).toBe(200);
+      expect(page.text).toContain('playwright');
+      expect(page.text).toContain('topic 7');
+      expect(page.text).not.toContain(nonce); // the nonce stays server-side
+    });
+
+    it('the full tap round trip: link → page → PIN submit ⇒ 200 applied + a restart', async () => {
+      const svc = makeService({}, true, /*preapproved*/ false);
+      const app = appWith(svc, path.join(dir, '.instar'));
+      const need = await request(app).post('/mcp/load').send({ topicId: 9, server: 'playwright' });
+      const nonce = need.body.nonce as string;
+      const link = await request(app).post('/mcp/approval-link').send({ topicId: 9, kind: 'load', server: 'playwright', nonce });
+      const requestId = link.body.requestId as string;
+      const before = restarts;
+      const ok = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
+      expect(ok.status).toBe(200);
+      expect(ok.text).toContain('Approved');
+      expect(restarts).toBe(before + 1);
+    });
+
+    it('the PIN gate holds — no PIN ⇒ 403, the agent (Bearer-only) cannot self-approve', async () => {
+      const svc = makeService({}, true, false);
+      const app = appWith(svc, path.join(dir, '.instar'));
+      const need = await request(app).post('/mcp/load').send({ topicId: 11, server: 'playwright' });
+      const nonce = need.body.nonce as string;
+      const link = await request(app).post('/mcp/approval-link').send({ topicId: 11, kind: 'load', server: 'playwright', nonce });
+      const requestId = link.body.requestId as string;
+      const r = await request(app).post(`/mcp/approve/${requestId}`).send({}); // no pin
+      expect(r.status).toBe(403);
+    });
+
+    it('single-use — a second PIN submit on the same requestId ⇒ 404 (consumed)', async () => {
+      const svc = makeService({}, true, false);
+      const app = appWith(svc, path.join(dir, '.instar'));
+      const need = await request(app).post('/mcp/load').send({ topicId: 13, server: 'playwright' });
+      const nonce = need.body.nonce as string;
+      const link = await request(app).post('/mcp/approval-link').send({ topicId: 13, kind: 'load', server: 'playwright', nonce });
+      const requestId = link.body.requestId as string;
+      const first = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
+      expect(first.status).toBe(200);
+      const second = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
+      expect(second.status).toBe(404);
+    });
+
+    it('an unknown requestId ⇒ GET 404 and POST(valid PIN) 404', async () => {
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'));
+      expect((await request(app).get('/mcp/approve/nope')).status).toBe(404);
+      expect((await request(app).post('/mcp/approve/nope').send({ pin: PIN })).status).toBe(404);
+    });
+  });
 });

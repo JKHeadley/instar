@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import { DynamicMcpManager, type DynamicMcpDeps, type RequestActor, type RequestChangeResult } from './DynamicMcpManager.js';
 import { McpLoadedSetStore } from './McpLoadedSetStore.js';
 import { McpApprovalNonceStore } from './McpApprovalNonceStore.js';
+import { PendingMcpApprovalStore, type PendingMcpApprovalView, type McpChangeKind } from './PendingMcpApprovalStore.js';
 import { resolveBaselineServers, type DynamicMcpConfig, type McpJson } from './dynamicMcpConfig.js';
 
 export interface DynamicMcpServicePrimitives {
@@ -49,6 +50,7 @@ export interface SessionMcpState {
 export class DynamicMcpService {
   private readonly loadedSet: McpLoadedSetStore;
   private readonly nonces = new McpApprovalNonceStore();
+  private readonly pendingApprovals = new PendingMcpApprovalStore();
   private readonly manager: DynamicMcpManager;
 
   constructor(private readonly p: DynamicMcpServicePrimitives) {
@@ -101,5 +103,33 @@ export class DynamicMcpService {
 
   requestOffload(topicId: number, server: string, actor: RequestActor): Promise<RequestChangeResult> {
     return this.manager.requestChange({ topicId, op: 'offload', server, actor });
+  }
+
+  // ── Operator-approval TAP surface (the nonce stays server-side) ──
+
+  /** Register a pending change for the tap surface and get back an opaque
+   *  requestId to put in the approval link. The agent (which already holds the
+   *  nonce from its needs-approval response) calls this; the nonce never travels
+   *  in the URL. */
+  registerApproval(topicId: number, kind: McpChangeKind, server: string, nonce: string): string {
+    return this.pendingApprovals.register({ topicId, kind, server, nonce });
+  }
+
+  /** What the approval PAGE may render — details WITHOUT the nonce. */
+  peekApproval(requestId: string): PendingMcpApprovalView | null {
+    return this.pendingApprovals.peek(requestId);
+  }
+
+  /** The PIN-gated submit: consume the pending request (single-use) and drive the
+   *  change via the operator-approved actor. The caller (route) MUST have already
+   *  verified the operator PIN — this method does NOT itself authenticate. Returns
+   *  `unknown-request` when the requestId is absent/expired/already used. */
+  async approveByRequestId(requestId: string): Promise<RequestChangeResult | { status: 'unknown-request' }> {
+    const p = this.pendingApprovals.consume(requestId);
+    if (!p) return { status: 'unknown-request' };
+    const actor: RequestActor = { kind: 'operator-approved', nonce: p.nonce };
+    return p.kind === 'load'
+      ? this.requestLoad(p.topicId, p.server, actor)
+      : this.requestOffload(p.topicId, p.server, actor);
   }
 }
