@@ -8275,6 +8275,37 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/mcp/load', (req, res) => { void handleMcpChange('load')(req, res); });
   router.post('/mcp/offload', (req, res) => { void handleMcpChange('offload')(req, res); });
 
+  // POST /mcp/approve — the OPERATOR-AUTHENTICATED approval for a non-preapproved
+  // load/offload. PIN-GATED (the dashboard PIN), so the agent — which only holds the
+  // shared Bearer token and NEVER the PIN — structurally cannot reach this route to
+  // self-approve (the C4 invariant: an interactive change completes only via a live
+  // preapproval OR this operator-PIN-authenticated path). The operator supplies the
+  // server-minted nonce (which the agent surfaced from its needs-approval response)
+  // + the PIN; this consumes the nonce via the {kind:'operator-approved'} actor. A
+  // wrong/expired nonce simply fails the gate and returns needs-approval again.
+  const handleMcpApprove = async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+    const svc = ctx.dynamicMcpService;
+    if (!svc || !svc.enabled()) { res.status(503).json({ error: 'dynamic-mcp disabled' }); return; }
+    if (!checkMandatePin(req, res)) return; // dashboard-PIN gate (rate-limited); response already sent on failure
+    const body = (req.body ?? {}) as { topicId?: unknown; kind?: unknown; server?: unknown; nonce?: unknown };
+    const topicId = Number(body.topicId);
+    const kind: 'load' | 'offload' = body.kind === 'offload' ? 'offload' : 'load';
+    const server = typeof body.server === 'string' ? body.server.trim() : '';
+    const nonce = typeof body.nonce === 'string' ? body.nonce : '';
+    if (!Number.isFinite(topicId) || !server || !nonce) {
+      res.status(400).json({ error: 'topicId (number), server (string), and nonce (string) are required' }); return;
+    }
+    const result = kind === 'load'
+      ? await svc.requestLoad(topicId, server, { kind: 'operator-approved', nonce })
+      : await svc.requestOffload(topicId, server, { kind: 'operator-approved', nonce });
+    const httpStatus =
+      result.status === 'applied' || result.status === 'no-op' ? 200
+        : result.status === 'needs-approval' ? 403 // the nonce didn't match/expired → approval did NOT take
+          : 409;
+    res.status(httpStatus).json({ ok: result.status === 'applied' || result.status === 'no-op', ...result });
+  };
+  router.post('/mcp/approve', (req, res) => { void handleMcpApprove(req, res); });
+
   // ── Feedback-factory processing (feedback-factory-migration §191) ──
   // Wires the already-parity'd processUnprocessed clustering pass into a real
   // triggerable capability. Both routes are dev-gated: ctx.feedbackProcessing is

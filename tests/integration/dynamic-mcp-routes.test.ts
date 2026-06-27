@@ -18,7 +18,7 @@ const MCP_JSON = { mcpServers: { playwright: { command: 'npx' }, threadline: { c
 
 function appWith(service: DynamicMcpService | null, stateDir: string) {
   const ctx = {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir, port: 0, sessions: {} as unknown, scheduler: {} as unknown } as unknown,
+    config: { projectName: 'test', projectDir: '/tmp', stateDir, port: 0, dashboardPin: '424242', sessions: {} as unknown, scheduler: {} as unknown } as unknown,
     sessionManager: { listRunningSessions: () => [] } as unknown,
     state: { getJobState: () => null, getSession: () => null } as unknown,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
@@ -117,5 +117,50 @@ describe('/mcp/* routes', () => {
     const r = await request(appWith(svc, path.join(dir, ".instar"))).post('/mcp/offload').send({ topicId: 5, server: 'playwright' });
     expect(r.status).toBe(409);
     expect(r.body.status).toBe('aborted');
+  });
+
+  describe('POST /mcp/approve — operator-authenticated (PIN-gated) approval', () => {
+    const PIN = '424242';
+
+    it('503 when the feature is disabled', async () => {
+      const r = await request(appWith(makeService({}, false), path.join(dir, ".instar")))
+        .post('/mcp/approve').send({ topicId: 5, server: 'playwright', nonce: 'x', pin: PIN });
+      expect(r.status).toBe(503);
+    });
+
+    it('requires the operator PIN (no pin ⇒ 403, the agent cannot self-approve)', async () => {
+      const r = await request(appWith(makeService({}, true, false), path.join(dir, ".instar")))
+        .post('/mcp/approve').send({ topicId: 5, server: 'playwright', nonce: 'x' });
+      expect(r.status).toBe(403);
+    });
+
+    it('a WRONG pin ⇒ 403', async () => {
+      const r = await request(appWith(makeService({}, true, false), path.join(dir, ".instar")))
+        .post('/mcp/approve').send({ topicId: 5, server: 'playwright', nonce: 'x', pin: 'wrong' });
+      expect(r.status).toBe(403);
+    });
+
+    it('valid PIN + the real nonce from a needs-approval ⇒ 200 applied (the round trip)', async () => {
+      const svc = makeService({}, true, /*preapproved*/ false); // interactive, not preapproved
+      const app = appWith(svc, path.join(dir, ".instar"));
+      // 1) the agent (Bearer) requests a load → needs-approval + a server-minted nonce
+      const need = await request(app).post('/mcp/load').send({ topicId: 5, server: 'playwright' });
+      expect(need.status).toBe(202);
+      const nonce = need.body.nonce as string;
+      expect(nonce).toBeTruthy();
+      // 2) the operator (PIN) approves with that nonce → the load completes
+      const ok = await request(app).post('/mcp/approve').send({ topicId: 5, server: 'playwright', nonce, pin: PIN });
+      expect(ok.status).toBe(200);
+      expect(ok.body).toMatchObject({ ok: true, status: 'applied' });
+    });
+
+    it('valid PIN but a WRONG nonce ⇒ 403 needs-approval (the approval did not take)', async () => {
+      const svc = makeService({}, true, false);
+      const app = appWith(svc, path.join(dir, ".instar"));
+      await request(app).post('/mcp/load').send({ topicId: 5, server: 'playwright' }); // mint a real nonce
+      const r = await request(app).post('/mcp/approve').send({ topicId: 5, server: 'playwright', nonce: 'FORGED', pin: PIN });
+      expect(r.status).toBe(403);
+      expect(r.body.status).toBe('needs-approval');
+    });
   });
 });
