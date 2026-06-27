@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateGuideContent } from './upgrade-guide-validator.mjs';
 import { assembleNextMd, gatherFragmentInputs, hasInternalOnlyMarker } from './assemble-next-md.mjs';
+import { isReleaseRelevant } from './release-relevant-paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -191,13 +192,19 @@ try {
   const fragmentChanges = changedFiles.filter(f =>
     f.startsWith('upgrades/next/') || f === 'upgrades/NEXT.md'
   );
-  if (srcChanges.length > 0 && fragmentChanges.length === 0) {
+  // Release-relevance is now the SHARED predicate (scripts/release-relevant-paths.mjs),
+  // the same one the server-side Layer-1 PR gate uses — so "needs a release note?"
+  // has one answer in both places. This BROADENS the old src/**.ts-only check to
+  // also catch scripts/, .github/workflows/, package.json, and skill code/templates
+  // (all of which ship behavior but previously slipped this local gate).
+  const releaseRelevantChanges = changedFiles.filter(isReleaseRelevant);
+  if (releaseRelevantChanges.length > 0 && fragmentChanges.length === 0) {
     errors.push(
-      `${srcChanges.length} source file(s) changed but no release-note fragment was added. ` +
+      `${releaseRelevantChanges.length} release-relevant file(s) changed but no release-note fragment was added. ` +
       `Without upgrades/next/<slug>.md (or upgrades/NEXT.md), publish.yml SILENTLY SKIPS the ` +
       `release — your change would merge but never ship. Add a fragment describing the change:\n` +
-      srcChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
-      (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
+      releaseRelevantChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
+      (releaseRelevantChanges.length > 5 ? `\n      • ...and ${releaseRelevantChanges.length - 5} more` : '')
     );
   }
 

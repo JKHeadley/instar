@@ -134,6 +134,12 @@ const ALLOWLIST = new Set([
   // previous release. Build-time only; never executes on an agent's
   // machine. Per INSTAR-JOBS-AS-AGENTMD spec §Drift Classifier.
   'scripts/classify-default-drift.mjs',
+  // release-fragment-gate Layer 2 publish-side annotator — runs READ-ONLY git
+  // (`describe --tags`, `diff --name-only -z`, `log`, `ls-files`) inside the
+  // publish GitHub Action to detect unreleased release-relevant work on a skip.
+  // CI-only; never executes on an agent's machine, and TS isn't compiled there
+  // so it cannot import the SafeGitExecutor funnel. Per RELEASE-FRAGMENT-GATE-SPEC.
+  'scripts/release-skip-annotate.mjs',
   // Tier-3 CI ratchet for the cartographer doc-tree (cartographer-doc-freshness
   // spec #2). A standalone .mjs (parity with docs-coverage.mjs) that runs in CI
   // with NO build step, so it cannot import the TS SafeGitExecutor funnel. All

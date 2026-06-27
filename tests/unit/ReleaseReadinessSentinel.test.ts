@@ -74,10 +74,48 @@ describe('ReleaseReadinessSentinel', () => {
 
   it('stays silent when a blocked backlog is below the age threshold', async () => {
     h.oldest = { sha: 'a'.repeat(40), dateMs: h.clock - 1 * DAY }; // 1 day < silent(2)
-    const s = new ReleaseReadinessSentinel(h.deps());
+    // Disable the missing-fragment fast-trigger so this test isolates the pure
+    // age-threshold semantic (the fast-trigger is covered separately below).
+    const s = new ReleaseReadinessSentinel(h.deps(), { fastTriggerOnGuideBlock: false });
     await s.tick();
     expect(h.posted).toHaveLength(0);
     expect(h.state.episodes).toHaveLength(1); // recorded, not surfaced
+  });
+
+  describe('fast-trigger on missing-fragment block (D7)', () => {
+    it('surfaces LOW immediately for a fresh fragment-less merge, bypassing the age floor', async () => {
+      // 0.1 days old (well below silent(2)), guide blocks publish (missing
+      // fragment), 1 feature commit → the silent-skip case → fast-trigger fires.
+      h.oldest = { sha: 'a'.repeat(40), dateMs: h.clock - Math.round(0.1 * DAY) };
+      h.guideBlocks = true;
+      h.analyzer = report(1, 0);
+      const s = new ReleaseReadinessSentinel(h.deps()); // default: fast-trigger ON
+      await s.tick();
+      expect(h.posted).toHaveLength(1);
+      expect(h.posted[0].priority).toBe('LOW');
+      const signal = h.audits.find((a) => a.event === 'signal');
+      expect(signal?.fastTriggered).toBe(true);
+    });
+
+    it('does NOT fast-trigger a coverage-gap block (only a missing fragment qualifies)', async () => {
+      // Fresh, but NOT a guide-block — blocked purely by a coverage gap. The
+      // fast-trigger is specific to the silent-skip (missing-fragment) case.
+      h.oldest = { sha: 'b'.repeat(40), dateMs: h.clock - Math.round(0.1 * DAY) };
+      h.guideBlocks = false;
+      h.analyzer = report(1, 0, 1, 0); // 1 critical coverage gap
+      const s = new ReleaseReadinessSentinel(h.deps());
+      await s.tick();
+      expect(h.posted).toHaveLength(0); // below age floor, not fast-triggered
+    });
+
+    it('respects the off-switch (fastTriggerOnGuideBlock:false → silent below age floor)', async () => {
+      h.oldest = { sha: 'c'.repeat(40), dateMs: h.clock - Math.round(0.1 * DAY) };
+      h.guideBlocks = true;
+      h.analyzer = report(1, 0);
+      const s = new ReleaseReadinessSentinel(h.deps(), { fastTriggerOnGuideBlock: false });
+      await s.tick();
+      expect(h.posted).toHaveLength(0);
+    });
   });
 
   it('raises exactly one deduped signal once the backlog ages past the threshold', async () => {

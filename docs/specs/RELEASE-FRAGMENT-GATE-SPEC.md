@@ -16,6 +16,9 @@ single-run-completable: true
 frontloaded-decisions: 11
 cheap-to-change-tags: 0
 contested-then-cleared: 1
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 28130 (2026-06-27 11:57 PDT): 'Approved and you have my preapproval for any decisions needed in this autonomy session', after reading the converged-spec ELI16 summary."
 ---
 
 # Spec — Release-Fragment Gate
@@ -259,7 +262,8 @@ guarantee. Secondary: **"No Silent Degradation to Brittle Fallback"** (exact reg
 article) — a green publish run that silently skips merged work is the textbook
 "looks-protected while fake-protected" degradation this article forbids; this spec
 extends it from LLM-gating calls to the release pipeline. Also engages **"Close the
-Loop / Deferral = Deletion"** (a release must not silently swallow merged work).
+Loop"** (a release must not silently swallow merged work — every shipped change is
+re-surfaced until it actually ships).
 
 ## Open questions
 

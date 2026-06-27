@@ -77,6 +77,20 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Loud-skip annotation (release-fragment-gate Layer 2)
+        # When the publish is about to SKIP (no fragment) but release-relevant
+        # work has merged since the last vX.Y.Z tag, emit a LOUD warning + step
+        # summary instead of a silent green run (the 2026-06-27 failure). SIGNAL
+        # ONLY — never fails the run (the script always exits 0); the durable,
+        # ack-able signal is the agent-side ReleaseReadinessSentinel.
+        # Spec: docs/specs/RELEASE-FRAGMENT-GATE-SPEC.md (Layer 2).
+        if: steps.guide-check.outputs.skip == 'true'
+        run: |
+          # The base checkout is shallow + tagless; fetch tags + enough history
+          # so the boundary tag (vX.Y.Z) and the unreleased window resolve.
+          git fetch --tags --deepen=200 origin main 2>/dev/null || git fetch --tags --unshallow 2>/dev/null || true
+          node scripts/release-skip-annotate.mjs
+
       - name: Release-tier gate (Layer 2)
         # Deployment Lockdown — Layer 2.
         # `.instar/release-tier.json` declares the active release line

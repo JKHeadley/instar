@@ -54,3 +54,9 @@ that only runs on your laptop is a guard people route around. A guard at the pla
 work actually merges is a guarantee. And a release that silently swallows finished
 work is exactly the "looks protected while being fake-protected" failure the
 constitution warns about.
+
+---
+
+*Status (2026-06-27): approved by Justin and built. Ships in this PR — the Layer-1
+PR check starts in warn-only mode; flip to a required blocking check per the spec's
+D3 criterion.*

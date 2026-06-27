@@ -1,0 +1,17 @@
+{
+  "ts": "2026-06-27T19:48:36.046Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/check-release-fragment.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/release-relevant-paths.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/release-skip-annotate.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 508,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}
