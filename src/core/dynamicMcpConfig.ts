@@ -146,3 +146,49 @@ export function mutateLoadedServers(
 export const DEFAULT_DYNAMIC_MCP_CONFIG: DynamicMcpConfig = {
   enabled: false,
 };
+
+/**
+ * The per-spawn inputs to the launch-set resolution (all already gathered by the
+ * caller, which does the IO). Kept pure so the load-bearing RESOLUTION ORDER —
+ * the part a wrong move strands a session on — is unit-testable in isolation.
+ */
+export interface SessionMcpResolutionInput {
+  /** The feature switch AS ALREADY RESOLVED by the caller (dev-agent gate /
+   *  explicit flag). The pure resolver does not re-derive it. */
+  enabled: boolean;
+  /** The launching session's framework. MCP `--mcp-config` is Claude-Code-specific. */
+  framework: string;
+  /** Servers from a COMMITTED loaded-set state file, or null if none/un-committed. */
+  committedStateServers: string[] | null;
+  /** True iff a state file EXISTS but could not be read/parsed (drives the M6
+   *  fail-toward-lean-baseline, not fail-toward-full-config, decision). */
+  stateFileUnreadable: boolean;
+  /** `resolveBaselineServers(...)` result (the lean set, or null = full config). */
+  baselineServers: string[] | null;
+}
+
+/**
+ * Resolve which MCP servers a session should LAUNCH with — the gate ORDER is
+ * load-bearing (folds convergence findings C3 + M6):
+ *   1. enabled-gate: off ⇒ null (full .mcp.json). Checked FIRST, before any state
+ *      file, so disabling the feature is a clean no-op even for a topic whose
+ *      state file says ["threadline"] (it would otherwise relaunch trimmed +
+ *      stranded after rollback). [C3]
+ *   2. framework-gate: non-claude-code ⇒ null (MCP flags are Claude-specific).
+ *   3. committed state file ⇒ its servers (an un-committed file was passed as null
+ *      by the caller — the two-phase-commit contract).
+ *   4. state file unreadable ⇒ the LEAN baseline (NOT full config) — a transient
+ *      state-dir error must not relaunch every heavy server warm and re-create the
+ *      exhaustion condition. [M6]
+ *   5. baseline ⇒ its servers.
+ *   6. null (full .mcp.json — the default).
+ * Returns the allowed server-name list to filter `.mcp.json` to, or `null` when
+ * the full `.mcp.json` should be used unchanged.
+ */
+export function resolveSessionMcpServers(input: SessionMcpResolutionInput): string[] | null {
+  if (!input.enabled) return null; // [C3] enabled-gate FIRST
+  if (input.framework !== 'claude-code') return null;
+  if (input.committedStateServers !== null) return input.committedStateServers;
+  if (input.stateFileUnreadable) return input.baselineServers; // [M6] lean, not full
+  return input.baselineServers;
+}

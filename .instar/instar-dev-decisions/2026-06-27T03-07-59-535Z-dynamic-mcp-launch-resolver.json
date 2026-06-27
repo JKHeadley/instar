@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-27T03:07:59.535Z",
+  "slug": "dynamic-mcp-launch-resolver",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 46,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Folds convergence findings C3/M6 from the DYNAMIC-MCP-LIFECYCLE spec review."
+  },
+  "verdict": "pass"
+}

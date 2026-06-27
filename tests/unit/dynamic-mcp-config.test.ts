@@ -7,9 +7,11 @@ import {
   filterMcpConfig,
   resolveBaselineServers,
   mutateLoadedServers,
+  resolveSessionMcpServers,
   DEFAULT_DYNAMIC_MCP_CONFIG,
   type DynamicMcpConfig,
   type McpJson,
+  type SessionMcpResolutionInput,
 } from '../../src/core/dynamicMcpConfig.js';
 
 const fullMcp: McpJson = {
@@ -126,5 +128,50 @@ describe('mutateLoadedServers — offload', () => {
     const current = ['playwright', 'threadline'];
     mutateLoadedServers(current, all, { kind: 'offload', server: 'playwright' });
     expect(current).toEqual(['playwright', 'threadline']);
+  });
+});
+
+describe('resolveSessionMcpServers — launch-set resolution ORDER', () => {
+  const base = (over: Partial<SessionMcpResolutionInput> = {}): SessionMcpResolutionInput => ({
+    enabled: true,
+    framework: 'claude-code',
+    committedStateServers: null,
+    stateFileUnreadable: false,
+    baselineServers: ['threadline'],
+    ...over,
+  });
+
+  it('[C3] disabled ⇒ null (full .mcp.json) EVEN WITH a committed state file — clean rollback', () => {
+    expect(resolveSessionMcpServers(base({ enabled: false, committedStateServers: ['threadline'] }))).toBeNull();
+  });
+
+  it('non-claude-code framework ⇒ null (MCP flags are Claude-specific)', () => {
+    expect(resolveSessionMcpServers(base({ framework: 'codex-cli', committedStateServers: ['threadline'] }))).toBeNull();
+  });
+
+  it('a committed state file wins over baseline', () => {
+    expect(resolveSessionMcpServers(base({ committedStateServers: ['playwright', 'threadline'] })))
+      .toEqual(['playwright', 'threadline']);
+  });
+
+  it('an empty committed state file means launch with NO servers (not "fall through")', () => {
+    expect(resolveSessionMcpServers(base({ committedStateServers: [] }))).toEqual([]);
+  });
+
+  it('[M6] state file unreadable ⇒ the LEAN baseline, NOT full config', () => {
+    expect(resolveSessionMcpServers(base({ committedStateServers: null, stateFileUnreadable: true, baselineServers: ['threadline'] })))
+      .toEqual(['threadline']);
+  });
+
+  it('[M6] state file unreadable + no lean baseline configured ⇒ null (full) — nothing lean to fall to', () => {
+    expect(resolveSessionMcpServers(base({ stateFileUnreadable: true, baselineServers: null }))).toBeNull();
+  });
+
+  it('no state file, baseline present ⇒ baseline', () => {
+    expect(resolveSessionMcpServers(base({ baselineServers: ['threadline'] }))).toEqual(['threadline']);
+  });
+
+  it('no state file, no baseline ⇒ null (full .mcp.json — the default)', () => {
+    expect(resolveSessionMcpServers(base({ baselineServers: null }))).toBeNull();
   });
 });
