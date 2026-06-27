@@ -84,6 +84,16 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
 }
 
+export function DYNAMIC_MCP_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Dynamic MCP Lifecycle (⚗️ experimental, ships DARK) — load heavy MCP servers on demand
+
+Heavy MCP servers (Playwright's Chromium; Electron bridges) are mostly idle and were a dominant share of the process footprint behind the 2026-06-26 resource panic. This lets a claude-code session launch with a LEAN MCP set and load a heavy server only when needed (restart \`--resume\` preserves the conversation), then offload it when idle. **Ships dark + opt-in** (\`sessions.dynamicMcp.enabled\`); the routes 503 when off. The idle-offload sweep + the non-autonomous operator-approval route are tracked follow-ups.
+- What is a topic's session running with? (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mcp/session/TOPIC_ID\` → \`{ servers, preapproved, source }\`.
+- Request a load / offload: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mcp/load -H 'Content-Type: application/json' -d '{"topicId":N,"server":"playwright"}'\` (\`/mcp/offload\` to drop).
+- **Authorization (Know Your Principal):** a change completes ONLY when the topic has a LIVE autonomous run (preapproved) OR an operator-authenticated approval. An \`agent\`-initiated change on a non-preapproved topic returns \`needs-approval\` and performs NO restart — I surface it and wait. I can NEVER self-approve by replaying the nonce over my own Bearer token.
+- **When to use** (PROACTIVE): in an autonomous run, when I need a heavy tool I don't have, I request the load (I'm preapproved → it loads + restarts + continues). When the user asks "free up resources from idle MCP servers" / "why did my session restart to add a tool?" → this feature. Single-server / no-\`.mcp.json\` agents are a no-op.\n`;
+}
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -4134,6 +4144,17 @@ setTimeout(() => process.exit(0), 2000);
       content += PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Playwright Profile Registry section');
+    }
+
+    // Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — Agent Awareness +
+    // Migration Parity: existing agents learn the dark/opt-in load-on-demand
+    // capability, the /mcp/* surface, the Know-Your-Principal authorization rule,
+    // and the proactive triggers. Honestly tagged experimental/dark (Maturity
+    // Honesty). Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('Dynamic MCP Lifecycle')) {
+      content += DYNAMIC_MCP_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Dynamic MCP Lifecycle section');
     }
 
     // Machine Load Assessment (CMT-1703, spec robust-load-assessment-fleet) — Agent
