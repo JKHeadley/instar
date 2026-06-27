@@ -8341,9 +8341,28 @@ export function createRoutes(ctx: RouteContext): Router {
 <body><h2>Approve a tool change?</h2>
 <p>The agent wants to <b>${mcpHtmlEscape(verb)}</b> the <b>${mcpHtmlEscape(view.server)}</b> tool for this conversation (topic ${view.topicId}).</p>
 <p>Enter your dashboard PIN to approve. The agent cannot approve this itself.</p>
-<form method="POST" action="/mcp/approve/${mcpHtmlEscape(view.requestId)}">
-<p><input type="password" name="pin" inputmode="numeric" autocomplete="off" placeholder="Dashboard PIN" required></p>
-<p><button type="submit">Approve</button></p></form></body></html>`);
+<form id="mcpForm">
+<p><input id="mcpPin" type="password" inputmode="numeric" autocomplete="off" placeholder="Dashboard PIN" required></p>
+<p><button type="submit">Approve</button></p></form>
+<script>
+// Submit the PIN as JSON via fetch (the server parses application/json, not
+// urlencoded form bodies) and render the returned result page in place.
+document.getElementById('mcpForm').addEventListener('submit', async function (e) {
+  e.preventDefault();
+  var btn = this.querySelector('button'); btn.disabled = true; btn.textContent = 'Approving…';
+  try {
+    var r = await fetch(${JSON.stringify('/mcp/approve/' + view.requestId)}, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: document.getElementById('mcpPin').value })
+    });
+    var html = await r.text();
+    document.open(); document.write(html); document.close();
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Approve';
+    alert('Could not reach the server — please try again.');
+  }
+});
+</script></body></html>`);
   });
 
   // The PIN-gated submit → consume the request server-side + drive the change.

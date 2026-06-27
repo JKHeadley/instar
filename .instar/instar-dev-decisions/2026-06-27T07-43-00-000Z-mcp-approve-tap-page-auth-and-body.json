@@ -1,0 +1,14 @@
+{
+  "ts": "2026-06-27T07:43:00.000Z",
+  "slug": "mcp-approve-tap-page-auth-and-body-fix",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": ["bugfix: operator-facing route reachability (auth-middleware exemption + request body parsing)"],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 40,
+  "causalAutopsy": { "origin": "existing-code-bug" },
+  "verdict": "pass",
+  "notes": "Live-as-self test (operator browser opening the tap-approval page) surfaced TWO escapes the unit/integration tests missed because they bypass the real auth middleware + send JSON directly: (1) GET/POST /mcp/approve/:requestId were behind the global Bearer gate, so the operator's browser (PIN, no Bearer) got 401 before the page rendered — fixed by a middleware exemption mirroring /secrets/drop (opaque requestId + PIN are the auth). (2) the page used a plain urlencoded <form> POST but the server only registers express.json(), so req.body.pin was empty -> 403 — fixed by submitting via fetch()+JSON, matching the proven SecretDrop renderForm pattern. Regression tests added at the middleware unit layer + the real-AgentServer e2e layer (the layers that actually exercise auth)."
+}

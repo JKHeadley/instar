@@ -220,6 +220,19 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
       return;
     }
 
+    // Dynamic-MCP operator-approval TAP pages — opened by the operator's BROWSER,
+    // which carries no Bearer token (the operator has the dashboard PIN, not the
+    // agent token). Same posture as Secret Drop: the opaque single-use requestId in
+    // the URL gates the GET page (renders the change, never the nonce), and the POST
+    // submit is PIN-gated by checkMandatePin inside the handler. The Bearer middleware
+    // would otherwise 401 the page before it ever renders. Scoped to `/mcp/approve/<id>`
+    // (trailing slash) so the agent-only `/mcp/approve` (exact) + `/mcp/approval-link`
+    // + `/mcp/load|offload|session` stay Bearer-gated.
+    if (req.path.startsWith('/mcp/approve/')) {
+      next();
+      return;
+    }
+
     // View routes support signed URLs for browser access (see ?sig= below)
     if (req.path.startsWith('/view/') && req.method === 'GET') {
       const sig = typeof req.query.sig === 'string' ? req.query.sig : null;

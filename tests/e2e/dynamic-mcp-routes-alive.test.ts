@@ -86,6 +86,27 @@ describe('/mcp/* routes E2E (alive on the real AgentServer boot)', () => {
     expect(res.status).not.toBe(404);
     expect(res.status).not.toBe(503); // enabled boot ⇒ not dark
   });
+
+  // Regression (live-as-self finding): the operator-approval TAP page is opened by the
+  // operator's BROWSER, which carries no Bearer token. Before the auth exemption it 401'd
+  // through the real middleware (the integration tests bypass the middleware, so they
+  // missed it). It must reach the handler WITHOUT a token — an unknown requestId 404s,
+  // never 401. This asserts through the REAL AgentServer auth stack.
+  it('GET /mcp/approve/<id> is reachable WITHOUT a Bearer token (404 unknown, never 401)', async () => {
+    const res = await request(app).get('/mcp/approve/nonexistent-request-id');
+    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /mcp/approve/<id> is reachable WITHOUT a Bearer token (browser form submit; not 401)', async () => {
+    const res = await request(app).post('/mcp/approve/nonexistent-request-id').send({ pin: '000000' });
+    expect(res.status).not.toBe(401);
+  });
+
+  it('the agent-only /mcp/approval-link STAYS Bearer-gated (401 without a token)', async () => {
+    const res = await request(app).post('/mcp/approval-link').send({ topicId: 5, server: 'playwright', nonce: 'x' });
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('/mcp/* routes E2E (503 on a DISABLED boot — the dark default)', () => {
