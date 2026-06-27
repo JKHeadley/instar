@@ -112,4 +112,44 @@ describe('DynamicMcpService', () => {
     // committed set is still the baseline (rollback), playwright NOT persisted as committed
     expect(committedOf(5)).toEqual(['threadline']);
   });
+
+  // The default-standard "thorough scenario" (operator mandate): a feature must be
+  // proven to BOTH load on demand AND offload when the work is done — as one
+  // continuous flow over the real service state, not just isolated operations. This
+  // is the deterministic, runs-in-CI complement to the live-as-self Playwright proof
+  // (which drives the same flow through a real session). See
+  // docs/specs/DYNAMIC-MCP-LIFECYCLE-SPEC.md and the live harness in
+  // docs/dynamic-mcp-live-as-self-harness.md.
+  it('FULL LIFECYCLE: lean baseline → load on demand → offload when done → back to lean', async () => {
+    const captured = [9001, 9002];
+    const svc = make({ captureHeavyPids: () => captured });
+    const TOPIC = 42;
+
+    // 1) starts LEAN — only the keep-warm baseline, no heavy server, no restart yet.
+    expect(svc.getSessionState(TOPIC)).toMatchObject({ servers: ['threadline'], source: 'baseline' });
+    expect(restarts).toBe(0);
+
+    // 2) LOADS ON DEMAND — the heavy server is added and the session restarts once.
+    const load = await svc.requestLoad(TOPIC, 'playwright', { kind: 'agent' });
+    expect(load.status).toBe('applied');
+    expect(restarts).toBe(1);
+    const afterLoad = svc.getSessionState(TOPIC);
+    expect(new Set(afterLoad.servers)).toEqual(new Set(['threadline', 'playwright']));
+    expect(afterLoad.source).toBe('committed'); // the load is durably committed, survives a re-read
+    expect(reaped).toHaveLength(0);              // nothing reaped on a load
+
+    // 3) OFFLOADS WHEN DONE — the heavy server is dropped, the session restarts again,
+    //    and the heavy child processes captured-before-kill are actually reaped (C1:
+    //    they reparent to launchd, so the offload must clean them up explicitly).
+    const offload = await svc.requestOffload(TOPIC, 'playwright', { kind: 'agent' });
+    expect(offload.status).toBe('applied');
+    expect(restarts).toBe(2);
+    expect(reaped).toEqual([captured]); // the leaked browser children are reclaimed
+
+    // 4) BACK TO LEAN — the committed set is the keep-warm baseline again; a fresh
+    //    read sees no heavy server. The machine reclaimed the footprint it borrowed.
+    const afterOffload = svc.getSessionState(TOPIC);
+    expect(afterOffload.servers).toEqual(['threadline']);
+    expect(committedOf(TOPIC)).toEqual(['threadline']);
+  });
 });

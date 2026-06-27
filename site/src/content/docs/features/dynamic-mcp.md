@@ -57,8 +57,19 @@ approval. Because the agent is the only caller of these routes over the shared b
 token, the agent-facing routes always act as the agent and never honor a nonce
 supplied in the request body. A change the agent isn't preapproved for returns
 `needs-approval` with a server-minted nonce and performs no restart — the agent
-surfaces it and waits. The operator-authenticated approval route (which consumes the
-nonce) is a tracked follow-up.
+surfaces it and waits.
+
+The operator-authenticated approval route consumes that nonce. `POST /mcp/approve`
+takes the change plus the dashboard PIN; the PIN gate is what the agent (bearer-only,
+no PIN) cannot satisfy, so the approval authority is structurally the operator's. For
+a phone-friendly tap flow, **`PendingMcpApprovalStore`** holds the pending change
+behind an opaque `requestId` so the server-minted nonce never travels in a URL (the
+same posture as Secret Drop's opaque tokens). The agent calls `POST /mcp/approval-link`
+to register the pending change and surfaces the returned link; the operator opens
+`GET /mcp/approve/:requestId` (a page that renders the change details but **never** the
+nonce), and the PIN-gated `POST /mcp/approve/:requestId` consumes the request once and
+drives the change. `PendingMcpApprovalStore` is single-use and TTL-bounded, so a
+consumed or expired link is inert.
 
 When the agent offloads a heavy server, it captures the server's child process IDs
 before the restart and cleans them up after the new session is confirmed up — those
@@ -71,6 +82,14 @@ otherwise leak a browser process each time.
   with, whether the topic is preapproved, and the provenance.
 - `POST /mcp/load` — request that a server be loaded (`{ topicId, server }`).
 - `POST /mcp/offload` — request that an idle server be dropped.
+- `POST /mcp/approve` — operator-authenticated approval of a pending change
+  (`{ topicId, server, nonce, pin }`); PIN-gated.
+- `POST /mcp/approval-link` — register a pending change for the tap flow; returns an
+  opaque `requestId` + link (bearer-gated, agent-called).
+- `GET /mcp/approve/:requestId` — the tappable approval page (renders details, never
+  the nonce).
+- `POST /mcp/approve/:requestId` — the PIN-gated submit that consumes the request and
+  drives the change.
 
 All routes are bearer-gated and return 503 while the feature is dark. The full design
 and convergence record live in `docs/specs/DYNAMIC-MCP-LIFECYCLE-SPEC.md`.

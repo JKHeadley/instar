@@ -8275,6 +8275,90 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/mcp/load', (req, res) => { void handleMcpChange('load')(req, res); });
   router.post('/mcp/offload', (req, res) => { void handleMcpChange('offload')(req, res); });
 
+  // POST /mcp/approve — the OPERATOR-AUTHENTICATED approval for a non-preapproved
+  // load/offload. PIN-GATED (the dashboard PIN), so the agent — which only holds the
+  // shared Bearer token and NEVER the PIN — structurally cannot reach this route to
+  // self-approve (the C4 invariant: an interactive change completes only via a live
+  // preapproval OR this operator-PIN-authenticated path). The operator supplies the
+  // server-minted nonce (which the agent surfaced from its needs-approval response)
+  // + the PIN; this consumes the nonce via the {kind:'operator-approved'} actor. A
+  // wrong/expired nonce simply fails the gate and returns needs-approval again.
+  const handleMcpApprove = async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+    const svc = ctx.dynamicMcpService;
+    if (!svc || !svc.enabled()) { res.status(503).json({ error: 'dynamic-mcp disabled' }); return; }
+    if (!checkMandatePin(req, res)) return; // dashboard-PIN gate (rate-limited); response already sent on failure
+    const body = (req.body ?? {}) as { topicId?: unknown; kind?: unknown; server?: unknown; nonce?: unknown };
+    const topicId = Number(body.topicId);
+    const kind: 'load' | 'offload' = body.kind === 'offload' ? 'offload' : 'load';
+    const server = typeof body.server === 'string' ? body.server.trim() : '';
+    const nonce = typeof body.nonce === 'string' ? body.nonce : '';
+    if (!Number.isFinite(topicId) || !server || !nonce) {
+      res.status(400).json({ error: 'topicId (number), server (string), and nonce (string) are required' }); return;
+    }
+    const result = kind === 'load'
+      ? await svc.requestLoad(topicId, server, { kind: 'operator-approved', nonce })
+      : await svc.requestOffload(topicId, server, { kind: 'operator-approved', nonce });
+    const httpStatus =
+      result.status === 'applied' || result.status === 'no-op' ? 200
+        : result.status === 'needs-approval' ? 403 // the nonce didn't match/expired → approval did NOT take
+          : 409;
+    res.status(httpStatus).json({ ok: result.status === 'applied' || result.status === 'no-op', ...result });
+  };
+  router.post('/mcp/approve', (req, res) => { void handleMcpApprove(req, res); });
+
+  // ── Operator-approval TAP surface (Mobile-Complete: tap a link, enter PIN) ──
+  // The agent registers a pending change (it holds the nonce from needs-approval) and
+  // surfaces the returned link; the operator taps it, sees the request (NO nonce on
+  // the page), and approves with the dashboard PIN. The nonce stays server-side
+  // (opaque requestId in the URL), and the PIN gate keeps the agent (Bearer-only,
+  // no PIN) from self-approving — the C4 invariant, made tappable.
+  const mcpHtmlEscape = (s: string): string => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+
+  // The agent (Bearer) registers a pending approval → opaque requestId + a tap URL.
+  router.post('/mcp/approval-link', (req, res) => {
+    const svc = ctx.dynamicMcpService;
+    if (!svc || !svc.enabled()) { res.status(503).json({ error: 'dynamic-mcp disabled' }); return; }
+    const body = (req.body ?? {}) as { topicId?: unknown; kind?: unknown; server?: unknown; nonce?: unknown };
+    const topicId = Number(body.topicId);
+    const kind: 'load' | 'offload' = body.kind === 'offload' ? 'offload' : 'load';
+    const server = typeof body.server === 'string' ? body.server.trim() : '';
+    const nonce = typeof body.nonce === 'string' ? body.nonce : '';
+    if (!Number.isFinite(topicId) || !server || !nonce) { res.status(400).json({ error: 'topicId, server, nonce required' }); return; }
+    const requestId = svc.registerApproval(topicId, kind, server, nonce);
+    const path = `/mcp/approve/${requestId}`;
+    res.json({ ok: true, requestId, path, url: ctx.tunnel?.getExternalUrl(path) ?? `http://localhost:${ctx.config.port}${path}` });
+  });
+
+  // The operator opens the link → a tappable approval page (NO nonce, NO PIN shown).
+  router.get('/mcp/approve/:requestId', (req, res) => {
+    const svc = ctx.dynamicMcpService;
+    if (!svc || !svc.enabled()) { res.status(503).type('html').send('<p>This approval feature is not enabled.</p>'); return; }
+    const view = svc.peekApproval(String(req.params.requestId));
+    if (!view) { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
+    const verb = view.kind === 'load' ? 'load' : 'drop';
+    res.type('html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve MCP change</title>
+<style>body{font-family:system-ui,sans-serif;max-width:30rem;margin:2rem auto;padding:0 1rem}button{font-size:1.1rem;padding:.6rem 1.2rem;width:100%}input{font-size:1.1rem;padding:.5rem;width:100%;box-sizing:border-box}</style></head>
+<body><h2>Approve a tool change?</h2>
+<p>The agent wants to <b>${mcpHtmlEscape(verb)}</b> the <b>${mcpHtmlEscape(view.server)}</b> tool for this conversation (topic ${view.topicId}).</p>
+<p>Enter your dashboard PIN to approve. The agent cannot approve this itself.</p>
+<form method="POST" action="/mcp/approve/${mcpHtmlEscape(view.requestId)}">
+<p><input type="password" name="pin" inputmode="numeric" autocomplete="off" placeholder="Dashboard PIN" required></p>
+<p><button type="submit">Approve</button></p></form></body></html>`);
+  });
+
+  // The PIN-gated submit → consume the request server-side + drive the change.
+  router.post('/mcp/approve/:requestId', (req, res) => {
+    void (async (): Promise<void> => {
+      const svc = ctx.dynamicMcpService;
+      if (!svc || !svc.enabled()) { res.status(503).type('html').send('<p>Not enabled.</p>'); return; }
+      if (!checkMandatePin(req, res)) return; // dashboard-PIN gate (rate-limited); response already sent on failure
+      const result = await svc.approveByRequestId(String(req.params.requestId));
+      if (result.status === 'unknown-request') { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
+      const ok = result.status === 'applied';
+      res.status(ok ? 200 : 409).type('html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:system-ui,sans-serif;max-width:30rem;margin:2rem auto;padding:0 1rem}</style></head><body><h2>${ok ? '✅ Approved' : '⚠️ Not applied'}</h2><p>${ok ? 'The tool change was approved and is being applied — the session will restart briefly and continue.' : `The change was not applied (status: ${mcpHtmlEscape(result.status)}). You can close this page.`}</p></body></html>`);
+    })();
+  });
+
   // ── Feedback-factory processing (feedback-factory-migration §191) ──
   // Wires the already-parity'd processUnprocessed clustering pass into a real
   // triggerable capability. Both routes are dev-gated: ctx.feedbackProcessing is

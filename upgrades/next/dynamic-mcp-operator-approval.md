@@ -1,0 +1,36 @@
+<!-- bump: patch -->
+<!-- audience: agent-only -->
+<!-- maturity: experimental -->
+
+## What Changed
+
+Added the **operator-approval route** (`POST /mcp/approve`) for the Dynamic MCP
+Lifecycle (⚗️ experimental, dark) — the piece that lets an **interactive** session
+(not just an autonomous-preapproved one) complete a load-on-demand. It is **PIN-gated**
+(the dashboard PIN), so the agent — which holds only the shared Bearer token and never
+the PIN — structurally cannot reach it to self-approve. The operator supplies the
+server-minted nonce (which the agent surfaced) plus the PIN, and the change completes
+via the existing `{kind:'operator-approved'}` path. This is the concrete completion of
+the C4 "agent can't approve its own change" invariant the dynamic-MCP spec required.
+
+Still dark by default. NOT yet operator-complete: the Mobile-Complete "tap to approve"
+surface (so the operator taps rather than POSTs) is the explicit next increment.
+
+## What to Tell Your User
+
+If a user asks "how do I approve the agent loading a tool mid-chat?" — once the
+feature is enabled, the agent surfaces the request and the user approves it with their
+dashboard PIN; the agent cannot approve on its own behalf.
+
+## Summary of New Capabilities
+
+- `POST /mcp/approve` — operator-PIN-authenticated approval of a non-preapproved MCP
+  load/offload (dark; 503 when the feature is off).
+
+## Evidence
+
+14 integration tests over the real createRoutes pipeline, including the full round
+trip (agent `needs-approval` → server-minted nonce → operator PIN + nonce → `applied`),
+plus the C4 cases (no PIN ⇒ 403, wrong PIN ⇒ 403, wrong/expired nonce ⇒ 403
+needs-approval). Backed by the converged+approved DYNAMIC-MCP-LIFECYCLE-SPEC, which
+named this route as the follow-up. tsc clean.
