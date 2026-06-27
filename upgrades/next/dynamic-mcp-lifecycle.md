@@ -1,0 +1,61 @@
+<!-- bump: minor -->
+<!-- audience: agent-only -->
+<!-- maturity: experimental -->
+
+## What Changed
+
+Added the **Dynamic MCP Lifecycle** (⚗️ experimental, ships DARK) — the on-demand
+loader for heavy MCP servers. MCP servers (Playwright's Chromium, Electron bridges)
+are heavy and mostly idle, and stacked idle copies were a dominant share of the
+process footprint behind the 2026-06-26 resource panic. This lets a claude-code
+session launch with a LEAN MCP set and load a heavy server only when it's needed
+(a `claude --resume` restart preserves the conversation), then offload it when idle.
+
+This ship lands the foundation + the load-on-demand path, all behind the explicit
+`sessions.dynamicMcp.enabled` flag (off by default — every `/mcp/*` route 503s when
+dark, and `buildSessionMcpFlags` returns a byte-identical launch). The design was
+converged via a two-reviewer adversarial pass (DYNAMIC-MCP-LIFECYCLE-SPEC), which
+caught and designed out two CRITICAL bugs before any code: the offload-leak (killing
+a session does NOT cascade to its MCP children — they reparent to launchd, so a naive
+offload would leak a Chromium) and an approval self-certification hole (the agent
+could have rubber-stamped its own change over the shared Bearer token).
+
+Tracked follow-ups before the dev-gate flip: the idle-offload background sweep + real
+process-cleanup, the operator-approval route (approve a load from a non-autonomous
+chat), and the live-user-channel proof (driving it through Telegram as the operator).
+
+## What to Tell Your User
+
+If a user asks "can you free up resources from idle browser/MCP servers?" or "why did
+my session restart to add a tool?", the agent now has a real mechanism for it
+(experimental, off by default): start a session lean, load a heavy tool only when
+needed, drop it when idle. During an autonomous run the agent loads on demand and
+carries on; otherwise it asks the operator before a restart, and it can never approve
+its own change.
+
+## Summary of New Capabilities
+
+- `GET /mcp/session/:topicId` — what MCP servers a topic's session is running with.
+- `POST /mcp/load` / `POST /mcp/offload` — request an on-demand load/offload
+  (Bearer-gated; authorization requires a live preapproval or an operator yes — the
+  agent cannot self-approve).
+- A lean baseline MCP set at spawn (`sessions.dynamicMcp.keepWarm`), fail-safe to the
+  full `.mcp.json`.
+- All dark by default (`sessions.dynamicMcp.enabled`); a no-op on single-server /
+  no-`.mcp.json` agents.
+
+## Evidence
+
+- **Spec:** `docs/specs/DYNAMIC-MCP-LIFECYCLE-SPEC.md` — converged (2 adversarial
+  reviewers, folded 2 CRITICAL + 9 MAJOR + 4 MINOR findings) + approved.
+- **Tests (three tiers, 98 across 10 files):** unit cores (baseline/mutation/idle
+  decision, driver orchestration incl. two-phase rollback + capture-then-reap + the
+  verified-auth gate, nonce store, loaded-set store, composition service,
+  buildSessionMcpFlags); integration (the `/mcp/*` routes over the real createRoutes
+  pipeline incl. the C4 body-nonce-rejection); e2e (the routes alive on the real
+  AgentServer boot — 200 enabled, 401 unauth, 503 disabled).
+- **Dark-safety:** a dedicated test asserts the spawn path is byte-identical when the
+  feature is off; the service construction is fail-safe (a throw ⇒ null ⇒ routes 503),
+  so a wiring fault can never break server boot.
+- **Awareness/migration:** the "Dynamic MCP Lifecycle" CLAUDE.md section ships to new
+  agents (generateClaudeMd) and existing agents (migrateClaudeMd, idempotent), tested.
