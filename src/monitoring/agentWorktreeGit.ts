@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import { classifyPorcelain } from '../core/worktreeDirtyCheck.js';
 import type { AgentWorktreeReaperDeps, WorktreeInfo } from './AgentWorktreeReaper.js';
 
@@ -88,6 +89,54 @@ export function isBranchMerged(readGit: ReadGit, repo: string, baseRef: string, 
   return lines.every((l) => l.startsWith('-'));
 }
 
+/** Run `gh` and return stdout, or null on ANY failure (gh missing, not authed,
+ *  not a GitHub repo, timeout). Null is the conservative signal → caller keeps. */
+export type RunGh = (args: string[], cwd: string) => string | null;
+
+const defaultRunGh: RunGh = (args, cwd) => {
+  try {
+    // Funnel through withSyncOp so the in-flight marker sees this blocking spawn
+    // (event-loop-resilience spec): the reaper runs in-process on a timer, and a
+    // bounded gh call must not read as a "stuck" event loop to the watchdogs.
+    return withSyncOp(() => execFileSync('gh', args, { cwd, encoding: 'utf-8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 }));
+  } catch {
+    return null; // @silent-fallback-ok — gh unavailable ⇒ no PR signal ⇒ KEEP (conservative)
+  }
+};
+
+/**
+ * Fetch a map of `headRefName → headRefOid` for MERGED PRs, to detect
+ * MULTI-COMMIT squash-merges that `git cherry` (patch-id) cannot — the
+ * disk-accumulation root cause: a multi-commit branch squash-merged into one
+ * commit on main has different commit SHAs/patch-ids, so cherry reports it
+ * UNMERGED and the worktree is kept forever. A merged PR is the authoritative
+ * "the content is in main" signal; pairing it with an EXACT head-OID match (in
+ * the caller) ensures a branch with commits ADDED AFTER the merge is still kept.
+ *
+ * ONE `gh` call per sweep (bounded `--limit`); fail-safe to an EMPTY map on any
+ * error so the reaper degrades to exactly today's cherry-only behavior (KEEP).
+ */
+export function fetchMergedPrHeadOids(repo: string, opts?: { runGh?: RunGh; limit?: number }): Map<string, string> {
+  const runGh = opts?.runGh ?? defaultRunGh;
+  const limit = opts?.limit ?? 500;
+  const map = new Map<string, string>();
+  const out = runGh(['pr', 'list', '--state', 'merged', '--json', 'headRefName,headRefOid', '--limit', String(limit)], repo);
+  if (!out) return map; // conservative: no signal
+  let arr: unknown;
+  try { arr = JSON.parse(out); } catch { return map; }
+  if (!Array.isArray(arr)) return map;
+  for (const row of arr) {
+    if (!row || typeof row !== 'object') continue;
+    const name = (row as { headRefName?: unknown }).headRefName;
+    const oid = (row as { headRefOid?: unknown }).headRefOid;
+    if (typeof name === 'string' && typeof oid === 'string' && name && oid) {
+      // Latest merged PR for a (reused) branch name wins — gh returns newest first.
+      if (!map.has(name)) map.set(name, oid);
+    }
+  }
+  return map;
+}
+
 /**
  * Build the production git/fs-backed deps for the AgentWorktreeReaper.
  * `worktreesDir` bounds which `git worktree list` entries are considered (the
@@ -101,10 +150,18 @@ export function makeAgentWorktreeReaperDeps(opts: {
   /** Override the process-cwd scanner (testing). Returns the set of worktree
    *  ROOT paths that currently have a live process cwd inside them. */
   cwdRoots?: () => Set<string>;
+  /** When true (default), `isMerged` falls back to GitHub merged-PR state to
+   *  detect multi-commit squash-merges that `git cherry` cannot. Fail-safe:
+   *  any gh error degrades to cherry-only (KEEP). Set false to disable the
+   *  network call entirely (the legacy cherry-only behavior). */
+  githubMergeCheck?: boolean;
+  /** Override the merged-PR map source (testing). Returns headRefName→headRefOid. */
+  mergedPrMap?: () => Map<string, string>;
   now?: () => number;
 }): AgentWorktreeReaperDeps {
   const readGit = opts.readGit ?? defaultReadGit;
   const repo = opts.instarRepo;
+  const githubMergeCheck = opts.githubMergeCheck ?? true;
   const worktreesReal = (() => { try { return fs.realpathSync(opts.worktreesDir); } catch { return opts.worktreesDir; } })();
   const within = (p: string): boolean => {
     const real = (() => { try { return fs.realpathSync(p); } catch { return p; } })();
@@ -142,6 +199,19 @@ export function makeAgentWorktreeReaperDeps(opts: {
     const t = Date.now();
     if (!cwdCache || t - cwdCacheAt > 10_000) { cwdCache = cwdRootsFn(); cwdCacheAt = t; }
     return cwdCache;
+  };
+
+  // Merged-PR map (headRefName→headRefOid), cached for a short TTL so a single
+  // reap pass makes ONE `gh` call, not one per worktree. The map only fixes the
+  // multi-commit-squash blind spot in `git cherry`; it is consulted lazily (only
+  // when cherry says unmerged) so a fully cherry-detectable repo never calls gh.
+  const mergedPrMapFn = opts.mergedPrMap ?? (() => fetchMergedPrHeadOids(repo));
+  let prMapCache: Map<string, string> | null = null;
+  let prMapCacheAt = 0;
+  const mergedPrMapCached = (): Map<string, string> => {
+    const t = Date.now();
+    if (!prMapCache || t - prMapCacheAt > 60_000) { prMapCache = mergedPrMapFn(); prMapCacheAt = t; }
+    return prMapCache;
   };
 
   return {
@@ -189,7 +259,18 @@ export function makeAgentWorktreeReaperDeps(opts: {
     isMerged: (info: WorktreeInfo): boolean => {
       const base = resolveBaseRef(readGit, repo);
       if (!base || !info.headSha) return false;
-      return isBranchMerged(readGit, repo, base, info.headSha);
+      // 1) Patch-id equivalence (fast, offline): fast-forward / merge / rebase /
+      //    single-commit-squash. Never false-positives "merged".
+      if (isBranchMerged(readGit, repo, base, info.headSha)) return true;
+      // 2) Multi-commit squash-merge: `git cherry` cannot see it (SHAs differ).
+      //    Consult GitHub merged-PR state — but require an EXACT head-OID match so
+      //    a branch with commits ADDED AFTER the merge is still KEPT (those would
+      //    be unmerged work). Fail-safe: an empty/missing map ⇒ KEEP.
+      if (githubMergeCheck && info.branch) {
+        const oid = mergedPrMapCached().get(info.branch);
+        if (oid && oid === info.headSha) return true;
+      }
+      return false;
     },
 
     isInUse: (p: string): boolean => {

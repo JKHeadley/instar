@@ -12,7 +12,7 @@ import {
   type AgentWorktreeReaperDeps,
   type WorktreeInfo,
 } from '../../src/monitoring/AgentWorktreeReaper.js';
-import { isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, REAPER_RESIDUE_DENYLIST, type ReadGit } from '../../src/monitoring/agentWorktreeGit.js';
+import { isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, fetchMergedPrHeadOids, REAPER_RESIDUE_DENYLIST, type ReadGit, type RunGh } from '../../src/monitoring/agentWorktreeGit.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -128,6 +128,99 @@ describe('isBranchMerged (git cherry) — conservative, never false-positive', (
   it('NOT merged (KEEP) when cherry cannot be computed (git throws)', () => {
     const throwing: ReadGit = () => { throw new Error('no such ref'); };
     expect(isBranchMerged(throwing, '/repo', 'main', 'sha')).toBe(false);
+  });
+});
+
+describe('fetchMergedPrHeadOids — gh-backed multi-commit-squash detection', () => {
+  const ghOut = (rows: Array<{ headRefName: string; headRefOid: string }>): RunGh => () => JSON.stringify(rows);
+
+  it('parses gh merged-PR JSON into a headRefName→headRefOid map', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: ghOut([
+      { headRefName: 'echo/feat-a', headRefOid: 'oidA' },
+      { headRefName: 'echo/feat-b', headRefOid: 'oidB' },
+    ]) });
+    expect(m.get('echo/feat-a')).toBe('oidA');
+    expect(m.get('echo/feat-b')).toBe('oidB');
+    expect(m.size).toBe(2);
+  });
+
+  it('keeps the FIRST (newest) entry when a branch name is reused', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: ghOut([
+      { headRefName: 'echo/reused', headRefOid: 'newest' },
+      { headRefName: 'echo/reused', headRefOid: 'older' },
+    ]) });
+    expect(m.get('echo/reused')).toBe('newest');
+  });
+
+  it('fail-safe to EMPTY map when gh is unavailable (null) — conservative KEEP', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: () => null });
+    expect(m.size).toBe(0);
+  });
+
+  it('fail-safe to EMPTY map on malformed JSON', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: () => 'not json' });
+    expect(m.size).toBe(0);
+  });
+
+  it('ignores rows missing name or oid', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: () => JSON.stringify([
+      { headRefName: 'ok', headRefOid: 'oidOk' },
+      { headRefName: '', headRefOid: 'x' },
+      { headRefOid: 'noName' },
+      { headRefName: 'noOid' },
+    ]) });
+    expect(m.get('ok')).toBe('oidOk');
+    expect(m.size).toBe(1);
+  });
+});
+
+describe('makeAgentWorktreeReaperDeps.isMerged — multi-commit squash via PR map', () => {
+  // readGit: rev-parse resolves a base; cherry reports UNMERGED (a "+" commit),
+  // which is exactly the multi-commit-squash blind spot.
+  const cherryUnmergedGit: ReadGit = (args) => {
+    if (args.includes('rev-parse')) return ''; // base resolves
+    if (args.includes('cherry')) return '+ aaa\n+ bbb'; // looks unmerged
+    throw new Error('unexpected git call: ' + args.join(' '));
+  };
+  const wt = (branch: string, headSha: string) => ({ path: '/x', branch, headSha });
+
+  it('MERGED when cherry says unmerged but a merged PR head-OID matches exactly', () => {
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: true,
+      mergedPrMap: () => new Map([['echo/feat', 'SQUASHED_OID']]),
+    });
+    expect(deps.isMerged(wt('echo/feat', 'SQUASHED_OID'))).toBe(true);
+  });
+
+  it('KEEP when the branch advanced past the merged PR (head-OID mismatch = unmerged work)', () => {
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: true,
+      mergedPrMap: () => new Map([['echo/feat', 'MERGED_OID']]),
+    });
+    // worktree HEAD is a NEW commit added after the merge → must be KEPT
+    expect(deps.isMerged(wt('echo/feat', 'NEWER_OID_WITH_UNMERGED_WORK'))).toBe(false);
+  });
+
+  it('KEEP when no merged PR exists for the branch', () => {
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: true,
+      mergedPrMap: () => new Map(),
+    });
+    expect(deps.isMerged(wt('echo/feat', 'anySha'))).toBe(false);
+  });
+
+  it('KEEP (legacy cherry-only) when githubMergeCheck is disabled — never calls the PR map', () => {
+    const prMap = vi.fn(() => new Map([['echo/feat', 'SQUASHED_OID']]));
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: false,
+      mergedPrMap: prMap,
+    });
+    expect(deps.isMerged(wt('echo/feat', 'SQUASHED_OID'))).toBe(false);
+    expect(prMap).not.toHaveBeenCalled();
   });
 });
 
