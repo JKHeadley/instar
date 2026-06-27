@@ -38,8 +38,9 @@ fail-safe (a throwing scanner never crashes a sample).
 ## What to Tell Your User
 
 If a user asks "how many processes am I running?" or "is the footprint climbing toward
-another crash?" → `GET /resources/footprint`. It's the early-warning measurement for the
-process accumulation that caused the panic. It only measures — it never kills anything.
+another crash?", the agent can now answer from a live per-machine process count with a
+trend. It's the early-warning measurement for the process accumulation that caused the
+panic. It only measures — it never kills anything.
 
 ## Summary of New Capabilities
 
