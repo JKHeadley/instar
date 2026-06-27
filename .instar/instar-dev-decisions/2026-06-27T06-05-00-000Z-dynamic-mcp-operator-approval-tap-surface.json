@@ -1,0 +1,14 @@
+{
+  "ts": "2026-06-27T06:05:00.000Z",
+  "slug": "dynamic-mcp-operator-approval-tap-surface",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": ["new capability: new routes (router.post/get '/mcp/approval-link', '/mcp/approve/:requestId' added)"],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 120,
+  "causalAutopsy": { "origin": "new-code" },
+  "verdict": "pass",
+  "notes": "Phone-friendly tap flow over the existing PIN-gated approval. Opaque requestId keeps the server-minted nonce server-side (Secret-Drop posture); the GET page never renders the nonce; PIN-gated submit is single-use + TTL-bounded via PendingMcpApprovalStore. The bearer-only agent cannot satisfy the PIN gate, so approval authority stays structurally the operator's (C4 invariant preserved)."
+}
