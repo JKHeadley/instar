@@ -145,6 +145,43 @@ describe('Config', () => {
       SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:frameworkDefaultModels-absent' });
     });
 
+    it('preserves sessions.dynamicMcp from the config file (the exact-gap test — feature un-enablable without it)', () => {
+      // THIRD instance of the load-path gap (componentFrameworks, frameworkDefaultModels,
+      // now dynamicMcp). #1293 added the feature + routes + SessionManager.buildSessionMcpFlags
+      // (all read config.sessions.dynamicMcp), but the loader never copied it from the FILE —
+      // so setting `sessions.dynamicMcp.enabled: true` did nothing (routes 503'd, sessions never
+      // trimmed). A FILE-loaded config MUST carry dynamicMcp or the feature can't be turned on.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const dynamicMcp = { enabled: true, keepWarm: ['threadline'] };
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux', dynamicMcp },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.dynamicMcp).toEqual(dynamicMcp);
+      expect(config.sessions.dynamicMcp?.enabled).toBe(true);
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:dynamicMcp' });
+    });
+
+    it('omits dynamicMcp when absent from the file (no phantom field)', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux' },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.dynamicMcp).toBeUndefined();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:dynamicMcp-absent' });
+    });
+
     it('respects sessions.tmuxPath from config.json instead of auto-detecting', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
       const stateDir = path.join(tmpDir, '.instar');

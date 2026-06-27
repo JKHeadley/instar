@@ -877,6 +877,21 @@ export function loadConfig(projectDir?: string): InstarConfig {
     typeof fileConfig.sessions.frameworkDefaultModels === 'object'
       ? { frameworkDefaultModels: fileConfig.sessions.frameworkDefaultModels }
       : {}),
+    // dynamicMcp (DYNAMIC-MCP-LIFECYCLE-SPEC). THE SAME LOAD-PATH GAP as
+    // componentFrameworks/frameworkDefaultModels above (THIRD instance — live-test
+    // 2026-06-27): #1293 added the feature, the `/mcp/*` routes (which read
+    // `options.config.sessions.dynamicMcp.enabled`), and SessionManager.buildSessionMcpFlags
+    // (which reads `config.sessions.dynamicMcp`) — but the loader never copied the field
+    // from the config FILE here. So the feature was UN-ENABLABLE on every deployed agent:
+    // setting `sessions.dynamicMcp.enabled: true` did nothing (routes 503'd, sessions never
+    // trimmed). The e2e/integration tests build config objects in-memory, bypassing
+    // loadConfig, so the file-load gap never surfaced until a real config-file enable was
+    // driven live. Pass it through (DynamicMcpService.enabled()/buildSessionMcpFlags still
+    // gate on `.enabled === true`, and the service construction is fail-safe).
+    ...(fileConfig.sessions?.dynamicMcp &&
+    typeof fileConfig.sessions.dynamicMcp === 'object'
+      ? { dynamicMcp: fileConfig.sessions.dynamicMcp }
+      : {}),
     // pi-cli subscription-guard override (PI-HARNESS-INTEGRATION-SPEC §4.3).
     // Config surface: top-level `piCli.allowAnthropicProviders` — file-config
     // only, deliberately NOT an env var (no per-boot bypass surface).
