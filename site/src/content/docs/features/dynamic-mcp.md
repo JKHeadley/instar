@@ -38,6 +38,17 @@ the full config, so a session is never stranded without its tools.
 - **`McpApprovalNonceStore`** issues the single-use approval codes described below.
   `McpApprovalNonceStore` binds each nonce to one exact change and expires it.
 
+## Automatic idle-offload
+
+Beyond the explicit "I'm done with this tool" drop, **`McpIdleOffloadSweep`** is a
+background sweep that offloads a heavy server once it has been provably idle under a
+live session past a window (about 30 minutes by default). `McpIdleOffloadSweep` keeps
+a per-process idle clock that resets the moment a session is — or might be — using
+its tools, so it never yanks a tool from a busy session, and it routes every offload
+through the same authorization-gated path an explicit request uses. It ships off and
+dry-run-first (it only logs "would offload" until deliberately enabled via
+`sessions.dynamicMcp.sweep`).
+
 ## Authorization — the agent cannot approve its own change
 
 A load or offload completes only when the topic has a **live preapproval** (an active
