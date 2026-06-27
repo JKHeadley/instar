@@ -18,6 +18,9 @@ import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { DynamicMcpService } from '../core/DynamicMcpService.js';
 import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
+import { captureHeavyMcpPidsForSession } from '../core/mcpPidCapture.js';
+import { makeMcpProcessReaperDeps } from '../monitoring/mcpProcessReaperDeps.js';
+import { looksActivelyWorking } from '../monitoring/sentinelWiring.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
@@ -2107,16 +2110,26 @@ export class AgentServer {
     // Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — build the composition
     // service with the host's REAL primitives. Dark by default (the explicit
     // sessions.dynamicMcp.enabled flag; flips to the dev-gate once the full
-    // load-on-demand + offload path is complete). Fail-safe: a construction error
-    // ⇒ null ⇒ the /mcp/* routes 503. v1 wires the LOAD path live (restart via
-    // SessionRefresh, isPreapproved via the autonomous registry); OFFLOAD ships
-    // conservatively inert (isMidToolUse ⇒ null aborts; captureHeavyPids ⇒ []) until
-    // the paneTail mid-tool-use probe + reaper pid-capture land in a follow-up.
+    // load-on-demand + offload path is complete + the live-as-operator proof
+    // passes). Fail-safe: a construction error ⇒ null ⇒ the /mcp/* routes 503.
+    // The FULL lifecycle is wired: load (restart via SessionRefresh, isPreapproved
+    // via the autonomous registry) AND offload (real heavy-child PID capture via the
+    // reaper deps + reap-after-restart; mid-tool-use via the live pane frame).
     const dynamicMcpService = ((): import('../core/DynamicMcpService.js').DynamicMcpService | null => {
       try {
         const tg = options.telegram ?? null;
         const sr = options.sessionRefresh ?? null;
         const stateDir = options.config.stateDir;
+        const sm = options.sessionManager;
+        const framework = options.config.sessions?.framework ?? 'claude-code';
+        // Reaper deps (real ps-based MCP-process listing + tmux pane map + kill),
+        // built once and reused for the offload capture-then-reap (C1).
+        const reaperDeps = makeMcpProcessReaperDeps({
+          sessionManager: sm,
+          tmuxPath: options.config.sessions?.tmuxPath ?? 'tmux',
+          auditPath: stateDir ? path.join(stateDir, '..', 'logs', 'mcp-reaper-audit.jsonl') : '/dev/null',
+        });
+        const MAX_HOPS = 12;
         return new DynamicMcpService({
           projectDir: options.config.projectDir,
           enabled: () => options.config.sessions?.dynamicMcp?.enabled === true,
@@ -2131,9 +2144,31 @@ export class AgentServer {
             try { return !!stateDir && activeAutonomousJobs(stateDir).some((j) => String(j.topic) === String(topicId)); }
             catch { return false; } // fail-closed
           },
-          captureHeavyPids: () => [],   // v1: real reaper pid-capture is a follow-up
-          reapPids: () => {},
-          isMidToolUse: () => null,     // v1: null ⇒ offload aborts (fail-closed) until paneTail wired
+          captureHeavyPids: (topicId: number, server: string) => {
+            try {
+              const sessionName = tg?.getSessionForTopic(topicId) ?? null;
+              if (!sessionName) return [];
+              return captureHeavyMcpPidsForSession({
+                sessionName, server,
+                procs: reaperDeps.listMcpProcesses(),
+                tree: reaperDeps.getProcessTree(),
+                paneMap: reaperDeps.getTmuxPaneMap(),
+                maxHops: MAX_HOPS,
+              });
+            } catch { return []; } // fail-safe: capture nothing rather than risk a wrong kill
+          },
+          reapPids: (pids: number[]) => {
+            for (const pid of pids) { try { reaperDeps.killProcess(pid); } catch { /* best-effort reclaim */ } }
+          },
+          isMidToolUse: (topicId: number) => {
+            try {
+              const sessionName = tg?.getSessionForTopic(topicId) ?? null;
+              if (!sessionName) return null;            // can't resolve ⇒ null ⇒ offload aborts (fail-closed)
+              const frame = sm.captureOutput(sessionName, 40);
+              if (frame == null) return null;           // can't capture ⇒ fail-closed
+              return looksActivelyWorking(frame, framework);
+            } catch { return null; }
+          },
         });
       } catch { return null; }
     })();
