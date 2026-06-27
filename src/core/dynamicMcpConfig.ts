@@ -63,6 +63,18 @@ export interface DynamicMcpConfig {
    * is dynamic. Light stdio bridges (threadline/instar) are cheap and stay.
    */
   keepWarm?: string[];
+  /**
+   * The automatic idle-offload sweep (McpIdleOffloadSweep). Off by default; runs
+   * ONLY when `enabled` AND `sweep.enabled` are both true. `dryRun` defaults true
+   * (logs "would offload" without acting). `idleOffloadMs` is the continuous-idle
+   * window before a heavy server becomes offload-eligible; `intervalMs` the tick.
+   */
+  sweep?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    idleOffloadMs?: number;
+    intervalMs?: number;
+  };
 }
 
 /**
