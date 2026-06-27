@@ -192,3 +192,24 @@ When a session goes quiet at its prompt, a background loop decides whether it st
 The tail-gating itself lives in one shared helper, `paneTail` (`liveTail` / `stripLineLead` / `wasGlyphLed`), so "what counts as the live tail" has a single definition rather than a copy per consumer — the same helper `StuckSignatureClassifier` uses for its honest turn-receipts. The capture is widened to clear Claude Code's input-box chrome (which renders well below the error line), so a genuine error can't be pushed off-screen.
 
 The classifier's signal feeds the **existing** recovery actuator — it emits `apiErrorAtIdle`, which `RateLimitSentinel` turns into a non-destructive backoff → nudge → verify → escalate loop (it never restarts a session on its own; the worst case of a wrong signal is one wasted nudge the verify step proves was a no-op). Every classify decision (fired vs suppressed) is recorded once per idle episode, so a wave of suppressions on genuine errors is observable rather than a silent under-fire. This keeps the idle-error path consistent with the broader [Signal vs. Authority](/foundations/north-star/) posture: the brittle detector signals, the full-context actuator decides.
+
+## Process footprint (the climb measurement)
+
+CPU and memory sampling tells you how *hard* the machine is working, but not how *many*
+processes are running — and it was the slow climb of the process count (several agent
+stacks plus their heavy, mostly-idle MCP servers: a whole Chromium for Playwright, an
+Electron) that went unwatched until the host hit a kernel limit and panicked on
+2026-06-26. The `ProcessFootprintMonitor` adds exactly that missing measurement. On an
+interval it counts the agent-relevant processes on the machine and classifies them —
+agent CLIs, MCP servers (matched by the same allow-listed signatures the MCP cleanup
+sweep uses), and other node — keeping a bounded rolling window so a TREND (rising /
+stable / falling) is visible.
+
+It is **observe-only**: it never kills, throttles, or gates anything (reclaiming
+processes is the reapers' job). Read it at `GET /resources/footprint` → `{ enabled,
+latest: { total, byKind, rssBytes }, trend, overThreshold, samples }`. It ships dark
+(rides the developmentAgent gate, so it dogfoods on a dev agent before any fleet
+rollout) and every reading path fails safe (a failed scan keeps the last sample rather
+than crashing). An optional threshold heads-up exists but is **off by default** —
+measure first. It registers in the guard posture, so `GET /guards` shows whether it is
+on.
