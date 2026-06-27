@@ -16,6 +16,8 @@ import { createHash, createHmac, timingSafeEqual, createPrivateKey } from 'node:
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { DynamicMcpService } from '../core/DynamicMcpService.js';
+import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
@@ -2102,12 +2104,47 @@ export class AgentServer {
       this.escalationHints = null;
     }
 
+    // Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — build the composition
+    // service with the host's REAL primitives. Dark by default (the explicit
+    // sessions.dynamicMcp.enabled flag; flips to the dev-gate once the full
+    // load-on-demand + offload path is complete). Fail-safe: a construction error
+    // ⇒ null ⇒ the /mcp/* routes 503. v1 wires the LOAD path live (restart via
+    // SessionRefresh, isPreapproved via the autonomous registry); OFFLOAD ships
+    // conservatively inert (isMidToolUse ⇒ null aborts; captureHeavyPids ⇒ []) until
+    // the paneTail mid-tool-use probe + reaper pid-capture land in a follow-up.
+    const dynamicMcpService = ((): import('../core/DynamicMcpService.js').DynamicMcpService | null => {
+      try {
+        const tg = options.telegram ?? null;
+        const sr = options.sessionRefresh ?? null;
+        const stateDir = options.config.stateDir;
+        return new DynamicMcpService({
+          projectDir: options.config.projectDir,
+          enabled: () => options.config.sessions?.dynamicMcp?.enabled === true,
+          config: () => options.config.sessions?.dynamicMcp,
+          restart: async (topicId: number) => {
+            const sessionName = tg?.getSessionForTopic(topicId) ?? null;
+            if (!sessionName || !sr) return { ok: false, code: 'not_telegram_bound' };
+            const r = await sr.refreshSession({ sessionName, reason: 'dynamic-mcp change' });
+            return r.ok ? { ok: true } : { ok: false, code: r.code };
+          },
+          isPreapproved: (topicId: number) => {
+            try { return !!stateDir && activeAutonomousJobs(stateDir).some((j) => String(j.topic) === String(topicId)); }
+            catch { return false; } // fail-closed
+          },
+          captureHeavyPids: () => [],   // v1: real reaper pid-capture is a follow-up
+          reapPids: () => {},
+          isMidToolUse: () => null,     // v1: null ⇒ offload aborts (fail-closed) until paneTail wired
+        });
+      } catch { return null; }
+    })();
+
     // Routes
     const routeCtx = {
       config: options.config,
       sessionManager: options.sessionManager,
       state: options.state,
       scheduler: options.scheduler ?? null,
+      dynamicMcpService,
       telegram: options.telegram ?? null,
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,
