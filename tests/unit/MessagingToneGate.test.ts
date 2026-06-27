@@ -566,4 +566,84 @@ describe('MessagingToneGate', () => {
       expect(result.failedClosed).toBe(true);
     });
   });
+
+  // B5 link carve-out: the prompt must teach the model that an `api-endpoint`
+  // signal fires on EVERY URL, and that a click/open destination (private-view
+  // link, tunnel URL, published/Telegraph page, dashboard, signed-token link)
+  // PASSES while only a call-target (curl/POST an endpoint) blocks. The LLM is
+  // mocked in unit tests, so the deterministic guarantee we lock here is that
+  // the prompt carries the both-sides carve-out + worked examples — the regression
+  // that broke real agents was the prompt blocking click-targets under B5.
+  describe('B5 link carve-out (prompt teaches call-vs-open)', () => {
+    async function capturePrompt(): Promise<string> {
+      let captured = '';
+      const provider = mockProvider((p) => {
+        captured = p;
+        return JSON.stringify({ pass: true, issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('Here is the link.', { channel: 'telegram' });
+      return captured;
+    }
+
+    it('B5 instructs judging by call-vs-open intent, not URL shape', async () => {
+      const prompt = await capturePrompt();
+      expect(prompt).toContain('B5_API_ENDPOINT');
+      // The discriminator must be intent, explicitly NOT the host:port/path shape.
+      expect(prompt).toMatch(/call-vs-open/i);
+      expect(prompt).toMatch(/NEVER BY SHAPE|never by the presence of host:port/i);
+    });
+
+    it('B5 explicitly exempts click/open destinations (the false-positive class)', async () => {
+      const prompt = await capturePrompt();
+      // The exact link kinds that broke real agents must be named as OPEN/PASS.
+      expect(prompt).toMatch(/private-view link/i);
+      expect(prompt).toMatch(/trycloudflare/i);
+      expect(prompt).toMatch(/telegraph/i);
+      expect(prompt).toMatch(/dashboard/i);
+      expect(prompt).toMatch(/\?token=/);
+    });
+
+    it('B5 still names a genuine call-target as a BLOCK (under-block guard)', async () => {
+      const prompt = await capturePrompt();
+      // Worked examples must cover BOTH sides of the boundary.
+      expect(prompt).toMatch(/BLOCK:.*curl http/i);
+      expect(prompt).toMatch(/PASS:.*\/view\//i);
+    });
+
+    it('the ALWAYS ALLOWED section names browser-open URLs specifically', async () => {
+      const prompt = await capturePrompt();
+      expect(prompt).toContain('ALWAYS ALLOWED');
+      expect(prompt).toMatch(/OPENS \/ CLICKS \/ VISITS/i);
+      expect(prompt).toMatch(/content destinations, not API calls/i);
+    });
+
+    it('honors the model verdict on both sides (plumbing): view link passes, call-target blocks', async () => {
+      // A click-destination — model passes it.
+      const passing = mockProvider(() =>
+        JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' }),
+      );
+      const passResult = await new MessagingToneGate(passing).review(
+        'Rendered doc: https://abc123.trycloudflare.com/view/k3p9?token=secrettoken',
+        { channel: 'telegram' },
+      );
+      expect(passResult.pass).toBe(true);
+
+      // A genuine API call handed to the user — model blocks it as B5.
+      const blocking = mockProvider(() =>
+        JSON.stringify({
+          pass: false,
+          rule: 'B5_API_ENDPOINT',
+          issue: 'curl endpoint handed to the user to call',
+          suggestion: 'Call it yourself and report the result.',
+        }),
+      );
+      const blockResult = await new MessagingToneGate(blocking).review(
+        'To check, run: curl http://localhost:4042/commitments',
+        { channel: 'telegram' },
+      );
+      expect(blockResult.pass).toBe(false);
+      expect(blockResult.rule).toBe('B5_API_ENDPOINT');
+    });
+  });
 });

@@ -804,7 +804,13 @@ Your decision must be traceable to EXACTLY ONE of the explicit rules below. You 
 - **B2_FILE_PATH** — the \`file-path\` signal is detected AND a concrete path is shown for the user to open/edit. Conceptual references ("the config file") are fine even if a path-shaped token appears. (The legacy \`raw-file-path\` upstream signal, if present, corroborates this one.)
 - **B3_CONFIG_KEY** — the \`config-key\` signal is detected AND the dotted key is presented as something the user must set/edit. Describing the BEHAVIOR a setting controls, without handing the user the key to change, is fine.
 - **B4_COPY_PASTE_CODE** — the \`copy-paste-code\` signal is detected AND the snippet is clearly offered for the user to copy-paste. A short inline code reference inside an explanation is not automatically a block — judge whether the user is being asked to use it.
-- **B5_API_ENDPOINT** — the \`api-endpoint\` signal is detected AND the URL/route is handed to the user to call/open. "The server" / "the endpoint" as nouns, or an internal route mentioned while explaining mechanics, are fine.
+- **B5_API_ENDPOINT** — the \`api-endpoint\` signal is detected AND the URL/route is handed to the user as an API for the USER to CALL themselves — a request they are expected to issue (curl / POST / GET / "hit this endpoint"), or a bare host:port route presented as something to invoke. JUDGE BY INTENT (call-vs-open), NEVER BY SHAPE. The \`api-endpoint\` detector fires on EVERY URL — it cannot tell a call-target from a click-target — so the detected signal ALONE is never a block; you decide from how the URL is being used. DO NOT block a URL the user is meant to OPEN / CLICK / VISIT in a browser: a private-view link (e.g. \`/view/<id>\`, often carrying a \`?token=\`), a Cloudflare tunnel URL (\`*.trycloudflare.com/...\`), a published or Telegraph page, a dashboard link, a download/file link, or any http(s) link shared as a destination to look at. Those are CONTENT the user opens, not an API they call — they PASS even though the signal fired and even though they contain a host, a port, and a path. "The server" / "the endpoint" as nouns, or an internal route mentioned while explaining mechanics, are also fine.
+  WORKED EXAMPLES (the discriminator is call-vs-open, never the presence of host:port/path):
+  - BLOCK: "To check, run: curl http://localhost:4042/commitments" — an API call handed to the user to issue.
+  - BLOCK: "Hit POST /attention to queue it yourself." — a route the user is told to invoke.
+  - PASS: "Here's the rendered doc: https://abc123.trycloudflare.com/view/k3p9?token=…" — a link the user clicks to open.
+  - PASS: "Your dashboard is at http://localhost:4040/dashboard — PIN 123456" — a destination to visit.
+  - PASS: "Published it here: https://telegra.ph/My-Report-06-27" — a page to read.
 - **B6_ENV_VAR** — the \`env-var\` signal is detected AND the variable is presented for the user to set/export. Naming a variable while explaining behavior is fine.
 - **B7_CRON_OR_SLUG** — the \`cron-or-slug\` signal is detected AND a cron expression or an internal slug/tracker id is surfaced to the user as something to use or that they can act on. An internal id leaked into user-facing prose is exactly the kind of thing to block; a slug discussed between agent and user about the work itself may be fine — judge by whether it is actionable/meaningful to the user.
 
@@ -950,7 +956,7 @@ These rules only fire when the producer has explicitly marked the candidate as a
 - Naming an internal subsystem by its role when discussing what it did.
 - Quoting short strings from earlier messages for reference (e.g., discussing why a "test" message leaked).
 - Slash commands that work in chat (/reflect, /help, /build).
-- URLs the user can click to visit.
+- URLs the user OPENS / CLICKS / VISITS in a browser — a private-view link (including one carrying a \`?token=\`), a Cloudflare tunnel URL, a published or Telegraph page, a dashboard link, a download/file link, any http(s) destination shared for the user to look at. These are content destinations, not API calls — NEVER block them under B5 (B5 is only for an endpoint the user is told to CALL themselves).
 
 ## Response format
 

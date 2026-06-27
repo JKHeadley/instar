@@ -56,6 +56,16 @@ describe('GateSignalDetectors — B1–B7 detection (signals, not blocks)', () =
     expect(kinds('POST to /telegram/post-update')).toContain('api-endpoint');
   });
 
+  it('B5 api-endpoint: fires on click/open destinations too (intentionally broad — the authority judges call-vs-open)', () => {
+    // The detector is a brittle SIGNAL, not a verdict: it cannot tell a curl
+    // target from a link-to-open, so it deliberately flags BOTH. The B5 prompt
+    // (MessagingToneGate) is the authority that passes a click-destination and
+    // blocks only a call-target. Documenting that breadth here keeps the
+    // signal-vs-authority split explicit.
+    expect(kinds('Rendered doc: https://abc123.trycloudflare.com/view/k3p9?token=secrettoken')).toContain('api-endpoint');
+    expect(kinds('Open http://localhost:4040/view/abc123')).toContain('api-endpoint');
+  });
+
   it('B6 env-var: detects assignments, $REFs, and process.env', () => {
     expect(kinds('AUTH_TOKEN=abc123')).toContain('env-var');
     expect(kinds('export $INSTAR_AUTH_TOKEN')).toContain('env-var');
