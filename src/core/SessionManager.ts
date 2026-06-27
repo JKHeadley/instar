@@ -63,6 +63,12 @@ const execFileAsync = promisify(execFile);
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import {
+  resolveBaselineServers,
+  resolveSessionMcpServers,
+  filterMcpConfig,
+  type McpJson,
+} from './dynamicMcpConfig.js';
+import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   claudeHeadlessExtraFlags,
@@ -3724,6 +3730,83 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — build the `--mcp-config`
+   * launch flags for a claude-code interactive session, so it launches with a
+   * lean/explicit MCP subset instead of the full `.mcp.json`.
+   *
+   * FAIL-SAFE by construction: the FIRST check is the (currently explicit)
+   * enable flag, so a dark agent returns `[]` (full `.mcp.json`) immediately —
+   * a strict no-op. The whole body is wrapped so ANY error (unreadable config,
+   * write failure, anything) returns `[]` — a session is NEVER stranded without
+   * its tools; the worst case is "the full tool set", never "missing tools".
+   *
+   * Resolution order is the spec's load-bearing gate (resolveSessionMcpServers):
+   * enabled → framework → committed state file → state-unreadable⇒lean baseline
+   * → baseline → full. When it resolves a trimmed set and no committed state file
+   * exists yet, it SEEDS one (so the driver + a later --resume restart know what
+   * is loaded). Until the on-demand load/offload driver lands, this gates behind
+   * the EXPLICIT `dynamicMcp.enabled` flag (NOT the dev-agent gate) so trimming
+   * cannot go live before there is a way to load a heavy server back.
+   */
+  private buildSessionMcpFlags(topicId: number | undefined, framework: string): string[] {
+    try {
+      const cfg = this.config.dynamicMcp;
+      const enabled = cfg?.enabled === true; // explicit-dark until the full path lands
+      if (!enabled) return [];
+      if (framework !== 'claude-code') return [];
+      if (topicId === undefined || topicId === null) return [];
+
+      const mcpJsonPath = path.join(this.config.projectDir, '.mcp.json');
+      let full: McpJson;
+      try { full = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8')) as McpJson; }
+      catch { return []; } // no/unreadable .mcp.json ⇒ nothing to filter ⇒ full
+      const allNames = Object.keys((full && typeof full === 'object' ? full.mcpServers : undefined) ?? {});
+
+      const stateDir = path.join(this.config.projectDir, '.instar', 'state', 'mcp-loaded');
+      const statePath = path.join(stateDir, `${topicId}.json`);
+      let committedStateServers: string[] | null = null;
+      let stateFileUnreadable = false;
+      if (fs.existsSync(statePath)) {
+        try {
+          const st = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+          // Two-phase commit: only a `committed:true` file is authoritative; an
+          // un-committed (in-flight) file is ignored (treated as no state).
+          if (st && st.committed === true && Array.isArray(st.servers)) {
+            committedStateServers = st.servers.filter((s: unknown) => typeof s === 'string' && (s as string).length > 0);
+          }
+        } catch { stateFileUnreadable = true; }
+      }
+
+      const baselineServers = resolveBaselineServers(allNames, cfg);
+      const allowed = resolveSessionMcpServers({
+        enabled, framework, committedStateServers, stateFileUnreadable, baselineServers,
+      });
+      if (allowed === null) return []; // full .mcp.json
+
+      // Seed the committed loaded-set state file from the resolved baseline when
+      // none exists yet — best-effort (a seed failure never blocks the launch).
+      // Skip when the existing file was merely unreadable (never clobber it).
+      if (committedStateServers === null && !stateFileUnreadable) {
+        try {
+          fs.mkdirSync(stateDir, { recursive: true });
+          const tmp = path.join(stateDir, `${topicId}.json.tmp`);
+          fs.writeFileSync(tmp, JSON.stringify({ servers: allowed, committed: true, updatedAt: new Date().toISOString(), reason: 'baseline' }, null, 2));
+          fs.renameSync(tmp, statePath);
+        } catch { /* seeding is best-effort */ }
+      }
+
+      const filtered = filterMcpConfig(full, allowed);
+      const outDir = path.join(this.config.projectDir, '.instar', 'state', 'session-mcp-config');
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, `mcp-${topicId}-${Date.now()}.json`);
+      fs.writeFileSync(outPath, JSON.stringify(filtered, null, 2));
+      return ['--strict-mcp-config', '--mcp-config', outPath];
+    } catch {
+      return []; // @silent-fallback-ok — any failure ⇒ full .mcp.json (never strands a session)
+    }
+  }
+
+  /**
    * Spawn an interactive Claude Code session (no -p prompt — opens at the REPL).
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
@@ -3899,6 +3982,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(effectiveConfigHome ? { configHome: effectiveConfigHome } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
+      // Dynamic MCP Lifecycle (claude-code only): launch with a lean/explicit MCP
+      // subset when resolved. Fail-safe to [] (full .mcp.json) — a no-op while the
+      // feature is dark, and never strands a launch. Ignored by other frameworks.
+      ...(() => { const f = this.buildSessionMcpFlags(options?.telegramTopicId, framework); return f.length > 0 ? { mcpFlags: f } : {}; })(),
       // pi-cli: pin session transcripts into the agent state dir so they are
       // durable + discoverable (PI-HARNESS-INTEGRATION-SPEC §2.2). Ignored by
       // every other framework's builder.

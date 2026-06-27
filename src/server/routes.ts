@@ -637,6 +637,10 @@ export interface RouteContext {
   sessionManager: SessionManager;
   state: StateManager;
   scheduler: JobScheduler | null;
+  /** Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC). Null/disabled ⇒ the
+   *  /mcp/* routes 503. Powers GET /mcp/session/:topicId, POST /mcp/load,
+   *  POST /mcp/offload. */
+  dynamicMcpService?: import('../core/DynamicMcpService.js').DynamicMcpService | null;
   telegram: TelegramAdapter | null;
   relationships: RelationshipManager | null;
   feedback: FeedbackManager | null;
@@ -8226,6 +8230,50 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     res.json(ctx.inboxDrainer.status());
   });
+
+  // ── Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) ──
+  // Load-on-demand / idle-offload of heavy MCP servers. Bearer-gated; the routes
+  // 503 when the service is absent/disabled (dark by default). The agent-facing
+  // load/offload routes ALWAYS act as {kind:'agent'} — they NEVER honor a
+  // caller-supplied nonce, because the agent receives the nonce in a needs-approval
+  // response and could otherwise self-approve over the shared Bearer (C4). The
+  // operator-authenticated approval route (PIN/sentinel-gated nonce consume) is a
+  // tracked follow-up; until then a non-preapproved change returns needs-approval
+  // and performs no restart.
+  const dynMcpEnabled = (): boolean => {
+    const svc = ctx.dynamicMcpService;
+    return !!svc && svc.enabled();
+  };
+
+  router.get('/mcp/session/:topicId', (req, res) => {
+    if (!dynMcpEnabled()) { res.status(503).json({ error: 'dynamic-mcp disabled' }); return; }
+    const topicId = Number(req.params.topicId);
+    if (!Number.isFinite(topicId)) { res.status(400).json({ error: 'invalid topicId' }); return; }
+    res.json({ ok: true, ...ctx.dynamicMcpService!.getSessionState(topicId) });
+  });
+
+  const handleMcpChange = (op: 'load' | 'offload') => async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+    if (!dynMcpEnabled()) { res.status(503).json({ error: 'dynamic-mcp disabled' }); return; }
+    const body = (req.body ?? {}) as { topicId?: unknown; server?: unknown };
+    const topicId = Number(body.topicId);
+    const server = typeof body.server === 'string' ? body.server.trim() : '';
+    if (!Number.isFinite(topicId) || !server) { res.status(400).json({ error: 'topicId (number) and server (string) are required' }); return; }
+    // ALWAYS {kind:'agent'} — never trust a nonce from the Bearer caller (C4).
+    const svc = ctx.dynamicMcpService!;
+    const result = op === 'load'
+      ? await svc.requestLoad(topicId, server, { kind: 'agent' })
+      : await svc.requestOffload(topicId, server, { kind: 'agent' });
+    const httpStatus =
+      result.status === 'applied' || result.status === 'no-op' ? 200
+        : result.status === 'needs-approval' ? 202
+          : result.status === 'aborted' ? 409
+            : result.status === 'unsupported-unbound' ? 409
+              : 409; // restart-failed
+    res.status(httpStatus).json({ ok: result.status === 'applied' || result.status === 'no-op', ...result });
+  };
+
+  router.post('/mcp/load', (req, res) => { void handleMcpChange('load')(req, res); });
+  router.post('/mcp/offload', (req, res) => { void handleMcpChange('offload')(req, res); });
 
   // ── Feedback-factory processing (feedback-factory-migration §191) ──
   // Wires the already-parity'd processUnprocessed clustering pass into a real

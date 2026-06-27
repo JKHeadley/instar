@@ -16,6 +16,14 @@ import { createHash, createHmac, timingSafeEqual, createPrivateKey } from 'node:
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { DynamicMcpService } from '../core/DynamicMcpService.js';
+import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
+import { captureHeavyMcpPidsForSession, MCP_SERVER_NAME_TO_SIGNATURE } from '../core/mcpPidCapture.js';
+import { makeMcpProcessReaperDeps } from '../monitoring/mcpProcessReaperDeps.js';
+import { looksActivelyWorking } from '../monitoring/sentinelWiring.js';
+import { resolveOwningSession } from '../monitoring/McpProcessReaper.js';
+import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
+import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
@@ -281,6 +289,8 @@ export class AgentServer {
   // WS5.2 Account Follow-Me — delivered-mandate consumer (seam #1): drives enroll-start for
   // operator-approved+delivered mandates so a tapped Approve actually produces a login.
   private followMeConsumerTimer: ReturnType<typeof setInterval> | null = null;
+  /** Dynamic MCP idle-offload sweep timer (dark + dryRun-first; cleared on stop). */
+  private mcpIdleOffloadSweepTimer: ReturnType<typeof setInterval> | null = null;
   private followMeConsumerRunning = false;
   private resourceSampler: ResourceSampler | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
@@ -2102,12 +2112,136 @@ export class AgentServer {
       this.escalationHints = null;
     }
 
+    // Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — build the composition
+    // service with the host's REAL primitives. Dark by default (the explicit
+    // sessions.dynamicMcp.enabled flag; flips to the dev-gate once the full
+    // load-on-demand + offload path is complete + the live-as-operator proof
+    // passes). Fail-safe: a construction error ⇒ null ⇒ the /mcp/* routes 503.
+    // The FULL lifecycle is wired: load (restart via SessionRefresh, isPreapproved
+    // via the autonomous registry) AND offload (real heavy-child PID capture via the
+    // reaper deps + reap-after-restart; mid-tool-use via the live pane frame).
+    const dynamicMcpService = ((): import('../core/DynamicMcpService.js').DynamicMcpService | null => {
+      try {
+        const tg = options.telegram ?? null;
+        const sr = options.sessionRefresh ?? null;
+        const stateDir = options.config.stateDir;
+        const sm = options.sessionManager;
+        const framework = options.config.sessions?.framework ?? 'claude-code';
+        // Reaper deps (real ps-based MCP-process listing + tmux pane map + kill),
+        // built once and reused for the offload capture-then-reap (C1).
+        const reaperDeps = makeMcpProcessReaperDeps({
+          sessionManager: sm,
+          tmuxPath: options.config.sessions?.tmuxPath ?? 'tmux',
+          auditPath: stateDir ? path.join(stateDir, '..', 'logs', 'mcp-reaper-audit.jsonl') : '/dev/null',
+        });
+        const MAX_HOPS = 12;
+        return new DynamicMcpService({
+          projectDir: options.config.projectDir,
+          enabled: () => options.config.sessions?.dynamicMcp?.enabled === true,
+          config: () => options.config.sessions?.dynamicMcp,
+          restart: async (topicId: number) => {
+            const sessionName = tg?.getSessionForTopic(topicId) ?? null;
+            if (!sessionName || !sr) return { ok: false, code: 'not_telegram_bound' };
+            const r = await sr.refreshSession({ sessionName, reason: 'dynamic-mcp change' });
+            return r.ok ? { ok: true } : { ok: false, code: r.code };
+          },
+          isPreapproved: (topicId: number) => {
+            try { return !!stateDir && activeAutonomousJobs(stateDir).some((j) => String(j.topic) === String(topicId)); }
+            catch { return false; } // fail-closed
+          },
+          captureHeavyPids: (topicId: number, server: string) => {
+            try {
+              const sessionName = tg?.getSessionForTopic(topicId) ?? null;
+              if (!sessionName) return [];
+              return captureHeavyMcpPidsForSession({
+                sessionName, server,
+                procs: reaperDeps.listMcpProcesses(),
+                tree: reaperDeps.getProcessTree(),
+                paneMap: reaperDeps.getTmuxPaneMap(),
+                maxHops: MAX_HOPS,
+              });
+            } catch { return []; } // fail-safe: capture nothing rather than risk a wrong kill
+          },
+          reapPids: (pids: number[]) => {
+            for (const pid of pids) { try { reaperDeps.killProcess(pid); } catch { /* best-effort reclaim */ } }
+          },
+          isMidToolUse: (topicId: number) => {
+            try {
+              const sessionName = tg?.getSessionForTopic(topicId) ?? null;
+              if (!sessionName) return null;            // can't resolve ⇒ null ⇒ offload aborts (fail-closed)
+              const frame = sm.captureOutput(sessionName, 40);
+              if (frame == null) return null;           // can't capture ⇒ fail-closed
+              return looksActivelyWorking(frame, framework);
+            } catch { return null; }
+          },
+        });
+      } catch { return null; }
+    })();
+
+    // Dynamic MCP idle-offload sweep — the automatic "offload a heavy server once
+    // it's been idle a while" trigger. Dark + dryRun-first: it only runs when BOTH
+    // sessions.dynamicMcp.enabled AND .sweep.enabled, and dryRun defaults true (logs
+    // "would offload" without acting). Fail-safe: any construction error ⇒ no sweep.
+    try {
+      const sweepCfg = options.config.sessions?.dynamicMcp?.sweep;
+      const featureEnabled = options.config.sessions?.dynamicMcp?.enabled === true;
+      if (dynamicMcpService && featureEnabled && sweepCfg?.enabled === true) {
+        const tg = options.telegram ?? null;
+        const sm = options.sessionManager;
+        const stateDir = options.config.stateDir;
+        const framework = options.config.sessions?.framework ?? 'claude-code';
+        const keepWarm = new Set(options.config.sessions?.dynamicMcp?.keepWarm ?? []);
+        const sweepDeps = makeMcpProcessReaperDeps({
+          sessionManager: sm,
+          tmuxPath: options.config.sessions?.tmuxPath ?? 'tmux',
+          auditPath: stateDir ? path.join(stateDir, '..', 'logs', 'mcp-reaper-audit.jsonl') : '/dev/null',
+        });
+        const sigToServer = new Map(Object.entries(MCP_SERVER_NAME_TO_SIGNATURE).map(([name, sig]) => [sig, name]));
+        const MAX_HOPS = 12;
+        const sweep = new McpIdleOffloadSweep(
+          {
+            listHeavyLiveMcpProcs: (): HeavyLiveMcpProc[] => {
+              const procs = sweepDeps.listMcpProcesses();
+              const tree = sweepDeps.getProcessTree();
+              const paneMap = sweepDeps.getTmuxPaneMap();
+              const out: HeavyLiveMcpProc[] = [];
+              for (const p of procs) {
+                if (!isHeavyMcpSignature(p.signatureId)) continue;
+                const sessionName = resolveOwningSession(p.pid, tree, paneMap, MAX_HOPS);
+                if (sessionName) out.push({ pid: p.pid, signatureId: p.signatureId, sessionName });
+              }
+              return out;
+            },
+            sessionToTopic: (sessionName) => tg?.getTopicForSession(sessionName) ?? null,
+            signatureToServer: (sig) => sigToServer.get(sig) ?? null,
+            isMidToolUse: (sessionName) => {
+              try { const f = sm.captureOutput(sessionName, 40); return f == null ? null : looksActivelyWorking(f, framework); }
+              catch { return null; }
+            },
+            isKeepWarm: (server) => keepWarm.has(server),
+            requestOffload: (topicId, server) => dynamicMcpService.requestOffload(topicId, server, { kind: 'agent' }),
+            now: () => Date.now(),
+            log: (msg) => console.log(msg),
+          },
+          {
+            enabled: true,
+            idleOffloadMs: sweepCfg.idleOffloadMs ?? 30 * 60 * 1000,
+            dryRun: sweepCfg.dryRun !== false, // default true
+          },
+        );
+        const intervalMs = sweepCfg.intervalMs ?? 5 * 60 * 1000;
+        this.mcpIdleOffloadSweepTimer = setInterval(() => { void sweep.tick().catch(() => undefined); }, intervalMs);
+        if (typeof this.mcpIdleOffloadSweepTimer.unref === 'function') this.mcpIdleOffloadSweepTimer.unref();
+      }
+    } catch { /* sweep is best-effort; a wiring fault never breaks boot */ }
+
     // Routes
     const routeCtx = {
       config: options.config,
       sessionManager: options.sessionManager,
       state: options.state,
       scheduler: options.scheduler ?? null,
+      dynamicMcpService,
       telegram: options.telegram ?? null,
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,
@@ -3962,6 +4096,7 @@ export class AgentServer {
     }
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
+      try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
       this.followMeConsumerTimer = null;
     }
     // Stop the growth-digest publisher's cron + pending catch-up timer.

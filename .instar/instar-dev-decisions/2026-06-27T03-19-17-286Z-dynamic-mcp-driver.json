@@ -1,0 +1,18 @@
+{
+  "ts": "2026-06-27T03:19:17.286Z",
+  "slug": "dynamic-mcp-driver",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 177,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The load/offload driver orchestration; folds convergence C4/M1/M3/C1/M2 into the decision flow."
+  },
+  "verdict": "pass"
+}

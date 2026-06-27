@@ -245,6 +245,16 @@ export interface SessionManagerConfig {
    * field existed, spawnInteractiveSession hardcoded 'claude-code',
    * so messaging a Codex-only agent spawned a Claude session. */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+  /**
+   * Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC). When enabled, a
+   * claude-code interactive session launches with a lean MCP subset
+   * (`keepWarm`) instead of the full `.mcp.json`, and heavy servers load on
+   * demand / offload when idle. ABSENT by default ⇒ full `.mcp.json` (today's
+   * behavior). TYPE-ONLY and intentionally NOT in ConfigDefaults (a default here
+   * would inject the block into every existing config and break the
+   * absent-equals-unchanged guarantee). Consumed only by the claude-code spawn
+   * path; other frameworks ignore it. */
+  dynamicMcp?: import('./dynamicMcpConfig.js').DynamicMcpConfig;
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */

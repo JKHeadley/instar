@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-27T03:28:48.515Z",
+  "slug": "dynamic-mcp-service",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 105,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Composition root for dynamic-MCP; ties manager + stores + injected host primitives."
+  },
+  "verdict": "pass"
+}
