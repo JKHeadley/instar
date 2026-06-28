@@ -873,6 +873,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // would-action WITHOUT changing ingress (the live flip is gated on the Phase-4
     // two-host proof + B2/B5 live, so it can't disturb the Phase-0 stabilization).
     pollFollowsLease: { dryRun: true },
+    // G2 nobody-polling RECOVERY (MESH-SELF-HEAL-SPEC §3.2). OMIT `enabled` ⇒
+    // dev-agent gate (live-on-dev / dark-on-fleet); dryRun:true ⇒ the evaluator
+    // detects + elects + records the soak counterfactual but performs NO actuation
+    // (no fenced-CAS acquire, no poll-lever write). Flipping dryRun:false is the
+    // deliberate enforce promotion (gated on the pollSucceeded-watermark plumbing +
+    // the Phase-5 second-pass live-verify on the real pair).
+    nobodyPollingRecovery: { dryRun: true },
     // multi-transport-mesh-comms (Layers 0-2) — multi-rope mesh transport
     // (Tailscale/LAN/Cloudflare hedged failover). Ships ENABLED (strictly additive;
     // a single-machine agent is a no-op and keeps its 127.0.0.1 bind — the 0.0.0.0

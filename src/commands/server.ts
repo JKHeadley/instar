@@ -16570,6 +16570,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               }
             } catch { /* best-effort pool refresh */ }
+            // G2 enforce (MESH-SELF-HEAL-SPEC §3.2) — evaluate nobody-polling over
+            // the freshly-recorded pool on the same 30s cadence; the coordinator
+            // debounces a silence across these ticks. DARK + dryRun-gated INSIDE
+            // the coordinator (strict no-op when off; records-only in dryRun), so
+            // this is a safe observe-producer here. Fire-and-forget: a slow/failed
+            // eval must never block or fail the pool refresh.
+            void coordinator
+              .evaluateNobodyPolling(
+                machinePoolRegistry!.getCapacities().map((c) => ({ machineId: c.machineId, online: c.online, pollingActive: c.pollingActive })),
+                false,
+                new Date().toISOString(),
+              )
+              .catch(() => { /* @silent-fallback-ok — G2 eval is best-effort signal */ });
           };
           refreshPool();
           const poolTimer = setInterval(refreshPool, 30_000);
