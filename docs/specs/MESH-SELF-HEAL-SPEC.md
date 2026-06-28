@@ -3,7 +3,9 @@ title: Mesh Self-Heal — Lease↔Job Binding, Nobody-Polling Detection, and the
 status: draft
 author: echo
 created: 2026-06-27
-approved: false
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
+approved: true
+approved-note: "Approved under operator (Justin) standing pre-approval for the 24h autonomous run, 2026-06-27 — converged at iteration 5, report delivered."
 eli16-overview: MESH-SELF-HEAL-SPEC.eli16.md
 related:
   - multi-machine-lease-self-heal.md

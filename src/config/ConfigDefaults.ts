@@ -1075,6 +1075,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       transferOutputCutoffMs: 1000,
       placementCooldownMs: 300000,
       topicPlacementUpdateMinIntervalMs: 10000,
+      // G3 — lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3, FD6). "Spawn iff I hold
+      // the fenced awake-lease, else forward to the holder" — stops the
+      // duplicate-session harm (the 2026-06-27 incident). Ships DARK (enabled:
+      // false + dryRun:true) — registered in DARK_GATE_EXCLUSIONS per
+      // lint-dev-agent-dark-gate. Single-machine + flag-off = byte-for-byte
+      // legacy spawn (the gate is a strict no-op there). dryRun logs the
+      // would-forward intent but still spawns (observe-only soak).
+      ownershipCheckedSpawn: {
+        enabled: false,
+        dryRun: true,
+      },
       // Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md
       // §Config). Ships DARK (enabled:false + dryRun:true) — registered in
       // DEV_GATED_FEATURES per lint-dev-agent-dark-gate. Both flags boot-read;

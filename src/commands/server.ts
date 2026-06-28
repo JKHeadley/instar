@@ -111,6 +111,7 @@ import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
+import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
@@ -545,6 +546,41 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** G3 lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3). "Do I hold the fenced
+ *  awake-lease?" — null = single-machine / no lease coordinator → the gate is a
+ *  strict no-op (always spawn locally, byte-for-byte legacy). Set in startServer's
+ *  mesh block from the lease coordinator. */
+let _holdsLeaseForSpawn: (() => boolean) | null = null;
+/** G3: the ownershipCheckedSpawn flag accessor (multiMachine.sessionPool.
+ *  ownershipCheckedSpawn). Defaults dark (no-op). Set in startServer. */
+let _ownershipCheckedSpawn: () => { enabled: boolean; dryRun: boolean } = () => ({ enabled: false, dryRun: true });
+/** G3: the soak-evidence ledger — records evaluable counterfactual evidence
+ *  (would-have-prevented-duplicate) + drives a promotion recommendation
+ *  (operator directive: observe-mode must be able to graduate). Always present;
+ *  read via the /mesh-selfheal/g3 route (the shared process-wide singleton). */
+const _g3SoakLedger = sharedG3SoakLedger;
+/**
+ * G3 — decide spawn-vs-forward for an inbound topic message, RECORD the soak
+ * evidence, and return whether to spawn locally. Centralizes the gate so every
+ * spawn callsite shares one decision + one ledger. Single-machine / flag-off =
+ * always spawn (the gate no-ops). When the decision is 'forward', the caller
+ * must NOT spawn and should route via _sessionRouter instead.
+ */
+function g3ShouldSpawnLocally(topicId: number): { spawnLocally: boolean; action: string; reason: string } {
+  const cfg = _ownershipCheckedSpawn();
+  const decision = decideLeaseGatedSpawn({
+    holdsLease: _holdsLeaseForSpawn ? _holdsLeaseForSpawn() : true,
+    flagEnabled: cfg.enabled,
+    dryRun: cfg.dryRun,
+    singleMachine: _holdsLeaseForSpawn === null,
+    forwardAvailable: _sessionRouter !== null,
+  });
+  _g3SoakLedger.record(decision, new Date().toISOString());
+  if (decision.action !== 'spawn') {
+    console.log(`[g3-spawn-gate] topic ${topicId}: action=${decision.action} reason=${decision.reason} spawnLocally=${decision.spawnLocally}`);
+  }
+  return { spawnLocally: decision.spawnLocally, action: decision.action, reason: decision.reason };
+}
 /** WS1.2: the owner-side drain runner (null = pool dark / deps unavailable).
  *  Presence IS the heartbeat-advertised ws12DrainReceive capability — a
  *  machine only advertises what it can actually execute. */
@@ -2275,6 +2311,22 @@ export function wireTelegramRouting(
       if (spawningTopics.has(topicId)) {
         telegram.sendToTopic(topicId, `Session is still starting up — please wait a moment.`).catch(() => {});
         console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate`);
+        return;
+      }
+
+      // G3 — lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3): spawn iff I hold the
+      // fenced awake-lease; if not, forward to the holder instead of spawning a
+      // duplicate. Single-machine / flag-off = byte-for-byte legacy (no-op).
+      const _g3 = g3ShouldSpawnLocally(topicId);
+      if (!_g3.spawnLocally) {
+        // action === 'forward': do NOT spawn locally. Hand the inbound to the
+        // lease holder via the existing WS1.1 SessionRouter seam (reuse, not
+        // reinvent). _sessionRouter is non-null here (forwardAvailable gated it).
+        if (_sessionRouter) {
+          _sessionRouter
+            .route({ sessionKey: String(topicId), messageId: String(msg.id), payload: text })
+            .catch((err) => console.error(`[g3-spawn-gate] forward route failed for topic ${topicId}:`, err));
+        }
         return;
       }
 
@@ -4573,6 +4625,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         coordinator.attachLeaseCoordinator(leaseCoordinator);
         leaseCoordinatorRef = leaseCoordinator;
+        // G3 — lease-gated spawn: wire the "do I hold the lease?" accessor so the
+        // spawn gate can fire. Setting this non-null also flips the gate out of its
+        // single-machine no-op (it now consults the real lease). The flag accessor
+        // reads the live config each spawn (no restart needed to flip the soak).
+        _holdsLeaseForSpawn = () => coordinator.holdsLease();
+        _ownershipCheckedSpawn = () => {
+          const o = (config as any)?.multiMachine?.sessionPool?.ownershipCheckedSpawn ?? {};
+          return { enabled: o.enabled === true, dryRun: o.dryRun !== false };
+        };
         await coordinator.initializeLease();
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
 
@@ -8766,6 +8827,50 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
       });
     }
+
+    // G3.4 — Single-writer binding lifecycle: clear a killed session's stale
+    // topic→session binding so a dead session can't silently resurrect (the
+    // invariant "a binding exists IFF a live session exists for it"). Registered
+    // AFTER the resume-UUID-save listener above so the UUID (kept in
+    // TopicResumeMap, keyed by topicId) is saved BEFORE the binding is cleared —
+    // clearing the binding never loses the resume UUID. Gated behind
+    // ownershipCheckedSpawn (dark + dryRun by default ⇒ strict no-op until the
+    // operator opts in); the next inbound for the topic re-spawns fresh (with
+    // --resume) and re-registers a new binding.
+    sessionManager.on('beforeSessionKill', (session: import('../core/types.js').Session) => {
+      if (!telegram) return;
+      try {
+        const cfg = _ownershipCheckedSpawn();
+        applyBindingCleanupOnKill({
+          // A context-exhaustion / recovery kill is immediately followed by a
+          // SAME-TOPIC respawn (respawnSession / respawnSessionFresh), which
+          // resolves its target via getSessionForTopic. Clearing the binding
+          // first would make that lookup return null and the recovery silently
+          // abort. Mirror the resume-UUID-save listener's contextExhaustionKills
+          // guard so the two beforeSessionKill siblings keep identical
+          // skip-on-respawn semantics. (G3 side-effects second-pass review.)
+          respawnImminent: contextExhaustionKills.has(session.tmuxSession),
+          registry: telegram,
+          sessionName: session.tmuxSession,
+          flagEnabled: cfg.enabled,
+          dryRun: cfg.dryRun,
+          ledger: _g3SoakLedger,
+          nowIso: new Date().toISOString(),
+          log: (msg) => console.log(msg),
+          // Durable audit (spec §6) — one mesh-selfheal.jsonl line per binding
+          // transition. Best-effort: a write failure never blocks the kill path.
+          audit: (entry) => {
+            try {
+              const logsDir = path.join(config.stateDir, '..', 'logs');
+              fs.mkdirSync(logsDir, { recursive: true });
+              fs.appendFileSync(path.join(logsDir, 'mesh-selfheal.jsonl'), JSON.stringify(entry) + '\n');
+            } catch { /* @silent-fallback-ok — audit jsonl is observability only */ }
+          },
+        });
+      } catch (err) {
+        console.error('[g3-binding-cleanup] Failed to clear stale binding on kill:', err);
+      }
+    });
 
     sessionManager.on('injectionReplyDetected', (info: { topicId: number; sessionName: string; text: string; injectedAt: number }) => {
       if (!telegram) return;

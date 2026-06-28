@@ -37,3 +37,7 @@ Two principles, both straight from today's incident:
 ## What ships when
 
 Safest-first: the duplicate-prevention piece first (most visible, lowest risk), then the nobody-serving alarm, then the badge↔job binding (highest authority, verified last). The data-coherence standard rolls out alongside, with its automatic enforcement check as the keystone that keeps the seam from ever coming back.
+
+## Build status
+
+**G3 (duplicate-prevention) is built and shipping dark** — the lease-gated spawn ("serve only if I genuinely hold the badge, else forward") and the single-writer binding lifecycle ("a binding exists only while a live session does") are in, behind an off-by-default flag with a dry-run soak that records exactly how many duplicates it *would* have prevented (so it can earn promotion instead of rotting silent). It changes nothing until deliberately turned on and live-verified on the real two-machine pair. G2 (nobody-serving alarm) and G1 (badge↔job binding) follow.
