@@ -49,15 +49,48 @@ export type DegradeReason = 'provider-error' | 'budget-timeout';
  * covered here — a slightly-off-tone message reaching the user beats silence,
  * but a secret/path/command leak must never escape, even during an outage.
  */
+/**
+ * Neutralize legitimate user-facing CLICK links before the deterministic floor
+ * scans the text, so a link the agent shares for the user to OPEN (a private
+ * view, tunnel, dashboard, Secret-Drop, Telegraph, or download URL) is not
+ * hard-blocked by the floor's api-endpoint / cron-or-slug signal detectors —
+ * which, unlike the LLM judge, cannot tell "open this in your browser" from
+ * "call this endpoint." This mirrors the LLM path's intent-based B5 carve-out
+ * (open-vs-call) at the floor.
+ *
+ * SAFETY: the scrub is suppressed (text returned UNCHANGED) the moment the text
+ * carries any CALL instruction — a shell fetch tool (curl/wget/xh/httpie), an
+ * uppercase HTTP method against a URL/path, or an imperative "hit/call/invoke
+ * the endpoint/url/api" phrase. So a genuine "run this curl" never escapes; only
+ * a bare clickable URL shared as a destination is removed before signal-scan.
+ * It ONLY strips scheme'd http(s) URLs — file paths, CLI commands, config keys,
+ * internal ids, and every other leak class are left fully intact for the floor.
+ */
+export function scrubClickLinksForFloor(text: string): string {
+  const CALL_CMD = /\b(?:curl|wget|xh|httpie)\b/i;
+  const CALL_METHOD = /\b(?:POST|GET|PUT|PATCH|DELETE)\s+(?:https?:\/\/|\/)/;
+  // Note: the article group carries its OWN trailing \s+ (no adjacent \s+…\s*),
+  // so a long whitespace run can't be split ambiguously — linear, no ReDoS.
+  const CALL_PHRASE =
+    /\b(?:hit|call|invoke|issue|send)\s+(?:(?:this|the|a)\s+)?(?:endpoint|url|api|request)\b/i;
+  if (CALL_CMD.test(text) || CALL_METHOD.test(text) || CALL_PHRASE.test(text)) {
+    return text;
+  }
+  return text.replace(/https?:\/\/[^\s)\]]+/gi, ' ');
+}
+
 export function detectDeterministicLeak(
   text: string,
 ): { rule: string; kind: string } | null {
-  for (const sig of detectGateSignals(text)) {
+  // Scan with click-destination URLs neutralized (unless a call-instruction is
+  // present) so a legitimate "open this link" message survives the floor.
+  const scanText = scrubClickLinksForFloor(text);
+  for (const sig of detectGateSignals(scanText)) {
     if (sig.detected) {
       return { rule: GATE_SIGNAL_KIND_TO_RULE[sig.kind], kind: sig.kind };
     }
   }
-  if (detectInternalIdLeak(text).leaked) {
+  if (detectInternalIdLeak(scanText).leaked) {
     return { rule: 'B20_INTERNAL_ID_LEAK', kind: 'internal-id-leak' };
   }
   return null;

@@ -4,7 +4,11 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
+import {
+  MessagingToneGate,
+  detectDeterministicLeak,
+  scrubClickLinksForFloor,
+} from '../../src/core/MessagingToneGate.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 
 function mockProvider(responseFn: (prompt: string) => string | Promise<string>): IntelligenceProvider {
@@ -691,6 +695,91 @@ describe('MessagingToneGate', () => {
       );
       expect(blockResult.pass).toBe(false);
       expect(blockResult.rule).toBe('B5_API_ENDPOINT');
+    });
+  });
+
+  // tonegate-floor-click-links: the deterministic floor (used when the LLM judge
+  // times out / errors) must NOT hard-block a legitimate user-facing CLICK link
+  // (a private view, tunnel, dashboard, Secret-Drop, Telegraph, download URL) —
+  // the LLM path already carves these out by intent; the floor did not, so a
+  // backend outage turned every shared link into a blocked message fleet-wide.
+  describe('deterministic floor — click-link carve-out (tonegate-floor-click-links)', () => {
+    const CLICK_LINKS = [
+      ['Secret Drop', 'Here is your one-time link to drop the key: https://abc-123.trycloudflare.com/secrets/drop/9f3a-2b1c'],
+      ['private view', 'I put the report here: http://localhost:4040/view/report-2026-06-28'],
+      ['dashboard', 'Open the dashboard: https://xyz.trycloudflare.com/dashboard?tab=files&path=docs/x.md'],
+      ['Telegraph', 'Published it publicly: https://telegra.ph/My-Page-06-28'],
+      ['download', 'Grab the file: http://localhost:4040/api/files/download?path=.claude/CLAUDE.md'],
+    ] as const;
+
+    for (const [label, msg] of CLICK_LINKS) {
+      it(`PASSES a ${label} click-link on the floor (no false hold)`, () => {
+        expect(detectDeterministicLeak(msg)).toBeNull();
+      });
+    }
+
+    it('still HOLDS a real CLI call instruction even when a URL is present', () => {
+      const leak = detectDeterministicLeak(
+        'To check, run: curl http://localhost:4042/commitments',
+      );
+      expect(leak).not.toBeNull();
+    });
+
+    it('still HOLDS an uppercase HTTP-method call against a URL', () => {
+      const leak = detectDeterministicLeak('POST https://localhost:4042/attention with that body');
+      expect(leak).not.toBeNull();
+    });
+
+    it('still HOLDS an imperative "hit the endpoint" call phrase with a URL', () => {
+      const leak = detectDeterministicLeak('hit the endpoint at https://localhost:4042/tunnel');
+      expect(leak).not.toBeNull();
+    });
+
+    it('still HOLDS a no-article call phrase ("call api") with a URL', () => {
+      const leak = detectDeterministicLeak('call api https://localhost:4042/commitments');
+      expect(leak).not.toBeNull();
+    });
+
+    it('scrubClickLinksForFloor runs in linear time on a long whitespace run (no ReDoS)', () => {
+      // A trigger verb followed by a huge whitespace run was the O(n²) backtracking
+      // shape; the hardened CALL_PHRASE must return promptly.
+      const adversarial = 'call' + ' '.repeat(200_000) + 'x https://a.com/y';
+      const start = Date.now();
+      scrubClickLinksForFloor(adversarial);
+      expect(Date.now() - start).toBeLessThan(200);
+    });
+
+    it('still HOLDS a file-path leak — scrub only removes scheme URLs', () => {
+      const leak = detectDeterministicLeak('see /Users/justin/.instar/config.json');
+      expect(leak?.rule).toBe('B2_FILE_PATH');
+    });
+
+    it('still HOLDS a bare CLI command leak alongside a click-link', () => {
+      const leak = detectDeterministicLeak(
+        'Open https://x.trycloudflare.com/view/abc — but first I ran: rm -rf node_modules && pnpm i',
+      );
+      expect(leak).not.toBeNull();
+    });
+
+    it('scrubClickLinksForFloor strips a scheme URL but leaves prose intact', () => {
+      expect(scrubClickLinksForFloor('open https://a.com/x/y now')).not.toMatch(/https?:\/\//);
+    });
+
+    it('scrubClickLinksForFloor leaves a curl call-instruction line UNCHANGED', () => {
+      const t = 'run: curl https://localhost:4042/x';
+      expect(scrubClickLinksForFloor(t)).toBe(t);
+    });
+
+    it('DEGRADES and SENDS a Secret-Drop link via review() when the provider throws (end-to-end)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+      const result = await gate.review(
+        'Your one-time Secret Drop link: https://abc-123.trycloudflare.com/secrets/drop/9f3a',
+        { channel: 'telegram' },
+      );
+      expect(result.pass).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.failedClosed).toBeFalsy();
     });
   });
 });

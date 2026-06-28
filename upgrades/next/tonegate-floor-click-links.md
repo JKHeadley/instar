@@ -1,0 +1,53 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Tone-gate deterministic-floor **click-link carve-out** (fixes the floor blocking
+legitimate user-facing links during an LLM outage). When the LLM tone-judge is
+slow or unavailable, outbound messages fall back to a fast pattern-only
+"deterministic floor" so the user is never silently cut off (the F4
+graceful-degradation path). That floor could not tell a clickable link from a
+callable endpoint, so it hard-blocked **every** link an agent tried to share —
+private views, dashboard links, Secret-Drop one-time URLs, Telegraph pages, file
+downloads — fleet-wide, whenever the LLM was degraded.
+
+The fix adds `scrubClickLinksForFloor`: before the floor's signal scan, scheme'd
+`http(s)://…` URLs shared as click destinations are neutralized so their
+host/port/path/token don't trip the floor's "looks like an endpoint" detectors —
+**unless** the text carries a real call instruction (`curl`/`wget`, an uppercase
+HTTP method against a URL, or "hit/call/invoke … the endpoint"), in which case
+nothing is scrubbed and the floor blocks as before. This mirrors the LLM path's
+existing intent-based (open-vs-call) carve-out, now at the degraded floor too.
+Safe-direction only: it loosens a false positive on clickable links and never
+lets a command, file path, config key, secret, or internal id escape.
+
+## What to Tell Your User
+
+You'll notice this only as the absence of a bug: when my LLM backend is
+rate-limited or slow, a link I send you (a report, a dashboard, a one-time
+Secret-Drop link) now actually reaches you instead of being silently held.
+Nothing to configure — it's always on, and it never weakens the gate that keeps
+raw commands and secrets out of our chat.
+
+## Summary of New Capabilities
+
+- The outbound tone gate's degraded "deterministic floor" no longer blocks
+  legitimate clickable links (private view / tunnel / dashboard / Secret-Drop /
+  Telegraph / download). Always-on correctness fix; no config knob. Real call
+  instructions (curl / uppercase-method-vs-URL / "hit the endpoint") are still
+  held, and command/path/secret/internal-id leaks are unaffected.
+
+## Evidence
+
+- New `deterministic floor — click-link carve-out` test block in
+  `tests/unit/MessagingToneGate.test.ts` (14 cases): each click-link class PASSES
+  the floor; curl / uppercase-method / "hit the endpoint" / no-article "call api"
+  calls still HOLD; file-path (`B2_FILE_PATH`) + bare-CLI leaks still HOLD; a
+  200k-char adversarial input proves the hardened call-phrase regex runs in
+  linear time (< 200ms); end-to-end `review()` degrades-and-SENDS a Secret-Drop
+  link on provider throw. Full file 55/55 green.
+- Independent Phase-5 second-pass review: **CONCUR** (leak-safety preserved across
+  eight bypass attempts; safe direction verified). One non-blocking latent-ReDoS
+  note **resolved in this PR** (no deferral): the call-phrase regex was hardened
+  to remove ambiguous whitespace backtracking.
+- tsc clean; budget + no-silent-fallbacks + dark-gate lint ratchets green.
