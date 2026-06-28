@@ -447,8 +447,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // RE-VERIFIED via the attributor on the edited ConfigDefaults (each maps to a real
       // `enabled: false,` line).
       '1060': 'multiMachine.sessionPool.enabled',
-      '1085': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1114': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1086': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1096': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1125': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -482,10 +483,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // attributor on the edited ConfigDefaults.
       // After merging JKHeadley/main + my accountFollowMe block, these resolve as below.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      '1283': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1405': 'cartographer.freshnessSweep.enabled',
-      '1450': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1475': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1294': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1416': 'cartographer.freshnessSweep.enabled',
+      '1461': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1486': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

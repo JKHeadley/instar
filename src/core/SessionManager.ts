@@ -2796,6 +2796,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // the CAS guard + endedReason are the only additions here.
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
+      // G3 (MESH-SELF-HEAL-SPEC §3.3, FD7): "a topic→session binding exists IFF a
+      // live session exists." killSession historically did NOT clear the binding,
+      // so a killed session left a stale binding that a later inbound resumed (the
+      // 2026-06-27 stale-binding respawn). Emit `sessionKilled` AFTER the pane is
+      // destroyed so a server-side listener can clear the binding — but ONLY if it
+      // still points to THIS exact session (a kill-to-restart that already
+      // re-registered a new session name must NOT be cleared). Race-safe by design.
+      this.emit('sessionKilled', session);
       return true;
     } finally {
       this.terminating.delete(sessionId);

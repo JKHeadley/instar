@@ -567,6 +567,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'optional-integration',
     reason: 'hold-for-stability policy; trails inboundQueue one rollout stage behind (operator discipline)',
   },
+  {
+    configPath: 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+    category: 'optional-integration',
+    reason: 'G3 lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3) — spawn iff holding the fenced awake-lease, else forward to holder; stops the duplicate-session harm. Dark→dry-run→dev-live→fleet, live-verified on the real Mini+Laptop pair before enablement.',
+  },
   // (the 7 multiMachine.stateSync.* memory stores — preferences, relationships,
   //  learnings, knowledge, evolutionActions, userRegistry, topicOperator — MOVED to
   //  DEV_GATED_FEATURES on 2026-06-13 per operator directive topic 13481: "NOTHING

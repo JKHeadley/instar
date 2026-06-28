@@ -10,6 +10,7 @@ import type { Request as ExpressRequest, Response as ExpressResponse } from 'exp
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { classifyActionClaim } from '../core/action-claim.js';
+import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
 import { getHostSpawnSemaphore, configuredSpawnAcquireMs, configuredSpawnWaitersMax } from '../core/hostSpawnSemaphore.js';
 import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
@@ -5581,6 +5582,22 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.sessionReaper.snapshot());
+  });
+
+  // G3 lease-gated-spawn soak evidence (MESH-SELF-HEAL-SPEC §3.3). The operator's
+  // PROMOTION-EVIDENCE surface — the answer to "is this dark feature actually
+  // doing anything, and should I promote it?" (operator directive 2026-06-27:
+  // observe-mode must produce an evaluable promotion recommendation, not rot
+  // dark forever). `summary` carries the counterfactual `wouldHavePreventedDuplicate`;
+  // `promotion` is the deterministic recommendation (promote | keep-soaking |
+  // consider-removal | enforcing). Read-only; never gates.
+  router.get('/mesh-selfheal/g3', (_req, res) => {
+    res.json({
+      feature: 'lease-gated-spawn',
+      flag: 'multiMachine.sessionPool.ownershipCheckedSpawn',
+      summary: sharedG3SoakLedger.summary(),
+      promotion: sharedG3SoakLedger.promotionSignal(),
+    });
   });
 
   // AgentWorktreeReaper (RESPONSIBLE-RESOURCE-USAGE — OS resource hygiene). The
@@ -16192,6 +16209,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         let resumeSessionId = ctx.topicResumeMap?.get(topicId) ?? undefined;
         if (resumeSessionId) {
           console.log(`[telegram-forward] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
+        }
+
+        // G3 — record the lease-gated-spawn decision for this SECONDARY spawn
+        // entry (the /internal/telegram-forward auto-spawn). This route is
+        // same-machine-only (injectionDropped respawn @server.ts + the lifeline
+        // poll) — cross-machine delivery bypasses it via MeshRpc→durable queue —
+        // so there is NO forward seam here and gating can never ping-pong.
+        // forwardAvailable:false makes this RECORD-ONLY: it always spawns
+        // (never strands a local re-entry), but feeds the shared soak ledger so
+        // the promotion evidence covers BOTH spawn entries, not just the cold
+        // path. Dark+dryRun by default ⇒ strict no-op on behavior.
+        try {
+          const o = (ctx.config as any)?.multiMachine?.sessionPool?.ownershipCheckedSpawn ?? {};
+          const g3 = decideLeaseGatedSpawn({
+            holdsLease: ctx.coordinator ? ctx.coordinator.holdsLease() : true,
+            flagEnabled: o.enabled === true,
+            dryRun: o.dryRun !== false,
+            singleMachine: ctx.coordinator === null,
+            forwardAvailable: false,
+          });
+          sharedG3SoakLedger.record(g3, new Date().toISOString());
+          if (g3.action !== 'spawn') {
+            console.log(`[g3-spawn-gate] (telegram-forward) topic ${topicId}: action=${g3.action} reason=${g3.reason} (record-only — local re-entry, no forward seam)`);
+          }
+        } catch (err) {
+          // @silent-fallback-ok — the soak record is observability only; a record
+          // failure must never block the spawn (the safe direction).
+          console.warn(`[g3-spawn-gate] (telegram-forward) record failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
         }
 
         ctx.sessionManager.spawnInteractiveSession(bootstrapMessage, topicName, { telegramTopicId: topicId, resumeSessionId }).then((newSessionName) => {
