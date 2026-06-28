@@ -26,8 +26,11 @@ import type { LeaseCoordinator } from './LeaseCoordinator.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
 import { ChurnBreaker } from './churnBreaker.js';
-import { writePollIntent } from './pollIntent.js';
+import { writePollIntent, readPollActive, pidAlive } from './pollIntent.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
+import { poolPollerVerdict } from './pollerCount.js';
+import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from './nobodyPollingRecovery.js';
+import { applyNobodyPollingRecovery } from './nobodyPollingActuator.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
@@ -608,6 +611,99 @@ export class MultiMachineCoordinator extends EventEmitter {
   private pollFollowsLeaseEnabled(): boolean {
     const m = this.config.multiMachine as { pollFollowsLease?: { enabled?: boolean } } | undefined;
     return resolveDevAgentGate(m?.pollFollowsLease?.enabled, this.config);
+  }
+
+  // ── G2 nobody-polling RECOVERY (enforce) — MESH-SELF-HEAL-SPEC §3.2 ──────────
+  /** Consecutive confirmed-silence reads (debounce so a handoff gap never trips). */
+  private _g2SilenceStreak = 0;
+  private static readonly G2_CONFIRM_OBSERVATIONS = 3;
+  /** Reentrancy guard: a slow eval must not overlap the next cadence tick (which
+   *  would double-increment the silence streak pre-await and trip the debounce
+   *  early). Mirrors `leaseTicking`. */
+  private _g2Evaluating = false;
+
+  /** Resolve the G2 enforce gate: dark+dryRun-first. OMIT `enabled` ⇒ dev-agent
+   *  gate (live-on-dev / dark-on-fleet); dryRun defaults TRUE (observe-only) so
+   *  enabling alone never actuates — flipping dryRun:false is the deliberate
+   *  enforce promotion. Read live so a config flip applies on the next tick. */
+  private nobodyPollingRecoveryCfg(): { enabled: boolean; dryRun: boolean } {
+    const m = this.config.multiMachine as { nobodyPollingRecovery?: { enabled?: boolean; dryRun?: boolean } } | undefined;
+    return {
+      enabled: resolveDevAgentGate(m?.nobodyPollingRecovery?.enabled, this.config),
+      dryRun: m?.nobodyPollingRecovery?.dryRun ?? true,
+    };
+  }
+
+  /**
+   * G2 enforce evaluator — the SERVER calls this on its cadence with the live pool
+   * capacities (which carry each machine's lifeline-actual `pollingActive`). It
+   * computes the B5 verdict, debounces a silence, runs the deterministic
+   * single-claimant decision, records the soak evidence, and — only on a genuine
+   * self-claim AND `dryRun:false` — actuates via the injected lease ports
+   * (acquire fenced CAS → re-verify own poll-freshness → start polling, else
+   * relinquish + self-exclude). DARK + dryRun-first: with the gate off it is a
+   * strict no-op; in dryRun it records "would claim" and touches NOTHING.
+   *
+   * NOTE (enforce-ENABLE prerequisite): the `localPollSucceededFresh` port here is
+   * a liveness approximation (lifeline pid alive + a fresh poll-active record). The
+   * true `pollSucceededMonoMs`/serve-progress watermark (spec §3.1 round-3) is a
+   * separate lifeline-side plumbing increment required BEFORE flipping dryRun:false
+   * on the fleet — but it is consulted ONLY when dryRun:false, so the dark soak
+   * never depends on it.
+   */
+  async evaluateNobodyPolling(
+    capacities: Array<{ machineId: string; online?: boolean; pollingActive?: boolean }>,
+    localSaw409: boolean,
+    nowIso: string,
+  ): Promise<{ skipped?: string; verdict?: string; silenceConfirmed?: boolean; decision?: string; actuation?: string }> {
+    const cfg = this.nobodyPollingRecoveryCfg();
+    if (!cfg.enabled || !this.leaseCoordinator || !this._identity) {
+      return { skipped: 'disabled-or-single-machine' };
+    }
+    // Reentrancy guard: never let a slow eval overlap the next cadence tick.
+    if (this._g2Evaluating) return { skipped: 'already-evaluating' };
+    this._g2Evaluating = true;
+    try {
+    const verdict = poolPollerVerdict(capacities, localSaw409);
+    if (verdict.verdict === 'silence') this._g2SilenceStreak += 1; else this._g2SilenceStreak = 0;
+    const silenceConfirmed = this._g2SilenceStreak >= MultiMachineCoordinator.G2_CONFIRM_OBSERVATIONS;
+    const decision = decideNobodyPollingClaim({
+      selfMachineId: this._identity.machineId,
+      pollerVerdict: verdict.verdict,
+      silenceConfirmed,
+      preferredAwakeMachineId: this.config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null,
+      // fit = heartbeat-fresh candidate (in a silence nobody is polling, so fitness
+      // is NOT tied to pollingActive); the post-CAS self-reverify checks real poll
+      // freshness before serving.
+      machines: capacities.map((c) => ({ machineId: c.machineId, fit: !!c.online })),
+      // Peer-evidence-of-global-outage plumbing is an enforce-ENABLE prerequisite;
+      // until then a confirmed silence proceeds to elect (the local-failure-safe
+      // direction — G2 picks a server rather than HOLD on unproven global blindness).
+      globalOutageEvidence: false,
+    });
+    sharedG2NobodyPollingLedger.recordClaim(decision, nowIso);
+    const outcome = await applyNobodyPollingRecovery({
+      decision,
+      dryRun: cfg.dryRun,
+      ledger: sharedG2NobodyPollingLedger,
+      nowIso,
+      log: (m) => console.log(`[MultiMachine] ${m}`),
+      ports: {
+        acquireFencedCas: () => this.leaseCoordinator!.acquireIfEligible(),
+        currentEpoch: () => this.leaseCoordinator!.currentEpoch(),
+        localPollSucceededFresh: () => {
+          const rec = readPollActive(this.config.stateDir);
+          if (!rec) return false;
+          return pidAlive(rec.pid) && (Date.now() - rec.ts) < 90_000;
+        },
+        startPolling: () => this.writeLeasePollIntent(true, 'awake'),
+        relinquishAndSelfExclude: () => { void this.leaseCoordinator!.relinquishAndBroadcast(); },
+      },
+    });
+    return { verdict: verdict.verdict, silenceConfirmed, decision: decision.action, actuation: outcome.result };
+    } finally {
+      this._g2Evaluating = false;
+    }
   }
 
   /**

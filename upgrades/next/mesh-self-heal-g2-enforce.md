@@ -1,0 +1,23 @@
+## What Changed
+
+Mesh Self-Heal **G2 enforce** (MESH-SELF-HEAL-SPEC §3.2) — the take-over actuation for the nobody-serving alarm. When NO machine is polling Telegram (the zombie-lease-holder state behind the message-drop incidents), exactly ONE fit machine now takes over poll-ownership — never zero (drops), never two (the Telegram 409 poll-war).
+
+- `src/core/nobodyPollingActuator.ts` (`applyNobodyPollingRecovery`) — dependency-injected actuator: win the fenced epoch-CAS → re-verify own poll-freshness (CAS-win is necessary-not-sufficient) → start polling, else relinquish + self-exclude.
+- `MultiMachineCoordinator.evaluateNobodyPolling()` — wires the detector + single-claimant election to the actuator with the real lease ports (`acquireIfEligible` / `currentEpoch` / `writeLeasePollIntent` / `relinquishAndBroadcast`), debounced (confirm=3) and reentrancy-guarded.
+- `server.ts` `refreshPool` — runs it on the existing 30s pool cadence, fire-and-forget.
+
+Ships **dark + dryRun-first** (`multiMachine.nobodyPollingRecovery`, OMITS `enabled` → dev-gated). In dryRun it detects + elects + records the soak counterfactual but performs ZERO side effects (no lease acquire, no poll-lever write) — verified by an independent second-pass review (the high-risk lease-authority gate). Flipping `dryRun:false` is the deliberate enforce promotion, gated on two tracked prerequisites: the real pollSucceeded watermark + the peer-confirmed global-outage plumbing (see MESH-SELF-HEAL-G2-BUILD.md).
+
+## Evidence
+
+- `tests/unit/nobodyPollingActuator.test.ts` — 5 tests, both sides of every boundary incl. the critical dryRun=zero-side-effects safety invariant (no CAS, no poll-write) and CAS-lost / self-excluded / claimed-serving.
+- Builds on the merged G2 core (18 unit) + observe route (4 integration). Dark-gate lint golden map updated for the +7 line shift. Typecheck clean; full G2 suite green.
+- Independent Phase-5 second-pass review: CONCUR (dryRun invariant holds; single-claimant is the fenced CAS; no tug-of-war). Its one minor concern (reentrancy guard) was fixed in this commit.
+
+## What to Tell Your User
+
+When this is turned on (it ships off, in observe-only mode for now), it fixes the "nobody is polling, so my messages silently drop" problem on multi-machine setups: if the in-charge machine goes quiet, exactly one healthy machine automatically takes over polling — no tug-of-war, no duplicates, no action needed from you. Single-machine setups are unaffected.
+
+## Summary of New Capabilities
+
+- `multiMachine.nobodyPollingRecovery` `{ dryRun }` — opt-in (dev-gated) nobody-polling take-over: detect → elect one machine → acquire the fenced lease → start polling. Dark + dryRun by default (observe-only; zero side effects until a deliberate enforce promotion).
