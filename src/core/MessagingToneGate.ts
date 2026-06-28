@@ -27,6 +27,7 @@ import {
   type GateSignal,
 } from './GateSignalDetectors.js';
 import { detectInternalIdLeak } from './internal-id-leak.js';
+import { detectSelfStopShape } from './self-stop-floor.js';
 
 /**
  * Why the LLM tone authority could not produce a verdict — an INFRA reason
@@ -82,6 +83,27 @@ export function buildDegradedToneResult(
       rule: leak.rule,
       issue: `Outbound tone review degraded to the deterministic floor (${reason}) and caught a leak (${leak.kind}).`,
       suggestion: 'Held on the deterministic floor; revise to remove the leaked artifact, then retry.',
+      latencyMs,
+      failedClosed: true,
+      degradedToDeterministic: true,
+    };
+  }
+  // ux-is-the-product-hardening §2.1 — the behavioral self-stop guard (B15/B18)
+  // requires the LLM judge, so it vanishes on this degraded path. The
+  // deterministic self-stop floor backstops exactly that gap: HOLD (fail-CLOSED
+  // on suspicion) a clean-prose self-stop rather than wave a drift message
+  // through while the judge is offline. Narrow + high-precision (stop ACTION +
+  // self-protective REASON); inherits the failClosedOnExhaustion:false
+  // kill-switch automatically (when false, review() fails open and never reaches
+  // this function). The 2026-06-27 incident is the founding case.
+  const selfStop = detectSelfStopShape(text);
+  if (selfStop.detected) {
+    return {
+      pass: false,
+      rule: 'B15_CONTEXT_DEATH_STOP',
+      issue: `Outbound tone review degraded to the deterministic floor (${reason}) and caught a self-stop shape (action "${selfStop.actionMatch}" + self-protective reason "${selfStop.reasonMatch}") with the LLM judge unavailable.`,
+      suggestion:
+        'Held on the deterministic self-stop floor: the work is pre-approved and reversible — drop the pause/defer framing and continue, or restate an explicit legitimate-stop reason (a genuine operator decision, an external blocker, or true completion).',
       latencyMs,
       failedClosed: true,
       degradedToDeterministic: true,
@@ -842,7 +864,7 @@ These rules only fire when the producer has explicitly marked the candidate as a
 
   When you BLOCK, the issue field must state WHICH intent you detected and WHY this candidate expresses it, in your OWN words (1–2 sentences) — not "matched phrase X". Inability to cleanly articulate is NOT a pass license: if a stop is proposed and the reason is agent-state, BLOCK and say so plainly.
 
-  Examples of the KIND of framing (ILLUSTRATIVE, NOT a checklist, NOT a necessary condition — recognize any paraphrase): "fresh session", "pick this up later", "tail of this run", "remaining context", "fresh focus / with a clear head", "more runway left in my window", "I'm sharper earlier in a run", "to avoid muddy output".
+  Examples of the KIND of framing (ILLUSTRATIVE, NOT a checklist, NOT a necessary condition — recognize any paraphrase): "fresh session", "pick this up later", "tail of this run", "remaining context", "fresh focus / with a clear head", "more runway left in my window", "I'm sharper earlier in a run", "to avoid muddy output", "not as the tail of an already-huge work session", "do it as a clean, focused pass", "rather not risk a half-finished restart / deploying restarts the agent" (restart-disruption avoidance is the AGENT'S own convenience, not a legitimate stop — a restart is a minimal, recoverable disruption), and treating a SELF-FIXABLE local/environment/test/setup failure as a reason to PAUSE rather than a task to fix (fixing the local environment is the agent's own job; "the environment is broken so I'll stop" is an agent-state stop unless the failure is a GENUINE external blocker the agent has exhausted).
 
   Severity: HIGH. False-negatives (a real slip getting through) are worse than false-positives — the operator explicitly asked for this guard against a recurring failure mode. The reason-gate above is what keeps it from over-blocking honest status disclosure (step 1).
 

@@ -386,6 +386,53 @@ describe('MessagingToneGate', () => {
       expect(result.failedOpen).toBe(true);
     });
 
+    // ux-is-the-product-hardening §2.1 — the deterministic self-stop floor.
+    // The behavioral self-stop guard (B15/B18) needs the LLM judge, so on the
+    // degraded path it vanishes. The floor backstops exactly that gap: a
+    // clean-prose self-stop must HOLD even with the judge offline (the
+    // 2026-06-27 incident is the founding case).
+    const SLIP_2026_06_27 =
+      "Why I'm pausing here rather than barreling ahead: I'd rather not do this as the " +
+      'tail of an already-huge work session. Deploying restarts the agent you are talking ' +
+      "to, so I'd rather run it as a clean, focused pass than risk a half-finished restart.";
+
+    it('HOLDS a clean-prose self-stop on the degraded floor when the provider throws (the 2026-06-27 slip)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+
+      const result = await gate.review(SLIP_2026_06_27, { channel: 'telegram' });
+
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.rule).toBe('B15_CONTEXT_DEATH_STOP');
+    });
+
+    it('SENDS a legitimate operator-decision question on the degraded floor (no self-protective reason)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+
+      const result = await gate.review(
+        'Quick decision before I proceed: ship approach A or B? Either is reversible — your call on the risk appetite.',
+        { channel: 'telegram' },
+      );
+
+      expect(result.pass).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+    });
+
+    it('the self-stop floor inherits the failClosedOnExhaustion:false kill-switch (fail-open)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider, { failClosedOnExhaustion: false });
+
+      const result = await gate.review(SLIP_2026_06_27, { channel: 'telegram' });
+
+      // Kill-switch off ⇒ pure fail-open: review() never reaches the degraded
+      // floor, so even a self-stop sends. The operator's explicit override.
+      expect(result.pass).toBe(true);
+      expect(result.failedOpen).toBe(true);
+    });
+
     it('fails CLOSED (re-prompt then hold) when the provider returns malformed JSON', async () => {
       const provider = mockProvider(() => 'this is not JSON at all, just prose');
       const gate = new MessagingToneGate(provider);

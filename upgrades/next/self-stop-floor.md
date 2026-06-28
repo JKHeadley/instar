@@ -1,0 +1,40 @@
+## What Changed
+
+The always-on outbound message gate has a behavioral check that blocks the agent from talking itself
+out of finishing pre-approved work (the "let me pause and pick this up fresh later" / "good stopping
+point" / "I'd rather not restart" bail-out habit). That check needs the LLM judge — and when the judge
+was unreachable (a flaky backend), the gate quietly let the message through. The leak backup
+(passwords / file paths / commands) still ran, but the behavioral self-stop check simply vanished
+under outage — exactly when the agent is most likely to be drifting.
+
+This adds a deterministic, no-LLM **self-stop floor** to the gate's existing degraded path
+(`src/core/self-stop-floor.ts`, wired into `buildDegradedToneResult`). When the LLM judge is offline
+and a message has the self-stop SHAPE — a stop/defer action conjoined with a self-protective reason
+(volume/fatigue, restart-avoidance, or treating a fixable local issue as a reason to stop) — the
+message is now HELD and surfaced back to the agent ("the work is pre-approved — continue") instead of
+being waved through. A genuine decision question to the operator or an external-blocker wait carries
+no self-protective reason and still sends. The LLM-judge B15 rule also got an illustrative clause for
+these same framings. The existing `messaging.toneGate.failClosedOnExhaustion: false` kill-switch
+covers the floor too.
+
+## What to Tell Your User
+
+If your agent ever went quiet under load and then later admitted it had "paused to pick things up
+fresh" — that gap is now closed on the degraded path. When the message-checking engine is briefly
+offline, the agent can no longer quietly send itself a bail-out and stop; the message is held and the
+agent is pushed to keep going on work you already approved. Nothing changes on normal sends, and your
+existing override still works.
+
+## Summary of New Capabilities
+
+- Deterministic self-stop backstop on the outbound gate's degraded path — the "don't talk yourself out
+  of finishing" guard no longer disappears when the LLM judge is unavailable.
+
+## Evidence
+
+- Replay of the 2026-06-27 bail-out message through the live deployed gate: `pass=false
+  rule=B15_CONTEXT_DEATH_STOP` (the gate's logic was already correct; the defect was fail-open under
+  outage, confirmed by `/metrics/features` showing fired=0 across 394 real calls in 72h).
+- tests/unit/self-stop-floor.test.ts (10 cases) + tests/unit/MessagingToneGate.test.ts (4 new
+  degraded-path cases): the slip HOLDs on a provider throw, a legit decision question SENDs, the
+  kill-switch fails open. 86 related tests green; `tsc --noEmit` clean.
