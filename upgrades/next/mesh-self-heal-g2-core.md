@@ -7,16 +7,17 @@ Mesh Self-Heal **G2 — core decision logic** (increment 1 of the nobody-serving
 - `decidePostCasSelfReverify` — "CAS-win is necessary but not sufficient": re-check live local poll-freshness before serving; on self-unfit, relinquish + self-exclude.
 - `NobodyPollingLedger` — evaluable soak evidence (episodes, claims, stand-downs, self-exclusions, vetoes), mirroring G3's close-the-loop ledger.
 
-This increment is **pure decision logic, NOT yet wired** to any tick, route, or actuation — it has ZERO runtime effect until the next increment (the `/mesh-selfheal/g2` observe route + enforce-mode actuation via the existing poll-follows-lease lever) consumes it.
+It also wires the core to a **read-only observe surface**, `GET /mesh-selfheal/g2`: it computes the live nobody-polling verdict over the pool, debounces a silence across reads, runs the decision (who would claim), records the soak counterfactual, and returns it. The surface is OBSERVE-only — it reports the decision but does NOT enact it (no lease acquire, no polling change). The enforce-mode actuation (actually taking over polling via the existing poll-follows-lease lever) is the next increment.
 
 ## Evidence
 
-- `tests/unit/nobodyPollingRecovery.test.ts` — 18 unit tests covering both sides of every decision boundary (election: preferred-fit / preferred-unfit / no-fit / determinism; verdict reduction: ok/dual/indeterminate/await/hold/claim/stand-down/escalate; self-reverify: fresh→serve / stale→relinquish; ledger accounting). All green; typecheck clean.
+- `tests/unit/nobodyPollingRecovery.test.ts` — 18 unit tests covering both sides of every decision boundary (election: preferred-fit / preferred-unfit / no-fit / determinism; verdict reduction: ok/dual/indeterminate/await/hold/claim/stand-down/escalate; self-reverify: fresh→serve / stale→relinquish; ledger accounting).
+- `tests/integration/mesh-selfheal-g2-route.test.ts` — 4 integration tests over the real HTTP pipeline (feature-alive 200; confirmed-silence→claim; transient-silence→await-confirm; two-pollers→veto). All green; typecheck clean.
 
 ## What to Tell Your User
 
-Nothing changes yet — this is inert internal decision logic for the upcoming "nobody-serving alarm," not yet active anywhere. When the full feature lands (a later increment), it will detect the "nobody is polling Telegram" state across your machines and have exactly one fit machine take over automatically, so messages stop dropping when a machine goes quiet. No action needed.
+Nothing changes in behavior yet — this is the detector + a read-only status surface for the upcoming "nobody-serving alarm," not yet acting anywhere. When the enforce step lands (next increment), it will detect the "nobody is polling Telegram" state across your machines and have exactly one fit machine take over automatically, so messages stop dropping when a machine goes quiet. No action needed.
 
 ## Summary of New Capabilities
 
-- None user-facing in this increment. New internal module `src/core/nobodyPollingRecovery.ts` (pure decision core) consumed by a later wiring increment; no route, config flag, or runtime surface added yet.
+- `GET /mesh-selfheal/g2` — read-only observe surface for the nobody-polling detector: live verdict + the single-claimant decision + soak evidence (agent observability; not a user-invokable capability). No config flag or write surface yet; observe-only (no actuation).

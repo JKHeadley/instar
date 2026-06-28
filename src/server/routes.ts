@@ -14,6 +14,7 @@ import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpa
 import { getHostSpawnSemaphore, configuredSpawnAcquireMs, configuredSpawnWaitersMax } from '../core/hostSpawnSemaphore.js';
 import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
+import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import fs from 'node:fs';
@@ -12721,6 +12722,57 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       enabled: !!ctx.machinePoolRegistry,
       ...verdict,
       machines: caps.map((c) => ({ machineId: c.machineId, nickname: c.nickname, online: c.online, pollingActive: c.pollingActive })),
+    });
+  });
+
+  // G2 nobody-polling silence debounce — module-scoped streak across reads, so a
+  // transient handoff-gap silence never reads as confirmed (Adv-F9).
+  const G2_NOBODY_POLLING_CONFIRM_OBSERVATIONS = 3;
+  let _g2SilenceStreak = 0;
+  // GET /mesh-selfheal/g2 — MESH-SELF-HEAL-SPEC §3.2 G2 OBSERVE surface (increment
+  // 2: detector + single-claimant election, REPORT-only). Computes the B5 verdict
+  // over the live pool, debounces a `silence` across reads (nobodyPollingConfirmObservations),
+  // runs the pure G2 decision (who should claim poll-ownership), records the
+  // counterfactual to the shared soak ledger, and returns it. OBSERVE-only: it
+  // does NOT actuate (no fenced-CAS acquire, no poll-lever write) — the enforce
+  // actuation is the next increment. Read-driven: each poll advances the soak.
+  router.get('/mesh-selfheal/g2', (_req, res) => {
+    const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
+    const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
+    const selfMachineId = ctx.coordinator?.identity?.machineId ?? null;
+    const verdict = poolPollerVerdict(
+      caps.map((c) => ({ machineId: c.machineId, online: c.online, pollingActive: c.pollingActive })),
+      false,
+    );
+    // Debounce a silence across reads (Adv-F9: a normal handoff gap is transient
+    // and must not trip a claim). Module-scoped streak counter.
+    if (verdict.verdict === 'silence') _g2SilenceStreak += 1; else _g2SilenceStreak = 0;
+    const silenceConfirmed = _g2SilenceStreak >= G2_NOBODY_POLLING_CONFIRM_OBSERVATIONS;
+    // fit (observe approximation): heartbeat-fresh = a candidate that COULD take
+    // over polling. In a `silence` NOBODY is polling, so fitness is NOT tied to
+    // pollingActive (that would exclude exactly the idle-but-healthy machines that
+    // should claim). The enforce increment refines this with the machine-local
+    // pollSucceededMonoMs re-verify (post-CAS) + self-exclusion advertisement.
+    const machines = caps.map((c) => ({ machineId: c.machineId, fit: !!c.online }));
+    const decision = decideNobodyPollingClaim({
+      selfMachineId: selfMachineId ?? '(unknown)',
+      pollerVerdict: verdict.verdict,
+      silenceConfirmed,
+      preferredAwakeMachineId: sync?.preferredAwakeMachineId ?? null,
+      machines,
+      // Peer-evidence-of-global-outage plumbing is the enforce increment; observe
+      // never claims a global outage (false → a confirmed silence proceeds to elect).
+      globalOutageEvidence: false,
+    });
+    sharedG2NobodyPollingLedger.recordClaim(decision, new Date().toISOString());
+    res.json({
+      enabled: !!ctx.machinePoolRegistry,
+      verdict,
+      silenceStreak: _g2SilenceStreak,
+      silenceConfirmed,
+      selfMachineId,
+      decision,
+      ledger: sharedG2NobodyPollingLedger.summary(),
     });
   });
 

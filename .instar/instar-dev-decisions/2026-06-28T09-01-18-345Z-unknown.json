@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-28T09:01:18.345Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 52,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}
