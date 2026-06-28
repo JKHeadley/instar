@@ -1,0 +1,23 @@
+## What Changed
+
+Mesh Self-Heal **G2 — core decision logic** (increment 1 of the nobody-serving alarm, `MESH-SELF-HEAL-SPEC` §3.2). Adds `src/core/nobodyPollingRecovery.ts`: the PURE, deterministic decision core for the silent-loss backstop — when NO machine is polling Telegram (the zombie-lease-holder state behind the message-drop incidents), exactly ONE fit machine must take over, never zero (drops), never two (the 409 poll-war).
+
+- `electPollClaimant` — deterministic single-claimant election (F4-preferred-awake if fit, else lowest-machineId fit). Machine-agnostic: every machine elects the SAME claimant, which is the structural defense against split-brain double-claim.
+- `decideNobodyPollingClaim` — reduces over the EXISTING B5 detector (`pollerCount.ts`): `ok`→no-op, `dual`→veto (claiming into 2 pollers IS the 409 war), `indeterminate`→fail-closed, unconfirmed silence→await, peer-confirmed global outage→hold, confirmed silence→elect + claim/stand-down/escalate.
+- `decidePostCasSelfReverify` — "CAS-win is necessary but not sufficient": re-check live local poll-freshness before serving; on self-unfit, relinquish + self-exclude.
+- `NobodyPollingLedger` — evaluable soak evidence (episodes, claims, stand-downs, self-exclusions, vetoes), mirroring G3's close-the-loop ledger.
+
+It also wires the core to a **read-only observe surface**, `GET /mesh-selfheal/g2`: it computes the live nobody-polling verdict over the pool, debounces a silence across reads, runs the decision (who would claim), records the soak counterfactual, and returns it. The surface is OBSERVE-only — it reports the decision but does NOT enact it (no lease acquire, no polling change). The enforce-mode actuation (actually taking over polling via the existing poll-follows-lease lever) is the next increment.
+
+## Evidence
+
+- `tests/unit/nobodyPollingRecovery.test.ts` — 18 unit tests covering both sides of every decision boundary (election: preferred-fit / preferred-unfit / no-fit / determinism; verdict reduction: ok/dual/indeterminate/await/hold/claim/stand-down/escalate; self-reverify: fresh→serve / stale→relinquish; ledger accounting).
+- `tests/integration/mesh-selfheal-g2-route.test.ts` — 4 integration tests over the real HTTP pipeline (feature-alive 200; confirmed-silence→claim; transient-silence→await-confirm; two-pollers→veto). All green; typecheck clean.
+
+## What to Tell Your User
+
+Nothing changes in behavior yet — this is the detector + a read-only status surface for the upcoming "nobody-serving alarm," not yet acting anywhere. When the enforce step lands (next increment), it will detect the "nobody is polling Telegram" state across your machines and have exactly one fit machine take over automatically, so messages stop dropping when a machine goes quiet. No action needed.
+
+## Summary of New Capabilities
+
+- `GET /mesh-selfheal/g2` — read-only observe surface for the nobody-polling detector: live verdict + the single-claimant decision + soak evidence (agent observability; not a user-invokable capability). No config flag or write surface yet; observe-only (no actuation).
