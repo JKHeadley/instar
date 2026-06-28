@@ -880,6 +880,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // deliberate enforce promotion (gated on the pollSucceeded-watermark plumbing +
     // the Phase-5 second-pass live-verify on the real pair).
     nobodyPollingRecovery: { dryRun: true },
+    // G1 zombie self-relinquish (lease↔job binding, MESH-SELF-HEAL-SPEC §3.1). OMIT
+    // `enabled` ⇒ dev-agent gate; dryRun:true ⇒ the holder-branch evaluator detects
+    // a confirmed zombie + records "would relinquish" but performs NO actuation (no
+    // relinquishAndBroadcast). Flipping dryRun:false is the deliberate enforce
+    // promotion (gated on the pollSucceeded/serve watermark refinements + the
+    // Phase-5 second-pass live-verify on the real pair).
+    zombieRelinquish: { dryRun: true },
     // multi-transport-mesh-comms (Layers 0-2) — multi-rope mesh transport
     // (Tailscale/LAN/Cloudflare hedged failover). Ships ENABLED (strictly additive;
     // a single-machine agent is a no-op and keeps its 127.0.0.1 bind — the 0.0.0.0

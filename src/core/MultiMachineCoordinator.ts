@@ -31,6 +31,9 @@ import { resolveDevAgentGate } from './devAgentGate.js';
 import { poolPollerVerdict } from './pollerCount.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from './nobodyPollingRecovery.js';
 import { applyNobodyPollingRecovery } from './nobodyPollingActuator.js';
+import { serveProgressFresh } from './serveProgress.js';
+import { decideZombieRelinquish, sharedG1ZombieRelinquishLedger } from './zombieRelinquish.js';
+import { getCurrentBootId } from '../server/boot-id.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
@@ -634,6 +637,102 @@ export class MultiMachineCoordinator extends EventEmitter {
     };
   }
 
+  // ── G1 zombie self-relinquish (lease↔job binding) — MESH-SELF-HEAL-SPEC §3.1 ──
+  private _g1RelinquishStreak = 0;
+  private _g1Evaluating = false;
+  private static readonly G1_CONFIRM_OBSERVATIONS = 3;
+  private static readonly G1_STALE_THRESHOLD_MS = 90_000;
+
+  /** G1 gate: dark+dryRun-first (dev-gated). Flipping dryRun:false (the deliberate
+   *  enforce promotion) is what lets a confirmed zombie actually relinquish. */
+  private zombieRelinquishCfg(): { enabled: boolean; dryRun: boolean } {
+    const m = this.config.multiMachine as { zombieRelinquish?: { enabled?: boolean; dryRun?: boolean } } | undefined;
+    return {
+      enabled: resolveDevAgentGate(m?.zombieRelinquish?.enabled, this.config),
+      dryRun: m?.zombieRelinquish?.dryRun ?? true,
+    };
+  }
+
+  /**
+   * G1 evaluator — called from tickLease's HOLDER branch each tick. Reads the three
+   * machine-local liveness watermarks (about THIS machine), debounces the relevant
+   * staleness, runs the deterministic zombie-relinquish decision, records evidence,
+   * and — only on a confirmed zombie AND `dryRun:false` — relinquishes the lease
+   * (signed tombstone). DARK + dryRun-first: gate off ⇒ strict no-op; dryRun ⇒
+   * records "would relinquish", touches NOTHING.
+   *
+   * Watermark sourcing (FD10 — lifeline-ACTUAL truth, not server intent):
+   *  - serveProgressedMonoMs ← state/serve-progress.json, read with getCurrentBootId()
+   *    (the SAME boot id the dispatch seam wrote with — NOT this.bootId, which is a
+   *    distinct per-coordinator id) so the boot-epoch fence matches; `performance.now()`
+   *    is the shared same-process clock domain for the freshness subtraction.
+   *  - poll signals ← lifeline-poll-active.json (ts-fresh = attempted; +pollingActive
+   *    = succeeded). These are liveness approximations; richer per-signal monotonic
+   *    stamps + the lastFetched>lastServed `pending` counters + positive-peer
+   *    global-outage evidence are enforce-ENABLE refinements (consulted only at
+   *    dryRun:false). With them unwired: pending defaults false (idle→pollSucceeded
+   *    path) and globalOutage defaults false (the local-failure-SAFE direction).
+   */
+  async evaluateZombieRelinquish(
+    nowMonoMs: number,
+    nowIso: string,
+  ): Promise<{ skipped?: string; decision?: string; relinquished?: boolean }> {
+    const cfg = this.zombieRelinquishCfg();
+    if (!cfg.enabled || !this.leaseCoordinator || !this._identity) {
+      return { skipped: 'disabled-or-single-machine' };
+    }
+    if (!this.leaseCoordinator.holdsLease()) {
+      this._g1RelinquishStreak = 0; // only a holder can be a zombie
+      return { skipped: 'not-holder' };
+    }
+    if (this._g1Evaluating) return { skipped: 'already-evaluating' };
+    this._g1Evaluating = true;
+    try {
+      const threshold = MultiMachineCoordinator.G1_STALE_THRESHOLD_MS;
+      const bootId = getCurrentBootId();
+      // serve-progress freshness needs the dispatch-seam's boot id; if the boot id
+      // isn't initialized yet (server not fully up), don't evaluate (skip — never
+      // relinquish on an un-evaluable serve signal).
+      if (!bootId) return { skipped: 'boot-id-not-ready' };
+      const serveProgressedFresh = serveProgressFresh(this.config.stateDir, bootId, nowMonoMs, threshold);
+      const pa = readPollActive(this.config.stateDir);
+      const pollFresh = !!pa && pidAlive(pa.pid) && (Date.now() - pa.ts) < threshold;
+      const pollAttemptedFresh = pollFresh;
+      const pollSucceededFresh = pollFresh && pa!.pollingActive === true;
+      const pending = false; // refinement: lastFetched>lastServed counters not yet plumbed
+      // Debounce the relevant-stale signal (Adv-F8 — an evaluator-resume blip alone never trips).
+      const relevantStale = pending ? !serveProgressedFresh : !pollSucceededFresh;
+      if (relevantStale) this._g1RelinquishStreak += 1; else this._g1RelinquishStreak = 0;
+      const staleConfirmed = this._g1RelinquishStreak >= MultiMachineCoordinator.G1_CONFIRM_OBSERVATIONS;
+      const decision = decideZombieRelinquish({
+        holdsLease: true,
+        isActiveLeaseRole: this._role === 'awake',
+        pending,
+        pollAttemptedFresh,
+        pollSucceededFresh,
+        serveProgressedFresh,
+        staleConfirmed,
+        peerConfirmsGlobalOutage: false, // refinement → local-failure-safe direction
+      });
+      sharedG1ZombieRelinquishLedger.record(decision, nowIso);
+      if (decision.relinquish && !cfg.dryRun) {
+        // Quiesce + relinquish (signed tombstone). Best-effort — a failure retries next tick.
+        try {
+          await this.leaseCoordinator.relinquishAndBroadcast();
+          this._g1RelinquishStreak = 0;
+          console.log(`[MultiMachine] [g1-relinquish] zombie holder relinquished (${decision.reason})`);
+        } catch (err) {
+          console.error(`[MultiMachine] [g1-relinquish] relinquish failed: ${(err as Error).message}`);
+        }
+      } else if (decision.relinquish && cfg.dryRun) {
+        console.log(`[MultiMachine] [g1-relinquish] DRY-RUN would relinquish (${decision.reason})`);
+      }
+      return { decision: decision.action, relinquished: decision.relinquish && !cfg.dryRun };
+    } finally {
+      this._g1Evaluating = false;
+    }
+  }
+
   /**
    * G2 enforce evaluator — the SERVER calls this on its cadence with the live pool
    * capacities (which carry each machine's lifeline-actual `pollingActive`). It
@@ -961,7 +1060,14 @@ export class MultiMachineCoordinator extends EventEmitter {
         // F1a — bounded await: a hung renew can never wedge the tick.
         await this.withTickTimeout('renew', () => this.leaseCoordinator!.renew());
         this.reconcileRoleToLease('lease-tick');
-      } else if (this.shouldDeferToPreferred()) {
+        // G1 (MESH-SELF-HEAL-SPEC §3.1) — a holder that has stopped doing the JOB
+        // (serve/poll watermarks stale) relinquishes the badge so a healthy machine
+        // takes over. DARK + dryRun-gated INSIDE the evaluator (strict no-op when
+        // off; records-only in dryRun). `performance.now()` matches the dispatch
+        // seam's serve-progress clock domain (same process). Best-effort — a slow/
+        // failed eval must never wedge the lease tick.
+        await this.evaluateZombieRelinquish(performance.now(), new Date().toISOString())
+          .catch(() => { /* @silent-fallback-ok — G1 eval is best-effort; retried next tick */ });
         // F4 (preferred-awake, opt-in) — we are NON-preferred and observe the
         // preferred machine holding a HEALTHY lease: defer, do not contend. If the
         // preferred goes down/unhealthy, shouldDeferToPreferred() flips false and we

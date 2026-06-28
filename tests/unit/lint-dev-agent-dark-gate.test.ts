@@ -453,10 +453,16 @@ describe('lint-dev-agent-dark-gate', () => {
       // DEV_GATED_FEATURES), so it adds NO new attributed path; it only shifts every
       // sessionPool-onward `enabled: false` line DOWN by +7. RE-VERIFIED via the
       // attributor on the edited ConfigDefaults (path set unchanged, uniform +7).
-      '1067': 'multiMachine.sessionPool.enabled',
-      '1093': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1103': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1132': 'multiMachine.sessionPool.holdForStability.enabled',
+      // mesh-self-heal G1 zombieRelinquish (2026-06-28): a NEW
+      // multiMachine.zombieRelinquish block (`{ dryRun: true }` + ~7-line comment)
+      // was inserted right after nobodyPollingRecovery (ABOVE sessionPool). It OMITS
+      // `enabled` (dev-gated via resolveDevAgentGate), so NO new attributed path; it
+      // only shifts every sessionPool-onward `enabled: false` line DOWN by +7.
+      // RE-VERIFIED via the attributor on the edited ConfigDefaults (uniform +7).
+      '1074': 'multiMachine.sessionPool.enabled',
+      '1100': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1110': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1139': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -491,10 +497,11 @@ describe('lint-dev-agent-dark-gate', () => {
       // After merging JKHeadley/main + my accountFollowMe block, these resolve as below.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
       // (+7 from the nobodyPollingRecovery block above — see the sessionPool note.)
-      '1301': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1423': 'cartographer.freshnessSweep.enabled',
-      '1468': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1493': 'cartographer.subtreeNav.llmRerank.enabled',
+      // (+7 from the zombieRelinquish block above — see the sessionPool note.)
+      '1308': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1430': 'cartographer.freshnessSweep.enabled',
+      '1475': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1500': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
