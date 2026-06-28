@@ -1,0 +1,20 @@
+## What Changed
+
+Mesh Self-Heal **G1 — core decision logic** (increment 1 of the lease↔job binding, MESH-SELF-HEAL-SPEC §3.1). Adds `src/core/zombieRelinquish.ts`: the PURE, deterministic decision for the deepest fix — the "in charge" lease currently means two things at once ("I'm the coordinator" AND "I'm actually serving you"), and conflating them is what let a machine hold the badge while serving nothing. G1 binds them: an active holder that has stopped doing the JOB must relinquish.
+
+- `decideZombieRelinquish` — three-signal liveness (pollAttempted / pollSucceeded / serveProgressed, all machine-local, about the machine ITSELF): `not-applicable` for a non-active-holder; `healthy`; `await-confirm` (debounced); `relinquish-wedged` (poll loop dead → unconditional); `hold-global` (only on POSITIVE peer evidence the outage is shared — "can't hear a peer" ≠ global); `relinquish` (confirmed LOCAL failure → safe direction, G2 backstops). Pending work keys on serve-progress; idle keys on poll-success.
+- `ZombieRelinquishLedger` — evaluable soak evidence (mirrors G2/G3).
+
+Pure decision logic, NOT yet wired — ZERO runtime effect until the next increment (the three-signal watermark plumbing incl. the new `state/serve-progress.json` record + the tickLease holder-branch wiring + F3 relinquish actuation) consumes it.
+
+## Evidence
+
+- `tests/unit/zombieRelinquish.test.ts` — 11 unit tests covering both sides of every branch: not-a-holder / observe-only → not-applicable; healthy (pending→serve, idle→poll); await-confirm; relinquish-wedged; hold-global (peer-confirmed); relinquish (no peer evidence = safe direction); fetched-and-dropped zombie; ledger accounting. Typecheck clean.
+
+## What to Tell Your User
+
+Nothing changes yet — inert internal decision logic for the deepest part of the multi-machine self-heal, not active anywhere. When the full feature lands, a machine that holds the "in charge" badge but has quietly stopped fetching/serving your messages will automatically hand the badge off (instead of sitting on it while messages drop) — and exactly one healthy machine takes over. No action needed.
+
+## Summary of New Capabilities
+
+- None user-facing in this increment. New internal module `src/core/zombieRelinquish.ts` (pure decision core) consumed by a later wiring increment; no route, config flag, or runtime surface added yet.
