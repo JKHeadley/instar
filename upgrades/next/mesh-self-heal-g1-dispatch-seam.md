@@ -1,0 +1,17 @@
+## What Changed
+
+Mesh Self-Heal **G1 — serve-progress dispatch-seam write** (wiring increment B1, MESH-SELF-HEAL-SPEC §3.1). Wires `writeServeProgress` into the `/internal/telegram-forward` handler — right after a fetched update is claimed for processing (past dedup-drop + sentinel-stop) — so the third liveness watermark (`serveProgressedMonoMs`) records REAL end-to-end serve progress instead of sitting unwritten.
+
+This makes the §3.1 third signal live: a machine that is actually serving fetched updates advances the watermark; a fetched-and-dropped zombie does not. Unconditional + best-effort (a write failure never affects routing); the watermark is still unread until the next increment (the relinquish evaluator).
+
+## Evidence
+
+- `tests/integration/serve-progress-dispatch-seam.test.ts` — drives the real `/internal/telegram-forward` handler and asserts `state/serve-progress.json` is written (with a monotonic stamp, bootId, serverPid) when the handler processes a fetched update. Typecheck clean.
+
+## What to Tell Your User
+
+Nothing changes in behavior — this is inert internal plumbing recording a health watermark (whether this machine is actually serving fetched messages) for the deepest multi-machine self-heal piece. No action needed.
+
+## Summary of New Capabilities
+
+- None user-facing. The serve-progress watermark (`state/serve-progress.json`) now records real data at the inbound dispatch seam; consumed by a later relinquish-evaluator increment.
