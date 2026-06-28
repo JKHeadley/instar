@@ -14,6 +14,8 @@ import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpa
 import { getHostSpawnSemaphore, configuredSpawnAcquireMs, configuredSpawnWaitersMax } from '../core/hostSpawnSemaphore.js';
 import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
+import { writeServeProgress } from '../core/serveProgress.js';
+import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
@@ -16038,6 +16040,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         console.error(`[telegram-forward] exactly-once gate error (fail-open, routing normally): ${err instanceof Error ? err.message : err}`);
       }
     }
+
+    // G1 (MESH-SELF-HEAL-SPEC §3.1) — stamp serve-progress: this machine just
+    // committed to PROCESSING a fetched update (past dedup-drop + sentinel-stop),
+    // i.e. end-to-end progress on inbound. The relinquish evaluator reads this
+    // (serveProgressedMonoMs) to tell a serving holder from a fetched-and-dropped
+    // zombie. Machine-global monotonic-MAX watermark; boot-epoch-fenced. Best-effort
+    // — a write failure must never affect routing.
+    try {
+      writeServeProgress(ctx.config.stateDir, {
+        bootId: getCurrentBootId() ?? `boot-${process.pid}`,
+        serverPid: process.pid,
+        monoMs: performance.now(),
+      });
+    } catch { /* @silent-fallback-ok — serve-progress is a best-effort liveness watermark; never block routing */ }
 
     // Agent-to-agent Telegram comms hook (spec MENTOR-LIVE-READINESS §Recipient side).
     // The polling path invokes this gate inside the adapter; lifeline-forwarded messages
