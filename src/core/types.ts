@@ -5229,6 +5229,36 @@ export interface MonitoringConfig {
     feedbackPostDelayMs?: number;
   };
   /**
+   * Bias-to-Action — standing-authorization signal for B17_FALSE_BLOCKER
+   * (spec: docs/specs/BIAS-TO-ACTION-SPEC.md). Feeds the MessagingToneGate a
+   * VERIFIED-operator, non-forwarded, in-window standing-authorization grant so
+   * that "re-asking for authority you already hold" is recognized as the B17
+   * false blocker it is. Dev-gated DARK: `enabled` is OMITTED from ConfigDefaults
+   * (the development-agent gate resolves it) and the routes 503 when off.
+   * SIGNAL-ONLY and OBSERVE-ONLY first (`observeOnly` default true): a would-fire
+   * is recorded to `logs/bias-to-action.jsonl` (source enum + matched-phrase token
+   * + uid HASH, never a raw quote) and the message is NEVER altered until a
+   * separate operator decision graduates it (observeOnly:false). It can never
+   * flip a B1–B7/B15 leak HOLD.
+   */
+  biasToAction?: {
+    /** Master kill switch (default via dev-agent gate; OMITTED from ConfigDefaults). */
+    enabled?: boolean;
+    /**
+     * Observe-only mode (default true). When true the resolver's grant is NOT
+     * attached to the gate context (no verdict can change) — the would-fire is
+     * only recorded to the telemetry log. Graduate to live B17 firing with false.
+     */
+    observeOnly?: boolean;
+    /** Look-back window for the verified-operator grant scan (spec D9). */
+    lookback?: {
+      /** Max operator-authored inbound rows scanned. Default 40. */
+      maxRows?: number;
+      /** Max grant age that still counts (ms). Default 24h. */
+      windowMs?: number;
+    };
+  };
+  /**
    * PrincipalGuard — observe-only outbound coherence check for the "Know Your
    * Principal" / Caroline identity-bleed standard (security build increment 3).
    * When enabled, the outbound tone-gate seam runs

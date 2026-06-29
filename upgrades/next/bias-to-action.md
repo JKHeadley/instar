@@ -1,0 +1,87 @@
+<!-- bump: patch -->
+
+## What Changed
+
+**Standing-authorization signal for the B17_FALSE_BLOCKER outbound-tone-gate rule**
+(BIAS-TO-ACTION-SPEC) — the structural fix for "re-asking the operator for an
+approval they already granted." The gate's existing B17 rule catches handing a
+doable task back to a human, but its legitimate "asking for an approval the agent
+must obtain" carve-out had no notion of an approval ALREADY IN HAND, so re-asking
+for held authority slipped through as legitimate escalation.
+
+Two cheap, deterministic, deps-injected producers now feed the existing LLM gate:
+`detectAskWhenAuthorized` (does the outbound text seek permission?) and
+`resolveStandingAuthorization` (is there a VERIFIED-operator, PROVABLY-non-forwarded,
+in-window grant in the topic?). The gate makes the semantic call — does this grant
+plausibly cover THIS specific, **non-FLOOR** action? — by meaning, with a decisive
+under-fire bias (any uncertainty → do not fire B17; a needless ask is harmless,
+suppressing a needed one is the harm). The standing-authorization evidence is
+rendered as boundary-quoted, secret-scrubbed **untrusted DATA** and can never flip a
+B1–B7/B15 leak HOLD; citation precedence (B15 > B16 > B17 > B18) is unchanged.
+
+Load-bearing security substrate: a forwarded operator message carries third-party
+content, so the Telegram message log now persists an **explicit `forwarded` boolean**
+on BOTH ingress paths (polling `appendToLog` + lifeline `logInboundMessage`),
+including an explicit `false` on genuine rows — a grant counts only when provably
+non-forwarded; a legacy row with no flag never counts (fail-safe).
+
+Ships **observe-only + dev-gated dark** (`monitoring.biasToAction`, registered in
+`DEV_GATED_FEATURES`): on a development agent the resolver runs and records a
+would-fire to `logs/bias-to-action.jsonl` (operator-uid HASH + ask-phrase token +
+source enum + grant timestamp — never a raw uid or the operator's words), and it
+changes **no message**. Live B17 firing is a separate future `observeOnly:false`
+operator decision, gated on a measured low false-positive rate.
+
+## Evidence
+
+**The gap (reproduction):** on 2026-06-27 (Telegram topic 28130) the operator said
+"Please enter an autonomy session and continue until this is fully fixed" + "you have
+my preapproval for any decisions needed." With that live grant in hand I still stopped
+at "ready for your go-ahead to build" and waited — the operator had to chase me ("did
+you get my last message?"). The existing B17_FALSE_BLOCKER rule is meant to catch
+handing a doable task back to a human, but its "asking for an approval the agent must
+obtain" carve-out treated re-asking for an ALREADY-GRANTED approval as legitimate
+escalation, so the surrender passed the gate.
+
+**Before:** a verified, in-window operator grant ("you have my preapproval…") followed
+by an agent message asking permission to proceed → B17 does NOT fire (the carve-out
+exempts the ask); the agent stalls on the operator.
+
+**After (observe-only, verified on the real read/write paths):** the same situation now
+resolves a verified-operator, provably-non-forwarded, in-window grant from the real
+Telegram message log and records a would-fire to `logs/bias-to-action.jsonl` (uid hash +
+ask-phrase token), demonstrating the live clause would recognize the false blocker —
+while changing no message. Verified by `tests/unit/bias-to-action-wiring.test.ts`, which
+drives the resolver through the real `getTopicHistory` read path: an identical grant
+from a DIFFERENT uid does NOT count, a FORWARDED grant does NOT count, a legacy row with
+no `forwarded` field does NOT count, and a topic with no bound operator does NOT count —
+each a fail-safe toward sending the ask. Forwarded persistence asserted on BOTH ingress
+writers including the explicit `false` on genuine rows.
+
+**Safety (before/after unchanged):** supplying a standing-authorization grant can never
+flip a B1–B7/B15 credential-leak HOLD — confirmed by the existing leak-HOLD regressions
+in the 55-test `MessagingToneGate` suite, which pass against the new B17 sub-clause; and
+the independent Phase-5 adversarial review traced all six security-critical claims and
+could not break any (CONCUR).
+
+## What to Tell Your User
+
+⚗️ **Experimental, off by default — nothing changes for you yet.** This is an internal
+guardrail that, once matured, will stop me re-asking you for permission I already
+have — when you've said "go ahead, you have my preapproval, run autonomously," I
+should act on that instead of stopping to ask again. For now it only *watches* and
+records what it would have done, on a development agent, without altering a single
+message. It will never override a genuine FLOOR decision (anything irreversible,
+cost-bearing, out-of-scope, or policy-sensitive) — those always still get your
+explicit yes — and it can never weaken the safety gate that stops credential/path
+leaks. Most agents (the fleet) are wholly unaffected until it's deliberately turned on.
+
+## Summary of New Capabilities
+
+- Standing-authorization signal for B17 — recognizes "re-asking for authority you
+  already hold" as the false blocker it is (observe-only + dev-gated dark).
+- Verified-operator-only, provably-non-forwarded, in-window grant resolution
+  (Know Your Principal; fail-safe toward sending the ask on any uncertainty).
+- Explicit `forwarded` provenance persisted on both Telegram ingress paths.
+- `logs/bias-to-action.jsonl` observe-only telemetry (hashed uid, no raw quote) for
+  measuring the false-positive rate before any live firing.

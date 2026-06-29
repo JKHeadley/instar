@@ -378,18 +378,18 @@ describe('lint-dev-agent-dark-gate', () => {
       // block below — shifting each subsequent `enabled: false` line DOWN by +5.
       // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
       '427': 'monitoring.correctionLearning.enabled',
-      '521': 'monitoring.apprenticeshipCycleSla.enabled',
-      '529': 'monitoring.geminiCapacityEscalation.enabled',
-      '553': 'monitoring.greenPrAutoMerge.enabled',
-      '603': 'threadline.a2aCheckIn.enabled',
+      '530': 'monitoring.apprenticeshipCycleSla.enabled',
+      '538': 'monitoring.geminiCapacityEscalation.enabled',
+      '562': 'monitoring.greenPrAutoMerge.enabled',
+      '612': 'threadline.a2aCheckIn.enabled',
       // secure-a2a-verified-pairing §3.10 (Increment 6): the new
       // threadline.verifiedPairing block (~21 lines, NO `enabled:` literal — see the
       // note below the sessionPool keys) was inserted inside the `threadline` block
       // ABOVE mentor, shifting every subsequent `enabled: false` line DOWN by +19.
       // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      '714': 'mentor.enabled',
-      '725': 'mentor.autonomousFix.enabled',
-      '740': 'mentee.enabled',
+      '723': 'mentor.enabled',
+      '734': 'mentor.autonomousFix.enabled',
+      '749': 'mentee.enabled',
       // multi-machine-lease-self-heal: a NEW multiMachine.leaseSelfHeal block was
       // inserted at the TOP of the `multiMachine` block (ABOVE accountFollowMe). It
       // adds TWO `enabled: false` literals — F2 staleHolderTakeover + F3
@@ -398,14 +398,14 @@ describe('lint-dev-agent-dark-gate', () => {
       // neither is attributed). The block (~30 lines incl. its comment) shifts every
       // subsequent `enabled: false` line DOWN by +28. RE-VERIFIED by hand via the
       // attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      '843': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '847': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '852': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '856': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
       // multi-transport-mesh-comms (2026-06-20): soloCaptainHold.enabled:false (Layer 3,
       // action-bearing) added to the leaseSelfHeal block + a ~15-line meshTransport FLAT
       // block (enabled: TRUE, NOT an `enabled: false` path so the attributor ignores it)
       // inserted ABOVE sessionPool — together shifting every sessionPool-onward
       // `enabled: false` line by +24 (956→980, 981→1005). RE-VERIFIED via the attributor.
-      '854': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '863': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -459,10 +459,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // `enabled` (dev-gated via resolveDevAgentGate), so NO new attributed path; it
       // only shifts every sessionPool-onward `enabled: false` line DOWN by +7.
       // RE-VERIFIED via the attributor on the edited ConfigDefaults (uniform +7).
-      '1074': 'multiMachine.sessionPool.enabled',
-      '1100': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1110': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1139': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1083': 'multiMachine.sessionPool.enabled',
+      '1109': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1119': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1148': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -498,10 +498,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
       // (+7 from the nobodyPollingRecovery block above — see the sessionPool note.)
       // (+7 from the zombieRelinquish block above — see the sessionPool note.)
-      '1308': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1430': 'cartographer.freshnessSweep.enabled',
-      '1475': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1500': 'cartographer.subtreeNav.llmRerank.enabled',
+      // BIAS-TO-ACTION-SPEC D8: a NEW monitoring.biasToAction ConfigDefaults block
+      // (~9 lines: observeOnly + lookback) was inserted after correctionLearning. It
+      // deliberately adds NO `enabled:` literal (the flag rides the developmentAgent
+      // gate; a literal `false` would force-dark dev agents — the PR #1001 anti-pattern),
+      // so it introduces NO new attributed path — it ONLY shifts every `enabled: false`
+      // key below it DOWN by +9. RE-VERIFIED by hand via the attributor on the edited
+      // ConfigDefaults (each still maps to a real `enabled: false,` line).
+      '1317': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1439': 'cartographer.freshnessSweep.enabled',
+      '1484': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1509': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

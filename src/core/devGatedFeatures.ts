@@ -50,6 +50,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the owner-gate + governor + reconciler run the full decision loop and AUDIT/log every suppression/dead-letter/close they WOULD make, but PromiseBeacon.emitUserSend STILL sends and the governor/reconciler mutate nothing while dryRun holds (verified at emitUserSend §4.2 + reconcileGraveyard/maybeReconcileGraveyard dryRun branches). No spend, no destructive action, no egress while the canary holds; real suppression/closes need a deliberate dryRun:false. Same dogfooding posture as topicProfiles / credential-repointing.',
   },
   {
+    name: 'biasToAction',
+    configPath: 'monitoring.biasToAction.enabled',
+    description: 'Standing-authorization signal for B17_FALSE_BLOCKER (BIAS-TO-ACTION-SPEC) — feeds the outbound tone gate a VERIFIED-operator, non-forwarded, in-window grant so "re-asking for authority you already hold" is recognized as the false blocker it is.',
+    justification: 'SIGNAL-ONLY and OBSERVE-ONLY (observeOnly defaults true): on a dev agent the resolver runs and records a would-fire to logs/bias-to-action.jsonl (uid HASH + ask-phrase token, never a raw quote), but the grant is NOT attached to the gate context so NO verdict can change and no message is ever altered. It can never flip a B1–B7/B15 leak HOLD. No spend, no egress, no destructive action while observe-only holds; live B17 firing needs a deliberate observeOnly:false. Same dogfooding posture as topicProfiles / agentOwnedFollowthrough.',
+  },
+  {
     name: 'standbyHonestyTiers',
     configPath: 'monitoring.standbyHonestyTiers.enabled',
     description: "Tier1/Tier2 standby honest-stuck classification — surface the REAL reason a live-but-failing session is silent (rate-limited / policy-wedge / context-wedge / context-too-long) instead of 'actively working'.",

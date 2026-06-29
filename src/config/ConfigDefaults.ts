@@ -459,6 +459,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
+    // Bias-to-Action standing-authorization signal (BIAS-TO-ACTION-SPEC, D8).
+    // Dev-gated DARK: `enabled` is intentionally OMITTED so the development-agent
+    // gate resolves it (live-on-dev / dark-on-fleet, the standard pattern). The
+    // non-`enabled` knobs ship so a dev agent gets the safe defaults: OBSERVE-ONLY
+    // (never alters a message) + the conservative D9 look-back window.
+    biasToAction: {
+      observeOnly: true,
+      lookback: { maxRows: 40, windowMs: 24 * 60 * 60 * 1000 },
+    },
     // Promise-Beacon Escalation (PROMISE-BEACON-ESCALATION-SPEC §5). When a
     // beacon-enabled commitment's owning session dies, escalate (revive → honest
     // status → loud give-up) instead of silently terminalizing it. Ships DARK:

@@ -225,6 +225,14 @@ interface LogEntry {
   senderName?: string;
   senderUsername?: string;
   telegramUserId?: number;
+  /**
+   * Forwarded provenance (BIAS-TO-ACTION-SPEC D10). Persisted EXPLICITLY on
+   * genuine inbound rows as `false` (NOT omitted) so the standing-authorization
+   * resolver can PROVE a row is non-forwarded — a forwarded operator message
+   * carries third-party content and must never count as a grant. A legacy row
+   * with no `forwarded` field is forwarded-UNKNOWN and does not count (fail-safe).
+   */
+  forwarded?: boolean;
 }
 
 /**
@@ -1219,6 +1227,10 @@ export class TelegramAdapter implements MessagingAdapter {
     senderName?: string;
     senderUsername?: string;
     telegramUserId?: number;
+    /** BIAS-TO-ACTION-SPEC D10: forwarded provenance from the lifeline wire.
+     *  Persisted EXPLICITLY (defaults to false) so the standing-authorization
+     *  resolver can prove a lifeline-ingested operator row is non-forwarded. */
+    forwarded?: boolean;
   }): void {
     this.appendToLog({
       messageId: entry.messageId,
@@ -1230,6 +1242,7 @@ export class TelegramAdapter implements MessagingAdapter {
       senderName: entry.senderName,
       senderUsername: entry.senderUsername,
       telegramUserId: entry.telegramUserId,
+      forwarded: entry.forwarded === true,
     });
   }
 
@@ -4502,6 +4515,14 @@ export class TelegramAdapter implements MessagingAdapter {
       },
     };
 
+    // BIAS-TO-ACTION-SPEC D10: detect the platform forward markers and persist
+    // an EXPLICIT forwarded boolean (false on a genuine row, NOT omitted) so the
+    // standing-authorization resolver can prove non-forwarded provenance.
+    const isForwarded = !!(
+      (msg as unknown as Record<string, unknown>).forward_origin
+      || (msg as unknown as Record<string, unknown>).forward_from
+      || (msg as unknown as Record<string, unknown>).forward_date
+    );
     // Log the message (including sender identity for multi-user topics)
     this.appendToLog({
       messageId: msg.message_id,
@@ -4513,6 +4534,7 @@ export class TelegramAdapter implements MessagingAdapter {
       senderName: msg.from.first_name,
       senderUsername: msg.from.username,
       telegramUserId: msg.from.id,
+      forwarded: isForwarded,
     });
 
     // Sentinel intercept — fires BEFORE routing to detect emergency stop/pause.

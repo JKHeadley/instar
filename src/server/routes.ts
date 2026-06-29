@@ -44,6 +44,7 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
@@ -294,6 +295,7 @@ import { detectLocalhostLink } from '../core/localhost-link.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
+import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
@@ -1762,6 +1764,97 @@ export function createRoutes(ctx: RouteContext): Router {
       } catch {
         // @silent-fallback-ok — detector errors never override the authority; skip the signal.
       }
+      // Standing-authorization for B17 (spec docs/specs/BIAS-TO-ACTION-SPEC.md):
+      // the ask-when-authorized SIGNAL. Populated always (it is inert without the
+      // standingAuthorization CONTEXT, which the dev-gated resolver below supplies).
+      // Fail-OPEN: a detector throw skips the signal.
+      try {
+        const ask = detectAskWhenAuthorized(text);
+        if (ask.asking) signals.askWhenAuthorized = { asking: true, phrase: ask.phrase };
+      } catch {
+        // @silent-fallback-ok — detector errors never override the authority; skip the signal.
+      }
+
+      // ── Standing-authorization CONTEXT for B17 (BIAS-TO-ACTION-SPEC D3/D4/D7/D8) ──
+      // The askWhenAuthorized signal above is INERT without this verified grant.
+      // Dev-gated DARK (resolveDevAgentGate) + OBSERVE-ONLY first: in observe mode
+      // the resolved grant is NOT attached to the gate context (no verdict can
+      // change) — a would-fire is recorded to logs/bias-to-action.jsonl (source enum
+      // + matched-phrase token + uid HASH, never the raw quote). Graduating to
+      // observeOnly:false is a SEPARATE operator decision that attaches the grant so
+      // the live B17 sub-clause judges it. Fail toward sending: every uncertainty
+      // leaves standingAuthorization undefined (the gate runs exactly as today).
+      let standingAuthorization:
+        | import('../core/MessagingToneGate.js').ToneReviewContext['standingAuthorization']
+        | undefined;
+      try {
+        const btaCfg = ctx.config.monitoring?.biasToAction;
+        if (
+          resolveDevAgentGate(btaCfg?.enabled, ctx.config) &&
+          ctx.topicOperatorStore &&
+          typeof options.topicId === 'number'
+        ) {
+          const topicForAuth = options.topicId;
+          const opStore = ctx.topicOperatorStore;
+          const { resolveStandingAuthorization } = await import('../core/standing-authorization.js');
+          const sa = resolveStandingAuthorization(
+            topicForAuth,
+            {
+              getVerifiedOperatorUid: (t) => opStore.asVerifiedOperator(t)?.uid ?? null,
+              getRecentMessages: (t) =>
+                (ctx.telegram?.getTopicHistory(Number(t), btaCfg?.lookback?.maxRows ?? 40) ?? [])
+                  .filter((e) => e.fromUser)
+                  .map((e) => ({
+                    telegramUserId: e.telegramUserId,
+                    text: e.text,
+                    ts: Date.parse(e.timestamp),
+                    forwarded: e.forwarded,
+                  })),
+              now: () => Date.now(),
+            },
+            { maxRows: btaCfg?.lookback?.maxRows, windowMs: btaCfg?.lookback?.windowMs },
+          );
+          const observeOnly = btaCfg?.observeOnly !== false; // default true
+          if (sa.present) {
+            if (observeOnly) {
+              // Record the would-fire ONLY when the agent is actually asking — that
+              // is the exact case the live B17 sub-clause would have to judge. The
+              // record carries a uid HASH + ask-phrase token, never a raw quote.
+              const wouldFire = buildBiasToActionWouldFire({
+                topicId: topicForAuth,
+                asking: signals.askWhenAuthorized?.asking === true,
+                present: true,
+                source: sa.source,
+                askPhrase: signals.askWhenAuthorized?.phrase,
+                operatorUid: opStore.asVerifiedOperator(topicForAuth)?.uid ?? null,
+                grantedAt: sa.grantedAt,
+              });
+              if (wouldFire) {
+                try {
+                  const logPath = path.join(ctx.config.stateDir, '..', 'logs', 'bias-to-action.jsonl');
+                  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+                  fs.appendFileSync(logPath, JSON.stringify(wouldFire) + '\n', 'utf8');
+                } catch {
+                  /* @silent-fallback-ok — telemetry must never throw or affect delivery */
+                }
+              }
+            } else {
+              // Graduated: attach the grant with secret-scrubbed evidence (D7) so the
+              // B17 sub-clause can judge coverage. The gate ALSO boundary-quotes it.
+              const { scrubString } = await import('../core/CredentialAuditEmit.js');
+              standingAuthorization = {
+                present: true,
+                grantedAt: sa.grantedAt,
+                evidenceQuote: scrubString(sa.evidenceQuote ?? '').slice(0, 280),
+              };
+            }
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — the resolver/telemetry never overrides the authority
+        // or affects delivery; on any error the gate runs without this context.
+      }
+
       try {
         const leak = detectInternalIdLeak(text);
         if (leak.leaked) signals.internalIdLeak = { leaked: true, terms: leak.terms };
@@ -1906,6 +1999,9 @@ export function createRoutes(ctx: RouteContext): Router {
           messageKind: options.messageKind,
           agentState,
           recipientClass,
+          // Undefined in observe-only mode (the default) and on every uncertainty,
+          // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
+          standingAuthorization,
         }),
         gateBudgetMs,
         undefined,
@@ -16001,6 +16097,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         senderName: fromFirstName,
         senderUsername: fromUsername,
         telegramUserId: fromUserId,
+        // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
+        // standing-authorization resolver can prove non-forwarded provenance.
+        forwarded: req.body.forwarded === true,
       });
     }
 
@@ -16121,7 +16220,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
           // any profile-ingress recognition. An upgraded lifeline sets this;
           // its absence (older lifeline) reads as not-forwarded.
-          ...(req.body.forwarded === true ? { forwarded: true } : {}),
+          // BIAS-TO-ACTION-SPEC D10: write an EXPLICIT boolean (NOT the
+          // omit-when-false idiom) so the standing-authorization resolver can
+          // prove a genuine lifeline-forwarded row is non-forwarded. An older
+          // lifeline that omits the field reads as `false` here (it cannot send
+          // a real forward through the legacy wire), which is the safe direction.
+          forwarded: req.body.forwarded === true,
         },
       };
 
