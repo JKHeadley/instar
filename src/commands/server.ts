@@ -16914,7 +16914,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         // inbound message that delivery may never route" (the 2026-06-12 stuck
         // transfer-back). Dark + dry-run defaults; strict single-machine no-op
         // inside the module. Phase C: quorum logic is N-machine from day one.
-        if (_topicPinStore && _meshSelfId) {
+        // Construction gated on the pin store ALONE — NOT on `_meshSelfId` (Finding
+        // 2026-06-30, caught by the live proof): this block runs ~950 lines BEFORE
+        // `_meshSelfId` is assigned in the boot sequence, so the old `&& _meshSelfId` guard
+        // was ALWAYS null here → the reconciler was never built and never ticked (0 ticks in
+        // logs, /pool/reconciler 503 even with both machines online). `selfMachineId` is now a
+        // late-bound getter (read at tick time, no-op while null) — the SAME proven fix the
+        // sibling OwnershipApplier already uses (ownership-applier-meshself-ordering-fix).
+        if (_topicPinStore) {
           const ws13Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws13Reconcile?: boolean; ws13DryRun?: boolean; ws13TickMs?: number; ws13PinReplicate?: boolean };
           const { OwnershipReconciler } = await import('../core/OwnershipReconciler.js');
           // Fix #2 advisory-pin read: the merged replicated `topic-pin-record` view (HLC-ordered)
@@ -16932,7 +16939,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // ladder intends. Strict single-machine no-op inside the module.
             enabled: () => resolveDevAgentGate(ws13Cfg().ws13Reconcile, config),
             dryRun: () => ws13Cfg().ws13DryRun !== false,
-            selfMachineId: _meshSelfId,
+            selfMachineId: () => _meshSelfId, // late-bound (assigned ~950 lines below) — read at tick time
             pinStore: _topicPinStore,
             // Fix #2: the merged ADVISORY replicated pins (HLC-ordered). Gated by
             // ws13PinReplicate (resolves LIVE on a dev agent / DARK on the fleet) so a

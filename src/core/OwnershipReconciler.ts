@@ -54,7 +54,15 @@ export interface OwnershipReconcilerDeps {
   enabled: () => boolean;
   /** Dry-run — log intended actions, never CAS. Read live. */
   dryRun: () => boolean;
-  selfMachineId: string;
+  /**
+   * This machine's mesh id, LATE-BOUND (Finding 2026-06-30: the boot-ordering bug the
+   * live proof caught). In server.ts the reconciler is wired ~950 lines BEFORE `_meshSelfId`
+   * is assigned, so a value here would always be null → the reconciler was never built and
+   * never ticked. A getter is read at TICK time (by which point the id resolves), exactly the
+   * pattern the sibling OwnershipApplier already uses (ownership-applier-meshself-ordering-fix).
+   * A tick while it is still null is a strict no-op (treated like single-machine).
+   */
+  selfMachineId: () => string | null;
   pinStore: TopicPlacementPinStore;
   /**
    * Cross-machine convergence (Fix #2): the merged ADVISORY replicated pins (move-intent
@@ -103,7 +111,7 @@ export interface ReconcileTickReport {
   deferredDebounce: number;
   deferredNoEvidence: number;
   dryRun: boolean;
-  skipped?: 'disabled' | 'single-machine';
+  skipped?: 'disabled' | 'single-machine' | 'self-id-unresolved';
 }
 
 /** Read-only per-topic decision explanation (Observable Intelligence): what the
@@ -171,7 +179,7 @@ export class OwnershipReconciler {
    *  from `updatedAt` (the migration for pre-Fix-#2 pins). */
   private deriveLocalPinHlc(pin: TopicPin): HlcTimestamp {
     if (pin.hlc) return pin.hlc;
-    return { physical: Date.parse(pin.updatedAt) || 0, logical: 0, node: this.d.selfMachineId };
+    return { physical: Date.parse(pin.updatedAt) || 0, logical: 0, node: this.d.selfMachineId() ?? '' };
   }
 
   /**
@@ -226,7 +234,13 @@ export class OwnershipReconciler {
       return this.finish(report);
     }
     const now = this.now();
-    const self = this.d.selfMachineId;
+    const self = this.d.selfMachineId();
+    if (!self) {
+      // The mesh id has not resolved yet (early boot). Strict no-op until it does — the
+      // FSM decisions are all relative to "self", so acting without it would be unsound.
+      report.skipped = 'self-id-unresolved';
+      return this.finish(report);
+    }
     const byId = new Map(machines.map((m) => [m.machineId, m]));
 
     for (const [sessionKey, pin] of Object.entries(this.effectivePins())) {
@@ -344,10 +358,11 @@ export class OwnershipReconciler {
       if (!countOnce) report[counter]++;
       return false; // dry-run never lands a CAS, so chained steps stop here
     }
+    const self = this.d.selfMachineId() ?? '';
     const r = this.d.ownership.cas(action, {
       sessionKey,
-      sender: this.d.selfMachineId,
-      nonce: `${this.d.selfMachineId}:${reason}:${sessionKey}:${this.now()}`,
+      sender: self,
+      nonce: `${self}:${reason}:${sessionKey}:${this.now()}`,
     });
     if (r.ok) {
       if (!countOnce) report[counter]++;
@@ -367,7 +382,7 @@ export class OwnershipReconciler {
    * the exact gap that left the cross-machine stuck-move bug a black box (2026-06-30).
    */
   explainTopic(sessionKey: string): TopicReconcileExplanation {
-    const self = this.d.selfMachineId;
+    const self = this.d.selfMachineId() ?? '(mesh id unresolved)';
     const machines = this.d.machines();
     const base = { sessionKey, self, machinesCount: machines.length };
     if (!this.d.enabled()) return { ...base, decision: 'skipped', reason: 'reconciler disabled' };
@@ -442,7 +457,7 @@ export class OwnershipReconciler {
     lastTickAt: string | null;
     lastReport: ReconcileTickReport | null;
     machinesCount: number;
-    selfMachineId: string;
+    selfMachineId: string | null;
   } {
     let machinesCount = 0;
     try { machinesCount = this.d.machines().length; } catch { /* best-effort */ }
@@ -452,7 +467,7 @@ export class OwnershipReconciler {
       lastTickAt: this.lastTickAtMs ? new Date(this.lastTickAtMs).toISOString() : null,
       lastReport: this.lastReport,
       machinesCount,
-      selfMachineId: this.d.selfMachineId,
+      selfMachineId: this.d.selfMachineId(),
     };
   }
 }

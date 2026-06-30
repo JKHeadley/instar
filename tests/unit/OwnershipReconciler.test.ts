@@ -88,6 +88,7 @@ interface Sim {
     debounceMs: number;
     now: () => number;
     advisoryPins: Map<number, { preferredMachine: string; hlc: { physical: number; logical: number; node: string } }>;
+    selfMachineId: () => string | null;
   }>) => OwnershipReconciler;
   /** Replicate the shared journal → run EVERY machine's applier (the cross-machine sync). */
   pump: () => void;
@@ -132,7 +133,7 @@ function makeSim(machines: ReconcilerMachineView[]): Sim {
       return new OwnershipReconciler({
         enabled: () => opts.enabled ?? true,
         dryRun: () => opts.dryRun ?? false,
-        selfMachineId: machineId,
+        selfMachineId: opts.selfMachineId ?? (() => machineId),
         pinStore: this.pinStoreFor(machineId),
         ...(opts.advisoryPins ? { advisoryPins: () => opts.advisoryPins! } : {}),
         ownership: regFor(machineId).reg, // PER-MACHINE registry (separate store)
@@ -227,7 +228,7 @@ describe('OwnershipReconciler — cooperative convergence', () => {
     seedActive(sim, '700', 'm_b');
     sim.pinStoreFor('m_b').set('700', 'm_a'); // just set — updatedAt = now
     const rec = new OwnershipReconciler({
-      enabled: () => true, dryRun: () => false, selfMachineId: 'm_b',
+      enabled: () => true, dryRun: () => false, selfMachineId: () => 'm_b',
       pinStore: sim.pinStoreFor('m_b'), ownership: sim.registryFor('m_b'),
       machines: () => TWO, isTopicBusy: () => false,
       emitPlacement: () => {}, debounceMs: 60_000, safePointDeadlineMs: 1000, deathEvidenceMs: 1000,
@@ -411,6 +412,34 @@ describe('OwnershipReconciler — WS1.2 drain-grace (transferring-to-me claims)'
     const rep = sim.reconcilerFor('m_a', { now: () => recAt + 1_000 }).tick();
     expect(rep.claims).toBe(1);
     expect(sim.read('700', 'm_a')!).toMatchObject({ status: 'active', ownerMachineId: 'm_a' });
+    sim.cleanup();
+  });
+});
+
+describe('OwnershipReconciler — late-bound self-id (boot-ordering fix, 2026-06-30 live-proof catch)', () => {
+  it('a null self-id (mesh id not resolved yet) is a STRICT no-op — never acts, even with a triggering pin', () => {
+    const sim = makeSim(TWO);
+    seedActive(sim, '700', 'm_b'); // m_b owns 700
+    sim.pinStoreFor('m_b').set('700', 'm_a'); // a pin that WOULD trigger a transfer if self resolved
+    const rep = sim.reconcilerFor('m_b', { selfMachineId: () => null }).tick();
+    expect(rep.skipped).toBe('self-id-unresolved');
+    expect(rep.transfers).toBe(0);
+    expect(sim.read('700', 'm_b')!.status).toBe('active'); // untouched
+    sim.cleanup();
+  });
+
+  it('once the self-id resolves (getter returns the id), the SAME reconciler acts — proving late-binding works', () => {
+    const sim = makeSim(TWO);
+    seedActive(sim, '700', 'm_b');
+    sim.pinStoreFor('m_b').set('700', 'm_a');
+    // A getter whose value flips from null → 'm_b' (models _meshSelfId being assigned after boot).
+    let resolved: string | null = null;
+    const rec = sim.reconcilerFor('m_b', { selfMachineId: () => resolved });
+    expect(rec.tick().skipped).toBe('self-id-unresolved'); // early boot: no-op
+    resolved = 'm_b'; // mesh id now assigned
+    const rep = rec.tick();
+    expect(rep.transfers).toBe(1); // same instance now transfers 700 → m_a
+    expect(sim.read('700', 'm_b')!.transferTo).toBe('m_a');
     sim.cleanup();
   });
 });
