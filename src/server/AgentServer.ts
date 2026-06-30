@@ -488,6 +488,8 @@ export class AgentServer {
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
     topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore;
+    /** Fix #3 observability: the WS1.3 OwnershipReconciler (for the /pool/reconciler readout). */
+    ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler;
     /** Pool Dashboard Streaming (§2.3) — shared single-use ticket store the
      *  WebSocketManager's /pool-stream upgrade consumes. */
     streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
@@ -2449,6 +2451,7 @@ export class AgentServer {
       forwardCommitmentMutate: options.forwardCommitmentMutate ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
+      ownershipReconciler: options.ownershipReconciler ?? null,
       secretSync: options.secretSync ?? null,
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,

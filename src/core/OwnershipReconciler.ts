@@ -38,7 +38,9 @@
 
 import type { SessionOwnershipRegistry, CasResult } from './SessionOwnershipRegistry.js';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
-import type { TopicPlacementPinStore } from './TopicPlacementPinStore.js';
+import type { TopicPin, TopicPlacementPinStore } from './TopicPlacementPinStore.js';
+import { compareHlc } from './TopicPinReplicatedStore.js';
+import type { HlcTimestamp } from './HybridLogicalClock.js';
 
 export interface ReconcilerMachineView {
   machineId: string;
@@ -54,6 +56,15 @@ export interface OwnershipReconcilerDeps {
   dryRun: () => boolean;
   selfMachineId: string;
   pinStore: TopicPlacementPinStore;
+  /**
+   * Cross-machine convergence (Fix #2): the merged ADVISORY replicated pins (move-intent
+   * from peers, HLC-ordered). The OWNING machine has no LOCAL pin for a stuck move (the pin
+   * was set on the lease-holder) — this is how it sees "you are pinned away" and starts the
+   * cooperative transfer. ADVISORY only: validated (known+online target) and able to trigger
+   * the owner's OWN transfer, never a force-claim. Absent ⇒ local-pin-only (single-machine
+   * / un-wired), today's behavior. Each entry is `{preferredMachine, hlc}` for a pinned topic.
+   */
+  advisoryPins?: () => Map<number, { preferredMachine: string; hlc: HlcTimestamp }>;
   ownership: SessionOwnershipRegistry;
   /** All REGISTERED machines (online and not). [] or [self] → strict no-op. */
   machines: () => ReconcilerMachineView[];
@@ -65,7 +76,10 @@ export interface OwnershipReconcilerDeps {
    */
   isTopicBusy: (sessionKey: string) => boolean;
   /** Journal pairing (§3.3): every landed CAS emits a placement entry. */
-  emitPlacement: (sessionKey: string, r: CasResult & { ok: true }, reason: 'reconcile-transfer' | 'reconcile-claim' | 'reconcile-force-claim' | 'reconcile-adopt') => void;
+  emitPlacement: (sessionKey: string, r: CasResult & { ok: true }, reason: 'reconcile-transfer' | 'reconcile-claim' | 'reconcile-force-claim' | 'reconcile-adopt' | 'reconcile-abort-transfer') => void;
+  /** Fix #3 / Finding N4: how long a `transferring` may sit (from its `timestamp`) before
+   *  the owner aborts a transfer toward an unreachable target. Default 120s. */
+  transferDeadlineMs?: number;
   /** Pin must be stable this long before the owner acts (flap debounce). */
   debounceMs?: number;
   /** Bounded safe-point wait: after this, transfer even if the session is busy. */
@@ -82,11 +96,34 @@ export interface ReconcileTickReport {
   claims: number;
   forceClaims: number;
   adoptions: number;
+  /** Fix #3 / Finding N4: a stuck `transferring(self→T)` whose target T went unreachable
+   *  past the deadline was aborted back to active(self) — recovery, not a new stall. */
+  aborts: number;
   deferredBusy: number;
   deferredDebounce: number;
   deferredNoEvidence: number;
   dryRun: boolean;
   skipped?: 'disabled' | 'single-machine';
+}
+
+/** Read-only per-topic decision explanation (Observable Intelligence): what the
+ *  reconciler WOULD do for one topic right now, and why — for live debugging a
+ *  stuck convergence without acting. Produced by OwnershipReconciler.explainTopic. */
+export type ReconcileDecision =
+  | 'no-pin' | 'converged' | 'claim' | 'await-other-claim' | 'adopt' | 'transfer'
+  | 'deferred-debounce' | 'deferred-busy' | 'force-claim' | 'deferred-no-evidence'
+  | 'abort-transfer' | 'not-my-move' | 'skipped';
+
+export interface TopicReconcileExplanation {
+  sessionKey: string;
+  self: string;
+  machinesCount: number;
+  pinned?: boolean;
+  preferredMachine?: string;
+  owner?: string | null;
+  status?: string | null;
+  decision: ReconcileDecision;
+  reason: string;
 }
 
 const DEFAULT_DEBOUNCE_MS = 30_000;
@@ -99,14 +136,28 @@ const DEFAULT_DEBOUNCE_MS = 30_000;
 const DEFAULT_DRAIN_CLAIM_GRACE_MS = 45_000;
 const DEFAULT_SAFE_POINT_DEADLINE_MS = 120_000;
 const DEFAULT_DEATH_EVIDENCE_MS = 180_000;
+/** Fix #3 / Finding N4: how long a `transferring` may sit before the owner aborts a
+ *  transfer toward an unreachable target (the convergence deadline). */
+const DEFAULT_TRANSFER_DEADLINE_MS = 120_000;
 
 export class OwnershipReconciler {
   private readonly d: OwnershipReconcilerDeps;
   /** First time we observed each topic's CURRENT conflict (cleared on convergence). */
   private readonly conflictSince = new Map<string, number>();
+  /** Observability (Observable Intelligence): the most recent tick's report + when. */
+  private lastReport: ReconcileTickReport | null = null;
+  private lastTickAtMs = 0;
 
   constructor(deps: OwnershipReconcilerDeps) {
     this.d = deps;
+  }
+
+  /** Stamp the last-tick observability state and return the report (single funnel
+   *  for every tick() exit so the status readout is never stale on an early return). */
+  private finish(report: ReconcileTickReport): ReconcileTickReport {
+    this.lastReport = report;
+    this.lastTickAtMs = this.now();
+    return report;
   }
 
   private now(): number {
@@ -116,31 +167,69 @@ export class OwnershipReconciler {
     try { this.d.logger?.(`[OwnershipReconciler] ${msg}`); } catch { /* observability never gates */ }
   }
 
+  /** The local pin's skew-proof HLC: its stored `hlc` (Fix #2), else a fallback derived
+   *  from `updatedAt` (the migration for pre-Fix-#2 pins). */
+  private deriveLocalPinHlc(pin: TopicPin): HlcTimestamp {
+    if (pin.hlc) return pin.hlc;
+    return { physical: Date.parse(pin.updatedAt) || 0, logical: 0, node: this.d.selfMachineId };
+  }
+
+  /**
+   * The EFFECTIVE pin per topic = the union of LOCAL pins (authoritative on the machine
+   * that set them) and ADVISORY replicated pins (the move-intent the OWNER receives),
+   * resolved by HLC precedence (Finding N3): a stale LOCAL self-pin must never mask a
+   * FRESHER replicated move-intent. With no advisory dep this is exactly the local pins
+   * (today's behavior). A replicated pin is ADVISORY — it only ever yields a `preferredMachine`
+   * the owner cooperatively transfers toward; the force-claim path never reads it.
+   */
+  private effectivePins(): Record<string, TopicPin> {
+    const local = this.d.pinStore.all();
+    const advisory = this.d.advisoryPins?.();
+    if (!advisory || advisory.size === 0) return local;
+    // Validate PRIMARY = membership/liveness (skew-proof): only act on a replicated pin
+    // whose target is a KNOWN and currently-ONLINE machine (Findings N2/SE4/AD5). A stale
+    // advisory pointing at a departed/offline machine must NOT trigger a transfer.
+    const online = new Set(this.d.machines().filter((m) => m.online).map((m) => m.machineId));
+    const out: Record<string, TopicPin> = { ...local };
+    for (const [topic, adv] of advisory) {
+      if (!online.has(adv.preferredMachine)) continue; // unknown/offline target → ignore advisory
+      const key = String(topic);
+      const localPin = local[key];
+      const advPin: TopicPin = { preferredMachine: adv.preferredMachine, pinned: true, updatedAt: new Date(adv.hlc.physical).toISOString(), hlc: adv.hlc };
+      if (!localPin || !localPin.pinned) {
+        out[key] = advPin; // no authoritative local pin → advisory move-intent IS the effective pin
+      } else if (compareHlc(adv.hlc, this.deriveLocalPinHlc(localPin)) > 0) {
+        out[key] = advPin; // replicated intent is newer (HLC) → it wins (N3)
+      }
+    }
+    return out;
+  }
+
   /**
    * One reconcile pass. Deterministic over local state; bounded by the number
    * of pinned topics. Safe to call on any cadence.
    */
   tick(): ReconcileTickReport {
     const report: ReconcileTickReport = {
-      examined: 0, transfers: 0, claims: 0, forceClaims: 0, adoptions: 0,
+      examined: 0, transfers: 0, claims: 0, forceClaims: 0, adoptions: 0, aborts: 0,
       deferredBusy: 0, deferredDebounce: 0, deferredNoEvidence: 0,
       dryRun: this.d.dryRun(),
     };
     if (!this.d.enabled()) {
       report.skipped = 'disabled';
-      return report;
+      return this.finish(report);
     }
     const machines = this.d.machines();
     if (machines.length < 2) {
       // Spec invariant 6: single-machine strict no-op — no machinery entered.
       report.skipped = 'single-machine';
-      return report;
+      return this.finish(report);
     }
     const now = this.now();
     const self = this.d.selfMachineId;
     const byId = new Map(machines.map((m) => [m.machineId, m]));
 
-    for (const [sessionKey, pin] of Object.entries(this.d.pinStore.all())) {
+    for (const [sessionKey, pin] of Object.entries(this.effectivePins())) {
       if (!pin.pinned || !pin.preferredMachine) continue;
       const rec = this.d.ownership.read(sessionKey);
       const owner = rec && rec.status !== 'released' ? rec.ownerMachineId : null;
@@ -167,7 +256,22 @@ export class OwnershipReconciler {
         this.act(report, 'claims', sessionKey, { type: 'claim', machineId: self }, 'reconcile-claim');
         continue;
       }
-      if (rec?.status === 'transferring') continue; // someone else's claim to make
+      if (rec?.status === 'transferring') {
+        // ── N4 recovery: I am the draining SOURCE and my transfer TARGET went
+        // unreachable past the deadline → abort-transfer back to active(self), so a
+        // dead-target handoff self-heals instead of freezing the topic (the "don't
+        // trade one stuck-state for another" finding). Owner-only by FSM construction.
+        if (owner === self && rec.transferTo && rec.transferTo !== self) {
+          const targetView = byId.get(rec.transferTo);
+          const targetUnreachable = !targetView || !targetView.online;
+          const pastDeadline = now - (rec.timestamp ?? now) >= (this.d.transferDeadlineMs ?? DEFAULT_TRANSFER_DEADLINE_MS);
+          if (targetUnreachable && pastDeadline) {
+            this.act(report, 'aborts', sessionKey, { type: 'abort-transfer', machineId: self }, 'reconcile-abort-transfer');
+            continue;
+          }
+        }
+        continue; // still in flight / someone else's claim to make
+      }
 
       // ── Case D: no live record and the pin names ME → adopt (place→claim).
       if ((!rec || rec.status === 'released') && pin.preferredMachine === self) {
@@ -224,15 +328,15 @@ export class OwnershipReconciler {
       }
       // Neither owner nor pin target: not my move this tick.
     }
-    return report;
+    return this.finish(report);
   }
 
   private act(
     report: ReconcileTickReport,
-    counter: 'transfers' | 'claims' | 'forceClaims' | 'adoptions',
+    counter: 'transfers' | 'claims' | 'forceClaims' | 'adoptions' | 'aborts',
     sessionKey: string,
     action: Parameters<SessionOwnershipRegistry['cas']>[0],
-    reason: 'reconcile-transfer' | 'reconcile-claim' | 'reconcile-force-claim' | 'reconcile-adopt',
+    reason: 'reconcile-transfer' | 'reconcile-claim' | 'reconcile-force-claim' | 'reconcile-adopt' | 'reconcile-abort-transfer',
     countOnce = false,
   ): boolean {
     if (this.d.dryRun()) {
@@ -254,5 +358,101 @@ export class OwnershipReconciler {
     }
     this.log(`${action.type} rejected for ${sessionKey} (${'reason' in r ? r.reason : 'unknown'}) — will re-evaluate next tick`);
     return false;
+  }
+
+  /**
+   * Read-only diagnostic: what the reconciler decides for ONE topic right now, and
+   * WHY — without acting. A documented mirror of tick()'s decision tree (kept in
+   * lock-step by parity unit tests). Answers "why is topic N not converging?" live —
+   * the exact gap that left the cross-machine stuck-move bug a black box (2026-06-30).
+   */
+  explainTopic(sessionKey: string): TopicReconcileExplanation {
+    const self = this.d.selfMachineId;
+    const machines = this.d.machines();
+    const base = { sessionKey, self, machinesCount: machines.length };
+    if (!this.d.enabled()) return { ...base, decision: 'skipped', reason: 'reconciler disabled' };
+    if (machines.length < 2) return { ...base, decision: 'skipped', reason: 'single-machine (machines() < 2)' };
+    const pin = this.effectivePins()[sessionKey];
+    if (!pin || !pin.pinned || !pin.preferredMachine) {
+      return { ...base, decision: 'no-pin', reason: "no pinned preferredMachine (local or advisory replicated) for this topic" };
+    }
+    const rec = this.d.ownership.read(sessionKey);
+    const owner = rec && rec.status !== 'released' ? rec.ownerMachineId : null;
+    const ctx = { ...base, pinned: true as const, preferredMachine: pin.preferredMachine, owner, status: rec?.status ?? null };
+    if (owner === pin.preferredMachine && rec?.status === 'active') {
+      return { ...ctx, decision: 'converged', reason: 'owner == pin target and active' };
+    }
+    if (rec?.status === 'transferring' && rec.transferTo === self) {
+      return { ...ctx, decision: 'claim', reason: 'transferring to me → would claim (completes handoff)' };
+    }
+    if (rec?.status === 'transferring') {
+      const now0 = this.now();
+      if (owner === self && rec.transferTo && rec.transferTo !== self) {
+        const tv = machines.find((m) => m.machineId === rec.transferTo);
+        const unreachable = !tv || !tv.online;
+        const past = now0 - (rec.timestamp ?? now0) >= (this.d.transferDeadlineMs ?? DEFAULT_TRANSFER_DEADLINE_MS);
+        if (unreachable && past) {
+          return { ...ctx, decision: 'abort-transfer', reason: `transfer target ${rec.transferTo} unreachable past deadline → would abort back to active(self)` };
+        }
+      }
+      return { ...ctx, decision: 'await-other-claim', reason: `transferring to ${rec.transferTo ?? '?'} — that machine claims` };
+    }
+    if ((!rec || rec.status === 'released') && pin.preferredMachine === self) {
+      return { ...ctx, decision: 'adopt', reason: 'no live record + pin names me → would place→claim' };
+    }
+    if (!rec || rec.status === 'released') {
+      return { ...ctx, decision: 'not-my-move', reason: 'no live record + pin names another machine' };
+    }
+    const now = this.now();
+    if (owner === self) {
+      const pinAgeMs = now - Date.parse(pin.updatedAt);
+      const debounceMs = this.d.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+      if (Number.isFinite(pinAgeMs) && pinAgeMs < debounceMs) {
+        return { ...ctx, decision: 'deferred-debounce', reason: `pin age ${Math.round(pinAgeMs)}ms < debounce ${debounceMs}ms` };
+      }
+      const since = this.conflictSince.get(sessionKey) ?? now;
+      const busy = this.d.isTopicBusy(sessionKey);
+      const pastDeadline = now - since >= (this.d.safePointDeadlineMs ?? DEFAULT_SAFE_POINT_DEADLINE_MS);
+      if (busy && !pastDeadline) {
+        return { ...ctx, decision: 'deferred-busy', reason: 'topic busy, within safe-point deadline' };
+      }
+      return { ...ctx, decision: 'transfer', reason: `I am the live owner, pin → ${pin.preferredMachine} → would transfer` };
+    }
+    if (pin.preferredMachine === self) {
+      const byId = new Map(machines.map((m) => [m.machineId, m]));
+      const ownerView = owner ? byId.get(owner) : undefined;
+      const ownerProvablyDead = !!ownerView && !ownerView.online
+        && (now - ownerView.lastSeenMs) >= (this.d.deathEvidenceMs ?? DEFAULT_DEATH_EVIDENCE_MS);
+      const ownerUnknown = !!owner && !ownerView;
+      const onlineCount = machines.filter((m) => m.online).length;
+      const inQuorum = machines.length <= 2 || onlineCount * 2 > machines.length;
+      if ((ownerProvablyDead || ownerUnknown) && inQuorum) {
+        return { ...ctx, decision: 'force-claim', reason: 'pin names me + owner provably dead/unknown + in quorum' };
+      }
+      return { ...ctx, decision: 'deferred-no-evidence', reason: `pin names me but owner ${owner} is alive/unproven-dead (online=${ownerView?.online ?? 'unknown'}) — waiting for its own Case-A transfer` };
+    }
+    return { ...ctx, decision: 'not-my-move', reason: 'neither owner nor pin target this tick' };
+  }
+
+  /** Reconciler status (Observable Intelligence): last tick report + when, plus the
+   *  live enabled/dryRun gate and machine-count the reconciler actually sees. */
+  status(): {
+    enabled: boolean;
+    dryRun: boolean;
+    lastTickAt: string | null;
+    lastReport: ReconcileTickReport | null;
+    machinesCount: number;
+    selfMachineId: string;
+  } {
+    let machinesCount = 0;
+    try { machinesCount = this.d.machines().length; } catch { /* best-effort */ }
+    return {
+      enabled: (() => { try { return !!this.d.enabled(); } catch { return false; } })(),
+      dryRun: (() => { try { return !!this.d.dryRun(); } catch { return true; } })(),
+      lastTickAt: this.lastTickAtMs ? new Date(this.lastTickAtMs).toISOString() : null,
+      lastReport: this.lastReport,
+      machinesCount,
+      selfMachineId: this.d.selfMachineId,
+    };
   }
 }

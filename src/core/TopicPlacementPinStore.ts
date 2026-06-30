@@ -24,6 +24,14 @@ export interface TopicPin {
   preferredMachine: string;
   pinned: boolean;
   updatedAt: string;
+  /**
+   * Cross-machine convergence (Fix #2 / Finding N3): the HLC stamped when this pin was
+   * set, so the reconciler can HLC-ORDER the local pin against a replicated advisory pin
+   * (a skew-PROOF comparison, never wall-clock). Absent on pre-Fix-#2 pins → the reconciler
+   * derives a fallback HLC from `updatedAt` on read (the documented migration). Structural
+   * type (not the HlcTimestamp import) to keep this low-level store dependency-free.
+   */
+  hlc?: { physical: number; logical: number; node: string };
 }
 
 export interface TopicPlacementPinStoreDeps {
@@ -65,11 +73,13 @@ export class TopicPlacementPinStore {
     fs.renameSync(tmp, this.d.filePath); // atomic swap
   }
 
-  /** Pin a topic to a machine (a hard pin). Idempotent; refreshes `updatedAt`. */
-  set(sessionKey: string, preferredMachine: string, pinned = true): void {
+  /** Pin a topic to a machine (a hard pin). Idempotent; refreshes `updatedAt`.
+   *  `hlc` (Fix #2) is the skew-proof ordering stamp; pass the same HLC that the
+   *  replicated `topic-pin-record` carried so local and replicated pins compare cleanly. */
+  set(sessionKey: string, preferredMachine: string, pinned = true, hlc?: { physical: number; logical: number; node: string }): void {
     this.load();
     const now = (this.d.now ?? (() => new Date()))().toISOString();
-    this.pins[sessionKey] = { preferredMachine, pinned, updatedAt: now };
+    this.pins[sessionKey] = { preferredMachine, pinned, updatedAt: now, ...(hlc ? { hlc } : {}) };
     this.persist();
   }
 

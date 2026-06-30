@@ -1164,6 +1164,8 @@ export interface RouteContext {
    *  pinned-vs-load-placed distinction in GET /pool/placement and the deterministic
    *  POST /pool/transfer. Null/absent when the pool is not wired (dark). */
   topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
+  /** Fix #3 observability: the WS1.3 OwnershipReconciler (for GET /pool/reconciler). */
+  ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler | null;
   /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
   secretSync?: import('../core/SecretSync.js').SecretSyncHandle | null;
   /** This machine's mesh id (machineId). Used by placement/transfer routes to tell
@@ -12803,6 +12805,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // GET /pool/reconciler — Fix #3 observability (Observable Intelligence). The WS1.3
+  // OwnershipReconciler's last-tick status, and (with ?topic=N) the read-only per-topic
+  // decision explanation — so a stuck cross-machine move is inspectable, not a black box.
+  // Bearer-gated like every route; credential-free (topic ids, machine ids, epochs, decision
+  // reasons only). 503 when the reconciler is absent (single-machine / pool dark).
+  router.get('/pool/reconciler', (req, res) => {
+    if (!ctx.ownershipReconciler) {
+      res.status(503).json({ error: 'ownership reconciler not active (single-machine / pool dark)' });
+      return;
+    }
+    const topic = typeof req.query.topic === 'string' ? req.query.topic.trim() : '';
+    if (topic) {
+      res.json({ status: ctx.ownershipReconciler.status(), topic: ctx.ownershipReconciler.explainTopic(topic) });
+      return;
+    }
+    res.json({ status: ctx.ownershipReconciler.status() });
+  });
+
   // GET /pool/poller-count — B5 (multimachine-lease-poll-robustness, Decision 11):
   // the exactly-one-Telegram-listener verdict over the pool — ok (exactly one
   // fresh poller) / dual (≥2 → 409 war) / silence (real zero) / indeterminate (a
@@ -13282,6 +13302,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
     ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
+    // Cross-machine convergence Fix #2: replicate the PIN (move-intent) so the OWNING machine
+    // sees "you are pinned away" and starts the cooperative transfer. Rides the WS2 replicated-
+    // record machinery (HLC ordering, tombstone). INERT unless the topicPins store is enabled
+    // (ws13PinReplicate) — the emitter dark-gate makes a dark/single-machine agent a strict no-op.
+    if (ctx.replicatedRecordEmitter && (plan.setPin ?? true)) {
+      try {
+        const topicNum = Number(topicId);
+        if (Number.isFinite(topicNum)) {
+          const { TOPIC_PIN_STORE_KEY, deriveTopicPinRecordKey, buildTopicPinPut } = await import('../core/TopicPinReplicatedStore.js');
+          const recordKey = deriveTopicPinRecordKey(topicNum);
+          if (recordKey) ctx.replicatedRecordEmitter.emit(TOPIC_PIN_STORE_KEY, recordKey, buildTopicPinPut(topicNum, target, true));
+        }
+      } catch { /* @silent-fallback-ok — pin replication is advisory; an emit fault never blocks the transfer (the pin is set locally regardless) */ }
+    }
     let releasedLocalOwnership = false;
     try {
       if (self && ctx.sessionOwnershipRegistry.ownerOf(topicId) === self) {

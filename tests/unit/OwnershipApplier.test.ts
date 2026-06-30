@@ -15,10 +15,19 @@ import { OwnershipApplier, type PlacementReader } from '../../src/core/Ownership
 import { LocalSessionOwnershipStore } from '../../src/core/LocalSessionOwnershipStore.js';
 
 /** A fake reader returning fixed placement entries (mirrors CoherenceJournalReader.query). */
-function reader(entries: Array<{ topic: number; machine: string; owner: string; epoch: number; source?: 'own' | 'replica' }>): PlacementReader {
+function reader(entries: Array<{ topic: number; machine: string; owner: string; epoch: number; source?: 'own' | 'replica'; status?: 'active' | 'transferring'; transferTo?: string; timestamp?: number; drainInFlight?: boolean }>): PlacementReader {
   return {
     query: () => ({
-      entries: entries.map((e) => ({ topic: e.topic, machine: e.machine, source: e.source ?? 'replica', data: { owner: e.owner, epoch: e.epoch, reason: 'user-move' } })),
+      entries: entries.map((e) => ({
+        topic: e.topic, machine: e.machine, source: e.source ?? 'replica',
+        data: {
+          owner: e.owner, epoch: e.epoch, reason: 'user-move',
+          ...(e.status ? { status: e.status } : {}),
+          ...(e.transferTo !== undefined ? { transferTo: e.transferTo } : {}),
+          ...(e.timestamp !== undefined ? { timestamp: e.timestamp } : {}),
+          ...(e.drainInFlight !== undefined ? { drainInFlight: e.drainInFlight } : {}),
+        },
+      })),
     }),
   };
 }
@@ -128,5 +137,90 @@ describe('OwnershipApplier', () => {
     applier.tick();
     const afterRestart = new LocalSessionOwnershipStore({ dir });
     expect(afterRestart.read('13481')?.ownerMachineId).toBe('mini');
+  });
+
+  // ── Fix #3: cross-machine transferring materialization + safety fences ──
+  describe('transferring handoff (Fix #3)', () => {
+    const known = () => new Set(['mini', 'laptop']);
+
+    it('materializes a replicated `transferring` so the target can claim (the core #3 fix)', () => {
+      const applier = new OwnershipApplier({
+        reader: reader([{ topic: 700, machine: 'mini', owner: 'mini', epoch: 3, status: 'transferring', transferTo: 'laptop', timestamp: 1000 }]),
+        store, selfMachineId: 'laptop', knownMachines: known, now: () => 1000,
+      });
+      applier.tick();
+      const rec = store.read('700')!;
+      expect(rec.status).toBe('transferring');
+      expect(rec.ownerMachineId).toBe('mini');
+      expect(rec.transferTo).toBe('laptop');
+    });
+
+    it('preserves the producer `timestamp` IN-BOUNDS (AD2 — drain timing intact)', () => {
+      const producerTs = 5_000_000;
+      const applier = new OwnershipApplier({
+        reader: reader([{ topic: 700, machine: 'mini', owner: 'mini', epoch: 3, status: 'transferring', transferTo: 'laptop', timestamp: producerTs }]),
+        store, selfMachineId: 'laptop', knownMachines: known, now: () => producerTs + 1000, // within skew tolerance
+      });
+      applier.tick();
+      expect(store.read('700')!.timestamp).toBe(producerTs); // carried verbatim
+    });
+
+    it('CLAMPS a FUTURE timestamp to now (SE8 — corrupt peer cannot defeat the deadline)', () => {
+      const now = 5_000_000;
+      const applier = new OwnershipApplier({
+        reader: reader([{ topic: 700, machine: 'mini', owner: 'mini', epoch: 3, status: 'transferring', transferTo: 'laptop', timestamp: now + 60 * 60 * 1000 }]), // 1h in the future
+        store, selfMachineId: 'laptop', knownMachines: known, now: () => now,
+      });
+      applier.tick();
+      expect(store.read('700')!.timestamp).toBe(now); // future floored to now
+    });
+
+    it('DOWNGRADES `transferring` to active when transferTo is unknown (AD3/SE1)', () => {
+      const applier = new OwnershipApplier({
+        reader: reader([{ topic: 700, machine: 'mini', owner: 'mini', epoch: 3, status: 'transferring', transferTo: 'ghost-machine', timestamp: 1000 }]),
+        store, selfMachineId: 'laptop', knownMachines: known, now: () => 1000,
+      });
+      applier.tick();
+      const rec = store.read('700')!;
+      expect(rec.status).toBe('active'); // never an un-claimable stuck transferring
+      expect(rec.transferTo).toBeUndefined();
+      expect(rec.ownerMachineId).toBe('mini');
+    });
+
+    it('DOWNGRADES `transferring` to active when transferTo == owner (AD3)', () => {
+      const applier = new OwnershipApplier({
+        reader: reader([{ topic: 700, machine: 'mini', owner: 'mini', epoch: 3, status: 'transferring', transferTo: 'mini', timestamp: 1000 }]),
+        store, selfMachineId: 'laptop', knownMachines: known, now: () => 1000,
+      });
+      applier.tick();
+      expect(store.read('700')!.status).toBe('active');
+    });
+
+    it('EPOCH FENCE: refuses an absurd epoch jump over local (SE2 — no permanent wedge)', () => {
+      store.casWrite({ sessionKey: '700', ownerMachineId: 'mini', ownershipEpoch: 5, status: 'active', nonce: 'x', timestamp: 1, updatedAt: '1970' });
+      const applier = new OwnershipApplier({
+        reader: reader([{ topic: 700, machine: 'mini', owner: 'laptop', epoch: 5 + 2e9 }]), // jump beyond default 1e9 ceiling
+        store, selfMachineId: 'laptop', knownMachines: known, maxEpochJump: 1e9,
+      });
+      applier.tick();
+      expect(store.read('700')!.ownershipEpoch).toBe(5); // unchanged — fenced out
+      expect(store.read('700')!.ownerMachineId).toBe('mini');
+    });
+
+    it('OWNER-ANCHORED tie-break at equal epoch: the true owner stream is canonical (SE6)', () => {
+      const applier = new OwnershipApplier({
+        reader: reader([
+          // A peer stream (laptop) falsely emits active for topic 700 at epoch 3...
+          { topic: 700, machine: 'laptop', owner: 'mini', epoch: 3, status: 'active' },
+          // ...and the TRUE owner (mini) emits the transferring at the SAME epoch.
+          { topic: 700, machine: 'mini', owner: 'mini', epoch: 3, status: 'transferring', transferTo: 'laptop', timestamp: 1000 },
+        ]),
+        store, selfMachineId: 'laptop', knownMachines: known, now: () => 1000,
+      });
+      applier.tick();
+      // The owner-anchored entry (stream==owner==mini) wins → transferring materialized.
+      expect(store.read('700')!.status).toBe('transferring');
+      expect(store.read('700')!.transferTo).toBe('laptop');
+    });
   });
 });

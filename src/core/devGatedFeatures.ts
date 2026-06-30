@@ -194,6 +194,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Coordinates between the operator\'s OWN machines only — no external egress; its in-component dryRun sub-knob (ws13DryRun) stays a plain hardcoded default true, so live-on-dev runs the reconcile loop but LOGS intended CAS actions without performing them (no destructive CAS) exactly as the rollout ladder intends; strict single-machine no-op inside the module. No third-party spend. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'ws13PinReplicate',
+    configPath: 'multiMachine.seamlessness.ws13PinReplicate',
+    description: 'Cross-machine reconciler convergence Fix #2 — replicate the user PIN (move-intent) as a `topic-pin-record` so the OWNING machine reads it (HLC-ordered, advisory, validated known+online) and starts the cooperative transfer. Sub-flag of WS1.3, independently rollback-able during soak.',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress; a replicated pin is ADVISORY move-intent that can only trigger the owner\'s OWN cooperative transfer (owner-gated FSM action), NEVER a force-claim/seat-steal (the force-claim decision is gated on death-evidence + quorum from machine liveness, never on the pin — a stale/corrupt pin cannot manufacture death evidence); rides the existing WS2 replicated-record machinery (HLC ordering, tombstone, quarantine); when dark the topic-pin emitter is a strict no-op (the store-enable entry is absent) and the reconciler reads no advisory pins; strict single-machine no-op (no peers). No destructive action, no third-party spend. Cross-machine reconciler convergence fix 2026-06-30.',
+  },
+  {
     name: 'ws41DurableAck',
     configPath: 'multiMachine.seamlessness.ws41DurableAck',
     description: 'WS4.1 durable operator-bound /ack across machines — a pooled-attention ack whose owner is briefly offline is persisted with the authenticated operator principal and re-delivered when the owner returns.',

@@ -768,6 +768,10 @@ let _slackInboundDispatch: ((message: import('../core/types.js').Message) => Pro
 // Null until startServer constructs it; the Telegram /restart handler falls
 // back to the inline kill+respawn path when null (e.g. early in boot).
 let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null = null;
+// Cross-machine convergence (Fix #3 observability): the WS1.3 OwnershipReconciler, hoisted so
+// the `/pool/reconciler` readout (status + per-topic explain) can reach it. Null until the
+// pool block constructs it (single-machine / dark → stays null → the route 503s).
+let _ownershipReconciler: import('../core/OwnershipReconciler.js').OwnershipReconciler | null = null;
 // Subscription & Auth Standard P1.3 — quota-aware account-swap scheduler. Null
 // until wired (requires SessionRefresh + the subscription pool).
 let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null = null;
@@ -3974,6 +3978,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { SUBSCRIPTION_ACCOUNT_META_KIND_REGISTRATION } = await import('../core/SubscriptionAccountMetaReplicatedStore.js');
     replicatedKindRegistry.register(SUBSCRIPTION_ACCOUNT_META_KIND_REGISTRATION);
 
+    // Cross-machine ownership-reconciler convergence Fix #2 (docs/specs/cross-machine-
+    // reconciler-convergence.md): register `topic-pin-record` so the user's PIN (move-intent)
+    // replicates to the OWNING machine — the reconciler there reads it (HLC-ordered, advisory)
+    // and starts the cooperative transfer. Registration is INERT; emission stays gated behind
+    // the store-enable flag (ws13PinReplicate), so a single-machine / dark agent is a no-op.
+    const { TOPIC_PIN_KIND_REGISTRATION } = await import('../core/TopicPinReplicatedStore.js');
+    replicatedKindRegistry.register(TOPIC_PIN_KIND_REGISTRATION);
+
     // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
     //    substrate above ships the registry + receive/serve machinery + advert; THIS
     //    wires the SEND half that was deferred ("the journal-backed emitter is attached
@@ -4089,10 +4101,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       (config as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe?.enabled,
       config,
     );
-    const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined =
-      _accountFollowMeEnabled
-        ? { ...(_stateSyncStoresBase ?? {}), subscriptionAccountMeta: { enabled: true } }
-        : _stateSyncStoresBase;
+    // Cross-machine convergence Fix #2 — the `topicPins` store gates on
+    // `multiMachine.seamlessness.ws13PinReplicate` (dev-live / fleet-dark, same ladder as the
+    // rest of WS1.3). When OFF the entry is absent ⇒ the emitter's enabled-check fails ⇒ no pin
+    // record ever crosses (a dark/single-machine agent is a strict no-op).
+    const _pinReplicateEnabled = resolveDevAgentGate(
+      (config as { multiMachine?: { seamlessness?: { ws13PinReplicate?: boolean } } }).multiMachine?.seamlessness?.ws13PinReplicate,
+      config,
+    );
+    const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
+      let s = _stateSyncStoresBase ?? {};
+      if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
+      if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
+      return _accountFollowMeEnabled || _pinReplicateEnabled || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+    })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
     // the per-store managers' emit hooks call). Needs the journal sink, the HLC clock,
@@ -16565,7 +16587,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (hbApi) {
                 for (const r of hbApi.listAll()) {
                   if (r.machineId !== poolSelfId) {
-                    machinePoolRegistry!.recordHeartbeat({ machineId: r.machineId, selfReportedLastSeen: r.lastHeartbeatAt });
+                    // COARSE: the file-based MachineHeartbeat is git-synced + written every
+                    // ~30min, so its lastHeartbeatAt is NOT a live clock reading. Mark it coarse
+                    // so it refreshes liveness but never drives the 5-min clock-skew quarantine
+                    // FSM (the permanent false-positive Laptop↔Mini quarantine, 2026-06-30).
+                    machinePoolRegistry!.recordHeartbeat({ machineId: r.machineId, selfReportedLastSeen: r.lastHeartbeatAt, coarseHeartbeat: true });
                   }
                 }
               }
@@ -16889,8 +16915,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // transfer-back). Dark + dry-run defaults; strict single-machine no-op
         // inside the module. Phase C: quorum logic is N-machine from day one.
         if (_topicPinStore && _meshSelfId) {
-          const ws13Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws13Reconcile?: boolean; ws13DryRun?: boolean; ws13TickMs?: number };
+          const ws13Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws13Reconcile?: boolean; ws13DryRun?: boolean; ws13TickMs?: number; ws13PinReplicate?: boolean };
           const { OwnershipReconciler } = await import('../core/OwnershipReconciler.js');
+          // Fix #2 advisory-pin read: the merged replicated `topic-pin-record` view (HLC-ordered)
+          // the reconciler consults so the OWNING machine sees a pin set on another machine.
+          const { mergeUnionToPins, compareHlc, TOPIC_PIN_RECORD_KIND } = await import('../core/TopicPinReplicatedStore.js');
+          const { CoherenceJournalReader: PinAdvReader } = await import('../core/CoherenceJournalReader.js');
+          const pinAdvisoryReader = new PinAdvReader({ stateDir: config.stateDir });
           const reconciler = new OwnershipReconciler({
             // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
             // read ws13Reconcile through resolveDevAgentGate so the reconcile loop
@@ -16903,6 +16934,22 @@ export async function startServer(options: StartOptions): Promise<void> {
             dryRun: () => ws13Cfg().ws13DryRun !== false,
             selfMachineId: _meshSelfId,
             pinStore: _topicPinStore,
+            // Fix #2: the merged ADVISORY replicated pins (HLC-ordered). Gated by
+            // ws13PinReplicate (resolves LIVE on a dev agent / DARK on the fleet) so a
+            // dark/single-machine agent reads no advisory pins (today's behavior).
+            advisoryPins: () => {
+              try {
+                if (!resolveDevAgentGate(ws13Cfg().ws13PinReplicate, config)) return new Map();
+                const res = pinAdvisoryReader.query({ kind: TOPIC_PIN_RECORD_KIND, limit: 2000 });
+                const merged = mergeUnionToPins(
+                  res.entries.map((e) => ({ data: e.data, origin: typeof e.data.origin === 'string' ? e.data.origin : '' })),
+                  compareHlc,
+                );
+                const out = new Map<number, { preferredMachine: string; hlc: import('../core/HybridLogicalClock.js').HlcTimestamp }>();
+                for (const [topic, p] of merged) out.set(topic, { preferredMachine: p.preferredMachine, hlc: p.hlc });
+                return out;
+              } catch { return new Map(); /* @silent-fallback-ok — advisory read fault → no advisory pins this tick; the next tick retries, never blocks the reconciler */ }
+            },
             ownership: ownReg,
             machines: () => {
               try {
@@ -16925,16 +16972,28 @@ export async function startServer(options: StartOptions): Promise<void> {
               try {
                 const topicNum = Number(sessionKey);
                 if (Number.isFinite(topicNum)) {
+                  const rr = r.record as { ownerMachineId?: string; ownershipEpoch: number; status?: string; transferTo?: string; timestamp?: number; drainInFlight?: boolean };
                   state.getCoherenceJournal()?.emitPlacement(topicNum, {
-                    owner: r.record.ownerMachineId ?? '',
-                    epoch: r.record.ownershipEpoch,
+                    owner: rr.ownerMachineId ?? '',
+                    epoch: rr.ownershipEpoch,
                     reason: 'reconcile',
+                    // Fix #3 (Finding INT2): a reconciler cooperative transfer emits the
+                    // `transferring` intermediate so the target machine claims cross-machine.
+                    ...(rr.status === 'transferring'
+                      ? {
+                          status: 'transferring' as const,
+                          ...(rr.transferTo ? { transferTo: rr.transferTo } : {}),
+                          ...(typeof rr.timestamp === 'number' ? { timestamp: rr.timestamp } : {}),
+                          ...(rr.drainInFlight ? { drainInFlight: true } : {}),
+                        }
+                      : {}),
                   });
                 }
               } catch { /* §3.3 pairing is observability — never endangers the CAS */ }
             },
             logger: (m) => console.log(pc.dim(`  ${m}`)),
           });
+          _ownershipReconciler = reconciler; // hoist for the /pool/reconciler readout
           const tickMs = Math.max(5000, ws13Cfg().ws13TickMs ?? 30000);
           const ws13Timer = setInterval(() => {
             try {
@@ -16970,6 +17029,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           durableOwnershipStore,
           reader: new CoherenceJournalReader({ stateDir: config.stateDir }),
           getSelfMachineId: () => _meshSelfId,
+          // Fix #3: validate a replicated `transferring` entry's `transferTo` against the
+          // live known-machine set before materializing (else downgrade to active(owner)).
+          knownMachines: () => new Set((machinePoolRegistry?.getCapacities() ?? []).map((c) => c.machineId)),
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
         if (ownershipApplier) {
@@ -17005,7 +17067,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch { /* trigger is best-effort; the backstop tick covers it */ }
           try {
             if (!coherenceJournal || !r?.ok) return;
-            const rec = (r as { record?: { ownerMachineId?: string; ownershipEpoch?: number } }).record;
+            const rec = (r as { record?: { ownerMachineId?: string; ownershipEpoch?: number; status?: string; transferTo?: string; timestamp?: number; drainInFlight?: boolean } }).record;
             const topicNum = Number(sessionKey);
             if (!Number.isFinite(topicNum) || rec?.ownershipEpoch == null) return;
             coherenceJournal.emitPlacement(topicNum, {
@@ -17013,6 +17075,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               ...(prevOwner ? { prevOwner } : {}),
               epoch: rec.ownershipEpoch,
               reason,
+              // Cross-machine convergence (Fix #3 / Finding INT2): carry the `transferring`
+              // intermediate so the target's OwnershipApplier materializes it and the target's
+              // reconciler claims (completing the handoff cross-machine). Absent for `active`.
+              ...(rec.status === 'transferring'
+                ? {
+                    status: 'transferring' as const,
+                    ...(rec.transferTo ? { transferTo: rec.transferTo } : {}),
+                    ...(typeof rec.timestamp === 'number' ? { timestamp: rec.timestamp } : {}),
+                    ...(rec.drainInFlight ? { drainInFlight: true } : {}),
+                  }
+                : {}),
             });
           } catch { /* observability never endangers the observed */ }
         };
@@ -19326,7 +19399,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

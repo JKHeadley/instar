@@ -42,9 +42,9 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -157,6 +157,20 @@ export interface PlacementData {
   prevOwner?: string;
   epoch: number;
   reason: PlacementReason;
+  // Cross-machine ownership-reconciler convergence (Fix #3): the cooperative-handoff
+  // INTERMEDIATE state, so a `transferring(owner=S → transferTo=T)` replicates and the
+  // target's applier materializes it (today only `active` crosses, so T never learns to
+  // claim → the stuck-move bug). All OPTIONAL + back-compat: an absent `status` is `active`
+  // (today's behavior), so an older peer that omits them is unaffected.
+  status?: 'active' | 'transferring';
+  /** During `transferring`: the target machine the session is moving to. */
+  transferTo?: string;
+  /** The PRODUCER record's `timestamp` (the field the drain-grace + convergence deadline
+   *  key on — OwnershipReconciler.ts). Carried so the target derives output-exclusion +
+   *  recovery timing from the origin, never re-stamped to local now. Clamped on receive. */
+  timestamp?: number;
+  /** Whether a SessionDrainRunner is still draining the source (drain-grace input). */
+  drainInFlight?: boolean;
 }
 
 export interface SessionLifecycleData {
@@ -291,6 +305,7 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // refresh loop is coalesced upstream. Carries NO credential and NO PII beyond email (the
   // configHome + every credential field are stripped at the projector).
   'subscription-account-meta': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
+  'topic-pin-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -482,7 +497,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -499,6 +514,7 @@ export class CoherenceJournal {
     'topic-operator-record': 0,
     'threadline-pairing-record': 0,
     'subscription-account-meta': 0,
+    'topic-pin-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -518,6 +534,7 @@ export class CoherenceJournal {
     'topic-operator-record': new Set(),
     'threadline-pairing-record': new Set(),
     'subscription-account-meta': new Set(),
+    'topic-pin-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -567,6 +584,7 @@ export class CoherenceJournal {
       'topic-operator-record': config.retention?.['topic-operator-record'] ?? DEFAULT_RETENTION['topic-operator-record'],
       'threadline-pairing-record': config.retention?.['threadline-pairing-record'] ?? DEFAULT_RETENTION['threadline-pairing-record'],
       'subscription-account-meta': config.retention?.['subscription-account-meta'] ?? DEFAULT_RETENTION['subscription-account-meta'],
+      'topic-pin-record': config.retention?.['topic-pin-record'] ?? DEFAULT_RETENTION['topic-pin-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -599,6 +617,7 @@ export class CoherenceJournal {
       'topic-operator-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'threadline-pairing-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'subscription-account-meta': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'topic-pin-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -923,10 +942,29 @@ export class CoherenceJournal {
       const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move', 'reconcile'];
       if (typeof reason !== 'string' || !reasons.includes(reason as PlacementReason)) return null;
       out = { owner, epoch, reason };
-      known = ['owner', 'epoch', 'reason', 'prevOwner'];
+      known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
       if (raw.prevOwner !== undefined) {
         if (typeof raw.prevOwner !== 'string') return null;
         out.prevOwner = raw.prevOwner;
+      }
+      // Cross-machine convergence (Fix #3) — OPTIONAL handoff fields. Back-compat:
+      // an absent `status` is `active` (today's behavior). A present-but-malformed
+      // field schema-rejects the whole record (never a silent partial accept).
+      if (raw.status !== undefined) {
+        if (raw.status !== 'active' && raw.status !== 'transferring') return null;
+        out.status = raw.status;
+      }
+      if (raw.transferTo !== undefined) {
+        if (typeof raw.transferTo !== 'string') return null;
+        out.transferTo = raw.transferTo;
+      }
+      if (raw.timestamp !== undefined) {
+        if (typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp)) return null;
+        out.timestamp = raw.timestamp;
+      }
+      if (raw.drainInFlight !== undefined) {
+        if (typeof raw.drainInFlight !== 'boolean') return null;
+        out.drainInFlight = raw.drainInFlight;
       }
     } else if (kind === 'session-lifecycle') {
       const sessionId = raw.sessionId;

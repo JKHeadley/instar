@@ -103,6 +103,19 @@ export interface HeartbeatObservation {
   /** The machine's own timestamp from its heartbeat (ISO) — advisory. */
   selfReportedLastSeen?: string;
   /**
+   * COARSE liveness beat (e.g. the git-synced file-based MachineHeartbeat, written
+   * every ~30min and tolerant of 48h staleness). When true, the clock-skew FSM is
+   * NOT driven from this beat: `selfReportedLastSeen` here is a coarse, possibly
+   * 30-min-old file timestamp, NOT a live clock reading, so comparing it against the
+   * 5-min clock-skew tolerance produces a PERMANENT false-positive quarantine that
+   * the fresh live (PeerPresencePuller) beats can never undo (root-caused live
+   * Laptop↔Mini, 2026-06-30: a stale file ts re-diverged before the 2 clean beats
+   * needed to re-admit, stranding the peer in suspect-clock-removed forever). A
+   * coarse beat still refreshes liveness (routerReceivedAt) — it only abstains from
+   * the precise clock-skew judgement, which belongs to the live beat path. Absent =
+   * a live beat = the skew FSM runs as before. */
+  coarseHeartbeat?: boolean;
+  /**
    * B5 (multimachine-lease-poll-robustness, Decision 11) — whether this machine's
    * LIFELINE is ACTUALLY polling Telegram (sourced from its lifeline-poll-active
    * file, the truth — not the server's intent). Absent = an older peer that
@@ -196,14 +209,23 @@ export class MachinePoolRegistry {
   recordHeartbeat(obs: HeartbeatObservation): ClockSkewSideEffect {
     const nowMs = this.now();
     const prev = this.observed.get(obs.machineId);
+    // COARSE beats (the git-synced file MachineHeartbeat) NEVER drive the clock-skew
+    // FSM: their `selfReportedLastSeen` is a coarse, possibly-30-min-old file timestamp,
+    // not a live clock reading, so judging it against the 5-min tolerance is a category
+    // error that produces a permanent false-positive quarantine (the live Laptop↔Mini
+    // bug, 2026-06-30). A coarse beat carries the prior skew state forward untouched and
+    // only refreshes liveness (routerReceivedAt, below).
     let divergent = false;
-    if (obs.selfReportedLastSeen) {
+    if (!obs.coarseHeartbeat && obs.selfReportedLastSeen) {
       const selfMs = Date.parse(obs.selfReportedLastSeen);
       if (Number.isFinite(selfMs)) {
         divergent = Math.abs(selfMs - nowMs) > this.d.clockSkewToleranceMs;
       }
     }
-    const { next, sideEffect } = clockSkewTransition(prev?.skew ?? INITIAL_CLOCK_SKEW_STATE, divergent);
+    const { next, sideEffect }: { next: ClockSkewFsmState; sideEffect: ClockSkewSideEffect } =
+      obs.coarseHeartbeat
+        ? { next: prev?.skew ?? INITIAL_CLOCK_SKEW_STATE, sideEffect: 'none' }
+        : clockSkewTransition(prev?.skew ?? INITIAL_CLOCK_SKEW_STATE, divergent);
     // Posture handling (GUARD-POSTURE-ENDPOINT-SPEC §2.3): a beat WITH a block
     // stamps a fresh receiver-side receipt time and persists durably; a beat
     // WITHOUT one (older peer / lighter beat) carries the previous block
@@ -227,10 +249,21 @@ export class MachinePoolRegistry {
     // one. Field-specific (not a generic deep-merge) by design: merging stale
     // fail-OPEN fields like quotaState forward would regress placement. A fully
     // offline peer still ages out via routerReceivedAtMs → online:false.
-    const obsToStore: HeartbeatObservation =
+    let obsToStore: HeartbeatObservation =
       obs.seamlessnessFlags === undefined && prev?.obs.seamlessnessFlags !== undefined
         ? { ...obs, seamlessnessFlags: prev.obs.seamlessnessFlags }
         : obs;
+    // selfReportedLastSeen carry-forward for COARSE beats: a coarse (stale, git-synced
+    // file) beat must NOT overwrite a FRESHER live `selfReportedLastSeen` from the
+    // PeerPresencePuller path — keep the newer of the two so the displayed last-seen
+    // stays honest and a coarse beat can't visually "age" a peer that is live.
+    if (obs.coarseHeartbeat && obs.selfReportedLastSeen && prev?.obs.selfReportedLastSeen) {
+      const coarseMs = Date.parse(obs.selfReportedLastSeen);
+      const prevMs = Date.parse(prev.obs.selfReportedLastSeen);
+      if (Number.isFinite(coarseMs) && Number.isFinite(prevMs) && prevMs > coarseMs) {
+        obsToStore = { ...obsToStore, selfReportedLastSeen: prev.obs.selfReportedLastSeen };
+      }
+    }
     this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
