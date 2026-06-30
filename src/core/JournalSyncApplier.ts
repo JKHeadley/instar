@@ -588,12 +588,26 @@ export class JournalSyncApplier {
     }
 
     if (kind === 'topic-placement') {
-      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move'];
+      // KEEP IN SYNC with CoherenceJournal.validate() topic-placement branch (the
+      // emit-side source of truth). WS1.3/Fix #3 (#1311) added the 'reconcile' reason
+      // AND the cooperative-handoff fields (status/transferTo/timestamp/drainInFlight)
+      // on the emit side but NOT here — so a real cross-machine transferring record
+      // failed receive-validation, marked the peer stream `suspect`, and halted
+      // replication so the target never claimed (live two-machine proof catch,
+      // 2026-06-30; in-process tests covered emit + applier-materialize, never this
+      // receive-validation path). Mirror EXACTLY.
+      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move', 'reconcile'];
       if (typeof raw.owner !== 'string' || !raw.owner) return false;
       if (typeof raw.epoch !== 'number' || !Number.isFinite(raw.epoch)) return false;
       if (typeof raw.reason !== 'string' || !reasons.includes(raw.reason as PlacementReason)) return false;
       if (raw.prevOwner !== undefined && typeof raw.prevOwner !== 'string') return false;
-      const known = ['owner', 'epoch', 'reason', 'prevOwner'];
+      // Fix #3 OPTIONAL handoff fields. Back-compat: an absent `status` is `active`.
+      // A present-but-malformed field rejects the record (never a silent partial accept).
+      if (raw.status !== undefined && raw.status !== 'active' && raw.status !== 'transferring') return false;
+      if (raw.transferTo !== undefined && typeof raw.transferTo !== 'string') return false;
+      if (raw.timestamp !== undefined && (typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp))) return false;
+      if (raw.drainInFlight !== undefined && typeof raw.drainInFlight !== 'boolean') return false;
+      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
       return keys.every((k) => known.includes(k));
     }
     if (kind === 'session-lifecycle') {
