@@ -1,0 +1,36 @@
+# Reconciler Boot-Ordering Fix — the convergence loop now actually runs
+
+## What Changed
+
+The cross-machine convergence loop (`OwnershipReconciler`) was being wired during server startup inside a
+guard that required the machine's mesh id to already be set — but that id is assigned ~950 lines later in the
+same synchronous boot sequence. So the guard was always null and **the reconciler was never constructed and
+never ticked** (live-confirmed: zero `OwnershipReconciler` lines in the server log; `/pool/reconciler` 503
+even with both machines online). This made the merged cross-machine "stuck move" fix correct but inert — the
+loop that consumes it didn't exist.
+
+The fix applies the exact pattern already shipped for the sibling `OwnershipApplier`
+(`ownership-applier-meshself-ordering-fix`): construction is now gated on the pin store alone, and
+`selfMachineId` is a **late-bound getter** read at tick time. While the id is still unresolved (very early
+boot) a tick is a strict no-op (`skipped: 'self-id-unresolved'`); once it resolves, the same loop instance
+acts. Found by driving the feature through live, exactly the value of the live-proof discipline.
+
+## Evidence
+
+- Unit: `tests/unit/OwnershipReconciler.test.ts` — 32 tests incl. two new regression tests (a null self-id is
+  a strict no-op even with a triggering pin; once the getter resolves, the SAME instance transfers). All four
+  `new OwnershipReconciler` construction sites updated to the late-bound shape.
+- Affected suites green: OwnershipReconciler, OwnershipApplier, CoherenceJournal, MachinePoolRegistry,
+  TopicPinReplicatedStore (123 tests).
+- The sibling `OwnershipApplier` already carries this identical fix + its own converged spec, establishing the
+  proven pattern.
+
+## What to Tell Your User
+
+Nothing yet — the convergence loop remains off by default (dev-gated). This fix simply means that when it is
+enabled, the loop actually runs (it never did before). No change to normal use until it's turned on.
+
+## Summary of New Capabilities
+
+- (Dark) The cross-machine convergence loop is now actually constructed and ticking on every machine that has
+  a pin store — the prerequisite for the merged stuck-move fix to take effect.
