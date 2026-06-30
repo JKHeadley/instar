@@ -16921,7 +16921,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // logs, /pool/reconciler 503 even with both machines online). `selfMachineId` is now a
         // late-bound getter (read at tick time, no-op while null) — the SAME proven fix the
         // sibling OwnershipApplier already uses (ownership-applier-meshself-ordering-fix).
-        if (_topicPinStore) {
+        // Gate on `ownReg` (the ownership registry, available HERE inside durableOwnership) —
+        // NOT on `_topicPinStore` (Finding 2026-06-30 #2, live-proof's SECOND catch): the pin
+        // store is assigned ~2200 lines BELOW, so `if (_topicPinStore)` was ALWAYS null here →
+        // reconciler still never built even after the `_meshSelfId` fix. `pinStore` is now a
+        // late-bound getter too (read at tick time, no pins while null) — same pattern as
+        // `selfMachineId` + the sibling OwnershipApplier.
+        if (ownReg) {
           const ws13Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws13Reconcile?: boolean; ws13DryRun?: boolean; ws13TickMs?: number; ws13PinReplicate?: boolean };
           const { OwnershipReconciler } = await import('../core/OwnershipReconciler.js');
           // Fix #2 advisory-pin read: the merged replicated `topic-pin-record` view (HLC-ordered)
@@ -16940,7 +16946,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             enabled: () => resolveDevAgentGate(ws13Cfg().ws13Reconcile, config),
             dryRun: () => ws13Cfg().ws13DryRun !== false,
             selfMachineId: () => _meshSelfId, // late-bound (assigned ~950 lines below) — read at tick time
-            pinStore: _topicPinStore,
+            pinStore: () => _topicPinStore, // late-bound (assigned ~2200 lines below) — read at tick time
+
             // Fix #2: the merged ADVISORY replicated pins (HLC-ordered). Gated by
             // ws13PinReplicate (resolves LIVE on a dev agent / DARK on the fleet) so a
             // dark/single-machine agent reads no advisory pins (today's behavior).

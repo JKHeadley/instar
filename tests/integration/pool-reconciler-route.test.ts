@@ -66,7 +66,7 @@ function makeReconciler(): OwnershipReconciler {
   pinStore.set('700', 'm_a');
   return new OwnershipReconciler({
     enabled: () => true, dryRun: () => false, selfMachineId: () => 'm_b',
-    pinStore, ownership: reg,
+    pinStore: () => pinStore, ownership: reg,
     machines: () => [{ machineId: 'm_a', online: true, lastSeenMs: Date.now() }, { machineId: 'm_b', online: true, lastSeenMs: Date.now() }],
     isTopicBusy: () => false, emitPlacement: () => {}, debounceMs: 0,
   });

@@ -63,7 +63,15 @@ export interface OwnershipReconcilerDeps {
    * A tick while it is still null is a strict no-op (treated like single-machine).
    */
   selfMachineId: () => string | null;
-  pinStore: TopicPlacementPinStore;
+  /**
+   * The local pin store, LATE-BOUND (Finding 2026-06-30 #2, the live proof's SECOND catch):
+   * in server.ts `_topicPinStore` is assigned ~2200 lines AFTER the reconciler is wired, so a
+   * value here (and the old `if (_topicPinStore)` construction gate) was ALWAYS null → the
+   * reconciler still never built even after the `_meshSelfId` fix. A getter read at TICK time
+   * resolves the store once boot completes; a tick while it is still null yields no pins (a
+   * natural no-op). Same late-bound pattern as `selfMachineId` + the sibling OwnershipApplier.
+   */
+  pinStore: () => TopicPlacementPinStore | null;
   /**
    * Cross-machine convergence (Fix #2): the merged ADVISORY replicated pins (move-intent
    * from peers, HLC-ordered). The OWNING machine has no LOCAL pin for a stuck move (the pin
@@ -191,7 +199,8 @@ export class OwnershipReconciler {
    * the owner cooperatively transfers toward; the force-claim path never reads it.
    */
   private effectivePins(): Record<string, TopicPin> {
-    const local = this.d.pinStore.all();
+    const ps = this.d.pinStore();
+    const local = ps ? ps.all() : {}; // null until _topicPinStore resolves at boot → no pins (natural no-op)
     const advisory = this.d.advisoryPins?.();
     if (!advisory || advisory.size === 0) return local;
     // Validate PRIMARY = membership/liveness (skew-proof): only act on a replicated pin

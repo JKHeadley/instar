@@ -89,6 +89,7 @@ interface Sim {
     now: () => number;
     advisoryPins: Map<number, { preferredMachine: string; hlc: { physical: number; logical: number; node: string } }>;
     selfMachineId: () => string | null;
+    pinStore: () => TopicPlacementPinStore | null;
   }>) => OwnershipReconciler;
   /** Replicate the shared journal → run EVERY machine's applier (the cross-machine sync). */
   pump: () => void;
@@ -134,7 +135,7 @@ function makeSim(machines: ReconcilerMachineView[]): Sim {
         enabled: () => opts.enabled ?? true,
         dryRun: () => opts.dryRun ?? false,
         selfMachineId: opts.selfMachineId ?? (() => machineId),
-        pinStore: this.pinStoreFor(machineId),
+        pinStore: opts.pinStore ?? (() => this.pinStoreFor(machineId)),
         ...(opts.advisoryPins ? { advisoryPins: () => opts.advisoryPins! } : {}),
         ownership: regFor(machineId).reg, // PER-MACHINE registry (separate store)
         machines: () => opts.machines ?? machines,
@@ -229,7 +230,7 @@ describe('OwnershipReconciler — cooperative convergence', () => {
     sim.pinStoreFor('m_b').set('700', 'm_a'); // just set — updatedAt = now
     const rec = new OwnershipReconciler({
       enabled: () => true, dryRun: () => false, selfMachineId: () => 'm_b',
-      pinStore: sim.pinStoreFor('m_b'), ownership: sim.registryFor('m_b'),
+      pinStore: () => sim.pinStoreFor('m_b'), ownership: sim.registryFor('m_b'),
       machines: () => TWO, isTopicBusy: () => false,
       emitPlacement: () => {}, debounceMs: 60_000, safePointDeadlineMs: 1000, deathEvidenceMs: 1000,
     });
@@ -425,6 +426,21 @@ describe('OwnershipReconciler — late-bound self-id (boot-ordering fix, 2026-06
     expect(rep.skipped).toBe('self-id-unresolved');
     expect(rep.transfers).toBe(0);
     expect(sim.read('700', 'm_b')!.status).toBe('active'); // untouched
+    sim.cleanup();
+  });
+
+  it('a null pinStore (not yet assigned at boot) is a no-op; once it resolves, the SAME reconciler acts (Finding #2)', () => {
+    const sim = makeSim(TWO);
+    seedActive(sim, '700', 'm_b');
+    // The pin lives in m_b's store, but the reconciler's pinStore getter returns null until boot completes.
+    sim.pinStoreFor('m_b').set('700', 'm_a');
+    let store: TopicPlacementPinStore | null = null;
+    const rec = sim.reconcilerFor('m_b', { pinStore: () => store });
+    expect(rec.tick().transfers).toBe(0); // pinStore null → no pins → no-op
+    expect(sim.read('700', 'm_b')!.status).toBe('active');
+    store = sim.pinStoreFor('m_b'); // _topicPinStore now assigned
+    expect(rec.tick().transfers).toBe(1); // same instance now sees the pin and transfers
+    expect(sim.read('700', 'm_b')!.transferTo).toBe('m_a');
     sim.cleanup();
   });
 
