@@ -284,6 +284,12 @@ async function handler(req, res) {
   }
   const token = inboxToken();
   if (token) {
+    const _tpBody = req.body ?? {};
+    const _tpTitle = typeof _tpBody.title === "string" ? _tpBody.title.trim() : "";
+    if (/^\[(DEGRADATION|DOCTOR)\]/i.test(_tpTitle)) {
+      res.status(200).json({ ok: true, accepted: false, dropped: "telemetry-paused" });
+      return;
+    }
     const store = new BlobInboxStore(
       new BlobInboxClient({ token, apiBase: process.env.FEEDBACK_INBOX_BLOB_API_BASE })
     );

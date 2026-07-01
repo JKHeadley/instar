@@ -62,6 +62,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const token = inboxToken();
   if (token) {
     // ── PERSISTENCE mode: the full ported intake pipeline + durable Blob inbox. ──
+
+    // ── Telemetry-pause filter (2026-06-30, operator directive) ──
+    // Automatic degradation/doctor HEALTH reports are telemetry-grade data that must
+    // NOT enter the feedback pipeline (they were drowning real feedback and tripping
+    // the rate limit). Drop them at the door: accept so the sending agent does not
+    // retry, but never persist. Real feedback (any other title) is unaffected.
+    // Reversible: delete this block to un-pause. Tracked: come back to route these
+    // into the dedicated telemetry pipeline instead (CMT-1850).
+    const _tpBody = (req.body ?? {}) as Record<string, unknown>;
+    const _tpTitle = typeof _tpBody.title === 'string' ? _tpBody.title.trim() : '';
+    if (/^\[(DEGRADATION|DOCTOR)\]/i.test(_tpTitle)) {
+      res.status(200).json({ ok: true, accepted: false, dropped: 'telemetry-paused' });
+      return;
+    }
+
     const store = new BlobInboxStore(
       new BlobInboxClient({ token, apiBase: process.env.FEEDBACK_INBOX_BLOB_API_BASE }),
     );
