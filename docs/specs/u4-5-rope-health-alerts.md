@@ -7,7 +7,7 @@ parent-principle: "The Agent Is Always Reachable — A Guaranteed Reachability F
 sibling-principles: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions; Bounded Notification Surface; Observability — you can't tune what you can't see; Scrape/Parser Fixture Realness; Migration Parity"
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; multi-transport-mesh-comms.md; MULTI-MACHINE-SESSION-POOL-SPEC.md"
 project: "self-healing-mesh (topic 29836)"
-depends-on: "U4.3 rope-health snapshot (HARD dependency — the authed GET /health ropeHealth per-(peer,kind) state; build order U4.3 → U4.5; there is NO usable interim source: /health today carries advertised kinds only and the resolver map is process-private); SleepWakeDetector + machine-registry online/last-seen (the expected-online gate); WS4.2 emptyState semantics (offline-since vs unreachable); PendingRelayStore (alert delivery retry); guardManifest (G3)"
+depends-on: "U4.3 rope-health snapshot (HARD dependency — the authed GET /health ropeHealth per-(peer,kind) state; build order U4.3 → U4.5; there is NO usable interim source: /health today carries advertised kinds only and the resolver map is process-private); git-synced coarse MachineHeartbeat (the mesh-INDEPENDENT liveness discriminator for the urgent tier — R-r2-1); SleepWakeDetector wake event (OWN-machine, retrospective — feeds only the self-wake grace window, never a peer-sleep signal); machine-registry online/last-seen (staleness only — failoverThresholdMs default 15 min); WS4.2 emptyState semantics (offline-since vs unreachable); tailscale status --json via bounded exec (the key-expiry source — R-r2-3); guardManifest (G3)"
 ---
 
 # U4.5 — Rope-Health Alerts
@@ -40,32 +40,77 @@ partition — the precondition for silent message loss — has no prompt alert a
 
 **Component (productized — this ships in instar, not as an agent-home script):**
 `RopeHealthMonitor` (`src/monitoring/RopeHealthMonitor.ts`), constructed by the real
-server boot, evaluating on the existing mesh heartbeat/lease-tick cadence (~every
-30s; no new loop — it subscribes to the tick the coordinator already runs).
+server boot, running **its OWN bounded evaluation loop** — a 30s `setInterval`
+owned by the monitor, constructed and torn down at boot/shutdown (R-r2-2). Round
+1's "subscribes to the ~30s coordinator tick" named a carrier that doesn't exist:
+the coordinator's real timers are the ~5s lease pull, the ~2 min heartbeat, and a
+30s `refreshPool` `setInterval` closure — none is a subscribable evaluation tick.
+Owning the loop keeps the cadence pinned in TIME, which the urgent debounce
+depends on (below).
 
-- **Data source (HARD dependency):** the U4.3 `PeerEndpointResolver.snapshot()` seam
-  (the same data the authed `/health` serves) — in-process, zero cost. U4.3 builds
-  first; there is no interim fallback (round 0's fallback named nothing real — this
-  is now honest).
+- **Primary data source (HARD dependency):** the U4.3
+  `PeerEndpointResolver.snapshot()` seam (the same data the authed `/health`
+  serves) — in-process, zero cost. U4.3 builds first; there is no interim fallback
+  (round 0's fallback named nothing real — this is now honest). **Absent-record
+  semantics (R-r2-minor):** a (peer, kind) with NO snapshot record (never dialed,
+  or evicted) is UNKNOWN, not down — the classifier fails toward **NOT-urgent**
+  (at most `degraded`/digest visibility). (U4.4 states the mirror-image rule:
+  absent ⇒ not-healthy ⇒ defer.)
+- **Second declared source — Tailscale key expiry (R-r2-3).** Key expiry is NOT in
+  the U4.3 snapshot (the resolver never sees it) — round 1's "single data source"
+  framing was wrong. The expiry tier reads a **bounded exec of `tailscale status
+  --json`**: hard timeout, cadence once per hour, output parsed by the registered
+  fixture-backed parser (§6). Absent CLI ⇒ the expiry tier is **silently absent**
+  (one debug log line, no alert, no error state) — the rest of the monitor is
+  unaffected.
 - **State (durable, small):** `state/rope-health.json` — per (peer, kind): condition,
   firstObservedAt, consecutiveObservations, episodeKey, lastAlertAt. Survives
   restarts (the debounce/episode memory a daily stateless job could never hold).
-  Bounded: peers × kinds.
-- **Classification (deterministic, sleep-aware):**
+  Bounded: peers × kinds. **Write discipline (R-r2-4):** transition-only writes
+  (a steady-state evaluation never touches disk) plus a short write debounce for
+  transition bursts; intra-episode counters lost to a restart are ACCEPTED
+  (declared — the safe direction: a restart re-debounces, it never fabricates an
+  episode).
+- **Classification (deterministic, sleep-aware) — REDEFINED on signals that exist
+  (R-r2-1):** Round 1's urgent gate relied on a "graceful sleep/shutdown
+  announcement" that exists NOWHERE: `SleepWakeDetector` detects only OWN-machine
+  sleep, retrospectively (a wake event after the fact — it cannot see a peer's
+  lid-close); the registry online flag is pure staleness (`failoverThresholdMs`
+  default **15 minutes**); and registry freshness itself rides the very mesh
+  being classified. As written, a lid-close would have matched urgent for up to
+  ~15 min — one HIGH false alarm per lid-close, the exact flood class this spec
+  exists to kill. The discriminator is now **mesh-INDEPENDENT liveness
+  evidence**: the git-synced coarse `MachineHeartbeat`.
   - `ok` — silence (no digest line, nothing).
   - `degraded` — a rope down to a peer while ≥1 other rope is healthy, OR a Tailscale
     key expiring within 14 days. Digest-only.
-  - `peer-offline` — ALL ropes down BUT the peer is NOT expected online: registry
-    marks it offline / it announced a graceful shutdown or sleep (SleepWakeDetector /
-    WS4.2 `offline since <t>` semantics). Digest-only ("<nickname> offline since
-    <t> — expected"). **A lid-close is never urgent.**
-  - `urgent` — ALL ropes down to a peer that IS expected online (registry-online,
-    heartbeat-fresh until it wasn't, no graceful-offline signal) for ≥
-    `urgentDebounceChecks` (default 2) consecutive evaluations. ONE HIGH attention
-    item per episode.
+  - `peer-offline` — ALL ropes down AND the peer's git-synced coarse heartbeat has
+    STOPPED advancing (peer likely asleep/off), or the registry already marks it
+    offline (WS4.2 `offline since <t>` semantics). Digest-only ("<nickname>
+    offline since <t> — expected"). **A lid-close is never urgent** — a sleeping
+    machine stops writing heartbeats.
+  - `urgent` — ALL ropes down to a peer whose git-synced coarse heartbeat **is
+    still advancing** (the machine is provably alive and working while every rope
+    to it is dead = a genuine partition, not sleep), sustained for ≥ 2 consecutive
+    evaluations spanning ≥ `urgentDebounceMs` (default 60000 — pinned in TIME on
+    the monitor's own 30s loop, not in ticks; R-r2-2). ONE HIGH attention item per
+    episode. **Self-wake grace window:** after OUR OWN machine wakes
+    (SleepWakeDetector's wake event — the one thing it CAN tell us), all snapshots
+    are stale; urgent is suppressed until each (peer, kind) has been re-observed
+    post-wake.
+  - **Residual, stated honestly:** a peer that dies BETWEEN coarse heartbeats
+    classifies `peer-offline` (heartbeat looks stopped) until registry staleness
+    passes and other evidence accrues — late-but-honest; the failure mode is a
+    delayed upgrade to urgent, never a false HIGH alarm.
 - **Episode semantics (honest about partitions):** episodeKey =
   `sorted(machineA,machineB) + ':' + coarse window start (condition onset, quantized
-  15 min)` — deterministically computable on BOTH sides without coordination. During
+  15 min)` — deterministically computable on BOTH sides without coordination.
+  **Boundary skew (R-r2-5):** the two sides detect at different instants, so an
+  onset straddling a quantization boundary yields adjacent window keys; post-heal
+  grouping therefore matches episodes across **ADJACENT quantization windows**
+  (same machine pair, window start ±1 quantum), and grouping is declared
+  **best-effort** — a skew beyond one quantum shows two groups, which is honest
+  display degradation, never lost or duplicated alerts. During
   a genuine two-sided partition each side raises at most ONE item (Telegram rides the
   internet, not the mesh, so delivery works) — **two items total for a true
   partition is accepted and declared** (coordination during the event is structurally
@@ -78,23 +123,40 @@ server boot, evaluating on the existing mesh heartbeat/lease-tick cadence (~ever
   here concretely rather than by reference).
 - **Alert delivery honesty:** the attention item + Telegram delivery ride the
   internet, not the mesh. If delivery itself fails, the failure is recorded in the
-  monitor state (`detected-not-notified`) and retried via the existing durable relay
-  path — detected-but-silent is impossible to lose silently.
+  monitor state (`detected-not-notified`) and **the monitor's own next-evaluation
+  retry re-raises it** — that retry, not any store attribution, is the mechanism
+  (round 1's PendingRelayStore citation dropped: attention-item creation does not
+  ride that queue; R-r2-minor). Detected-but-silent is impossible to lose
+  silently.
 - **Content scrub (frontloaded rule):** alert/digest text carries rope KIND +
   machine NICKNAME + relative expiry ONLY — never raw IPs, URLs, tunnel hostnames,
   tailnet names, or account emails (the tailscale JSON carries all of these; they
   never leave the parser).
 - **The daily digest line:** `GET /mesh/rope-health` (Bearer) serves the monitor's
   current classification + episode state. A **built-in daily job template**
-  (`rope-health-digest`, shipped via the standard job-template path, off by default
-  fleet / on for dev per job convention) emits at most ONE consolidated section
-  (≤ 3 sentences, clamped, machine-named) to the alerts hub topic when anything is
-  non-ok. The operator's existing agent-home G1 script simply adds one read of the
-  same route (documented one-line change) — the G1 script is thereby a CONSUMER,
-  never the mechanism. Migration parity: the monitor + route + job template all ship
-  in instar with config defaults via `migrateConfig`; the CLAUDE.md template gains
-  the proactive trigger ("is the mesh healthy? / why did I get a partition alert?"
-  → `GET /mesh/rope-health`).
+  (`rope-health-digest`) ships via the standard built-in-jobs path using the
+  **feedback-factory pattern (R-r2-7)** — round 1's "off by default fleet / on for
+  dev per job convention" named a convention that doesn't exist; the real pattern
+  (per `feedback-factory-process`) is: the template ships ENABLED, and the job
+  body exits silently when its route 503s (i.e. when `monitoring.ropeHealth` is
+  dark on that agent). Full frontmatter, frontloaded: name `rope-health-digest`,
+  schedule `"0 9 * * *"`, model `haiku`, supervision `tier1`, priority `low`. The
+  job emits at most ONE consolidated section (≤ 3 sentences, clamped,
+  machine-named) when anything is non-ok — delivered to
+  **`monitoring.ropeHealth.digestTopicId` (R-r2-8)**: round 1's "alerts hub topic"
+  is not a real construct; the real surface is this config key, mirroring the
+  `burnDetection.alertTopicId` precedent — default UNSET, in which case the digest
+  job LOGS only (no Telegram send); the operator sets their hub topic id to get
+  the digest delivered. Migration parity for the key via `migrateConfig`.
+  **G1-script note (R-r2-minor):** the operator's existing agent-home G1
+  coherence script is a CONSUMER, never the mechanism — and since it is
+  agent-home (no repo artifact to patch), the one-line "also read
+  `GET /mesh/rope-health`" change is documented as an **operator note in the
+  digest job template body and in this spec**, not as a code deliverable.
+  Migration parity: the monitor + route + job template + config key all ship in
+  instar with config defaults via `migrateConfig`; the CLAUDE.md template gains
+  the proactive trigger ("is the mesh healthy? / why did I get a partition
+  alert?" → `GET /mesh/rope-health`).
 
 ## 3. Multi-machine posture (mandatory)
 
@@ -115,12 +177,28 @@ window declared per G3.
 ## 5. Config, rollout, migration
 
 - `monitoring.ropeHealth` = `{ enabled (OMITTED — dev-agent gate: live-on-dev day
-  one, dark fleet), urgentEnabled: true, urgentDebounceChecks: 2, clearSustainMs:
-  600000, keyExpiryWarnDays: 14, digestJobEnabled (job-template convention) }`.
+  one, dark fleet), urgentEnabled: true, urgentDebounceMs: 60000 (time-pinned —
+  R-r2-2; replaces round 1's tick-counted urgentDebounceChecks), clearSustainMs:
+  600000, keyExpiryWarnDays: 14, digestTopicId (default unset — R-r2-8) }`.
+  (Round 1's `digestJobEnabled` dropped — the job ships enabled with a
+  503-silent body per the feedback-factory pattern, R-r2-7.)
+- **Action-bearing discipline for the urgent tier, argued explicitly (R-r2-6):**
+  the urgent tier auto-posts HIGH attention items, which normally pushes a
+  feature into `DARK_GATE_EXCLUSIONS`' action-bearing category. This spec takes
+  the OTHER branch — a `DEV_GATED_FEATURES` entry whose written justification
+  is: the only egress is **episode-deduped** (ONE HIGH item per (pair, episode),
+  split-brain-item suppressed), **sleep-gated** (the mesh-independent heartbeat
+  discriminator kills the lid-close false-alarm class by construction), and it is
+  **operator-mandated partition alerting** — the silent-partition gap is the
+  incident class the operator directed this project to close, the same
+  bounded-escalation posture as the `degradationLadderNeverSilent` precedent
+  already in that registry. `urgentEnabled: true` therefore rides the same
+  dev-agent gate as the monitor (no separate flag ramp); the justification text
+  above ships in the registry entry (an explicit build deliverable).
 - Graduation criteria (named): 7 days on the dev pair with zero false urgent items
   (every urgent episode manually confirmed real) and ≥1 real sleep event correctly
-  classified `peer-offline` → fleet default-on for the monitor (digest job stays
-  per-agent opt-in).
+  classified `peer-offline` → fleet default-on for the monitor (the digest job
+  emits only where `digestTopicId` is set).
 - Rollback: `enabled:false` → monitor inert, route 503s, job emits nothing. The
   state file is inert data.
 - **Build order:** U4.3 merges first (the snapshot seam is this spec's data source).
@@ -129,43 +207,74 @@ window declared per G3.
 
 ## 6. Tests (tiers declared)
 
-Unit: classifier per class incl. the sleep gate (expected-online vs graceful-offline
-vs unreachable — both sides of every boundary); episodeKey determinism (both sides
-compute the same key); debounce (N-1 checks do not fire); sustained-clear (blip does
-not re-fire); split-brain-item suppression; content scrub (fixture rows containing
-IPs/emails/tailnet never reach output); **tailscale `status --json` parser REGISTERED
-with captured byte-for-byte fixtures** (real output incl. KeyExpiry — Scrape/Parser
-Fixture Realness); state-file round-trip across restart. Integration: `GET
+Unit: classifier per class incl. the heartbeat discriminator (heartbeat-advancing
++ all-down ⇒ urgent path; heartbeat-stopped ⇒ `peer-offline`; between-heartbeats
+death ⇒ `peer-offline` then late upgrade — both sides of every boundary, R-r2-1);
+self-wake grace window (post-own-wake, urgent suppressed until re-observation);
+absent snapshot record ⇒ NOT-urgent (R-r2-minor); episodeKey determinism (both
+sides compute the same key) + **adjacent-window grouping** (skew straddling a
+quantization boundary still groups; beyond one quantum degrades to two groups —
+R-r2-5); time-pinned debounce (a second evaluation inside `urgentDebounceMs` does
+not fire — R-r2-2); sustained-clear (blip does not re-fire); split-brain-item
+suppression; **transition-only state writes** (steady-state evaluations write
+nothing; restart loses only intra-episode counters — R-r2-4); content scrub
+(fixture rows containing IPs/emails/tailnet never reach output); **tailscale
+`status --json` parser REGISTERED with captured byte-for-byte fixtures** (real
+output incl. KeyExpiry — Scrape/Parser Fixture Realness) + bounded-exec behavior
+(timeout kills; absent CLI ⇒ expiry tier silently absent + one debug log —
+R-r2-3); state-file round-trip across restart. Integration: `GET
 /mesh/rope-health` through the real HTTP pipeline (authed); attention item raised
-via the real queue with episode dedup; metrics rows. E2E lifecycle (feature-alive):
-production init with the flag dev-resolved → monitor constructed, ticking,
-`lastEvaluatedAt` advancing; dark → 503 + zero presence. Wiring-integrity: monitor
-subscribes to the REAL coordinator tick and reads the REAL resolver snapshot (not a
-copy). Live two-machine drive (before fleet): tailscale logout on the dev pair →
-degraded line appears; peer sleep → `peer-offline`, NO urgent item (the load-bearing
-false-alarm test, live); full network cut to an expected-online peer (simulated) →
-ONE urgent item per side, episode-grouped post-heal.
+via the real queue with episode dedup; digest send honors unset `digestTopicId`
+(logs only — R-r2-8); metrics rows. E2E lifecycle (feature-alive): production
+init with the flag dev-resolved → monitor constructed, its own 30s loop ticking,
+`lastEvaluatedAt` advancing; dark → 503 + zero presence + no timer. Wiring-
+integrity: the monitor owns its own loop (constructed + torn down by real server
+boot/shutdown — R-r2-2) and reads the REAL resolver snapshot (not a copy). Live
+two-machine drive (before fleet): tailscale logout on the dev pair → degraded
+line appears; peer sleep → `peer-offline`, NO urgent item (the load-bearing
+false-alarm test, live — the heartbeat stops); full network cut to a
+heartbeat-advancing peer (simulated) → ONE urgent item per side, episode-grouped
+post-heal.
 
 ## Frontloaded Decisions
 
-1. **Productized in-server monitor** — the detector is instar source riding the
-   existing mesh tick with a small durable state file; the G1 agent-home script
-   becomes a consumer of `GET /mesh/rope-health`, never the mechanism. (Resolves the
-   Migration-Parity violation and gives the urgent tier a real evaluation vehicle.)
-2. **U4.3 is a HARD dependency** — no fallback data source exists; build order
-   declared.
-3. **Sleep-aware urgency** — urgent requires expected-online + all-down + debounce;
-   a lid-close classifies `peer-offline` (digest at most). The suppressed-false-alarm
-   count is a metric, so the gate's value is measurable.
+1. **Productized in-server monitor** — the detector is instar source running its
+   OWN bounded 30s evaluation loop (round 1's "subscribable coordinator tick"
+   doesn't exist — R-r2-2) with a small durable, transition-only-written state
+   file (R-r2-4); the G1 agent-home script becomes a consumer of
+   `GET /mesh/rope-health`, never the mechanism (documented as an operator note
+   in the digest job body + this spec — no repo artifact exists to patch).
+   (Resolves the Migration-Parity violation and gives the urgent tier a real
+   evaluation vehicle.)
+2. **U4.3 is a HARD dependency for rope state** — no fallback data source exists;
+   build order declared; absent snapshot records fail toward NOT-urgent. Tailscale
+   key expiry has its OWN declared source (hourly bounded exec of `tailscale
+   status --json`; absent CLI ⇒ tier silently absent — R-r2-3).
+3. **Sleep-aware urgency on signals that EXIST (R-r2-1)** — urgent requires
+   all-down + the peer's git-synced coarse heartbeat still advancing
+   (mesh-independent proof of a live-but-partitioned peer) + the time-pinned
+   debounce; a lid-close classifies `peer-offline` because the heartbeat stops
+   (round 1's "graceful sleep announcement" gate named a signal that exists
+   nowhere). A self-wake grace window suppresses urgent over stale post-wake
+   snapshots. Residual declared: death between coarse heartbeats reads
+   `peer-offline` first — late-but-honest. The suppressed-false-alarm count is a
+   metric, so the gate's value is measurable.
 4. **Honest partition semantics** — at most one item per SIDE per episode; two-sided
    duplication during a true partition is accepted and declared (coalescing during
    the event is structurally impossible); deterministic shared episodeKey groups them
-   post-heal; the split-brain item wins if already open.
-5. **Only all-down-expected-online escalates** — a degraded rope with a healthy
-   alternative is digest-only; key expiry warns at 14 days in the digest.
+   post-heal across ADJACENT quantization windows (best-effort declared — R-r2-5);
+   the split-brain item wins if already open.
+5. **Only all-down-with-advancing-heartbeat escalates** — a degraded rope with a
+   healthy alternative is digest-only; key expiry warns at 14 days in the digest,
+   delivered to `monitoring.ropeHealth.digestTopicId` (default unset ⇒ log-only —
+   R-r2-8) via the enabled-but-503-silent `rope-health-digest` job (feedback-
+   factory pattern; frontmatter frontloaded — R-r2-7).
 6. **Content scrub is a hard rule** — kind + nickname + relative expiry only.
-7. **Maturation Path compliance** — live-on-dev day one via the dev gate; named
-   graduation criteria; G3 loadBearing registration.
+7. **Maturation Path compliance** — live-on-dev day one via the dev gate, with the
+   urgent tier's action-bearing question answered by an explicit
+   `DEV_GATED_FEATURES` justification (episode-deduped, sleep-gated,
+   operator-mandated partition alerting; `degradationLadderNeverSilent`
+   precedent — R-r2-6); named graduation criteria; G3 loadBearing registration.
 
 ## Open questions
 
