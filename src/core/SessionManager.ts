@@ -3124,6 +3124,32 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Capture the current output of a tmux session WITH ANSI escape sequences
+   * (`capture-pane -e`) preserved.
+   *
+   * Exists for consumers that need the RENDERING of pane text, not just its
+   * bytes — the F2 ghost-text exclusion in StuckInputSentinel reads the SGR
+   * dim attribute to tell the harness's model-generated composer suggestion
+   * (rendered dim, never typed) apart from genuinely stuck real input, which
+   * are byte-identical once attributes are stripped. Returns null on any
+   * capture failure, exactly like captureOutput.
+   */
+  // RULE 3: EXEMPT — primitive output capture (styled twin of captureOutput
+  // above); the state-detection patterns live in the consumers.
+  captureOutputAnsi(tmuxSession: string, lines: number = 100): string | null {
+    try {
+      return withSyncOp(() => execFileSync(
+        this.config.tmuxPath,
+        ['capture-pane', '-t', `=${tmuxSession}:`, '-p', '-e', '-S', `-${lines}`],
+        { encoding: 'utf-8', timeout: 5000 }
+      ));
+    } catch {
+      // @silent-fallback-ok — capture output, null handled by caller
+      return null;
+    }
+  }
+
+  /**
    * The last `lines` MEANINGFUL rows of a session's pane — blank-fill-immune.
    *
    * `capture-pane -S -N` returns the last N PHYSICAL rows, so in a tall pane

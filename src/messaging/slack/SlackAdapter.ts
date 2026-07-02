@@ -21,7 +21,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
-import { SlackApiClient } from './SlackApiClient.js';
+import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
 import { SocketModeClient, type SocketModeHandlers } from './SocketModeClient.js';
 import { ChannelManager } from './ChannelManager.js';
 import { FileHandler } from './FileHandler.js';
@@ -36,6 +36,58 @@ const RING_BUFFER_CAPACITY = 50;
 const SLACK_MAX_TEXT_LENGTH = 4000;
 const AUTO_ARCHIVE_DAYS = 7;
 const LOG_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000; // Daily
+
+/**
+ * Synthetic file id used by the startup self-verify's files.info probe.
+ * WELL-FORMED (Slack file ids are `F` + uppercase alphanumerics) but
+ * guaranteed nonexistent, so a healthy workspace answers `file_not_found`.
+ * The previous probe id (`F000SELFTEST`) tripped Slack's argument validation
+ * instead (`invalid_arguments`), which the old classification counted as an
+ * unexpected FAILURE — a healthy adapter red-flagged itself at every boot
+ * (live server.log 2026-07-02 18:12:27; slack-ai-employee-audit §1).
+ */
+export const FILES_INFO_PROBE_ID = 'F0000000000';
+
+/**
+ * Classify the outcome of the files.info self-verify probe.
+ *
+ * @param probeError null when the call succeeded (ok:true); otherwise the
+ *   Slack error code (SlackApiError.slackError) or error message.
+ *
+ * The check's job is to prove the files.info METHOD — the one the snippet/Post
+ * content path depends on (Method 1) — is reachable and responsive with our
+ * token, beyond the scope header claiming files:read. Both `file_not_found`
+ * (the probe id passed argument validation and reached lookup) and
+ * `invalid_arguments` (Slack's server-side validator rejected the synthetic id
+ * before lookup) prove exactly that: transport, auth, and method dispatch all
+ * answered. Neither is a capability failure — a real file id can't produce
+ * either. `missing_scope` and anything else remain failures.
+ *
+ * Exported for unit tests; _selfVerify is the production caller.
+ */
+export function classifyFilesInfoSelfTest(
+  probeError: string | null,
+): { status: 'pass' | 'fail'; detail: string } {
+  if (probeError === null) {
+    return { status: 'pass', detail: 'API responded (unexpected ok for synthetic probe id)' };
+  }
+  if (probeError.includes('file_not_found')) {
+    return { status: 'pass', detail: 'API responsive (file_not_found for synthetic probe id)' };
+  }
+  if (probeError.includes('invalid_arguments')) {
+    return {
+      status: 'pass',
+      detail: 'API responsive (synthetic probe id rejected at argument validation — endpoint, auth, and transport verified)',
+    };
+  }
+  if (probeError.includes('missing_scope')) {
+    return {
+      status: 'fail',
+      detail: 'Returns missing_scope despite scope header claiming files:read is granted',
+    };
+  }
+  return { status: 'fail', detail: `Unexpected error: ${probeError}` };
+}
 
 export class SlackAdapter implements MessagingAdapter {
   readonly platform = 'slack';
@@ -2130,25 +2182,17 @@ export class SlackAdapter implements MessagingAdapter {
     }
 
     // ── Check 2: files.info API responds correctly ────────────────────
+    // We expect file_not_found (or invalid_arguments — Slack rejecting the
+    // synthetic id at argument validation) for the probe id; either proves
+    // the API is reachable and responsive. See classifyFilesInfoSelfTest.
     if (grantedScopes.includes('files:read')) {
+      let probeError: string | null = null;
       try {
-        const resp = await this.apiClient.call('files.info', { file: 'F000SELFTEST' }) as Record<string, unknown>;
-        // We expect file_not_found for a fake ID — that means the API is working
-        results.push({ check: 'files.info API', status: 'pass', detail: 'API responded (unexpected ok for fake file)' });
+        await this.apiClient.call('files.info', { file: FILES_INFO_PROBE_ID });
       } catch (err) {
-        const msg = (err as Error).message;
-        if (msg.includes('file_not_found')) {
-          results.push({ check: 'files.info API', status: 'pass', detail: 'API responsive (file_not_found for test ID)' });
-        } else if (msg.includes('missing_scope')) {
-          results.push({
-            check: 'files.info API',
-            status: 'fail',
-            detail: 'Returns missing_scope despite scope header claiming files:read is granted',
-          });
-        } else {
-          results.push({ check: 'files.info API', status: 'fail', detail: `Unexpected error: ${msg}` });
-        }
+        probeError = err instanceof SlackApiError ? err.slackError : (err as Error).message;
       }
+      results.push({ check: 'files.info API', ...classifyFilesInfoSelfTest(probeError) });
     } else {
       results.push({
         check: 'files.info API',

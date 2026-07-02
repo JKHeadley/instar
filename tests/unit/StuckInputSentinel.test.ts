@@ -22,6 +22,7 @@ type StubManager = {
   listRunningSessions: ReturnType<typeof vi.fn>;
   tmuxSessionExists: ReturnType<typeof vi.fn>;
   captureOutput: ReturnType<typeof vi.fn>;
+  captureOutputAnsi: ReturnType<typeof vi.fn>;
   fireStuckInputRecovery: ReturnType<typeof vi.fn>;
   getStrandedDraftMarker: ReturnType<typeof vi.fn>;
   clearStrandedDraftMarker: ReturnType<typeof vi.fn>;
@@ -34,10 +35,15 @@ type StubManager = {
  * @param markers per-session stranded-draft marker record. When a session has a
  *   codex marker, the sentinel uses MARKER-based detection (isMarkerStuckAtPrompt
  *   over the pane) instead of the generic `❯`-prompt reader.
+ * @param ansiPanes per-session ANSI (`capture-pane -e`) frames for the F2
+ *   ghost-text gate. Defaults to the plain pane — a frame with no SGR codes
+ *   renders nothing dim, so the gate classifies the text as 'real' and the
+ *   legacy recovery behavior is preserved.
  */
 function buildStubManager(
   panes: Record<string, string | (() => string)>,
   markers: Record<string, { marker: string; framework: string }> = {},
+  ansiPanes: Record<string, string | (() => string)> = {},
 ): StubManager {
   const liveMarkers = new Map(Object.entries(markers).map(([k, v]) => [k, { ...v, injectedAt: 0 }]));
   return {
@@ -46,6 +52,10 @@ function buildStubManager(
     captureOutput: vi.fn((name: string) => {
       const p = panes[name];
       return typeof p === 'function' ? p() : p;
+    }),
+    captureOutputAnsi: vi.fn((name: string) => {
+      const a = ansiPanes[name] ?? panes[name];
+      return typeof a === 'function' ? a() : a;
     }),
     fireStuckInputRecovery: vi.fn(),
     getStrandedDraftMarker: vi.fn((name: string) => liveMarkers.get(name)),
