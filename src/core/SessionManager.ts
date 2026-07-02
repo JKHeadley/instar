@@ -897,8 +897,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Register the multi-machine lease/awake predicate. When set and it returns
    * false, an AUTONOMOUS terminate is a no-op `skipped:'not-lease-holder'` — only
    * the awake/lease-holding machine may autonomously reap; a standby may detect
-   * and signal but never kill another machine's sessions. Operator kills bypass.
-   * Unset → treated as awake (single-machine default).
+   * and signal but never kill another machine's sessions. Operator kills bypass,
+   * and so does the topic-moved closeout (`bypassLeaseForTopicMovedCloseout` —
+   * F8: closing THIS machine's own leftover session for a topic that moved away
+   * is not "killing another machine's session", and the old owner is by
+   * definition usually not the lease holder). Unset → treated as awake
+   * (single-machine default).
    */
   setAwakeChecker(fn: () => boolean): void {
     this.isAwakeMachine = fn;
@@ -991,7 +995,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
    *  - CAS on live status + an in-flight guard (prevents the double-kill race).
    *  - `protectedSessions` (never kill).
    *  - Lease-holder gate: an AUTONOMOUS reap on a standby machine is a no-op
-   *    `skipped:'not-lease-holder'` — only the awake machine reaps.
+   *    `skipped:'not-lease-holder'` — only the awake machine reaps. Exception
+   *    (F8): the topic-moved closeout's `bypassLeaseForTopicMovedCloseout`
+   *    lifts ONLY this gate (see the opt's doc below).
    *  - ReapGuard (§P2): an AUTONOMOUS reap of a session the guard says to KEEP is
    *    a no-op `skipped:<keep-reason>` — even a buggy killer cannot end a guarded
    *    session.
@@ -1036,6 +1042,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
        */
       bypassRecentUserMessageForConfirmedMove?: boolean;
       /**
+       * Post-transfer closeout carve-out (F8, roadmap 0.6,
+       * test-as-self 2026-07-02): lifts ONLY the lease-holder gate — protected,
+       * CAS, in-flight, and EVERY KEEP-guard still apply unchanged. The
+       * SessionReaper sets it ONLY on the topic-moved closeout path, where this
+       * machine is closing ITS OWN local leftover session for a topic the pool
+       * ownership registry says ANOTHER machine now owns. The lease gate exists
+       * so a standby never reaps ANOTHER machine's sessions; the post-transfer
+       * closeout is the inverse case — the machine a topic moves AWAY from is
+       * by definition usually NOT the serving-lease holder, so without this
+       * carve-out the transfer's required teardown was structurally vetoed
+       * `skipped:'not-lease-holder'` every attempt until the P19 breaker gave
+       * up, stranding a duplicate session on the old machine (audit F8).
+       */
+      bypassLeaseForTopicMovedCloseout?: boolean;
+      /**
        * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
        * KILLER's decision point — the only moment the work was observable (the
        * quota-shed migrator computes it BEFORE its Ctrl+C grace round tears the
@@ -1072,7 +1093,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         return { terminated: false, skipped: 'protected' };
       }
       // Lease-holder gate: a standby machine never reaps another machine's sessions.
-      if (this.isAwakeMachine && !this.isAwakeMachine()) {
+      // F8 carve-out: the topic-moved closeout is exempt — it closes THIS
+      // machine's OWN leftover session for a topic that moved AWAY (the old
+      // owner is by definition usually not the lease holder, so the gate
+      // structurally vetoed the exact teardown the transfer requires). The
+      // flag lifts ONLY this gate; protected (above) and the KEEP-guard
+      // cascade (below) are unaffected.
+      if (this.isAwakeMachine && !this.isAwakeMachine()
+          && !opts?.bypassLeaseForTopicMovedCloseout) {
         this.emit('reapBlocked', { session, reason, skipped: 'not-lease-holder', origin });
         return { terminated: false, skipped: 'not-lease-holder' };
       }
@@ -3862,9 +3890,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     if (this.tmuxSessionExists(tmuxSession)) {
-      // Session already exists — just reuse it
+      // Session already exists — just reuse it. The initial message is
+      // instar-composed bootstrap content (F7) — mark it first-party so the
+      // InputGuard doesn't flag instar's own boot template as an injection.
       if (initialMessage) {
-        this.injectMessage(tmuxSession, initialMessage);
+        this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
       }
       return tmuxSession;
     }
@@ -4169,7 +4199,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (ready) {
       const stabilizationMs = options?.resumeSessionId ? 5000 : 1000;
       await new Promise(r => setTimeout(r, stabilizationMs));
-      this.injectMessage(tmuxSession, initialMessage);
+      // First-party provenance (F7): this initial message is instar's OWN
+      // composed bootstrap (session context + the MANDATORY Telegram-relay
+      // instructions). Marking it here covers every spawn lane that funnels
+      // through ready-and-inject — cold spawns, moved-topic respawns, and the
+      // pending-inject boot recovery — so the InputGuard never flags instar's
+      // own boot template as a suspected prompt injection (audit F7).
+      this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
       this.pendingInjects.clear(tmuxSession);
       console.log(`[SessionManager] Injected initial message into "${tmuxSession}" (${initialMessage.length} chars${stabilizationMs ? ', after stabilization delay' : ''})`);
       return;
@@ -4248,7 +4284,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (stillAlive) {
       console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
       console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
-      this.injectMessage(tmuxSession, initialMessage);
+      // Same instar-composed bootstrap as the ready path above — first-party (F7).
+      this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
       this.pendingInjects.clear(tmuxSession);
       return;
     }
@@ -4678,12 +4715,55 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * before injection. Suspicious messages still reach the session but with
    * a system-reminder warning injected afterward (async, non-blocking).
    *
+   * `opts.firstParty` — first-party provenance for instar's OWN injections
+   * (F7, roadmap 0.6, test-as-self 2026-07-02): the session-boot bootstrap
+   * (context + the MANDATORY Telegram-relay instructions) is composed by
+   * instar itself, but it reached the guard as ordinary untagged text — so the
+   * InputGuard flagged instar's own boot template as a suspected prompt
+   * injection and the freshly-spawned session distrusted its own bootstrap.
+   * The provenance travels as THIS in-process parameter — never as content.
+   * That is deliberately stronger than any in-content marker: no HTTP surface
+   * or message body can reach this parameter, so content that merely LOOKS
+   * like a bootstrap (or like any marker) cannot mint the flag by
+   * construction — there is nothing to string-match and therefore nothing to
+   * forge. Only in-process injector code that AUTHORED the text sets it.
+   * Every first-party injection is recorded in the security log
+   * (`first-party-injection`) so the guard bypass stays auditable. Everything
+   * without the flag keeps the exact pre-F7 guard behavior.
+   *
    * For multi-line text, uses bracketed paste mode escape sequences so the
    * terminal treats newlines as literal text rather than Enter keypresses.
    * This avoids tmux load-buffer/paste-buffer which trigger macOS TCC
    * "access data from other apps" permission prompts.
    */
-  injectMessage(tmuxSession: string, text: string): boolean {
+  injectMessage(
+    tmuxSession: string,
+    text: string,
+    opts?: {
+      /** In-process first-party provenance (F7). `source` is the audit label
+       *  (e.g. 'session-bootstrap'). See the method doc — content can never
+       *  mint this flag; only instar's own injector code can. */
+      firstParty?: { source: string };
+    },
+  ): boolean {
+    // ── First-party provenance (F7): instar-authored content, verified by
+    // the in-process parameter (never by what the text says) — the guard
+    // layers below exist to vet content of UNVERIFIED origin, and instar's
+    // own bootstrap is not that. Logged, then injected directly.
+    if (opts?.firstParty) {
+      if (this.inputGuard) {
+        try {
+          this.inputGuard.logSecurityEvent({
+            event: 'first-party-injection',
+            session: tmuxSession,
+            source: opts.firstParty.source,
+            messagePreview: text.slice(0, 100),
+          });
+        } catch { /* logging must never block a bootstrap injection */ }
+      }
+      return this.rawInject(tmuxSession, text);
+    }
+
     // ── Input Guard: Layer 1 + 1.5 (deterministic, synchronous) ──
     if (this.inputGuard) {
       // Parse the message's own [telegram:N] tag so getTopicBinding can

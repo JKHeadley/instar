@@ -341,4 +341,72 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(r).toEqual({ terminated: false, skipped: 'main-process-active' });
     expect(state.getSession(s.id)!.status).toBe('running');
   });
+
+  // ── bypassLeaseForTopicMovedCloseout (F8 lease carve-out, roadmap 0.6) ──────
+  // The machine a topic moves AWAY from is by definition usually NOT the
+  // serving-lease holder, so the lease gate structurally vetoed the exact
+  // closeout the transfer requires (`skipped:'not-lease-holder'` ×5 → breaker
+  // give-up → leftover session survived; test-as-self matrix 2026-07-02, F8).
+  // The flag lifts ONLY the lease gate — protected, CAS, and every KEEP-guard
+  // are re-checked and still veto. Both sides of every boundary:
+
+  it('standby machine WITHOUT the flag → skipped:not-lease-holder (today\'s veto preserved)', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false); // this machine does not hold the lease
+    const s = await spawn('lease-1');
+    const r = await manager.terminateSession(s.id, 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)');
+    expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('standby machine WITH bypassLeaseForTopicMovedCloseout → the closeout terminates (zero leftover)', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('lease-2');
+    const reason = 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)';
+    const r = await manager.terminateSession(s.id, reason, { bypassLeaseForTopicMovedCloseout: true });
+    expect(r.terminated).toBe(true);
+    const saved = state.getSession(s.id)!;
+    expect(saved.status).toBe('completed');
+    expect(saved.endedReason).toBe(reason); // the honest reason is durably recorded
+  });
+
+  it('the lease carve-out does NOT lift protected — a protected session still refuses', async () => {
+    manager.setAwakeChecker(() => false);
+    const protectedSession = {
+      id: 'prot-lease', name: 'server', status: 'running' as const,
+      tmuxSession: 'my-project-server', startedAt: new Date().toISOString(), prompt: 'p',
+    };
+    state.saveSession(protectedSession);
+    const r = await manager.terminateSession('prot-lease', 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
+    expect(r).toEqual({ terminated: false, skipped: 'protected' });
+    expect(state.getSession('prot-lease')!.status).toBe('running');
+  });
+
+  it('the lease carve-out does NOT lift the KEEP-guards — recent-user-message still vetoes', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, topicBinding: () => 1, recentUserMessage: () => true }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('lease-3');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
+    expect(r).toEqual({ terminated: false, skipped: 'recent-user-message' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('the lease carve-out does NOT lift active-subagent (still vetoes)', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, activeSubagentCount: () => 1 }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('lease-4');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
+    expect(r).toEqual({ terminated: false, skipped: 'active-subagent' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('on the lease-holding (awake) machine the flag is a no-op — terminate behaves exactly as before', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => true);
+    const s = await spawn('lease-5');
+    const r = await manager.terminateSession(s.id, 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
+    expect(r.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed');
+  });
 });

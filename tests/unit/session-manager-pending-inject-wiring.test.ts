@@ -135,7 +135,10 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     const result = await manager.recoverPendingInjects();
 
     expect(result.redelivered).toEqual([tmux]);
-    expect(injectSpy).toHaveBeenCalledWith(tmux, 'orphaned message');
+    // F7 (roadmap 0.6): the redelivered initial message is instar's OWN
+    // bootstrap — it must carry the in-process first-party provenance so the
+    // InputGuard never flags the system's own startup instructions.
+    expect(injectSpy).toHaveBeenCalledWith(tmux, 'orphaned message', { firstParty: { source: 'session-bootstrap' } });
     expect(pendingFiles()).toHaveLength(0);
   });
 

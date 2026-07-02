@@ -228,4 +228,53 @@ describe('session-lifecycle reap wiring (integration)', () => {
     expect(state.getSession(s.id)!.status).toBe('completed');
     expect(log.read().at(-1)).toMatchObject({ type: 'reaped', reason: 'reaped-idle' });
   });
+
+  // ── F8 lease carve-out (post-transfer closeout, roadmap 0.6) ──────────────
+  // The audited failure: after a topic moved away, the OLD machine (no longer
+  // the lease holder) tried to close its own leftover session and the lease
+  // gate vetoed every attempt (skipped:'not-lease-holder' ×5 → breaker gave
+  // up → duplicate session survived). The carve-out lifts ONLY the lease gate.
+  it('F8: standby machine + bypassLeaseForTopicMovedCloseout → closeout LANDS, reap-log records the honest reason', async () => {
+    const s = await spawn('moved-topic-leftover');
+    awake = false; // this machine lost the lease when the topic moved away
+    const reason = 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)';
+    const r = await manager.terminateSession(s.id, reason, { bypassLeaseForTopicMovedCloseout: true });
+    expect(r.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed'); // ZERO leftover sessions
+    expect(log.read().at(-1)).toMatchObject({ type: 'reaped', session: 'moved-topic-leftover', reason });
+  });
+
+  it('F8: the carve-out does NOT weaken the protected gate — a protected session still never auto-closes', async () => {
+    awake = false;
+    const protectedSession: Session = {
+      id: 'prot-f8', name: 'proj-server', status: 'running', tmuxSession: 'proj-server',
+      startedAt: new Date().toISOString(), prompt: 'p',
+    } as Session;
+    state.saveSession(protectedSession);
+    mockTmuxSessions.add('proj-server');
+    const r = await manager.terminateSession('prot-f8', 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)', { bypassLeaseForTopicMovedCloseout: true });
+    expect(r.terminated).toBe(false);
+    expect(r.skipped).toBe('protected');
+    expect(state.getSession('prot-f8')!.status).toBe('running');
+    expect(log.read().at(-1)).toMatchObject({ type: 'skipped', skipped: 'protected' });
+  });
+
+  it('F8: the carve-out does NOT weaken the KEEP-guards — a relay-leased session still refuses', async () => {
+    const s = await spawn('moved-but-guarded');
+    relayLeased = s.id; // a live KEEP-guard reason
+    awake = false;
+    const r = await manager.terminateSession(s.id, 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)', { bypassLeaseForTopicMovedCloseout: true });
+    expect(r.terminated).toBe(false);
+    expect(r.skipped).toBe('relay-lease'); // vetoed by the guard, NOT by the lease
+    expect(state.getSession(s.id)!.status).toBe('running');
+    expect(log.read().at(-1)).toMatchObject({ type: 'skipped', skipped: 'relay-lease' });
+  });
+
+  it('F8 boundary: a standby terminate WITHOUT the flag keeps today\'s not-lease-holder veto', async () => {
+    const s = await spawn('ordinary-standby-kill');
+    awake = false;
+    const r = await manager.terminateSession(s.id, 'idle-zombie');
+    expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
 });

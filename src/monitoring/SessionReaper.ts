@@ -339,6 +339,15 @@ export interface SessionReaperDeps {
        *  ONLY on a liveness-CONFIRMED genuine move so a duplicate leftover with a
        *  pre-move "recent" message can shed. */
       bypassRecentUserMessageForConfirmedMove?: boolean;
+      /** Post-transfer closeout carve-out (F8, roadmap 0.6): lifts ONLY the
+       *  authority's lease-holder gate — the machine a topic moves AWAY from is
+       *  by definition usually NOT the serving-lease holder, so without this
+       *  the closeout of its own leftover session was structurally vetoed
+       *  `skipped:'not-lease-holder'` on every attempt. Set on EVERY closeout
+       *  terminate (legacy + gated): the target is always THIS machine's own
+       *  local session for a topic owned elsewhere. Protected + KEEP-guards
+       *  are unaffected. */
+      bypassLeaseForTopicMovedCloseout?: boolean;
       workEvidence?: string[];
     },
   ) => Promise<{ terminated: boolean; skipped?: string }>;
@@ -907,9 +916,17 @@ export class SessionReaper extends EventEmitter {
       return { terminated: false, reapedThisTick };
     }
     if (reapedThisTick < this.cfg.maxReapsPerTick && this.hourlyBudgetRemaining() > 0) {
+      // F8 carve-out: EVERY closeout terminate carries the lease bypass — the
+      // topic provably moved AWAY from this machine (ownership signal + dwell),
+      // so this machine is usually no longer the lease holder, yet the session
+      // being closed is its OWN local leftover. Without the flag the authority
+      // vetoed the closeout `skipped:'not-lease-holder'` until the P19 breaker
+      // gave up (audit F8, test-as-self 2026-07-02). `workEvidence` semantics
+      // are unchanged: killer-authoritative [] only on the liveness-confirmed
+      // Part E path, guard-collected otherwise.
       const res = await this.deps.terminate(session.id, reason, bypassRecentForMove
-        ? { bypassRecentUserMessageForConfirmedMove: true, workEvidence: [] }
-        : undefined);
+        ? { bypassRecentUserMessageForConfirmedMove: true, workEvidence: [], bypassLeaseForTopicMovedCloseout: true }
+        : { bypassLeaseForTopicMovedCloseout: true });
       if (res.terminated) {
         reapedThisTick++;
         this.reapTimestamps.push(this.now());

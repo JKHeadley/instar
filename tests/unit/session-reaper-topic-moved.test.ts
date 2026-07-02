@@ -274,4 +274,47 @@ describe('SessionReaper — topic-moved closeout (post-transfer duplicate sessio
     h.setNow(1_240_000); await h.reaper.tick(); // next tick closes another
     expect(h.terminate).toHaveBeenCalledTimes(2);
   });
+
+  // ── F8 lease carve-out (roadmap 0.6, test-as-self 2026-07-02) ─────────────
+  // The machine a topic moves AWAY from is by definition usually NOT the
+  // serving-lease holder, so the authority's lease gate structurally vetoed
+  // the exact closeout the transfer requires (skipped:'not-lease-holder' ×5,
+  // then breaker give-up — the leftover session survived). Every closeout
+  // terminate must therefore carry the narrow lease bypass.
+
+  it('F8: the closeout terminate carries bypassLeaseForTopicMovedCloseout (legacy path)', async () => {
+    const h = harness({ deps: { topicOwnerElsewhere: () => 'Mac Mini' } });
+    await h.reaper.tick();
+    h.setNow(1_120_000); await h.reaper.tick(); // dwell met → terminate
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+    const opts = h.terminate.mock.calls[0][2] as {
+      bypassLeaseForTopicMovedCloseout?: boolean;
+      bypassRecentUserMessageForConfirmedMove?: boolean;
+      workEvidence?: string[];
+    } | undefined;
+    expect(opts?.bypassLeaseForTopicMovedCloseout).toBe(true);
+    // The legacy path never mints the Part E recent-message bypass, and it
+    // leaves workEvidence unset so the authority's guard-collected fallback
+    // is preserved (F8 lifts ONLY the lease gate — nothing else changes).
+    expect(opts?.bypassRecentUserMessageForConfirmedMove).toBeUndefined();
+    expect(opts?.workEvidence).toBeUndefined();
+  });
+
+  it('F8: a lease-vetoing authority closes the leftover once the bypass is honored (regression shape of the audit)', async () => {
+    // Model the audited failure: an authority that refuses any closeout
+    // WITHOUT the lease bypass (the old machine is not the lease holder), but
+    // honors the carve-out. Pre-fix, the reaper passed no flag → 5 vetoes →
+    // breaker give-up; with the fix the FIRST attempt lands.
+    const terminate = vi.fn(async (_id: string, _r: string, opts?: { bypassLeaseForTopicMovedCloseout?: boolean }) =>
+      opts?.bypassLeaseForTopicMovedCloseout ? { terminated: true } : { terminated: false, skipped: 'not-lease-holder' });
+    const raiseAttention = vi.fn();
+    const h = harness({ deps: { topicOwnerElsewhere: () => 'Mac Mini', terminate, raiseAttention } });
+    await h.reaper.tick();
+    h.setNow(1_120_000); await h.reaper.tick(); // dwell met → attempt 1 succeeds
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(h.audits.some(a => a.event === 'reaped' && (a as { rule?: string }).rule === 'topic-moved-away')).toBe(true);
+    // No veto streak, no breaker, no escalation — the leftover is gone.
+    expect(h.audits.filter(a => a.event === 'closeout-breaker-open')).toHaveLength(0);
+    expect(raiseAttention).not.toHaveBeenCalled();
+  });
 });

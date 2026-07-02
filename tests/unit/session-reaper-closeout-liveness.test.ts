@@ -108,6 +108,46 @@ describe('SessionReaper — closeout liveness gate (Part C decision table)', () 
     expect(h.audits.some(a => a.event === 'reaped' && (a as any).confirmedMove === true)).toBe(true);
   });
 
+  it('F8: the gated closeout terminate carries bypassLeaseForTopicMovedCloseout (lease carve-out)', async () => {
+    // The old owner is by definition usually NOT the lease holder after a
+    // move — the authority's lease gate vetoed the exact teardown the
+    // transfer requires (audit F8). The gated path must carry the narrow
+    // lease bypass on every closeout terminate, alongside its Part E flag.
+    let r = 500_000;
+    const h = harness({
+      deps: {
+        remoteOwnerHasLiveSession: liveness(true, () => r),
+        recentUserMessageAt: () => 400_000, // older than the snapshot → Part E bypass too
+      },
+    });
+    await h.reaper.tick();
+    h.setNow(1_120_000); r = 700_000; await h.reaper.tick();
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+    const opts = h.terminate.mock.calls[0][2] as any;
+    expect(opts?.bypassLeaseForTopicMovedCloseout).toBe(true);
+    expect(opts?.bypassRecentUserMessageForConfirmedMove).toBe(true);
+  });
+
+  it('F8: the lease bypass is carried even when the Part E bypass is withheld (fresher user message)', async () => {
+    let r = 500_000;
+    const terminate = vi.fn(async (_id: string, _reason: string, opts?: any) =>
+      opts?.bypassRecentUserMessageForConfirmedMove ? { terminated: true } : { terminated: false, skipped: 'recent-user-message' });
+    const h = harness({
+      deps: {
+        terminate,
+        remoteOwnerHasLiveSession: liveness(true, () => r),
+        recentUserMessageAt: () => 9_000_000, // NEWER than the snapshot → Part E withheld
+      },
+    });
+    await h.reaper.tick();
+    h.setNow(1_120_000); r = 700_000; await h.reaper.tick();
+    expect(terminate).toHaveBeenCalledTimes(1);
+    const opts = terminate.mock.calls[0][2];
+    // F8 lease bypass: always on for a closeout. Part E: correctly withheld.
+    expect(opts?.bypassLeaseForTopicMovedCloseout).toBe(true);
+    expect(opts?.bypassRecentUserMessageForConfirmedMove).toBeUndefined();
+  });
+
   it('remoteOwnerHasLiveSession=false → WITHHOLD; no terminate; once-per-episode stale-owner audit', async () => {
     const h = harness({ deps: { remoteOwnerHasLiveSession: liveness(false, () => 500_000) } });
     await h.reaper.tick();

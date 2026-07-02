@@ -16258,6 +16258,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           sessionManager.terminateSession(id, reason, {
             bypassActiveProcessKeep: opts?.bypassActiveProcessKeep,
             bypassRecentUserMessageForConfirmedMove: opts?.bypassRecentUserMessageForConfirmedMove,
+            // F8 carve-out: the topic-moved closeout's lease bypass must reach
+            // the authority — dropping it here would silently restore the
+            // not-lease-holder veto the carve-out exists to lift.
+            bypassLeaseForTopicMovedCloseout: opts?.bypassLeaseForTopicMovedCloseout,
             workEvidence: opts?.workEvidence,
           }),
         markReaping: (id) => sessionManager.markReaping(id),
