@@ -83,10 +83,16 @@ declaredDeliverables?: string[], startedAt }`. The SERVER mints `runId`, takes t
 snapshot below, persists the server-owned run record
 (`state/autonomous-server/<topicId>.<runId>.json`, written only by the server), and
 returns `{ runId }`; setup writes the runId into the state-file frontmatter so the
-hook can echo it. **One registration per active run:** a re-register for a topic with
-an active run is REFUSED (409) and flagged (attention item) — a session cannot
-re-register mid-run with a broadened declared list. The server-side sessionId↔topicId
-map (§2.3) is built here. The snapshot:
+hook can echo it. The body ALSO carries `endAt` (R43 — the duration ceiling, so the
+server can judge expiry without the state file). **Run-record lifecycle (R43,
+normative):** a record is ACTIVE from registration until it becomes TERMINAL — a
+`met:true` final verdict at the chokepoint marks it terminal; `endAt` passage marks
+it expired; the run-end call (R44) marks it ended. **One registration per active
+run:** a re-register for a topic is REFUSED (409) + flagged ONLY while the existing
+record is non-terminal AND unexpired; otherwise the old record is lazily archived
+(R28) and the new registration proceeds — an early-finished run never blocks the
+topic's next registration, and a crashed run self-clears at `endAt`. The server-side
+sessionId↔topicId map (§2.3) is built here. The snapshot:
 
 - `scopeAccretion` config (the whole sub-object) — closes the mid-run self-disable
   bypass at the correct layer: the session editing `.instar/config.json` OR its own
@@ -122,9 +128,17 @@ escape):
   (`.worktrees/*`) created after `started_at`. A worktree first seen at sweep time
   gets its start-SHA recorded on first sight (= the merge-base with its base branch
   at creation, falling back to registration-time base-root SHA).
-- **Per root:** committed arm = `git log <startSHA>..HEAD --diff-filter=ACR
-  --name-only` (SHA-anchored, NOT `--since` — commit dates are author-settable);
-  uncommitted arm = `git status --porcelain`. Both filtered by class globs (§2.4).
+- **Per root:** committed arm = `git log --branches --not <startSHA>
+  --diff-filter=ACR --name-only` (R41 — ALL local branches, not `..HEAD`: round 4
+  caught that commit-on-branch-then-switch-back is a normal-workflow escape; local
+  branches only, so fetched peer work is never attributed — a false hold from a
+  stray local branch stays breaker-bounded, the safe direction). SHA-anchored, never
+  `--since` (commit dates are author-settable). Uncommitted arm = `git status
+  --porcelain` with the porcelain mapping FIXED (R42): `??` untracked and `A`/`M`
+  states = present; `R`/`C` rename/copy = the NEW path is present (old path treated
+  as deleted); `D` = deleted (feeds R17's deleted-flag, never silent reclass);
+  ignored files and submodule pointers are NOT swept (out of taxonomy, §6). Both
+  arms filtered by class globs (§2.4).
 - The sweep is read-only (`SafeGitExecutor.readSync` verbs), bounded (per-root
   timeout, total budget, path-count clamp of 200), and runs in-process on the server
   at judge-fire only — no data crosses from the session's environment. Writes to
@@ -223,10 +237,14 @@ computed server-side at judge-fire time:
   own-file rule relaxed: for a doc whose deliverable IS the doc, the merged PR
   containing it suffices), or declared.
 - **Script:** merged PR touching the script path.
-- **Primary evidence source is git, not the network (R34):** merged-PR reality is
-  checked first as `git log origin/main <startSHA>..HEAD -- <path>` in the swept
-  root (zero network, rides the same sweep); the batched `gh` query is the fallback
-  for cross-repo/branch cases only.
+- **Evidence-source separation (R34, corrected by round 4 — local git state is NOT
+  a merged-PR predicate):** the authoritative merged-PR check is the forge (`gh`,
+  batched, bounded). The local-git fast path `git log <startSHA>..origin/main --
+  <path>` (note the corrected range: commits reachable from origin/main as last
+  fetched, not from HEAD) is a POSITIVE-ONLY shortcut: it may CLEAR an artifact
+  (the path verifiably landed on the protected base — fetch staleness only delays
+  clearing, the safe direction) but is never used to refuse; absence falls through
+  to the `gh` query.
 
 Cost discipline (R22): corroboration runs only on the judge path; merged-PR evidence
 is fetched with ONE batched query per evaluation (`gh pr list --state merged
@@ -269,7 +287,17 @@ Two ratification paths, both terminating in server-owned records:
    echoes exactly what was ratified). Persisted into the server run record
    (survives restarts); audited.
 
-2. **Conversational path (proposal → server-authored enumeration → confirmation).**
+2. **Conversational path (proposal → server-authored enumeration → confirmation),
+   consumed ONLY at the live receive path (R45 — round 4 simplification).** Both the
+   defer-vocabulary trigger detection AND the confirmation matching run at the
+   server's IN-PROCESS Telegram receive path (the server long-polls Telegram
+   itself) — the on-disk history JSONL is NOT part of the mechanism at all, which
+   eliminates the forged-row vector outright instead of bounding it (a message the
+   server did not itself receive from Telegram can never trigger or confirm).
+   Consequence, stated honestly: only messages received while the server is up
+   participate (an enumeration/confirmation during a server outage is simply
+   re-triggered on the next in-window operator message — safe, keep-working
+   direction). The remaining sub-bullets define the flow:
    Closes the display-integrity gap (Agent Proposes, Operator Approves): the operator
    must approve a SERVER-authored statement whose displayed set is byte-identical to
    what executes.
@@ -372,21 +400,35 @@ preserve the no-wedge guarantee). The set hash changing, or any new corroboratio
 resets the counter. The session's honest early exit for a genuinely blocked artifact
 remains the existing `<hard-blocker>` path, unchanged.
 
-**Post-trip semantics (R39):** after the breaker trips and the loud item is raised,
-the accretion gate DISENGAGES for that run (subsequent evaluations fall through to
-the judge as today) — the exit is permitted, the label is the deterrent, and the
-no-wedge guarantee holds.
+**Post-trip semantics (R39) — and the guarantee named honestly (R46, round 4):**
+after the breaker trips and the loud item is raised, the accretion gate DISENGAGES
+for that run (subsequent evaluations fall through to the judge as today) — the exit
+is permitted, the label is the deterrent, and the no-wedge guarantee holds. The
+precise guarantee is therefore NOT "accreted work always joins the completion bar";
+it is: **silent deferral is structurally impossible — accreted work blocks
+completion K times and can thereafter be abandoned only LOUDLY** (enumerated to the
+operator on every exit surface, R40). That is the honest ceiling for a machine that
+cannot compel work; requiring ratification to release the breaker would reintroduce
+the wedge the no-trap guarantee forbids.
 
 **EVERY exit is loud, not just the breaker's (R40 — round 3 caught the clock-out
-bypass: never claim done, idle to `end_at`, exit silently).** Every run-end surface —
+bypass; R44 wires the trigger round 4 found missing).** Every run-end surface —
 breaker trip, `<hard-blocker>` exit, DURATION EXPIRY, and the normal met-path final
 notice — runs a non-blocking advisory sweep and, when the unbuilt accreted set is
 non-empty, enumerates it (with the deleted sublist) in the end-of-run notice and
-raises the same ONE deduped attention item. The expiry path is never blocked or
-delayed (the no-trap guarantee is untouched); it just can no longer be silent. With
-R40, §3's claim is true as stated: the incident's SILENT exit is structurally
-impossible on every path; what remains is a loud one — the honest floor for a
-machine that cannot compel work.
+raises the same ONE deduped attention item. **The mechanism (R44):** the stop hook's
+expiry/terminal paths (BOTH variants, including native-goal) call a new lightweight
+`POST /autonomous/:topic/run-end` — best-effort, `-m`-bounded, NEVER blocking or
+delaying the exit — whose handler runs the sweep, composes the enumerated notice,
+and marks the record ended. The R28(b) daily sweep is the crash/tamper BACKSTOP: it
+does not merely archive — an expired record it reaps gets the same enumeration +
+attention item (up to 24h late, and late-but-loud beats never). The session-writable
+emergency-stop file (`.instar/autonomous-emergency-stop`) is a run-end surface a
+session could `touch` itself: the hook's emergency path also fires the run-end call,
+and a run ended by emergency-stop with a non-empty unbuilt set is enumerated
+IDENTICALLY (named in §6 — the one-step bypass is thereby as loud as the two-step).
+With R40+R44, §3's claim is true as stated: the incident's SILENT exit is
+structurally impossible on every path.
 
 ## 4. Config, migration parity + awareness
 
@@ -397,7 +439,8 @@ machine that cannot compel work.
   `ConfigDefaults.ts`/`types.ts` and the CLAUDE.md template is REWORDED (change
   sites listed) to name the PIN route as the live lever.
 - **Complete change-site list (R27):** `src/server/routes.ts` (NEW
-  `POST /autonomous/register`; evaluate-completion: topicId/runId body fields +
+  `POST /autonomous/register` + NEW `POST /autonomous/:topic/run-end` (R44);
+  evaluate-completion: topicId/runId body fields +
   server-resolved arming + registered-condition authority + the deterministic gate;
   the two new PIN-gated routes: ratify-deferral + scope-accretion-override;
   `parseStopSignals`: + `scopeAccretionSuspected` boolean only);
@@ -541,6 +584,18 @@ fires.
 - **Docs-PR bundling:** the R33 predicate's ≥10-line non-docs floor is a deterrence
   bound, not proof of implementation — named, accepted, loud (a merged PR is public
   and attributable).
+- **Narrow taxonomy, accepted explicitly (R47):** the glob classes are a
+  docs/spec/script DISCIPLINE, not a semantic in-scope-work detector — TODO
+  scaffolds, issue creation, code stubs, and artifacts in unlisted directories are
+  out of v1's blocking taxonomy (unlisted docs get the advisory flag only).
+  Per-repo configurable classifiers are a possible follow-up, not smuggled scope.
+- **Conformance-gate-dark machines:** with the gate disabled (all `/spec` routes
+  503), corroboration arm (a) can never clear on that machine — spec-class clearing
+  then requires the merged-PR arm or ratification. Fail direction: keep-working,
+  breaker-bounded.
+- **Emergency-stop as exit lever:** `touch`ing the emergency-stop file ends the run
+  in one step — but per R44 it is a covered exit surface: the unbuilt set is
+  enumerated identically, so the lever buys a faster exit, never a quieter one.
 
 ## Open questions
 
