@@ -39,6 +39,9 @@ export function readRegistryHighWater(stateDir: string): boolean {
     const obj = JSON.parse(raw) as { everPopulated?: unknown };
     return obj?.everPopulated === true;
   } catch {
+    // @silent-fallback-ok: a high-water read fault → treat as never-populated,
+    // which classifies an empty registry as degenerate → DELIVER (fail toward
+    // delivery), the safe direction for the silent-loss class this fixes.
     return false;
   }
 }
@@ -60,6 +63,9 @@ export function setRegistryHighWater(stateDir: string, reason: string): boolean 
     fs.renameSync(tmp, p);
     return true;
   } catch {
+    // @silent-fallback-ok: best-effort marker write; a write fault just means the
+    // marker isn't set yet — it is retried on the next real-user register, and an
+    // unset marker fails TOWARD delivery (never a silent reject).
     return false;
   }
 }

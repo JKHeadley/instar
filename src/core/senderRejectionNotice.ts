@@ -141,7 +141,7 @@ export class SenderRejectionNoticer {
             );
           }
         }
-      } catch { /* divergence probe is best-effort */ }
+      } catch { /* @silent-fallback-ok: divergence probe is best-effort — an advisory coherence signal only, never gates the notice */ }
     }
 
     // (peer,cause) episode bookkeeping (cross-topic ceiling + flapping decay).

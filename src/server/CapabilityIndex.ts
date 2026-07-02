@@ -1161,6 +1161,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
   { prefix: 'mcp', reason: 'Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — ships dark/experimental behind sessions.dynamicMcp.enabled (the routes 503 when off); the agent learns it via the CLAUDE.md awareness section, not /capabilities, until it matures past dark' },
+  { prefix: 'users', reason: 'POST /users/allow-test-identity (silent-loss-refusal-conservation §2.D) — a dashboard-PIN-gated route that mints a signed allow-marker for a legitimate user whose id collides with a known test-identity marker; operator/support-only, not an agent-invokable conversational capability' },
   { prefix: 'a2a', reason: 'same-machine agent-to-agent transport — peers discover each other via AgentRegistry, not /capabilities' },
   { prefix: 'health', reason: 'basic liveness check, no auth' },
   { prefix: 'ping', reason: 'synchronous noop, used by tunnel/lifeline probes' },

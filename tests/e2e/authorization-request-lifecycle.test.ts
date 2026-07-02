@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { allowTestIdentities } from '../helpers/allow-test-identities.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -38,6 +39,8 @@ describe('Operator Authorization Request E2E — feature is alive + requester≠
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
     fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+    // MIA (U0B9SFJ7QAK) is a known test-identity id; enable the double-keyed escape.
+    allowTestIdentities(stateDir);
 
     const config = {
       projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,

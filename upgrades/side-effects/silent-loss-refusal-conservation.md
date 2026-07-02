@@ -97,3 +97,28 @@ path). C fires only where today = silent loss. D's disarm fires only in degenera
 states that today reject everyone; its own failure mode (a probe throwing on a
 transiently-locked POPULATED store) is pinned to ARM by `populated-registry-always-arms`,
 so the new code cannot regress the existing security control.
+
+## Follow-up: CI-surfaced test adjustments (2026-07-02)
+
+The full sharded CI suite surfaced pre-existing tests the change interacts with.
+Fixed WITHOUT weakening the production fixture-refusal or the no-silent-fallbacks
+guard, via the intended escape/annotation mechanisms:
+
+- **Fixture-writing tests** (e2e coordination-mandate + authorization-request; integration
+  permissions-routes) now use the intended DOUBLE-KEYED test escape via a shared
+  `tests/helpers/allow-test-identities.ts` (env `INSTAR_ALLOW_TEST_IDENTITIES=1` + the
+  on-disk `.instar-test-home` marker). Production behavior is unchanged — a stray env var
+  alone still cannot disable the guard.
+- **`no-silent-fallbacks` ratchet**: my four new-file intentional fail-toward-delivery
+  catches + the four inbound-wiring construction catches in `server.ts` are annotated
+  `@silent-fallback-ok` with a per-site reason. Net flagged count returns to baseline
+  491 — NO baseline bump; the guard is not weakened.
+- **`feature-delivery-completeness`**: the migrator "Sender-Rejection Notices" section is
+  added to `legacyMigratorSections` (template + migrator behavioral awareness, no
+  framework-shadowed route).
+- **`capabilities-discoverability`**: the `/users` route prefix (`POST /users/allow-test-identity`)
+  is classified in `CapabilityIndex.INTERNAL_PREFIXES` (dashboard-PIN-gated, operator/support-only,
+  not an agent-invokable capability).
+- **`session-pool-activation-wiring`**: the fail-safe scan window grew 5200→6500 to contain
+  the `rejected` short-circuit added inside the inbound interception block (documented
+  window-maintenance pattern).

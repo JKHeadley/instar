@@ -24,6 +24,7 @@ import os from 'node:os';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { allowTestIdentities } from '../helpers/allow-test-identities.js';
 import { MandateStore } from '../../src/coordination/MandateStore.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -205,6 +206,8 @@ describe('Phone-first floor-grant path E2E — the dashboard form\'s exact flow 
     fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
     // The cast the person picker offers — production users.json shape.
+    // U_MIA is a known test-identity id; enable the double-keyed test escape.
+    allowTestIdentities(stateDir);
     fs.writeFileSync(path.join(stateDir, 'users.json'), JSON.stringify([
       { id: 'slack-U_MIA', name: 'Mia Member', channels: [{ type: 'slack', identifier: 'U_MIA' }], permissions: ['member'], preferences: {}, slackUserId: 'U_MIA', orgRole: 'member', createdAt: 'x' },
     ]));

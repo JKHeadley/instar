@@ -168,6 +168,9 @@ export class SenderValidationGate {
       const v = this.d.operatorUidForTopic(session);
       return v != null && Number.isFinite(v) && v !== 0 ? v : null;
     } catch {
+      // @silent-fallback-ok: an operator-resolution fault → null → the gate
+      // declines to arm against a populated registry (fails toward delivery +
+      // alerts), never a silent reject of the operator.
       return null;
     }
   }

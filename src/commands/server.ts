@@ -16325,16 +16325,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     {
       const ledgerForNotice = messageLedger;
       _senderRejectionNoticer = new SenderRejectionNoticer({
+        // @silent-fallback-ok: fire-and-forget notice send; the deterministic
+        // delivery path + DeliveryFailureSentinel own retry, not this callsite.
         sendTelegram: (topicId, text) => { telegram?.sendToTopic(topicId, text).catch(() => {}); },
         sendSlack: (slackKey, text) => {
           const channelId = slackKey.split(':')[0];
+          // @silent-fallback-ok: fire-and-forget notice send (see sendTelegram).
           _slackAdapter?.sendToChannel(channelId, text).catch(() => {});
         },
         alertHub: (title, body) => notify('IMMEDIATE', 'sender-rejection', `${title}: ${body}`),
         markRejectedDurable: ledgerForNotice
+          // @silent-fallback-ok: a dedupe-ledger fault returns true (treat as
+          // first-transition → SEND the notice) — fails toward TELLING the user.
           ? (messageId: string) => { try { return ledgerForNotice.markRejected(messageId, 0, { platform: 'mesh' }); } catch { return true; } }
           : undefined,
         resolvesLocally: (uid: number) => {
+          // @silent-fallback-ok: divergence-probe read helper; a resolve fault →
+          // false (no divergence signal this tick), advisory only.
           try { return new UserManager(config.stateDir).resolveFromTelegramUserId(uid) !== null; } catch { return false; }
         },
       });
@@ -17384,6 +17391,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { SenderValidationGate } = await import('../core/senderValidationGate.js');
         const _svUsersFile = path.join(config.stateDir, 'users.json');
         const _svStatUsers = (): { mtimeMs: number; size: number } | null => {
+          // @silent-fallback-ok: stat fault → null (ENOENT/unreadable) is a first-class
+          // input to classifyRegistry, which fails TOWARD delivery on a missing store.
           try { const s = fs.statSync(_svUsersFile); return { mtimeMs: s.mtimeMs, size: s.size }; } catch { return null; }
         };
         let _svManager: UserManager | null = null;
@@ -17396,9 +17405,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             (s !== null && _svManagerStat != null && (s.mtimeMs !== _svManagerStat.mtimeMs || s.size !== _svManagerStat.size));
           if (changed || !_svManager) {
             // READ-ONLY load: NO initialUsers → loadUsers runs no merge/persist.
+            // @silent-fallback-ok: a load fault → null manager → resolveUid below
+            // returns false; the gate's own degenerate-state check then fails toward
+            // delivery rather than silently rejecting.
             try { _svManager = new UserManager(config.stateDir); } catch { _svManager = null; }
             _svManagerStat = s;
           }
+          // @silent-fallback-ok: a resolve fault → false (unresolved) is safe — the
+          // gate never rejects on an unresolved sender against a degenerate registry.
           try { return _svManager?.resolveFromTelegramUserId(uid) != null; } catch { return false; }
         };
         const senderValidationGate = new SenderValidationGate({
@@ -17412,7 +17426,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!op) return null;
               const n = Number(op.uid);
               return Number.isFinite(n) && n !== 0 ? n : null;
-            } catch { return null; }
+            } catch {
+              // @silent-fallback-ok: an operator-store fault → null → the gate
+              // declines to arm (fails toward delivery + alerts), never a silent reject.
+              return null;
+            }
           },
           alert: (level, cause, message) => notify(level === 'HIGH' ? 'IMMEDIATE' : 'SUMMARY', 'sender-validation', `[${cause}] ${message}`),
           log: (line) => console.warn(pc.yellow(line)),
