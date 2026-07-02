@@ -90,18 +90,31 @@ depends on (below).
     offline since <t> — expected"). **A lid-close is never urgent** — a sleeping
     machine stops writing heartbeats.
   - `urgent` — ALL ropes down to a peer whose git-synced coarse heartbeat **is
-    still advancing** (the machine is provably alive and working while every rope
-    to it is dead = a genuine partition, not sleep), sustained for ≥ 2 consecutive
-    evaluations spanning ≥ `urgentDebounceMs` (default 60000 — pinned in TIME on
-    the monitor's own 30s loop, not in ticks; R-r2-2). ONE HIGH attention item per
-    episode. **Self-wake grace window:** after OUR OWN machine wakes
-    (SleepWakeDetector's wake event — the one thing it CAN tell us), all snapshots
-    are stale; urgent is suppressed until each (peer, kind) has been re-observed
-    post-wake.
+    still advancing**, with "advancing" DEFINED (R-r3-1 — round 3 caught that
+    both naive constructions break a claim): **advancement-since-onset
+    semantics** — a heartbeat row whose `lastHeartbeatAt` is NEWER than the
+    all-down condition's onset, OBSERVED after the onset. Freshness-window
+    semantics ("beat age < threshold") are explicitly REJECTED: the heartbeat
+    writes every ~30 min and propagates via ~30-min git-sync, so a
+    just-lid-closed peer's last beat looks fresh for up to an hour — the exact
+    false HIGH alarm this tier must never raise. Consequence, stated honestly:
+    **the urgent tier's real detection latency is bounded by the heartbeat
+    interval plus up to two sync cadences (~30-90 min)** — a genuine partition
+    is confirmed the first time a post-onset beat lands while all ropes stay
+    dead. The `urgentDebounceMs` (default 60000) on the monitor's own 30s loop
+    (R-r2-2) is the SHORT-TERM flap filter on the all-down condition itself,
+    NOT the binding urgent latency — the binding bound is the post-onset-beat
+    confirmation, and the graduation criteria judge against THAT bound. ONE
+    HIGH attention item per episode. **Self-wake grace window:** after OUR OWN
+    machine wakes (SleepWakeDetector's wake event — the one thing it CAN tell
+    us), all snapshots are stale; urgent is suppressed until each (peer, kind)
+    has been re-observed post-wake.
   - **Residual, stated honestly:** a peer that dies BETWEEN coarse heartbeats
-    classifies `peer-offline` (heartbeat looks stopped) until registry staleness
-    passes and other evidence accrues — late-but-honest; the failure mode is a
-    delayed upgrade to urgent, never a false HIGH alarm.
+    classifies `peer-offline` (no post-onset beat ever lands) — late-but-honest;
+    and a just-lid-closed peer whose LAST pre-sleep beat is still sync-propagating
+    classifies `peer-offline`, never urgent (the beat predates the onset). The
+    failure mode in every ambiguous case is a delayed or withheld upgrade to
+    urgent — never a false HIGH alarm.
 - **Episode semantics (honest about partitions):** episodeKey =
   `sorted(machineA,machineB) + ':' + coarse window start (condition onset, quantized
   15 min)` — deterministically computable on BOTH sides without coordination.
@@ -134,12 +147,19 @@ depends on (below).
   never leave the parser).
 - **The daily digest line:** `GET /mesh/rope-health` (Bearer) serves the monitor's
   current classification + episode state. A **built-in daily job template**
-  (`rope-health-digest`) ships via the standard built-in-jobs path using the
-  **feedback-factory pattern (R-r2-7)** — round 1's "off by default fleet / on for
-  dev per job convention" named a convention that doesn't exist; the real pattern
-  (per `feedback-factory-process`) is: the template ships ENABLED, and the job
-  body exits silently when its route 503s (i.e. when `monitoring.ropeHealth` is
-  dark on that agent). Full frontmatter, frontloaded: name `rope-health-digest`,
+  (`rope-health-digest`) ships via the standard built-in-jobs path. **Precedent
+  stated honestly (R-r2-7, corrected by R-r3-2 — round 2's claim was factually
+  wrong):** the real `feedback-factory-process` template ships **`enabled:
+  false`** (installed + scheduled + 503-silent body + operator opt-in enable —
+  its e2e test asserts `enabled === false`). This spec DIVERGES from that
+  precedent deliberately, and says so: `rope-health-digest` ships **`enabled:
+  true` with the 503-silent body** — because the digest's whole gating already
+  lives in the `monitoring.ropeHealth` dev-agent gate (dark fleet → the route
+  503s → the enabled job runs and exits silently at zero cost; live dev agent →
+  the digest actually flows from day one, the Maturation-Path posture this spec
+  commits to). An `enabled: false` template would silently defeat the day-one
+  dev-agent digest with no compensating safety (the feature flag is the real
+  gate). Full frontmatter, frontloaded: name `rope-health-digest`,
   schedule `"0 9 * * *"`, model `haiku`, supervision `tier1`, priority `low`. The
   job emits at most ONE consolidated section (≤ 3 sentences, clamped,
   machine-named) when anything is non-ok — delivered to
@@ -207,9 +227,12 @@ window declared per G3.
 
 ## 6. Tests (tiers declared)
 
-Unit: classifier per class incl. the heartbeat discriminator (heartbeat-advancing
-+ all-down ⇒ urgent path; heartbeat-stopped ⇒ `peer-offline`; between-heartbeats
-death ⇒ `peer-offline` then late upgrade — both sides of every boundary, R-r2-1);
+Unit: classifier per class incl. the heartbeat discriminator with the R-r3-1
+semantics PINNED (post-onset beat + all-down ⇒ urgent; a FRESH-LOOKING but
+pre-onset beat immediately after a lid-close ⇒ `peer-offline`, NEVER urgent —
+the load-bearing false-alarm arm; heartbeat-stopped ⇒ `peer-offline`;
+between-heartbeats death ⇒ `peer-offline` then late upgrade — both sides of
+every boundary, R-r2-1);
 self-wake grace window (post-own-wake, urgent suppressed until re-observation);
 absent snapshot record ⇒ NOT-urgent (R-r2-minor); episodeKey determinism (both
 sides compute the same key) + **adjacent-window grouping** (skew straddling a

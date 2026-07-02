@@ -67,12 +67,15 @@ owner is NOT stale). Emits ONE attention item only for a genuinely unresolvable
 partition (dedup per episode), never per heartbeat. Read: `GET /pool/placement`
 gains `ownershipLeaseState: held|stale|releasing|claimed`.
 
-## U4.3 — Traffic-independent circuit-breaker recovery probe
+## U4.3 — Traffic-independent rope-health recovery probe
 
-**Problem.** A per-transport circuit breaker that opens on failure only recovers when
-NEW traffic happens to test the path — a quiet mesh can leave a breaker open long
-after the underlying rope healed (the "healthy but presumed-down" gap). The lease
-layer then avoids a machine that is actually fine.
+**Problem (corrected by convergence rounds 1-3 — the sketch below is historical).**
+There is NO circuit-breaker object; the real primitive is the per-(peer,kind)
+HealthRecord, and the real starvation is hedge-winner-abort (a dead rope is never
+re-dialed, and a cancelled hedge loser records a false failure). The converged
+spec drives the EXISTING HealthRecord from an in-process episode-scoped prober
+and fixes the hedge-abort accounting. See the converged spec — it supersedes
+this sketch entirely.
 
 **Design sketch.** An active, cadenced half-open probe: when a breaker is open, a
 lightweight signed ping (the delivery-canary G4 primitive is the model — zero
@@ -121,10 +124,10 @@ already exists and already honors the noise directive.
 
 ## Sequencing (recommended)
 
-1. **U4.5** first — pure observability, rides G1, lowest risk, immediate operator
-   value (know about rope degradation before it bites).
-2. **U4.3** — active breaker recovery; unblocks the "presumed-down" false avoidance
-   that amplifies every other gap.
+1. **U4.3 FIRST** (sequencing INVERTED by convergence — the original "U4.5 first,
+   rides G1" plan was overturned: G1 cannot be the vehicle, and U4.5's data source
+   IS U4.3's health snapshot, a HARD dependency).
+2. **U4.5** — in-server monitor + digest, immediately after (may share U4.3's PR).
 3. **U4.2** — stale-owner release; the acute strand-fix (directly addresses the
    24h-session-death loop).
 4. **U4.1** — pin persistence; user-facing intent durability.

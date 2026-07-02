@@ -64,17 +64,33 @@ get dialed.
   (predicate below) whose probe-layer due gate has elapsed and whose kind has **no
   probe already in flight** (single in-flight per (peer, kind) — a CAS on a small
   in-memory set). No new scheduler, no new loop, near-zero marginal cost.
-- **Probe-selection predicate — dead OR mid-recovery, bounded (R-r2-2).** A
-  dead-only selector is inconsistent with the close semantics: `recordResult(ok)`
-  clears `consecutiveFailures` to 0 on the FIRST success, so after one successful
-  probe the rope is no longer dead-marked, a dead-only selector stops probing at
-  `recoveryStreak = 1 < 3`, and starvation resumes (hedge never dials it — it is
-  still not `lastKnownGood`, so it sorts behind the winner). Selection is therefore
-  `dead OR (recoveryStreak > 0 && !lastKnownGood)` — the probe keeps driving a
-  mid-recovery rope until it either reclaims `lastKnownGood` (traffic takes over)
-  or re-dies (dead branch resumes). Bounded: mid-recovery probing is capped by the
-  same per-(peer,kind) in-flight CAS + the probe-layer due gate, and the state
-  space is at most peers × kinds.
+- **Probe-selection is EPISODE-scoped — no limbo, no free-running cadence
+  (R-r2-2, corrected by R-r3-1/R-r3-2).** A dead-only selector is inconsistent
+  with the close semantics: `recordResult(ok)` clears `consecutiveFailures` to 0
+  on the FIRST success, so a dead-only selector stops probing at
+  `recoveryStreak = 1 < 3` and starvation resumes. Round 3 then broke the
+  round-2 predicate `dead OR (recoveryStreak > 0 && !lastKnownGood)` two ways:
+  (a) LIMBO — one probe failure after dead-clear sets `recoveryStreak = 0,
+  consecutiveFailures = 1` (< dead threshold), making BOTH branches false: the
+  probe stops, the hedge still never dials it, and the rope can never re-die —
+  permanent re-strand; (b) CADENCE — a mid-recovery rope has trivially-true
+  `isProbeDue` (zero failures), and the P19 floor engages only on FAILURES, so a
+  slow-but-alive rope whose EWMA latency blocks `lastKnownGood` reclaim would be
+  probed every ~5s tick forever (~17k/day, the 2026-06-05 shape) while every
+  probe SUCCEEDS. **The corrected mechanism is a probe EPISODE:** an episode
+  OPENS when a rope goes dead; while an episode is open, the rope is
+  probe-eligible regardless of the dead flag's momentary state (closing both
+  limbo arms — a fail-after-partial-recovery stays in-episode); the episode
+  CLOSES when the rope reclaims `lastKnownGood` (traffic takes over) or on the
+  explicit exhaustion path. Within an episode the probe layer owns the cadence
+  in BOTH health states: `recoveryProbeMidIntervalMs` (default 45s) is the
+  mid-recovery due interval (never the resolver's trivially-true 5s), and after
+  `recoveryProbeMaxUnreclaimedSuccesses` (default 20) consecutive successful
+  probes WITHOUT `lastKnownGood` reclaim (the slow-but-alive case) the episode
+  drops to the same `probeFloorMs` floor cadence as the failure path, with the
+  same escalate-once item ("rope <kind> to <nickname> answers probes but stays
+  demoted — latency above the reclaim bar"). Bounded: per-(peer,kind) in-flight
+  CAS + episode-owned cadence + both floors; state space at most peers × kinds.
 - **The probe is an in-process pinned dial.** Rope-pinning is a SENDER-SIDE dial
   choice (dial that endpoint's URL directly, bypassing hedge selection) — **no wire
   change, no new envelope field, no version-skew concern**. The probe reuses the G4
@@ -197,7 +213,10 @@ dead ropes, strict no-op.
   (default 900000), `recoveryProbeExhaustAttempts` (default 20),
   `recoveryProbeReopenEpisodeWindowMs` (default 600000 — renamed from round 1's
   bare `reopenEpisodeWindowMs` for flat-namespace prefix consistency with its
-  siblings; R-r2-6).
+  siblings; R-r2-6), `recoveryProbeMidIntervalMs` (default 45000 — the
+  mid-recovery episode cadence, R-r3-2), `recoveryProbeMaxUnreclaimedSuccesses`
+  (default 20 — the slow-but-alive success-path bound before floor cadence,
+  R-r3-2).
 - **Registry entry (explicit build deliverable — R-r2-6):** a `DEV_GATED_FEATURES`
   entry for `multiMachine.meshTransport.recoveryProbeEnabled` with a written
   justification: the probe's only egress is the **deduped escalate-once**
@@ -220,8 +239,15 @@ dead ropes, strict no-op.
 
 ## 6. Tests (tiers declared)
 
-Unit: probe-eligibility selection (dead OR mid-recovery `recoveryStreak > 0 &&
-!lastKnownGood` — both branches; probe-layer due gate elapsed; no in-flight);
+Unit: probe-eligibility selection is EPISODE-scoped (opens on dead; stays
+eligible through fail-after-partial-recovery — the limbo case `recoveryStreak=0,
+consecutiveFailures=1, !lastKnownGood` MUST remain probed; closes only on
+`lastKnownGood` reclaim or exhaustion; R-r3-1); mid-recovery cadence owned by the
+probe layer (`recoveryProbeMidIntervalMs`, never the resolver's 5s; the
+slow-but-alive rope drops to floor cadence after
+`recoveryProbeMaxUnreclaimedSuccesses` successes with the escalate-once item —
+a simulated day stays under the bound in BOTH the all-fail and
+all-succeed-never-reclaim arms; R-r3-2);
 single-in-flight CAS; **hedge-abort neutrality** (an AbortError-after-winner does
 NOT record failure; a real dial failure still does — both sides, R-r2-1);
 typed-contract success classifier — **registered parser with captured
