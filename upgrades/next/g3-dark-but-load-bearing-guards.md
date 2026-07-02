@@ -1,0 +1,77 @@
+<!-- bump: minor -->
+
+## What Changed
+
+The guard-posture inventory (`GET /guards`) can now express that a DARK feature
+is load-bearing — that a critical path depends on it — instead of treating it as
+an ordinary optional dark feature that sits quiet while the path it should guard
+runs unguarded. This is the guard-layer arm of the ratified "A Dark Feature Guards
+Nothing" standard, and it closes the gap the 2026-07-01 silent-loss postmortem
+named (operator message delivery depended on dark guards, and nothing surfaced it).
+
+A guard declared `loadBearing` in the manifest now carries a `criticalPath` label
+on every row, and when it sits silently unguarded it is classified one of three
+ways:
+- `loadBearingGap` — LOUD. A critical path is unguarded. It alerts on its OWN
+  attention episode track (`guard-posture-loadbearing:ep-N`), so a long-lived gap
+  can never mask an acute load-shed on another guard.
+- `loadBearingSoaking` — a dry-run guard graduating within a bounded, code-constant
+  soak window. Surfaced on `/guards` only, no alert; it LAPSES to a loud gap if it
+  stalls past the window.
+- `loadBearingAccepted` — an owned, PIN-authenticated operator acceptance is on
+  record. Full suppression + a visible accepted-risk row.
+
+New route (dashboard-PIN-gated, `owner` + `reason` both required):
+`POST`/`DELETE /guards/:key/accept-fallback`. The initial curated load-bearing set
+is small and conservative: the durable inbound-message queue and the stranded-topic
+sentinel, both on the operator-message-delivery critical path.
+
+The classifier stays observe-only — it never gates, blocks, or disables anything,
+and `/guards` is byte-identical for a consumer that ignores the new fields. Rollback
+lever for the alert: `monitoring.guardPostureProbe.alertLoadBearingGaps` (the
+classification stays either way).
+
+## What to Tell Your User
+
+I can now tell you when a critical safety system is turned off but something
+important actually depends on it — instead of it quietly staying dark. If that
+happens I will flag it clearly and give you three ways to resolve it: turn the
+guard on, let it finish a short grace period while it is being rolled out, or have
+you formally accept the risk (which I record with your name and reason so it is a
+real decision, not a shrug). Accepting a risk needs your dashboard PIN — I cannot
+do it on your behalf. If you ever ask "why is a critical guard flagged as a gap?",
+that is this feature at work.
+
+## Summary of New Capabilities
+
+- `GET /guards` rows gain `loadBearing`, `criticalPath`, `loadBearingGap`,
+  `loadBearingSoaking`, `loadBearingAccepted`, and `acceptedFallbackReason`; the
+  summary and the capacity heartbeat gain `loadBearingGapKeys`,
+  `loadBearingSoakingKeys`, and `loadBearingAcceptedKeys`.
+- `POST /guards/:key/accept-fallback` (dashboard-PIN-gated; `owner` + `reason`
+  required) records an owned per-machine acceptance; `DELETE` revokes it and
+  reopens the gap.
+- The GuardPostureProbe raises a load-bearing gap on its own bounded, per-episode
+  attention topic, separate from the acute load-shed track (no masking).
+- Per-machine by design: accepting a risk on one machine never silences a peer's
+  gap; a peer's critical-path label is looked up from the local, fleet-uniform
+  manifest.
+
+## Evidence
+
+Before: on an agent where a load-bearing feature ships dark (e.g. the inbound-message
+queue with `enabled:false`), `GET /guards` reported it identically to any optional
+dark feature — an `off:dark-default` row with no signal that a critical path depended
+on it, so nothing ever surfaced the exposure (the postmortem's silent-loss shape).
+
+After (verified over the real HTTP route + real disk in the Tier-3 e2e): the same
+dark guard's `/guards` row now carries `loadBearing:true`, a `criticalPath` string,
+and `loadBearingGap:true`, and the summary lists it under `loadBearingGapKeys`.
+`POST /guards/:key/accept-fallback` with a valid PIN + owner + reason flips the row to
+`loadBearingAccepted` (gap cleared, reason visible); `DELETE` reopens the gap, and both
+survive a fresh-server "reboot" reading the same durable per-machine record. The
+masking regression drives the REAL `createAttentionItem` funnel and asserts an acute
+off-runtime-divergent guard surfaces while a load-bearing-gap episode has been open —
+and an inert-lever test proves the funnel dedups by item id, so the separate episode
+track (not a healthKey change) is what carries the fix. `npx tsc --noEmit` clean and
+`npm run lint` exit 0.

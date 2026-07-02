@@ -48,6 +48,20 @@ export interface GuardManifestEntry {
   /** Implementing component (class/module name) — the lint's join key. */
   component?: string;
   description: string;
+  // ── G3: dark-but-load-bearing classification (g3-dark-but-load-bearing-guards) ──
+  /** A CRITICAL PATH depends on this guard — a silent-unguarded posture is a
+   *  visible gap, not quiet (the "A Dark Feature Guards Nothing" arm). */
+  loadBearing?: boolean;
+  /** REQUIRED when loadBearing — the path the guard protects (e.g. "operator
+   *  inbound message delivery"). Travels on EVERY anomaly of a load-bearing guard. */
+  criticalPath?: string;
+  /** Graduated-rollout soak budget, days from declaredLoadBearingAt (manifest
+   *  constant). 0/absent ⇒ no grace → an on-dry-run guard is immediately a Gap. */
+  soakWindowDays?: number;
+  /** ISO date the loadBearing flag was added (manifest constant). REQUIRED +
+   *  valid-ISO when soakWindowDays>0; absent/malformed at runtime ⇒ the soak
+   *  clause cannot be evaluated → the guard falls to the loud Gap (safe/loud). */
+  declaredLoadBearingAt?: string;
 }
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
@@ -63,6 +77,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     expectRuntime: false,
     component: 'QueueDrainLoop',
     description: 'Durable custody for undeliverable inbound messages + the drain that delivers them (ships dark).',
+    // G3 load-bearing (g3-dark-but-load-bearing-guards, Decision 2): the durable
+    // inbound-message custody + drain sits directly on the OPERATOR MESSAGE
+    // DELIVERY path the 2026-07-01 silent-loss postmortem named. Ships dry-run-first
+    // (enabled:true,dryRun:true), so a graduating agent SOAKS for the window; a
+    // fully-dark agent is a loud loadBearingGap (force a decision: graduate or
+    // record an owned accept).
+    loadBearing: true,
+    criticalPath: 'operator inbound message delivery (durable custody + drain for undeliverable inbound messages)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-01',
   },
   {
     key: 'multiMachine.sessionPool.holdForStability.enabled',
@@ -247,6 +271,15 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     expectRuntime: true,
     component: 'StrandedTopicSentinel',
     description: 'Pure-signal detector: surfaces a topic whose owner machine is online-but-unable-to-serve (quota-walled / adapter-disconnected) while a healthy machine holds the lease, so inbound is silently dead. Raises ONE aggregated attention item; MUTATES NOTHING.',
+    // G3 load-bearing (g3-dark-but-load-bearing-guards, Decision 2): the ONLY
+    // detector of "inbound is silently dead" — an online-but-unable-to-serve
+    // owner. Directly on the operator-message-reachability critical path. No
+    // dry-run arm, so a dark agent is an immediate loud loadBearingGap (the honest
+    // force-a-decision signal); the soak window applies only where it is graduated.
+    loadBearing: true,
+    criticalPath: 'inbound message reachability (detects an online-but-unable-to-serve owner so inbound is not silently dead)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-01',
   },
   {
     // tmux Event-Loop Resilience (C). `enabled` is deliberately OMITTED from
@@ -720,4 +753,35 @@ export function manifestComponents(): Set<string> {
 
 export function notAGuardComponents(): Set<string> {
   return new Set(NOT_A_GUARD.map(e => e.component));
+}
+
+/**
+ * G3 manifest lints (g3-dark-but-load-bearing-guards §2.1) — BOTH NEW:
+ *   1. `loadBearing` ⇒ `criticalPath` is REQUIRED (a load-bearing gap with no
+ *      named path is a bare row — the criticalPath must travel on every anomaly).
+ *   2. `soakWindowDays > 0` ⇒ `declaredLoadBearingAt` is REQUIRED and must be a
+ *      valid ISO date (else the soak clause cannot be evaluated).
+ * Returns a list of human-readable violations; empty ⇒ the manifest is well-formed.
+ * A unit test asserts the real GUARD_MANIFEST returns zero violations; the RUNTIME
+ * fallback for a typo'd declaredLoadBearingAt lives in deriveGuardRow (falls to the
+ * loud Gap — the safe, loud direction, never silently non-soaking).
+ */
+export function validateGuardManifest(
+  manifest: readonly GuardManifestEntry[] = GUARD_MANIFEST,
+): string[] {
+  const violations: string[] = [];
+  for (const e of manifest) {
+    if (e.loadBearing && (!e.criticalPath || !e.criticalPath.trim())) {
+      violations.push(`${e.key}: loadBearing is true but criticalPath is missing (criticalPath is REQUIRED when loadBearing).`);
+    }
+    if (typeof e.soakWindowDays === 'number' && e.soakWindowDays > 0) {
+      const d = e.declaredLoadBearingAt;
+      if (!d || !d.trim()) {
+        violations.push(`${e.key}: soakWindowDays>0 but declaredLoadBearingAt is missing (REQUIRED to anchor the soak window).`);
+      } else if (Number.isNaN(Date.parse(d))) {
+        violations.push(`${e.key}: declaredLoadBearingAt "${d}" is not a valid ISO date (soak window cannot be anchored).`);
+      }
+    }
+  }
+  return violations;
 }

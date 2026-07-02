@@ -2101,6 +2101,12 @@ export interface GuardPostureSummary {
   divergedPendingRestart: number;
   errored: number;
   missing: number;
+  /** G3 (g3-dark-but-load-bearing-guards §2.6): load-bearing key-lists riding the
+   *  heartbeat so a peer gap is visible fleet-wide. Optional for wire back-compat —
+   *  an un-upgraded peer omits them and the probe Array.isArray-guards the read. */
+  loadBearingGapKeys?: string[];
+  loadBearingSoakingKeys?: string[];
+  loadBearingAcceptedKeys?: string[];
   generatedAt: string;
 }
 

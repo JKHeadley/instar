@@ -15,6 +15,7 @@ import {
   GUARD_MANIFEST,
   type GuardManifestEntry,
 } from './guardManifest.js';
+import type { AcceptedFallbackRecord, ScopedAcceptedFallbacks } from './guardAcceptedFallbacks.js';
 import { getConfigByPath } from '../core/devGatedFeatures.js';
 import {
   extractGuardPosture,
@@ -65,6 +66,19 @@ export interface GuardRow {
   /** Normalized getter-error message (errored state only). */
   error?: string;
   process: 'server' | 'lifeline';
+  // ── G3: dark-but-load-bearing FLAGS (orthogonal to the nine-state contract) ──
+  /** Mirrored from the manifest — a critical path depends on this guard. */
+  loadBearing?: true;
+  /** Present for ANY posture of a load-bearing guard (travels on every anomaly). */
+  criticalPath?: string;
+  /** LOUD: silently unguarded (off:dark-default or on-dry-run), past soak, not accepted. */
+  loadBearingGap?: true;
+  /** GRADUATE arm: on-dry-run within the soak window (no attention item). */
+  loadBearingSoaking?: true;
+  /** Owned operator acceptance recorded on THIS machine (full Gap suppression). */
+  loadBearingAccepted?: true;
+  /** The operator's recorded reason — the VISIBLE accepted-risk row. */
+  acceptedFallbackReason?: string;
 }
 
 export interface GuardsSummary {
@@ -80,6 +94,10 @@ export interface GuardsSummary {
   missing: number;
   offRuntimeDivergent: number;
   runtimeEnriched: string; // "n/total"
+  // ── G3: load-bearing key-lists (the loud gap subset + the two quiet subsets) ──
+  loadBearingGapKeys: string[];
+  loadBearingSoakingKeys: string[];
+  loadBearingAcceptedKeys: string[];
 }
 
 export interface GuardInventoryResult {
@@ -90,6 +108,11 @@ export interface GuardInventoryResult {
 const ROW_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
   'key', 'configEnabled', 'defaultEnabled', 'effective', 'offClass',
   'divergence', 'runtime', 'runtimeReason', 'error', 'process',
+  // G3 (§2.2): ALL SIX load-bearing fields named — the projection is closed, so
+  // an unnamed field never leaves the server (omitting acceptedFallbackReason
+  // would hollow the accepted-risk row).
+  'loadBearing', 'criticalPath', 'loadBearingGap', 'loadBearingSoaking',
+  'loadBearingAccepted', 'acceptedFallbackReason',
 ]);
 const RUNTIME_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
   'enabled', 'dryRun', 'lastTickAt', 'tickAgeMs', 'stale', 'jobCount', 'pausedJobCount',
@@ -110,6 +133,27 @@ interface DeriveInput {
   bootSnapshotAvailable: boolean;
   runtime: GuardRuntimeRead;
   now: number;
+  /** G3 (§2.6): the operator-accept record for THIS guard on THIS machine,
+   *  read/scoped by the CALLER and threaded in — deriveGuardRow stays PURE. */
+  acceptedFallback?: AcceptedFallbackRecord;
+}
+
+/**
+ * G3 soak-window evaluation (§2.1 lint fallback). Returns true iff an on-dry-run
+ * load-bearing guard is still WITHIN its bounded soak window. Any absent/malformed
+ * input returns FALSE (→ the loud Gap: the SAFE, loud direction — never silently
+ * non-soaking from a typo). Monotonic on `now`: once past the window it never
+ * reverts (windowEnd is a fixed manifest constant).
+ */
+function isWithinSoakWindow(manifest: GuardManifestEntry | undefined, now: number): boolean {
+  const days = manifest?.soakWindowDays;
+  if (typeof days !== 'number' || days <= 0) return false; // 0/absent ⇒ no grace
+  const declared = manifest?.declaredLoadBearingAt;
+  if (!declared || !declared.trim()) return false;         // REQUIRED — absent ⇒ Gap
+  const declaredAt = Date.parse(declared);
+  if (Number.isNaN(declaredAt)) return false;              // malformed ⇒ Gap
+  const windowEndMs = declaredAt + days * 86_400_000;
+  return now <= windowEndMs;
 }
 
 /**
@@ -252,6 +296,31 @@ export function deriveGuardRow(input: DeriveInput): GuardRow {
   };
   if (runtimeReason) row.runtimeReason = runtimeReason;
   if (error) row.error = error;
+
+  // ── G3: dark-but-load-bearing classification (§2.2) — orthogonal FLAGS ──
+  if (manifest?.loadBearing) {
+    row.loadBearing = true;
+    if (manifest.criticalPath) row.criticalPath = manifest.criticalPath; // travels on every posture
+    // A SILENT-unguarded posture is off:dark-default or on-dry-run. The loud
+    // classes (off-runtime-divergent, diverged-from-default off, missing,
+    // errored, on-stale) already alarm under their own class — G3 attaches
+    // criticalPath (above) but sets NO loadBearingGap there (no double-alarm).
+    const silentlyUnguarded =
+      (effective === 'off' && offClass === 'dark-default') || effective === 'on-dry-run';
+    if (silentlyUnguarded) {
+      if (input.acceptedFallback) {
+        // 1. Owned operator acceptance → full Gap suppression + VISIBLE accepted row.
+        row.loadBearingAccepted = true;
+        row.acceptedFallbackReason = input.acceptedFallback.reason;
+      } else if (effective === 'on-dry-run' && isWithinSoakWindow(manifest, now)) {
+        // 2. Graduate arm: dry-run within the bounded soak window (no attention item).
+        row.loadBearingSoaking = true;
+      } else {
+        // 3. Loud: silently unguarded, past soak (or never soakable), not accepted.
+        row.loadBearingGap = true;
+      }
+    }
+  }
   return row;
 }
 
@@ -264,6 +333,10 @@ export function buildGuardInventory(opts: {
   bootSnapshot: GuardPostureBootSnapshot | null;
   registry: GuardRegistry;
   now?: number;
+  /** G3 (§2.6): THIS machine's operator-accept records, keyed by guardKey. The
+   *  CALLER reads state/guard-accepted-fallbacks.json ONCE + scopes to self, then
+   *  threads it here — buildGuardInventory stays PURE (no fs). */
+  acceptedFallbacks?: ScopedAcceptedFallbacks;
 }): GuardInventoryResult {
   const now = opts.now ?? Date.now();
   const extractedCurrent = extractGuardPosture(opts.snapshot.resolved);
@@ -307,6 +380,7 @@ export function buildGuardInventory(opts: {
         bootSnapshotAvailable: !!bootPosture,
         runtime: opts.registry.read(key),
         now,
+        acceptedFallback: opts.acceptedFallbacks?.[key],
       }),
     );
   }
@@ -316,10 +390,14 @@ export function buildGuardInventory(opts: {
     off: 0, offDeviant: 0, offDarkDefault: 0,
     divergedPendingRestart: 0, errored: 0, missing: 0, offRuntimeDivergent: 0,
     runtimeEnriched: '',
+    loadBearingGapKeys: [], loadBearingSoakingKeys: [], loadBearingAcceptedKeys: [],
   };
   let enriched = 0;
   for (const g of guards) {
     if (g.runtime) enriched++;
+    if (g.loadBearingGap) summary.loadBearingGapKeys.push(g.key);
+    if (g.loadBearingSoaking) summary.loadBearingSoakingKeys.push(g.key);
+    if (g.loadBearingAccepted) summary.loadBearingAcceptedKeys.push(g.key);
     switch (g.effective) {
       case 'on-confirmed': summary.onConfirmed++; break;
       case 'on-unverified': summary.onUnverified++; break;
@@ -370,6 +448,13 @@ export function buildHeartbeatPostureBlock(
     divergedPendingRestart: s.divergedPendingRestart,
     errored: s.errored,
     missing: s.missing,
+    // G3 (§2.6): the three load-bearing key-lists ride the heartbeat so a peer
+    // gap is visible fleet-wide. The heartbeat compute (server.ts site 3) threads
+    // the local accept map + `now`, so these are already correctly derived here —
+    // this block just filters (an accepted guard never ships as a loadBearingGap).
+    loadBearingGapKeys: [...s.loadBearingGapKeys],
+    loadBearingSoakingKeys: [...s.loadBearingSoakingKeys],
+    loadBearingAcceptedKeys: [...s.loadBearingAcceptedKeys],
     generatedAt,
   };
 }

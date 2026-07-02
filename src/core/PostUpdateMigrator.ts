@@ -5973,6 +5973,26 @@ Every guard (monitoring sentinels, reapers, the scheduler, …) is graded by wha
       result.skipped.push('CLAUDE.md: Guard Posture (/guards) capability section already present');
     }
 
+    // G3 dark-but-load-bearing classification (g3-dark-but-load-bearing-guards
+    // §5/§6 Agent Awareness). Existing agents already carry the base Guard Posture
+    // section (content-sniffed above, so it is not re-edited in place — migrateClaudeMd
+    // only APPENDS); this appends the load-bearing vocabulary + the accept route as a
+    // standalone addendum. Idempotent via content-sniffing on the `loadBearingGap` token.
+    if (!content.includes('loadBearingGap')) {
+      const g3 = `
+#### Dark-but-Load-Bearing Guards (G3 — "A Dark Feature Guards Nothing")
+
+A guard a CRITICAL PATH depends on carries \`loadBearing:true\` + a \`criticalPath\` label on EVERY \`/guards\` row. When it sits silently unguarded (dark, or on-dry-run) it is classified one of three ways: \`loadBearingGap\` (LOUD — a critical path is unguarded; alerts on its OWN attention channel so it can never mask an acute load-shed), \`loadBearingSoaking\` (a dry-run guard graduating WITHIN its bounded soak window — surfaced on \`/guards\` only, no alert; it LAPSES to a loud gap if it stalls past the window), or \`loadBearingAccepted\` (an owned operator acceptance is on record — full suppression + a visible accepted-risk row).
+- Resolve a gap three ways: GRADUATE the guard (flip it on — all flags clear), let it SOAK out, OR record an owned accept: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/guards/<key>/accept-fallback -d '{"reason":"…","owner":"…","pin":"<dashboard PIN>"}'\` (BOTH \`reason\` + \`owner\` REQUIRED; dashboard-PIN-gated — a Bearer token cannot accept a safety risk for you; \`DELETE\` the same path revokes and reopens the gap). Per-machine (an accept on one machine never silences a peer's gap).
+- **When to use** (PROACTIVE): user asks "why is a critical guard flagged as a gap?" → it's dark-but-load-bearing; graduate it or record an owned accept. Rollback lever for the alert: \`monitoring.guardPostureProbe.alertLoadBearingGaps: false\` (/guards keeps the classification).
+`;
+      content += '\n' + g3;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Dark-but-Load-Bearing Guards (G3) section');
+    } else {
+      result.skipped.push('CLAUDE.md: Dark-but-Load-Bearing Guards (G3) section already present');
+    }
+
     // AgentWorktreeReaper report (RESPONSIBLE-RESOURCE-USAGE — OS resource hygiene).
     // Tells the agent the "which stale worktrees can be reclaimed?" read-surface
     // exists. Without it, an agent asked about worktree disk/sprawl has no grounded
