@@ -1,118 +1,172 @@
 ---
-title: "U4.5 — Rope-Health Alerts (honest, deduped mesh-transport degradation heads-up)"
+title: "U4.5 — Rope-Health Alerts (productized monitor + honest partition semantics + sleep-aware urgency)"
 slug: "u4-5-rope-health-alerts"
 author: "echo"
 status: "draft"
-parent-principle: "The Agent Is Always Reachable — a mesh partition must be seen before it silences the operator"
-sibling-principles: "Bounded Notification Surface; A Refusal Stays a Refusal (a dark rope is a refusal-in-waiting); Runtime End-to-End Proof"
+parent-principle: "The Agent Is Always Reachable — A Guaranteed Reachability Floor"
+sibling-principles: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions; Bounded Notification Surface; Observability — you can't tune what you can't see; Scrape/Parser Fixture Realness; Migration Parity"
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; multi-transport-mesh-comms.md; MULTI-MACHINE-SESSION-POOL-SPEC.md"
 project: "self-healing-mesh (topic 29836)"
-depends-on: "G1 coherence-audit digest (already deployed both machines this session — .instar/scripts/coherence-audit.mjs); multiMachine.meshTransport (shipped)"
+depends-on: "U4.3 rope-health snapshot (HARD dependency — the authed GET /health ropeHealth per-(peer,kind) state; build order U4.3 → U4.5; there is NO usable interim source: /health today carries advertised kinds only and the resolver map is process-private); SleepWakeDetector + machine-registry online/last-seen (the expected-online gate); WS4.2 emptyState semantics (offline-since vs unreachable); PendingRelayStore (alert delivery retry); guardManifest (G3)"
 ---
 
 # U4.5 — Rope-Health Alerts
 
-## 1. Problem
+## 1. Problem — corrected by round-1 review
 
-The mesh now runs over multiple transports ("ropes": Tailscale, LAN, Cloudflare
-tunnel — `multiMachine.meshTransport`). Transport degradation is today visible ONLY
-if someone goes looking: `GET /health → multiMachine.syncStatus.meshEndpoints`,
-`GET /guards`, or the tailscale CLI. Three degradations matter and are all currently
-silent:
+Mesh transport degradation is silent today: a Tailscale key expiry drops a rope with
+no warning; a persistently-down rope (the Cloudflare flap behind the 2026-07-01 lease
+instability) is visible only to someone who goes looking; an all-transports-down
+partition — the precondition for silent message loss — has no prompt alert at all.
 
-1. A Tailscale key nearing expiry (the Laptop key expires 2026-12-29, the Mini's
-   2026-12-11 — verified this session). When a key expires, that rope drops with no
-   warning.
-2. A rope persistently down to a peer (e.g. the Cloudflare flap that was the root
-   cause of the 2026-07-01 lease instability).
-3. ALL transports down to a peer — an imminent partition, the precondition for the
-   silent-message-loss class this whole project exists to eliminate.
+**Round-1 grounding corrections baked into this rewrite:**
+- Round 0 rode the G1 coherence-audit job for everything. Verified: G1 is a
+  **hand-deployed agent-home script** (zero hits in the instar repo) running **once
+  daily at 09:20, stateless**. It cannot detect "~2 consecutive all-down probes,"
+  cannot debounce across runs, and a partition beginning at 10:00 would first be
+  *evaluated* ~23 hours later. The urgent tier had no evaluation vehicle, the
+  `monitoring.coherenceAudit.ropeHealth` flag gated nothing shipped (Migration
+  Parity violation), and "no new store" contradicted the state the debounce needs.
+- Round 0's classification conflated a **sleeping laptop** with a partition — on the
+  motivating asymmetric setup that is one HIGH false alarm per lid-close, forever
+  (the exact 2026-05-22 flood class).
+- Round 0's "P17 pool-coalescing prevents double-alert" was wrong three ways: P17 is
+  a read-time view merge (never creation-dedup), HIGH items are exempt from
+  coalescing, and the fan-out needs the very mesh that is down.
+- Round 0's data-source fallback ("current best-effort reachability") names nothing
+  that exists.
 
-The operator should be told about (1) and (2) ONCE, calmly, BEFORE they become a
-lease instability — and (3) promptly. But per the operator's standing
-conservative-notification directive ("almost all messages should be assumed to be
-messages the agent acts on, not that the user should know about; one hub topic for
-user alerts; never per-event topics"), this must NOT become a stream of per-check
-alerts. The failure mode to avoid is exactly the 2026-05-22 sentinel-flood and the
-2026-06-05 worktree-detector flood: one topic per event.
+## 2. Design — an in-server monitor (product code); the digest stays one line
 
-## 2. Design
+**Component (productized — this ships in instar, not as an agent-home script):**
+`RopeHealthMonitor` (`src/monitoring/RopeHealthMonitor.ts`), constructed by the real
+server boot, evaluating on the existing mesh heartbeat/lease-tick cadence (~every
+30s; no new loop — it subscribes to the tick the coordinator already runs).
 
-**Ride the existing G1 coherence-audit digest — add NO new notification surface.**
-The G1 audit already runs daily on both machines, already checks Tailscale login
-state + a 14-day key-expiry warning, and already emits exactly ONE digest line to the
-hub topic (7848) — never per-item, never a new topic. U4.5 EXTENDS that one digest
-with a rope-health section, rather than building a second notifier.
-
-- **Data source (read-only, local):** `GET /health → multiMachine.syncStatus.meshEndpoints`
-  for the advertised rope kinds; the per-transport circuit-breaker state (from U4.3
-  once it lands, else the current best-effort reachability); `tailscale status --json`
-  for key expiry (already parsed by the G1 tailscale check). Everything is a local
-  read — no egress beyond the mesh the agent already uses.
-- **Classification (deterministic):**
-  - `ok` — every advertised rope to every known peer is healthy; key expiry > 14 days.
-    → NO line in the digest (silence is the default; the digest only speaks on drift,
-    consistent with G1 today).
-  - `degraded` — a rope is down to a peer BUT ≥1 other rope is healthy (the mesh is
-    still connected), OR a key expires within 14 days. → ONE line in the daily G1
-    digest: "Rope health: Tailscale to <mini> down (LAN still up); Laptop key expires
-    in 9d." Informational, rides the existing digest cadence.
-  - `urgent` — ALL transports to a peer are down (imminent/actual partition). → this
-    is the ONLY case that escalates beyond the daily digest: ONE deduped Attention
-    item (`source` keyed on the partition episode, HIGH), coalesced per episode so a
-    flapping rope can't flood (the same episode-dedup the split-brain attention item
-    uses). Never one-per-check.
-- **Flap-proofing (reuse U1's shape):** a `degraded`→`ok` recovery must be SUSTAINED
-  (a short blip does not clear-then-re-alert). Track time-since-first-observed per
-  (peer, rope); a `degraded` line only appears after the condition holds past a
-  debounce, and the `urgent` attention item only escalates after ALL-down holds past
-  a (shorter) debounce. This is the identical anti-flap decay the silent-loss notice
-  uses (§2.C of the U1 spec) — reuse it, do not reinvent.
+- **Data source (HARD dependency):** the U4.3 `PeerEndpointResolver.snapshot()` seam
+  (the same data the authed `/health` serves) — in-process, zero cost. U4.3 builds
+  first; there is no interim fallback (round 0's fallback named nothing real — this
+  is now honest).
+- **State (durable, small):** `state/rope-health.json` — per (peer, kind): condition,
+  firstObservedAt, consecutiveObservations, episodeKey, lastAlertAt. Survives
+  restarts (the debounce/episode memory a daily stateless job could never hold).
+  Bounded: peers × kinds.
+- **Classification (deterministic, sleep-aware):**
+  - `ok` — silence (no digest line, nothing).
+  - `degraded` — a rope down to a peer while ≥1 other rope is healthy, OR a Tailscale
+    key expiring within 14 days. Digest-only.
+  - `peer-offline` — ALL ropes down BUT the peer is NOT expected online: registry
+    marks it offline / it announced a graceful shutdown or sleep (SleepWakeDetector /
+    WS4.2 `offline since <t>` semantics). Digest-only ("<nickname> offline since
+    <t> — expected"). **A lid-close is never urgent.**
+  - `urgent` — ALL ropes down to a peer that IS expected online (registry-online,
+    heartbeat-fresh until it wasn't, no graceful-offline signal) for ≥
+    `urgentDebounceChecks` (default 2) consecutive evaluations. ONE HIGH attention
+    item per episode.
+- **Episode semantics (honest about partitions):** episodeKey =
+  `sorted(machineA,machineB) + ':' + coarse window start (condition onset, quantized
+  15 min)` — deterministically computable on BOTH sides without coordination. During
+  a genuine two-sided partition each side raises at most ONE item (Telegram rides the
+  internet, not the mesh, so delivery works) — **two items total for a true
+  partition is accepted and declared** (coordination during the event is structurally
+  impossible); after heal, the pool attention view groups them by the shared
+  episodeKey. If a split-brain attention item is already open for the same episode
+  window, the monitor does NOT raise a second item (episode-registry check) — one
+  episode, one ask.
+  An episode ENDS only after ≥ `clearSustainMs` (default 10 min) of continuous
+  health — a blip cannot clear-then-re-fire (the U1 sustained-clear shape, restated
+  here concretely rather than by reference).
+- **Alert delivery honesty:** the attention item + Telegram delivery ride the
+  internet, not the mesh. If delivery itself fails, the failure is recorded in the
+  monitor state (`detected-not-notified`) and retried via the existing durable relay
+  path — detected-but-silent is impossible to lose silently.
+- **Content scrub (frontloaded rule):** alert/digest text carries rope KIND +
+  machine NICKNAME + relative expiry ONLY — never raw IPs, URLs, tunnel hostnames,
+  tailnet names, or account emails (the tailscale JSON carries all of these; they
+  never leave the parser).
+- **The daily digest line:** `GET /mesh/rope-health` (Bearer) serves the monitor's
+  current classification + episode state. A **built-in daily job template**
+  (`rope-health-digest`, shipped via the standard job-template path, off by default
+  fleet / on for dev per job convention) emits at most ONE consolidated section
+  (≤ 3 sentences, clamped, machine-named) to the alerts hub topic when anything is
+  non-ok. The operator's existing agent-home G1 script simply adds one read of the
+  same route (documented one-line change) — the G1 script is thereby a CONSUMER,
+  never the mechanism. Migration parity: the monitor + route + job template all ship
+  in instar with config defaults via `migrateConfig`; the CLAUDE.md template gains
+  the proactive trigger ("is the mesh healthy? / why did I get a partition alert?"
+  → `GET /mesh/rope-health`).
 
 ## 3. Multi-machine posture (mandatory)
 
-Each machine runs its OWN G1 audit and reports its OWN rope view (a rope's health is
-inherently per-machine-pair — the Laptop's view of the Mini is authoritative for that
-direction). So this is **machine-local BY DESIGN**: no replication. The digest each
-machine emits names the machine it is reporting FROM. The `urgent` partition attention
-item is pool-coalesced (both machines observing the same all-down partition raise ONE
-item, via the existing P17 attention coalescing), so a two-sided partition does not
-double-alert.
+Rope health is per-machine-pair and directional — **machine-local BY DESIGN**, no
+replication. Each machine's monitor reports its OWN view, named as such. The
+episodeKey gives cross-machine read-time grouping without any cross-machine write.
+Single-machine install: no peers, monitor idles at zero cost, strict no-op.
 
-## 4. Tests
+## 4. Observability
 
-- `degraded-rope-emits-exactly-one-digest-line` (not per-rope, not per-peer).
-- `all-transports-down-escalates-one-deduped-attention-item` (+ a flapping all-down
-  raises ONE item per episode, never per-check).
-- `key-expiry-within-14d-appears-in-digest`, `>14d-is-silent`.
-- `sustained-clear-required-before-re-alert` (a blip does not clear-then-re-fire).
-- `healthy-mesh-emits-no-rope-line` (silence is the default).
-- Multi-machine: `two-sided-partition-coalesces-to-one-item`.
+Feature-metrics key `rope-health` (deterministic — zero LLM cost): evaluations,
+transitions by class, urgent episodes, suppressed-by-sleep-gate count (the
+false-alarm class we killed, made countable), detected-not-notified retries,
+digest emissions. guardManifest entry: `loadBearing: true`, `criticalPath: "mesh
+partition alerting"` (this IS the alerting layer for reachability), with soak
+window declared per G3.
 
-## 5. Rollback / rollout
+## 5. Config, rollout, migration
 
-Rides the G1 job that already ships. New behavior is gated by
-`monitoring.coherenceAudit.ropeHealth` (default on once soaked — but the digest is
-already opt-in per-machine via the job's own enablement, so the blast radius is one
-extra line in an existing daily message). Disable = drop the config flag; the G1
-digest reverts to its pre-U4.5 content. No new store, no new topic, no new endpoint.
+- `monitoring.ropeHealth` = `{ enabled (OMITTED — dev-agent gate: live-on-dev day
+  one, dark fleet), urgentEnabled: true, urgentDebounceChecks: 2, clearSustainMs:
+  600000, keyExpiryWarnDays: 14, digestJobEnabled (job-template convention) }`.
+- Graduation criteria (named): 7 days on the dev pair with zero false urgent items
+  (every urgent episode manually confirmed real) and ≥1 real sleep event correctly
+  classified `peer-offline` → fleet default-on for the monitor (digest job stays
+  per-agent opt-in).
+- Rollback: `enabled:false` → monitor inert, route 503s, job emits nothing. The
+  state file is inert data.
+- **Build order:** U4.3 merges first (the snapshot seam is this spec's data source).
+  The two may share a PR per the shared-seam convention; U4.5's tests must not be
+  skipped when combined.
+
+## 6. Tests (tiers declared)
+
+Unit: classifier per class incl. the sleep gate (expected-online vs graceful-offline
+vs unreachable — both sides of every boundary); episodeKey determinism (both sides
+compute the same key); debounce (N-1 checks do not fire); sustained-clear (blip does
+not re-fire); split-brain-item suppression; content scrub (fixture rows containing
+IPs/emails/tailnet never reach output); **tailscale `status --json` parser REGISTERED
+with captured byte-for-byte fixtures** (real output incl. KeyExpiry — Scrape/Parser
+Fixture Realness); state-file round-trip across restart. Integration: `GET
+/mesh/rope-health` through the real HTTP pipeline (authed); attention item raised
+via the real queue with episode dedup; metrics rows. E2E lifecycle (feature-alive):
+production init with the flag dev-resolved → monitor constructed, ticking,
+`lastEvaluatedAt` advancing; dark → 503 + zero presence. Wiring-integrity: monitor
+subscribes to the REAL coordinator tick and reads the REAL resolver snapshot (not a
+copy). Live two-machine drive (before fleet): tailscale logout on the dev pair →
+degraded line appears; peer sleep → `peer-offline`, NO urgent item (the load-bearing
+false-alarm test, live); full network cut to an expected-online peer (simulated) →
+ONE urgent item per side, episode-grouped post-heal.
 
 ## Frontloaded Decisions
 
-1. **Ride G1, do not build a new notifier** — the conservative-notification directive
-   makes a second surface the wrong call; the daily digest already exists and already
-   honors "one hub topic, drift-only."
-2. **Machine-local, not replicated** — rope health is per-machine-pair; each machine
-   reports its own view. (Contested-cheap: N/A — no durable external side-effect.)
-3. **Only ALL-down escalates beyond the digest** — a single degraded rope with a
-   healthy alternative is NOT urgent (the mesh is still connected); escalating it
-   would be noise. Imminent partition is the bar for an attention item.
-4. **Reuse U1's flap-proof decay** — do not invent a second anti-flap mechanism.
+1. **Productized in-server monitor** — the detector is instar source riding the
+   existing mesh tick with a small durable state file; the G1 agent-home script
+   becomes a consumer of `GET /mesh/rope-health`, never the mechanism. (Resolves the
+   Migration-Parity violation and gives the urgent tier a real evaluation vehicle.)
+2. **U4.3 is a HARD dependency** — no fallback data source exists; build order
+   declared.
+3. **Sleep-aware urgency** — urgent requires expected-online + all-down + debounce;
+   a lid-close classifies `peer-offline` (digest at most). The suppressed-false-alarm
+   count is a metric, so the gate's value is measurable.
+4. **Honest partition semantics** — at most one item per SIDE per episode; two-sided
+   duplication during a true partition is accepted and declared (coalescing during
+   the event is structurally impossible); deterministic shared episodeKey groups them
+   post-heal; the split-brain item wins if already open.
+5. **Only all-down-expected-online escalates** — a degraded rope with a healthy
+   alternative is digest-only; key expiry warns at 14 days in the digest.
+6. **Content scrub is a hard rule** — kind + nickname + relative expiry only.
+7. **Maturation Path compliance** — live-on-dev day one via the dev gate; named
+   graduation criteria; G3 loadBearing registration.
 
 ## Open questions
 
 None.
-
-> The debounce windows (degraded vs urgent) are config knobs with sensible defaults
-> (degraded: appears in the next daily digest; urgent: ~2 consecutive all-down probes)
-> — tunable without a spec change, so they are frontloaded config, not open questions.
