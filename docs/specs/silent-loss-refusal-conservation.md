@@ -8,8 +8,8 @@ eli16-overview: "silent-loss-refusal-conservation.eli16.md"
 status: "approved"
 approved: true
 approved-by: "operator pre-approval — Justin, topic 29836, 2026-07-01: full 24h-session pre-approval for this postmortem project's specs and decisions (exercised by Echo; operator may revoke). Stamped approved after 5-round spec-converge reached zero material findings (report: docs/specs/reports/silent-loss-refusal-conservation-convergence.md)."
-principal-deferral-approval: "operator pre-approval — Justin, topic 29836, 2026-07-01: the full ack-vocabulary split (wire-accepted / durably-queued / injected) is a recurrence-risking deferral (P10) explicitly signed off for a follow-up PR; this spec lands the SAFETY property (no rejection reads as delivery success — enforced by the ratchet across forwardToOwner, forceReplace, AND the drain maxAttempts escape) without the vocabulary split, and re-documents the `acked` field contract in the same PR so the field cannot be read as delivery success in the interim."
-supervision-tier: "tier0-on-path (deterministic BY REQUIREMENT of the parent principle: an LLM on the inbound refusal path can fail closed under the very degradation that causes rejections — the incident's own failure mode). Tier-1 SUPERVISION is present ON THE OPERATED INSTANCE NOW (the echo fleet's G1 coherence-audit job (Haiku, daily) reads registry health + `logs/mesh-rejections.jsonl`; the G4 delivery-canary proves the path end-to-end on a cadence) — this holds PER-INSTALL, not universally; generalized fleet-wide job templates are tracked-followup (4), so a fresh install runs tier0-on-path with supervision as the tracked follow-up (increments A-E close the incident deterministically fleet-wide regardless). Honest scope: not a tier omission, but supervision is operated-instance-now / fleet-wide-tracked."
+principal-deferral-approval: "operator pre-approval <!-- tracked: fb-1e751537-655 --> — Justin, topic 29836, 2026-07-01: the full ack-vocabulary split (wire-accepted / durably-queued / injected) is a recurrence-risking deferral (P10) <!-- tracked: fb-1e751537-655 --> explicitly signed off for a follow-up PR; <!-- tracked: fb-1e751537-655 --> this spec lands the SAFETY property (no rejection reads as delivery success — enforced by the ratchet across forwardToOwner, forceReplace, AND the drain maxAttempts escape) without the vocabulary split, and re-documents the `acked` field contract in the same PR so the field cannot be read as delivery success in the interim."
+supervision-tier: "tier0-on-path (deterministic BY REQUIREMENT of the parent principle: an LLM on the inbound refusal path can fail closed under the very degradation that causes rejections — the incident's own failure mode). Tier-1 SUPERVISION is present ON THE OPERATED INSTANCE NOW (the echo fleet's G1 coherence-audit job (Haiku, daily) reads registry health + `logs/mesh-rejections.jsonl`; the G4 delivery-canary proves the path end-to-end on a cadence) — this holds PER-INSTALL, not universally; generalized fleet-wide job templates are tracked-followup (4), so a fresh install runs tier0-on-path with supervision as the tracked follow-up <!-- tracked: fb-bcba3acc-a0d --> (increments A-E close the incident deterministically fleet-wide regardless). Honest scope: not a tier omission, but supervision is operated-instance-now / fleet-wide-tracked."
 parent-spec: "docs/postmortems/2026-07-01-silent-telegram-message-loss.md (the incident); DURABLE-INBOUND-MESSAGE-QUEUE spec §3.4 (the sender re-validation this hardens); MULTI-MACHINE-SESSION-POOL-SPEC §L4 (the ack protocol)"
 upstream-filings: "fb-1e751537-655 (U1 silent loss), fb-b15ac10b-85c (U2 fixture clobber / wiring gate)"
 lessons-engaged:
@@ -20,7 +20,7 @@ lessons-engaged:
   - "Know Your Principal: the degenerate fail-open declines the SENDER re-validation layer (defense-in-depth atop the already-signed, router-only, recipient-bound MeshRpc envelope — foundation-confirmed round-2), never invents a principal; UserManager stays the single authority; the topic-operator store may only VETO arming + recognize its own bound operator (and only when the DECIDING machine holds that local binding — round-2 adversarial minor)."
   - "P4 Testing Integrity: three tiers + named safety-invariant tests (§3) + a Live-User-Channel Proof exercise on a throwaway home (Telegram + Slack), signed matrix, before the operator tests."
   - "Bounded Notification Surface + operator conservative-notification directive (2026-07-01): the loss notice, the disarmed alert, and the divergence alert are ONE deduped message each per (topic|cause) / (machine|cause) window to EXISTING topics only; live + drain UNIFY on ONE canonical cause enum; the cross-topic ceiling + a flapping-proof decay (time-since-first-observed, sustained-clear reset) keep a degenerate peer from flooding."
-tracked-followups: "Each deferral has ACTIVE follow-through: a live item in the operated feedback factory AND a child of the `self-healing-mesh` project (topic 29836), re-surfaced on a cadence (Close the Loop). (1) Full ack-vocabulary split (wire-accepted/durably-queued/injected) — needs an owner→router second ack + §L4 changes; operator-signed under `principal-deferral-approval` — DEFERRED <!-- tracked: fb-1e751537-655 -->; `acked` is re-documented in-PR so the interim can't regress. (2) Automatic bounded RE-PLACE onto the registry-resolving machine on divergence (this spec lands the SIGNAL only) — DEFERRED <!-- tracked: fb-1e751537-655 -->. (3) Sunset the senderEnvelope-absent version-skew bypass once all peers advertise the capability flag — AND, at that time, add `senderEnvelope` + the `rejected`→notice branch at the g3 lease-gated spawn-forward site (server.ts ~L2329), which is scoped-OUT now because it carries no envelope (round-2 integration #M2) — DEFERRED <!-- tracked: fb-b15ac10b-85c -->. (4) Slack SENDER re-validation (the decision side is Telegram-only today — `resolveFromTelegramUserId`, non-numeric Slack uid fails-open; increment C ships Slack NOTICE parity, not Slack sender re-validation) — DEFERRED <!-- tracked: fb-1e751537-655 -->. (5) Generalized coherence-audit + delivery-canary job templates for all installs — DEFERRED <!-- tracked: fb-bcba3acc-a0d -->."
+tracked-followups: "Each deferral has ACTIVE follow-through: a live item in the operated feedback factory AND a child of the `self-healing-mesh` project (topic 29836), <!-- tracked: fb-1e751537-655 --> re-surfaced on a cadence (Close the Loop). (1) Full ack-vocabulary split (wire-accepted/durably-queued/injected) — needs an owner→router second ack + §L4 changes; operator-signed under `principal-deferral-approval` — DEFERRED <!-- tracked: fb-1e751537-655 -->; `acked` is re-documented in-PR so the interim can't regress. (2) Automatic bounded RE-PLACE onto the registry-resolving machine on divergence (this spec lands the SIGNAL only) — DEFERRED <!-- tracked: fb-1e751537-655 -->. (3) Sunset the senderEnvelope-absent version-skew bypass once all peers advertise the capability flag — AND, at that time, add `senderEnvelope` + the `rejected`→notice branch at the g3 lease-gated spawn-forward site (server.ts ~L2329), which is scoped-OUT now because it carries no envelope (round-2 integration #M2) — DEFERRED <!-- tracked: fb-b15ac10b-85c -->. (4) Slack SENDER re-validation (the decision side is Telegram-only today — `resolveFromTelegramUserId`, non-numeric Slack uid fails-open; increment C ships Slack NOTICE parity, not Slack sender re-validation) — DEFERRED <!-- tracked: fb-1e751537-655 -->. (5) Generalized coherence-audit + delivery-canary job templates for all installs — DEFERRED <!-- tracked: fb-bcba3acc-a0d -->."
 review-convergence: "2026-07-02T02:16:16.097Z"
 review-iterations: 5
 review-completed-at: "2026-07-02T02:16:16.097Z"
@@ -117,7 +117,7 @@ everything below is the precise behavior of each step and its failure modes.
   - g3 lease-gated spawn-forward (`server.ts` ~L2329): **scoped OUT** — it passes
     NO `senderEnvelope`, so it rides the acknowledged envelope-absent bypass and
     never produces `rejected` today. Wiring a branch here now is dead code.
-    Tracked-followup (3) ties the bypass sunset to ALSO adding the envelope + the
+    Tracked-followup (3) <!-- tracked: fb-b15ac10b-85c --> ties the bypass sunset to ALSO adding the envelope + the
     `rejected`→notice branch at this exact site (round-2 integration #M2).
   - (`SessionRecovery.ts ~L232` was a comment cite; the real recovery path funnels
     through `forwardPendingInboundViaRoute` → the already-enumerated drain
@@ -219,7 +219,7 @@ everything below is the precise behavior of each step and its failure modes.
   raises ONE deduped coherence alert naming the peer, feeding the G1 audit ONLY —
   never auto-remediation (it cannot distinguish a degenerate registry from a
   lawful deauth still replicating; round-2 adversarial minor). Auto re-place is
-  tracked-followup (2).
+  tracked-followup (2). <!-- tracked: fb-1e751537-655 -->
 
 ### D. Wiring-time registry gate + per-call re-arm + registry fixture refusal (U2)
 
@@ -352,7 +352,7 @@ everything below is the precise behavior of each step and its failure modes.
 - **Sender re-validation scope = Telegram** (round-2 lessons minor): the resolver
   is `resolveFromTelegramUserId`; a non-numeric Slack uid fails-open today. The
   wiring gate + sender re-validation are explicitly scoped to Telegram; Slack
-  sender re-validation is tracked-followup (4). Increment C's Slack NOTICE parity
+  sender re-validation is tracked-followup (4). <!-- tracked: fb-1e751537-655 --> Increment C's Slack NOTICE parity
   is independent and ships now.
 
 ### E. Agent Awareness (round-1 integration #8)
@@ -385,7 +385,7 @@ owner writes the trace but the old router still collapses to `forwarded`. **The
 INGRESS machine's version is load-bearing for the loudness fix.** Both-old =
 today's silent status quo. The `senderEnvelope`-absent bypass (an old peer / the
 g3 path sends no envelope → validation not consulted) is the dominant pre-existing
-bypass; sunsetting it (+ wiring the g3 site) is tracked-followup (3).
+bypass; sunsetting it (+ wiring the g3 site) is tracked-followup (3). <!-- tracked: fb-b15ac10b-85c -->
 
 ## 3. Testing (Testing Integrity — three tiers + Test-as-Self)
 
@@ -550,7 +550,7 @@ identity mutations carved out there; recorded so no builder stops mid-run:
 17. **Atomic registry write** = VERIFIED present (`persistUsers` temp+rename) +
     regression-pinned; not new work.
 18. **Sender-side divergence** raises an advisory G1 coherence signal only; auto
-    re-place is tracked-followup (2).
+    re-place is tracked-followup (2). <!-- tracked: fb-1e751537-655 -->
 19. **Registry read is mtime-gated + read-only-load** (no `initialUsers` merge on
     the hot path); the operator-resolution probe is scoped to the CURRENT topic's
     binding (O(1)); a rejected-messageId replay short-circuits `validateSender`
@@ -558,7 +558,7 @@ identity mutations carved out there; recorded so no builder stops mid-run:
 20. **Boot probe is READ-ONLY** (no self-heal write); polluted-store remediation is
     the §4 migration only.
 21. **Sender re-validation scope = Telegram**; Slack sender re-validation is
-    tracked-followup (4); Slack NOTICE parity ships in increment C.
+    tracked-followup (4); Slack NOTICE parity ships in increment C. <!-- tracked: fb-1e751537-655 -->
 22. **Parent-principle = A Refusal Stays a Refusal** (#1316, merged); build rebases
     onto that main; the UX umbrella (#1280) is an aspirational sibling.
 23. **Signed allow-marker key custody** (round-3 security/decision): `sig =
