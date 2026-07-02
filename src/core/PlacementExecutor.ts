@@ -113,11 +113,26 @@ export function validateTopicPlacement(tp: unknown, capabilityWhitelist: string[
 
 const MEM_PRESSURE_NUM: Record<string, number> = { low: 0, moderate: 1, high: 2, critical: 3 };
 
+/**
+ * U4.1 §2E (R-r2-2) optional seams. `sustainedOnline`: the hard-pin fulfilment
+ * hysteresis — a pinned placement proceeds only when the pinned machine has
+ * been CONTINUOUSLY online for the sustained window (a flapping machine never
+ * triggers ping-pong). A machine failing the gate makes the hard pin
+ * `hard-pin-unavailable` → QUEUED (the shipped queued-never-rerouted contract —
+ * placement never drifts to another machine because the pinned one flapped).
+ * Absent ⇒ plain-online eligibility (today's exact behavior).
+ */
+export interface PlacementExecutorSeams {
+  sustainedOnline?: (machineId: string) => boolean;
+}
+
 export class PlacementExecutor {
   private readonly policy: PlacementPolicy;
-  constructor(policy: PlacementPolicy = DEFAULT_PLACEMENT_POLICY) {
+  private readonly seams: PlacementExecutorSeams;
+  constructor(policy: PlacementPolicy = DEFAULT_PLACEMENT_POLICY, seams: PlacementExecutorSeams = {}) {
     validatePlacementPolicy(policy);
     this.policy = policy;
+    this.seams = seams;
   }
 
   /** Score a candidate (lower = better): weighted load + session-ratio + mem pressure. */
@@ -200,7 +215,15 @@ export class PlacementExecutor {
         // the decision reason carries the quota note so the caller can surface it.
         if (tp.pinned && tp.preferredMachine) {
           const pinned = eligible.find((m) => m.machineId === tp.preferredMachine);
-          if (!pinned) {
+          // U4.1 §2E (i): fulfilment requires SUSTAINED online — a pinned machine
+          // that only just flapped back on is treated as unavailable (→ QUEUED,
+          // never re-routed; the same honest contract as offline). Absent seam /
+          // seam fault ⇒ plain-online (today's behavior — fail toward placement).
+          let sustainedOk = true;
+          if (pinned && this.seams.sustainedOnline) {
+            try { sustainedOk = this.seams.sustainedOnline(pinned.machineId); } catch { sustainedOk = true; /* @silent-fallback-ok — a broken hysteresis signal degrades to plain-online eligibility (today's exact behavior): fail toward PLACEMENT, never a wedged pin (U4.1 §2E) */ }
+          }
+          if (!pinned || !sustainedOk) {
             return { chosenMachine: null, score: 0, reason: 'hard-pin-unavailable', outcome: 'queued', escalationReason: 'hard-pin-unsatisfiable' };
           }
           return {

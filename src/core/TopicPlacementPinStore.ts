@@ -19,6 +19,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { TopicPlacement } from './PlacementExecutor.js';
 
+/**
+ * U4.1 §2F (Know Your Principal): WHO set the pin — LOCAL-ONLY provenance.
+ * `operator` = resolved from the topic's auto-bound VERIFIED operator
+ * (TopicOperatorStore) when the authenticated request carried one; `agent` =
+ * a Bearer-authed agent-initiated pin (a legitimate pin author). NEVER
+ * replicated — the replicated `topic-pin-record` stays deliberately non-PII.
+ * Serve-time length-clamped on the Bearer-gated read surface.
+ */
+export type TopicPinnedBy =
+  | { kind: 'operator'; platform: string; uid: string }
+  | { kind: 'agent'; sessionRef: string };
+
 /** One persisted pin: the resolved target machine + when it was set. */
 export interface TopicPin {
   preferredMachine: string;
@@ -32,6 +44,8 @@ export interface TopicPin {
    * type (not the HlcTimestamp import) to keep this low-level store dependency-free.
    */
   hlc?: { physical: number; logical: number; node: string };
+  /** U4.1 §2F: local-only pin provenance (never replicated; see TopicPinnedBy). */
+  pinnedBy?: TopicPinnedBy;
 }
 
 export interface TopicPlacementPinStoreDeps {
@@ -39,6 +53,13 @@ export interface TopicPlacementPinStoreDeps {
   filePath: string;
   /** Wall clock — injectable for tests. Defaults to `Date`. */
   now?: () => Date;
+  /**
+   * U4.1 §2C loud durability: fired when a CORRUPT pin file is quarantined
+   * aside (the aside path + the parse error). The caller raises the ONE
+   * deduped `u41:pin-corrupt:<storeFilePath>` attention item. Optional —
+   * absence never gates the quarantine itself.
+   */
+  onCorrupt?: (asidePath: string, error: string) => void;
 }
 
 export class TopicPlacementPinStore {
@@ -59,8 +80,18 @@ export class TopicPlacementPinStore {
           this.pins = raw.pins as Record<string, TopicPin>;
         }
       }
-    } catch {
-      this.pins = {}; // corrupt file → start clean (the pin is advisory, not authoritative)
+    } catch (err) {
+      // U4.1 §2C (fixes defect 3): THIS store is the AUTHORITATIVE local record
+      // of operator placement intent (the replicated `topic-pin-record` is the
+      // advisory one) — which is exactly why the old wipe-and-persist here was
+      // success-shaped TOTAL LOSS. A corrupt file is QUARANTINED ASIDE
+      // (preserved, never overwritten), reported loudly via onCorrupt (the ONE
+      // deduped `u41:pin-corrupt:<path>` item), and the store resolves to
+      // UNKNOWN (no pins) until the operator re-pins or restores.
+      const aside = `${this.d.filePath}.corrupt-${Date.now()}`;
+      try { fs.renameSync(this.d.filePath, aside); } catch { /* rename best-effort — the report below still fires; a later persist() only lands on the (now absent) canonical path */ }
+      try { this.d.onCorrupt?.(aside, err instanceof Error ? err.message : String(err)); } catch { /* the report is observability — never gates the load */ }
+      this.pins = {};
     }
     this.loaded = true;
   }
@@ -75,11 +106,13 @@ export class TopicPlacementPinStore {
 
   /** Pin a topic to a machine (a hard pin). Idempotent; refreshes `updatedAt`.
    *  `hlc` (Fix #2) is the skew-proof ordering stamp; pass the same HLC that the
-   *  replicated `topic-pin-record` carried so local and replicated pins compare cleanly. */
-  set(sessionKey: string, preferredMachine: string, pinned = true, hlc?: { physical: number; logical: number; node: string }): void {
+   *  replicated `topic-pin-record` carried so local and replicated pins compare
+   *  cleanly (the U4.1 one-HLC funnel `setPinWithOneHlc` does exactly this).
+   *  `pinnedBy` (U4.1 §2F) is local-only provenance — never replicated. */
+  set(sessionKey: string, preferredMachine: string, pinned = true, hlc?: { physical: number; logical: number; node: string }, pinnedBy?: TopicPinnedBy): void {
     this.load();
     const now = (this.d.now ?? (() => new Date()))().toISOString();
-    this.pins[sessionKey] = { preferredMachine, pinned, updatedAt: now, ...(hlc ? { hlc } : {}) };
+    this.pins[sessionKey] = { preferredMachine, pinned, updatedAt: now, ...(hlc ? { hlc } : {}), ...(pinnedBy ? { pinnedBy } : {}) };
     this.persist();
   }
 

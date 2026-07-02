@@ -121,6 +121,35 @@ export interface OwnershipReconcilerDeps {
    * a later operator re-pin (fresh HLC) clears the suspension.
    */
   claimSuspensions?: () => Map<number, { suspended: boolean; hlc: HlcTimestamp }>;
+  /**
+   * U4.1 §2E (R-r2-2) — the SUSTAINED-online gate for pin-driven actuation
+   * toward a machine: Case-A cooperative-transfer initiation and Case-D adopt
+   * proceed only when the target has been continuously online for
+   * ws13SustainedOnlineMs (anti-flap hysteresis; an offline/flapping pinned
+   * target yields `pending`, never a transfer→abort churn loop). Absent ⇒
+   * plain-online gating (today's behavior — tests/single-machine unaffected).
+   */
+  sustainedOnline?: (machineId: string) => boolean;
+  /**
+   * U4.1 §2E brake (iii): a topic with a LIVE autonomous run defers pin-driven
+   * transfers INDEFINITELY as pending — the safe-point deadline override does
+   * NOT apply to pin-driven moves, and the consent gate is never auto-confirmed
+   * or retried in a loop. Absent ⇒ no autonomous-run signal (today's behavior).
+   */
+  hasLiveAutonomousRun?: (sessionKey: string) => boolean;
+  /** U4.1 §2D pacing: bounded MOVE-INITIATING actions (transfers + adoptions +
+   *  force-claims) per tick — a lease flap can never trigger a transfer storm.
+   *  Claims and aborts are exempt (they complete/unwind in-flight handoffs).
+   *  Default 2 (ws13MaxMovesPerTick). */
+  maxMovesPerTick?: number;
+  /** U4.1 §2D: desired≠actual persisting past this raises `pinState: diverged`
+   *  + ONE deduped attention item per episode. Default 10min (ws13DivergedWindowMs). */
+  divergedWindowMs?: number;
+  /** U4.1 §2E brake (ii): a pending pin older than this raises ONE deduped
+   *  fulfil-or-unpin attention item. Default 24h (ws13PendingPinMaxAgeMs). */
+  pendingPinMaxAgeMs?: number;
+  /** U4.1 P17 escalation seam (deduped upstream by id). Absent ⇒ no escalation. */
+  raiseAttention?: (item: { id: string; title: string; body: string; priority: string; sourceContext: string }) => void;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -137,11 +166,37 @@ export interface ReconcileTickReport {
   deferredBusy: number;
   deferredDebounce: number;
   deferredNoEvidence: number;
-  /** U4.2 named code fix: a LOCAL pin toward an unknown/offline machine defers
-   *  the cooperative transfer (the same online-gate advisory pins already had). */
+  /** U4.2 named code fix (upgraded by U4.1 R-r2-2 to SUSTAINED-online): a pin
+   *  toward an unknown/offline/not-yet-sustained machine defers the cooperative
+   *  transfer — `pinState: pending`, zero transfer/abort churn cycles. */
   deferredTargetOffline: number;
+  /** U4.1 §2E (iii): pin-driven move deferred indefinitely — live autonomous run. */
+  deferredAutonomousRun: number;
+  /** U4.1 §2D pacing: move-initiating actions withheld this tick (over ws13MaxMovesPerTick). */
+  deferredPaced: number;
   dryRun: boolean;
   skipped?: 'disabled' | 'single-machine' | 'self-id-unresolved';
+}
+
+/**
+ * U4.1 §2D — the verified pin actuation state on the placement read
+ * (docs/specs/u4-1-pin-persistence.md; joint enum with U4.2 §2.4, R-r3-4).
+ * `suspended-pending-owner-return` is derived from U4.2's replicated
+ * `topic-claim-annotation` via the ONE comparison authority
+ * (`claimSuspensionExcludesPin`); readers MUST tolerate it from day one.
+ */
+export type PinState = 'actuated' | 'pending' | 'diverged' | 'suspended-pending-owner-return';
+
+export interface PinStateReport {
+  pinned: boolean;
+  preferredMachine?: string;
+  pinState?: PinState;
+  /** The winning pin record's HLC PHYSICAL component (R-r2) — never a separate
+   *  wall-clock read, so the displayed hold-start can never disagree with the
+   *  ordering authority. */
+  pinHeldSince?: number;
+  /** Named honesty for `pending` (e.g. the pinned machine's offline status). */
+  pendingReason?: string;
 }
 
 /** Read-only per-topic decision explanation (Observable Intelligence): what the
@@ -177,6 +232,13 @@ const DEFAULT_DEATH_EVIDENCE_MS = 180_000;
 /** Fix #3 / Finding N4: how long a `transferring` may sit before the owner aborts a
  *  transfer toward an unreachable target (the convergence deadline). */
 const DEFAULT_TRANSFER_DEADLINE_MS = 120_000;
+/** U4.1 §2.G ws13MaxMovesPerTick default: bounded move-initiations per tick. */
+const DEFAULT_MAX_MOVES_PER_TICK = 2;
+/** U4.1 §2.G ws13DivergedWindowMs default: 10min (20 ticks) of persistent
+ *  desired≠actual before `diverged` + its attention item. */
+const DEFAULT_DIVERGED_WINDOW_MS = 600_000;
+/** U4.1 §2.G ws13PendingPinMaxAgeMs default: 24h before the fulfil-or-unpin item. */
+const DEFAULT_PENDING_PIN_MAX_AGE_MS = 86_400_000;
 
 export class OwnershipReconciler {
   private readonly d: OwnershipReconcilerDeps;
@@ -221,20 +283,30 @@ export class OwnershipReconciler {
    * the owner cooperatively transfers toward; the force-claim path never reads it.
    */
   private effectivePins(): Record<string, TopicPin> {
+    // U4.2 §2.4: the claim-suspension read applies to LOCAL pins too — a
+    // suspension must hold even when no advisory pins exist, or the local
+    // reconciler would fight a stale-owner claim.
+    return this.applyClaimSuspensions(this.effectivePinsRaw());
+  }
+
+  /** The union WITHOUT the suspension filter — pinStateOf() needs to SEE a
+   *  suspended pin (to report `suspended-pending-owner-return`) that tick()
+   *  must never ACT on (U4.1 §2D / U4.2 §2.4 composition).
+   *  `includeOfflineAdvisory` (READ surfaces only): the known-and-online
+   *  advisory filter protects ACTUATION; the placement READ still wants to
+   *  report an offline-target advisory pin honestly as `pending`. */
+  private effectivePinsRaw(includeOfflineAdvisory = false): Record<string, TopicPin> {
     const ps = this.d.pinStore();
     const local = ps ? ps.all() : {}; // null until _topicPinStore resolves at boot → no pins (natural no-op)
     const advisory = this.d.advisoryPins?.();
-    // U4.2 §2.4: the claim-suspension read applies to LOCAL pins too — a
-    // suspension must hold even when no advisory pins exist (the early-return
-    // path), or the local reconciler would fight a stale-owner claim.
-    if (!advisory || advisory.size === 0) return this.applyClaimSuspensions(local);
+    if (!advisory || advisory.size === 0) return local;
     // Validate PRIMARY = membership/liveness (skew-proof): only act on a replicated pin
     // whose target is a KNOWN and currently-ONLINE machine (Findings N2/SE4/AD5). A stale
     // advisory pointing at a departed/offline machine must NOT trigger a transfer.
     const online = new Set(this.d.machines().filter((m) => m.online).map((m) => m.machineId));
     const out: Record<string, TopicPin> = { ...local };
     for (const [topic, adv] of advisory) {
-      if (!online.has(adv.preferredMachine)) continue; // unknown/offline target → ignore advisory
+      if (!includeOfflineAdvisory && !online.has(adv.preferredMachine)) continue; // unknown/offline target → ignore advisory (actuation)
       const key = String(topic);
       const localPin = local[key];
       const advPin: TopicPin = { preferredMachine: adv.preferredMachine, pinned: true, updatedAt: new Date(adv.hlc.physical).toISOString(), hlc: adv.hlc };
@@ -244,7 +316,7 @@ export class OwnershipReconciler {
         out[key] = advPin; // replicated intent is newer (HLC) → it wins (N3)
       }
     }
-    return this.applyClaimSuspensions(out);
+    return out;
   }
 
   /**
@@ -278,6 +350,7 @@ export class OwnershipReconciler {
     const report: ReconcileTickReport = {
       examined: 0, transfers: 0, claims: 0, forceClaims: 0, adoptions: 0, aborts: 0,
       deferredBusy: 0, deferredDebounce: 0, deferredNoEvidence: 0, deferredTargetOffline: 0,
+      deferredAutonomousRun: 0, deferredPaced: 0,
       dryRun: this.d.dryRun(),
     };
     // U4.2 — the stale-owner-release engine rides THIS tick (one actor: the
@@ -316,16 +389,32 @@ export class OwnershipReconciler {
     }
     const byId = new Map(machines.map((m) => [m.machineId, m]));
     const staleOwnerActive = !!(this.d.staleOwnerEngine?.()?.isActive());
+    // U4.1 §2D pacing: bounded MOVE-INITIATING actions per tick (transfers +
+    // adoptions + force-claims); a lease flap can never trigger a transfer storm.
+    const maxMoves = Math.max(1, this.d.maxMovesPerTick ?? DEFAULT_MAX_MOVES_PER_TICK);
+    const movesInitiated = () => report.transfers + report.adoptions + report.forceClaims;
+    // U4.1 §2E (R-r2-2): sustained-online gate for pin-driven actuation toward a
+    // machine. Absent dep ⇒ plain online (today's behavior).
+    const targetActuationOk = (view: ReconcilerMachineView | undefined, machineId: string): boolean => {
+      if (!view || !view.online) return false;
+      const gate = this.d.sustainedOnline;
+      if (!gate) return true;
+      try { return gate(machineId); } catch { return true; /* @silent-fallback-ok — a broken hysteresis signal degrades to plain-online (today's behavior), never wedges convergence */ }
+    };
+    const pinnedSeenThisTick = new Set<string>();
 
     for (const [sessionKey, pin] of Object.entries(this.effectivePins())) {
       if (!pin.pinned || !pin.preferredMachine) continue;
+      pinnedSeenThisTick.add(sessionKey);
       const rec = this.d.ownership.read(sessionKey);
       const owner = rec && rec.status !== 'released' ? rec.ownerMachineId : null;
       if (owner === pin.preferredMachine && rec?.status === 'active') {
         this.conflictSince.delete(sessionKey);
+        this.closePinEpisodes(sessionKey);
         continue; // converged
       }
       report.examined++;
+      this.escalatePinDivergence(sessionKey, pin, now);
       if (!this.conflictSince.has(sessionKey)) this.conflictSince.set(sessionKey, now);
       const since = this.conflictSince.get(sessionKey)!;
 
@@ -363,6 +452,16 @@ export class OwnershipReconciler {
 
       // ── Case D: no live record and the pin names ME → adopt (place→claim).
       if ((!rec || rec.status === 'released') && pin.preferredMachine === self) {
+        // U4.1 §2E (i): fulfilment on return requires SUSTAINED online — a
+        // flapping machine must not grab its pinned topics on each blink.
+        if (!targetActuationOk(byId.get(self), self)) {
+          report.deferredTargetOffline++;
+          continue;
+        }
+        if (movesInitiated() >= maxMoves) {
+          report.deferredPaced++;
+          continue;
+        }
         const placed = this.act(report, 'adoptions', sessionKey, { type: 'place', machineId: self }, 'reconcile-adopt');
         if (placed) this.act(report, 'adoptions', sessionKey, { type: 'claim', machineId: self }, 'reconcile-adopt', /*countOnce*/ true);
         continue;
@@ -378,20 +477,38 @@ export class OwnershipReconciler {
           report.deferredDebounce++;
           continue;
         }
-        // U4.2 named code fix: LOCAL pins in the cooperative path gain the same
-        // online-gate the advisory pins already have — never start a transfer
-        // toward an unknown/offline machine (the N4 abort would only have to
-        // unwind it later).
+        // U4.2 named code fix, upgraded by U4.1 R-r2-2: LOCAL pins in the
+        // cooperative path gain the SUSTAINED-online gate the advisory pins'
+        // online filter foreshadowed — never start a transfer toward an
+        // unknown/offline/just-flapped-on machine (the N4 abort would only
+        // have to unwind it ~every 2.5min, forever, silently). The pin stays
+        // QUEUED (`pinState: pending`), never re-routed.
         const targetView = byId.get(pin.preferredMachine);
-        if (!targetView || !targetView.online) {
+        if (!targetActuationOk(targetView, pin.preferredMachine)) {
           report.deferredTargetOffline++;
           continue;
+        }
+        // U4.1 §2E (iii): a LIVE autonomous run defers a pin-driven move
+        // INDEFINITELY as pending — the safe-point deadline override does NOT
+        // apply, and the consent gate is never auto-confirmed. The aged-pending
+        // attention item (brake ii) is the bounded escape, not a forced move.
+        if (this.d.hasLiveAutonomousRun) {
+          let live = false;
+          try { live = this.d.hasLiveAutonomousRun(sessionKey); } catch { live = false; /* @silent-fallback-ok — an unreadable run registry reads as no live run; the busy/safe-point gates below still apply */ }
+          if (live) {
+            report.deferredAutonomousRun++;
+            continue;
+          }
         }
         // Bounded safe point: wait for idle, but never past the deadline.
         const busy = this.d.isTopicBusy(sessionKey);
         const pastDeadline = now - since >= (this.d.safePointDeadlineMs ?? DEFAULT_SAFE_POINT_DEADLINE_MS);
         if (busy && !pastDeadline) {
           report.deferredBusy++;
+          continue;
+        }
+        if (movesInitiated() >= maxMoves) {
+          report.deferredPaced++;
           continue;
         }
         this.act(report, 'transfers', sessionKey, { type: 'transfer', to: pin.preferredMachine }, 'reconcile-transfer');
@@ -423,6 +540,10 @@ export class OwnershipReconciler {
         const online = machines.filter((m) => m.online).length;
         const inQuorum = machines.length <= 2 || online * 2 > machines.length;
         if ((ownerProvablyDead || ownerUnknown) && inQuorum) {
+          if (movesInitiated() >= maxMoves) {
+            report.deferredPaced++;
+            continue;
+          }
           this.act(report, 'forceClaims', sessionKey, { type: 'force-claim', machineId: self }, 'reconcile-force-claim');
         } else {
           // Alive (or merely slow / unproven) owner: its own reconciler runs
@@ -433,10 +554,81 @@ export class OwnershipReconciler {
       }
       // Neither owner nor pin target: not my move this tick.
     }
+    // U4.1 §2D/§2E episode boundaries: a pin that vanished (cleared/tombstoned)
+    // closes its open attention episodes — a re-pin later opens a NEW episode.
+    for (const key of [...this.divergedEpisodes]) {
+      if (!pinnedSeenThisTick.has(key)) this.divergedEpisodes.delete(key);
+    }
+    for (const key of [...this.agedPendingEpisodes]) {
+      if (!pinnedSeenThisTick.has(key)) this.agedPendingEpisodes.delete(key);
+    }
+    // The conflict clock resets with the episode too: a topic whose pin was
+    // cleared must not carry the OLD episode's divergence age into a later
+    // re-pin (it would classify `diverged` instantly instead of earning a
+    // fresh ws13DivergedWindowMs). conflictSince is only ever populated for
+    // pinned topics inside this loop, so pruning unseen keys is sound.
+    for (const key of [...this.conflictSince.keys()]) {
+      if (!pinnedSeenThisTick.has(key)) this.conflictSince.delete(key);
+    }
     // U4.2 — the stale-owner evidence pass (claims for provably-dead owners,
     // pinned AND unpinned; ambiguity escalation on any quorum member).
     runStaleOwnerPass();
     return this.finish(report);
+  }
+
+  // ── U4.1 §2D/§2E — P17 escalation (one deduped item per EPISODE, never per tick) ──
+
+  /** Open attention episodes (a flap WITHIN an open episode never re-raises). */
+  private readonly divergedEpisodes = new Set<string>();
+  private readonly agedPendingEpisodes = new Set<string>();
+
+  /** Convergence (or pin removal) closes both episodes for the topic. */
+  private closePinEpisodes(sessionKey: string): void {
+    this.divergedEpisodes.delete(sessionKey);
+    this.agedPendingEpisodes.delete(sessionKey);
+  }
+
+  /**
+   * Raise the two U4.1 attention items for a topic currently in desired≠actual
+   * conflict: `u41:pin-diverged:<topicId>` when the conflict has persisted past
+   * ws13DivergedWindowMs (declarative intent with no controller escalation is a
+   * wish), and `u41:pin-pending-aged:<topicId>` when the pin itself has sat
+   * unfulfilled past ws13PendingPinMaxAgeMs (fulfil-or-unpin — covers the
+   * decommissioned/rebuilt-machineId case AND the owner-side offline-target
+   * pending, R-r2-2). Both are once-per-episode; the attention store dedupes by
+   * id as the backstop.
+   */
+  private escalatePinDivergence(sessionKey: string, pin: TopicPin, now: number): void {
+    const raise = this.d.raiseAttention;
+    if (!raise) return;
+    const since = this.conflictSince.get(sessionKey) ?? now;
+    const divergedWindow = this.d.divergedWindowMs ?? DEFAULT_DIVERGED_WINDOW_MS;
+    if (now - since >= divergedWindow && !this.divergedEpisodes.has(sessionKey)) {
+      this.divergedEpisodes.add(sessionKey);
+      try {
+        raise({
+          id: `u41:pin-diverged:${sessionKey}`,
+          title: `Topic ${sessionKey} placement diverged from its pin`,
+          body: `Topic ${sessionKey} is pinned to ${pin.preferredMachine} but has been running elsewhere for over ${Math.round(divergedWindow / 60000)} minutes. The reconciler keeps converging it; if this persists, the pinned machine may be refusing the topic — check GET /pool/placement?topic=${sessionKey} and GET /pool/reconciler?topic=${sessionKey}.`,
+          priority: 'medium',
+          sourceContext: 'ws13-pin-persistence',
+        });
+      } catch { /* escalation is observability — never gates the tick */ }
+    }
+    const pinAge = now - this.deriveLocalPinHlc(pin).physical;
+    const maxPendingAge = this.d.pendingPinMaxAgeMs ?? DEFAULT_PENDING_PIN_MAX_AGE_MS;
+    if (pinAge >= maxPendingAge && !this.agedPendingEpisodes.has(sessionKey)) {
+      this.agedPendingEpisodes.add(sessionKey);
+      try {
+        raise({
+          id: `u41:pin-pending-aged:${sessionKey}`,
+          title: `Topic ${sessionKey}'s pin has waited ${Math.round(pinAge / 3600000)}h unfulfilled`,
+          body: `Topic ${sessionKey} is pinned to ${pin.preferredMachine} but the pin has not been fulfilled for over ${Math.round(maxPendingAge / 3600000)} hours (the machine may be offline, decommissioned, or the topic is deferring on live work). Fulfil it (bring ${pin.preferredMachine} back / free the topic) or unpin via POST /pool/unpin {"topic":${JSON.stringify(sessionKey)}}.`,
+          priority: 'medium',
+          sourceContext: 'ws13-pin-persistence',
+        });
+      } catch { /* escalation is observability — never gates the tick */ }
+    }
   }
 
   /**
@@ -532,7 +724,15 @@ export class OwnershipReconciler {
       }
       return { ...ctx, decision: 'await-other-claim', reason: `transferring to ${rec.transferTo ?? '?'} — that machine claims` };
     }
+    const sustainedOk = (machineId: string): boolean => {
+      if (!this.d.sustainedOnline) return true;
+      try { return this.d.sustainedOnline(machineId); } catch { return true; }
+    };
     if ((!rec || rec.status === 'released') && pin.preferredMachine === self) {
+      const selfView = machines.find((m) => m.machineId === self);
+      if (!selfView || !selfView.online || !sustainedOk(self)) {
+        return { ...ctx, decision: 'deferred-target-offline', reason: 'pin names me but I have not been sustained-online yet (U4.1 §2E fulfilment hysteresis)' };
+      }
       return { ...ctx, decision: 'adopt', reason: 'no live record + pin names me → would place→claim' };
     }
     if (!rec || rec.status === 'released') {
@@ -548,6 +748,16 @@ export class OwnershipReconciler {
       const tv = machines.find((m) => m.machineId === pin.preferredMachine);
       if (!tv || !tv.online) {
         return { ...ctx, decision: 'deferred-target-offline', reason: `pin target ${pin.preferredMachine} unknown/offline — cooperative transfer deferred (U4.2 online-gate)` };
+      }
+      if (!sustainedOk(pin.preferredMachine)) {
+        return { ...ctx, decision: 'deferred-target-offline', reason: `pin target ${pin.preferredMachine} recently returned — waiting for sustained online (U4.1 §2E hysteresis)` };
+      }
+      if (this.d.hasLiveAutonomousRun) {
+        let live = false;
+        try { live = this.d.hasLiveAutonomousRun(sessionKey); } catch { live = false; }
+        if (live) {
+          return { ...ctx, decision: 'deferred-busy', reason: 'live autonomous run — pin-driven move defers indefinitely (no deadline override, U4.1 §2E iii)' };
+        }
       }
       const since = this.conflictSince.get(sessionKey) ?? now;
       const busy = this.d.isTopicBusy(sessionKey);
@@ -574,6 +784,67 @@ export class OwnershipReconciler {
       return { ...ctx, decision: 'deferred-no-evidence', reason: `pin names me but owner ${owner} is alive/unproven-dead (online=${ownerView?.online ?? 'unknown'}) — waiting for its own Case-A transfer` };
     }
     return { ...ctx, decision: 'not-my-move', reason: 'neither owner nor pin target this tick' };
+  }
+
+  /**
+   * U4.1 §2D — the VERIFIED pin actuation state for one topic (the placement
+   * read's `pinState` + `pinHeldSince`). The read reflects the verified actual
+   * owner vs the pin, never intent alone (P20: Verify the State, Not Its
+   * Symbol). Derivation:
+   *  - a live claim suspension excluding the pin → `suspended-pending-owner-return`
+   *    (U4.2 §2.4 joint enum value; the ONE comparison authority is
+   *    `claimSuspensionExcludesPin` — never a re-implemented comparison);
+   *  - owner === pin target && active → `actuated`;
+   *  - desired≠actual persisting past ws13DivergedWindowMs → `diverged`;
+   *  - otherwise → `pending` (with the target's offline status named).
+   * `pinHeldSince` is the winning record's HLC PHYSICAL component (R-r2).
+   */
+  pinStateOf(sessionKey: string): PinStateReport {
+    const pin = this.effectivePinsRaw(/*includeOfflineAdvisory*/ true)[sessionKey];
+    if (!pin || !pin.pinned || !pin.preferredMachine) return { pinned: false };
+    const pinHlc = pin.hlc ?? this.deriveLocalPinHlc(pin);
+    const base = { pinned: true as const, preferredMachine: pin.preferredMachine, pinHeldSince: pinHlc.physical };
+    // U4.2 §2.4: a claim suspension excludes the pin — derived, never written.
+    try {
+      const s = this.d.claimSuspensions?.()?.get(Number(sessionKey));
+      if (claimSuspensionExcludesPin(pinHlc, s)) {
+        return { ...base, pinState: 'suspended-pending-owner-return' };
+      }
+    } catch { /* an unreadable annotation view reads as no suspension — the states below stay honest */ }
+    const rec = this.d.ownership.read(sessionKey);
+    const owner = rec && rec.status !== 'released' ? rec.ownerMachineId : null;
+    if (owner === pin.preferredMachine && rec?.status === 'active') {
+      return { ...base, pinState: 'actuated' };
+    }
+    const now = this.now();
+    const since = this.conflictSince.get(sessionKey);
+    if (since !== undefined && now - since >= (this.d.divergedWindowMs ?? DEFAULT_DIVERGED_WINDOW_MS)) {
+      return { ...base, pinState: 'diverged' };
+    }
+    // Pending — name the reason honestly (§2E: the offline pinned machine case).
+    let pendingReason: string | undefined;
+    try {
+      const view = this.d.machines().find((m) => m.machineId === pin.preferredMachine);
+      if (!view) pendingReason = `pinned machine ${pin.preferredMachine} is not registered in the pool`;
+      else if (!view.online) pendingReason = `pinned machine ${pin.preferredMachine} is offline`;
+      else if (this.d.sustainedOnline && !this.d.sustainedOnline(pin.preferredMachine)) {
+        pendingReason = `pinned machine ${pin.preferredMachine} recently returned — waiting for sustained online`;
+      }
+    } catch { /* @silent-fallback-ok — the reason string is ADVISORY display detail; `pending` stands honestly on its own when the machines view is unreadable */ }
+    return { ...base, pinState: 'pending', ...(pendingReason ? { pendingReason } : {}) };
+  }
+
+  /** U4.1 §2A — GuardRegistry self-registration getter (`expectRuntime: true`
+   *  honesty: the manifest declares a runtime report ONLY because this exists
+   *  and server.ts registers it at boot). */
+  guardStatus(): { enabled: boolean; dryRun: boolean; lastTickAt: number } {
+    // Read-only guard-posture report: an unreadable gate reads as the SAFEST
+    // claim (disabled / dry-run), never a false "on".
+    return {
+      enabled: (() => { try { return !!this.d.enabled(); } catch { return false; /* @silent-fallback-ok — unreadable gate reads as the safest claim (off) */ } })(),
+      dryRun: (() => { try { return !!this.d.dryRun(); } catch { return true; /* @silent-fallback-ok — unreadable gate reads as the safest claim (dry-run) */ } })(),
+      lastTickAt: this.lastTickAtMs,
+    };
   }
 
   /** Reconciler status (Observable Intelligence): last tick report + when, plus the

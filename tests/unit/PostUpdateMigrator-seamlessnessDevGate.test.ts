@@ -1,6 +1,6 @@
 /**
- * Migration parity for the 5 multiMachine.seamlessness coherence flags (WS3 / WS1.3 /
- * WS4.1 / WS4.3) re-gated to the developmentAgent gate on 2026-06-13 (operator directive
+ * Migration parity for the multiMachine.seamlessness coherence flags (WS3 / WS4.1 /
+ * WS4.3) re-gated to the developmentAgent gate on 2026-06-13 (operator directive
  * topic 13481: "NOTHING should ship dark on development agents").
  *
  * Existing agents carry the OLD ConfigDefaults-backfilled signature — an explicit
@@ -11,6 +11,13 @@
  * ws43JournalLeaseDryRun:true so the consumer's coherent dryRun default applies. An
  * operator-set explicit `true` (or any non-default value) is left entirely alone (reach is
  * not authority). Mirrors the ws44PoolLinks / stateSync strips.
+ *
+ * U4.1 (docs/specs/u4-1-pin-persistence.md §5, R-r2-4): ws13Reconcile was REMOVED
+ * from the strip list by the pin-persistence graduation PR — an explicit
+ * `ws13Reconcile: false` is now the operator's DURABLE rollback lever ("re-darken
+ * the ws13 flags") and must SURVIVE every migrator run. The old strip could not
+ * distinguish the operator's darken from a default-shaped false, so it silently
+ * undid the rollback on the next update. This suite locks BOTH directions.
  */
 import { describe, it, expect } from 'vitest';
 import { migrateConfigSeamlessnessDevGate } from '../../src/core/PostUpdateMigrator.js';
@@ -19,7 +26,6 @@ import { resolveDevAgentGate } from '../../src/core/devAgentGate.js';
 
 const FLAGS = [
   'ws3OneVoice',
-  'ws13Reconcile',
   'ws41DurableAck',
   'ws43RoleGuard',
   'ws43JournalLease',
@@ -37,11 +43,31 @@ function oldDefaultConfig(): Record<string, any> {
 }
 
 describe('migrateConfigSeamlessnessDevGate', () => {
-  it('strips the default-shaped false from all 5 coherence flags + paired ws43JournalLeaseDryRun', () => {
+  it('strips the default-shaped false from the 4 gated coherence flags + paired ws43JournalLeaseDryRun', () => {
     const cfg = oldDefaultConfig();
     expect(migrateConfigSeamlessnessDevGate(cfg)).toBe(true);
-    // All 5 flags + dryRun stripped → seamlessness block was emptied & removed.
+    // All 4 flags + dryRun stripped → seamlessness block was emptied & removed.
     expect(cfg.multiMachine.seamlessness).toBeUndefined();
+  });
+
+  it('U4.1 R-r2-4: an explicit ws13Reconcile:false (the operator rollback lever) SURVIVES migration', () => {
+    const cfg: Record<string, any> = {
+      multiMachine: {
+        seamlessness: {
+          ...Object.fromEntries(FLAGS.map((f) => [f, false])),
+          ws13Reconcile: false, // the operator's re-darken — must NOT be stripped
+          ws43JournalLeaseDryRun: true,
+        },
+      },
+    };
+    expect(migrateConfigSeamlessnessDevGate(cfg)).toBe(true); // the 4 gated flags still strip
+    expect(cfg.multiMachine.seamlessness.ws13Reconcile).toBe(false); // the lever survives
+    // And it stays dark even on a dev agent — the operator darken WINS the gate.
+    const dev: Record<string, any> = { developmentAgent: true, ...cfg };
+    expect(resolveDevAgentGate(dev.multiMachine.seamlessness.ws13Reconcile, dev)).toBe(false);
+    // Idempotent: a second run has nothing more to strip and still leaves the lever.
+    expect(migrateConfigSeamlessnessDevGate(cfg)).toBe(false);
+    expect(cfg.multiMachine.seamlessness.ws13Reconcile).toBe(false);
   });
 
   it('keeps non-default tunables when stripping only the flags (block not emptied)', () => {

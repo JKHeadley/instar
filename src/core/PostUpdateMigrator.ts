@@ -411,25 +411,37 @@ export function migrateConfigStateSyncStoresDevGate(config: Record<string, unkno
 }
 
 /**
- * The 5 multiMachine.seamlessness coherence flags (WS3 / WS1.3 / WS4.1 / WS4.3)
- * re-gated to the developmentAgent gate on 2026-06-13 (operator directive topic
- * 13481). Each was a hardcoded `false` in ConfigDefaults; now OMITTED so
+ * The multiMachine.seamlessness coherence flags (WS3 / WS4.1 / WS4.3) re-gated
+ * to the developmentAgent gate on 2026-06-13 (operator directive topic 13481).
+ * Each was a hardcoded `false` in ConfigDefaults; now OMITTED so
  * resolveDevAgentGate decides (live-on-dev / dark-fleet) — mirroring ws44PoolLinks.
+ *
+ * ws13Reconcile was REMOVED from this list by the U4.1 pin-persistence
+ * graduation PR (docs/specs/u4-1-pin-persistence.md §5, R-r2-4): the strip
+ * could not distinguish an OPERATOR-set `ws13Reconcile: false` (the documented
+ * rollback lever — "re-darken the ws13 flags") from a default-shaped `false`,
+ * so it silently UNDID the operator's rollback on every migrator run. From the
+ * graduation PR on, an explicit `false` is an operator darken and the migration
+ * respects it. (Deployed agents already had their historical default-shaped
+ * `false` stripped by earlier migrator runs, so removing the rule loses
+ * nothing.) `ws13PinReplicate` was never in this list — the asymmetry is
+ * deliberate; it must never be added.
  */
 const SEAMLESSNESS_DEV_GATED_FLAGS = [
   'ws3OneVoice',
-  'ws13Reconcile',
   'ws41DurableAck',
   'ws43RoleGuard',
   'ws43JournalLease',
 ] as const;
 
 /**
- * Strip default-shaped literal `false` for the 5 seamlessness coherence flags so
+ * Strip default-shaped literal `false` for the seamlessness coherence flags so
  * the developmentAgent gate resolves them (live on dev, dark on fleet) — exactly the
- * ws44PoolLinks / ws44PoolCache invariant, applied to ws3OneVoice / ws13Reconcile /
+ * ws44PoolLinks / ws44PoolCache invariant, applied to ws3OneVoice /
  * ws41DurableAck / ws43RoleGuard / ws43JournalLease (operator directive 2026-06-13,
- * topic 13481). An existing agent that ran the old ConfigDefaults carries an explicit
+ * topic 13481; ws13Reconcile removed by U4.1 — an explicit `false` is now the
+ * operator's durable rollback lever and survives migration). An existing agent
+ * that ran the old ConfigDefaults carries an explicit
  * `false` per flag, which (being explicit) would keep resolveDevAgentGate DARK even on
  * a dev agent. Rules per flag:
  *   - absent          → no-op. The gate already decides correctly.
@@ -5554,6 +5566,21 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       content += '\n' + poolSessions + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool-wide session visibility line');
+    }
+
+    // U4.1 pin persistence (docs/specs/u4-1-pin-persistence.md): agents that
+    // already carry the pool section predate the verified pinState block on
+    // GET /pool/placement, the deliberate POST /pool/unpin surface, and the
+    // skew-quarantine read — without this line an agent asked "why is this
+    // topic not on the machine I pinned it to?" has no grounded answer, and an
+    // agent asked to unpin improvises. Idempotent via the unique `/pool/unpin`
+    // route marker (no other section names that route).
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('/pool/unpin')) {
+      const u41line = `
+- **Pin persistence (U4.1 — a deliberate pin survives lease handover and machine bounce):** \`GET /pool/placement?topic=N\` also reports the VERIFIED pin actuation state — \`pinState\` (\`actuated\` = the topic really runs on the pinned machine · \`pending\` = queued with the honest reason named, e.g. the pinned machine is offline · \`diverged\` = desired≠actual persisted past the window (one deduped attention item is raised) · \`suspended-pending-owner-return\` = a stale-owner claim suspended the pin) + \`pinHeldSince\`. Unpin deliberately: \`POST /pool/unpin\` with \`{"topic":N}\` — the clear REPLICATES (a stale copy on another machine can never silently re-pin it). A pin record from a clock-skewed machine is quarantined durably (\`GET /pool/pin-quarantine\`); dismissing its alert never re-admits it — re-admission is the explicit \`POST /pool/pin-quarantine/readmit\`. Proactive: "why is this topic not on the machine I pinned it to?" → read \`pinState\` + \`pendingReason\` before guessing; "stop pinning this topic" → \`POST /pool/unpin\`.`;
+      content += '\n' + u41line + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added U4.1 pin-persistence awareness line');
     }
 
     // WS4.2 (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.2, F7): agents that already

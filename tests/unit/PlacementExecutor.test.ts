@@ -61,6 +61,25 @@ describe('PlacementExecutor.decide (§L4)', () => {
     expect(d).toMatchObject({ chosenMachine: null, outcome: 'queued', escalationReason: 'hard-pin-unsatisfiable' });
   });
 
+  it('U4.1 §2E: hard pin to a NOT-YET-SUSTAINED machine QUEUES (never re-routes) — fulfilment hysteresis', () => {
+    const gated = new PlacementExecutor(undefined, { sustainedOnline: (m) => m !== 'mini' });
+    const tp: TopicPlacement = { preferredMachine: 'mini', pinned: true };
+    const d = gated.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini'), machine('other')] }));
+    // The flapped-back-on pinned machine reads as unavailable: queued-never-rerouted.
+    expect(d).toMatchObject({ chosenMachine: null, outcome: 'queued', reason: 'hard-pin-unavailable', escalationReason: 'hard-pin-unsatisfiable' });
+  });
+
+  it('U4.1 §2E: hard pin to a SUSTAINED machine places; absent seam = today\'s exact behavior', () => {
+    const gated = new PlacementExecutor(undefined, { sustainedOnline: () => true });
+    const tp: TopicPlacement = { preferredMachine: 'mini', pinned: true };
+    expect(gated.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini'), machine('other')] })).chosenMachine).toBe('mini');
+    // Seam absent (default construction) — plain-online eligibility, unchanged.
+    expect(exec.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini')] })).chosenMachine).toBe('mini');
+    // A throwing seam fails toward placement (plain-online), never toward a wedge.
+    const throwing = new PlacementExecutor(undefined, { sustainedOnline: () => { throw new Error('tracker down'); } });
+    expect(throwing.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini')] })).chosenMachine).toBe('mini');
+  });
+
   it('soft preference: places on the preferred machine if eligible, else degrades to least-loaded', () => {
     const pref: TopicPlacement = { preferredMachine: 'mini' };
     expect(exec.decide(req({ topicMetadata: pref, machineRegistry: [machine('mini', { loadAvg: 5 }), machine('x', { loadAvg: 0 })] }))).toMatchObject({ chosenMachine: 'mini', reason: 'preference' });

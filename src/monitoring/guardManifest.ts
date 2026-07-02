@@ -88,6 +88,52 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     soakWindowDays: 30,
     declaredLoadBearingAt: '2026-07-01',
   },
+  // ── U4.1 — WS1.3 pin persistence (docs/specs/u4-1-pin-persistence.md §2A) ──
+  {
+    key: 'multiMachine.seamlessness.ws13Reconcile',
+    kind: 'config',
+    configPath: 'multiMachine.seamlessness.ws13Reconcile',
+    // Dev-gated: `enabled` OMITTED from ConfigDefaults (resolveDevAgentGate) —
+    // dark-default on the fleet, live on a development agent. ws13DryRun is the
+    // in-component "log intended CAS without performing it" rung.
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.seamlessness.ws13DryRun',
+    expectedTickMs: 30_000, // ws13TickMs default
+    process: 'server',
+    // expectRuntime honesty (U4.1 §2A manifest constants): TRUE only because the
+    // reconciler's GuardRegistry self-registration is BUILT (OwnershipReconciler
+    // .guardStatus() registered at boot in server.ts) — a manifest that expects a
+    // runtime report nobody sends is a standing false alarm.
+    expectRuntime: true,
+    component: 'OwnershipReconciler',
+    description: 'U4.1/WS1.3 ownership reconciler — the owning controller that drives a pinned topic to its desired machine within a bounded time (cooperative transfer/adopt; paced; sustained-online gated) or escalates loudly (pin-diverged / pin-pending-aged attention items).',
+    // G3 (U4.1 §2A): pin persistence is the exact "A Dark Feature Guards Nothing"
+    // failure named after the 2026-07-01 incident — a dark/dry-run posture must
+    // classify loadBearingSoaking→loadBearingGap, never sit silent.
+    loadBearing: true,
+    criticalPath: 'deliberate placement persistence (operator pin survives lease handover and machine bounce)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-02',
+  },
+  {
+    key: 'multiMachine.seamlessness.ws13PinReplicate',
+    kind: 'config',
+    configPath: 'multiMachine.seamlessness.ws13PinReplicate',
+    // Dev-gated: OMITTED from ConfigDefaults (resolveDevAgentGate) — dark-default
+    // on the fleet, live on a development agent.
+    defaultEnabled: false,
+    process: 'server',
+    // No single ticking runtime component: emission rides the store-agnostic
+    // ReplicatedRecordEmitter and reads ride the TopicPinFoldView refresh — no
+    // self-registration, so expectRuntime stays honest at false.
+    expectRuntime: false,
+    component: 'TopicPinReplicatedStore',
+    description: 'U4.1/WS1.3 pin replication — the topic-pin-record advisory stream (HLC-ordered, tombstone-respecting, skew-gated answer-complete fold) that lets the owning machine and a new lease-holder SEE an operator pin set elsewhere.',
+    loadBearing: true,
+    criticalPath: 'deliberate placement persistence (operator pin survives lease handover and machine bounce)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-02',
+  },
   // ── U4.3 — rope-health recovery probe (docs/specs/u4-3-breaker-recovery-probe.md §3) ──
   {
     key: 'multiMachine.meshTransport.recoveryProbeEnabled',

@@ -1182,6 +1182,12 @@ export interface RouteContext {
    *  pinned-vs-load-placed distinction in GET /pool/placement and the deterministic
    *  POST /pool/transfer. Null/absent when the pool is not wired (dark). */
   topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
+  /** U4.1 §2C — the sticky durable skew-quarantine set (GET /pool/pin-quarantine +
+   *  the explicit per-record re-admit). Null/absent when the pool is not wired. */
+  topicPinSkewQuarantine?: import('../core/TopicPinSkewQuarantine.js').TopicPinSkewQuarantine | null;
+  /** U4.1 §2C — the answer-complete pin fold view (status surface + the re-admit
+   *  full-refold reset). Null/absent when pin replication is not wired. */
+  topicPinFoldView?: import('../core/TopicPinFoldView.js').TopicPinFoldView | null;
   /** Fix #3 observability: the WS1.3 OwnershipReconciler (for GET /pool/reconciler). */
   ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler | null;
   /** U4.2 — stale-owner release engine (status route; 503 when dark/absent). */
@@ -13926,10 +13932,52 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return null; /* @silent-fallback-ok — a derivation fault omits the ADVISORY field; owner/pin/lease facts above stay authoritative */
       }
     })();
+    // U4.1 §2D: the VERIFIED pin actuation state — `pinState` (actuated | pending |
+    // diverged | suspended-pending-owner-return; readers tolerate the U4.2 joint
+    // value from day one) + `pinHeldSince` (the winning record's HLC PHYSICAL
+    // component, never a separate wall-clock read). Derived by the reconciler when
+    // wired; a pin-only fallback keeps the read honest on a reconciler-less install.
+    const pinStateBlock = (() => {
+      try {
+        if (ctx.ownershipReconciler) {
+          const r = ctx.ownershipReconciler.pinStateOf(topicId);
+          if (r.pinned && r.pinState) {
+            return {
+              pinState: r.pinState,
+              ...(r.pinHeldSince !== undefined ? { pinHeldSince: r.pinHeldSince } : {}),
+              ...(r.pendingReason ? { pendingReason: r.pendingReason } : {}),
+            };
+          }
+          return null;
+        }
+        if (pin && pin.pinned) {
+          const heldSince = pin.hlc?.physical ?? Date.parse(pin.updatedAt);
+          return {
+            pinState: owner === pin.preferredMachine ? 'actuated' : 'pending',
+            ...(Number.isFinite(heldSince) ? { pinHeldSince: heldSince } : {}),
+          };
+        }
+        return null;
+      } catch {
+        return null; /* @silent-fallback-ok — a derivation fault omits the ADVISORY pinState block; owner/pin/lease facts stay authoritative */
+      }
+    })();
+    // U4.1 §2F: pinnedBy is LOCAL-ONLY provenance, serve-time LENGTH-CLAMPED on
+    // this Bearer-gated read surface (never replicated).
+    const clamp = (s: unknown, n = 128) => (typeof s === 'string' ? s.slice(0, n) : '');
+    const pinnedByBlock = pin?.pinnedBy
+      ? {
+          pinnedBy: pin.pinnedBy.kind === 'operator'
+            ? { kind: 'operator' as const, platform: clamp(pin.pinnedBy.platform, 32), uid: clamp(pin.pinnedBy.uid, 64) }
+            : { kind: 'agent' as const, sessionRef: clamp((pin.pinnedBy as { sessionRef?: string }).sessionRef, 64) },
+        }
+      : {};
     res.json({
       ...description,
       pendingReplacement,
       ...(pendingReplacement && pin ? { pendingSince: pin.updatedAt } : {}),
+      ...(pinStateBlock ?? {}),
+      ...pinnedByBlock,
       ...(ownershipLeaseState ? { ownershipLeaseState } : {}),
       answeredBy: holderUrl ? 'local-fallback' : 'local',
     });
@@ -14158,20 +14206,37 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // direction, identical to WS5.3 being off).
       }
     }
-    ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
-    // Cross-machine convergence Fix #2: replicate the PIN (move-intent) so the OWNING machine
-    // sees "you are pinned away" and starts the cooperative transfer. Rides the WS2 replicated-
-    // record machinery (HLC ordering, tombstone). INERT unless the topicPins store is enabled
-    // (ws13PinReplicate) — the emitter dark-gate makes a dark/single-machine agent a strict no-op.
-    if (ctx.replicatedRecordEmitter && (plan.setPin ?? true)) {
-      try {
-        const topicNum = Number(topicId);
-        if (Number.isFinite(topicNum)) {
-          const { TOPIC_PIN_STORE_KEY, deriveTopicPinRecordKey, buildTopicPinPut } = await import('../core/TopicPinReplicatedStore.js');
-          const recordKey = deriveTopicPinRecordKey(topicNum);
-          if (recordKey) ctx.replicatedRecordEmitter.emit(TOPIC_PIN_STORE_KEY, recordKey, buildTopicPinPut(topicNum, target, true));
-        }
-      } catch { /* @silent-fallback-ok — pin replication is advisory; an emit fault never blocks the transfer (the pin is set locally regardless) */ }
+    // U4.1 §2B — the ONE-HLC pin mutation funnel (fixes the set()-without-hlc
+    // gap): the funnel mints ONE HLC inside the replicated emit and stamps the
+    // local set() with the SAME stamp, so local and replicated pins compare
+    // cleanly under HLC-highest-wins (previously the local pin fell back to a
+    // derived wall-clock). Emission stays gated by ws13PinReplicate inside the
+    // emitter (dark/single-machine ⇒ local-only set, today's exact behavior).
+    // pinnedBy (§2F, Know Your Principal): the topic's auto-bound VERIFIED
+    // operator when one exists (never a content name), else the Bearer-authed
+    // agent surface — local-only provenance, never replicated.
+    try {
+      const { setPinWithOneHlc } = await import('../core/TopicPinMutation.js');
+      const boundOperator = (() => {
+        try {
+          const op = ctx.topicOperatorStore?.getOperator(topicId);
+          return op && typeof op.uid === 'string' && op.uid
+            ? { kind: 'operator' as const, platform: String(op.platform || 'telegram'), uid: op.uid }
+            : null;
+        } catch { return null; /* @silent-fallback-ok — an unreadable binding degrades to agent provenance, never a blocked pin */ }
+      })();
+      setPinWithOneHlc(
+        { pinStore: ctx.topicPinStore, emitter: ctx.replicatedRecordEmitter ?? null },
+        topicId,
+        target,
+        plan.setPin ?? true,
+        boundOperator ?? { kind: 'agent', sessionRef: 'pool-transfer-api' },
+      );
+    } catch {
+      // @silent-fallback-ok — NOT silent to the pin itself: the funnel import/emit
+      // failing must never lose the user's explicit move, so fall back to the plain
+      // local set (no hlc — the reconciler's documented updatedAt derivation covers it).
+      ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
     }
     let releasedLocalOwnership = false;
     try {
@@ -14326,6 +14391,96 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...(drainLeg.attempted ? { drain: drainLeg } : {}),
       ...(escalationHintFiled ? { escalationHintFiled: true } : {}),
     });
+  });
+
+  // POST /pool/unpin — U4.1 §2B: the deliberate UNPIN surface. Body: { topic }.
+  // Clears the topic's placement pin through the one-HLC tombstone funnel
+  // (`clearPinWithTombstone`), so the clear REPLICATES: a stale replicated PUT
+  // on a peer can never silently re-pin the topic the operator just unpinned
+  // (the live defect-2 bug — `buildTopicPinTombstone` had ZERO callers). A
+  // non-holder PROXIES to the holder (whose pin store drives routing), exactly
+  // like POST /pool/transfer. 503 when the pool isn't wired (dark / single).
+  router.post('/pool/unpin', async (req, res) => {
+    const body = (req.body ?? {}) as { topic?: unknown };
+    const topicId = body.topic != null ? String(body.topic).trim() : '';
+    if (!topicId) {
+      res.status(400).json({ error: 'topic is required, e.g. {"topic":13481}' });
+      return;
+    }
+    if (!ctx.topicPinStore) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/unpin`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic: topicId }),
+        });
+        // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
+        // status code with an empty object; the status is the signal, not the body.
+        const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
+      } catch (err) {
+        // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with
+        // the reason (the unpin did not happen), never a masked failure.
+        res.status(502).json({ error: `could not reach lease-holder to unpin: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+    try {
+      const { clearPinWithTombstone } = await import('../core/TopicPinMutation.js');
+      const r = clearPinWithTombstone(
+        { pinStore: ctx.topicPinStore, emitter: ctx.replicatedRecordEmitter ?? null },
+        topicId,
+      );
+      res.json({ topic: topicId, unpinned: true, hadPin: r.hadPin, tombstoneReplicated: r.hlc !== undefined });
+    } catch (err) {
+      res.status(500).json({ error: `unpin failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // GET /pool/pin-quarantine — U4.1 §2C: the sticky skew-quarantine set (read-only)
+  // + the fold view's status. 503 when the pin fold isn't wired (dark).
+  router.get('/pool/pin-quarantine', (_req, res) => {
+    if (!ctx.topicPinSkewQuarantine) {
+      res.status(503).json({ error: 'pin skew-quarantine not available (pin replication dark on this agent)' });
+      return;
+    }
+    res.json({
+      quarantined: ctx.topicPinSkewQuarantine.all(),
+      ...(ctx.topicPinFoldView ? { fold: ctx.topicPinFoldView.status() } : {}),
+    });
+  });
+
+  // POST /pool/pin-quarantine/readmit — U4.1 R-r4-1: the DELIBERATE, explicit
+  // per-record re-admission (an authority decision distinct from dismissing the
+  // attention NOTIFICATION — acking the alert never re-admits). Body: the exact
+  // { key, hlc } pair from GET /pool/pin-quarantine. Forces a full re-fold so the
+  // re-admitted record re-enters the comparison; a record STILL beyond the live
+  // skew gate simply re-quarantines on that fold (honest — it is still poison by
+  // the gate's judgment until wall time catches up).
+  router.post('/pool/pin-quarantine/readmit', (req, res) => {
+    if (!ctx.topicPinSkewQuarantine) {
+      res.status(503).json({ error: 'pin skew-quarantine not available (pin replication dark on this agent)' });
+      return;
+    }
+    const body = (req.body ?? {}) as { key?: unknown; hlc?: unknown };
+    const key = typeof body.key === 'string' ? body.key : '';
+    const hlc = body.hlc as { physical?: unknown; logical?: unknown; node?: unknown } | undefined;
+    if (!key || !hlc || typeof hlc.physical !== 'number' || typeof hlc.logical !== 'number' || typeof hlc.node !== 'string') {
+      res.status(400).json({ error: 'key and hlc {physical, logical, node} are required (copy them from GET /pool/pin-quarantine)' });
+      return;
+    }
+    const removed = ctx.topicPinSkewQuarantine.readmit(key, { physical: hlc.physical, logical: hlc.logical, node: hlc.node });
+    if (!removed) {
+      res.status(404).json({ error: 'no quarantined record matches that (key, hlc) pair' });
+      return;
+    }
+    try { ctx.topicPinFoldView?.resetFold(); } catch { /* the next refresh full-folds regardless of a reset fault */ }
+    res.json({ readmitted: true, key, note: 'a full re-fold will re-evaluate the record; if it is still beyond the skew gate it re-quarantines honestly' });
   });
 
   // GET /secrets/sync-status — read-only view of cross-machine secret-sync (spec Phase 4).

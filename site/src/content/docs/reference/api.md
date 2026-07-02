@@ -612,8 +612,11 @@ never the agent. With no mandate issued, every evaluation denies. Every decision
 
 ## /pool
 - `GET /pool` — the machine pool: router, nicknames, hardware, online status, load, quota state
-- `GET /pool/placement` — which machine owns a topic + the reason (`pinned`/`placed`/`unowned`)
+- `GET /pool/placement` — which machine owns a topic + the reason (`pinned`/`placed`/`unowned`) + the U4.1 verified pin state (`pinState`: `actuated`/`pending`/`diverged`/`suspended-pending-owner-return`, `pinHeldSince`, `pendingReason`, `pinnedBy`)
 - `POST /pool/transfer` — deterministic topic move to a nickname/machineId (the validated planner)
+- `POST /pool/unpin` — deliberately clear a topic's placement pin; the clear replicates as a tombstone so a stale copy can never re-pin it (U4.1)
+- `GET /pool/pin-quarantine` — the sticky skew-quarantine set (clock-skewed pin records excluded from pin resolution) + fold status (503 when pin replication is dark)
+- `POST /pool/pin-quarantine/readmit` — the deliberate, explicit per-record re-admission of a quarantined pin record (dismissing the alert never re-admits)
 - `GET /pool/queue` — durable inbound-queue counts + hold/flap state (503 while dark)
 - `GET /pool/reconciler` — WS1.3 ownership reconciler status (+ `?topic=N` per-topic explain)
 - `GET /pool/stale-owner-release` — U4.2 stale-owner release telemetry: attempts, would-claims (dry-run), refusals by reason, evidence classes, P19 give-ups, probe-breaker state, open episodes (503 when dark; see [Multi-machine](/features/multi-machine/))

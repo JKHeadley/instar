@@ -488,6 +488,10 @@ export class AgentServer {
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
     topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore;
+    /** U4.1 §2C — sticky skew-quarantine set (GET /pool/pin-quarantine + re-admit). */
+    topicPinSkewQuarantine?: import('../core/TopicPinSkewQuarantine.js').TopicPinSkewQuarantine;
+    /** U4.1 §2C — the answer-complete pin fold view (status + re-admit refold). */
+    topicPinFoldView?: import('../core/TopicPinFoldView.js').TopicPinFoldView;
     /** Fix #3 observability: the WS1.3 OwnershipReconciler (for the /pool/reconciler readout). */
     ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler;
     /** U4.2 — the stale-owner release engine (GET /pool/stale-owner-release; 503 when dark). */
@@ -2462,6 +2466,8 @@ export class AgentServer {
       forwardCommitmentMutate: options.forwardCommitmentMutate ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
+      topicPinSkewQuarantine: options.topicPinSkewQuarantine ?? null,
+      topicPinFoldView: options.topicPinFoldView ?? null,
       ownershipReconciler: options.ownershipReconciler ?? null,
       staleOwnerEngine: options.staleOwnerEngine ?? null,
       leaseHandback: options.leaseHandback ?? null,

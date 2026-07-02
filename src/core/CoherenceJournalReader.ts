@@ -145,6 +145,33 @@ interface Cursor {
   seq: number;
 }
 
+// ── U4.1 §2C — the answer-complete pin fold (docs/specs/u4-1-pin-persistence.md) ──
+
+/** Per-file byte offsets for the incremental pin-record tail (TokenLedgerPoller
+ *  pattern made explicit: idempotent re-scan via byte offsets; a file-identity
+ *  change resets the offset). Keyed by absolute file path. */
+export type PinFoldOffsets = Record<string, { offset: number; identity: string }>;
+
+/** One raw `topic-pin-record` entry surfaced by the fold (envelope data + origin). */
+export interface PinFoldEntry {
+  data: Record<string, unknown>;
+  origin: string;
+  source: StreamSource;
+  machineId: string;
+}
+
+export interface PinFoldResult {
+  entries: PinFoldEntry[];
+  /** Updated offsets to feed the NEXT incremental fold. */
+  offsets: PinFoldOffsets;
+  scannedBytes: number;
+  skippedCorrupt: number;
+  /** True when the byte-guard engaged (newest-first partial fold; LOUD upstream). */
+  truncated: boolean;
+  /** The byte ranges left unfolded when the guard engaged — the escalation body. */
+  unfolded: Array<{ file: string; fromByte: number; toByte: number }>;
+}
+
 function realFs(): JournalFs {
   return {
     openSync: fs.openSync,
@@ -451,6 +478,151 @@ export class CoherenceJournalReader {
     }
 
     return { entries: sorted, liveRun, artifactPaths, truncated };
+  }
+
+  /**
+   * U4.1 §2C (R-r2-3): the dedicated ANSWER-COMPLETE fold path for
+   * `topic-pin-record` — streams EVERY entry of the kind (active file AND
+   * archives, OWN stream AND every peer-replica stream) FORWARD from the
+   * caller's per-file byte offsets, WITHOUT the `READER_MAX_LIMIT` newest-tail
+   * clamp (that clamp exists to bound generic tail reads; it silently broke
+   * pin answer-completeness — a long-untouched topic's winning record fell out
+   * of the newest-500 window as other topics churned).
+   *
+   * Bounds honestly: `maxBytes` is the fold byte-guard (`ws13FoldMaxBytes`).
+   * When the PENDING bytes exceed it the fold reads NEWEST-FIRST up to the
+   * budget, reports `truncated: true` + the exact `unfolded` byte ranges, and
+   * does NOT advance offsets over unread bytes — never a silent truncation
+   * (the caller raises the ONE deduped `u41:pin-fold-truncated` item).
+   *
+   * Offsets are only advanced past COMPLETE lines (a torn mid-write tail line
+   * is left for the next fold), and a file whose identity (dev:ino) changed —
+   * or whose size shrank below the recorded offset — resets to 0; re-scans are
+   * idempotent by the caller's HLC winner-map semantics.
+   */
+  foldPinRecords(opts: { priorOffsets?: PinFoldOffsets; maxBytes?: number } = {}): PinFoldResult {
+    const KIND = 'topic-pin-record';
+    const result: PinFoldResult = {
+      entries: [], offsets: {}, scannedBytes: 0, skippedCorrupt: 0, truncated: false, unfolded: [],
+    };
+    const prior = opts.priorOffsets ?? {};
+    const maxBytes = typeof opts.maxBytes === 'number' && Number.isFinite(opts.maxBytes) && opts.maxBytes > 0
+      ? opts.maxBytes
+      : Number.POSITIVE_INFINITY;
+
+    // Discover every stream file of the kind (own + replicas), with stat + resume offset.
+    interface FoldFile {
+      file: string; source: StreamSource; machineId: string; isArchive: boolean;
+      size: number; identity: string; startOffset: number;
+    }
+    const files: FoldFile[] = [];
+    for (const s of this.enumerate(undefined, KIND)) {
+      let size = 0;
+      let identity = '';
+      try {
+        const st = this.io.statSync(s.file) as { size: number; dev?: number; ino?: number };
+        size = st.size;
+        identity = `${st.dev ?? 0}:${st.ino ?? 0}`;
+      } catch {
+        continue; // vanished between enumerate and stat — next fold re-discovers
+      }
+      const p = prior[s.file];
+      // Identity change (rotation swapped the inode) or shrink → reset to 0.
+      const startOffset = p && p.identity === identity && p.offset <= size ? p.offset : 0;
+      files.push({ file: s.file, source: s.source, machineId: s.machineId, isArchive: s.isArchive, size, identity, startOffset });
+    }
+
+    const pendingOf = (f: FoldFile) => Math.max(0, f.size - f.startOffset);
+    const totalPending = files.reduce((acc, f) => acc + pendingOf(f), 0);
+    const overBudget = totalPending > maxBytes;
+    // Newest-first order for the budgeted partial fold: current files before
+    // archives, archives by descending rotation stamp (mirrors orderNewestFirst).
+    const ordered = overBudget
+      ? [...files].sort((a, b) => {
+          if (a.isArchive !== b.isArchive) return a.isArchive ? 1 : -1;
+          return this.archiveStamp(b.file) - this.archiveStamp(a.file);
+        })
+      : files;
+
+    let budget = maxBytes;
+    for (const f of ordered) {
+      const pending = pendingOf(f);
+      if (pending === 0) {
+        result.offsets[f.file] = { offset: f.startOffset, identity: f.identity };
+        continue;
+      }
+      if (overBudget && budget <= 0) {
+        // Byte-guard engaged: this file's pending range goes UNFOLDED (loud upstream);
+        // its offset is NOT advanced, so the next fold retries it.
+        result.truncated = true;
+        result.unfolded.push({ file: f.file, fromByte: f.startOffset, toByte: f.size });
+        result.offsets[f.file] = { offset: f.startOffset, identity: f.identity };
+        continue;
+      }
+      const toRead = overBudget ? Math.min(pending, budget) : pending;
+      const { consumedBytes, lines } = this.readForward(f.file, f.startOffset, toRead);
+      if (overBudget) budget -= toRead;
+      result.scannedBytes += consumedBytes;
+      const newOffset = f.startOffset + consumedBytes;
+      result.offsets[f.file] = { offset: newOffset, identity: f.identity };
+      if (newOffset < f.size) {
+        // Partially read (budget cut, or a torn tail line at file end mid-write).
+        if (overBudget) {
+          result.truncated = true;
+          result.unfolded.push({ file: f.file, fromByte: newOffset, toByte: f.size });
+        }
+      }
+      for (const line of lines) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          result.skippedCorrupt++;
+          continue;
+        }
+        const e = parsed as JournalEntry;
+        if (!e || typeof e !== 'object' || e.kind !== KIND || !e.data || typeof e.data !== 'object') {
+          result.skippedCorrupt++;
+          continue;
+        }
+        result.entries.push({
+          data: e.data,
+          origin: typeof e.data.origin === 'string' ? (e.data.origin as string) : '',
+          source: f.source,
+          machineId: f.machineId,
+        });
+      }
+    }
+    return result;
+  }
+
+  /** Read up to `maxBytes` FORWARD from `offset`, returning complete lines only
+   *  (consumedBytes stops at the last newline so a torn tail is never consumed). */
+  private readForward(file: string, offset: number, maxBytes: number): { consumedBytes: number; lines: string[] } {
+    if (maxBytes <= 0) return { consumedBytes: 0, lines: [] };
+    let fd: number;
+    try {
+      fd = this.io.openSync(file, 'r');
+    } catch {
+      return { consumedBytes: 0, lines: [] };
+    }
+    try {
+      const buf = Buffer.alloc(maxBytes);
+      const bytesRead = this.io.readSync(fd, buf, 0, maxBytes, offset);
+      if (bytesRead <= 0) return { consumedBytes: 0, lines: [] };
+      const text = buf.subarray(0, bytesRead).toString('utf-8');
+      const lastNewline = text.lastIndexOf('\n');
+      if (lastNewline < 0) return { consumedBytes: 0, lines: [] }; // one torn line — wait for the writer
+      const complete = text.slice(0, lastNewline);
+      // Byte length of the consumed prefix (multi-byte safe), + 1 for the newline.
+      const consumedBytes = Buffer.byteLength(complete, 'utf-8') + 1;
+      const lines = complete.split('\n').filter((l) => l.trim().length > 0);
+      return { consumedBytes, lines };
+    } catch {
+      return { consumedBytes: 0, lines: [] };
+    } finally {
+      try { this.io.closeSync(fd); } catch { /* best-effort close */ }
+    }
   }
 
   /** The opaque cursor for the LAST entry of a page (callers echo it back). */

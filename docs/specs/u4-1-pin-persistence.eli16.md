@@ -81,3 +81,9 @@ live autonomous work is never yanked to satisfy a pin.
 
 Nothing — you pre-approved this project's decisions (topic 29836), and the spec
 ends with zero open questions. Approval of the converged spec is the only step.
+
+*(Build note, 2026-07-02: the two named follow-ups — per-key rewrite-compaction
+at rotation if pin volume ever nears the fold byte-guard, and the Tier-4
+live-user-channel matrix that gates the dryRun-exit/fleet graduation — are
+tracked as commitment CMT-1875, so they re-surface on cadence instead of
+relying on memory.)*

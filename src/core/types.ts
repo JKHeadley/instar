@@ -2456,12 +2456,39 @@ export interface MultiMachineConfig {
     ws3OneVoice?: boolean;
     /** WS3 dwell window (ms) before the election re-evaluates. Default 60000. */
     ws3DwellMs?: number;
-    /** WS1.3 ownership reconcile (bounded pin/owner convergence). DARK default. */
+    /** WS1.3 ownership reconcile (bounded pin/owner convergence). Dev-gated
+     *  (resolveDevAgentGate) — OMITTED default. Post-U4.1 an explicit `false`
+     *  is the operator's DURABLE rollback lever (survives migration). */
     ws13Reconcile?: boolean;
     /** WS1.3 dry-run (logs intended CAS actions without performing them). Default true. */
     ws13DryRun?: boolean;
-    /** WS1.3 reconcile tick cadence (ms). Default 30000. */
+    /** WS1.3 reconcile tick cadence (ms). Default 30000 (floor 5000). */
     ws13TickMs?: number;
+    /** WS1.3 pin replication (the topic-pin-record advisory stream + fold read).
+     *  Dev-gated (resolveDevAgentGate) — OMITTED default. */
+    ws13PinReplicate?: boolean;
+    /** U4.1 §2.G: pin-stability debounce (ms) before the owner acts on a pin —
+     *  exposes the reconciler's existing debounceMs dep. Default 30000. */
+    ws13DebounceMs?: number;
+    /** U4.1 §2.G: transfer deadline (ms) before the owner aborts a transfer
+     *  toward an unreachable target (N4 abort). Default 120000. */
+    ws13TransferDeadlineMs?: number;
+    /** U4.1 §2.G: sustained-online hysteresis (ms) gating pin fulfilment AND
+     *  Case-A initiation toward a returning machine. Default 120000 (4 ticks). */
+    ws13SustainedOnlineMs?: number;
+    /** U4.1 §2.G: pending-pin age bound (ms) → the ONE deduped fulfil-or-unpin
+     *  attention item (`u41:pin-pending-aged`). Default 86400000 (24h). */
+    ws13PendingPinMaxAgeMs?: number;
+    /** U4.1 §2.G: bounded move-initiations per reconciler tick — a lease flap
+     *  can never trigger a transfer storm. Default 2. */
+    ws13MaxMovesPerTick?: number;
+    /** U4.1 §2.G: divergence window (ms) of persistent desired≠actual before
+     *  `pinState: diverged` + its attention item. Default 600000 (10min). */
+    ws13DivergedWindowMs?: number;
+    /** U4.1 §2.G (R-r3-3): fold byte-guard — on breach the pin fold truncates
+     *  NEWEST-FIRST and raises `u41:pin-fold-truncated` (never silent).
+     *  Default 67108864 (64MB). */
+    ws13FoldMaxBytes?: number;
     /**
      * WS4.4 "links that survive machine boundaries" (§WS4.4 / F6). When on, the
      * tunnel-fronting machine resolves the actual HOLDER of a `/view/:id` it does

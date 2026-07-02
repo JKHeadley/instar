@@ -355,6 +355,24 @@
       "grandfathered": false
     },
     {
+      "category": "topic-pin-skew-quarantine",
+      "description": "U4.1 sticky durable exclusion set for future-skewed replicated topic-pin records (key+HLC pairs; docs/specs/u4-1-pin-persistence.md §2C). Machine-local BY DESIGN: each fold quarantines what ITS skew gate rejected.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/session-pool/topic-pin-skew-quarantine.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "domain-cardinality",
+        "note": "One entry per poisoned record (rare by construction); entries prune on honest supersession (a newer honest HLC wins) or explicit per-record re-admission — never unbounded growth."
+      }
+    },
+    {
       "category": "conversation-live-tail",
       "description": "Conversation live-tail replicated holder->standby per the seamlessness spec.",
       "scope": "must-be-coherent",

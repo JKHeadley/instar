@@ -33,6 +33,12 @@ export const TOPIC_PIN_STORE_KEY = 'topicPins';
  *  preferredMachine that is not a plain id is rejected (it flows into placement decisions). */
 const MACHINE_ID_RE = /^[\w-]{1,64}$/;
 
+/** The same clamp for consumers outside this module (the U4.1 fold view's second pass —
+ *  ONE validation authority, never a re-implemented regex). */
+export function isValidPinMachineId(id: unknown): id is string {
+  return typeof id === 'string' && MACHINE_ID_RE.test(id);
+}
+
 /** The store-owned fields (for the registry's unknown-field counting). */
 const TOPIC_PIN_KNOWN_FIELDS = ['topic', 'preferredMachine', 'pinned', 'deletedAt'] as const;
 

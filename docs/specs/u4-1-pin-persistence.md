@@ -175,8 +175,9 @@ optional):
   up to the budget and LOUDLY escalates — ONE deduped attention item naming the
   truncation (which byte ranges of which streams went unfolded) — never a silent
   truncation. If pin event volume ever grows toward the guard, per-key
-  rewrite-compaction at rotation is the named tracked follow-up (not built now;
-  the guard makes the need visible instead of silent).
+  rewrite-compaction at rotation is the named tracked follow-up
+  <!-- tracked: CMT-1875 --> (not built now; the guard makes the need visible
+  instead of silent).
 - **Incremental offset-tracked tail.** After the boot fold, the 30s tick updates the
   map incrementally: per-journal-file byte offsets are tracked and only appended
   bytes are re-scanned — the TokenLedgerPoller pattern made explicit (idempotent
@@ -264,7 +265,7 @@ the two sibling specs' schemas compose — round 2 shipped it here as
 `pin-held-pending-owner-return` while U4.2 reserved `suspended-pending-owner-return`;
 a joint enum must be ONE string, and U4.2's name wins (R-r3-4). It represents
 U4.2's pin suspension when a stale owner's topic is claimed (a claim SUSPENDS the
-pin rather than leaving pin↔owner divergence for the reconciler to fight). Its semantics are deferred entirely to
+pin rather than leaving pin↔owner divergence for the reconciler to fight). Its semantics live entirely in
 `docs/specs/u4-2-stale-owner-release.md` §2.4 — U4.1 machinery never emits it, but
 readers/renderers of `pinState` MUST tolerate it from day one. *`pinHeldSince`
 source (R-r2):* declared as the winning pin record's **HLC physical component** —
@@ -343,7 +344,7 @@ serve-time length-clamped on the Bearer-gated read surface.
 
 All knobs live in the existing `multiMachine.seamlessness` family (the ws13 home,
 `src/commands/server.ts:17050`). Frontloaded here — named keys, named defaults, no
-deferred tuning decisions:
+tuning decision left open:
 
 | Knob | Config key | Default | Grounding |
 |---|---|---|---|
@@ -519,7 +520,7 @@ than its bound.
    record bytes (no compaction mechanism exists), argued small by the operator
    event rate and backstopped by the loud newest-first `ws13FoldMaxBytes`
    byte-guard — never a silent truncation; per-key rewrite-compaction at rotation
-   is the tracked follow-up (R-r3-3).
+   is the tracked follow-up <!-- tracked: CMT-1875 --> (R-r3-3).
 7. **Actuation verification is part of the feature** (pinState on the placement
    read + G1 agreement-invariant line): a pin without verify-after is a wish.
    `pinState` reserves `suspended-pending-owner-return` for U4.2 (the joint enum

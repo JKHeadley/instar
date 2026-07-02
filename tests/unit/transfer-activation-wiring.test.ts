@@ -30,11 +30,13 @@ describe('server-boot wiring: transfer-by-nickname activation (§L4)', () => {
 
   it('applies a transfer plan: sets the pin AND releases local ownership so it re-places', () => {
     const idx = src.indexOf('transferMod.planTransferByNickname(');
-    // Window 3600 (was 1600): the WS1.4 autonomousRunActive consent dep
-    // (MULTI-MACHINE-SEAMLESSNESS-SPEC) grew the planner-state construction,
-    // pushing the pin-set (~2520) and release (~2890) further in.
-    const block = src.slice(idx, idx + 3600);
-    expect(block).toContain('_topicPinStore!.set(sessionKey, target');
+    // Window 4800 (was 3600): U4.1 §2B replaced the raw `_topicPinStore!.set(...)`
+    // with the ONE-HLC mutation funnel (`pinMutationMod.setPinWithOneHlc` — the
+    // same stamp on the replicated PUT and the local set) + §2F pinnedBy
+    // provenance resolution, growing the arm; the release CAS follows it.
+    const block = src.slice(idx, idx + 4800);
+    expect(block).toContain('pinMutationMod.setPinWithOneHlc(');
+    expect(block).toContain('_topicPinStore!'); // the funnel writes THROUGH the real local store
     expect(block).toContain("type: 'release'"); // release local ownership so route() re-places to the pin
   });
 
@@ -49,8 +51,11 @@ describe('server-boot wiring: transfer-by-nickname activation (§L4)', () => {
 
   it('passes the pin into route() as topicMetadata so placement honors it', () => {
     const routeIdx = src.indexOf('await _sessionRouter.route({');
-    const block = src.slice(routeIdx, routeIdx + 320);
-    expect(block).toContain('topicMetadata: _topicPinStore?.asTopicMetadata(String(topicId))');
+    const block = src.slice(routeIdx, routeIdx + 480);
+    // U4.1 §2D: seeding resolves local pin ⊕ fold winner by HLC when the fold is
+    // wired (`_pinPlacementMetadata`), degrading to the plain local-store read —
+    // both arms must stay present (the fallback IS today's behavior).
+    expect(block).toContain('_pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId))');
   });
 
   it('is dark-gated (the relocation only fires when the rollout stage is past dark)', () => {

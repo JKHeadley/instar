@@ -305,7 +305,15 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // refresh loop is coalesced upstream. Carries NO credential and NO PII beyond email (the
   // configHome + every credential field are stripped at the projector).
   'subscription-account-meta': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
-  'topic-pin-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
+  // topic-pin-record (U4.1 §2C, fixes defect 4): rotateKeep 0 = rotate but NEVER
+  // delete — the replication carrier must not drop pins by construction (the old
+  // keep-4 window could rotate a long-untouched topic's winning record away as
+  // other topics churned). Pin volume is tiny (operator actions, one compact
+  // record per pin EVENT); the answer-complete READ is the fold view's job
+  // (CoherenceJournalReader.foldPinRecords + TopicPinFoldView), bounded by the
+  // loud ws13FoldMaxBytes byte-guard. Per-key rewrite-compaction at rotation is
+  // the named tracked follow-up if volume ever grows toward the guard.
+  'topic-pin-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
   // U4.2 (stale-owner-release §2.4): claim suspension + per-topic claim budget +
   // declined-demote pins. Written only on claim/decline transitions — tiny volume.
   'topic-claim-annotation': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
