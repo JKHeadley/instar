@@ -149,8 +149,12 @@ export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManife
   } catch { /* @silent-fallback-ok: a not-yet-existing stateDir keeps its lexical path; containment still bounds it (WORKING-SET-HANDOFF-SPEC §3.1) */
   }
   const conventionDir = path.join(stateDir, 'autonomous');
+  // Scope-accretion server run records (autonomous-scope-accretion-completion.md
+  // §4 multi-machine posture): the server run record + advisory ledger ride the
+  // working-set carrier on transfer. Archived records are excluded below.
+  const serverRecordDir = path.join(stateDir, 'state', 'autonomous-server');
   // Same roots as the journal writer's artifactRoots default (§3.1).
-  const jailRoots = [conventionDir, stateDir];
+  const jailRoots = [conventionDir, serverRecordDir, stateDir];
 
   let jailRejected = 0;
   let goneFromDisk = 0;
@@ -171,6 +175,25 @@ export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManife
     if (!name.startsWith(prefix)) continue;
     candidates.set(path.join(conventionDir, name), {
       abs: path.join(conventionDir, name),
+      fromJournal: false,
+    });
+  }
+
+  // Source 1b: scope-accretion SERVER run records (`<topic>.<runId>.json` +
+  // `<topic>.<runId>.artifacts.jsonl`) — same bounded, non-recursive readdir,
+  // same `<topic>.` prefix rule. Archived records (`.archived.json`) are
+  // EXCLUDED from carrier nomination (R28).
+  let serverNames: string[] = [];
+  try {
+    serverNames = io.readdirSync(serverRecordDir);
+  } catch { /* @silent-fallback-ok: server-record dir absent = no scope-accretion records; the convention + journal sources still apply */
+    serverNames = [];
+  }
+  for (const name of serverNames) {
+    if (!name.startsWith(prefix)) continue;
+    if (name.endsWith('.archived.json') || name.endsWith('.tmp')) continue;
+    candidates.set(path.join(serverRecordDir, name), {
+      abs: path.join(serverRecordDir, name),
       fromJournal: false,
     });
   }

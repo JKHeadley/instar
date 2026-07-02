@@ -1416,7 +1416,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         failWindowMs: 600000,
         failCooldownMs: 600000,
       },
+      // Scope-Accretion Completion Discipline (spec: autonomous-scope-accretion-
+      // completion.md §4). Default ON (monotone-safe, operator-requested — the
+      // documented maturation-path exception). SNAPSHOT SEMANTICS: this config is
+      // snapshotted SERVER-SIDE at run registration, so a mid-run edit to this
+      // file changes nothing for the running session; the operator's LIVE lever
+      // is the PIN-gated route POST /autonomous/:topic/scope-accretion-override
+      // (dashboard PIN — audited, principal-verified). Editing `enabled:false`
+      // here is the rollback for FUTURE runs.
+      scopeAccretion: {
+        enabled: true,
+        // K consecutive scope-accretion holds with an unchanged unbuilt-set hash
+        // and no new corroboration/ratification trip the breaker (min 2): ONE
+        // loud labeled exit, then the gate disengages for the run (R26/R39).
+        breakerK: 3,
+      },
     },
+    // Server-side ceiling (ms) on a registered run's endAt — POST /autonomous/
+    // register CLAMPS endAt to now + maxDurationMs so a session cannot register
+    // an unbounded run (R43/R49). Default 48h.
+    maxDurationMs: 172800000,
   },
   // Cartographer doc-tree — hierarchical semantic map with git-hash staleness
   // (cartographer-doc-tree-schema spec #1). `enabled` is deliberately OMITTED so

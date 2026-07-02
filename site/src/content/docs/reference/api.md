@@ -257,6 +257,12 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
 - `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
 
+## /autonomous
+- `POST /autonomous/register` — server-side start snapshot for an autonomous run (scope-accretion R30): the server mints the runId, snapshots the `scopeAccretion` config + sweep base-root start-SHAs, and clamps `endAt` to `now + maxDurationMs`. One registration per active run (409 while the existing record is active).
+- `POST /autonomous/:topic/run-end` — every exit surface reports here (scope-accretion R44): runs the non-blocking advisory sweep and enumerates any unbuilt accreted work loudly; marks the run record ended.
+- `POST /autonomous/:topic/ratify-deferral` — dashboard-PIN-gated operator ratification of deferred accreted artifacts (`{"artifacts": [...]}` or `{"all": true}`; the response echoes exactly what was ratified).
+- `POST /autonomous/:topic/scope-accretion-override` — dashboard-PIN-gated live mid-run lever (`{"enabled": false, "reason": "…"}`): overrides the registration-time snapshot for the running session; audited.
+
 ## /autonomy
 - `GET /autonomy`
 - `GET /autonomy/elevation`

@@ -174,8 +174,14 @@ describe('Secure A2A Verified Pairing E2E lifecycle (feature is alive)', () => {
     const p = res.body.pairings.find((x: { peerFp: string }) => x.peerFp === peer.fp);
     expect(p).toBeDefined();
     expect(p.state).toBe('pending-verification');
-    // SAS words NEVER appear on the list route.
-    expect(JSON.stringify(res.body)).not.toContain(sasWords[0]);
+    // SAS words NEVER appear on the list route. Assert on the FIELD and on the
+    // joined 6-word phrase — never a lone word: SAS words come from a 2048-word
+    // common-English list, and a single word can legitimately collide with other
+    // response content (observed 2026-07-02: sasWords[0] === 'setup' false-
+    // positived against trustSource 'setup-default').
+    expect(p.sasWords).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain(sasWords.join(' '));
+    expect(JSON.stringify(res.body)).not.toContain(JSON.stringify(sasWords).slice(1, -1));
   });
 
   it('GET /threadline/pairing/:peerFp WITH a valid PIN surfaces the SAS while pending (§3.9)', async () => {

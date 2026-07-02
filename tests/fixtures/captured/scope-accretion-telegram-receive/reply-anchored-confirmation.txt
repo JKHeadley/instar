@@ -1,0 +1,52 @@
+{
+  "chat": {
+    "id": -1001111111111,
+    "is_forum": true,
+    "title": "Echo",
+    "type": "supergroup"
+  },
+  "date": 1782978959,
+  "from": {
+    "first_name": "Echo Agent",
+    "id": 2222222222,
+    "is_bot": true,
+    "username": "echo_instar_bot"
+  },
+  "is_topic_message": true,
+  "message_id": 30114,
+  "message_thread_id": 30112,
+  "reply_to_message": {
+    "chat": {
+      "id": -1001111111111,
+      "is_forum": true,
+      "title": "Echo",
+      "type": "supergroup"
+    },
+    "date": 1782978958,
+    "entities": [
+      {
+        "length": 14,
+        "offset": 49,
+        "type": "url"
+      },
+      {
+        "length": 14,
+        "offset": 77,
+        "type": "url"
+      }
+    ],
+    "from": {
+      "first_name": "Echo Agent",
+      "id": 2222222222,
+      "is_bot": true,
+      "username": "echo_instar_bot"
+    },
+    "is_topic_message": true,
+    "message_id": 30113,
+    "message_thread_id": 30112,
+    "sender_tag": "Admin",
+    "text": "Ratify deferring these 2 artifacts?\n- docs/specs/example-one.md\n- docs/specs/example-two.md\n\nReply to THIS message with yes/approve, or use the dashboard."
+  },
+  "sender_tag": "Admin",
+  "text": "yes — approve"
+}

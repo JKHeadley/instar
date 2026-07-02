@@ -4349,6 +4349,15 @@ process.stdin.on('end', async () => {
       event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
+      // green-pr-automerge Layer 2: forward the session cwd so the server can
+      // resolve the ending session's branch (without it, Layer 2 ships inert).
+      // (Reconciled with the PostUpdateMigrator copy — keep BOTH in sync.)
+      cwd: input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd() || '',
+      // scope-accretion ADVISORY ledger (spec autonomous-scope-accretion-
+      // completion.md R18): forward the Write/Edit file path for attribution
+      // detail. Optional + designed-benign: the receiver stores extra fields
+      // as-is and a payload without it remains valid.
+      file_path: (input.tool_input && (input.tool_input.file_path || input.tool_input.path)) || '',
     });
 
     const url = new URL(serverUrl + '/hooks/events?instar_sid=' + instarSid);

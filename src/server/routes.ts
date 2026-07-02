@@ -249,6 +249,17 @@ import {
   suspendAutonomousTopicForMove,
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
+import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
+import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
+import {
+  runAccretionSweep,
+  computeUnbuiltSet,
+  parseDeclaredDeliverables,
+  type SweepResult,
+  type AccretedArtifact,
+} from '../core/ScopeAccretionSweep.js';
+import { resolveCorroboration } from '../core/ScopeAccretionCorroboration.js';
+import { ScopeAccretionRatifier } from '../core/ScopeAccretionRatifier.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
@@ -1575,6 +1586,13 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Homeostasis monitor — work-velocity awareness (ported from Dawn)
   const homeostasisMonitor = new HomeostasisMonitor(ctx.config.stateDir);
+
+  // Scope-Accretion Completion Discipline — the SERVER-OWNED run-record store
+  // (spec: autonomous-scope-accretion-completion.md R30). Declared up here so
+  // the /hooks/events advisory-ledger hook (defined before the /autonomous
+  // routes) can reference it lexically; the gate/route logic lives with the
+  // other /autonomous routes below.
+  const autonomousRunStore = new AutonomousRunStore(ctx.config.stateDir);
 
   // Truncation detector for Telegram messages (Drop Zone integration)
   const truncationDetector = new TruncationDetector();
@@ -3393,6 +3411,22 @@ export function createRoutes(ctx: RouteContext): Router {
       if (toolName === 'Bash' && typeof toolInput === 'string' && /git\s+commit\b/.test(toolInput)) {
         homeostasisMonitor.recordCommit();
       }
+
+      // Scope-accretion ADVISORY tool-event ledger (R18): attribution detail
+      // (which turn, which tool) — never the blocking set (the git sweep is the
+      // load-bearing layer). Resolution miss degrades the advisory layer only (R19).
+      const filePath = typeof payload.file_path === 'string' ? payload.file_path : '';
+      const sid = typeof payload.session_id === 'string' ? payload.session_id : '';
+      if (filePath && sid && (toolName === 'Write' || toolName === 'Edit')) {
+        const mapped = autonomousRunStore.resolveSession(sid);
+        if (mapped) {
+          autonomousRunStore.appendAdvisoryArtifact(mapped.topicId, mapped.runId, {
+            filePath,
+            toolName,
+            sessionId: sid,
+          });
+        }
+      }
     }
 
     // Bridge instar session ID ↔ Claude Code session ID.
@@ -4414,6 +4448,381 @@ export function createRoutes(ctx: RouteContext): Router {
   // Agents should query this at session start rather than guessing
   // about what infrastructure exists.
 
+  // ══ Scope-Accretion Completion Discipline ═══════════════════════════════
+  // Spec: docs/specs/autonomous-scope-accretion-completion.md. The load-bearing
+  // facts (what did this session create? did the verified operator ratify
+  // deferral?) are computed SERVER-SIDE at the evaluate-completion chokepoint
+  // from git truth + server-owned state — never transported from the session's
+  // environment, never read from files the session routinely edits (R11/R12).
+  // (The AutonomousRunStore instance is declared near the top of createRoutes
+  // so the /hooks/events advisory-ledger hook can reference it.)
+
+  const scopeAccretionMetric = (
+    outcome: 'fired' | 'noop' | 'error' | 'shed',
+    verdictId?: string,
+    latencyMs?: number,
+  ): void => {
+    try {
+      ctx.featureMetricsLedger?.record({ feature: 'scope-accretion', kind: 'event', outcome, verdictId, latencyMs });
+    } catch { /* @silent-fallback-ok — observability must never break the gate path */ }
+  };
+
+  // Read-only git funnel for the sweep (R15: SafeGitExecutor.readSync verbs only).
+  const scopeAccretionReadGit = (args: string[], cwd: string, timeoutMs?: number): string =>
+    SafeGitExecutor.readSync(args, {
+      cwd,
+      operation: 'src/server/routes.ts:scope-accretion-sweep',
+      timeout: timeoutMs ?? 4000,
+    });
+
+  const scopeAccretionEffective = (rec: AutonomousRunRecord): boolean =>
+    rec.scopeAccretionOverride ? rec.scopeAccretionOverride.enabled : rec.scopeAccretion.enabled;
+
+  /** Registration-time base roots (R13): the work_dir repo + the agent-home repo. */
+  const deriveBaseRoots = (workDir: string): AutonomousRunRecord['baseRoots'] => {
+    const resolveRepo = (dir: string): { root: string; sha: string } | null => {
+      try {
+        const root = scopeAccretionReadGit(['rev-parse', '--show-toplevel'], dir).trim();
+        const sha = scopeAccretionReadGit(['rev-parse', 'HEAD'], root).trim();
+        if (!root || !/^[0-9a-f]{7,40}$/.test(sha)) return null;
+        return { root, sha };
+      } catch {
+        /* @silent-fallback-ok — a non-git workDir/agent-home is a legitimate shape:
+           the sweep degrades to the porcelain-only best-effort root (spec §2.2),
+           never a false hold and never a false done. */
+        return null;
+      }
+    };
+    const roots: AutonomousRunRecord['baseRoots'] = [];
+    const wd = resolveRepo(workDir);
+    const home = resolveRepo(ctx.config.projectDir);
+    const sameRoot = wd && home && path.resolve(wd.root) === path.resolve(home.root);
+    if (wd) {
+      // R48: if the run's work_dir IS the shared agent-home clone, HEAD-only
+      // attribution wins (concurrent sessions must not hold this run).
+      roots.push({ root: wd.root, startSha: wd.sha, shared: !!sameRoot });
+    } else {
+      roots.push({ root: workDir, startSha: null, shared: false });
+    }
+    if (home && !sameRoot) roots.push({ root: home.root, startSha: home.sha, shared: true });
+    return roots;
+  };
+
+  interface AccretionComputation {
+    rec: AutonomousRunRecord;
+    sweep: SweepResult;
+    unbuilt: AccretedArtifact[];
+    clearedCount: number;
+    degraded: boolean;
+  }
+
+  /** §2.8 steps 1: sweep (R31) + corroboration (R21) + persistence (monotone). */
+  const computeAccretion = (rec: AutonomousRunRecord): AccretionComputation => {
+    const sweep = runAccretionSweep(rec, {
+      readGit: scopeAccretionReadGit,
+      worktreesDir: path.join(ctx.config.projectDir, '.worktrees'),
+    });
+    const declared = parseDeclaredDeliverables(rec.condition, rec.declaredDeliverables);
+    const preliminary = computeUnbuiltSet(sweep, declared, rec.ratifiedArtifacts, rec.corroborated);
+    const negativeCached = new Set(
+      preliminary.filter((a) => autonomousRunStore.isNegativeCached(rec, a.path)).map((a) => a.path),
+    );
+    const artifactStartShas: Record<string, string | null> = {};
+    for (const b of rec.baseRoots) artifactStartShas[path.resolve(b.root)] = b.startSha;
+    for (const [wt, sha] of Object.entries({ ...rec.worktreeFirstSeen, ...sweep.newWorktrees })) {
+      artifactStartShas[path.resolve(wt)] = sha;
+    }
+    const corr = resolveCorroboration(
+      {
+        artifacts: preliminary,
+        alreadyCorroborated: rec.corroborated,
+        negativeCached,
+        startedAt: rec.startedAt,
+        workDir: rec.workDir,
+        artifactStartShas,
+      } as Parameters<typeof resolveCorroboration>[0],
+      {
+        // gh resolves the repo from its cwd — pin it to the run's registered
+        // work_dir so merged-PR evidence is queried against the run's OWN repo.
+        // withSyncOp: judge-path-only, `-m`-bounded (R22) — funneled so the
+        // in-flight marker sees the blocking call (tmux-event-loop-resilience).
+        runGh: (args: string[], timeoutMs: number) =>
+          withSyncOp(() => execFileSync('gh', args, { cwd: rec.workDir, timeout: timeoutMs, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }) as string),
+        readGit: scopeAccretionReadGit,
+        fsExists: (p: string) => fs.existsSync(p),
+        conformanceInvocationsInWindow: (slug, a, b) =>
+          autonomousRunStore.conformanceInvocationsInWindow(slug, a, b),
+      },
+    );
+    const nowIso = new Date().toISOString();
+    const updated =
+      autonomousRunStore.update(rec.topicId, rec.runId, (r) => {
+        for (const [p, ev] of Object.entries(corr.cleared)) {
+          if (!r.corroborated[p]) r.corroborated[p] = { by: ev.by, at: nowIso, detail: ev.detail };
+          delete r.negativeCache[p];
+        }
+        for (const p of corr.newNegatives) r.negativeCache[p] = nowIso;
+        for (const [wt, sha] of Object.entries(sweep.newWorktrees)) {
+          if (!r.worktreeFirstSeen[wt]) r.worktreeFirstSeen[wt] = sha;
+        }
+      }) ?? rec;
+    const unbuilt = computeUnbuiltSet(sweep, declared, updated.ratifiedArtifacts, updated.corroborated);
+    const final =
+      autonomousRunStore.update(rec.topicId, rec.runId, (r) => {
+        const prior = new Map(r.lastUnbuilt.map((u) => [u.path, u.firstSeenAt]));
+        r.lastUnbuilt = unbuilt.map((a) => ({
+          path: a.path,
+          cls: a.cls,
+          deleted: a.deleted,
+          firstSeenAt: prior.get(a.path) ?? nowIso,
+        }));
+        r.lastSweepAt = nowIso;
+      }) ?? updated;
+    const clearedCount = Object.keys(final.corroborated).length + final.ratifiedArtifacts.length;
+    return { rec: final, sweep, unbuilt, clearedCount, degraded: sweep.degraded || corr.degraded };
+  };
+
+  const clampPathList = (paths: string[], limit = 50): string => {
+    const shown = paths.slice(0, limit);
+    const more = paths.length - shown.length;
+    return shown.join(', ') + (more > 0 ? ` — and ${more} more` : '');
+  };
+
+  /**
+   * EVERY exit is loud (R40): enumerate a non-empty unbuilt accreted set in the
+   * end-of-run notice + ONE deduped attention item. Best-effort, never blocks.
+   */
+  const enumerateUnbuiltLoudly = async (
+    rec: AutonomousRunRecord,
+    unbuilt: Array<{ path: string; deleted: boolean }>,
+    surface: string,
+    extra?: string,
+  ): Promise<void> => {
+    if (unbuilt.length === 0) return;
+    const paths = unbuilt.map((u) => u.path);
+    const deleted = unbuilt.filter((u) => u.deleted).map((u) => u.path);
+    const deletedNote = deleted.length
+      ? ` The session DELETED ${deleted.length} accreted deliverable(s): ${clampPathList(deleted, 20)}.`
+      : '';
+    const text =
+      `⚠️ Autonomous run on topic ${rec.topicId} ended (${surface}) with ${paths.length} unbuilt accreted ` +
+      `artifact(s) that were neither built, corroborated, nor ratified: ${clampPathList(paths)}.${deletedNote}` +
+      (extra ? ` ${extra}` : '');
+    const topicNum = Number(rec.topicId);
+    if (ctx.telegram && Number.isFinite(topicNum)) {
+      await ctx.telegram.sendToTopic(topicNum, text).catch(() => { /* best-effort notice */ });
+      await ctx.telegram
+        .createAttentionItem({
+          id: `scope-accretion-exit-${rec.topicId}-${rec.runId}`,
+          title: `Autonomous run left ${paths.length} accreted artifact(s) unbuilt`,
+          summary: text.slice(0, 1000),
+          priority: 'NORMAL',
+          sourceContext: 'scope-accretion',
+          category: 'autonomous',
+        })
+        .catch(() => { /* best-effort attention */ });
+    }
+    scopeAccretionMetric('fired', `exit-enumeration:${surface}`);
+  };
+
+  /** R28b daily-sweep backstop — reaped crashed records get their loud enumeration. */
+  const runDailySweepBackstop = (): void => {
+    try {
+      const reaped = autonomousRunStore.dailySweep();
+      for (const rec of reaped) {
+        void enumerateUnbuiltLoudly(
+          rec,
+          rec.lastUnbuilt ?? [],
+          'expired >24h ago (daily-sweep backstop)',
+          'Late-but-loud: the run ended without a run-end call.',
+        );
+      }
+    } catch { /* @silent-fallback-ok — the backstop is best-effort; the next call retries */ }
+  };
+
+  // Conversational ratification (R37/R38/R45) — trigger + confirmation matched
+  // ONLY at the live receive path; server-authored enumeration; server-owned records.
+  const scopeAccretionRatifier = new ScopeAccretionRatifier({
+    store: autonomousRunStore,
+    getOperatorUid: (topicId: number) => ctx.topicOperatorStore?.getOperator(topicId)?.uid ?? null,
+    sendToTopic: async (topicId: number, text: string) => {
+      if (!ctx.telegram) throw new Error('telegram adapter unavailable');
+      const r = await ctx.telegram.sendToTopic(topicId, text);
+      return { messageId: r.messageId };
+    },
+    dashboardLink: (topicId: string) =>
+      `http://localhost:${ctx.config.port}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}`,
+    recordMetric: (o) => scopeAccretionMetric(o, 'ratification'),
+    log: (m) => console.warn(m),
+  });
+  if (ctx.telegram) {
+    // Direct-poll ingress (the server long-polls Telegram itself, R45). The
+    // lifeline-forward ingress fires the same observer inside
+    // POST /internal/telegram-forward below.
+    ctx.telegram.onScopeAccretionInbound = (evt) => {
+      void scopeAccretionRatifier.observeInbound(evt);
+    };
+  }
+
+  // ── POST /autonomous/register (R30/R43/R49) — the server-side start snapshot ──
+  // Bearer-auth like every /autonomous route (localhost trust plane — the setup
+  // path is the intended caller; there is no finer ambient caller identity, R49).
+  router.post('/autonomous/register', (req, res) => {
+    runDailySweepBackstop();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const topicId = typeof body.topicId === 'string' || typeof body.topicId === 'number' ? String(body.topicId) : '';
+    const condition = typeof body.condition === 'string' ? body.condition : '';
+    const workDir = typeof body.workDir === 'string' && body.workDir ? body.workDir : ctx.config.projectDir;
+    if (!topicId || !condition) {
+      res.status(400).json({ error: '"topicId" and "condition" (string) required' });
+      return;
+    }
+    const declaredDeliverables = Array.isArray(body.declaredDeliverables)
+      ? body.declaredDeliverables.filter((d): d is string => typeof d === 'string' && !!d.trim()).slice(0, 100)
+      : [];
+    const startedAt = typeof body.startedAt === 'string' && Number.isFinite(Date.parse(body.startedAt))
+      ? body.startedAt
+      : new Date().toISOString();
+    const endAt = typeof body.endAt === 'string' ? body.endAt : undefined;
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined;
+    // Snapshot the WHOLE scopeAccretion sub-object at registration (R13): the
+    // session editing .instar/config.json mid-run changes nothing the
+    // chokepoint reads. The operator's live lever is the PIN override (R14).
+    const cfg = ctx.config.autonomousSessions?.completionDiscipline?.scopeAccretion ?? {};
+    const snapshot = {
+      enabled: cfg.enabled ?? true,
+      breakerK: Math.max(2, typeof cfg.breakerK === 'number' && Number.isFinite(cfg.breakerK) ? Math.floor(cfg.breakerK) : 3),
+    };
+    const result = autonomousRunStore.register({
+      topicId,
+      condition,
+      workDir,
+      declaredDeliverables,
+      startedAt,
+      endAt,
+      sessionId,
+      scopeAccretion: snapshot,
+      baseRoots: deriveBaseRoots(workDir),
+      maxDurationMs: ctx.config.autonomousSessions?.maxDurationMs ?? 172_800_000,
+    });
+    if (!result.ok) {
+      // One registration per active run (R43): refused + flagged.
+      scopeAccretionMetric('noop', 'register-conflict');
+      void ctx.telegram
+        ?.createAttentionItem({
+          id: `scope-accretion-reregister-${topicId}`,
+          title: `Autonomous re-registration refused for topic ${topicId}`,
+          summary: `A re-register arrived while run ${result.existingRunId} is still active and unexpired.`,
+          priority: 'LOW',
+          sourceContext: 'scope-accretion',
+          category: 'autonomous',
+        })
+        .catch(() => { /* best-effort */ });
+      res.status(409).json({ error: 'a run is already registered and active for this topic', existingRunId: result.existingRunId });
+      return;
+    }
+    scopeAccretionMetric('fired', 'register');
+    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped });
+  });
+
+  // ── POST /autonomous/:topic/run-end (R44) — every exit surface reports here ──
+  // Best-effort, `-m`-bounded on the hook side, NEVER blocking or delaying the
+  // exit: the handler runs the advisory sweep, composes the enumerated notice
+  // (R40), and marks the record ended.
+  router.post('/autonomous/:topic/run-end', async (req, res) => {
+    runDailySweepBackstop();
+    const topic = String(req.params.topic);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const reason = typeof body.reason === 'string' ? body.reason.slice(0, 200) : 'run-end';
+    const runId = typeof body.runId === 'string' ? body.runId : undefined;
+    const rec = autonomousRunStore.getRecord(topic);
+    if (!rec) {
+      res.status(404).json({ ok: false, error: 'no registered run for topic' });
+      return;
+    }
+    if (runId && rec.runId !== runId) {
+      res.status(409).json({ ok: false, error: 'runId mismatch', currentRunId: rec.runId });
+      return;
+    }
+    let unbuiltEnumerated = 0;
+    if (scopeAccretionEffective(rec)) {
+      try {
+        const comp = computeAccretion(rec);
+        if (comp.unbuilt.length > 0) {
+          await enumerateUnbuiltLoudly(comp.rec, comp.unbuilt, `run-end: ${reason}`);
+          unbuiltEnumerated = comp.unbuilt.length;
+        }
+      } catch (err) {
+        // The advisory sweep must never block the exit (R44) — record + proceed.
+        console.warn(`[scope-accretion] run-end sweep failed (exit proceeds): ${err instanceof Error ? err.message : String(err)}`);
+        scopeAccretionMetric('error', 'run-end-sweep');
+      }
+    }
+    autonomousRunStore.markTerminal(rec.topicId, rec.runId, 'ended', reason);
+    res.json({ ok: true, runId: rec.runId, unbuiltEnumerated });
+  });
+
+  // ── POST /autonomous/:topic/ratify-deferral (R23 path 1 — PIN, phone-first) ──
+  router.post('/autonomous/:topic/ratify-deferral', async (req, res) => {
+    if (!checkMandatePin(req, res)) return;
+    const topic = String(req.params.topic);
+    const rec = autonomousRunStore.getRecord(topic);
+    if (!rec || !autonomousRunStore.isActive(rec)) {
+      res.status(404).json({ error: 'no ACTIVE registered run for topic' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const all = body.all === true;
+    const listed = Array.isArray(body.artifacts)
+      ? body.artifacts.filter((a): a is string => typeof a === 'string' && !!a.trim())
+      : [];
+    if (!all && listed.length === 0) {
+      res.status(400).json({ error: '"artifacts" (string[]) or "all": true required' });
+      return;
+    }
+    // {all:true} ratifies the server's CURRENT unbuilt list at call time — the
+    // response echoes exactly what was ratified (display authority = executed
+    // authority). Re-sweep for freshness; fall back to the last persisted set.
+    let current = rec.lastUnbuilt.map((u) => u.path);
+    try {
+      const comp = computeAccretion(rec);
+      current = comp.unbuilt.map((a) => a.path);
+    } catch { /* @silent-fallback-ok — the persisted lastUnbuilt set is the documented fallback */ }
+    const ratified = all ? current : listed;
+    autonomousRunStore.update(rec.topicId, rec.runId, (r) => {
+      for (const p of ratified) {
+        if (!r.ratifiedArtifacts.includes(p)) r.ratifiedArtifacts.push(p);
+      }
+      r.ratifications.push({ via: 'pin', at: new Date().toISOString(), artifacts: [...ratified] });
+    });
+    scopeAccretionMetric('fired', 'ratify-pin');
+    res.json({ ok: true, ratified, runId: rec.runId });
+  });
+
+  // ── POST /autonomous/:topic/scope-accretion-override (R14 — the operator's
+  // instant mid-run lever; dashboard-PIN-gated, audited, principal-verified) ──
+  router.post('/autonomous/:topic/scope-accretion-override', (req, res) => {
+    if (!checkMandatePin(req, res)) return;
+    const topic = String(req.params.topic);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.enabled !== 'boolean' || typeof body.reason !== 'string' || !body.reason.trim()) {
+      res.status(400).json({ error: '"enabled" (boolean) and "reason" (string) required' });
+      return;
+    }
+    const rec = autonomousRunStore.getRecord(topic);
+    if (!rec) {
+      res.status(404).json({ error: 'no registered run for topic' });
+      return;
+    }
+    const enabled = body.enabled;
+    autonomousRunStore.update(rec.topicId, rec.runId, (r) => {
+      r.scopeAccretionOverride = { enabled, reason: String(body.reason).slice(0, 300), at: new Date().toISOString() };
+    });
+    console.log(`[scope-accretion] operator PIN override for topic ${topic}: enabled=${enabled} (${String(body.reason).slice(0, 120)})`);
+    scopeAccretionMetric('fired', `override-${enabled ? 'enable' : 'disable'}`);
+    res.json({ ok: true, topic, enabled, runId: rec.runId });
+  });
+
   // ── Multi-session autonomy: list / start-gate / stop ──────────────────
   // Per-topic autonomous jobs live at .instar/autonomous/<topicId>.local.md.
   // These routes are the management surface; the stop hook is the per-session enforcer.
@@ -4494,6 +4903,12 @@ export function createRoutes(ctx: RouteContext): Router {
     if (s.taskStructure === 'has-tasks' || s.taskStructure === 'indeterminate') out.taskStructure = s.taskStructure;
     if (typeof s.milestoneRationalizationDetected === 'boolean') out.milestoneRationalizationDetected = s.milestoneRationalizationDetected;
     if (typeof s.injectionSuspected === 'boolean') out.injectionSuspected = s.injectionSuspected;
+    // Scope-accretion: the advisory Layer-B boolean is the ONE new whitelisted
+    // client field (R23). The BLOCKING inputs (`unbuiltAccretedArtifacts`,
+    // `operatorRatifiedDeferral`, `scopeAccretion` facts) are computed inside
+    // the route and NEVER accepted from the client — anything else on the
+    // signals object is dropped here by construction.
+    if (typeof s.scopeAccretionSuspected === 'boolean') out.scopeAccretionSuspected = s.scopeAccretionSuspected;
     // stopKind may arrive either inside signals or as a sibling field of the body.
     const stopKind = s.stopKind ?? (body as Record<string, unknown>).stopKind;
     if (stopKind === 'hard-blocker') out.stopKind = 'hard-blocker';
@@ -4516,11 +4931,256 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
+      const tail = typeof transcriptTail === 'string' ? transcriptTail : '';
+
+      // ══ Scope-accretion deterministic pre-judge gate (R25/R35/R36) ══════════
+      // Whitelist-validated identity fields — everything else on the body is ignored.
+      const saBody = (req.body ?? {}) as Record<string, unknown>;
+      const bodyTopicId =
+        typeof saBody.topicId === 'string' || typeof saBody.topicId === 'number' ? String(saBody.topicId) : undefined;
+      const bodyRunId = typeof saBody.runId === 'string' ? saBody.runId : undefined;
+      const bodySessionId = typeof saBody.sessionId === 'string' ? saBody.sessionId : undefined;
+      runDailySweepBackstop();
+
+      // Arming is SERVER-resolved, never client-selected (R35): the sessionId↔
+      // topicId map from registration, with the body topicId (verified against
+      // the registration record below) as the direct carrier.
+      let resolvedTopic = bodyTopicId;
+      if (!resolvedTopic && bodySessionId) {
+        resolvedTopic = autonomousRunStore.resolveSession(bodySessionId)?.topicId;
+      }
+
+      let armedRecord: AutonomousRunRecord | null = null;
+      if (!resolvedTopic) {
+        const active = autonomousRunStore.listActive();
+        if (active.length > 0) {
+          // A done-claim with NO resolvable topic while registered runs are
+          // active is REFUSED (R35). Version-skew vs tamper is distinguished by
+          // the migration marker state of the DEPLOYED hook: a pre-migration
+          // hook (no SCOPE_ACCRETION marker) is skew; a post-migration omission
+          // is tamper-shaped and says so.
+          let postMigration = false;
+          try {
+            const deployedHook = path.join(
+              ctx.config.projectDir,
+              '.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh',
+            );
+            postMigration = fs.readFileSync(deployedHook, 'utf8').includes('SCOPE_ACCRETION');
+          } catch { /* @silent-fallback-ok — unreadable hook ⇒ treat as skew (the softer message) */ }
+          const shape = postMigration
+            ? 'the installed stop hook DOES carry the scope-accretion capability, so an omitted topicId is tamper-shaped'
+            : 'the installed stop hook looks pre-migration (version skew) — update instar / re-run the post-update migration';
+          scopeAccretionMetric('fired', 'unattributed-done-claim');
+          void ctx.telegram
+            ?.createAttentionItem({
+              id: 'scope-accretion-unattributed-done-claim',
+              title: 'Unattributed autonomous done-claim refused',
+              summary: `evaluate-completion was called with no topicId/runId while ${active.length} registered run(s) are active. ${shape}.`,
+              priority: 'NORMAL',
+              sourceContext: 'scope-accretion',
+              category: 'autonomous',
+            })
+            .catch(() => { /* best-effort */ });
+          res.json({
+            met: false,
+            reason: `unattributed-done-claim: ${active.length} registered autonomous run(s) are active on this server but the request carried no topicId/runId (${shape})`,
+          });
+          return;
+        }
+        // Zero active registered runs → a true legacy caller: gate inert, logged.
+      } else {
+        const byTopic = autonomousRunStore.getRecord(resolvedTopic);
+        if (bodyRunId && byTopic && byTopic.runId !== bodyRunId && autonomousRunStore.isActive(byTopic)) {
+          // runId cross-check (§6): a session presenting ANOTHER run's identifiers
+          // is refused by the pair check.
+          scopeAccretionMetric('fired', 'run-identity-mismatch');
+          res.json({
+            met: false,
+            reason: `run-identity-mismatch: topic ${resolvedTopic} is registered to a different runId — the presented pair does not match the server's registration record`,
+          });
+          return;
+        }
+        if (byTopic && autonomousRunStore.isActive(byTopic)) {
+          armedRecord = byTopic;
+          if (bodySessionId) autonomousRunStore.mapSession(bodySessionId, byTopic.topicId, byTopic.runId);
+        } else if (!byTopic) {
+          console.log(`[scope-accretion] evaluate-completion for UNREGISTERED topic ${resolvedTopic} — accretion gate inert (honest degradation)`);
+        }
+      }
+
+      // R36: when a run is registered, the judge evaluates the SERVER-REGISTERED
+      // condition — the body condition is used only for legacy callers. A
+      // divergence is logged + flagged once per run (closing the weakened-
+      // condition bypass; mid-run state-file edits are ignored for accretion).
+      let effectiveCondition = condition;
+      if (armedRecord) {
+        if (armedRecord.condition.trim() !== condition.trim()) {
+          effectiveCondition = armedRecord.condition;
+          if (!armedRecord.conditionDivergenceFlagged) {
+            autonomousRunStore.update(armedRecord.topicId, armedRecord.runId, (r) => {
+              r.conditionDivergenceFlagged = true;
+            });
+            console.warn(`[scope-accretion] condition divergence for topic ${armedRecord.topicId}: body condition differs from the registered text — judging the REGISTERED condition (R36)`);
+            void ctx.telegram
+              ?.createAttentionItem({
+                id: `scope-accretion-condition-divergence-${armedRecord.topicId}-${armedRecord.runId}`,
+                title: `Autonomous run condition diverged mid-run (topic ${armedRecord.topicId})`,
+                summary: 'The done-claim carried a condition text different from the one registered at setup. The server judges the REGISTERED condition; mid-run edits are ignored for accretion purposes.',
+                priority: 'NORMAL',
+                sourceContext: 'scope-accretion',
+                category: 'autonomous',
+              })
+              .catch(() => { /* @silent-fallback-ok — divergence-flag attention is best-effort observability; the REGISTERED condition is already the judged authority either way (R36) */ });
+          } else {
+            effectiveCondition = armedRecord.condition;
+          }
+        }
+      }
+
+      // §2.8 step 1-2: the deterministic gate — sweep + corroboration +
+      // ratification state, then HOLD without spending the judge LLM call.
+      let signals = parseStopSignals(req.body);
+      if (armedRecord && scopeAccretionEffective(armedRecord)) {
+        let comp: ReturnType<typeof computeAccretion> | null = null;
+        try {
+          comp = computeAccretion(armedRecord);
+        } catch (err) {
+          // A sweep failure degrades to NO HOLD (the judge still runs) — but is
+          // recorded; it can never manufacture a false hold or a false done.
+          console.warn(`[scope-accretion] sweep failed (gate degrades to judge-only): ${err instanceof Error ? err.message : String(err)}`);
+          scopeAccretionMetric('error', 'sweep-failure');
+        }
+        if (comp) {
+          scopeAccretionMetric(comp.unbuilt.length > 0 ? 'fired' : 'noop', 'sweep', comp.sweep.latencyMs);
+          const unbuiltPaths = comp.unbuilt.map((a) => a.path);
+          const deletedPaths = comp.unbuilt.filter((a) => a.deleted).map((a) => a.path);
+          if (comp.unbuilt.length > 0) {
+            // Breaker (R26): persisted server-side state; K consecutive holds
+            // with an unchanged set hash and no new corroboration/ratification.
+            const setHash = hashPathSet(unbuiltPaths);
+            const k = Math.max(2, armedRecord.scopeAccretion.breakerK || 3);
+            let rec2 = autonomousRunStore.getByPair(armedRecord.topicId, armedRecord.runId) ?? comp.rec;
+            let tripped = rec2.breaker.tripped;
+            if (!tripped) {
+              rec2 =
+                autonomousRunStore.update(armedRecord.topicId, armedRecord.runId, (r) => {
+                  const nowIso = new Date().toISOString();
+                  if (r.breaker.accretedSetHash === setHash && r.breaker.clearedCount === comp!.clearedCount) {
+                    r.breaker.consecutiveHolds += 1;
+                  } else {
+                    r.breaker = {
+                      accretedSetHash: setHash,
+                      firstSeenAt: nowIso,
+                      consecutiveHolds: 1,
+                      lastProgressAt: nowIso,
+                      clearedCount: comp!.clearedCount,
+                      tripped: false,
+                    };
+                  }
+                  if (r.breaker.consecutiveHolds >= k) {
+                    r.breaker.tripped = true;
+                    r.breaker.trippedAt = nowIso;
+                  }
+                }) ?? rec2;
+              if (rec2.breaker.tripped) {
+                tripped = true;
+                // The loud, distinctly-labeled trip — carrying the P13 stop-
+                // rationale classification verdict (recorded, never bypassed:
+                // a `buildable` verdict is DISPLAYED so the operator sees the
+                // evasion shape; the exit is still permitted — no wedge, R39).
+                let p13Verdict = 'unavailable';
+                try {
+                  const v = await ctx.completionEvaluator.evaluateStopRationale(tail, {
+                    ...(signals ?? {}),
+                    stopKind: 'hard-blocker',
+                  });
+                  p13Verdict = v.classifiedBlocker ?? (v.stopAllowed ? 'allowed' : 'blocked');
+                } catch { /* @silent-fallback-ok — classification is display-only on the trip; the trip itself is already decided */ }
+                const tripText =
+                  `exiting via scope-accretion breaker with ${unbuiltPaths.length} unbuilt accreted artifact(s): ` +
+                  `${clampPathList(unbuiltPaths)}${deletedPaths.length ? ` (deleted: ${clampPathList(deletedPaths, 20)})` : ''} ` +
+                  `— P13 classification: ${p13Verdict}`;
+                scopeAccretionMetric('fired', 'breaker-trip');
+                const topicNum = Number(armedRecord.topicId);
+                if (ctx.telegram && Number.isFinite(topicNum)) {
+                  await ctx.telegram.sendToTopic(topicNum, `⚠️ ${tripText}`).catch(() => { /* best-effort */ });
+                  await ctx.telegram
+                    .createAttentionItem({
+                      id: `scope-accretion-breaker-${armedRecord.topicId}-${armedRecord.runId}`,
+                      title: `Scope-accretion breaker tripped (topic ${armedRecord.topicId})`,
+                      summary: tripText,
+                      priority: 'HIGH',
+                      sourceContext: 'scope-accretion',
+                      category: 'autonomous',
+                    })
+                    .catch(() => { /* best-effort */ });
+                }
+              }
+            }
+            if (!tripped) {
+              // The HOLD (R25): met:false with the machine-readable reason +
+              // clamped path list, WITHOUT spending the judge LLM call. The
+              // hook surfaces this verbatim — the session knows what to build.
+              scopeAccretionMetric('fired', 'hold');
+              res.json({
+                met: false,
+                reason:
+                  `scope-accretion-hold: ${unbuiltPaths.length} accreted deliverable(s) this run created must be ` +
+                  `built+corroborated (merged PR / converged report), declared, or operator-ratified before completion: ` +
+                  `${clampPathList(unbuiltPaths)}` +
+                  (deletedPaths.length ? ` — DELETED accreted deliverables (deletion is not an exit): ${clampPathList(deletedPaths, 20)}` : '') +
+                  (comp.degraded ? ' [corroborationDegraded: merged-PR evidence could not be fully fetched this pass]' : ''),
+                scopeAccretion: {
+                  hold: true,
+                  unbuilt: unbuiltPaths.slice(0, 50),
+                  deleted: deletedPaths.slice(0, 20),
+                  consecutiveHolds: rec2.breaker.consecutiveHolds,
+                  breakerK: k,
+                },
+              });
+              return;
+            }
+            // Post-trip (R39): the gate DISENGAGES for this run — fall through
+            // to the judge exactly as today; the label was the deterrent.
+          } else {
+            // Progress (empty unbuilt set) resets the breaker counters.
+            autonomousRunStore.update(armedRecord.topicId, armedRecord.runId, (r) => {
+              if (!r.breaker.tripped && r.breaker.consecutiveHolds > 0) {
+                r.breaker.consecutiveHolds = 0;
+                r.breaker.accretedSetHash = '';
+                r.breaker.lastProgressAt = new Date().toISOString();
+              }
+            });
+          }
+          // §2.8 step 3: the accretion facts ride along as CONTEXT lines in the
+          // signals block (advisory corroboration for the judge's narrative
+          // verdict) — gated on field presence so disabled mode is byte-identical.
+          signals = {
+            ...(signals ?? {}),
+            scopeAccretion: {
+              unbuilt: unbuiltPaths.slice(0, 50),
+              deleted: deletedPaths.slice(0, 20),
+              ratifiedCount: comp.rec.ratifiedArtifacts.length,
+              corroborationDegraded: comp.degraded,
+            },
+          };
+        }
+      }
+
       const verdict = await ctx.completionEvaluator.evaluate(
-        condition,
-        typeof transcriptTail === 'string' ? transcriptTail : '',
-        parseStopSignals(req.body),
+        effectiveCondition,
+        tail,
+        signals,
       );
+      // R43: a met:true final verdict at the chokepoint marks the server-owned
+      // run record TERMINAL (subject to the live-test veto below, which can
+      // still flip met → false — terminality is recorded only on the verdict
+      // that actually leaves this handler as met:true).
+      const markMetTerminal = (): void => {
+        if (armedRecord && autonomousRunStore.isActive(armedRecord)) {
+          autonomousRunStore.markTerminal(armedRecord.topicId, armedRecord.runId, 'met', 'met:true final verdict');
+        }
+      };
       // ── Live-user-channel-proof veto (spec §4) ──────────────────────────────
       // A deterministic post-check on a met:true verdict: a USER-FACING feature
       // cannot resolve "done" without a verified live-test artifact. Same shape as
@@ -4541,6 +5201,7 @@ export function createRoutes(ctx: RouteContext): Router {
               return;
             }
             // dry-run / warn: surface the would-block but honor the original verdict.
+            if (verdict.met) markMetTerminal();
             res.json({ ...verdict, liveTestGate: { outcome: gate.outcome, mode: gate.mode, wouldBlock: gate.wouldBlock, reason: gate.reason, overrode: false } });
             return;
           }
@@ -4549,6 +5210,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // (the completion judge is the primary authority); fall through to the verdict.
         }
       }
+      if (verdict.met) markMetTerminal();
       res.json(verdict);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -16242,6 +16904,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
         // standing-authorization resolver can prove non-forwarded provenance.
         forwarded: req.body.forwarded === true,
+      });
+    }
+
+    // ── Scope-accretion ratification observer (R45 — lifeline-forward ingress) ──
+    // The server's OTHER in-process receive path: lifeline-owned-polling agents
+    // never run TelegramAdapter.processUpdate, so the defer-trigger/confirmation
+    // matcher fires here too. Signal-only: fire-and-forget, never blocks routing.
+    if (messageId && text) {
+      const fwdReplyTo = typeof req.body.replyToMessageId === 'number' ? req.body.replyToMessageId : undefined;
+      void scopeAccretionRatifier.observeInbound({
+        topicId: Number(topicId),
+        text: String(text),
+        senderUid: String(fromUserId ?? ''),
+        messageId: Number(messageId) || 0,
+        replyToMessageId: fwdReplyTo,
+        at: Date.now(),
       });
     }
 

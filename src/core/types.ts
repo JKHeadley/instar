@@ -3571,7 +3571,36 @@ export interface InstarConfig {
       judgeFailCooldownMs?: number;
       /** Per-field clamp (chars) on the <hard-blocker> marker fields (default 500). */
       markerFieldMaxChars?: number;
+      /** Real-check verification (ACT-152 / autonomous-completion-real-checks spec). */
+      realCheck?: {
+        enabled?: boolean;
+        timeoutMs?: number;
+        maxChars?: number;
+        captureBytes?: number;
+        failBreakerThreshold?: number;
+        failWindowMs?: number;
+        failCooldownMs?: number;
+      };
+      /**
+       * Scope-Accretion Completion Discipline (spec: autonomous-scope-accretion-
+       * completion.md). SNAPSHOT SEMANTICS: snapshotted server-side at run
+       * registration — a mid-run edit here changes nothing for the running
+       * session. The operator's LIVE mid-run lever is the PIN-gated
+       * POST /autonomous/:topic/scope-accretion-override route (audited,
+       * principal-verified); this flag governs FUTURE runs.
+       */
+      scopeAccretion?: {
+        /** Default true (monotone-safe, operator-requested). */
+        enabled?: boolean;
+        /** Consecutive unchanged-set holds that trip the loud breaker (default 3, min 2). */
+        breakerK?: number;
+      };
     };
+    /**
+     * Server-side ceiling (ms) on a registered autonomous run's endAt —
+     * POST /autonomous/register clamps endAt to now + maxDurationMs (default 48h).
+     */
+    maxDurationMs?: number;
   };
   /** Notification preferences for autonomy events */
   notifications?: NotificationPreferences;

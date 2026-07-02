@@ -516,9 +516,20 @@ describe('lint-dev-agent-dark-gate', () => {
       // key below it DOWN by +9. RE-VERIFIED by hand via the attributor on the edited
       // ConfigDefaults (each still maps to a real `enabled: false,` line).
       '1342': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1464': 'cartographer.freshnessSweep.enabled',
-      '1509': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1534': 'cartographer.subtreeNav.llmRerank.enabled',
+      // autonomous-scope-accretion-completion §4: a NEW
+      // autonomousSessions.completionDiscipline.scopeAccretion block (`enabled: true`
+      // + breakerK — default ON, the documented maturation-path exception) plus the
+      // maxDurationMs ceiling comment (~19 lines total) was inserted after realCheck —
+      // BELOW the multiMachine block (threadlinePairing unshifted) and ABOVE the
+      // cartographer block. `enabled: true` is not an attributed dark-gate literal,
+      // so it introduces NO new attributed path — it ONLY shifts the three
+      // cartographer keys below it DOWN by +19 relative to the post-#1323 main
+      // line-map (1464→1483, 1509→1528, 1534→1553). RE-VERIFIED via the attributor
+      // on the rebase-MERGED ConfigDefaults (each still maps to a real
+      // `enabled: false,` line).
+      '1483': 'cartographer.freshnessSweep.enabled',
+      '1528': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1553': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

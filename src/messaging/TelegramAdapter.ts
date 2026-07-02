@@ -557,6 +557,25 @@ export class TelegramAdapter implements MessagingAdapter {
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
   public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number }) => void) | null = null;
+
+  /**
+   * Scope-accretion ratification observer (spec autonomous-scope-accretion-
+   * completion.md R45): fired for every AUTHENTICATED inbound TEXT topic
+   * message on the server's own long-poll receive path — the trigger +
+   * confirmation matcher consumes ONLY messages the server itself received
+   * from Telegram (never any on-disk history file). Signal-only: fired
+   * fire-and-forget AFTER auth gating; a throwing observer never blocks
+   * message routing. Carries reply_to_message_id so a confirmation can be
+   * reply-anchored to the recorded server-authored enumeration (R38).
+   */
+  public onScopeAccretionInbound: ((evt: {
+    topicId: number;
+    text: string;
+    senderUid: string;
+    messageId: number;
+    replyToMessageId?: number;
+    at: number;
+  }) => void) | null = null;
   /**
    * Outbound relay for a TOKENLESS standby (bug #7). When this adapter has no bot
    * token — a multi-machine pool standby serving a session moved to it — it cannot
@@ -4536,6 +4555,23 @@ export class TelegramAdapter implements MessagingAdapter {
       telegramUserId: msg.from.id,
       forwarded: isForwarded,
     });
+
+    // Scope-accretion ratification observer (R45) — the LIVE receive path.
+    // Fire-and-forget: a throwing observer must never block message routing.
+    if (this.onScopeAccretionInbound) {
+      try {
+        this.onScopeAccretionInbound({
+          topicId: numericTopicId,
+          text,
+          senderUid: String(msg.from.id),
+          messageId: msg.message_id,
+          replyToMessageId: msg.reply_to_message?.message_id,
+          at: msg.date * 1000,
+        });
+      } catch (err) {
+        console.error(`[telegram] scope-accretion observer error (ignored): ${err}`);
+      }
+    }
 
     // Sentinel intercept — fires BEFORE routing to detect emergency stop/pause.
     // This runs in the server process, separate from the session, so it can

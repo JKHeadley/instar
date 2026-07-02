@@ -102,6 +102,7 @@ export default defineConfig({
             { label: 'Self-Healing Remediator', slug: 'features/remediator' },
             { label: 'Task Flows', slug: 'features/task-flows' },
             { label: 'Correction & Preference Learning', slug: 'features/correction-preference-learning' },
+            { label: 'Scope-Accretion Completion Discipline', slug: 'features/scope-accretion' },
           ],
         },
         {

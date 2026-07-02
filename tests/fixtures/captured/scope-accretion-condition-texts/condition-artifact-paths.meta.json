@@ -1,0 +1,8 @@
+{
+  "source": "REAL registered completion-condition text from .instar/autonomous/29723.local.md — contains real path tokens (research/llm-pathway-bench/HANDOFF.md) that do NOT match the deliverable globs",
+  "command": "re.search(r'^completion_condition: \"(.*)\"$', …)",
+  "capturedAt": "2026-07-02T08:00:44Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "none",
+  "note": "Path tokens outside the deliverable globs declare NOTHING (grammar = token regex ∩ deliverable globs)."
+}
