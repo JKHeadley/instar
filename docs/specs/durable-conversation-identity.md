@@ -225,11 +225,17 @@ conversation than your existing commitments here").
 candidate(routingKey) = -(Math.abs(h) + 1)   where h = the deployed 32-bit sum-shift hash
                                              over the ROUTING KEY (thread-aware — the
                                              slackRoutingKeySyntheticId semantics)
-mint(key):
+mint(key, { durableBinding }):
   existing = registry.byTuple(tuple(key))    → return existing.id          (idempotent)
   id = candidate(routingKey(key))
-  while registry.occupies(id) for a DIFFERENT tuple:  id -= 1              (probe DOWN)
-  persist { key, tuple, id, … } durably (atomic write), THEN return id
+  probes = 0
+  while registry.occupies(id) for a DIFFERENT tuple:                       (probe DOWN)
+    id -= 1; if (++probes > MAX_PROBE_DISTANCE) → typed mint-failure → §3.6 pending-mint path
+  assign { key, tuple, id, … } to the authoritative in-memory cache + reverse index (sync)
+  if (durableBinding OR probes > 0):                                       (WAL — see below)
+    append+fsync one journal line to logs/conversation-registry.jsonl BEFORE returning id
+  schedule the batched full-store snapshot write (off the hot path)
+  return id
 ```
 
 - **`registry.occupies(id)`** treats an id as occupied if it is a live conversation's id
@@ -238,13 +244,43 @@ mint(key):
 - **Probe direction is DOWN (`id -= 1`) and is FROZEN FOREVER** (frontloaded decision 2).
   Rebuild determinism (§3.3 property 3) and cross-machine convergence both require every
   implementation, on every version, to probe identically.
+- **The local probe loop is BOUNDED by the SAME `MAX_PROBE_DISTANCE = 64` the ingest
+  coherence check uses (§3.5)** — scalability-N2. This is a hard invariant: a local mint may
+  NEVER produce an id further than 64 below its candidate, because every peer's ingest would
+  quarantine such an entry as a suspected pre-squat (local-probe-distance ≤ ingest-bound). A
+  probe overflow (astronomically unlikely — 64 consecutive occupied ids near a random point
+  in a 2³¹ space) degrades to the §3.6 pending-mint path, never a silently-un-ingestable id.
+- **The WAL rule (codex-R3-1, scalability-N1, adversarial-A, security-1 — four-reviewer
+  convergent).** The id is assigned synchronously in-memory (so `returned == will-persist`
+  for in-memory reads), but "persist THEN return" is realized on the DURABILITY axis by a
+  cheap append+fsync of ONE journal line — NOT the O(N) full-store JSON write, which stays
+  batched. This synchronous journal append is REQUIRED (before the id is handed to a
+  consumer that will durably bind to it) for two cases where the id is NOT deterministically
+  re-derivable after a crash: (a) a **probed** id (probe order is lost if only the batched
+  snapshot carries it), and (b) any **durable-binding-forced** mint (§3.3 breaker carve-out —
+  a commitment/working-set bind). §6.2 journal replay then restores these across a hard
+  crash in the assign→snapshot window. A pure SPECULATIVE, non-probed inbound mint needs no
+  synchronous write (its candidate re-mints deterministically for free on the next inbound),
+  so it rides the batched snapshot only — no whole-file write on the hot path, the §3.4
+  freeze pattern is never reintroduced.
 
 Why the legacy hash is the candidate — three load-bearing properties:
 
-1. **Zero-loss adoption.** Every synthetic id already durably written (TopicMemory
-   message + summary rows; any PresenceProxy state) was computed by this hash over the
-   routing key. A conversation's first mint lands on the SAME id the legacy code produced
-   — existing history attaches to the registered conversation instead of orphaning.
+1. **Zero-loss adoption — scoped honestly (codex-R3-2).** The claim is proven ONLY for
+   CHANNEL-LEVEL ids, which is all that durable stores actually hold today: the sole durable
+   negative-id writer before this spec is the TopicMemory dual-write (`server.ts:13216-13227`),
+   which hashes the bare **channelId** (channel-level), and the boot adoption pass (§6.2)
+   re-mints exactly those channel-level keys from `slack-channel-registry.json` → same id,
+   history attaches. **Inventory of durable stores that can hold negative ids:** TopicMemory
+   (channel-level, adoption-covered); PresenceProxy state (in-memory, non-durable — nothing
+   to adopt); the §10.5 SessionRefresh binding (thread-aware, but session-resume state, not a
+   durable follow-through consumer). **Thread-level ids are NOT claimed zero-loss**: no
+   durable store holds one today (Slack follow-through does not exist yet — that is what this
+   spec builds), and any future thread-level id is re-minted deterministically on its next
+   inbound (its routing key reappears) OR restored by journal replay if it carried a durable
+   binding (the §3.3 WAL rule). The one-way hash means a durable thread-level id with NO
+   journal entry and NO future inbound is unrecoverable — which is exactly why the WAL rule
+   fsyncs the journal line before a thread-level binding commits.
 2. **Mixed-fleet convergence with zero coordination.** During a version-skew window, an
    old server computes the hash directly; a new server mints via the registry with the
    hash as candidate. Same key → same id on both, without any cross-version protocol.
@@ -281,11 +317,18 @@ any authorized sender, a looping bot, or a channel-rename/thread-flood storm can
 unbounded durable entries. A per-channel, per-window mint budget sits at the mint
 chokepoint, with a critical carve-out (scalability-F1, adversarial-A4-drain):
 
-- **A durable BINDING always forces registration.** When a consumer binds durable state to
-  a conversation (opening a commitment, a working-set carry — the paths that need
-  `resolve(id)` to work after a restart), the mint is registered REGARDLESS of budget. This
-  set is bounded (durable bindings are far rarer than inbound messages) and is the only path
-  where a deferred registration would be observable as a lost `resolve`.
+- **A durable BINDING forces registration — but the bypass carries its OWN cap
+  (adversarial-B; "guard bypass carries its own cap").** When a consumer binds durable state
+  to a conversation (opening a commitment, a working-set carry — the paths that need
+  `resolve(id)` to work after a restart), the mint is registered REGARDLESS of the speculative
+  budget, AND the WAL rule (§3.3) fsyncs its journal line first. Because forcing registration
+  is itself an escape hatch around the growth breaker, it gets its OWN separate, HIGHER
+  per-window budget with a defined TERMINAL behavior at the cap: a typed refusal on the
+  binding-open (`POST /commitments` returns a typed "conversation-registration-capacity"
+  error the session surfaces) + ONE deduped attention item — NEVER a silent drop (a drop would
+  reopen the lost-`resolve` hole). Reaching this cap is extreme (durable bindings are far
+  rarer than inbound messages, and mint is authorized-sender-gated fail-closed +
+  `POST /commitments` is Bearer-gated), so it is a loud backstop, not a normal path.
 - **The breaker only defers SPECULATIVE inbound-triggered registrations, and defers them to
   NOWHERE — it DROPS them (zero pending state).** The candidate id is deterministic and
   recomputable from the routing key, so a dropped speculative registration re-mints for free
@@ -322,8 +365,8 @@ deduped attention item (the TopicPlacementPinStore pattern). Entry shape:
       // written as "replicated" on ingest and only upgraded LOCALLY to "adopted-replicated"
       // on first corroboration. deliverToConversation resolves ONLY the three local origins.
       "origin": "adopted-legacy-hash" | "minted-probed" | "adopted-replicated" | "replicated",
-      "reachability": "ok" | "unreachable",   // non-identity delivery state (§5)
-      "hlc": { "physical": 0, "logical": 0, "node": "…" },
+      "reachability": "ok" | "unreachable",   // LOCAL-authoritative delivery state (§5.1); enum-clamped on ingest; a replicated value is display-only + NEVER drives the owner's dead-letter (security-2)
+      "hlc": { "physical": 0, "logical": 0, "node": "…" },  // the emitter-ticked record HLC; the alias-tiebreak clock (§3.5), receipt-clamped on ingest — NOT a second clock
       "label": "#engineering"            // display-only, refreshable, sanitized on render
     }
   },
@@ -342,17 +385,24 @@ serializations, event loop frozen for minutes, `/health` 000, watchdog SIGKILL l
 Mitigations shipped WITH this spec, not deferred:
 - The adoption pass (§6.2) and any burst run inside a **batched-save window** (one flush),
   mirroring CommitmentTracker's post-freeze `batchingSaves`.
-- Delivery never waits on the durable WRITE — but the id is assigned SYNCHRONOUSLY
-  (scalability-S1). The mint assigns the id against the authoritative in-memory cache +
-  id→key reverse index, **probe included** (both are O(1)/cheap synchronous ops), so the id
-  RETURNED always equals the id that will PERSIST — no misdelivery window, and never a raw
-  pre-probe candidate that could be a live foreign-tuple id. Only the durable `saveStore()`
-  write is deferred off the hot path (batched/debounced); `mutate()` is used purely for
-  persistence, not for id assignment. Queue overflow (the CommitmentTracker
-  `MUTATE_QUEUE_MAX_DEPTH=256` precedent) degrades to the §3.6 pending-mint path. Returning
-  a raw candidate BEFORE synchronous assignment is reserved strictly for the registry-
-  *unavailable* path (§3.6), whose heal repairs the affected binding's id FORWARD — never by
-  aliasing onto a live foreign id (which §3.5 would refuse anyway).
+- Delivery never waits on the O(N) full-store WRITE — but the id is assigned SYNCHRONOUSLY
+  and its DURABILITY is anchored by a cheap journal append (the WAL model, §3.3). The mint
+  assigns the id against the authoritative in-memory cache + id→key reverse index, **probe
+  included** (O(1) synchronous ops), so the id RETURNED always equals the id that will
+  PERSIST — no misdelivery window, never a raw pre-probe candidate. **A probed or
+  durable-binding-forced mint additionally append+fsyncs ONE journal line to
+  `logs/conversation-registry.jsonl` BEFORE the id is handed to the durable consumer**
+  (codex-R3-1/scalability-N1/adversarial-A/security-1: the ids that are NOT deterministically
+  re-derivable after a hard crash — probed ids lose their order, forced bindings may be
+  thread-level — must be on disk before a commitment binds to them; §6.2 replay restores
+  them). The journal append is O(1) (append-only line), NOT the O(N)
+  `JSON.stringify`+`writeFileSync` that caused the freeze — so this reintroduces NO whole-file
+  write on the hot path. Only the full-store `saveStore()` SNAPSHOT is deferred/batched;
+  `mutate()` is used purely for the snapshot, not for id assignment. Queue overflow (the
+  CommitmentTracker `MUTATE_QUEUE_MAX_DEPTH=256` precedent) degrades to the §3.6 pending-mint
+  path. Returning a raw candidate BEFORE synchronous assignment is reserved strictly for the
+  registry-*unavailable* path (§3.6), whose heal repairs the affected binding's id FORWARD —
+  never by aliasing onto a live foreign id (which §3.5 would refuse anyway).
 - `GET /conversations/health` carries `entryCount` + `fileSizeBytes` with a threshold
   attention item (design ceiling stated: ~50k entries / ~10MB is the JSON-store ceiling).
 - **Named escape hatch (not deferred silently):** past the ceiling, migrate to
@@ -393,9 +443,12 @@ divergence — a probe on one side) arrives as TWO DISTINCT recordKeys that NEVE
 foundation conflict path. The conversations store detects the same-tuple pair in its OWN
 tuple index and writes the LOCAL alias entirely ABOVE the foundation — **zero foundation
 change, no conflict surface to suppress** (that framing is dropped). Winner selection uses
-the **replication-envelope HLC** (the same clock the foundation's `classifyOriginSet`
-orders on — NOT a separate entry-level field), lower-HLC winner, tiebreak lexicographically
-smaller machineId; both machines apply the identical rule → convergence. The
+the **record-carried emitter HLC** (integration-F2 / lessons-NEW-2 — there is ONE HLC per
+record: the emitter-ticked value carried in the replication record's `data`, ordered on by
+the foundation's `classifyOriginSet`, and persisted as the entry's `hlc` field §3.4; the
+type-clamp receipt-clamps its `physical` on ingest so a forged `{physical:0}` cannot win),
+lower-HLC winner, tiebreak lexicographically smaller machineId; both machines apply the
+identical rule → convergence. The
 `adopted-replicated` local-origin copy (below) is emitted via the STANDARD
 `ReplicatedRecordEmitter` so its `observed` witness ≥ the source entry's HLC (it
 witness-dominates and cannot manufacture a spurious self-conflict). The store re-applies
@@ -417,7 +470,12 @@ round required:**
   shape-clamped (`^[CDG][A-Z0-9]+$`), `threadTs` shape-clamped (`^\d{10}\.\d{6}$` or null);
   `key` regex `^slack:[A-Za-z0-9_.:-]+$`; timestamps ISO-8601-only; `hlc.physical`
   **clamped to a sane window around receipt time** (a forged `{physical:0}` cannot win the
-  alias tiebreak); `label` length-bounded AND sanitized/escaped on every render surface
+  alias tiebreak); `reachability` **enum-clamped `{ok, unreachable}` AND treated as
+  LOCAL-authoritative** — a replicated `reachability` is display-only and MUST NOT drive the
+  owner's terminal dead-letter (security-2: the owner reads only its OWN locally-observed
+  reachability; else a forged `unreachable` could kill a live beacon); `origin` is NOT
+  peer-clamped — it is overwritten to `replicated` locally on ingest (never trusted from the
+  wire); `label` length-bounded AND sanitized/escaped on every render surface
   (`GET /conversations`, dashboard) as untrusted peer data (WS2 render-safety).
 - **id↔key coherence check (security-M1, adversarial-A3).** On ingest the registry
   recomputes `candidate(routingKey(key))` and accepts the entry ONLY if `id === candidate`
@@ -575,23 +633,27 @@ inspects — never a thrown exception that skips beacon re-arm, and NEVER succes
   results, escalates via `raiseAttention` — so a funnel failure can never silently kill
   the beacon timer (today's `fire()` skips re-arm on throw — this is fixed as part of the
   proof-consumer increment).
-- **Permanent-vs-transient classification (adversarial-A2/NEW#1, codex-X4).** The Slack arm
-  classifies `is_archived` / `channel_not_found` / `not_in_channel` as a PERMANENT
-  `conversation-unreachable`. **The code is `is_archived`, NOT `channel_archived`** — that
-  is the error `chat.postMessage` actually returns for an archived channel (the codebase
-  uses `is_archived` throughout: `SlackAdapter.ts:1570`, `types.ts:160`, `ChannelManager.ts:34`);
-  `SlackApiError.slackError` carries the raw code. This set is DISTINCT from the adapter's
-  token-scoped `SlackApiError.permanent` (`PERMANENT_ERRORS`, `SlackApiClient.ts:32-41`) — it
-  must not reuse that flag. §10 pins the exact set in a Tier-1 test. On a permanent error the
-  registry entry's `reachability` flips to `unreachable` (non-identity ADVISORY metadata,
-  never deletion, and it NEVER gates delivery), the beacon treats it as TERMINAL → ONE
+- **Permanent-vs-transient classification (adversarial-A2/NEW#1, codex-X4, lessons-NEW-3).**
+  The Slack arm reads the raw error code from **`SlackApiError.slackError`** (`SlackApiClient.ts:131,138`
+  — the `data.error` STRING returned by `chat.postMessage`, NOT the channel-property boolean
+  `channel.is_archived`) and classifies `{is_archived, channel_not_found, not_in_channel}` as
+  a PERMANENT `conversation-unreachable`. **The code is `is_archived`, NOT `channel_archived`.**
+  This set is DISTINCT from the adapter's token-scoped `SlackApiError.permanent`
+  (`PERMANENT_ERRORS`, `SlackApiClient.ts:32-41` = auth/token codes) — it must not reuse that
+  flag. **Drift canary (L5):** an unrecognized permanent-SHAPED Slack error (a channel-state
+  code not in the set — Slack could add one) does NOT get silently mis-bucketed; it is treated
+  transient (safe default — beacon retries) AND raises ONE deduped attention item so the set
+  can be updated. §10 pins the exact set + the canary in a Tier-1 test. On a permanent error
+  the entry's `reachability` flips to `unreachable` (LOCAL-authoritative ADVISORY metadata,
+  never deletion, NEVER gates delivery — the OWNER reads only its OWN locally-observed
+  reachability, never a peer's replicated value, §3.5). The beacon treats it as TERMINAL → ONE
   `raiseAttention` dead-letter. The flip is IDEMPOTENT (already-`unreachable` → no write) and
-  routed through the SAME batched/debounced flush as other metadata writes, so a mass event
-  (bot removed from a workspace, org offboarding) coalesces into one write instead of an
-  O(N)-per-channel write storm on the failure path (scalability-F2). Transient errors retry
-  per existing behavior and never durably flip. `reachability` is auto-cleared back to `ok`
-  on the next successful delivery or authenticated inbound on the tuple (a re-invited /
-  un-archived channel is never stuck).
+  rides the SAME batched flush, so a mass event (bot removed from a workspace, org offboarding)
+  coalesces into one write, not an O(N)-per-channel write storm on the failure path
+  (scalability-F2). Transient errors retry and never durably flip. `reachability` auto-clears
+  to `ok` on the next successful delivery or authenticated inbound (a re-invited / un-archived
+  channel is never stuck; permanent-as-transient self-heals via the N-fail dead-letter,
+  transient-as-permanent self-heals via auto-clear — the bounded blast radius L5 requires).
 
 **§5.2 Bounded notification surface (P17 — lessons-F8).** The funnel is the ONE chokepoint
 every migrated consumer rides, so the per-conversation delivery budget lives HERE: `id < 0`
@@ -671,12 +733,21 @@ roadmap item and slots in UNDER this funnel without changing its callers.
 9. **Bespoke conversations replicated store** (dark, dev-gated, dryRun-first — the
    multi-machine increment integration-F1/security-NEW-2/lessons-F1 required as a named,
    scheduled step, not a hand-wave): the id-keyed replicated store doing its own tuple-first
-   merge + local alias derivation (§3.5), re-applying the WS2 hardening, with the
-   `stateSyncConversations` `DEV_GATED_FEATURES` entry (the one-line pattern at
-   `devGatedFeatures.ts:408-449`) as its integration step and a wiring-integrity regression
-   test asserting the 7 existing WS2 stores still surface conflicts unchanged. This increment
-   is what §9's "enabling `stateSync.conversations` is the supported multi-machine Slack
-   posture" depends on; single-Slack-machine deployments (today) never reach it.
+   merge + local alias derivation (§3.5), re-applying the WS2 hardening. **Full new-replicated-
+   KIND wiring checklist (integration-R3-i — "zero foundation change" ≠ "zero replication-
+   subsystem wiring"), each mirroring the TopicPin precedent:** (a) JournalKind registration —
+   BOTH the static half (`CoherenceJournal.JOURNAL_KINDS`) and the dynamic half
+   (`ReplicatedKindRegistry`), cf. `TOPIC_PIN_RECORD_KIND` + `TOPIC_PIN_KIND_REGISTRATION`;
+   (b) a `StateSyncStores` config-surface entry for `conversations` so
+   `isStoreEmissionEnabled('conversations')` + the `selfStateSyncReceive` funnel resolve
+   (the four funnels at `devGatedFeatures.ts:404-407`); (c) the `stateSyncConversations`
+   `DEV_GATED_FEATURES` entry (the one-line pattern at `devGatedFeatures.ts:408-449`); (d) the
+   `RollbackUnmerge` `getByStore` store-key wiring (the `TOPIC_PIN_STORE_KEY` precedent — the
+   §9 "rollback-unmerge drops a peer namespace on disable" claim structurally depends on it);
+   (e) the emitter dark-gate. Plus a wiring-integrity regression test asserting the 7 existing
+   WS2 stores still surface conflicts unchanged. This increment is what §9's "enabling
+   `stateSync.conversations` is the supported multi-machine Slack posture" depends on;
+   single-Slack-machine deployments (today) never reach it.
 
 **Dark-window honesty (adversarial-A6/NEW#4).** While `followThrough` is dark/dry, a session
 CAN mint an id and open a commitment on it. To avoid a silently-broken promise, the
@@ -690,9 +761,13 @@ same dark gate it reports (adversarial-NEW#4). Silence is not an option.
 
 ### 6.2 Adoption pass + rebuild (boot-time ensure; PostUpdateMigrator backup-manifest entry)
 
-**Supervision Tier 0 (P7 — lessons-F11):** the adoption pass and funnel are pure
-deterministic data transforms with no policy decision — Tier 0, justified by golden-parity
-determinism, declared explicitly here.
+**Supervision Tier 0 (P7 — lessons-F11 + lessons-NEW-1):** the adoption pass, the funnel,
+AND the increment-9 bespoke-store MERGE (type-clamp, id↔key coherence, seize-refusal,
+quarantine, alias derivation, lower-HLC winner selection) are all pure deterministic
+clamp/merge transforms over untrusted peer data with NO context-dependent policy decision —
+Tier 0, justified by golden-parity/deterministic-convergence testing, declared explicitly
+here (each is a first-class automated pipeline, so the declaration is explicit per P7, not
+implied).
 
 Idempotent, boot-time ensure (inside a batched-save window, §3.4): for every channel in
 `slack-channel-registry.json`, `mint(slack:<team>:<channel>)`. This pre-registers all
@@ -853,7 +928,15 @@ binding gap named in the audit closes to "creates the identity everything else c
 - **Golden parity**: `candidateIdForRoutingKey` reproduces the EXACT ids of all three
   legacy copies for channel-level keys, and of slackRefreshBinding for thread keys.
 - Probe: seeded collision → next-lower id; probe skips alias ids; both orderings converge
-  post-merge.
+  post-merge; **the local probe loop is bounded by `MAX_PROBE_DISTANCE=64` (the SAME constant
+  the ingest coherence check uses) — a >64 probe degrades to the pending-mint path, never a
+  peer-un-ingestable id** (local-probe-distance ≤ ingest-bound invariant).
+- **WAL crash-durability** (the four-reviewer round-3 finding): a PROBED mint and a
+  durable-binding-forced mint append+fsync their journal line BEFORE returning the id; kill
+  the process AFTER the binding commits but BEFORE the batched snapshot flush → on reboot the
+  id STILL resolves (journal replay); a pure speculative non-probed mint rides the snapshot
+  only (no synchronous journal write); the durable-binding path is never dropped by the
+  pending-mint drop. Assert no whole-file write on the commitment-open path.
 - Ingest clamps: positive/foreign-platform id refused; malformed key/shape refused; rebind
   refused; **id further than `MAX_PROBE_DISTANCE` from candidate(key) refused + quarantined**;
   **a legitimately-probed entry WITHIN the bound is ACCEPTED even without locally-visible
@@ -870,20 +953,30 @@ binding gap named in the audit closes to "creates the identity everything else c
   non-owning-machine → typed failure; **dryRun → typed non-delivery (NOT success) + audit
   line**; **permanent-error set is exactly `{is_archived, channel_not_found, not_in_channel}`
   — each flips `reachability` + dead-letters; distinct from the adapter's token-scoped
-  `SlackApiError.permanent`**; reachability flip is idempotent (already-unreachable → no
-  write) + auto-clears on next success; system-channel suppression preserved; opts
-  pass-through (isProxy/dedup) per-arm.
+  `SlackApiError.permanent`**; **an unrecognized permanent-shaped Slack error → treated
+  transient + ONE deduped attention item (drift canary, L5)**; reachability flip is
+  idempotent (already-unreachable → no write) + auto-clears on next success; **a peer-forged
+  replicated `reachability:unreachable` NEVER terminates a live beacon on the owner (owner
+  reads only its own locally-observed reachability)**; system-channel suppression preserved;
+  opts pass-through (isProxy/dedup) per-arm.
 - **Beacon survives + escalates a funnel typed failure** (fire() re-arm in finally; N-fail
   → raiseAttention) — the flagship-consumer safety test.
 - **Burst-invariant (P17)**: 1,000 attention items on one minted id → bounded Slack messages;
   the per-conversation budget map evicts stale entries (bounded, not monotonic).
 - Mint-rate breaker: over-budget conversation still delivers (in-memory candidate); a
   SPECULATIVE inbound registration is DROPPED (zero pending state) + re-mints on a later
-  inbound; **a durable BINDING (commitment open) FORCES registration regardless of budget**.
-- **Bespoke replicated store** (§6.1 step 9): same-tuple/different-id detected in the store's
-  tuple index → local alias, NEVER a foundation `recordConflict`; wiring-integrity regression
-  asserts the 7 existing WS2 stores still surface conflicts unchanged; `adopted-replicated`
-  copy emitted via the standard emitter witness-dominates (no self-conflict).
+  inbound; **a durable BINDING (commitment open) FORCES registration regardless of the
+  speculative budget, but its OWN higher cap yields a typed capacity-refusal + attention item
+  at the ceiling (never a silent drop — adversarial-B)**.
+- **Bespoke replicated store** (§6.1 step 9) — this is the highest-criticality new component,
+  so its merge gets EXHAUSTIVE race/divergence coverage (gemini-R2/R3): same-tuple/different-id
+  → local alias, NEVER a foundation `recordConflict`; every §3.5 divergence case (placeholder-
+  skew both orderings, out-of-order probed ingest, forged-origin, forged-reachability, seize)
+  as a property-style convergence assertion (both machines' perspectives reach the identical
+  final state); wiring-integrity regression asserts the 7 existing WS2 stores still surface
+  conflicts unchanged; `adopted-replicated` copy emitted via the standard emitter
+  witness-dominates (no self-conflict); a peer-forged `reachability:unreachable`/`origin` is
+  neutralized on ingest.
 
 **Tier 2 — integration** (full HTTP pipeline):
 - `GET /conversations*` routes: list/resolve/health, 404 semantics, Bearer auth, label
@@ -998,6 +1091,12 @@ Live-User-Channel-Proof scenario-matrix standard.
 16. **Recovery order: backup-restore primary → journal replay → deterministic re-mint
     last-resort (documented probe-order risk); audit-log retention exceeds backup cadence**
     — §6.2, §8.
+17. **Durability model = journal-as-WAL: a PROBED or durable-binding-forced mint append+fsyncs
+    ONE journal line BEFORE returning the id; the O(N) full-store snapshot stays batched; a
+    pure speculative non-probed mint rides the snapshot only (re-mints deterministically). The
+    local probe loop is bounded by `MAX_PROBE_DISTANCE=64` (= the ingest bound). Zero-loss
+    adoption is claimed ONLY for channel-level ids (the inventory of durable negative-id
+    stores); thread-level ids re-mint on next inbound or restore via the WAL.** — §3.3, §3.4.
 
 ## Open questions
 
