@@ -52,7 +52,7 @@ soakWindowDays?: number;       // graduated-rollout soak budget, days from decla
                                // constant). 0/absent ⇒ no grace → on-dry-run is immediately a Gap.
 declaredLoadBearingAt?: string; // ISO date the flag was added (manifest constant)
 ```
-**Manifest lint (mirrors the existing `criticalPath`-required lint):** when
+**Manifest lints (both NEW — no such field/lint exists in `guardManifest.ts` today):** when
 `loadBearing` is true, `criticalPath` is required; and when `soakWindowDays > 0`,
 `declaredLoadBearingAt` is REQUIRED and must be a valid ISO date. If it is absent or
 malformed at runtime, the soak clause cannot be evaluated → the guard falls to the loud
@@ -207,7 +207,7 @@ per guard), no per-guard disk on any hot path.
 ## 3. Decision points touched
 
 No new block/allow/route gate. G3 adds inventory FLAGS, one probe anomaly class on its own
-health key, and one PIN-gated ack route that only SUPPRESSES a signal. Judgment is
+separate EPISODE TRACK, and one PIN-gated ack route that only SUPPRESSES a signal. Judgment is
 manifest curation (load-bearing set + soak windows) — frontloaded, reviewed like any
 manifest edit.
 
@@ -263,12 +263,14 @@ install degrades cleanly.
 ## 6. Rollback / rollout
 
 Classification (flags + summary + allowlist + criticalPath annotation), the accept route,
-and the separate-health-key channel ship ALWAYS-ON as pure observability — additive, never
+and the separate-episode-track wiring ship ALWAYS-ON as pure observability — additive, never
 gating (byte-identical `/guards` for a consumer ignoring the new fields). The PROBE alert
 on `load-bearing-gap` ships behind the existing GuardPostureProbe enablement + a
 `monitoring.guardPostureProbe.alertLoadBearingGaps` sub-flag (soak-gated default-on is
 automatic — soak windows are code constants). Rollback = drop the sub-flag; `/guards`
-keeps the classification. No new notification surface beyond the one dedicated health key.
+keeps the classification. The notification surface is the SEPARATE EPISODE TRACK — at most
+two bounded per-episode, aggregated forum topics (the acute track + the load-bearing-gap
+track), never per-guard; the inert `healthKey` field on these items is not the mechanism.
 
 **Agent Awareness (mandatory).** Extend `src/scaffold/templates.ts` → `generateClaudeMd()`
 (the "Guard Posture — `GET /guards`" section) with the `loadBearingGap` /
@@ -290,7 +292,7 @@ reach existing agents because the manifest ships as code.
 6. **Soak is the GRADUATE arm, time-bounded, not an accept** — `loadBearingSoaking` within
    a manifest window, lapses to the loud Gap at window end; never a code-shipped shrug.
 7. **Observe-only** — Signal vs. Authority; no gating.
-8. **Always-on classification/route/channel; opt-in alert.**
+8. **Always-on classification/route/episode-track wiring; opt-in alert.**
 9. **Both `deriveGuardRow` AND `buildGuardInventory` stay PURE; thread at ALL 3 build sites
    (round-3 + round-4 fix)** — the caller reads the accept file once and threads the map +
    `now` via `opts`/`DeriveInput`; no `fs` in either function. The threading MUST cover every
