@@ -99,6 +99,29 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // enrichment then never spends Anthropic quota. Only used by the dark
   // llmEnrichment path; the shipped deterministic auditor makes no LLM calls.
   StandardsCoverageEnrichment: 'job',
+
+  // ── Previously-uncategorized LLM callsites (LLM Routing Registry audit,
+  //    2026-07-01). Each calls an intelligence provider's .evaluate() but was
+  //    absent from this map AND passes no explicit attribution.category, so it
+  //    resolved to 'other' → the agent default framework (Claude) — silently
+  //    spending Anthropic quota instead of routing off-Claude like its peers.
+  //    Categorized by function (sentinel = background judgment call, gate =
+  //    pre-action allow/deny, reflector = extraction/summarization/analysis).
+  //    The drift-guard test (componentCategories-evaluate-coverage.test.ts)
+  //    keeps this map exhaustive over .evaluate() callsites going forward. ──
+  InputClassifier: 'sentinel',           // input auto-approve vs relay classification
+  SessionSummarySentinel: 'sentinel',    // summarize tmux output → task/phase/files
+  TelegramAdapter: 'sentinel',           // stall/idle alert-suppression judge (parity with SlackAdapter)
+  ResumeValidator: 'gate',               // does a resume UUID match the topic? (pre-resume gate)
+  Usher: 'reflector',                    // route a turn to candidate topics
+  TopicIntentExtractor: 'reflector',     // extract topic intent from a turn
+  PreCompactionFlush: 'reflector',       // extract durable facts before compaction
+  TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
+  LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state
+  openConversationBrief: 'reflector',    // generate an A2A conversation brief
+  'a2a-checkin': 'reflector',            // summarize A2A check-in threads (server:a2a-checkin)
+  'correction-learning': 'reflector',    // distill recurring corrections → preference (server:correction-learning)
+  'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
 };
 
 /**
