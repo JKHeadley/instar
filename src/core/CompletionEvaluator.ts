@@ -258,6 +258,13 @@ export class CompletionEvaluator {
       '- the agent is NOT actually stopping (it is continuing / re-scoping / moving',
       '  to another topic, or periodically checking for a peer reply while it keeps',
       '  advancing other work).',
+      '',
+      'If the transcript proposes NO stop/park/hand-off at all, answer STOP_OK —',
+      'there is nothing to block.',
+      'Wall-clock time is NEVER an off-ramp: "it is late", "2am", "end of the day",',
+      'or "a natural boundary" does not earn a stop while the run has remaining time',
+      'and in-scope work — built artifacts earn a stop only when the remaining work',
+      'is genuinely blocked or done.',
     ];
     // Signal-gated additions — ONLY when signals present, so an old hook's
     // payload (no signals) yields a byte-identical prompt to today.
