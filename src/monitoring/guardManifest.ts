@@ -88,6 +88,51 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     soakWindowDays: 30,
     declaredLoadBearingAt: '2026-07-01',
   },
+  // ── U4.3 — rope-health recovery probe (docs/specs/u4-3-breaker-recovery-probe.md §3) ──
+  {
+    key: 'multiMachine.meshTransport.recoveryProbeEnabled',
+    kind: 'config',
+    configPath: 'multiMachine.meshTransport.recoveryProbeEnabled',
+    // Dev-gated: `enabled` OMITTED from ConfigDefaults (resolveDevAgentGate) —
+    // dark-default on the fleet, live (dry-run) on a development agent.
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.meshTransport.recoveryProbeDryRun',
+    expectedTickMs: 5_000, // rides the ~5s lease-pull tick (the carrier)
+    process: 'server',
+    expectRuntime: false,
+    component: 'RopeRecoveryProber',
+    description: 'U4.3 traffic-independent recovery probe for dead mesh ropes (pinned signed canary dials feeding the one HealthRecord authority; episode-scoped, P19 15-min floor, escalate-once per episode).',
+    // G3 (R-r2-6): this is a GUARD for a live incident class (a healed rope
+    // presumed dead for a week), so a dark/stalled state must classify as
+    // loadBearingGap/loadBearingSoaking — never sit silently off. The soak
+    // constants make the day-one dev dry-run posture classify loadBearingSoaking
+    // (a guard graduating within its bounded window), not an instant Gap alarm.
+    loadBearing: true,
+    criticalPath: 'mesh reachability recovery',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-02',
+  },
+  // ── U4.5 — rope-health alerts monitor (docs/specs/u4-5-rope-health-alerts.md §4) ──
+  {
+    key: 'monitoring.ropeHealth.enabled',
+    kind: 'config',
+    configPath: 'monitoring.ropeHealth.enabled',
+    // Dev-gated: `enabled` OMITTED from ConfigDefaults (resolveDevAgentGate) —
+    // dark-default on the fleet, live on a development agent day one.
+    defaultEnabled: false,
+    expectedTickMs: 30_000, // the monitor's OWN bounded evaluation loop (R-r2-2)
+    process: 'server',
+    expectRuntime: false,
+    component: 'RopeHealthMonitor',
+    description: 'U4.5 rope-health alerts — deterministic sleep-aware mesh-degradation classifier (ok/degraded/peer-offline/urgent) with episode-deduped HIGH partition alerts + Tailscale key-expiry warnings.',
+    // G3: this IS the alerting layer for mesh reachability — a partition with the
+    // monitor dark is exactly the silent-message-loss precondition it exists to
+    // surface, so a dark/stalled state must classify loadBearingGap/Soaking.
+    loadBearing: true,
+    criticalPath: 'mesh partition alerting',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-02',
+  },
   {
     key: 'multiMachine.sessionPool.holdForStability.enabled',
     kind: 'config',

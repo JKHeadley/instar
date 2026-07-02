@@ -1175,6 +1175,9 @@ export interface RouteContext {
   ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler | null;
   /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
   secretSync?: import('../core/SecretSync.js').SecretSyncHandle | null;
+  /** U4.5 rope-health alerts monitor (u4-5-rope-health-alerts) — backs
+   *  GET /mesh/rope-health. Null/absent when the dev gate resolves dark (503). */
+  ropeHealthMonitor?: import('../monitoring/RopeHealthMonitor.js').RopeHealthMonitor | null;
   /** This machine's mesh id (machineId). Used by placement/transfer routes to tell
    *  whether the answering machine owns the topic. Null/absent (single-machine/dark). */
   meshSelfId?: string | null;
@@ -12927,6 +12930,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...verdict,
       machines: caps.map((c) => ({ machineId: c.machineId, nickname: c.nickname, online: c.online, pollingActive: c.pollingActive })),
     });
+  });
+
+  // ── U4.5 — rope-health alerts (u4-5-rope-health-alerts §2) ──
+  // The monitor's read surface: current classification + episode state + the
+  // deterministic ≤3-sentence digest the rope-health-digest job consumes.
+  // Dev-gated: ctx.ropeHealthMonitor is null on the fleet (resolveDevAgentGate
+  // dark) → 503; live on a dev agent day one. Bearer-authed via the standard
+  // router middleware. `?digest=1` records a digest-emission metric (the job's
+  // read); a plain read records nothing extra. Content-scrubbed by construction
+  // (rope KIND + machine NICKNAME + relative times only — never IPs/URLs/
+  // tailnet names/emails).
+  router.get('/mesh/rope-health', (req, res) => {
+    const monitor = ctx.ropeHealthMonitor;
+    if (!monitor) {
+      res.status(503).json({ error: 'rope-health monitor unavailable (monitoring.ropeHealth dark for this agent)' });
+      return;
+    }
+    if (req.query.digest === '1') monitor.recordDigestEmission();
+    res.json(monitor.status());
   });
 
   // G2 nobody-polling silence debounce — module-scoped streak across reads, so a

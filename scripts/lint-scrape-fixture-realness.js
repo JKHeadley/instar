@@ -56,6 +56,26 @@ export const SCRAPE_PARSERS = [
     testFile: 'tests/unit/framework-login-driver.test.ts',
     testName: 'parses the REAL wrapped Mac Mini login pane',
   },
+  // U4.3 (u4-3-breaker-recovery-probe §6): the recovery probe's typed-contract
+  // success classifier consumes untrusted wire bytes (a captive portal or wrong
+  // server can answer anything) — registered with captured byte-for-byte
+  // fixtures of real /mesh/rpc responses + real wrong-server/captive bodies.
+  {
+    parserSymbol: 'parseProbeResponse',
+    fixtureSlug: 'mesh-rpc-probe-responses',
+    testFile: 'tests/unit/ropeProbeContract.test.ts',
+    testName: 'classifies the REAL captured /mesh/rpc probe responses byte-for-byte',
+  },
+  // U4.5 (u4-5-rope-health-alerts §6): the key-expiry tier's parser consumes
+  // untrusted CLI stdout (`tailscale status --json` — carries IPs, emails,
+  // tailnet names that must NEVER leave the parser) — registered with captured
+  // byte-for-byte fixtures of the real command output (same-length redactions).
+  {
+    parserSymbol: 'parseTailscaleStatus',
+    fixtureSlug: 'tailscale-status',
+    testFile: 'tests/unit/tailscaleStatusParser.test.ts',
+    testName: 'parses the REAL captured tailscale status --json byte-for-byte',
+  },
 ];
 
 const REQUIRED_META_FIELDS = ['source', 'command', 'capturedAt', 'machine', 'redactions', 'note'];

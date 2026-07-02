@@ -64,6 +64,24 @@ export interface MultiMachineSyncStatus {
    * or no ropes advertised yet.
    */
   meshEndpoints?: string[];
+  /**
+   * U4.3 (u4-3-breaker-recovery-probe §3) — per-(peer, kind) rope health served
+   * from the PeerEndpointResolver.snapshot() seam via the RopeRecoveryProber's
+   * registration handle (`attachRopeHealthProvider`). Present ONLY when the
+   * prober is wired (dev-gate live); `syncStatus` itself is only ever serialized
+   * on the AUTHED /health branch, so mesh topology never leaks unauthenticated.
+   * Kind + counters only — no URLs/IPs (Decision 15 content scrub).
+   */
+  ropeHealth?: Array<{
+    peer: string;
+    kind: string;
+    state: 'healthy' | 'dead' | 'exhausted';
+    consecutiveFailures: number;
+    recoveryStreak: number;
+    lastResultAt: number | null;
+    lastProbeAt: number | null;
+    nextProbeDueAt: number | null;
+  }>;
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -216,6 +234,19 @@ export class MultiMachineCoordinator extends EventEmitter {
   private leaseStallSurfaced: boolean = false;
   /** F3 — per-incarnation latch so a silent standby relinquishes its held lease once. */
   private silentStandbyRelinquished: boolean = false;
+  /**
+   * U4.3 — the rope-health registration handle (the resolver instance is a
+   * closure-local in server.ts; the prober registers its merged view here so
+   * getSyncStatus can serve `ropeHealth` on the authed /health). Null = prober
+   * not wired (dev-gate dark) → the field is simply absent.
+   */
+  private ropeHealthProvider: (() => NonNullable<MultiMachineSyncStatus['ropeHealth']>) | null = null;
+  /**
+   * U4.3 — lease-pull tick listeners (the probe CARRIER: "no new scheduler, no
+   * new loop" — the prober attaches here and rides the existing ~5s pull tick).
+   * Each listener is error-isolated; a throwing listener never breaks the pull.
+   */
+  private leasePullTickListeners: Array<() => void> = [];
 
   constructor(state: StateManager, config: CoordinatorConfig) {
     super();
@@ -960,7 +991,36 @@ export class MultiMachineCoordinator extends EventEmitter {
         : undefined,
       preferredAwakeMachineId: this.config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null,
       meshEndpoints: this.selfMeshEndpointKinds(),
+      ...(this.ropeHealthProvider ? { ropeHealth: this.ropeHealthSafe() } : {}),
     };
+  }
+
+  /**
+   * U4.3 — register the rope-health read seam (the prober's merged
+   * resolver-snapshot + probe-scheduling view). getSyncStatus serves it as
+   * `ropeHealth` on the authed /health branch. Idempotent (last writer wins).
+   */
+  attachRopeHealthProvider(provider: () => NonNullable<MultiMachineSyncStatus['ropeHealth']>): void {
+    this.ropeHealthProvider = provider;
+  }
+
+  private ropeHealthSafe(): NonNullable<MultiMachineSyncStatus['ropeHealth']> {
+    try {
+      return this.ropeHealthProvider?.() ?? [];
+    } catch {
+      // @silent-fallback-ok: a read-only /health observability field — a throwing
+      // provider yields an empty list, never an error on the health path.
+      return [];
+    }
+  }
+
+  /**
+   * U4.3 — attach a listener to the ~5s lease-pull tick (the probe CARRIER; spec
+   * §2 "no new scheduler, no new loop, near-zero marginal cost"). Listeners run
+   * after each pull tick settles, each error-isolated.
+   */
+  attachLeasePullTickListener(listener: () => void): void {
+    this.leasePullTickListeners.push(listener);
   }
 
   /**
@@ -1216,6 +1276,17 @@ export class MultiMachineCoordinator extends EventEmitter {
     } finally {
       this.leasePulling = false;
       this.leasePullStartMonoMs = 0;
+      // U4.3 — the probe carrier: run attached tick listeners (error-isolated;
+      // the prober's onTick is synchronous eligibility scanning + fire-and-forget
+      // dials, so the pull cadence is never blocked).
+      for (const listener of this.leasePullTickListeners) {
+        try {
+          listener();
+        } catch {
+          // @silent-fallback-ok — a throwing tick listener (probe scan fault) must
+          // never break the lease pull loop; the next tick retries it.
+        }
+      }
       arm();
     }
   }

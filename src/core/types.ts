@@ -2222,6 +2222,28 @@ export interface MeshTransportConfig {
   maxProbeBackoffMs?: number;
   /** Bind host override (Decision 17). Default: '0.0.0.0' when enabled else '127.0.0.1'. */
   bindHost?: string;
+
+  // ── U4.3 — traffic-independent rope-health recovery probe (flat knobs,
+  //    docs/specs/u4-3-breaker-recovery-probe.md §5). ──
+  /**
+   * Recovery-probe master switch. DELIBERATELY OMITTED from ConfigDefaults so the
+   * developmentAgent gate resolves it (live-on-dev in dry-run day one, dark on
+   * the fleet) — see DEV_GATED_FEATURES `ropeRecoveryProbe`.
+   */
+  recoveryProbeEnabled?: boolean;
+  /** Dry-run SENDS real probes (harmless typed-refusal contract) and logs
+   *  would-close verdicts but never mutates the HealthRecord. Default true. */
+  recoveryProbeDryRun?: boolean;
+  /** P19 floor cadence for a permanently-dead / slow-but-alive rope. Default 900000 (15 min). */
+  recoveryProbeFloorMs?: number;
+  /** Consecutive probe failures before the exhaustion transition + escalate-once. Default 20. */
+  recoveryProbeExhaustAttempts?: number;
+  /** A probe-close→re-death inside this window counts as a probe failure for backoff. Default 600000. */
+  recoveryProbeReopenEpisodeWindowMs?: number;
+  /** Mid-recovery episode cadence (never the resolver's trivially-true ~5s). Default 45000. */
+  recoveryProbeMidIntervalMs?: number;
+  /** Consecutive successful probes WITHOUT lastKnownGood reclaim before floor cadence. Default 20. */
+  recoveryProbeMaxUnreclaimedSuccesses?: number;
 }
 
 export interface MultiMachineConfig {
@@ -4504,6 +4526,43 @@ export interface MonitoringConfig {
     inflightSpawnTtlMs?: number;
     /** Self-heal line on a live respawn (default true). */
     notifyUser?: boolean;
+  };
+  /**
+   * U4.5 — Rope-Health Alerts (docs/specs/u4-5-rope-health-alerts.md). The
+   * in-server RopeHealthMonitor: its own bounded 30s evaluation loop over the
+   * U4.3 PeerEndpointResolver.snapshot() seam, deterministic sleep-aware
+   * classification (ok / degraded / peer-offline / urgent), episode-deduped
+   * HIGH partition alerts, Tailscale key-expiry warnings, and the
+   * GET /mesh/rope-health read surface the rope-health-digest job consumes.
+   *
+   * `enabled` is DELIBERATELY OPTIONAL (dev-gate convention): omitted from
+   * ConfigDefaults so resolveDevAgentGate decides — LIVE on a development
+   * agent day one, DARK on the fleet (the route 503s, no timer exists).
+   */
+  ropeHealth?: {
+    /** Dev-gate convention: omit to let resolveDevAgentGate decide. */
+    enabled?: boolean;
+    /** Urgent (HIGH-alert) tier master — rides the same dev gate (default: true). */
+    urgentEnabled?: boolean;
+    /** Time-pinned flap filter on the all-down condition (default: 60000). */
+    urgentDebounceMs?: number;
+    /** Continuous health required before an episode ends (default: 600000). */
+    clearSustainMs?: number;
+    /** Tailscale key expiry warning horizon in days (default: 14). */
+    keyExpiryWarnDays?: number;
+    /**
+     * Telegram topic id the rope-health-digest job delivers to (mirrors the
+     * burnDetection.alertTopicId precedent — R-r2-8). Default UNSET: the digest
+     * job LOGS only; the operator sets their hub topic id to get delivery.
+     */
+    digestTopicId?: number;
+    /**
+     * HARD CAP on self-wake urgent suppression (default: 300000). Bounded per
+     * docs/audits/multi-machine-seamless-ux-audit-2026-07.md finding P1-A7:
+     * SleepWakeDetector can emit FALSE wake events (event-loop stalls misread
+     * as sleeps), so a "recently slept" signal is a short grace, never a veto.
+     */
+    wakeGraceMaxMs?: number;
   };
   /**
    * AutonomousProgressHeartbeat — a hedged, change-gated, sparse liveness

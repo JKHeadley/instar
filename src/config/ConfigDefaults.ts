@@ -141,6 +141,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     autonomousHeartbeat: {
       dryRun: true,
     },
+    // U4.5 — Rope-Health Alerts (docs/specs/u4-5-rope-health-alerts.md §5).
+    // DEV-GATED: `enabled` is DELIBERATELY OMITTED (not hardcoded false) so
+    // resolveDevAgentGate decides at runtime — LIVE on a development agent day
+    // one, DARK on the fleet (GET /mesh/rope-health 503s, no evaluation timer).
+    // Registered in DEV_GATED_FEATURES (`ropeHealthAlerts`). `urgentEnabled`
+    // rides the same gate (the action-bearing question is answered in the
+    // registry justification — R-r2-6). `digestTopicId` default UNSET (R-r2-8):
+    // the digest job logs only until the operator names their hub topic.
+    ropeHealth: {
+      urgentEnabled: true,
+      urgentDebounceMs: 60_000,
+      clearSustainMs: 600_000,
+      keyExpiryWarnDays: 14,
+    },
     // ResourceLedger — default-on so every agent durably records its rate-limit
     // events (breaker trips + sentinel detections) instead of losing them on
     // restart. Read-only observability; never gates. Event-driven, negligible
@@ -912,6 +926,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       unhealthyAfterFailures: 3,
       endpointEvictionMs: 3600000,
       maxProbeBackoffMs: 300000,
+      // U4.3 — traffic-independent rope-health recovery probe
+      // (docs/specs/u4-3-breaker-recovery-probe.md §5). `recoveryProbeEnabled`
+      // is DELIBERATELY OMITTED (not hardcoded false) so resolveDevAgentGate
+      // decides at runtime — LIVE (in dry-run) on a development agent, DARK on
+      // the fleet. Registered in DEV_GATED_FEATURES (`ropeRecoveryProbe`).
+      recoveryProbeDryRun: true,
+      recoveryProbeFloorMs: 900000,
+      recoveryProbeExhaustAttempts: 20,
+      recoveryProbeReopenEpisodeWindowMs: 600000,
+      recoveryProbeMidIntervalMs: 45000,
+      recoveryProbeMaxUnreclaimedSuccesses: 20,
     },
     // WS5.2 Account Follow-Me (docs/specs/ws52-account-follow-me-security.md). The
     // `enabled` literal is DELIBERATELY OMITTED (not hardcoded false) so

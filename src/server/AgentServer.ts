@@ -502,6 +502,8 @@ export class AgentServer {
     poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
     /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
     secretSync?: import('../core/SecretSync.js').SecretSyncHandle;
+    /** U4.5 rope-health alerts monitor — backs GET /mesh/rope-health (null = dark → 503). */
+    ropeHealthMonitor?: import('../monitoring/RopeHealthMonitor.js').RopeHealthMonitor | null;
     /** This machine's mesh id. */
     meshSelfId?: string;
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
@@ -2453,6 +2455,7 @@ export class AgentServer {
       topicPinStore: options.topicPinStore ?? null,
       ownershipReconciler: options.ownershipReconciler ?? null,
       secretSync: options.secretSync ?? null,
+      ropeHealthMonitor: options.ropeHealthMonitor ?? null,
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
       sendDrain: options.sendDrain ?? null,

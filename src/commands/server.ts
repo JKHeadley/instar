@@ -4407,6 +4407,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // honesty observer that STOPS attempting goes BLIND if the registry recovers.
     const MAX_BACKOFF_TICKS = 20;
     let leaseCoordinatorRef: LeaseCoordinator | undefined;
+    // U4.3/U4.5 — hoisted rope-health seams. The resolver + prober are closure-locals
+    // of the mesh-init block; U4.5's RopeHealthMonitor (constructed far below) reads the
+    // REAL resolver snapshot through `_ropeSnapshotSource` (never a copy), and the
+    // prober rides the coordinator's lease-pull tick.
+    let _ropeSnapshotSource: (() => import('../core/PeerEndpointResolver.js').RopeHealthSnapshotRow[]) | null = null;
+    let _ropeProber: import('../core/RopeRecoveryProber.js').RopeRecoveryProber | null = null;
     let liveTailBuffer: LiveTailBuffer | undefined;
     let liveTailSendTransport: HttpLiveTailTransport | undefined;
     let handoffWireTransport: HandoffWireTransport | undefined;
@@ -4705,6 +4711,133 @@ export async function startServer(options: StartOptions): Promise<void> {
         };
         await coordinator.initializeLease();
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
+
+        // ── U4.3 — traffic-independent rope-health recovery probe ──────────
+        // (docs/specs/u4-3-breaker-recovery-probe.md). Rides the lease-pull tick
+        // (attachLeasePullTickListener — the carrier, no new loop), dials each
+        // probe-eligible dead rope PINNED via a MeshRpcClient-built signed
+        // envelope (never the router-forward funnel), classifies the response by
+        // the exact typed G4 canary contract, and feeds recordResult on the ONE
+        // health authority. Dev-gated: recoveryProbeEnabled OMITTED from config
+        // ⇒ live (dry-run) on a development agent, dark on the fleet.
+        _ropeSnapshotSource = () => meshResolver.snapshot();
+        try {
+          const probeEnabled = resolveDevAgentGate(meshCfg?.recoveryProbeEnabled, config);
+          if (probeEnabled && meshEnabled()) {
+            const { RopeRecoveryProber } = await import('../core/RopeRecoveryProber.js');
+            const { buildRopeProbeCommand, parseProbeResponse } = await import('../core/ropeProbeContract.js');
+            const probeClientMod = await import('../core/MeshRpcClient.js');
+            const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+            let probeNonce = 0;
+            const probeClient = new probeClientMod.MeshRpcClient({
+              selfMachineId,
+              sign: (c) => signEd25519(c, idMgr.loadSigningKey()),
+              nonce: () => `${selfMachineId}:rope-probe:${Date.now()}:${++probeNonce}`,
+            });
+            const probeDryRun = meshCfg?.recoveryProbeDryRun !== false;
+            const ropeProber = new RopeRecoveryProber(
+              {
+                resolver: meshResolver,
+                // The same validated registry view the transport dials: resolve()
+                // validates URL shape per kind + the LAN-subnet gate, so the probe
+                // can never dial a forbidden host.
+                listTargets: () => {
+                  try {
+                    const reg = idMgr.loadRegistry();
+                    const out: Array<{ machineId: string; kind: import('../core/types.js').MeshEndpoint['kind']; url: string }> = [];
+                    for (const [id, e] of Object.entries(reg.machines ?? {})) {
+                      if (id === selfMachineId || e.revokedAt) continue;
+                      if (!e.lastKnownUrl && (e.endpoints?.length ?? 0) === 0) continue;
+                      for (const ep of meshResolver.resolve(id, e.endpoints, (e.lastKnownUrl ?? undefined) as string | undefined)) {
+                        out.push({ machineId: id, kind: ep.kind, url: ep.url });
+                      }
+                    }
+                    return out;
+                  } catch {
+                    // @silent-fallback-ok: an unreadable registry yields no probe
+                    // targets THIS tick — the next tick re-reads; never a crash on
+                    // the lease-pull carrier.
+                    return [];
+                  }
+                },
+                sendProbe: async (target) => {
+                  const started = Date.now();
+                  try {
+                    const env = probeClient.buildEnvelope(
+                      { machineId: target.machineId, url: target.url },
+                      buildRopeProbeCommand(selfMachineId, `${Date.now()}-${++probeNonce}`),
+                      leaseCoordinatorRef?.currentEpoch() ?? 0,
+                    );
+                    const res = await fetch(`${target.url.replace(/\/$/, '')}/mesh/rpc`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(env),
+                      signal: AbortSignal.timeout(10_000),
+                    });
+                    const raw = await res.text();
+                    const verdict = parseProbeResponse(raw, res.status);
+                    return {
+                      typedSuccess: verdict.typedSuccess,
+                      detail: verdict.detail ? `${verdict.classification}:${verdict.detail}` : verdict.classification,
+                      latencyMs: Date.now() - started,
+                    };
+                  } catch (err) {
+                    return {
+                      typedSuccess: false,
+                      detail: `dial-failed: ${err instanceof Error ? err.message : String(err)}`,
+                      latencyMs: Date.now() - started,
+                    };
+                  }
+                },
+                raiseAttention: (item) =>
+                  telegram?.createAttentionItem({
+                    id: item.id,
+                    title: item.title,
+                    summary: item.body.slice(0, 160),
+                    description: item.body,
+                    category: 'rope-recovery-probe',
+                    priority: 'NORMAL',
+                    sourceContext: 'rope-recovery-probe',
+                  }),
+                recordMetric: (event) => {
+                  try {
+                    getFeatureMetricsRecorder()?.record({
+                      feature: 'rope-recovery-probe',
+                      kind: 'event',
+                      outcome:
+                        event === 'probe-failure' || event === 'exhaustion-trip'
+                          ? 'error'
+                          : event.startsWith('dry-run')
+                            ? 'noop'
+                            : 'fired',
+                      verdictId: event,
+                    });
+                  } catch {
+                    // @silent-fallback-ok: metrics are observability, never authority —
+                    // a recorder fault must not break the probe path.
+                  }
+                },
+                logger: (m) => console.log(pc.dim(`  ${m}`)),
+              },
+              {
+                dryRun: probeDryRun,
+                floorMs: meshCfg?.recoveryProbeFloorMs ?? 900_000,
+                exhaustAttempts: meshCfg?.recoveryProbeExhaustAttempts ?? 20,
+                reopenEpisodeWindowMs: meshCfg?.recoveryProbeReopenEpisodeWindowMs ?? 600_000,
+                midIntervalMs: meshCfg?.recoveryProbeMidIntervalMs ?? 45_000,
+                maxUnreclaimedSuccesses: meshCfg?.recoveryProbeMaxUnreclaimedSuccesses ?? 20,
+              },
+            );
+            _ropeProber = ropeProber;
+            coordinator.attachLeasePullTickListener(() => ropeProber.onTick());
+            coordinator.attachRopeHealthProvider(() => ropeProber.view());
+            console.log(pc.dim(`  Rope recovery probe: armed (${probeDryRun ? 'dry-run — sends real probes, never mutates health' : 'LIVE'})`));
+          } else {
+            console.log(pc.dim('  Rope recovery probe: dark (recoveryProbeEnabled resolves off on this agent)'));
+          }
+        } catch (err) {
+          console.warn(pc.yellow(`  Rope recovery probe init failed: ${err instanceof Error ? err.message : String(err)}`));
+        }
 
         // ── Handoff ack/yield wire (spec §8 G3d/G3e) ───────────────
         // The point-to-point channel the two machines use to negotiate a
@@ -19621,7 +19754,106 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    // ── U4.5 — Rope-Health Alerts monitor (docs/specs/u4-5-rope-health-alerts.md) ──
+    // Constructed by the real server boot with its OWN bounded 30s evaluation
+    // loop (R-r2-2), reading the REAL U4.3 resolver snapshot through the hoisted
+    // `_ropeSnapshotSource` seam (never a copy). DEV-GATED: monitoring.ropeHealth
+    // `enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate decides —
+    // LIVE on a development agent day one, DARK on the fleet (route 503s, no
+    // timer). Single-machine installs idle at zero cost (no peers). Torn down in
+    // the shutdown handler. Own try/catch: an init failure leaves it null
+    // (route 503s, deny-safe) and never blocks boot.
+    let ropeHealthMonitor: import('../monitoring/RopeHealthMonitor.js').RopeHealthMonitor | null = null;
+    try {
+      const rhCfg = config.monitoring?.ropeHealth;
+      if (resolveDevAgentGate(rhCfg?.enabled, config)) {
+        const { RopeHealthMonitor } = await import('../monitoring/RopeHealthMonitor.js');
+        const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+        const rhSelfId = coordinator?.identity?.machineId ?? machineHeartbeat.config.machineId;
+        ropeHealthMonitor = new RopeHealthMonitor(
+          {
+            // U4.3 hard data dependency: the resolver snapshot seam. Null until
+            // the mesh block wires it (single-machine → always []) — the monitor
+            // then idles (UNKNOWN fails toward NOT-urgent).
+            snapshot: () => _ropeSnapshotSource?.() ?? [],
+            selfMachineId: rhSelfId,
+            listPeers: () =>
+              (machinePoolRegistry?.getCapacities() ?? [])
+                .filter((c) => c.machineId !== rhSelfId)
+                .map((c) => ({
+                  machineId: c.machineId,
+                  nickname: c.nickname ?? c.machineId,
+                  registryOnline: c.online === true,
+                })),
+            // The mesh-INDEPENDENT liveness discriminator (R-r2-1): the git-synced
+            // coarse MachineHeartbeat file, parsed to epoch-ms.
+            readHeartbeatAtMs: (id) => {
+              const r = machineHeartbeatApi.read(id);
+              if (!r) return null;
+              const t = Date.parse(r.lastHeartbeatAt);
+              return Number.isFinite(t) ? t : null;
+            },
+            raiseAttention: (item) =>
+              telegram?.createAttentionItem({
+                id: item.id,
+                title: item.title,
+                summary: item.body.slice(0, 160),
+                description: item.body,
+                category: 'rope-health',
+                priority: 'HIGH',
+                sourceContext: 'rope-health',
+              }),
+            // One episode, one ask: while the lease layer's split-brain surface is
+            // active for this partition, its item wins — the monitor stays quiet.
+            splitBrainItemOpen: () => (coordinator?.getSyncStatus?.().splitBrainState ?? 'clear') !== 'clear',
+            stateFilePath: path.join(config.stateDir, 'state', 'rope-health.json'),
+            recordMetric: (event) => {
+              try {
+                getFeatureMetricsRecorder()?.record({
+                  feature: 'rope-health',
+                  kind: 'event',
+                  outcome:
+                    event === 'urgent-episode' || event === 'key-expiry-warning' || event.startsWith('transition-')
+                      ? 'fired'
+                      : event === 'detected-not-notified-retry'
+                        ? 'error'
+                        : 'noop',
+                  verdictId: event,
+                });
+              } catch {
+                // @silent-fallback-ok: metrics are observability, never authority —
+                // a recorder fault must not break the evaluation loop.
+              }
+            },
+            logger: (m) => console.log(pc.dim(`  ${m}`)),
+          },
+          {
+            urgentEnabled: rhCfg?.urgentEnabled !== false,
+            urgentDebounceMs: rhCfg?.urgentDebounceMs ?? 60_000,
+            clearSustainMs: rhCfg?.clearSustainMs ?? 600_000,
+            keyExpiryWarnDays: rhCfg?.keyExpiryWarnDays ?? 14,
+            wakeGraceMaxMs: rhCfg?.wakeGraceMaxMs ?? 300_000,
+          },
+        );
+        // Self-wake grace feed (the ONE thing SleepWakeDetector can tell us —
+        // OWN-machine wake). BOUNDED inside the monitor by wakeGraceMaxMs:
+        // docs/audits/multi-machine-seamless-ux-audit-2026-07.md finding P1-A7
+        // documented 26 FALSE wake events in one night (event-loop stalls
+        // misread as sleeps), so a wake signal is a short grace, never a veto.
+        sleepWakeDetector.on('wake', () => ropeHealthMonitor?.noteOwnWake());
+        ropeHealthMonitor.start();
+        console.log(pc.dim('  Rope-health monitor: live (own 30s evaluation loop)'));
+      } else {
+        console.log(pc.dim('  Rope-health monitor: dark (monitoring.ropeHealth resolves off on this agent)'));
+      }
+    } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; init failure leaves the
+      // monitor null → route 503s (deny-safe), never blocks boot.
+      console.warn(pc.yellow(`  Rope-health monitor init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`));
+      ropeHealthMonitor = null;
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
@@ -20408,6 +20640,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       registrySyncDebouncer?.stop();
       gitSync?.stop();
       coordinator.stop();
+      ropeHealthMonitor?.stop();
       coherenceMonitor.stop();
       commitmentTracker.stop();
       commitmentSentinel?.stop();

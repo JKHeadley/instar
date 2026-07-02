@@ -1,0 +1,12 @@
+{
+  "source": "real `tailscale status` (NO --json) stdout on the dev laptop — the realistic wrong-invocation/wrong-output body the parser must classify as not-parsed (the malformed arm)",
+  "command": "tailscale status",
+  "capturedAt": "2026-07-02T08:30:00Z",
+  "machine": "echo laptop (build worktree)",
+  "redactions": [
+    "hostnames -> same-length x/0 fill",
+    "login name -> same-length fill",
+    "IPv4 addresses (tailscale + LAN endpoint) -> same-length digit fill (IP grammar preserved)"
+  ],
+  "note": "Byte-for-byte column alignment of the live capture preserved (same-length redactions). Feeds parseTailscaleStatus's malformed classification: a non-JSON body must yield { parsed: false } and the expiry tier silently absent — never a throw."
+}

@@ -1185,6 +1185,23 @@
         "state/resume-queue.lock"
       ],
       "grandfathered": false
+    },
+    {
+      "category": "rope-health-monitor",
+      "description": "U4.5 RopeHealthMonitor durable debounce/episode memory (u4-5-rope-health-alerts §2) - per peer: condition, all-down onset, episodeKey, lastAlertAt, detected-not-notified flag. Transition-only writes with a short debounce; intra-episode counters lost to a restart are ACCEPTED (a restart re-debounces, never fabricates an episode). Machine-local BY DESIGN (rope health is per-machine-pair and directional); never authority.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/rope-health.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "bounded-set",
+        "maxOpenItems": 100,
+        "note": "One record per known peer machine (peers x 1) - bounded by the machine registry size; a peer's record is overwritten in place on every transition, never appended."
+      }
     }
   ]
 }

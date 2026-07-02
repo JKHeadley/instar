@@ -7240,6 +7240,26 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       }
     }
 
+
+    // U4.3 + U4.5 (u4-rope-probe-alerts) — Agent Awareness + Migration Parity:
+    // existing agents learn the rope recovery probe (why a dead rope came back by
+    // itself → /health ropeHealth) and the rope-health alerts monitor
+    // (GET /mesh/rope-health + the digest job + the partition-alert semantics).
+    // Body mirrors generateClaudeMd() byte-for-byte. Content-sniffed on the
+    // stable heading → idempotent. Harmless where both features are dark (the
+    // route 503s; the probe is inert).
+    if (!content.includes('Mesh Rope Health (recovery probe + partition alerts)')) {
+      content += `\n### Mesh Rope Health (recovery probe + partition alerts)
+
+Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) honest. **Recovery probe (U4.3):** a rope marked dead no longer stays presumed-dead for a week — an in-server prober rides the ~5s lease tick and re-dials dead ropes with a pinned, signed canary (typed-refusal contract; any-2xx never counts), feeding the ONE health authority so a healed rope closes in minutes. Episode-scoped with a 15-min P19 floor and ONE deduped escalation per episode. **Rope-health alerts (U4.5):** a monitor classifies each peer every 30s — \`ok\` (silence), \`degraded\` (a rope down, another carrying traffic — digest only), \`peer-offline\` (all ropes down AND its heartbeat stopped — a lid-close is NEVER an alarm), \`urgent\` (all ropes down while its git-synced heartbeat still ADVANCES = alive but partitioned → ONE HIGH attention item per episode; honest latency: a genuine partition is confirmed in ~30-90 min, bounded by the heartbeat+sync cadence). A Tailscale key expiring within 14 days warns in the digest.
+- Rope state per (peer, kind): \`curl -H \"Authorization: Bearer $AUTH\" http://localhost:${port}/health\` → \`multiMachine.syncStatus.ropeHealth\` (authed only).
+- The classification + digest: \`curl -H \"Authorization: Bearer $AUTH\" http://localhost:${port}/mesh/rope-health\` (503 = the monitor is dark on this agent). The daily \`rope-health-digest\` job logs the digest; set \`monitoring.ropeHealth.digestTopicId\` to have it delivered.
+- **When to use** (PROACTIVE): \"why did a dead rope come back by itself?\" → the recovery probe (read \`ropeHealth\`); \"is the mesh healthy? / why did I get a partition alert?\" → \`GET /mesh/rope-health\`. Alert text carries rope KIND + machine NICKNAME only — never IPs/tailnet names/emails.
+- Both ship dev-gated (\`multiMachine.meshTransport.recoveryProbeEnabled\`, \`monitoring.ropeHealth.enabled\` — omitted ⇒ live on a development agent, dark on the fleet; probe dry-run first via \`recoveryProbeDryRun\`). Specs: \`docs/specs/u4-3-breaker-recovery-probe.md\`, \`docs/specs/u4-5-rope-health-alerts.md\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mesh Rope Health awareness section');
+    }
+
     // multi-transport-mesh-comms — Agent Awareness + Migration Parity: existing
     // agents learn the multi-rope mesh transport (Tailscale/LAN/Cloudflare hedged
     // failover), the /health meshEndpoints read, the "why unreachable / why does
@@ -7322,6 +7342,7 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Self-Discovery',
       '**Publishing**',
       '**Private Viewing**',

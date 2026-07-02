@@ -74,6 +74,18 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Append-only local journal of content-free lifecycle events; no egress, no spend, no destructive action.',
   },
   {
+    name: 'ropeRecoveryProbe',
+    configPath: 'multiMachine.meshTransport.recoveryProbeEnabled',
+    description: 'U4.3 traffic-independent rope-health recovery probe — rides the lease-pull tick, sends pinned signed bogus-uid canary probes to dead mesh ropes and feeds the typed result into the ONE health authority (PeerEndpointResolver.recordResult), so a healed rope closes in minutes instead of staying presumed-dead (the week-long Tailscale strand).',
+    justification: 'Ships recoveryProbeDryRun:true (the dry-run canary): dry-run SENDS real probes — harmless by the typed-refusal payload contract (a signed bogus-uid deliverMessage the peer answers with not-router/sender-rejected; nothing can ever be injected) — but never mutates the HealthRecord. The only user-facing egress is the DEDUPED escalate-once attention item per (peer, kind, episode) — bounded, episode-keyed output, the same posture as the degradationLadderNeverSilent precedent already in this registry — so it is safe AND runnable live-on-dev rather than an action-bearing DARK_GATE_EXCLUSIONS case. P19 Eternal-Sentinel floor (15 min) bounds a permanently-dead rope in BOTH modes; no spend, no destructive action.',
+  },
+  {
+    name: 'ropeHealthAlerts',
+    configPath: 'monitoring.ropeHealth.enabled',
+    description: 'U4.5 rope-health alerts — the in-server RopeHealthMonitor: a bounded 30s evaluation loop over the U4.3 resolver snapshot with deterministic sleep-aware classification (ok/degraded/peer-offline/urgent), episode-deduped HIGH partition alerts, Tailscale key-expiry warnings, GET /mesh/rope-health, and the rope-health-digest daily job.',
+    justification: 'The urgent tier auto-posts HIGH attention items, which normally pushes a feature into DARK_GATE_EXCLUSIONS\' action-bearing category. This takes the OTHER branch deliberately (R-r2-6): the only egress is EPISODE-DEDUPED (ONE HIGH item per (machine-pair, episode); an already-open split-brain item wins and suppresses it), SLEEP-GATED (the mesh-independent git-synced heartbeat discriminator kills the lid-close false-alarm class by construction — a sleeping machine stops writing heartbeats, so it classifies peer-offline, never urgent), and it is OPERATOR-MANDATED partition alerting — the silent-partition gap is the incident class the operator directed this project to close. Same bounded-escalation posture as the degradationLadderNeverSilent precedent already in this registry. No spend (deterministic classifier, zero LLM), no destructive action; the digest job logs only until digestTopicId is set.',
+  },
+  {
     name: 'warmSessionA2A',
     configPath: 'threadline.warmSessionA2A.enabled',
     description: 'Warm-session pool for agent-to-agent delivery.',

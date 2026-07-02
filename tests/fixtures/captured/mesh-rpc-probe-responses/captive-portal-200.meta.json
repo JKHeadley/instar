@@ -1,0 +1,8 @@
+{
+  "source": "Apple captive-portal detection endpoint (the canonical captive-portal 200)",
+  "command": "curl -s http://captive.apple.com/hotspot-detect.html",
+  "capturedAt": "2026-07-02T08:10:26Z",
+  "machine": "echo laptop (build worktree)",
+  "redactions": [],
+  "note": "the untyped-2xx arm: a live network's captive portal answers 200 HTML to anything; structural bytes untouched"
+}

@@ -215,8 +215,19 @@ export class HttpLeaseTransport implements LeaseTransport {
         else this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, 'unconfirmed');
         return outcome;
       } catch (err) {
-        this.d.resolver!.recordResult(peer.machineId, ep.kind, false, this.now() - started);
-        this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, err instanceof Error ? err.message : String(err));
+        // U4.3 R-r2-1 (REQUIRED transport fix) — hedge-abort neutrality: when the
+        // hedge WINNER's finish() aborted this loser attempt (the hedge controller's
+        // `signal` is aborted and the rejection is abort-shaped), record NEUTRALLY —
+        // never recordResult(false). Without this, a recovering rope dialed as a
+        // hedge loser had its recoveryStreak reset perpetually by its healthy
+        // sibling's win (the week-long presumed-dead Tailscale rope). A real dial
+        // failure (network error, or OUR per-attempt timeout — whose abort fires the
+        // MERGED signal, not the hedge controller's) still records failure.
+        const abortedByWinner = signal.aborted && isAbortShapedError(err);
+        if (!abortedByWinner) {
+          this.d.resolver!.recordResult(peer.machineId, ep.kind, false, this.now() - started);
+          this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, err instanceof Error ? err.message : String(err));
+        }
         return { confirmed: false, lease: null as LeaseRecord | null };
       }
     };
@@ -441,6 +452,21 @@ interface MeshAckResponse {
   sig?: string;
   /** mesh-endpoint-http-propagation — the holder's advertised endpoints (pull RESPONSE). */
   endpoints?: unknown;
+}
+
+/**
+ * U4.3 R-r2-1 — is this rejection abort-shaped (a cancelled dial), as opposed to a
+ * real network/protocol failure? fetch rejects an aborted request with a DOMException
+ * named 'AbortError' (AbortSignal.timeout yields 'TimeoutError', which is a REAL
+ * per-attempt failure — but that abort fires only the merged signal, so the caller's
+ * hedge-controller `signal.aborted` check already excludes it unless a winner also
+ * confirmed, in which case neutrality is the correct call anyway).
+ */
+export function isAbortShapedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const name = (err as { name?: unknown }).name;
+  const code = (err as { code?: unknown }).code;
+  return name === 'AbortError' || code === 'ABORT_ERR' || code === 20;
 }
 
 /** Combine two AbortSignals — aborts when either does (Node 20.3+ AbortSignal.any, with fallback). */
