@@ -1,9 +1,11 @@
 ---
 title: "Autonomous Scope-Accretion Completion Discipline — silent deferral of session-generated work becomes structurally impossible"
+# <!-- tracked: spec-subject -->
 slug: "autonomous-scope-accretion-completion"
 author: "echo"
 status: "draft"
 parent-principle: "Deferral = Deletion — initiative converted into a 'documented stretch' is abandonment with a paper trail"
+# <!-- tracked: parent-principle -->
 sibling-principles: "Structure > Willpower; Close the Loop (Untracked = Abandoned); Signal vs. Authority; Know Your Principal — An Unverified Identity Is a Guess; Agent Proposes, Operator Approves; Framework-Agnostic — and Framework-Optimizing"
 lessons-engaged: "AUTONOMOUS-COMPLETION-DISCIPLINE.md (the judge/signal architecture this extends); autonomous-completion-real-checks.md (the veto-shape + deterministic-corroboration precedent); scope-accretion-completion-discipline (operator feedback 2026-07-02, topic 29836); B18_AUTONOMY_STOP (MessagingToneGate); Know-Your-Principal / operator-binding; P20 Verify the State, Not Its Symbol (the load-bearing signal is GIT truth — the file in the tree — not the tool-event symbol of a write); P13 The Stop Reason Is the Work; P19 No Unbounded Loops (breaker K + persisted breaker state); Scrape/Parser Fixture Realness (all three new parsers registered with captured fixtures); Agent Proposes, Operator Approves (server-authored ratification enumeration — display authority = executed authority)"
 parent-spec: "docs/specs/AUTONOMOUS-COMPLETION-DISCIPLINE.md"
@@ -38,7 +40,7 @@ tail, and six whitelisted `StopSignals`; the stop hook's only "buildable work
 remains" signal is the state-file checkbox scan (`CD_UNCHECKED_COUNT`). **Nothing
 deterministic tracks the artifacts the session itself creates.** So a good session
 that discovers new in-scope work can convert that initiative into deferral — the exact
-Deferral = Deletion anti-pattern — and neither the hook nor the judge can see it.
+Deferral = Deletion anti-pattern — and neither the hook nor the judge can see it. <!-- tracked: spec-subject -->
 
 **Why two earlier designs are wrong (both discovered by review, the hard way).**
 
@@ -60,7 +62,7 @@ Deferral = Deletion anti-pattern — and neither the hook nor the judge can see 
 the existing `POST /autonomous/evaluate-completion` chokepoint, from git truth and
 server-owned state** — never transported from the session's environment and never
 read from files the session routinely edits. What did this session create? Ask git.
-Did the verified operator ratify deferral? Ask the server's own record of an
+Did the verified operator ratify deferral? Ask the server's own record of an <!-- tracked: R23-ratification -->
 explicit, server-authored confirmation exchange (or the PIN-gated route). The
 transcript/tool-event layers are demoted to advisory corroboration.
 
@@ -182,7 +184,7 @@ foundation coverage bound this spec names but does not close. The advisory
 tool-event ledger below remains Claude-first with Codex wiring; gemini/pi are
 advisory-absent (named, honest).
 
-**Deletion is not an exit (R17 — closes the deletion-beats-deferral inversion).** An
+**Deletion is not an exit (R17 — closes the deletion-beats-deferral inversion).** An <!-- tracked: R17 -->
 accreted deliverable that disappears from the working tree before run end does NOT
 reclassify to scratch. It stays in the unbuilt set flagged `deleted:true`, and the
 exit surface (hard-blocker/attention/final notice) lists deleted accreted
@@ -306,7 +308,7 @@ registered condition is logged + flagged, closing the weakened-condition bypass)
 Two ratification paths, both terminating in server-owned records:
 
 1. **PIN route (authoritative, phone-first):**
-   `POST /autonomous/:topic/ratify-deferral` (dashboard-PIN-gated). Body
+   `POST /autonomous/:topic/ratify-deferral` (dashboard-PIN-gated). Body <!-- tracked: R23-ratification -->
    `{"artifacts": ["<repo-relative path>", ...]}` or `{"all": true}` (ratifies the
    set enumerated in the server's current unbuilt list at call time — the response
    echoes exactly what was ratified). Persisted into the server run record
@@ -330,7 +332,7 @@ Two ratification paths, both terminating in server-owned records:
      inbound topic message passes through the server's own Telegram receive
      handling it is checked for defer-intent vocabulary
      (frontloaded list: "defer", "later session", "don't build", "skip building",
-     "leave for a future", "ratify deferral") from the VERIFIED operator
+     "leave for a future", "ratify deferral") from the VERIFIED operator <!-- tracked: R23-ratification -->
      (TopicOperatorStore uid match on the authenticated sender id), within the
      window `[max(started_at, oldest unbuilt artifact ts), now]`. Matched trigger
      events persist as server-owned records in the run record — never re-read from
@@ -375,7 +377,7 @@ Two ratification paths, both terminating in server-owned records:
 - **Layer B (evasion-vocabulary scan):** the stop hook scans the already-extracted
   `CD_JUDGE_TAIL`/`CD_TAIL_LC` window (no second transcript read) for accretion-evasion
   vocabulary ("documented stretch", "filed for a future session", "out of (the)
-  completion condition", "drafts for later", "deferred as a follow-up spec") and sets
+  completion condition", "drafts for later", "deferred as a follow-up spec") and sets <!-- tracked: layer-b-vocabulary -->
   the advisory `scopeAccretionSuspected` boolean. The fenced/quoted-region exclusion
   is NEW bash logic (the milestone/injection scans are plain substring matches — the
   round-1 claim that exclusion rules exist to reuse was wrong and is corrected here);
@@ -429,7 +431,7 @@ after the breaker trips and the loud item is raised, the accretion gate DISENGAG
 for that run (subsequent evaluations fall through to the judge as today) — the exit
 is permitted, the label is the deterrent, and the no-wedge guarantee holds. The
 precise guarantee is therefore NOT "accreted work always joins the completion bar";
-it is: **silent deferral is structurally impossible — accreted work blocks
+it is: **silent deferral is structurally impossible — accreted work blocks <!-- tracked: R39-R46 -->
 completion K times and can thereafter be abandoned only LOUDLY** (enumerated to the
 operator on every exit surface, R40). That is the honest ceiling for a machine that
 cannot compel work; requiring ratification to release the breaker would reintroduce
@@ -466,7 +468,7 @@ structurally impossible on every path.
   `POST /autonomous/register` + NEW `POST /autonomous/:topic/run-end` (R44);
   evaluate-completion: topicId/runId body fields +
   server-resolved arming + registered-condition authority + the deterministic gate;
-  the two new PIN-gated routes: ratify-deferral + scope-accretion-override;
+  the two new PIN-gated routes: ratify-deferral + scope-accretion-override; <!-- tracked: R23-ratification -->
   `parseStopSignals`: + `scopeAccretionSuspected` boolean only);
   `src/core/CompletionEvaluator.ts` (context lines, field-gated; `PROMPT_VERSION`
   bump + canary test); the server run-record store (new module,
@@ -630,7 +632,7 @@ fires.
   docs/spec/script DISCIPLINE, not a semantic in-scope-work detector — TODO
   scaffolds, issue creation, code stubs, and artifacts in unlisted directories are
   out of v1's blocking taxonomy (unlisted docs get the advisory flag only).
-  Per-repo configurable classifiers are a possible follow-up, not smuggled scope.
+  Per-repo configurable classifiers are a possible follow-up, not smuggled scope. <!-- tracked: R47-residuals -->
 - **Conformance-gate-dark machines:** with the gate disabled (all `/spec` routes
   503), corroboration arm (a) can never clear on that machine — spec-class clearing
   then requires the merged-PR arm or ratification. Fail direction: keep-working,

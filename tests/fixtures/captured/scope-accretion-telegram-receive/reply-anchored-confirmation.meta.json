@@ -1,0 +1,8 @@
+{
+  "source": "Telegram Bot API sendMessage response with reply_to_message_id set — REAL reply-shaped message object incl. the nested reply_to_message, captured live (same session as enumeration-message)",
+  "command": "python3 capture-telegram-fixtures.py (sendMessage with reply_to_message_id=<enumeration message_id>)",
+  "capturedAt": "2026-07-02T08:00:44Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "group chat id and bot user id digit-masked same-length",
+  "note": "The reply-anchored confirmation shape (R38): reply_to_message.message_id chains to the recorded enumeration message."
+}

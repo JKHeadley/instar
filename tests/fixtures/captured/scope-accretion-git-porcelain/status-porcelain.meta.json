@@ -1,0 +1,8 @@
+{
+  "source": "REAL `git status --porcelain` stdout from git version 2.39.5 (Apple Git-154), captured byte-for-byte from a live scratch repository staged with A/M/D/R/?? states",
+  "command": "git status --porcelain (after: commit; modify; git mv old-name.md new-name.md; git rm delete-me.md; add untracked; git add audits/added.md)",
+  "capturedAt": "2026-07-02T08:01:52Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "none",
+  "note": "Feeds parsePorcelainStatus (spec autonomous-scope-accretion-completion.md R42 porcelain mapping): ?? and A/M present; R new-path present + old-path deleted; D deleted."
+}

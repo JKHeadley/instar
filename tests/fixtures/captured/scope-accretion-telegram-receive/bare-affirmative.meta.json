@@ -1,0 +1,8 @@
+{
+  "source": "Telegram Bot API sendMessage response `result` object, captured live (same session)",
+  "command": "python3 capture-telegram-fixtures.py",
+  "capturedAt": "2026-07-02T08:00:44Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "group chat id and bot user id digit-masked same-length",
+  "note": "A bare \"yes\" with NO reply anchor — must resolve to the EMPTY set (R38)."
+}

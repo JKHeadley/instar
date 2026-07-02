@@ -85,10 +85,13 @@ describe('Layer A — notify_terminal_stop wiring in the bundled hook', () => {
 
   it('places a notify call before each terminal rm -f "$STATE_FILE"; exit pattern', () => {
     const src = readHook();
+    // The scope-accretion run_end_call (R40/R44 — every exit surface reports to
+    // the server) may sit between the notify and the state-file removal; the
+    // invariant under test is unchanged: notify PRECEDES the removal.
     // completion-promise block: notify precedes the state-file removal
-    expect(src).toMatch(/notify_terminal_stop "[^\n]*finished — all the work is done\.[^\n]*"\n\s*rm -f "\$STATE_FILE"/);
+    expect(src).toMatch(/notify_terminal_stop "[^\n]*finished — all the work is done\.[^\n]*"(\n\s*run_end_call "[^\n]*")?\n\s*rm -f "\$STATE_FILE"/);
     // duration block (legacy)
-    expect(src).toMatch(/notify_terminal_stop "[^\n]*hit its time limit[^\n]*"\n\s*rm -f "\$STATE_FILE"/);
+    expect(src).toMatch(/notify_terminal_stop "[^\n]*hit its time limit[^\n]*"(\n\s*run_end_call "[^\n]*")?\n\s*rm -f "\$STATE_FILE"/);
   });
 });
 
@@ -189,11 +192,13 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
     // → `COMPLETION_DISCIPLINE` (structural enforcement of "don't stop a pre-approved
     // autonomous run early" — AUTONOMOUS-COMPLETION-DISCIPLINE.md)
     // → `REALCHECK_VERIFY` (ACT-152: the hook now runs an opt-in verification_command on a
-    // met:true verdict and gates the exit on it — autonomous-completion-real-checks.md).
+    // met:true verdict and gates the exit on it — autonomous-completion-real-checks.md)
+    // → `SCOPE_ACCRETION` (autonomous-scope-accretion-completion.md: Layer B scan +
+    // topicId/runId echo + run_end_call on every exit surface).
     // The bundled hook still contains
     // notify_terminal_stop — asserted above — so that capability is not lost on upgrade.
     const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'core', 'PostUpdateMigrator.ts'), 'utf8');
-    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'REALCHECK_VERIFY'/);
+    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'SCOPE_ACCRETION'/);
   });
 
   it('restart-resume note is SILENT to the user — audit + stderr only (RESTART_NOTE_SILENT)', () => {

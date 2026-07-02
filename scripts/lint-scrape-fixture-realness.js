@@ -76,6 +76,46 @@ export const SCRAPE_PARSERS = [
     testFile: 'tests/unit/tailscaleStatusParser.test.ts',
     testName: 'parses the REAL captured tailscale status --json byte-for-byte',
   },
+  // ── Scope-Accretion Completion Discipline (autonomous-scope-accretion-completion.md §5 R29) ──
+  {
+    parserSymbol: 'parseReceivePathMessage',
+    fixtureSlug: 'scope-accretion-telegram-receive',
+    testFile: 'tests/unit/scope-accretion-ratifier.test.ts',
+    testName: 'parses the REAL captured Telegram receive-path message objects',
+  },
+  {
+    parserSymbol: 'parseRatificationConfirmation',
+    fixtureSlug: 'scope-accretion-telegram-receive',
+    testFile: 'tests/unit/scope-accretion-ratifier.test.ts',
+    testName: 'binds a REAL reply-anchored confirmation to the enumerated set (message-id chain)',
+  },
+  {
+    parserSymbol: 'parseDeferTrigger',
+    fixtureSlug: 'scope-accretion-telegram-receive',
+    testFile: 'tests/unit/scope-accretion-ratifier.test.ts',
+    testName: 'matches defer-intent vocabulary in the REAL captured trigger message',
+  },
+  {
+    parserSymbol: 'parseDeclaredDeliverables',
+    fixtureSlug: 'scope-accretion-condition-texts',
+    testFile: 'tests/unit/scope-accretion-sweep.test.ts',
+    testName: 'a REAL pathless condition text declares NOTHING',
+  },
+  {
+    parserSymbol: 'parsePorcelainStatus',
+    fixtureSlug: 'scope-accretion-git-porcelain',
+    testFile: 'tests/unit/scope-accretion-sweep.test.ts',
+    testName: 'maps REAL git status --porcelain output per the R42 mapping',
+  },
+  {
+    // The Layer B evasion-vocabulary scan is BASH (autonomous-stop-hook.sh);
+    // the test drives it through a runLayerBScan() helper that executes the
+    // real hook's awk/substring logic over the captured judge-tail bytes.
+    parserSymbol: 'runLayerBScan',
+    fixtureSlug: 'scope-accretion-transcript-tail',
+    testFile: 'tests/unit/autonomous-stop-hook-scope-accretion.test.ts',
+    testName: 'flags the REAL incident prose and stays silent on the REAL fenced clean tail',
+  },
 ];
 
 const REQUIRED_META_FIELDS = ['source', 'command', 'capturedAt', 'machine', 'redactions', 'note'];

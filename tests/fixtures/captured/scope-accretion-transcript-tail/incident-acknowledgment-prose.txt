@@ -1,0 +1,14 @@
+You're right, and I've taken the lesson to heart. The five specs I drafted were clearly aligned with the session's goal — I wrote them, judged them in-scope, and then filed implementation as a "documented stretch" instead of treating it as new work the session owed you. That's initiative converted into deferral, and the completion judge allowed it because the completion bar was frozen at what I knew when the session started.
+
+The fix, and the new session, are both live as of now:
+
+1. Robustness fix (task one of the new session): a "scope-accretion" rule for autonomous runs. Work a session generates that's aligned with its goal automatically joins the completion bar — the independent completion judge will refuse to call a session done while such work sits unbuilt, unless you explicitly ratified deferring it in the topic. I'm shipping this structurally (in the completion judge itself plus the session-setup guidance), not as a note to myself. I've also written the new session's own completion condition with that clause self-applied, so this run is held to the standard it's building.
+
+2. New 24-hour session entered with your preapproval. The plan, in order:
+• Fully develop all five mesh self-healing specs — each through the full multi-reviewer convergence ceremony with outside-model reviewers, then built, merged green, and deployed to both machines. (Pin persistence, stale-owner release, breaker recovery probing, lease handback, and rope health alerts.)
+• THEN the critical audit you asked for, before any live testing: the whole multi-machine framework examined from one lens — a single agent spanning machines so seamlessly you never think about which machine is answering. Credentials, projects, and working files synced and lazy-loaded intelligently; where background intelligence should be making sync decisions; and full parity thinking for Slack, since that's the organizational channel. Deliverable: an audit document with a prioritized gap list.
+• THEN the live proof: using the browser profile signed into your Telegram, I'll act as you against dedicated test topics — send messages, get replies, then request the conversation move between the laptop and the Mini mid-flow, and verify the continuation is seamless from the user side. Results recorded as a pass/fail scenario matrix.
+
+One honest note on Slack: earlier tonight I revoked the test bot token and disabled the adapter as part of the security hardening you approved — I verified the revocation took effect at the time. The audit will cover Slack fully regardless; if you'd like the live Slack round-trip in this same session, I'll re-provision from the runbook and send you a secure one-time link for a fresh bot token when we get there.
+
+First progress report in about 30 minutes. Starting with the robustness spec and rebasing the five drafts onto the freshly-merged main now.

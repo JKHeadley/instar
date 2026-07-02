@@ -1,0 +1,8 @@
+{
+  "source": "The agent's own Telegram outbound log .instar/telegram-messages.jsonl — a REAL agent-authored progress message containing fenced ``` regions and NO accretion-evasion vocabulary (2026-05-30, topic 2169)",
+  "command": "python3 (json.loads per line; select fromUser:false and '```' in text; write text byte-for-byte)",
+  "capturedAt": "2026-07-02T08:00:44Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "none",
+  "note": "The NEGATIVE + fenced-region input for the Layer B scan: fenced content must be excluded and nothing may fire."
+}

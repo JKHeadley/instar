@@ -1550,6 +1550,14 @@ export class TelegramLifeline {
     const rawForward = rawMsg as unknown as Record<string, unknown>;
     const isForwarded = Boolean(rawForward.forward_origin || rawForward.forward_from || rawForward.forward_date);
 
+    // Scope-accretion ratification (spec autonomous-scope-accretion-completion.md
+    // R38/R45): carry reply_to_message_id across the lifeline hop so a
+    // reply-anchored confirmation of a server-authored enumeration works on
+    // lifeline-owned-polling agents. An older server ignores the extra field;
+    // an older lifeline omits it → only the explicit "ratify"-token confirmation
+    // binds (the safe, stricter direction).
+    const replyToMessageId = (rawMsg as { reply_to_message?: { message_id?: number } }).reply_to_message?.message_id;
+
     const buildBody = (includeVersion: boolean): string =>
       JSON.stringify({
         topicId,
@@ -1560,6 +1568,7 @@ export class TelegramLifeline {
         messageId: rawMsg.message_id,
         timestamp: new Date(rawMsg.date * 1000).toISOString(),
         senderIsBot,
+        ...(typeof replyToMessageId === 'number' ? { replyToMessageId } : {}),
         ...(isForwarded ? { forwarded: true } : {}),
         ...(senderChatId !== undefined ? { senderChatId } : {}),
         ...(senderBotId !== undefined ? { senderBotId } : {}),

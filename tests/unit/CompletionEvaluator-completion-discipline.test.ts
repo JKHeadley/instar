@@ -141,10 +141,38 @@ describe('CompletionEvaluator — PROMPT_VERSION canary (milestone floor cannot 
     expect(p).toContain('milestoneRationalizationDetected: true');
   });
 
-  it('PROMPT_VERSION is bumped to v2', () => {
+  it('PROMPT_VERSION is bumped to v3 (scope-accretion context block)', () => {
     const e = new CompletionEvaluator({ intelligence: stubProvider('MET\nok') });
-    expect(e.promptVersion).toBe('completion-eval-v2');
+    expect(e.promptVersion).toBe('completion-eval-v3');
     expect(e.stopRationalePromptVersion).toBe('stop-rationale-v2');
+  });
+
+  // Scope-accretion (autonomous-scope-accretion-completion.md §2.8 step 3):
+  // the accretion facts render as CONTEXT lines gated on FIELD PRESENCE, so a
+  // payload without the new fields yields a byte-identical v2-shaped prompt —
+  // the rollback byte-identity claim, pinned here.
+  it('a signals payload WITHOUT scope-accretion fields renders no accretion lines (byte-identity when disabled)', () => {
+    const e = new CompletionEvaluator({ intelligence: stubProvider('MET\nok') });
+    const p = e.buildCompletionPromptForTest('all tests pass', 'some prose', SIGNALS_MILESTONE);
+    expect(p).not.toContain('scopeAccretion');
+    expect(p).not.toContain('SCOPE-ACCRETION FACTS');
+  });
+
+  it('scope-accretion fields render the context block when present', () => {
+    const e = new CompletionEvaluator({ intelligence: stubProvider('MET\nok') });
+    const p = e.buildCompletionPromptForTest('all tests pass', 'some prose', {
+      ...SIGNALS_MILESTONE,
+      scopeAccretionSuspected: true,
+      scopeAccretion: {
+        unbuilt: ['docs/specs/foo.md'],
+        deleted: [],
+        ratifiedCount: 0,
+        corroborationDegraded: false,
+      },
+    });
+    expect(p).toContain('scopeAccretionSuspected: true');
+    expect(p).toContain('SCOPE-ACCRETION FACTS');
+    expect(p).toContain('docs/specs/foo.md');
   });
 });
 

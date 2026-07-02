@@ -1,0 +1,5 @@
+A  docs/audits/added.md
+D  docs/specs/delete-me.md
+ M docs/specs/keep-me.md
+R  docs/specs/old-name.md -> docs/specs/new-name.md
+?? docs/specs/brand-new.md

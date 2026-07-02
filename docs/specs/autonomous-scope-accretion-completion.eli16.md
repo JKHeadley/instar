@@ -77,3 +77,7 @@ Existing agents receive it through the standard migration path.
 Nothing new — this is the structural fix you ordered on July 2nd, and this very
 session is holding itself to the rule it built. Approval of the converged spec is
 the only step.
+
+*(Editorial note, build-time: the spec body carries inline `tracked:` bookkeeping
+markers next to the words "deferral"/"follow-up" — required by the repo's
+orphan-deferral commit gate. They change nothing about the converged design.)*

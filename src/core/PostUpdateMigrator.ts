@@ -109,6 +109,16 @@ Heavy MCP servers (Playwright's Chromium; Electron bridges) are mostly idle and 
 - **When to use** (PROACTIVE): in an autonomous run, when I need a heavy tool I don't have, I request the load (I'm preapproved → it loads + restarts + continues). When the user asks "free up resources from idle MCP servers" / "why did my session restart to add a tool?" → this feature. Single-server / no-\`.mcp.json\` agents are a no-op.\n`;
 }
 
+export function SCOPE_ACCRETION_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Scope-Accretion Completion Discipline (autonomous runs finish what they start)
+
+Work an autonomous run ITSELF creates joins its completion bar (spec: autonomous-scope-accretion-completion.md; parent principle: Deferral = Deletion). At setup the run is REGISTERED server-side (\`POST /autonomous/register\` — the server mints the runId, snapshots the config + git base-root SHAs, clamps the duration ceiling). At every done-claim the server sweeps GIT TRUTH over the run's roots: a deliverable the session drafted (a spec under \`docs/specs/\`, an audit, a runbook, a script) that is neither built+corroborated (a merged PR with real non-docs code, or a converged report backed by the server's own conformance-check records), nor declared at setup, nor operator-ratified, HOLDS completion — \`met:false, reason: scope-accretion-hold\` — no matter HOW the file was written (Write tool, Bash heredoc, subagent). Labeling it "the documented stretch" changes nothing: silent deferral is structurally impossible; after K holds (default 3) the breaker permits the exit but LOUDLY enumerates the abandoned artifacts to you on the attention queue.
+- **Ratify a deferral conversationally**: say "ratify deferral" (or "defer those") in the run's topic — I (the server) reply with the EXACT enumerated artifact list; reply to that message with yes/approve and it binds exactly that set. Only the topic's VERIFIED operator can ratify.
+- **Ratify from the dashboard / API (PIN)**: \`curl -X POST http://localhost:${port}/autonomous/TOPIC/ratify-deferral -H 'Content-Type: application/json' -d '{"pin":"<dashboard PIN>","all":true}'\` (or \`{"artifacts":["docs/specs/foo.md"]}\`).
+- **Operator mid-run override (the live lever)**: \`POST /autonomous/TOPIC/scope-accretion-override\` with \`{"pin":"<dashboard PIN>","enabled":false,"reason":"…"}\` — the config file is snapshotted at registration, so THIS route (not a config edit) is the instant mid-run off-switch. Config default for FUTURE runs: \`autonomousSessions.completionDiscipline.scopeAccretion.enabled\`.
+- **When to use** (PROACTIVE): user asks "why won't my autonomous run finish?" → read the hold reason (it lists the exact unbuilt paths); "let it defer those specs" → drive the ratification (conversational or PIN route), never edit server state by hand. Every run exit — met, expiry, emergency-stop, hard-blocker — enumerates any unbuilt accreted work; a silent clock-out is structurally closed.\n`;
+}
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -2922,11 +2932,24 @@ export class PostUpdateMigrator {
     // ONLY in the new bundled hook, so bumping re-deploys it to every existing agent that carries
     // COMPLETION_DISCIPLINE but not REALCHECK_VERIFY; customized hooks (no stock fingerprint) are
     // still left untouched. (Setup + SKILL.md markers bumped to REALCHECK_VERIFY in the same PR.)
+    // Marker bumped `REALCHECK_VERIFY` → `SCOPE_ACCRETION` (spec:
+    // autonomous-scope-accretion-completion.md): the bundled hook now (a) runs the
+    // Layer B accretion-evasion vocabulary scan over the judge tail with a NEW
+    // fenced/quoted-region exclusion and sends the advisory
+    // `scopeAccretionSuspected` signal, (b) echoes topicId/runId/sessionId on the
+    // evaluate-completion call so the SERVER can arm its git-truth accretion gate
+    // against its own registration record (R35), and (c) fires run_end_call on
+    // EVERY terminal exit surface — met, promise, duration-expiry (both variants),
+    // emergency-stop (both variants), hard-blocker, state-corrupt — so the server
+    // enumerates any unbuilt accreted work LOUDLY on every exit (R40/R44). The
+    // SCOPE_ACCRETION sentinel is present ONLY in the new bundled hook; bumping
+    // re-deploys it to agents carrying REALCHECK_VERIFY but not SCOPE_ACCRETION;
+    // customized hooks (no stock fingerprint) are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'REALCHECK_VERIFY',
+      'SCOPE_ACCRETION',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (real-check verification gate — opt-in verification_command run on met:true, exit gated on it; fail/timeout/breaker → keep working)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (scope-accretion: Layer B scan + runId echo + run-end call on every exit surface)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
@@ -2946,11 +2969,17 @@ export class PostUpdateMigrator {
     // (so the hook resolves the real-check CWD structurally). The REALCHECK_VERIFY sentinel is
     // present ONLY in the new bundled setup; bumping re-deploys it to existing agents carrying
     // COMPLETION_DISCIPLINE but not REALCHECK_VERIFY; customized scripts left untouched.
+    // Marker bumped `REALCHECK_VERIFY` → `SCOPE_ACCRETION`: the bundled setup now
+    // calls POST /autonomous/register at session setup (the server mints the
+    // runId, snapshots the scopeAccretion config + sweep base-root SHAs, clamps
+    // endAt) and writes the returned run_id into the state-file frontmatter, plus
+    // parses `--declared-deliverables`. Bumping re-deploys to agents carrying
+    // REALCHECK_VERIFY but not SCOPE_ACCRETION; customized scripts left untouched.
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'REALCHECK_VERIFY',
+      'SCOPE_ACCRETION',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (--verification-command/--verification-cwd flags + work_dir capture)',
+      'skills/autonomous/scripts/setup-autonomous.sh (scope-accretion: server-side run registration + --declared-deliverables + run_id frontmatter)',
     );
     // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
     // single marker bump carries every fix to date):
@@ -3001,11 +3030,20 @@ export class PostUpdateMigrator {
     //       but not the new one) gets re-deployed to fix (5). The upgrade re-deploys the WHOLE
     //       bundled SKILL.md; customized SKILL.md files (missing the stock ALL_TASKS_COMPLETE
     //       fingerprint) are left untouched (idempotent).
+    //   (6) Scope-accretion completion discipline (autonomous-scope-accretion-
+    //       completion.md): the Step-2b flow gains the MANDATORY server-side run
+    //       registration (POST /autonomous/register → run_id frontmatter field),
+    //       and a new "Scope Accretion" section documents the Layer A recording
+    //       duty (`- [ ] ACCRETED(<date>): <path> …`) + how ratification works.
+    //       Marker bumped `REALCHECK_VERIFY` → `SCOPE_ACCRETION`: present ONLY in
+    //       fix (6)'s version, so an agent that received fix (5) gets re-deployed.
+    //       The upgrade re-deploys the WHOLE bundled SKILL.md; customized files
+    //       (missing the stock ALL_TASKS_COMPLETE fingerprint) are left untouched.
     upgrade(
       '.claude/skills/autonomous/SKILL.md',
-      'REALCHECK_VERIFY',
+      'SCOPE_ACCRETION',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (optional verification_command/verification_cwd real-check fields in the Write-tool template)',
+      'skills/autonomous/SKILL.md (scope-accretion: registration step + Layer A recording duty + ratification guidance)',
     );
   }
 
@@ -4167,7 +4205,13 @@ process.stdin.on('end', async () => {
       tool_name: input.tool_name || '',
       // green-pr-automerge Layer 2: forward the session cwd so the server can
       // resolve the ending session's branch (without it, Layer 2 ships inert).
+      // (Reconciled with the init.ts copy — keep BOTH in sync.)
       cwd: input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd() || '',
+      // scope-accretion ADVISORY ledger (spec autonomous-scope-accretion-
+      // completion.md R18): forward the Write/Edit file path for attribution
+      // detail. Optional + designed-benign: the receiver stores extra fields
+      // as-is and a payload without it remains valid.
+      file_path: (input.tool_input && (input.tool_input.file_path || input.tool_input.path)) || '',
     });
 
     const url = new URL(serverUrl + '/hooks/events?instar_sid=' + instarSid);
@@ -4229,6 +4273,17 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n### Real-Check Verification (autonomous, optional)\n\nThe autonomous completion judge reads my TRANSCRIPT — it does not run tools. When a goal is checkable by a command (a test suite, build, grep, or CI status), an autonomous job can declare a \`verification_command\` (\`instar\`'s autonomous setup takes \`--verification-command "<cmd>"\` and \`--verification-cwd "<dir>"\`, and always records \`work_dir\` so a relative command runs in the right tree). When set, a met:true verdict RUNS the command and the run may stop ONLY if it ALSO passes (exit 0); a fail/timeout/breaker-open keeps me working with the command's output as guidance — it can never CAUSE a premature exit (the safe direction). Bounded timeout, output scrubbed for secrets, destructive commands refused, P19 breaker on a stuck/flaky check. Audit: \`logs/autonomous-realcheck.jsonl\`. Off-switch: \`autonomousSessions.completionDiscipline.realCheck.enabled\` (read at the chokepoint — no restart). NO-OP unless a job declares a \`verification_command\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Real-Check Verification section');
+    }
+
+    // Scope-Accretion Completion Discipline (spec: autonomous-scope-accretion-
+    // completion.md) — Agent Awareness Standard + Migration Parity: existing agents
+    // learn that work an autonomous run itself creates joins its completion bar,
+    // how ratification works (conversational + the PIN routes), and the operator's
+    // live override lever. Content-sniffed for idempotency.
+    if (!content.includes('Scope-Accretion Completion Discipline')) {
+      content += SCOPE_ACCRETION_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Scope-Accretion Completion Discipline section');
     }
 
     // Permission-Prompt Floor (spec: framework-permission-prompt-robustness) — Agent
