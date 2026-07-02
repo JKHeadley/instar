@@ -9,6 +9,17 @@ lessons-engaged: "stranded-inbound-self-heal.md §Deferred-v2 (CMT-1786, all sev
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; docs/specs/stranded-inbound-self-heal.md; MULTI-MACHINE-SESSION-POOL-SPEC.md; MULTI-MACHINE-SEAMLESSNESS-SPEC.md"
 project: "self-healing-mesh (topic 29836)"
 depends-on: "OwnershipReconciler (WS1.3 Case C force-claim — the machinery this EXTENDS); SessionOwnership FSM (ownershipEpoch fence, applyOwnershipAction); StrandedTopicSentinel (detection layer, loadBearing); fenced serving lease (the claim ARBITER); ChurnBreaker (claimer-availability composition, §2.1); multiMachine.meshTransport (authenticated probes); PeerEndpointRecorder (advert-set provenance, §2.2.2); WorkingSetPullCoordinator; MessageProcessingLedger; U4.1 (pin suspend interaction, §2.4); U4.4 (lease hand-back moves the claimer role, §2.5/§2.6)"
+review-convergence: "2026-07-02T07:28:08.681Z"
+review-iterations: 4
+review-completed-at: "2026-07-02T07:28:08.681Z"
+review-report: "docs/specs/reports/u4-2-stale-owner-release-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 0
+contested-then-cleared: 0
+approved: true
+approved-basis: "Operator preapproval for spec approvals in this session (topic 29836, 2026-07-02): 'Full preapproval granted … spec approvals, server restarts, deployment, and all in-scope reversible decisions.' Recorded transparently, not silently self-granted."
 ---
 
 # U4.2 — Stale-Owner Release Path
