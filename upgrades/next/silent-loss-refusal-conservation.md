@@ -1,4 +1,3 @@
-<!-- internal-only -->
 <!-- bump: patch -->
 
 ## What Changed
@@ -32,6 +31,32 @@ Ships always-on (a reachability floor may not be dark). Sender re-validation
 remains Telegram-scoped; Slack ships NOTICE parity now (sender re-validation is a
 tracked follow-up). Two tracked deferrals: the full ack-vocabulary split
 (fb-1e751537-655) and the fixture-clobber/wiring-gate filing (fb-b15ac10b-85c).
+
+## What to Tell Your User
+
+Your messages can no longer be silently dropped. If I ever genuinely cannot confirm
+you as an approved sender, you now get a plain, one-time notice on the same channel
+you wrote to ("I got your message but couldn't confirm you as an approved sender…")
+instead of silence — so a delivery receipt with no reply can never again mean your
+message vanished. And I will not switch that sender-check on at all against a
+registry that looks empty or damaged: on a fresh install, or if the user list ever
+gets wiped or corrupted, I default to letting your messages through and flagging the
+problem, rather than locking you out. This is a safety fix and is always on.
+
+## Summary of New Capabilities
+
+- A terminally-refused sender-check produces ONE neutral, deduped user notice on the
+  originating channel (Telegram now; Slack too), never silence.
+- Sender re-validation self-disables against a degenerate / never-populated /
+  corrupt / operator-unresolvable user registry (fails toward delivery + alerts),
+  using a durable `state/registry-high-water.json` marker to tell a fresh-install
+  empty registry from an emptied-by-deletion one.
+- Test/fixture identities are refused from the production user registry at both the
+  write and load layers, with a dashboard-PIN-minted signed override for a
+  legitimate name-collision, plus a one-time boot migration that quarantines
+  already-polluted stores (backup + audit).
+- A machine-local, metadata-only `logs/mesh-rejections.jsonl` trace records every
+  cross-machine sender refusal (never message content).
 
 ## Evidence
 
