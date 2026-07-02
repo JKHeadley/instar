@@ -125,3 +125,19 @@ integration (PIN gate, owner-required, accept clears gap, DELETE-revoke survives
 3 e2e (feature-alive: six fields + accept route mounted). Existing guard/posture suites
 (monitoring 260, guard integration+e2e 51, server+migrator 27, parity+discoverability 170)
 all pass.
+
+## Post-review fixes (2026-07-02)
+
+- Rebased onto JKHeadley/main after PR #1317 (silent-loss fix) merged. #1317's
+  rejected-enumeration + wiring gate on `routes.ts`/`server.ts`/`types.ts` and G3's
+  additive edits compose cleanly (adjacent, non-overlapping edits; tsc + `npm run lint`
+  clean post-rebase; the guard/posture suite re-run green).
+- CI's full sharded suite caught two mechanical guard-tracking failures the loaded-box
+  local run (exit 144) missed. Neither weakens a guard:
+  1. `no-silent-fallbacks` (492 > baseline 491): `readAcceptedFallbacks`'s
+     missing/corrupt-file catch in `guardAcceptedFallbacks.ts` is annotated
+     `@silent-fallback-ok` — an empty map is the SAFE direction (no phantom accept can
+     suppress a real load-bearing gap). Threshold NOT bumped; count back to 491.
+  2. `feature-delivery-completeness`: the migrator's new `loadBearingGap` content-sniff
+     section is registered in `legacyMigratorSections` (migrator-only behavioral
+     awareness, also emitted inline by `generateClaudeMd` so a fresh init self-matches).

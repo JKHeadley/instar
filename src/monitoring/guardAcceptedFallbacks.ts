@@ -67,6 +67,8 @@ export function readAcceptedFallbacks(stateDir: string): AcceptedFallbackFile {
     }
     return out;
   } catch {
+    // @silent-fallback-ok — a missing/corrupt accept file must yield an EMPTY map
+    // (the SAFE direction): no phantom accept can suppress a real load-bearing gap.
     return {};
   }
 }
