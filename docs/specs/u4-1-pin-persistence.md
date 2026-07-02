@@ -213,10 +213,17 @@ to win `compareHlc`.
   persisted to a durable quarantine set stored beside the pin store
   (`state/session-pool/topic-pin-skew-quarantine.json`, atomic-JSON like its
   sibling), and every future fold excludes any record matching that exact
-  `(key, hlc)` REGARDLESS of clock progress. It is cleared only two ways: operator
-  ack (the skew attention item gains an ack action that clears that origin's
-  entries), or supersession by a NEWER honest record — a higher HLC that passes
-  the gate — at which point the quarantined entry is dead by ordering anyway.
+  `(key, hlc)` REGARDLESS of clock progress. **Clearing (R-r4-1 — dismissal is not
+  re-admission):** the ONLY self-clearing path is supersession by a NEWER honest
+  record — a higher HLC that passes the gate — at which point the quarantined
+  entry is dead by ordering anyway. Operator ack of the attention item closes the
+  NOTIFICATION and nothing else: the sticky entries remain excluded (acking before
+  the skew delta elapses must not re-open the episode, and acking after it must
+  not re-admit the poison to beat quarantine-window tombstones — either arm would
+  recreate the exact resurrection this fix exists to prevent, triggered by the
+  natural act of dismissing an alert). A deliberate re-admit exists as its own
+  explicit per-record action (`re-admit quarantined record` on the item's detail
+  surface) — an authority decision distinct from dismissing a notification.
   Bound: tiny — one entry per poisoned record, and poisoned records are rare by
   construction.
 
@@ -266,7 +273,7 @@ item per episode, re-raised only when a NEW episode opens:
 | Corrupt pin store quarantined | `u41:pin-corrupt:<storeFilePath>` | a quarantine event | operator ack (attention resolve) |
 | Aged pending pin | `u41:pin-pending-aged:<topicId>` | pending age > `ws13PendingPinMaxAgeMs` | pin fulfils, or is cleared/tombstoned |
 | Pin diverged | `u41:pin-diverged:<topicId>` | desired≠actual persists past `ws13DivergedWindowMs` | `pinState` returns `actuated`, or the pin is cleared/tombstoned |
-| Skew-quarantined pin record | `u41:pin-hlc-skew:<originMachineId>` | first quarantined record from that origin | operator ack (attention resolve — also clears that origin's sticky quarantine entries), or every quarantined `(key, hlc)` superseded by a newer honest record (R-r3-2) |
+| Skew-quarantined pin record | `u41:pin-hlc-skew:<originMachineId>` | first quarantined record from that origin | operator ack closes the NOTIFICATION only (sticky entries remain excluded — R-r4-1), or every quarantined `(key, hlc)` superseded by a newer honest record (R-r3-2); explicit per-record re-admit is a separate action |
 | Fold byte-guard breach | `u41:pin-fold-truncated` | fold exceeds `ws13FoldMaxBytes` (newest-first truncation engaged) | a full fold completes within budget (R-r3-3) |
 
 A flap WITHIN an open episode never re-raises (the episode boundary is the dedup
@@ -373,10 +380,11 @@ Unit: `unpin-emits-tombstone`; `stale-replicated-pin-never-resurrects-after-unpi
 `future-skewed-pin-hlc-is-quarantined-never-merged-never-immortal` (R-r2-1 — a
 record past the `maxDriftMs` clamp is excluded from the fold, quarantined on disk,
 raises the deduped item, and cannot beat a tombstone);
-`skew-quarantine-is-sticky-across-clock-advance` (R-r3-2 — the exclusion HOLDS
-after the clock advances past the skew delta: the record never un-quarantines and
-never beats a tombstone or re-pin minted during the quarantine window; cleared
-only by operator ack or a newer honest record);
+`skew-quarantine-is-sticky-across-clock-advance` (R-r3-2/R-r4-1 — the exclusion
+HOLDS after the clock advances past the skew delta AND after an operator ack
+followed by a clock advance (the ack-then-clock-advance arm): the record never
+un-quarantines and never beats a tombstone or re-pin minted during the quarantine
+window; only a newer honest record or the explicit per-record re-admit clears it);
 `skewed-pin-record-is-accepted-at-applier-stream-never-suspect-halted` (R-r3-1 —
 a misclocked record persists at the applier, the peer's `topic-pin-record` stream
 stays live, and tombstones behind it keep flowing);
@@ -481,8 +489,9 @@ than its bound.
    ONLY at the fold — the applier accepts-and-persists a skewed record, because
    its sole refusal path would suspect-halt the peer's whole stream (R-r3-1) —
    and the quarantine is STICKY: a durable `(key, hlc)` set beside the pin store,
-   immune to clock progress, cleared only by operator ack or a newer honest
-   record (R-r3-2).
+   immune to clock progress; ack closes the notification only — self-clearing is
+   supersession by a newer honest record, and re-admission is a separate explicit
+   per-record action (R-r3-2/R-r4-1).
 4. **pinnedBy is local-only provenance** ({operator|agent} domain from the verified
    topic-operator binding; replicated record stays non-PII).
 5. **Pending-pin: queued-never-rerouted preserved**, with sustained-online
