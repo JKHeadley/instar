@@ -111,7 +111,9 @@ persistently down, the Cloudflare flap) is currently visible only if you go look
 failure becomes a lease instability — but per the conservative-notification
 directive, NOT a stream of per-check alerts.
 
-**Design sketch.** Fold rope-health into the existing G1 coherence-audit digest (the
+**Design sketch (HISTORICAL — superseded entirely by the converged spec: an
+in-server RopeHealthMonitor owns detection; G1 is a consumer only; there is no
+breaker object).** Fold rope-health into the existing G1 coherence-audit digest (the
 daily single-message-to-hub-topic path built this session already checks Tailscale
 login state + a 14-day key-expiry warning) — extend it to per-transport reachability
 + breaker state + key expiry, as ONE line in the existing digest, never a new topic

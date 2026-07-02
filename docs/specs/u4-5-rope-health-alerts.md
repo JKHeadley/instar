@@ -201,7 +201,8 @@ window declared per G3.
   R-r2-2; replaces round 1's tick-counted urgentDebounceChecks), clearSustainMs:
   600000, keyExpiryWarnDays: 14, digestTopicId (default unset — R-r2-8) }`.
   (Round 1's `digestJobEnabled` dropped — the job ships enabled with a
-  503-silent body per the feedback-factory pattern, R-r2-7.)
+  503-silent body, a stated DIVERGENCE from the feedback-factory precedent, which
+  ships enabled:false; justification in §2 — R-r2-7/R-r3-2.)
 - **Action-bearing discipline for the urgent tier, argued explicitly (R-r2-6):**
   the urgent tier auto-posts HIGH attention items, which normally pushes a
   feature into `DARK_GATE_EXCLUSIONS`' action-bearing category. This spec takes
@@ -290,8 +291,9 @@ post-heal.
 5. **Only all-down-with-advancing-heartbeat escalates** — a degraded rope with a
    healthy alternative is digest-only; key expiry warns at 14 days in the digest,
    delivered to `monitoring.ropeHealth.digestTopicId` (default unset ⇒ log-only —
-   R-r2-8) via the enabled-but-503-silent `rope-health-digest` job (feedback-
-   factory pattern; frontmatter frontloaded — R-r2-7).
+   R-r2-8) via the enabled-but-503-silent `rope-health-digest` job (a deliberate,
+   argued divergence from the feedback-factory precedent, which ships
+   enabled:false; frontmatter frontloaded — R-r2-7/R-r3-2).
 6. **Content scrub is a hard rule** — kind + nickname + relative expiry only.
 7. **Maturation Path compliance** — live-on-dev day one via the dev gate, with the
    urgent tier's action-bearing question answered by an explicit
