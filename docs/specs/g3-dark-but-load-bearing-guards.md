@@ -112,20 +112,31 @@ the `criticalPath` label to that emission (§2.3).
   fleet-uniform constant, valid per §4).
 - **criticalPath annotation** rides ANY anomaly of a load-bearing guard (both paths) — so
   the loud classes carry "a LOAD-BEARING critical path (X) is down," not a bare row.
-- **Own attention channel (round-3 masking fix).** `load-bearing-gap` is a DESIGNED,
-  long-lived anomaly (the graduate/accept decision legitimately takes days), so its
-  episode stays open for a long time. The attention funnel (`createAttentionItem`) is
-  CREATE-IF-ABSENT by item id, and the agent-health lane suppresses a same-`healthKey`
-  re-escalation for ~30 min — so a long-lived gap episode sharing the GENERIC
-  `GUARD_POSTURE_HEALTH_KEY` would MASK a later acute load-shed on another guard (the
-  2026-06-05 incident G3 exists to catch): the fresh anomaly would hit the same open
-  episode id and be silently dropped. FIX: `load-bearing-gap` rides its OWN dedicated
-  `GUARD_POSTURE_LOADBEARING_HEALTH_KEY`, SEPARATE from the generic guard-posture episode.
-  The acute classes keep their existing episode/channel, so an acute load-shed surfaces
-  independently regardless of a load-bearing-gap episode being open. Two coalesced health
-  keys, each ONE item — never a per-guard flood, never a new topic (Bounded Notification
-  Surface, one-hub rule). (This SUPERSEDES the round-2 "re-emit under the same healthKey"
-  idea, which round-3 grounding proved inert against the create-if-absent funnel.)
+- **Separate EPISODE TRACK (round-3/round-4 masking fix).** `load-bearing-gap` is a
+  DESIGNED, long-lived anomaly (the graduate/accept decision legitimately takes days). The
+  real masking mechanism is the probe's SINGLE-episode state machine — one shared
+  `openEpisodeId`/`episodeEmitted`/`anomalies` map — plus `createAttentionItem`'s
+  create-if-absent-by-id. A long-lived `load-bearing-gap` keeps `current.length > 0`
+  forever, so the shared episode never closes, no fresh episode id is minted, and a later
+  ACUTE anomaly (guard Y → `off-runtime-divergent`, the 2026-06-05 incident G3 exists to
+  catch) is silently dropped at the probe's `episodeEmitted`-true branch — before it ever
+  reaches the funnel. FIX: run the episode lifecycle on TWO independent tracks — a
+  `load-bearing-gap` track with its OWN `openEpisodeId`/`episodeEmitted`/partitioned
+  `anomalies` subset + its OWN item-id namespace (`guard-posture-loadbearing:ep-N`),
+  separate from the generic acute-anomaly track (`guard-posture:ep-N`). The acute track
+  opens/emits/closes independently, so an acute load-shed surfaces even while a
+  `load-bearing-gap` track has been open for a week. **The separate health KEY is NOT the
+  lever:** guard-posture items carry no `lane:'agent-health'`, so `healthKey` (and the
+  agent-health lane's ~30-min same-key suppression) is INERT for them — a key-only change
+  would leave masking fully intact. This supersedes BOTH the round-2 re-emit idea and the
+  round-3 "separate health key" framing, each proven inert against the real funnel.
+- **Bounded, not one-hub (round-4 correction).** Guard-posture anomalies are `HIGH` →
+  critical → a per-episode SYSTEM forum topic (they bypass the flood guard by design — a
+  load-shed must stay visible). So each of the two episode tracks surfaces as ONE bounded,
+  coalesced, per-episode CLASS-LEVEL forum topic — two class-level topics, NOT one per
+  guard: Bounded Notification Surface holds (no per-element flood). It is deliberately NOT
+  the calm one-hub agent-health lane — routing a genuine load-shed there would downgrade
+  its visibility, defeating the incident G3 exists to catch.
 - **Soaking pushes NO attention item.** `loadBearingSoaking` surfaces on `/guards` +
   `loadBearingSoakingKeys` and at most a low-frequency informational LOG line — it never
   raises an attention item, so it needs no health key and cannot crowd an alarm.
@@ -157,27 +168,41 @@ disables (Signal vs. Authority).
 ### 2.5 Why the masking channel-split matters
 
 An un-closeable/long-lived anomaly holding an episode open is normal for
-`load-bearing-gap` (the decision takes days). The round-2 "re-emit" idea could not land
-fresh content through the create-if-absent funnel (round-3 finding), so the real fix is
-the SEPARATE health key (§2.3): the acute-load-shed classes retain their own episode +
-emission channel, so a genuine load-shed on guard Y is surfaced even while a
-`load-bearing-gap` episode on guard X has been open for a week. Soaking never enters any
-loud `current` set (it pushes no attention item), so it cannot hold an episode open.
+`load-bearing-gap` (the decision takes days). Neither the round-2 "re-emit" idea nor a
+separate-health-KEY change fixes the masking — both are inert against the real funnel (the
+re-emit hits create-if-absent-by-id; the health key is only read on the agent-health lane,
+which guard-posture items do NOT use). The real lever is the SEPARATE EPISODE TRACK (§2.3):
+the acute-anomaly track runs its own `openEpisodeId`/`episodeEmitted` lifecycle, so a
+genuine load-shed on guard Y is surfaced even while a `load-bearing-gap` track on guard X
+has been open for a week. Soaking never enters any loud `current` set (it pushes no
+attention item), so it cannot hold an episode open. The §5 regression drives the REAL
+`createAttentionItem` funnel and asserts guard Y is observably surfaced — and FAILS if only
+the health key is split without splitting the episode state.
 
 ### 2.6 Data flow (both `deriveGuardRow` AND `buildGuardInventory` stay PURE)
 
 `guardPostureView.ts` is contract PURE/no-I/O — `buildGuardInventory` today receives ALL
-disk-resolved state (config snapshot, boot snapshot, registry) via `opts` from its caller
-`getLocalPosture` (the route/orchestration layer), and touches no `fs`. So the
-accepted-fallback map is read/parsed by the CALLER (`getLocalPosture` / the route handler,
-where `resolveGuardConfigSnapshot` + `readGuardPostureBootSnapshot` already run) and
-threaded into `buildGuardInventory` via a new `opts` field + into each `deriveGuardRow`
-via `DeriveInput` (mirroring exactly how `bootSnapshot` is resolved-by-caller-and-passed).
-`now` is threaded the same way. NEITHER `deriveGuardRow` NOR `buildGuardInventory` gains
-an `fs` call (round-3: the round-2 wording relocated the I/O into `buildGuardInventory`,
-which is itself pure — the correct layer is the caller). `buildHeartbeatPostureBlock`
-filters the already-derived rows for the three key-lists. One read point, no per-guard
-disk on the `/guards` hot path.
+disk-resolved state (config snapshot, boot snapshot, registry) via `opts` from its callers,
+and touches no `fs`. So the accepted-fallback map + `now` are read/parsed by the CALLER and
+threaded into `buildGuardInventory` via a new `opts` field + into each `deriveGuardRow` via
+`DeriveInput` (mirroring exactly how `bootSnapshot` is resolved-by-caller-and-passed).
+NEITHER `deriveGuardRow` NOR `buildGuardInventory` gains an `fs` call (round-3: the round-2
+wording relocated the I/O into `buildGuardInventory`, which is itself pure — the correct
+layer is the caller).
+
+**Thread at EVERY site that builds an inventory — 3 today (round-4 fix).** The objective
+criterion: wherever `resolveGuardConfigSnapshot` + `readGuardPostureBootSnapshot` already run
+to feed `buildGuardInventory`, the accept-map + `now` must be threaded too. There are THREE
+such sites: (1) the `GET /guards` route (routes.ts), (2) the probe's `getLocalPosture`
+(server.ts), and (3) the heartbeat `selfGuardPosture` compute (server.ts) that feeds
+`buildHeartbeatPostureBlock`'s `loadBearingGapKeys`/`loadBearingSoakingKeys`/
+`loadBearingAcceptedKeys`. Missing site (3) is a SILENT multi-machine correctness trap: an
+operator-`accepted` load-bearing guard on machine A would be re-derived as `loadBearingGap`
+in A's OWN heartbeat block, shipped to peers in `loadBearingGapKeys`, and machine B would
+raise a FALSE `load-bearing-gap` alarm for a risk A's operator already accepted (and the soak
+lapse would also misfire, `now` being unthreaded there). `buildHeartbeatPostureBlock` then
+just filters the already-correctly-derived rows. One accept-file read PER inventory build (not
+per guard), no per-guard disk on any hot path.
 
 ## 3. Decision points touched
 
@@ -197,7 +222,8 @@ truth; an operator-accept on one machine does not silence a peer's gap — each 
 local). The heartbeat carries the three key-lists; `GET /guards?scope=pool` + the Machines
 tab surface a gap on ANY machine (same path `offDeviantKeys` rides; peer read
 Array.isArray-guarded). The `load-bearing-gap` probe item is pool-coalesced on its own
-health key. Single-machine install degrades cleanly.
+episode track / item-id namespace (`guard-posture-loadbearing:ep-N`). Single-machine
+install degrades cleanly.
 
 ## 5. Tests
 
@@ -213,11 +239,16 @@ health key. Single-machine install degrades cleanly.
 - `accept-fallback-route-requires-dashboard-pin` (Bearer-only rejected); `owner-missing-rejected`.
 - `operator-DELETE-revoke-reopens-gap-and-survives-reboot`.
 - `deriveGuardRow-AND-buildGuardInventory-stay-pure-accept-map-threaded-by-caller` (no fs
-  in either; `getLocalPosture` does the single read).
-- `load-bearing-gap-rides-its-own-health-key` AND
+  in either; the caller does the single read).
+- `owner-accepted-guard-reports-loadBearingAccepted-not-gap-in-its-own-heartbeat-block` (the
+  round-4 3rd-site fix — the heartbeat compute threads the local accept map, so an accepted
+  guard never ships to peers as a `loadBearingGap`; and its soak lapse honors the threaded `now`).
+- `load-bearing-gap-runs-a-separate-episode-track` AND
   `acute-off-runtime-divergent-surfaces-while-a-load-bearing-gap-episode-is-open` — the
   masking regression, driven against the REAL `createAttentionItem` funnel (assert guard Y
-  is observably surfaced, not merely that emit was called).
+  is observably surfaced, not merely that emit was called); AND
+  `masking-persists-if-only-healthKey-split-without-splitting-episode-state` (the
+  inert-lever guard — proves the episode-track split, not the key, carries the fix).
 - `soaking-pushes-no-attention-item` (only `/guards` + log).
 - `criticalPath-label-travels-on-off-runtime-divergent` (+ missing/errored/on-stale).
 - `evaluateInventory-pushes-load-bearing-gap-class` + `evaluateHeartbeat-reads-loadBearingGapKeys-arrayguarded`.
@@ -260,13 +291,21 @@ reach existing agents because the manifest ships as code.
    a manifest window, lapses to the loud Gap at window end; never a code-shipped shrug.
 7. **Observe-only** — Signal vs. Authority; no gating.
 8. **Always-on classification/route/channel; opt-in alert.**
-9. **Both `deriveGuardRow` AND `buildGuardInventory` stay PURE (round-3 fix)** — the caller
-   (`getLocalPosture`) reads the accept file once and threads the map + `now` via `opts`/
-   `DeriveInput`; no `fs` in either function.
-10. **`load-bearing-gap` rides its OWN health key (round-3 masking fix)** — separate from
-    the generic guard-posture episode, so a long-lived gap episode cannot mask an acute
-    load-shed through the create-if-absent attention funnel. Supersedes the inert
-    re-emit-under-same-key idea; soaking pushes no attention item at all.
+9. **Both `deriveGuardRow` AND `buildGuardInventory` stay PURE; thread at ALL 3 build sites
+   (round-3 + round-4 fix)** — the caller reads the accept file once and threads the map +
+   `now` via `opts`/`DeriveInput`; no `fs` in either function. The threading MUST cover every
+   site that builds an inventory (GET /guards, the probe `getLocalPosture`, AND the heartbeat
+   `selfGuardPosture` compute) — missing the heartbeat site silently mis-ships an accepted
+   guard to peers as a Gap.
+10. **`load-bearing-gap` runs a SEPARATE EPISODE TRACK (round-3/round-4 masking fix)** — its
+    own `openEpisodeId`/`episodeEmitted`/partitioned anomalies + its own item-id namespace
+    (`guard-posture-loadbearing:ep-N`), so a long-lived gap episode cannot mask an acute
+    load-shed. The probe's single-episode state was the real masking mechanism; a separate
+    health KEY is INERT (guard-posture items don't use the agent-health lane). Each track =
+    one bounded per-episode class-level forum topic — BNS-consistent (not per-guard),
+    deliberately NOT the calm one-hub lane (that would downgrade a load-shed's visibility).
+    Supersedes both the inert re-emit and separate-health-key framings; soaking pushes no
+    attention item.
 11. **Soak window = manifest constant; DELETE = operator records only** — reboot-stable.
 12. **`owner` is a REQUIRED accept-route field (round-3 fix)** — the PIN proves a PIN-holder,
     not a named operator; `owner` cannot be derived, so it is supplied and written to the
