@@ -3108,6 +3108,34 @@ export interface InstarConfig {
      */
     swapAttemptTimeoutMs?: number;
     /**
+     * Pinned-callsite model overrides (docs/LLM-ROUTING-REGISTRY.md "Risk items"
+     * #3/#5/#6/#7 — the hardcoded-model callsites that bypass the router).
+     * INLINE-DEFAULTED at each callsite (the codexExecJson/swapAttemptTimeoutMs
+     * precedent): section absent ⇒ the shipped default applies, byte-for-byte;
+     * present ⇒ the operator's value wins. Deliberately kept out of
+     * ConfigDefaults/migrateConfig so absence is the default state, never a
+     * persisted block. (The mentor loop's model is NOT here — it was already
+     * config-driven via `mentor.autonomousFix.model`, default 'opus'.)
+     */
+    pinnedModels?: {
+      /**
+       * Model tier for DispatchExecutor.runAgentic's spawned dispatch session
+       * (src/core/DispatchExecutor.ts). Default 'haiku' — dispatch steps are
+       * bounded follow-instructions work.
+       */
+      dispatchAgentic?: string;
+      /**
+       * Model id for the anthropic-headless credential-probe validation ping
+       * (a 4-token Messages-API "ping" that verifies a credential works).
+       * Default: ANTHROPIC_MODELS.haiku from src/core/models.ts — the probe
+       * only needs the cheapest valid model on the account.
+       * (The setup-wizard narrative models are env-overridable instead —
+       * INSTAR_WIZARD_CODEX_MODEL / INSTAR_WIZARD_GEMINI_MODEL — because the
+       * wizard runs BEFORE this config file exists.)
+       */
+      anthropicCredentialProbe?: string;
+    };
+    /**
      * Resilient Degradation Ladder (docs/specs/resilient-degradation-ladder.md). Ships DARK /
      * dev-gated: each rung's `enabled` is OMITTED so `resolveDevAgentGate` resolves it
      * (live-on-dev / dark-on-fleet); with all rungs off, behavior is EXACTLY today's

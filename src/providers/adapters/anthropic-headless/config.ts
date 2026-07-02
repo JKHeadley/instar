@@ -18,6 +18,14 @@ export interface AnthropicHeadlessConfig {
   credential?: string;
   /** Optional Anthropic API base URL (for proxies / Meridian). */
   apiBaseUrl?: string;
+  /**
+   * Model id for the credential-probe validation ping (a 4-token
+   * Messages-API "ping" that verifies a credential works). Threaded from
+   * `intelligence.pinnedModels.anthropicCredentialProbe` at server boot
+   * (LLM-ROUTING-REGISTRY.md risk item #7). Unset ⇒ ANTHROPIC_MODELS.haiku
+   * — the probe only needs the cheapest valid model on the account.
+   */
+  credentialProbeModel?: string;
   /** Default timeout for one-shot calls (ms). */
   defaultOneShotTimeoutMs?: number;
   /** Default max-duration for agentic sessions (minutes). */

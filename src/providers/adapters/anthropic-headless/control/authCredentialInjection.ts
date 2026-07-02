@@ -15,6 +15,7 @@ import { CapabilityFlag } from '../../../capabilities.js';
 import { AuthError } from '../../../errors.js';
 import type { AnthropicHeadlessConfig } from '../config.js';
 import { ANTHROPIC_HEADLESS_ID, mapApiError } from '../errors.js';
+import { ANTHROPIC_MODELS } from '../../../../core/models.js';
 
 class AnthropicHeadlessAuthCredentialInjection implements AuthCredentialInjection {
   readonly capability = CapabilityFlag.AuthCredentialInjection;
@@ -47,6 +48,19 @@ class AnthropicHeadlessAuthCredentialInjection implements AuthCredentialInjectio
     return 'unknown credential kind';
   }
 
+  /**
+   * RULE 3.1 RATIONALE (state-detection: credential-validity probe)
+   * - Criticality: minor-degradation. A wrong verdict surfaces as a loud
+   *   AuthError (or a later loud auth failure downstream) — never silent
+   *   corruption; the probe is a pre-check convenience, not the authority.
+   * - Frequency: per-enrollment / per-verification event (rare).
+   * - Stability: very-stable — official public Messages-API HTTP status
+   *   semantics (401/403 for bad credentials), not a scraped surface.
+   * - Fallback: every downstream call with the credential fails loudly on
+   *   its own; mapApiError classifies non-ok statuses.
+   * - → Verdict: deterministic, exempt-from-canary (stable public API
+   *   contract + loud failure path). Registry row: 06-state-detector-registry.md.
+   */
   async probe(credential: ProviderCredential): Promise<void> {
     const validation = this.validate(credential);
     if (validation) {
@@ -68,7 +82,10 @@ class AnthropicHeadlessAuthCredentialInjection implements AuthCredentialInjectio
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        // Config-overridable (risk item #7); default sourced from the
+        // models.ts tier map, not a string literal — the probe only needs
+        // the cheapest valid model on the account.
+        model: this._config.credentialProbeModel?.trim() || ANTHROPIC_MODELS.haiku,
         max_tokens: 4,
         messages: [{ role: 'user', content: 'ping' }],
       }),

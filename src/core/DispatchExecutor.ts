@@ -184,10 +184,22 @@ export class DispatchExecutor {
    * any evidence is emitted.
    */
   private lastDecisionEntityId: string | null = null;
+  /**
+   * Model tier for the runAgentic spawned dispatch session. Threaded from
+   * `intelligence.pinnedModels.dispatchAgentic` at the construction site
+   * (LLM-ROUTING-REGISTRY.md risk item #3 — formerly a hardcoded 'haiku').
+   * Inline-defaulted: null ⇒ 'haiku', byte-for-byte the previous behavior.
+   */
+  private agenticModel: string | null = null;
 
-  constructor(projectDir: string, sessionManager?: SessionManager | null) {
+  constructor(
+    projectDir: string,
+    sessionManager?: SessionManager | null,
+    options?: { agenticModel?: string },
+  ) {
     this.projectDir = projectDir;
     this.sessionManager = sessionManager ?? null;
+    this.agenticModel = options?.agenticModel?.trim() || null;
   }
 
   /**
@@ -573,7 +585,7 @@ export class DispatchExecutor {
         name: sessionName,
         prompt: fullPrompt,
         maxDurationMinutes: 10,
-        model: 'haiku',
+        model: this.agenticModel ?? 'haiku',
         jobSlug: 'dispatch-action',
       });
 
