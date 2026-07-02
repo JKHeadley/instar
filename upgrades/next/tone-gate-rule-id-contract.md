@@ -1,0 +1,34 @@
+# Tone-gate prompt: full rule-id contract + JSON quote-escaping rule
+
+## What Changed
+Two string corrections inside the MessagingToneGate prompt template
+(src/core/MessagingToneGate.ts): the JSON schema line and the closing
+constraint now demand the FULL rule identifier (e.g. `B15_CONTEXT_DEATH_STOP`)
+instead of enumerating the short ids (`B15`) that `parseResponse` rejects
+fail-closed — the prompt previously instructed the exact output its own parser
+refuses. Added an escaping rule so models quoting the candidate message inside
+`issue`/`suggestion` strings use single quotes instead of raw double quotes
+(raw quotes break `JSON.parse` and void the verdict). A source-level
+contract-pin test (tests/unit/tone-gate-rule-id-contract.test.ts) locks both
+corrections in.
+
+## Evidence
+INSTAR-Bench v2 A/B `ab-tone-gate2`: CLEAN-WIN — 40 previously-failing cells
+fixed, 0 previously-passing cells regressed, 118 cells across 7 routes
+(claude-sonnet/opus/haiku via claude-code, gpt-5.5/gpt-5.5-plain/gpt-5.4-mini
+via codex, gpt-5.5 via pi), infra-class failures excluded from accounting,
+single disputed cell arbitrated at 3 samples. The underlying defect had
+cross-model failure share up to 1.00 (every model, both API and CLI doors,
+obeyed the short-id instruction). Contract-pin test 3/3 green; adjacent
+tone/gate unit tests 36/36 green.
+
+## What to Tell Your User
+The quality gate that reviews my outgoing messages just got more reliable: a
+wording bug in its instructions made models answer in a format the gate
+couldn't read, so some correct verdicts were being lost. The instructions now
+match what the gate expects, proven side-by-side on seven model routes before
+shipping (40 cases fixed, zero broken). You don't need to do anything.
+
+## Summary of New Capabilities
+None new — an existing safety gate now reads its models' verdicts reliably
+across every provider route.
