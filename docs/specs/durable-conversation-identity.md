@@ -187,13 +187,21 @@ telegram: (never stored — positive ids pass through)
 - The `<channelId>[:<threadTs>]` tail IS the adapter routing key — conversion between
   canonical key and transport sessionKey is a pure string operation
   (`parseSlackRoutingKey`, `SlackForwardBridge.ts:31-38`, reused).
-- **Phase-1 workspace assumption (codex-X2a), stated explicitly:** this phase supports
-  exactly ONE Slack workspace per fleet, and relies on Slack channel-id uniqueness within
-  that workspace for the tuple's `channelId` to be a sufficient identity. The moment
-  multi-workspace (Phase 7.1) or Slack Connect shared channels (a single channel id visible
-  from multiple workspaces — §11.8) land, `workspaceId` must re-enter the identity core with
-  a migration/alias story; the tuple-first merge rule here is CORRECT ONLY under the
-  single-workspace assumption and is flagged so Phase 7.1 does not inherit a silent trap.
+- **Phase-1 single-workspace assumption is STRUCTURALLY ENFORCED, not just documented
+  (codex-X2a, codex-R4-1).** This phase supports exactly ONE Slack workspace per fleet, and
+  relies on Slack channel-id uniqueness within that workspace for the tuple's `channelId` to
+  be a sufficient identity. To ensure a durable equivalence class can never encode the WRONG
+  merge (which a later `workspaceId`-in-identity migration would then have to un-tangle), the
+  registry **hard-refuses to mint for a SECOND distinct CONCRETE `workspaceId`**: the first
+  concrete teamId seen becomes the fleet's pinned workspace; a mint whose authenticated
+  `getWorkspaceId()` returns a DIFFERENT concrete teamId is refused with a typed
+  `multi-workspace-unsupported` error + ONE deduped attention item (a Slack Connect shared
+  channel arriving from a foreign workspace hits the same refusal). `_`-placeholder mints are
+  always allowed (they upgrade in place to the pinned teamId). So multi-workspace / Slack
+  Connect is not a silent hazard — it is a loud, typed refusal until the Phase-7.1 migration
+  re-enters `workspaceId` into the identity core with a real migration/alias story. The
+  tuple-first merge rule here is thereby CORRECT BY CONSTRUCTION within the one enforced
+  workspace, not merely by assumption.
 
 ### 3.2 Slack thread ⇄ conversation mapping rules (adopted verbatim from resolveRoutingKey)
 
@@ -409,6 +417,33 @@ Mitigations shipped WITH this spec, not deferred:
   snapshot + append-journal (the `logs/conversation-registry.jsonl` audit is already half
   of it) or SQLite (the pending-relay-store precedent). §11 tracks it as a planned
   migration, so 100k entries is a scheduled move, never an incident.
+
+**WAL crash-consistency contract (codex-R4-3 — a recovery-critical journal needs a real
+contract, not "append a line").** The journal is the crash-durability write-ahead log; the
+JSON snapshot is a rebuildable cache. The contract:
+- **Record framing:** each journal line is ONE self-contained JSON object
+  `{ seq, op: "mint"|"alias"|"reachability", key, tuple, id, origin, hlc, ts }` terminated by
+  a newline. `seq` is a per-file monotonically-increasing sequence number. A reader tolerates
+  a **torn tail** (a crash mid-append): the last line lacking a terminating newline OR failing
+  JSON parse is DISCARDED (only a fully-written, newline-terminated line is a committed
+  record). No line is ever rewritten in place (append-only), so an earlier record can never be
+  corrupted by a later crash.
+- **fsync discipline:** the durable-binding/probed append fsyncs the FILE; on file
+  creation and on rotation the containing DIRECTORY is fsynced once (so the new/rotated file's
+  directory entry is durable). Speculative non-probed mints do not fsync (they ride the batched
+  snapshot).
+- **Snapshot high-water mark:** the batched JSON snapshot persists the highest `seq` it
+  incorporated (`snapshotHighWaterSeq`). Recovery loads the snapshot, then replays ONLY journal
+  records with `seq > snapshotHighWaterSeq` — so replay is bounded (never the whole journal) and
+  the snapshot + tail compose to the exact pre-crash state.
+- **Idempotent replay:** replay is keyed by `id`/`tuple`; re-applying a record already present
+  (from the snapshot or an earlier replay) is a no-op. Replay is therefore safe to run any number
+  of times, and a crash DURING replay simply re-runs it.
+- **Rotation/checkpoint:** the journal rotates by size/line cap (§8) with retention exceeding the
+  backup cadence; a rotation writes a fresh file whose first record carries the current
+  `snapshotHighWaterSeq` as a checkpoint anchor, and prunes only fully-superseded rotated files
+  (every record ≤ a persisted snapshot's high-water). This is the incremental adoption of the
+  §3.4 "snapshot + append-journal" escape hatch — shipped NOW for the durable path, not deferred.
 
 The file joins `config.backup.includeFiles` via PostUpdateMigrator exactly as
 `state/topic-profiles.json` + `state/topic-operators.json` did
@@ -968,15 +1003,21 @@ binding gap named in the audit closes to "creates the identity everything else c
   inbound; **a durable BINDING (commitment open) FORCES registration regardless of the
   speculative budget, but its OWN higher cap yields a typed capacity-refusal + attention item
   at the ceiling (never a silent drop — adversarial-B)**.
-- **Bespoke replicated store** (§6.1 step 9) — this is the highest-criticality new component,
-  so its merge gets EXHAUSTIVE race/divergence coverage (gemini-R2/R3): same-tuple/different-id
-  → local alias, NEVER a foundation `recordConflict`; every §3.5 divergence case (placeholder-
-  skew both orderings, out-of-order probed ingest, forged-origin, forged-reachability, seize)
-  as a property-style convergence assertion (both machines' perspectives reach the identical
-  final state); wiring-integrity regression asserts the 7 existing WS2 stores still surface
-  conflicts unchanged; `adopted-replicated` copy emitted via the standard emitter
-  witness-dominates (no self-conflict); a peer-forged `reachability:unreachable`/`origin` is
-  neutralized on ingest.
+- **Bespoke replicated store** (§6.1 step 9) — the highest-criticality new component, so its
+  merge gets EXHAUSTIVE coverage (gemini-R2/R3/R4 — treated as the single highest test
+  priority): every §3.5 divergence case (placeholder-skew both orderings, out-of-order probed
+  ingest, forged-origin, forged-reachability, seize) plus **PROPERTY-BASED / FUZZ tests that
+  validate merge CONVERGENCE under randomized message interleavings and chaotic replication
+  ordering** (both machines' perspectives reach the identical final state regardless of arrival
+  order — the load-bearing CRDT-style guarantee, since this store deliberately sidesteps the
+  foundation's battle-tested conflict path); same-tuple/different-id → local alias, NEVER a
+  foundation `recordConflict`; wiring-integrity regression asserts the 7 existing WS2 stores
+  still surface conflicts unchanged; `adopted-replicated` copy witness-dominates (no
+  self-conflict); a peer-forged `reachability:unreachable`/`origin` is neutralized on ingest.
+- **WAL crash-consistency** (§3.4 contract): torn-tail line discarded on replay; replay is
+  idempotent (re-run any number of times → same state); snapshot high-water bounds replay to
+  the tail; a crash mid-append never corrupts an earlier record; a crash mid-replay re-runs
+  cleanly.
 
 **Tier 2 — integration** (full HTTP pipeline):
 - `GET /conversations*` routes: list/resolve/health, 404 semantics, Bearer auth, label
@@ -1034,11 +1075,17 @@ Live-User-Channel-Proof scenario-matrix standard.
    IN Phase 7.1; the `_`-placeholder teamId backfill MUST NOT merge/split existing entries
    for shared channels — reserved-note so Phase 7.1 doesn't inherit a trap.
 9. **A wider (48-bit) candidate space + full decoupling from the legacy hash**
-   (gemini-G1): the legacy 32-bit hash is a TRANSITIONAL dependency (the mint CANDIDATE,
-   with the registry as the collision authority). Once adoption is complete, a future
-   change MAY introduce a wider id scheme for NEW conversations, decoupled from the legacy
-   semantics; deferred here because it breaks zero-loss adoption + mixed-fleet convergence
-   for the existing corpus.
+   (gemini-G1, codex-R4-2): the legacy 32-bit hash is a TRANSITIONAL dependency (the mint
+   CANDIDATE, with the registry as the collision authority). It is DELIBERATELY kept for Phase
+   1 because it is what buys zero-loss adoption of the existing channel-level corpus AND
+   coordination-free mixed-fleet skew convergence — both hard requirements TODAY. The wider
+   space is the natural **Phase-7.2 companion**: Phase 7.2 (thread-routing default ON) is
+   precisely what makes thread-level mints common and thus makes the 31-bit birthday pressure
+   (§3.3 table) matter — and thread-level ids have NO legacy corpus to adopt, so a wider space
+   for NEW thread/non-legacy mints there breaks nothing (channel-level ids keep the legacy
+   candidate for zero-loss). The scale mitigation is thereby tied to the exact phase that
+   creates the scale, not carried as unbounded debt: until 7.2, thread mints are ~zero
+   (thread routing is disabled by default), so the 31-bit space is not a live risk.
 10. **Registry compaction/GC** — bounded-by-usage; never deletes (identity resolves
     forever). The §3.4 snapshot+append-journal / SQLite escape hatch is the planned scale
     migration, tracked here so 100k entries is a scheduled move, not an incident.
