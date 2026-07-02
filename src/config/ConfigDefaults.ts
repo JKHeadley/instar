@@ -40,13 +40,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     activeWorkSilenceSentinel: {
       enabled: true,
     },
-    // Master gate for Telegram delivery of silently-stopped-sentinel
-    // escalations. Default false → sentinel notices are housekeeping and stay
-    // in the logs (server.log + sentinel-events.jsonl). Set true to receive
-    // ONE consolidated heads-up in the existing system topic when a genuine
-    // recovery-failed silence occurs. Default-false in response to the
-    // 2026-05-22 topic-spam flood. See docs/specs/silently-stopped-trio.md.
-    sentinelTelegramEscalation: false,
+    // Master gate for Telegram delivery of sentinel escalations. Default
+    // true (flipped 2026-05-24) — without this, all three sentinels
+    // (rate-limit / socket-disconnect / active-silence) recover silently
+    // and the operator never knows the recovery feature fired. The default
+    // false was protecting against a topic-spam flood that has since been
+    // mitigated by SentinelNotifier's per-session-cooldown + coalesced
+    // single-topic delivery. Set false to restore the silent-recovery
+    // behavior. See docs/specs/SENTINEL-REACHABILITY-SPEC.md.
+    sentinelTelegramEscalation: true,
     promptGate: {
       enabled: true,
       autoApprove: {

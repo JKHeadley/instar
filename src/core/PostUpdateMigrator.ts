@@ -2312,30 +2312,32 @@ Spec: \`docs/specs/auto-updater-lifeline-coordination.md\` (in the instar repo).
       result.upgraded.push('CLAUDE.md: added Version-Skew Self-Recovery section');
     }
 
-    // Sentinel Notifications (silently-stopped trio post-2026-05-22) — tells
-    // the agent the silently-stopped sentinels are housekeeping and go to the
-    // logs by default. Without this, an agent asked "are my sentinels alerting?"
-    // or "where do sentinel events go?" has no grounded answer. Idempotent via
-    // content-sniffing on the unique marker phrase.
-    if (!content.includes('sentinelTelegramEscalation') && !content.includes('Sentinel Notifications (silently-stopped trio)')) {
+    // Sentinel Notifications — recovery reachability. Updated 2026-05-24
+    // (sentinelTelegramEscalation default flipped to ON; lifeline fallback
+    // added for non-topic-bound sessions). Idempotent via the marker phrase
+    // "Sentinel Recovery Reachability".
+    if (!content.includes('Sentinel Recovery Reachability')) {
+      // Remove any prior version of this section so we replace cleanly.
+      content = content.replace(
+        /\n## Sentinel Notifications \(silently-stopped trio\)[\s\S]*?(?=\n## |\n# |$)/,
+        '\n',
+      );
       const section = `
-## Sentinel Notifications (silently-stopped trio)
+## Sentinel Recovery Reachability
 
-The SocketDisconnectSentinel + ActiveWorkSilenceSentinel watch for sessions that drop their socket or freeze mid-task. They detect, attempt one gentle nudge, and verify recovery — all on their own.
+Three sentinels watch for stuck sessions and recover them on their own: RateLimitSentinel (Anthropic's "Server is temporarily limiting requests" throttle), SocketDisconnectSentinel (mid-session API connection drops), ActiveWorkSilenceSentinel (sessions that went silent while supposed to be working).
 
-By default this is HOUSEKEEPING — the user never sees it. Every transition (detected / nudged / recovered / escalated) is written to:
-- The server log (\`logs/server.log\`) as \`[sentinel:KIND] sentinel/sessionName — detail\` lines.
-- A structured audit trail at \`logs/sentinel-events.jsonl\` (one JSON entry per transition).
+Each one detects, attempts a gentle recovery, verifies it took, and tells the user. **Delivery is reachable under every condition** — it routes to the bound topic if there is one, falls back to the lifeline (system) topic, and if even the lifeline is unavailable writes a structured \`recovery-unreachable\` event to \`logs/sentinel-events.jsonl\` + the dashboard alerts panel. Never silent.
 
-Telegram delivery of escalations is OFF by default. When a genuinely-stuck session truly fails recovery and the user should know, set \`monitoring.sentinelTelegramEscalation: true\` in \`.instar/config.json\` — then escalations are COALESCED into ONE consolidated message and posted to the existing system (lifeline) topic. They are never per-event new topics. This default-off + single-topic design is the post-2026-05-22 fix for the topic-spam flood.
+Default ON (flipped 2026-05-24). Escalations are COALESCED into one consolidated message per window, posted to the lifeline topic — never per-event new topics. Set \`monitoring.sentinelTelegramEscalation: false\` in \`.instar/config.json\` to restore the silent-recovery behavior (logs only).
 
-If a user asks "are my sentinels alerting?" or "why isn't the watchdog notifying me?" — read \`logs/sentinel-events.jsonl\` for the full audit trail and explain that Telegram is opt-in via the flag above. Spec: \`docs/specs/silently-stopped-trio.md\`.
+If a user asks "are my sentinels alerting?" or "why didn't I hear about that throttle?" — check \`logs/sentinel-events.jsonl\` for the audit trail and \`.instar/sentinel-alerts.json\` for unreachable-delivery events. Spec: \`docs/specs/SENTINEL-REACHABILITY-SPEC.md\`.
 `;
       content += '\n' + section;
       patched = true;
-      result.upgraded.push('CLAUDE.md: added Sentinel Notifications section');
+      result.upgraded.push('CLAUDE.md: added/updated Sentinel Recovery Reachability section');
     } else {
-      result.skipped.push('CLAUDE.md: Sentinel Notifications section already present');
+      result.skipped.push('CLAUDE.md: Sentinel Recovery Reachability section already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener

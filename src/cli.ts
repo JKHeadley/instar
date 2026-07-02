@@ -486,6 +486,49 @@ worktreeCmd
     }
   });
 
+worktreeCmd
+  .command('health')
+  .description(
+    'Inspect every worktree under the agent home for sandbox-fragile pointers. ' +
+      'Reports OK, BROKEN-POINTER (gitdir target unreachable), or DIRTY-MIGRATION-PENDING ' +
+      '(parent reachable but worktree has uncommitted changes blocking auto-migration). ' +
+      'Use --json for machine-readable output.',
+  )
+  .option('--json', 'Emit JSON instead of a human-readable table')
+  .action(async (opts) => {
+    const { resolveAgentHome, inspectWorktreeHealth } = await import('./core/InstarWorktreeManager.js');
+    try {
+      const { agentHome } = resolveAgentHome();
+      const entries = inspectWorktreeHealth(agentHome);
+      if (opts.json) {
+        console.log(JSON.stringify({ agentHome, entries }, null, 2));
+        return;
+      }
+      if (entries.length === 0) {
+        console.log(pc.dim(`No worktrees in ${path.join(agentHome, '.worktrees')}.`));
+        return;
+      }
+      let nonOk = 0;
+      console.log(pc.bold(`Worktree health for ${agentHome}:`));
+      for (const e of entries) {
+        const tag =
+          e.status === 'ok' ? pc.green('OK') :
+          e.status === 'broken-pointer' ? pc.red('BROKEN-POINTER') :
+          e.status === 'dirty-migration-pending' ? pc.yellow('DIRTY-MIGRATION-PENDING') :
+          e.status === 'detached-no-git' ? pc.red('DETACHED-NO-GIT') :
+          pc.dim('UNKNOWN');
+        if (e.status !== 'ok') nonOk++;
+        console.log(`  ${tag}  ${e.slug}${e.detail ? pc.dim(` — ${e.detail}`) : ''}`);
+      }
+      if (nonOk > 0) {
+        console.log(pc.dim(`\n${nonOk} of ${entries.length} worktrees need attention. Auto-migration will run on next \`instar update\`.`));
+      }
+    } catch (err) {
+      console.error(pc.red(`worktree health failed: ${(err as Error).message}`));
+      process.exit(1);
+    }
+  });
+
 // ── Backup ───────────────────────────────────────────────────────
 
 const backupCmd = program

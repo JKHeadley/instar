@@ -417,25 +417,67 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   }
 
   const createOp = 'src/core/InstarWorktreeManager.ts:createWorktree';
-  // Pre-prune dangling worktree metadata.
-  tryGit(['-C', instarRepo, 'worktree', 'prune'], instarRepo, createOp, 'write');
 
-  // Decide whether the branch already exists.
-  const branchExists =
-    tryGit(['-C', instarRepo, 'show-ref', '--verify', `refs/heads/${opts.branch}`], instarRepo, createOp, 'read').ok;
+  // Decide whether to use `git worktree add` or `git clone`. When the
+  // instar repo lives outside agent home (the normal cross-project case),
+  // a worktree's .git pointer file references the parent repo's
+  // .git/worktrees/<slug>/ metadata — which the macOS sandbox can revoke
+  // mid-session (confirmed 2026-05-22). A `git clone --no-hardlinks`
+  // produces a self-contained .git/ directory entirely inside agent home;
+  // the parent path can be deleted, revoked, or set on fire and the
+  // worktree keeps working. See docs/specs/SENTINEL-REACHABILITY-SPEC.md
+  // §B1. INSTAR_WORKTREE_FORCE_WORKTREE=1 forces the legacy path
+  // (rollback escape hatch); INSTAR_WORKTREE_FORCE_CLONE=1 forces clone.
+  const useClone = shouldCloneInsteadOfWorktree(instarRepo, agentHome);
 
-  const addArgs = ['-C', instarRepo, 'worktree', 'add'];
   let createdBranch = false;
-  if (!branchExists) {
-    const base = await resolveBaseBranch(instarRepo, opts.baseBranch);
-    addArgs.push('-b', opts.branch, worktreePath, base);
-    createdBranch = true;
+
+  if (useClone) {
+    // Branch resolution happens on the parent first so we can clone the
+    // correct ref. If the branch doesn't exist there yet, create it from
+    // the resolved base.
+    const branchExistsInParent = tryGit(
+      ['-C', instarRepo, 'show-ref', '--verify', `refs/heads/${opts.branch}`],
+      instarRepo, createOp, 'read',
+    ).ok;
+    if (!branchExistsInParent) {
+      const base = await resolveBaseBranch(instarRepo, opts.baseBranch);
+      const branchResult = tryGit(
+        ['-C', instarRepo, 'branch', opts.branch, base],
+        instarRepo, createOp, 'write',
+      );
+      if (!branchResult.ok) {
+        throw new Error(`branch create failed in source repo: ${branchResult.error}`);
+      }
+      createdBranch = true;
+    }
+    // --no-hardlinks ensures pack-file independence: deleting the parent's
+    // .git/objects later does not dangle the worktree's references.
+    const cloneResult = tryGit(
+      ['clone', '--quiet', '--local', '--no-hardlinks', '--branch', opts.branch, instarRepo, worktreePath],
+      worktreesDir, createOp, 'write',
+    );
+    if (!cloneResult.ok) {
+      throw new Error(`clone-isolation failed: ${cloneResult.error}`);
+    }
   } else {
-    addArgs.push(worktreePath, opts.branch);
-  }
-  const addResult = tryGit(addArgs, instarRepo, createOp, 'write');
-  if (!addResult.ok) {
-    throw new Error(classifyWorktreeAddError(addResult.error, worktreePath, instarRepo));
+    // In-tree worktree: source is already under agent home, sandbox hazard
+    // doesn't apply, and worktree is cheaper than clone.
+    tryGit(['-C', instarRepo, 'worktree', 'prune'], instarRepo, createOp, 'write');
+    const branchExists =
+      tryGit(['-C', instarRepo, 'show-ref', '--verify', `refs/heads/${opts.branch}`], instarRepo, createOp, 'read').ok;
+    const addArgs = ['-C', instarRepo, 'worktree', 'add'];
+    if (!branchExists) {
+      const base = await resolveBaseBranch(instarRepo, opts.baseBranch);
+      addArgs.push('-b', opts.branch, worktreePath, base);
+      createdBranch = true;
+    } else {
+      addArgs.push(worktreePath, opts.branch);
+    }
+    const addResult = tryGit(addArgs, instarRepo, createOp, 'write');
+    if (!addResult.ok) {
+      throw new Error(classifyWorktreeAddError(addResult.error, worktreePath, instarRepo));
+    }
   }
 
   // Per-worktree git identity. Cosmetic attribution, not authority. Signing
@@ -501,6 +543,28 @@ function classifyWorktreeAddError(stderr: string, worktreePath: string, repoPath
     return `worktree add failed — directory ${worktreePath} already exists. Inspect contents then 'rm -rf ${worktreePath}' if safe, then retry.`;
   }
   return `worktree add failed: ${stderr}`;
+}
+
+/**
+ * Decide whether to create a self-contained clone (--local --no-hardlinks)
+ * instead of a git worktree. True when the source repo lives outside agent
+ * home — when the sandbox-revocation hazard applies. Honors the same env
+ * overrides as WorktreeManager's identically-named method for consistency.
+ *
+ * Spec: docs/specs/SENTINEL-REACHABILITY-SPEC.md §B1.
+ */
+export function shouldCloneInsteadOfWorktree(instarRepo: string, agentHome: string): boolean {
+  if (process.env.INSTAR_WORKTREE_FORCE_WORKTREE === '1') return false;
+  if (process.env.INSTAR_WORKTREE_FORCE_CLONE === '1') return true;
+  try {
+    const sourceReal = fs.realpathSync(instarRepo);
+    let homeReal = agentHome;
+    try { homeReal = fs.realpathSync(agentHome); } catch { /* dir may not exist yet */ }
+    return !sourceReal.startsWith(homeReal + path.sep) && sourceReal !== homeReal;
+  } catch {
+    // realpath failed — be conservative and clone (safer).
+    return true;
+  }
 }
 
 function setLocalGitIdentity(worktreePath: string, agentName: string): void {
@@ -600,4 +664,94 @@ function appendLedgerLine(filePath: string, entry: LedgerEntry): void {
  *  cannot drift. */
 export function worktreeDedupeKey(worktreePath: string): string {
   return `worktree-misplaced:${crypto.createHash('sha256').update(worktreePath).digest('hex')}`;
+}
+
+// ── Health check ─────────────────────────────────────────────────────────
+
+export type WorktreeHealthStatus =
+  | 'ok'                       // self-contained .git/ directory; parent reachable
+  | 'broken-pointer'           // .git is a file pointing into an inaccessible parent path
+  | 'dirty-migration-pending'  // .git is a file pointing into agent-accessible parent, but worktree has uncommitted changes
+  | 'detached-no-git'          // worktree directory exists but has no .git at all
+  | 'unknown';
+
+export interface WorktreeHealthEntry {
+  slug: string;
+  worktreePath: string;
+  status: WorktreeHealthStatus;
+  gitdirTarget?: string;   // for .git-file worktrees, the target it points at
+  parentReachable?: boolean;
+  detail?: string;
+}
+
+/**
+ * Inspect every worktree under `<agentHome>/.worktrees/` and classify its
+ * health. Used by the `instar worktree health` CLI command and by the
+ * GET /worktree/health route surfaced in the dashboard. Read-only.
+ */
+export function inspectWorktreeHealth(agentHome: string): WorktreeHealthEntry[] {
+  const worktreesDir = path.join(agentHome, '.worktrees');
+  if (!fs.existsSync(worktreesDir)) return [];
+
+  const entries: WorktreeHealthEntry[] = [];
+  for (const slug of fs.readdirSync(worktreesDir)) {
+    if (slug.startsWith('.')) continue; // ignore .ledger.jsonl etc.
+    const worktreePath = path.join(worktreesDir, slug);
+    let lst: fs.Stats;
+    try { lst = fs.lstatSync(worktreePath); } catch { continue; }
+    if (!lst.isDirectory()) continue;
+
+    const gitMarker = path.join(worktreePath, '.git');
+    let markerLst: fs.Stats | null = null;
+    try { markerLst = fs.lstatSync(gitMarker); } catch { /* no .git at all */ }
+
+    if (!markerLst) {
+      entries.push({ slug, worktreePath, status: 'detached-no-git' });
+      continue;
+    }
+
+    if (markerLst.isDirectory()) {
+      entries.push({ slug, worktreePath, status: 'ok', parentReachable: true });
+      continue;
+    }
+
+    // .git is a file → worktree pointer. Read it and check the gitdir target.
+    let gitdirContent = '';
+    try { gitdirContent = fs.readFileSync(gitMarker, 'utf-8'); } catch { /* fall through */ }
+    const m = gitdirContent.match(/^gitdir:\s*(.+?)\s*$/m);
+    const gitdirTarget = m ? m[1] : undefined;
+    if (!gitdirTarget) {
+      entries.push({ slug, worktreePath, status: 'unknown', detail: '.git file has no gitdir line' });
+      continue;
+    }
+
+    // Is the target reachable?
+    let parentReachable = false;
+    try { fs.accessSync(gitdirTarget, fs.constants.R_OK); parentReachable = true; } catch { /* unreachable */ }
+
+    if (!parentReachable) {
+      entries.push({ slug, worktreePath, status: 'broken-pointer', gitdirTarget, parentReachable: false });
+      continue;
+    }
+
+    // Reachable now but worktree-pointer style — still vulnerable to mid-
+    // session sandbox revocation. Surface as a migration candidate; if the
+    // worktree has uncommitted changes, mark it pending operator action.
+    let dirty = false;
+    try {
+      // git status --porcelain; if anything is staged or unstaged → dirty
+      const r = tryGit(['-C', worktreePath, 'status', '--porcelain'], worktreePath, 'inspectWorktreeHealth', 'read');
+      dirty = r.ok && r.stdout.trim().length > 0;
+    } catch { /* if git fails, treat as dirty (safer) */ dirty = true; }
+
+    entries.push({
+      slug,
+      worktreePath,
+      status: dirty ? 'dirty-migration-pending' : 'broken-pointer',
+      gitdirTarget,
+      parentReachable: true,
+      detail: dirty ? 'uncommitted changes prevent auto-migration' : 'migration candidate (parent reachable now, but worktree-pointer is sandbox-fragile)',
+    });
+  }
+  return entries;
 }

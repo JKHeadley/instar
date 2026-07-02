@@ -775,8 +775,10 @@ export class WorktreeManager extends EventEmitter {
       // "destructive against the instar source" if cwd happens to be inside
       // it. Pin cwd to the worktrees root (always outside the source tree,
       // and guaranteed to exist since worktreePath lives there).
+      // --local --no-hardlinks: ensure pack-file independence so parent
+      // deletion does NOT dangle the worktree's object refs.
       SafeGitExecutor.execSync(
-        ['clone', '--quiet', this.opts.projectDir, worktreePath],
+        ['clone', '--quiet', '--local', '--no-hardlinks', this.opts.projectDir, worktreePath],
         { timeout: 120_000, cwd: this.worktreesRoot, operation: 'src/core/WorktreeManager.ts:clone-default' },
       );
       // Create branch on the clone (mirrors the worktree path's branch-prep).

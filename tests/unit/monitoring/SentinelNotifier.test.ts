@@ -50,14 +50,16 @@ describe('SentinelNotifier — record() is always log-only', () => {
   });
 });
 
-describe('SentinelNotifier — escalate() with telegramEscalation OFF (default)', () => {
+describe('SentinelNotifier — escalate() with telegramEscalation explicitly OFF', () => {
   it('records the escalation and logs that it was suppressed, sending nothing', async () => {
     const sink = makeLog();
     const sent: string[] = [];
+    // Default flipped to true 2026-05-24 — explicit false now required to
+    // restore the prior log-only behavior.
     const n = new SentinelNotifier({
       log: sink.log,
       sendConsolidated: async (t) => { sent.push(t); return true; },
-    });
+    }, { telegramEscalation: false });
     expect(n.telegramEnabled).toBe(false);
     n.escalate('silence', 'agent-1', 'something went quiet');
     await n.flushNow();
@@ -72,6 +74,79 @@ describe('SentinelNotifier — escalate() with telegramEscalation OFF (default)'
     n.escalate('silence', 'agent-1', 'something went quiet');
     await n.flushNow();
     expect(sink.entries.map(e => e.kind)).toEqual(['escalated', 'escalation-suppressed']);
+  });
+});
+
+describe('SentinelNotifier — per-session cooldown (R5 defense-in-depth)', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-05-24T00:00:00Z')); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('suppresses repeat escalations for the same (sentinel, session) within the cooldown window', async () => {
+    const sink = makeLog();
+    const sent: string[] = [];
+    const n = new SentinelNotifier(
+      { log: sink.log, sendConsolidated: async (t) => { sent.push(t); return true; } },
+      { telegramEscalation: true, coalesceWindowMs: 50, perSessionCooldownMs: 60_000 },
+    );
+    // First escalation emits
+    n.escalate('socket-disconnect', 'agent-1', 'first');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sent).toHaveLength(1);
+
+    // Repeat within cooldown is suppressed
+    n.escalate('socket-disconnect', 'agent-1', 'second (within cooldown)');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sent).toHaveLength(1);
+
+    const suppressed = sink.entries.filter(e => e.kind === 'escalation-suppressed');
+    expect(suppressed.length).toBe(1);
+    expect(suppressed[0].detail).toMatch(/per-session cooldown active/);
+  });
+
+  it('different sentinels for the same session do NOT share a cooldown', async () => {
+    const sink = makeLog();
+    const sent: string[] = [];
+    const n = new SentinelNotifier(
+      { log: sink.log, sendConsolidated: async (t) => { sent.push(t); return true; } },
+      { telegramEscalation: true, coalesceWindowMs: 10, perSessionCooldownMs: 60_000 },
+    );
+    n.escalate('socket-disconnect', 'agent-1', 'socket-first');
+    await vi.advanceTimersByTimeAsync(50);
+    n.escalate('active-silence', 'agent-1', 'silence-first');
+    await vi.advanceTimersByTimeAsync(50);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('20 events for the same session in a minute → ≤2 sends (coalescing + cooldown)', async () => {
+    const sink = makeLog();
+    const sent: string[] = [];
+    const n = new SentinelNotifier(
+      { log: sink.log, sendConsolidated: async (t) => { sent.push(t); return true; } },
+      { telegramEscalation: true, coalesceWindowMs: 1_000, perSessionCooldownMs: 5 * 60_000 },
+    );
+    for (let i = 0; i < 20; i++) {
+      n.escalate('socket-disconnect', 'agent-x', `event-${i}`);
+      await vi.advanceTimersByTimeAsync(3_000); // 3s between, total 60s
+    }
+    expect(sent.length).toBeLessThanOrEqual(2);
+  });
+
+  it('after cooldown expires, escalations resume', async () => {
+    const sink = makeLog();
+    const sent: string[] = [];
+    const n = new SentinelNotifier(
+      { log: sink.log, sendConsolidated: async (t) => { sent.push(t); return true; } },
+      { telegramEscalation: true, coalesceWindowMs: 50, perSessionCooldownMs: 1_000 },
+    );
+    n.escalate('socket-disconnect', 'agent-1', 'first');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sent).toHaveLength(1);
+
+    // Advance past cooldown window
+    await vi.advanceTimersByTimeAsync(2_000);
+    n.escalate('socket-disconnect', 'agent-1', 'after-cooldown');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sent).toHaveLength(2);
   });
 });
 

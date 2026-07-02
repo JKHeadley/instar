@@ -67,9 +67,9 @@ export interface SentinelNotifierDeps {
 
 export interface SentinelNotifierConfig {
   /**
-   * Master gate for Telegram escalation. Default false → all sentinel notices
-   * are log-only. When true, genuine recovery-failed escalations are coalesced
-   * and sent to the system topic.
+   * Master gate for Telegram escalation. Default true (flipped 2026-05-24
+   * — see ConfigDefaults.ts for full rationale). When false, all sentinel
+   * notices are log-only.
    */
   telegramEscalation?: boolean;
   /**
@@ -78,17 +78,29 @@ export interface SentinelNotifierConfig {
    * enough to absorb a restart-time burst, short enough to feel timely.
    */
   coalesceWindowMs?: number;
+  /**
+   * Per-sentinel-per-session cooldown (ms). After a session's escalation has
+   * been emitted, repeat escalations for the same (sentinel, session) pair
+   * within this window are suppressed (recorded as `escalation-suppressed`;
+   * never reach Telegram). Defense-in-depth above the coalescing window for
+   * real-outage durations where a sentinel might re-fire many times in a row.
+   * Default 5 minutes. See SENTINEL-REACHABILITY-SPEC.md §R5.
+   */
+  perSessionCooldownMs?: number;
 }
 
 const DEFAULT_CONFIG: Required<SentinelNotifierConfig> = {
-  telegramEscalation: false,
+  telegramEscalation: true,
   coalesceWindowMs: 5_000,
+  perSessionCooldownMs: 5 * 60_000,
 };
 
 export class SentinelNotifier {
   private readonly cfg: Required<SentinelNotifierConfig>;
   private readonly pending = new Map<string, string>();
   private flushHandle: ReturnType<typeof setTimeout> | null = null;
+  /** Last-emit timestamp per (sentinel, sessionName) for per-session cooldown. */
+  private readonly lastEmitAt = new Map<string, number>();
 
   constructor(
     private readonly deps: SentinelNotifierDeps,
@@ -121,6 +133,17 @@ export class SentinelNotifier {
       this.write('escalation-suppressed', sentinel, sessionName, 'telegramEscalation disabled (log-only)');
       return;
     }
+    // Per-(sentinel, session) cooldown — suppress repeats in a real-outage
+    // sequence where a sentinel might re-fire many times for the same session.
+    const key = `${sentinel}::${sessionName}`;
+    const now = (this.deps.now ?? Date.now)();
+    const last = this.lastEmitAt.get(key);
+    if (last != null && now - last < this.cfg.perSessionCooldownMs) {
+      const remainingMs = this.cfg.perSessionCooldownMs - (now - last);
+      this.write('escalation-suppressed', sentinel, sessionName, `per-session cooldown active (${Math.round(remainingMs / 1000)}s remaining)`);
+      return;
+    }
+    this.lastEmitAt.set(key, now);
     this.pending.set(sessionName, text);
     this.scheduleFlush();
   }

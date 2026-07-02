@@ -5193,25 +5193,62 @@ export async function startServer(options: StartOptions): Promise<void> {
       sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId;
 
     // Neutral "continue" nudge — NOT the compaction-resume payload (which would
-    // falsely tell the agent its memory was reset). Topic-tagged so InputGuard
-    // accepts it.
+    // falsely tell the agent its memory was reset). For topic-bound sessions
+    // the nudge is `[telegram:N]`-tagged so InputGuard accepts it; for non-
+    // topic-bound sessions (developer's interactive Claude Code window, gsd
+    // worktree sessions, etc.) it's injected untagged — InputGuard only
+    // enforces topic tagging on sessions that have a binding.
     const rateLimitResume = async (sessionName: string): Promise<boolean> => {
       if (!sessionManager.isSessionAlive(sessionName)) return false;
       const topicId = telegram?.getTopicForSession(sessionName);
-      if (topicId == null) return false;
-      const tagged = `[telegram:${topicId}] The temporary server throttle should have cleared — please continue where you left off.`;
-      return sessionManager.injectMessage(sessionName, tagged);
+      const nudge = 'The temporary server throttle should have cleared — please continue where you left off.';
+      const text = topicId != null ? `[telegram:${topicId}] ${nudge}` : nudge;
+      return sessionManager.injectMessage(sessionName, text);
     };
-    // Route a user-facing notice for the session's topic (Telegram).
+    // Route a user-facing notice. Topic-bound → that topic. Otherwise →
+    // lifeline (system) topic. Otherwise → recovery-unreachable audit event.
+    // Never silently no-op (closes 2026-05-24 silent-recovery bug). See
+    // src/monitoring/recoveryReachability.ts.
+    const { deliverReachable } = await import('../monitoring/recoveryReachability.js');
+    const sentinelAuditPath = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
+    const sentinelAlertsPath = path.join(config.stateDir, 'sentinel-alerts.json');
+    const auditUnreachable = (sessionName: string, sentinel: string, text: string, tried: string[]): void => {
+      const entry = {
+        ts: new Date().toISOString(),
+        kind: 'recovery-unreachable' as const,
+        sentinel,
+        sessionName,
+        text,
+        fallbackTried: tried,
+      };
+      try { fs.appendFileSync(sentinelAuditPath, JSON.stringify(entry) + '\n'); } catch { /* best-effort */ }
+      // Dashboard alert pane: append-only JSON array, capped to last 200.
+      try {
+        const cur = fs.existsSync(sentinelAlertsPath)
+          ? JSON.parse(fs.readFileSync(sentinelAlertsPath, 'utf-8')) as unknown[]
+          : [];
+        const next = (Array.isArray(cur) ? cur : []).concat([entry]).slice(-200);
+        fs.writeFileSync(sentinelAlertsPath, JSON.stringify(next, null, 2));
+      } catch { /* best-effort */ }
+      console.warn(`[sentinel:recovery-unreachable] ${sentinel}/${sessionName} (tried: ${tried.join(' → ')})`);
+    };
     const rateLimitNotify = async (sessionName: string, text: string): Promise<void> => {
-      const topicId = telegram?.getTopicForSession(sessionName);
-      if (topicId == null) return;
-      const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-        body: JSON.stringify({ text }),
+      if (!telegram) {
+        auditUnreachable(sessionName, 'rate-limit', text, ['no-telegram', 'audit']);
+        return;
+      }
+      const result = await deliverReachable(sessionName, 'rate-limit', text, {
+        topicForSession: (s) => telegram.getTopicForSession(s) ?? undefined,
+        lifelineTopicId: () => telegram.getLifelineTopicId(),
+        sendToTopic: async (topicId, t) => { await telegram.sendToTopic(topicId, t); },
+        auditUnreachable,
       });
-      if (!resp.ok) throw new Error(`rate-limit notify failed: ${resp.status}`);
+      if (result.reached === 'audit-only') {
+        // We already logged via auditUnreachable; do NOT throw — the sentinel
+        // treats throw as a delivery error and may retry, which would just
+        // re-fail. Audit-only is a terminal "we tried" state.
+        return;
+      }
     };
     const rlsCfg = config.monitoring?.rateLimitSentinel ?? { enabled: true };
     const rateLimitSentinel = new RateLimitSentinel(
@@ -5293,21 +5330,32 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       // Consolidated Telegram delivery — reuses the existing system (lifeline)
       // topic. When telegramEscalation is off, this callback is never invoked.
+      // When the lifeline is missing or delivery fails, write a structured
+      // `recovery-unreachable` event so the failure surfaces in the dashboard
+      // alerts panel rather than vanishing into a `notify-error` log line.
       const localTelegram = telegram;
       const sendConsolidated = localTelegram
         ? async (text: string): Promise<boolean> => {
             const topicId = localTelegram.getLifelineTopicId();
-            if (!topicId) return false;
+            if (!topicId) {
+              auditUnreachable('coalesced-sentinels', 'sentinel-notifier', text, ['lifeline:missing', 'audit']);
+              return false;
+            }
             try {
               await localTelegram.sendToTopic(topicId, text);
               return true;
-            } catch {
+            } catch (err) {
+              auditUnreachable('coalesced-sentinels', 'sentinel-notifier', text, [
+                'lifeline:send-failed',
+                `error:${err instanceof Error ? err.message.slice(0, 60) : String(err).slice(0, 60)}`,
+                'audit',
+              ]);
               return false;
             }
           }
         : undefined;
 
-      const telegramEscalation = config.monitoring?.sentinelTelegramEscalation === true;
+      const telegramEscalation = config.monitoring?.sentinelTelegramEscalation !== false;
       const notifier = new SentinelNotifier(
         { log: logSink, sendConsolidated },
         { telegramEscalation },
