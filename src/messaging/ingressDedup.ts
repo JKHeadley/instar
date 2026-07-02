@@ -79,6 +79,16 @@ export function decideIngress(
     return { action: 'drop', reason: 'already-replied' };
   }
 
+  // A terminally REJECTED row (the owner re-validated the sender and refused —
+  // silent-loss-refusal-conservation §2.C) is terminal: a redelivered rejected
+  // update_id is DROPPED here, never re-routed. Without this a redelivery would
+  // fall to the 'received' branch, beginProcessing would flip it back to
+  // 'processing', and stuck-recovery would eventually markAbandoned it → the
+  // generic "I didn't get to N message(s)" notice on top of the §C notice.
+  if (entry.state === 'rejected') {
+    return { action: 'drop', reason: 'already-replied' };
+  }
+
   if (entry.state === 'processing') {
     // Stuck (old holder fenced mid-turn) → the new holder re-claims it.
     const startedMs = entry.processingStartedAt ? Date.parse(entry.processingStartedAt) : NaN;

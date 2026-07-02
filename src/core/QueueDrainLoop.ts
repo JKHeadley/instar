@@ -100,8 +100,12 @@ export interface QueueDrainLoopDeps {
   /** The §3.1 dispatch seam (via:'drain'). Bounded by dispatchDeadlineMs here. */
   dispatchInbound(msg: DrainMessage, handover: DrainHandover): Promise<DrainDispatchResult>;
   /** maxAttempts escape hatch — ONE forced re-place bypassing hold/deliver
-   *  verdicts (§3.3). Resolves true when the re-place succeeded. */
-  forceReplace(msg: DrainMessage): Promise<boolean>;
+   *  verdicts (§3.3). Resolves true when the re-place succeeded, false on a
+   *  non-terminal failure (→ attempts-exhausted), or the DISTINCT `'rejected'`
+   *  verdict when the re-place hit a first-class sender refusal (silent-loss-
+   *  refusal-conservation §2.A — mapped to the SAME sender-deauthorized terminal
+   *  + unified notice, NOT mislabeled attempts-exhausted). */
+  forceReplace(msg: DrainMessage): Promise<boolean | 'rejected'>;
   /** §4 hold verdict — required; the server injects always-'failover' when the
    *  policy is off (§4.2). Pure in-memory (breaker + capacity registry). */
   holdVerdict(sessionKey: string): HoldVerdict;
@@ -649,14 +653,21 @@ export class QueueDrainLoop {
       const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
       if (!claimed) return;
       this.d.store.incrementCounter('holdBypassedByAttemptsCap');
-      let ok = false;
+      let res: boolean | 'rejected' = false;
       try {
-        ok = await this.d.forceReplace(this.toMsg(row, senderEnvelope, topicMetadata));
-      } catch { ok = false; }
-      if (ok) {
+        res = await this.d.forceReplace(this.toMsg(row, senderEnvelope, topicMetadata));
+      } catch { res = false; }
+      if (res === true) {
         this.d.store.transition(row.enqueue_seq, 'claimed', 'delivered', { nowIso: new Date(this.d.now()).toISOString() });
         this.mirrorRemove(row.session_key);
         summary.delivered += 1;
+      } else if (res === 'rejected') {
+        // §2.A — the forced re-place hit a first-class sender refusal. Terminal
+        // the SAME way as the direct 'sender-rejected' dispatch result (below):
+        // sender-deauthorized + the unified §2.C loss notice, NOT attempts-exhausted.
+        this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso: new Date(this.d.now()).toISOString(), terminalReason: 'sender-deauthorized' });
+        this.mirrorRemove(row.session_key);
+        this.d.reportLoss([this.lossItem(row, 'sender-deauthorized')], 'sender-deauthorized');
       } else {
         this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso: new Date(this.d.now()).toISOString(), terminalReason: 'attempts-exhausted' });
         this.mirrorRemove(row.session_key);

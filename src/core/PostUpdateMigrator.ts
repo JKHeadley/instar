@@ -64,6 +64,12 @@ import {
   type MigratorStep,
   type RunPendingStepsResult,
 } from './MigratorStepEngine.js';
+import {
+  matchTestIdentity,
+  verifyAllowTestIdentity,
+  loadTestIdentityKey,
+} from '../users/testIdentityMarkers.js';
+import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,6 +88,15 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **Scope honesty:** the verdict is CPU-capacity only — it does NOT assess memory/swap/thermal/disk-IO, so \`OK\` means "CPU has headroom," not "everything is fine."
 - **NEVER** judge load from \`uptime\` 1-min load average alone — quote the script's verdict + real idle%, never the load average. (This rule exists because that exact misread caused a false "heavy load" deferral on 2026-06-19.)
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
+}
+
+export function SENDER_REJECTION_CLAUDEMD_SECTION(): string {
+  return `\n### Sender-Rejection Notices ("message not delivered — sender not recognized")
+
+When I run across more than one machine and a message is forwarded to the machine that OWNS the conversation, that machine re-validates the sender against its OWN user registry. If it can't confirm the sender, the message is REFUSED (a first-class terminal outcome — never silently logged as "delivered") and the user is told with ONE neutral notice: *"I got your message but couldn't confirm you as an approved sender, so it wasn't delivered. I've logged the details so this can be diagnosed."*
+- **Why a user got that notice:** the owning machine didn't resolve the sender's id in its user registry. Read \`logs/mesh-rejections.jsonl\` on the DECIDING machine (metadata-only: \`ts/reason/session/messageId/senderUid\`, never payload) and check the registration path — the sender may not be registered on that machine, or its \`users.json\` may be degenerate.
+- **The safety gate (silent-loss-refusal-conservation §2.D):** sender re-validation refuses to ARM against a genuinely-empty / never-populated / corrupt / operator-unresolvable registry — it fails toward DELIVERY and shouts (a fresh install must let the operator's first message through), and it keeps a durable \`state/registry-high-water.json\` marker so a never-populated \`[]\` (fresh install → deliver) is told apart from an emptied-by-deletion \`[]\` (→ keep rejecting + HIGH alert). A corrupt/unparseable registry fails CLOSED (reject unresolved) — never silently opens the doors. Test/fixture identities are refused at the write AND load layers so the registry can't be clobbered the way it was on 2026-07-01.
+- **When to use** (PROACTIVE): user asks "why did I get a 'message not delivered / sender not recognized' notice?" → read \`logs/mesh-rejections.jsonl\` + check whether they're registered on the owning machine. "why did my messages silently stop?" → check that machine's registry health (an emptied registry disarms + shouts; a corrupt one fails closed). Spec: \`docs/specs/silent-loss-refusal-conservation.md\`.\n`;
 }
 
 export function DYNAMIC_MCP_CLAUDEMD_SECTION(port: number): string {
@@ -659,8 +674,100 @@ export class PostUpdateMigrator {
     this.migrateConformanceGateAutoInvoke(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
+    this.migrateFixtureIdentityQuarantine(result);
 
     return result;
+  }
+
+  /**
+   * silent-loss-refusal-conservation §4 — one-time idempotent remediation of an
+   * ALREADY-polluted `users.json`. `validateProfile`/`loadUsers` only guard NEW
+   * writes + in-memory loads; a machine already carrying fixture rows on disk
+   * would re-create the 2026-07-01 incident on its next captain flip. This scans
+   * `users.json` against `TEST_IDENTITY_MARKERS`, SKIPS any row carrying a `sig`
+   * that VERIFIES (the signed allow-marker — a legitimate collision), QUARANTINES
+   * the rest (backup + audit), and BACK-FILLS the high-water marker when ≥1
+   * surviving NON-fixture user remains in a store that has no marker (the
+   * installed-base set-point). Idempotent: after quarantine no fixtures remain →
+   * a re-run is a no-op. NOTE (§6 rollback): the quarantine is NOT git-revertable
+   * — a wrongly-quarantined legitimate user is recovered from the timestamped backup.
+   */
+  private migrateFixtureIdentityQuarantine(result: MigrationResult): void {
+    const usersFile = path.join(this.config.stateDir, 'users.json');
+    if (!fs.existsSync(usersFile)) {
+      result.skipped.push('fixture-identity-quarantine: users.json not found');
+      return;
+    }
+    let rows: Array<Record<string, unknown>>;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(usersFile, 'utf-8'));
+      if (!Array.isArray(parsed)) {
+        result.skipped.push('fixture-identity-quarantine: users.json is not an array (left untouched — corruption is not this migration\'s job)');
+        return;
+      }
+      rows = parsed as Array<Record<string, unknown>>;
+    } catch (err) {
+      // A corrupt store is NOT this migration's concern (loadUsers backs it up);
+      // never clobber an unparseable file.
+      result.skipped.push(`fixture-identity-quarantine: users.json parse-failure (left untouched): ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const key = loadTestIdentityKey(this.config.stateDir);
+    const survivors: Array<Record<string, unknown>> = [];
+    const quarantined: Array<Record<string, unknown>> = [];
+    for (const row of rows) {
+      const profile = row as { id?: string; slackUserId?: string; channels?: Array<{ type: string; identifier: string }>; allowTestIdentity?: { marker: string; sig: string } };
+      const marker = matchTestIdentity({ id: String(profile.id ?? ''), slackUserId: profile.slackUserId, channels: profile.channels ?? [] });
+      if (!marker) {
+        survivors.push(row);
+        continue;
+      }
+      // A row with a VERIFYING signed allow-marker is a legitimate collision — keep it.
+      if (verifyAllowTestIdentity(key, String(profile.id ?? ''), marker, profile.allowTestIdentity)) {
+        survivors.push(row);
+        continue;
+      }
+      quarantined.push(row);
+    }
+
+    if (quarantined.length > 0) {
+      // Back up the quarantined rows to a timestamped file (recoverable — §6).
+      const backupPath = `${usersFile}.fixture-quarantine.${Date.now()}.json`;
+      try {
+        fs.writeFileSync(backupPath, JSON.stringify(quarantined, null, 2));
+      } catch (err) {
+        // If we can't back up, do NOT quarantine (never a non-recoverable delete).
+        result.errors.push(`fixture-identity-quarantine: backup write failed, leaving users.json untouched: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      // Atomic rewrite of users.json with the survivors (temp + rename).
+      try {
+        const tmp = `${usersFile}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(survivors, null, 2));
+        fs.renameSync(tmp, usersFile);
+      } catch (err) {
+        result.errors.push(`fixture-identity-quarantine: users.json rewrite failed: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      result.upgraded.push(
+        `fixture-identity-quarantine: quarantined ${quarantined.length} fixture/test identit${quarantined.length === 1 ? 'y' : 'ies'} out of users.json ` +
+        `(backup: ${path.basename(backupPath)}); ${survivors.length} real user(s) remain`,
+      );
+    }
+
+    // Back-fill the high-water marker for the installed base: a store that has
+    // held ≥1 real (non-fixture) user should classify POPULATED if later emptied
+    // (emptied-by-deletion → keep rejecting), not never-populated.
+    const realSurvivors = survivors.filter((r) => {
+      const p = r as { id?: string; slackUserId?: string; channels?: Array<{ type: string; identifier: string }> };
+      return matchTestIdentity({ id: String(p.id ?? ''), slackUserId: p.slackUserId, channels: p.channels ?? [] }) === null;
+    });
+    if (realSurvivors.length > 0 && !readRegistryHighWater(this.config.stateDir)) {
+      if (setRegistryHighWater(this.config.stateDir, 'migration-backfill')) {
+        result.upgraded.push('fixture-identity-quarantine: back-filled registry high-water marker (installed-base set-point)');
+      }
+    }
   }
 
   /**
@@ -7133,6 +7240,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       content += `\n**Fork-Bomb Spawn Cap (host-wide concurrent-LLM-subprocess ceiling)** — A SAFETY FLOOR that ships ON for every agent (never dark): a host-local counting semaphore bounds how many \`claude -p\`/\`codex exec\` subprocesses run AT ONCE across every compliant Instar process on the host (default 8). It is the structural answer to the 2026-06-20 OOM fork-bomb (~230-289 concurrent spawns ≈ 90-115GB). Every LLM provider rides the spawn-cap funnel (\`buildIntelligenceProvider\`); a saturated cap makes new spawns wait a bounded time, then shed — and a capacity shed of a SAFETY-GATING call fails CLOSED (held), never auto-passes. A per-agent single-instance lock removes the duplicate-server-instance multiplier.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/spawn-limiter\` → \`{ cap, liveHolders, available, saturated, waiters, acquireMs, waitersMax }\` (Registry First — read it, never guess).\n- Tune via \`.instar/config.json\` → \`intelligence.spawnCap\` (\`maxConcurrent\`, \`acquireMs\`, \`waitersMax\`) or env (\`INSTAR_HOST_SPAWN_MAX\`, \`INSTAR_SPAWN_ACQUIRE_MS\`, \`INSTAR_SPAWN_WAITERS_MAX\`). Restart sessions/server to apply.\n- **When to use** (PROACTIVE): "are we protected against a fork-bomb / OOM?" / "how many LLM spawns are running right now?" / "why did a gate hold under load?" → \`GET /spawn-limiter\`. (Spec: \`docs/specs/forkbomb-prevention-simple.md\`; constitution: "Bounded Blast Radius".)\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Fork-Bomb Spawn Cap section');
+    }
+
+    // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
+    // Awareness + Migration Parity: an agent that doesn't know a "sender not
+    // recognized" notice comes from the mesh sender re-validation will be confused
+    // by it. Content-sniffed on a stable heading → idempotent.
+    if (!content.includes('Sender-Rejection Notices')) {
+      content += SENDER_REJECTION_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Sender-Rejection Notices section');
     }
 
     if (patched) {

@@ -77,14 +77,34 @@ export type RouteAction =
   | 'queued'
   | 'duplicate'
   | 'owner-dead-replaced'
-  | 'placement-blocked';
+  | 'placement-blocked'
+  /**
+   * TERMINAL REFUSAL (silent-loss-refusal-conservation §2.A — "A Refusal Stays a
+   * Refusal"). The owner peer answered a `deliverMessage` with a typed
+   * `sender-rejected` NACK: it re-validated the carried sender against its OWN
+   * users registry and refused. This is NOT a successful forward — it is a
+   * first-class terminal outcome that MUST stay distinguishable from `forwarded`
+   * at every consumer. `acked` is true (transport-terminal: the offset advances,
+   * the message is never retried/re-placed — a re-placed owner's registry would
+   * reject identically), but the message was DROPPED, not delivered. Every
+   * consumer enumerates this branch explicitly and fires the §2.C loss notice
+   * BEFORE any local-dispatch / isRemotelyHandled check. */
+  | 'rejected';
 
 export interface RouteOutcome {
   action: RouteAction;
   owner?: string | null;
   detail?: string;
-  /** True once the inbound is durably accepted (ledger ACK or local handling) — the
-   * caller may advance the platform offset ONLY when this is true (§L4 ACK protocol). */
+  /**
+   * TRANSPORT-TERMINAL, not delivery-success. True once the inbound reached a
+   * terminal transport state and the platform offset may advance (§L4 ACK
+   * protocol) — this includes a durable accept (ledger ACK / local handling) AND
+   * a terminal `action:'rejected'` refusal (advance the offset so the refused
+   * message is never retried). NEVER read `acked:true` as "the user received
+   * this" — a `rejected` outcome is acked AND dropped. Read `action` to know
+   * which. (Conservation of refusal: the pre-fix code set acked:true on a
+   * rejection and labelled it `forwarded`, so every consumer read it as success.)
+   */
   acked: boolean;
 }
 
@@ -110,6 +130,10 @@ export function isRemotelyHandled(outcome: RouteOutcome, selfMachineId: string |
   const remoteOwner = outcome.owner != null && outcome.owner !== selfMachineId;
   if (outcome.action === 'spawned' && remoteOwner) return true;
   if (outcome.action === 'owner-dead-replaced' && remoteOwner) return true;
+  // 'rejected' is DELIBERATELY not "remotely handled" (§2.A): a refusal is not a
+  // success, and treating it as handled-elsewhere would re-hide the drop. Every
+  // consumer branches on action==='rejected' explicitly BEFORE reaching here (and
+  // fires the loss notice); this function only classifies success dispositions.
   return false;
 }
 
@@ -214,7 +238,7 @@ export class SessionRouter {
    * dispatch. Returns true when the message ended up durably handled
    * (acked outcome that isn't another queued/blocked verdict).
    */
-  async forceReplace(msg: InboundMessage): Promise<boolean> {
+  async forceReplace(msg: InboundMessage): Promise<boolean | 'rejected'> {
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(() => this.placeAndClaim(msg, 'failover', true));
     const tail = next.then(() => undefined, () => undefined);
@@ -223,7 +247,21 @@ export class SessionRouter {
       if (this.chains.get(msg.sessionKey) === tail) this.chains.delete(msg.sessionKey);
     });
     const outcome = await next;
-    return outcome.acked && outcome.action !== 'queued' && outcome.action !== 'placement-blocked';
+    // Ratchet (§2.A / round-2 adversarial #M1): a `rejected` outcome is
+    // acked-but-DROPPED — it must NEVER read as "durably handled" here (the
+    // drain's maxAttempts escape keys on this return value; a truthy value would
+    // suppress the §2.C loss notice). It also must NOT return bare `false` — bare
+    // false lands in the escape's `else` and mislabels the cause `attempts-exhausted`,
+    // losing the refusal cause + the divergence signal. Return the DISTINCT
+    // `'rejected'` verdict so the drain escape maps it to the SAME
+    // `sender-deauthorized` terminal handling (unified notice + divergence probe).
+    // placeAndClaim CAN yield `rejected` via its CAS-lost → forwardToOwner arm.
+    if (outcome.action === 'rejected') return 'rejected';
+    return (
+      outcome.acked &&
+      outcome.action !== 'queued' &&
+      outcome.action !== 'placement-blocked'
+    );
   }
 
   private backoff(attempt: number): number {
@@ -278,7 +316,13 @@ export class SessionRouter {
         // (healthy, never suspect) and durably REFUSED the sender. Terminal for
         // this message: acked so the offset advances; never retried/re-placed.
         if (ack.accepted === 'sender-rejected') {
-          return { action: 'forwarded', owner, detail: 'sender-rejected', acked: true };
+          // §2.A — the core silent-loss fix. The owner re-validated the sender
+          // and refused. Return the FIRST-CLASS terminal `rejected` (NOT
+          // `forwarded`) so no consumer can read the refusal as a successful
+          // delivery. `acked:true` still advances the offset (never retried —
+          // a re-placed owner rejects identically); `detail` carries the
+          // canonical cause the §2.C notice + drain unify on.
+          return { action: 'rejected', owner, detail: 'sender-deauthorized', acked: true };
         }
         // stale-ownership → re-resolve (bounded) and route to the current owner.
         if (reResolveDepth >= this.cfg.maxReResolveDepth) {

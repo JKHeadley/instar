@@ -10,6 +10,13 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { UserProfile, UserChannel, Message } from '../core/types.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import {
+  matchTestIdentity,
+  testIdentitiesAllowed,
+  verifyAllowTestIdentity,
+  TestIdentityRefusedError,
+} from './testIdentityMarkers.js';
+import { setRegistryHighWater } from '../core/registryHighWater.js';
 
 /**
  * WS2.6 user-record replication emit seam (injected, dark by default). server.ts late-binds a
@@ -34,12 +41,40 @@ export class UserManager {
   private users: Map<string, UserProfile> = new Map();
   private channelIndex: Map<string, string> = new Map(); // "type:identifier" -> userId
   private usersFile: string;
+  private readonly stateDir: string;
+  /**
+   * silent-loss-refusal-conservation §2.D — the server-held HMAC key that
+   * verifies a signed `allowTestIdentity` marker on a legitimate fixture-collision
+   * profile. Loaded only by the server process (NOT authToken/dashboardPin).
+   * Absent (CLI / read-only probe / tests) → a fixture-collision profile is
+   * refused (write) / skipped (load) unless the double-keyed test escape is on —
+   * a marker can be neither minted nor verified without the key (safe direction).
+   */
+  private readonly testIdentityKey: string | undefined;
   /** WS2.6 user-record replication emitter (injected, dark by default). Absent ⇒ strict no-op. */
   private userReplication: UserReplicationEmitter | null = null;
 
-  constructor(stateDir: string, initialUsers?: UserProfile[]) {
+  constructor(stateDir: string, initialUsers?: UserProfile[], opts?: { testIdentityKey?: string }) {
     this.usersFile = path.join(stateDir, 'users.json');
+    this.stateDir = stateDir;
+    this.testIdentityKey = opts?.testIdentityKey;
     this.loadUsers(initialUsers);
+  }
+
+  /**
+   * silent-loss-refusal-conservation §2.D — is a fixture-identity write/load
+   * PERMITTED for this profile? A match is permitted only when (a) the
+   * double-keyed test escape is active (env + on-disk test-home marker) OR (b) the
+   * profile carries a signed `allowTestIdentity` marker that VERIFIES under the
+   * server key (a legitimate name-collision, dashboard-PIN-minted). Returns the
+   * matched marker string when the write/load must be REFUSED, or null when it is
+   * permitted (either no match, or an accepted override). */
+  private refusedTestIdentity(profile: Pick<UserProfile, 'id' | 'slackUserId' | 'channels' | 'allowTestIdentity'>): string | null {
+    const marker = matchTestIdentity(profile);
+    if (!marker) return null;
+    if (testIdentitiesAllowed(this.stateDir)) return null;
+    if (verifyAllowTestIdentity(this.testIdentityKey, profile.id, marker, profile.allowTestIdentity)) return null;
+    return marker;
   }
 
   /**
@@ -149,6 +184,12 @@ export class UserManager {
     }
 
     this.persistUsers();
+
+    // silent-loss-refusal-conservation §2.D set-point: a successful register/upsert
+    // of a (validated non-fixture) user means the authoritative local registry now
+    // holds a real user — set the monotonic high-water marker so a later emptying
+    // classifies POPULATED (emptied-by-deletion), not never-populated.
+    try { setRegistryHighWater(this.stateDir, 'user-registered'); } catch { /* best-effort */ }
   }
 
   /**
@@ -236,6 +277,16 @@ export class UserManager {
     if (!Array.isArray(profile.permissions)) {
       throw new Error(`UserProfile(${profile.id}).permissions must be an array`);
     }
+    // silent-loss-refusal-conservation §2.D — fixture refusal at the WRITE path
+    // (API/CLI/registration). "Test Identity Never Enters Production State": a
+    // typed throw so a fixture id can never be persisted into the production
+    // registry (the 2026-07-01 clobber's write side). A legitimate name-collision
+    // supplies a dashboard-PIN-minted signed `allowTestIdentity`; an isolated test
+    // home sets the double-keyed escape.
+    const refused = this.refusedTestIdentity(profile);
+    if (refused) {
+      throw new TestIdentityRefusedError(profile.id, refused);
+    }
   }
 
   private loadUsers(initialUsers?: UserProfile[]): void {
@@ -247,6 +298,21 @@ export class UserManager {
           // Skip malformed entries
           if (!user.id || !Array.isArray(user.channels) || !Array.isArray(user.permissions)) {
             console.warn(`[UserManager] Skipping malformed user entry: ${JSON.stringify(user).slice(0, 100)}`);
+            continue;
+          }
+          // silent-loss-refusal-conservation §2.D — fixture refusal at the LOAD
+          // path. Refuse-and-skip-with-loud-alert (NEVER throw — a constructor
+          // throw fails boot). A fixture row that slipped into an already-polluted
+          // store is dropped from the in-memory registry so it can never resolve
+          // as a real sender; the §4 boot migration quarantines it off disk.
+          const refused = this.refusedTestIdentity(user);
+          if (refused) {
+            console.error(
+              `[UserManager] REFUSING to load fixture/test identity "${user.id}" (matched marker "${refused}") from the user registry ` +
+              `— "Test Identity Never Enters Production State" (silent-loss-refusal-conservation §2.D). ` +
+              `The row is skipped in-memory; the boot migration quarantines it off disk. ` +
+              `If this is a legitimate user, register them via the dashboard-PIN-authed allow-identity override.`,
+            );
             continue;
           }
           this.users.set(user.id, user);
@@ -268,9 +334,28 @@ export class UserManager {
     if (initialUsers) {
       for (const user of initialUsers) {
         if (!this.users.has(user.id)) {
-          this.upsertUser(user);
+          // upsertUser → validateProfile refuses a fixture initialUsers entry
+          // (typed throw). Guard so a fixture in config.users can't fail boot;
+          // a real initialUsers merge below sets the high-water marker.
+          try {
+            this.upsertUser(user);
+          } catch (err) {
+            if (err instanceof TestIdentityRefusedError) {
+              console.error(`[UserManager] Skipped fixture identity from initialUsers: ${err.message}`);
+              continue;
+            }
+            throw err;
+          }
         }
       }
+    }
+
+    // silent-loss-refusal-conservation §2.D set-point: if the authoritative local
+    // registry holds ≥1 resolvable real user, this machine has "held a real user"
+    // — set the monotonic high-water marker so a LATER emptying classifies as
+    // POPULATED (emptied-by-deletion → keep rejecting), not never-populated.
+    if (this.users.size > 0) {
+      try { setRegistryHighWater(this.stateDir, 'load-observed-real-user'); } catch { /* best-effort */ }
     }
   }
 

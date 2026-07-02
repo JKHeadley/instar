@@ -648,6 +648,15 @@ export interface UserProfile {
    * absent it is derived from `permissions`. See src/permissions/SlackPrincipalResolver.ts.
    */
   orgRole?: string;
+  /**
+   * Signed override allowing a profile that legitimately COLLIDES with a
+   * `TEST_IDENTITY_MARKERS` fixture id to persist + load (silent-loss-refusal-
+   * conservation §2.D). Minted only on a dashboard-PIN-authed request; the load
+   * path VERIFIES the HMAC (no PIN). On the WS2.6 field-clamp denylist — a
+   * legitimately-overridden fixture-collision profile does NOT replicate its
+   * marker (re-mint on the peer if it ever occurs). NOT a bare boolean.
+   */
+  allowTestIdentity?: { marker: string; sig: string };
 }
 
 export interface UserChannel {

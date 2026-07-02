@@ -143,7 +143,10 @@ import { createHandoffReceiverWiring } from '../core/handoffReceiverWiring.js';
 import { createHandoffSentinelBootWiring } from '../core/handoffSentinelBootWiring.js';
 import type { HandoffOutcome } from '../core/HandoffSentinel.js';
 import { MessageProcessingLedger } from '../messaging/MessageProcessingLedger.js';
+import { dedupeKeyFor } from '../messaging/ingressDedup.js';
 import { recoverStuckMessages } from '../messaging/stuckMessageRecovery.js';
+import { SenderRejectionNoticer, SENDER_DEAUTHORIZED_CAUSE } from '../core/senderRejectionNotice.js';
+import { appendMeshRejection } from '../core/meshRejectionLog.js';
 import { ReplyMarkerTransport } from '../core/ReplyMarkerTransport.js';
 import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
 import { createPrivateKey, createPublicKey, createHash } from 'node:crypto';
@@ -212,6 +215,7 @@ import type { PipelineMessage } from '../types/pipeline.js';
 import { toPipeline, toInjection, toLogEntry, formatHistoryLine } from '../types/pipeline.js';
 import type { Message, IntelligenceProvider, UserProfile, InstarConfig } from '../core/types.js';
 import { UserManager } from '../users/UserManager.js';
+import { loadTestIdentityKey } from '../users/testIdentityMarkers.js';
 import { formatUserContextForSession, hasUserContext } from '../users/UserContextBuilder.js';
 import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -551,6 +555,11 @@ let _meshSelfId: string | null = null;
  *  strict no-op (always spawn locally, byte-for-byte legacy). Set in startServer's
  *  mesh block from the lease coordinator. */
 let _holdsLeaseForSpawn: (() => boolean) | null = null;
+/** silent-loss-refusal-conservation §2.C — the unified sender-rejection loss
+ *  noticer. Constructed in startServer (needs messageLedger + notify + userManager);
+ *  referenced module-wide (incl. wireTelegramRouting's live consumer) via this ref.
+ *  null = not yet wired → the consumer falls back to the deterministic adapter send. */
+let _senderRejectionNoticer: import('../core/senderRejectionNotice.js').SenderRejectionNoticer | null = null;
 /** G3: the ownershipCheckedSpawn flag accessor (multiMachine.sessionPool.
  *  ownershipCheckedSpawn). Defaults dark (no-op). Set in startServer. */
 let _ownershipCheckedSpawn: () => { enabled: boolean; dryRun: boolean } = () => ({ enabled: false, dryRun: true });
@@ -2178,6 +2187,34 @@ export function wireTelegramRouting(
         // box (the recognizer logs its pin, but route()'s actual placement/forward
         // decision was invisible; that hid the bug below from the first live test).
         console.log(`[session-pool] route topic ${topicId} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+        // silent-loss-refusal-conservation §2.A/§2.C — a first-class terminal
+        // `rejected` (the owner re-validated the sender and refused) is NOT a
+        // successful forward: TELL the user via the ORIGINATING adapter and
+        // terminal-return WITHOUT local dispatch, BEFORE the isRemotelyHandled
+        // test (which returns false for 'rejected' → would otherwise fall through
+        // to a local inject the owner already refused). User-originated only (a
+        // real platform uid + a bound topic — job/sentinel/canary keys excluded).
+        if (outcome.action === 'rejected') {
+          console.log(`[session-pool] topic ${topicId} REJECTED (${outcome.detail ?? 'sender-deauthorized'}) — not dispatching locally; notifying user`);
+          if (telegramUserId) {
+            const noticer = _senderRejectionNoticer;
+            if (noticer) {
+              noticer.onRejected({
+                adapter: 'telegram',
+                topicId,
+                messageId: dedupeKeyFor('telegram', topicId, msg.id),
+                senderUid: telegramUserId,
+                peer: outcome.owner ?? undefined,
+              });
+            } else {
+              // Noticer not yet wired — the deterministic adapter send is the floor.
+              telegram.sendToTopic(topicId,
+                "I got your message but couldn't confirm you as an approved sender, so it wasn't delivered. I've logged the details so this can be diagnosed.",
+              ).catch(() => {});
+            }
+          }
+          return;
+        }
         // Short-circuit local dispatch whenever the session ended up on ANOTHER machine
         // (forward/duplicate, OR a fresh remote 'spawned'/'owner-dead-replaced'). Before
         // this, only 'forwarded'/'duplicate' were caught, so a just-moved topic was
@@ -2393,7 +2430,11 @@ export function wireTelegramRouting(
         ?? _topicPinStore?.asTopicMetadata(dmsg.sessionKey),
       senderEnvelope: dmsg.senderEnvelope,
     });
-    if (outcome.action === 'forwarded' && outcome.detail === 'sender-rejected') {
+    // silent-loss-refusal-conservation §2.A — forwardToOwner no longer masquerades
+    // a refusal as `forwarded`; it returns the first-class terminal `rejected`.
+    // Map it to the drain's `sender-rejected` disposition (→ terminal
+    // `sender-deauthorized` + the unified §2.C loss notice via reportLoss).
+    if (outcome.action === 'rejected') {
       return { kind: 'sender-rejected' };
     }
     if (isRemotelyHandled(outcome, _meshSelfId)) {
@@ -6147,7 +6188,12 @@ export async function startServer(options: StartOptions): Promise<void> {
       // "Account switcher + quota collector pipeline" section above.
 
       // Initialize persistent UserManager for user identity resolution (Gap 8)
-      const userManager = new UserManager(config.stateDir, config.users);
+      // silent-loss-refusal-conservation §2.D — the authoritative UserManager
+      // carries the server-held allow-marker key so a legitimate fixture-collision
+      // profile's signed `allowTestIdentity` VERIFIES on load (a bogus marker is
+      // quarantined). Read-only probes elsewhere construct WITHOUT the key (fixtures
+      // skipped — the safe direction).
+      const userManager = new UserManager(config.stateDir, config.users, { testIdentityKey: loadTestIdentityKey(config.stateDir) });
       attachUserReplication(userManager); // WS2.6 send-side (dark by default)
 
       // Fix command dependencies — populated later when subsystems initialize.
@@ -7097,6 +7143,31 @@ export async function startServer(options: StartOptions): Promise<void> {
                 channel: { platform: 'slack', workspaceId: _slackAdapter?.getWorkspaceId(), channelId },
               });
               console.log(`[session-pool] slack route key=${routingKey} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+              // silent-loss-refusal-conservation §2.A/§2.C — a first-class terminal
+              // `rejected` is NOT a successful forward: reply in-thread on the
+              // originating Slack channel and terminal-return WITHOUT local dispatch,
+              // BEFORE the isRemotelyHandled test. Slack NOTICE parity ships now;
+              // Slack SENDER re-validation is tracked-followup 4.
+              if (outcome.action === 'rejected') {
+                console.log(`[session-pool] slack key ${routingKey} REJECTED (${outcome.detail ?? 'sender-deauthorized'}) — not dispatching locally; notifying user`);
+                const slackUid = (message.metadata?.slackUserId as string) || undefined;
+                if (slackUid) {
+                  const noticer = _senderRejectionNoticer;
+                  if (noticer) {
+                    noticer.onRejected({
+                      adapter: 'slack',
+                      slackKey: routingKey,
+                      messageId: dedupeKeyFor('slack', routingKey, String(message.id)),
+                      peer: outcome.owner ?? undefined,
+                    });
+                  } else {
+                    slackAdapter!.sendToChannel(channelId,
+                      "I got your message but couldn't confirm you as an approved sender, so it wasn't delivered. I've logged the details so this can be diagnosed.",
+                    ).catch(() => {});
+                  }
+                }
+                return;
+              }
               if (isRemotelyHandled(outcome, _meshSelfId)) {
                 console.log(`[session-pool] slack key ${routingKey} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
                 return;
@@ -16245,6 +16316,30 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // ── Sender-rejection loss noticer (silent-loss-refusal-conservation §2.C) ──
+    // The single funnel the live consumer (Telegram/Slack) AND the queue-drain loss
+    // path route through so a first-class `rejected` outcome ALWAYS tells the user,
+    // deduped + ceilinged. Durable per-messageId dedupe uses the ledger's
+    // `markRejected` marker when the ledger is present; otherwise the in-memory
+    // 30-min window bounds it. Divergence probe reads a fresh read-only UserManager.
+    {
+      const ledgerForNotice = messageLedger;
+      _senderRejectionNoticer = new SenderRejectionNoticer({
+        sendTelegram: (topicId, text) => { telegram?.sendToTopic(topicId, text).catch(() => {}); },
+        sendSlack: (slackKey, text) => {
+          const channelId = slackKey.split(':')[0];
+          _slackAdapter?.sendToChannel(channelId, text).catch(() => {});
+        },
+        alertHub: (title, body) => notify('IMMEDIATE', 'sender-rejection', `${title}: ${body}`),
+        markRejectedDurable: ledgerForNotice
+          ? (messageId: string) => { try { return ledgerForNotice.markRejected(messageId, 0, { platform: 'mesh' }); } catch { return true; } }
+          : undefined,
+        resolvesLocally: (uid: number) => {
+          try { return new UserManager(config.stateDir).resolveFromTelegramUserId(uid) !== null; } catch { return false; }
+        },
+      });
+    }
+
     // ── ReleaseReadinessSentinel (Layer B of release-readiness-visibility) ──
     // Repo-gated dev-environment watchdog: only constructed when the install has
     // an analyzable instar git repo AND the feature is enabled in config. On a
@@ -17280,6 +17375,48 @@ export async function startServer(options: StartOptions): Promise<void> {
         // activation; the durable receipt + ACK is the complete dark-phase contract.)
         const deliverMod = await import('../core/DeliverMessageHandler.js');
         const deliverSeenFallback = new Set<string>(); // used only if the SQLite ledger is unavailable
+        // silent-loss-refusal-conservation §2.D — the wiring-time registry gate.
+        // A stat-gated, READ-ONLY (no initialUsers merge — the old closure passed
+        // config.users, which can writeFileSync per message) resolver + the
+        // degenerate/unknown-unsafe/operator-resolution arm decision. Constructed
+        // ONCE; the operator-uid probe reads the LOCAL topic-operator binding of the
+        // deciding machine (KYP) via the late-bound AgentServer ref.
+        const { SenderValidationGate } = await import('../core/senderValidationGate.js');
+        const _svUsersFile = path.join(config.stateDir, 'users.json');
+        const _svStatUsers = (): { mtimeMs: number; size: number } | null => {
+          try { const s = fs.statSync(_svUsersFile); return { mtimeMs: s.mtimeMs, size: s.size }; } catch { return null; }
+        };
+        let _svManager: UserManager | null = null;
+        let _svManagerStat: { mtimeMs: number; size: number } | null | undefined = undefined;
+        const _svResolveUid = (uid: number): boolean => {
+          const s = _svStatUsers();
+          const changed =
+            _svManagerStat === undefined ||
+            (s === null) !== (_svManagerStat === null) ||
+            (s !== null && _svManagerStat != null && (s.mtimeMs !== _svManagerStat.mtimeMs || s.size !== _svManagerStat.size));
+          if (changed || !_svManager) {
+            // READ-ONLY load: NO initialUsers → loadUsers runs no merge/persist.
+            try { _svManager = new UserManager(config.stateDir); } catch { _svManager = null; }
+            _svManagerStat = s;
+          }
+          try { return _svManager?.resolveFromTelegramUserId(uid) != null; } catch { return false; }
+        };
+        const senderValidationGate = new SenderValidationGate({
+          usersFilePath: _svUsersFile,
+          stateDir: config.stateDir,
+          statUsers: _svStatUsers,
+          resolveUid: _svResolveUid,
+          operatorUidForTopic: (session: string): number | null => {
+            try {
+              const op = _agentServerRef?.getTopicOperatorStore()?.getOperator(session);
+              if (!op) return null;
+              const n = Number(op.uid);
+              return Number.isFinite(n) && n !== 0 ? n : null;
+            } catch { return null; }
+          },
+          alert: (level, cause, message) => notify(level === 'HIGH' ? 'IMMEDIATE' : 'SUMMARY', 'sender-validation', `[${cause}] ${message}`),
+          log: (line) => console.warn(pc.yellow(line)),
+        });
         const deliverMessageHandler = deliverMod.createDeliverMessageHandler({
           ownerEpochOf: (s) => ownReg.read(s)?.ownershipEpoch ?? null,
           recordReceipt: (messageId, session) => {
@@ -17294,16 +17431,26 @@ export async function startServer(options: StartOptions): Promise<void> {
             deliverSeenFallback.add(messageId);
             return true;
           },
-          // §3.4 sender re-validation (per-machine registries can diverge during
-          // a deauthorization): a carried envelope whose userId no longer
-          // resolves on THIS machine NACKs `sender-rejected`. Envelope absent
-          // (old peer / live local frame) → not consulted.
-          validateSender: (envelope) => {
+          // §3.4 sender re-validation, hardened by the §2.D wiring gate: a carried
+          // envelope whose userId no longer resolves on THIS machine NACKs
+          // `sender-rejected` — BUT the gate never arms against a degenerate /
+          // never-populated / corrupt / operator-unresolvable registry (it fails
+          // toward delivery + shouts instead of rejecting everyone, the incident
+          // fix). Envelope absent (old peer / live local frame) → not consulted.
+          validateSender: (envelope, session) => {
             const uid = Number(envelope.userId);
-            if (!Number.isFinite(uid) || uid === 0) return true;
-            // THIS machine's registry (file-backed; the telegram block's
-            // instance is scoped there — same files, same truth).
-            try { return new UserManager(config.stateDir, config.users).resolveFromTelegramUserId(uid) !== null; } catch { return true; }
+            return senderValidationGate.decide(uid, session).verdict === 'deliver';
+          },
+          // §2.B — the receiver-side rejection trace (metadata-only). The DECIDING
+          // machine records its own refusal to logs/mesh-rejections.jsonl so a
+          // future incident is never forensically blank on the machine that decided.
+          onRejected: (meta) => {
+            appendMeshRejection(config.stateDir, {
+              reason: meta.reason,
+              session: meta.session,
+              messageId: meta.messageId,
+              senderUid: meta.senderUid,
+            });
           },
           // Owner-side bridge (§L4 handoff): a forwarded message landed → spawn/resume
           // the local session for the topic so the conversation continues on THIS machine.
@@ -18765,6 +18912,21 @@ export async function startServer(options: StartOptions): Promise<void> {
                     }
                   },
                   reportLoss: (items, reason) => {
+                    // silent-loss-refusal-conservation §2.C — a `sender-deauthorized`
+                    // loss is a first-class REFUSAL, not a generic "didn't get to it":
+                    // route each item through the UNIFIED noticer (same neutral
+                    // wording + dedupe as the live path), NOT the generic message.
+                    if (reason === SENDER_DEAUTHORIZED_CAUSE && _senderRejectionNoticer) {
+                      for (const it of items) {
+                        const tid = Number(it.sessionKey);
+                        if (Number.isFinite(tid) && tid > 0) {
+                          _senderRejectionNoticer.onRejected({ adapter: 'telegram', topicId: tid, messageId: it.messageId });
+                        } else {
+                          _senderRejectionNoticer.onRejected({ adapter: 'slack', slackKey: it.sessionKey, messageId: it.messageId });
+                        }
+                      }
+                      return;
+                    }
                     notifyInboundLoss(items, 'SUMMARY', (count) =>
                       `I didn't get to ${count} of your message(s) (${reason}) — resend anything still needed.`);
                   },

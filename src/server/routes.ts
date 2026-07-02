@@ -7842,6 +7842,42 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ mandate: { ...m, authorshipValid: ctx.coordination.store.verifyAuthorship(m) } });
   });
 
+  // silent-loss-refusal-conservation §2.D — mint a signed allow-marker for a
+  // LEGITIMATE fixture-identity name-collision. PIN-GATED (a Bearer token is
+  // structurally insufficient — else any token-holder could register a
+  // fixture-with-owner-perms, reproducing the S3 escalation). Reuses
+  // checkMandatePin (sha256 + timingSafeEqual + per-IP rate-limit). Returns the
+  // signed `{marker, sig}`; the operator then registers the profile carrying it
+  // (loadUsers/validateProfile VERIFY the HMAC with NO PIN present). The raw
+  // header/marker is never logged; the authenticated principal is audited.
+  router.post('/users/allow-test-identity', async (req, res) => {
+    if (!checkMandatePin(req, res)) return; // 403/429 already sent
+    const body = (req.body ?? {}) as { userId?: unknown; marker?: unknown };
+    const userId = typeof body.userId === 'string' ? body.userId : '';
+    const marker = typeof body.marker === 'string' ? body.marker : '';
+    if (!userId || !marker) {
+      res.status(400).json({ error: 'userId and marker are required' });
+      return;
+    }
+    const { matchesTestIdentityToken, signAllowTestIdentity, loadTestIdentityKey } = await import('../users/testIdentityMarkers.js');
+    // The marker must be a REAL fixture marker from the closed set (exact id or an
+    // anchored reserved-token prefix) — a caller can't mint a signature for an
+    // arbitrary string. The sig binds to (userId, marker); the load path verifies
+    // it against the profile's OWN id + its matched marker.
+    if (!matchesTestIdentityToken(marker)) {
+      res.status(400).json({ error: 'marker is not a recognized fixture-identity marker' });
+      return;
+    }
+    const key = loadTestIdentityKey(ctx.config.stateDir);
+    if (!key) {
+      res.status(503).json({ error: 'no server signing key available to mint an allow-marker' });
+      return;
+    }
+    const sig = signAllowTestIdentity(key, userId, marker);
+    console.log(`[allow-identity] minted allow-marker for a fixture-colliding user (operator-authenticated, PIN)`);
+    res.json({ allowTestIdentity: { marker, sig } });
+  });
+
   // Issue a mandate — PIN-GATED (decision 2A: the human-authenticated surface).
   router.post('/mandate/issue', (req, res) => {
     if (!ctx.coordination) {
