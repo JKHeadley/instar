@@ -41,8 +41,10 @@ U4.2 is implemented AS the ownership FSM's existing `force-claim` action
 (`applyOwnershipAction` on the `SessionOwnershipRecord`), driven by
 `OwnershipReconciler` Case C with an upgraded evidence bar and coverage extended to
 UNPINNED topics. `ownershipEpoch` IS the fence — no parallel `fenceToken` field, no
-new record kind, no second store (Cross-Store Coherence: the existing record keeps
-answering "who owns this topic"). Claims respect the FSM's real terms: a
+second OWNERSHIP store (Cross-Store Coherence: the existing record keeps answering
+"who owns this topic"; the §2.4 `topic-claim-annotation` kind is deliberately NOT
+ownership state — it carries suspension/budget/refusal metadata and can never
+answer or fence ownership; R-r3-1). Claims respect the FSM's real terms: a
 `transferring` record with `drainInFlight: true` inside the reconciler's drain-grace
 window (`DEFAULT_DRAIN_CLAIM_GRACE_MS`, `OwnershipReconciler.ts`) is held back until
 the owner's `SessionDrainRunner` reaches a safe point — a mid-drain death rides the
@@ -109,8 +111,17 @@ exhausted-HIGH item is a cross-referenced adjacent signal, NOT the accepted surf
      AMBIGUITY and feeds the §2.6 3×TTL operator escalation — never a silent strand.
      The version-skew protection narrows to what it actually protects: absence of
      the NEW per-episode evidence fails closed, while machine-death evidence rides
-     the capacity heartbeat every deployed version already emits. Tests:
-     `bootstrap-never-observed-owner-is-ambiguity-then-expired`,
+     the capacity heartbeat every deployed version already emits.
+     **Honesty note on condition (b) (R-r3-3):** the git-synced coarse heartbeat
+     beats on a ~30-minute cadence, so "(b) coarse beat older than
+     `deathEvidenceMs`" (a 180s-scale bound) is weak discrimination — a LIVE
+     owner's last coarse beat is routinely older than the bound between beats.
+     Live-owner protection in the bootstrap case therefore rests on condition (a)
+     (continuous non-observation since boot at `bootstrapNonObservationMultiple ×
+     deathEvidenceMs`) plus evidences 2 and 5 (all-transport disproof +
+     side-effect recency); (b) is a tie-breaker only — it distinguishes a
+     long-dead owner from a recently-alive one, never a live one from a dead one.
+     Tests: `bootstrap-never-observed-owner-is-ambiguity-then-expired`,
      `claimant-restart-does-not-strand-auto-failover`.
 2. **Multi-transport disproof:** the owner is unreachable via the authenticated
    signed-handshake probe on EVERY advertised transport. The advertisement set must
@@ -191,29 +202,50 @@ exhausted-HIGH item is a cross-referenced adjacent signal, NOT the accepted surf
 
 ### 2.4 Claim-time semantics (the three hard runtime moments)
 
-- **Pins (U4.1 interaction — representation decided jointly, R-r2-7):** a
-  stale-owner claim SUSPENDS the topic's pin rather than leaving pin↔owner
-  divergence for the reconciler to fight — no claim/transfer-back oscillation. The
-  REPRESENTATION: the suspension lives in the **ownership record** — the record the
-  claim already mutates, under the same epoch fence — as a new optional field
-  `suspended: {byMachine, episodeId, at}`. It does NOT live in the replicated pin
-  record: U4.1 freezes the replicated pin schema, and the pin is the operator's
-  statement, not the claimant's to rewrite. U4.1's `pinState` enum (today
-  `actuated | pending | diverged`) RESERVES `suspended-pending-owner-return`,
-  DERIVED AT READ TIME from the ownership record's suspension field — no pin-record
-  write ever occurs. `effectivePins()` consults the ownership suspension before
-  adopting or driving a pin; a later operator re-pin (fresh HLC) clears the
-  suspension (the operator's newer statement wins). Version skew: readers ignore
-  unknown ownership fields — the new optional field rides `OwnershipApplier`'s
-  carried-field validation as a clamped optional passthrough (this passes its
-  existing unknown-field posture; a pre-U4.2 reader simply never derives the
-  suspended state). Cross-reference: `u4-1-pin-persistence.md` carries the matching
-  enum reservation. Pin resumption follows U4.1's sustained-online hysteresis when
-  the owner returns. Local pins in the reconciler's cooperative path gain the same
-  online-gate the advisory pins already have (named code fix). Tests:
-  `claim-suspends-pin-via-ownership-record-not-pin-record`,
+- **Pins (U4.1 interaction — representation re-decided jointly, R-r3-1/R-r3-2;
+  supersedes R-r2-7's ownership-record field):** a stale-owner claim SUSPENDS the
+  topic's pin rather than leaving pin↔owner divergence for the reconciler to fight
+  — no claim/transfer-back oscillation. Round 2 put the suspension in the
+  ownership record as a new optional field; grounding kills that: the
+  topic-placement receive-validation STRICTLY rejects unknown fields (`known =
+  ['owner','epoch','reason','prevOwner','status','transferTo','timestamp',
+  'drainInFlight']`, `JournalSyncApplier.ts:610-612`; an invalid entry marks the
+  peer stream suspect and HALTS the batch) and `OwnershipApplier` is a whitelist
+  materializer that silently DROPS unknown fields — so a `suspended` field could
+  not ride the ownership record: a pre-U4.2 peer would suspect-halt the claimant's
+  entire placement stream, and even between U4.2 peers the field would never
+  materialize. The REPRESENTATION (R-r3-1): the suspension lives in a NEW separate
+  registered replicated record kind, **`topic-claim-annotation`** (keyed
+  `topic + episodeId`), validated through the GENERIC envelope path exactly like
+  `topic-pin-record` (the `replicatedRegistry.getByKind` branch,
+  `JournalSyncApplier.ts:579` — a new registered KIND is additive: peers that
+  don't register it simply never sync it, so there is no unknown-FIELD rejection
+  surface at all). The ownership record stays UNTOUCHED — zero version-skew risk
+  on the placement stream. **The annotation kind is epoch-INDEPENDENT by design
+  (R-r3-2)** — ordered by its own HLC via the generic envelope, like pins —
+  because an annotation write must NOT be an ownership CAS transition: bumping
+  `ownershipEpoch` for a suspension/budget/refusal write would fence a live
+  owner's sends the moment the §2.3 emission fence is wired, and contradicts
+  §2.2.1's records-written-only-on-claim/release-transitions rule; while NOT
+  bumping (if the data rode the ownership record) means the fast-forward-only
+  `OwnershipApplier` never propagates the change. One stone, both findings: a
+  separate, epoch-independent kind is the only representation that replicates
+  without touching the fence — that is the design reason the kind exists. The
+  suspension does NOT live in the replicated pin record either: U4.1 freezes the
+  replicated pin schema, and the pin is the operator's statement, not the
+  claimant's to rewrite. U4.1's `pinState` enum (today `actuated | pending |
+  diverged`) RESERVES `suspended-pending-owner-return`, DERIVED AT READ TIME from
+  the live suspension annotation — no pin-record write ever occurs.
+  `effectivePins()` consults the suspension annotation before adopting or driving
+  a pin; a later operator re-pin (fresh HLC) clears the suspension (the operator's
+  newer statement wins). Cross-reference: `u4-1-pin-persistence.md` carries the
+  matching enum reservation. Pin resumption follows U4.1's sustained-online
+  hysteresis when the owner returns. Local pins in the reconciler's cooperative
+  path gain the same online-gate the advisory pins already have (named code fix).
+  Tests: `claim-suspends-pin-via-annotation-kind-not-pin-or-ownership-record`,
   `operator-repin-clears-suspension`,
-  `suspension-field-passes-applier-carried-field-validation`.
+  `annotation-kind-passes-generic-envelope-validation-and-never-touches-placement-schema`,
+  `annotation-write-never-bumps-ownership-epoch`.
 - **In-flight messages:** the claim performs an inbound-queue reconciliation:
   redeliver only rows not known reply-committed. Delivery across a claim is
   **at-least-once by design in v1** (the reply-committed watermark is machine-local
@@ -240,10 +272,13 @@ claimer role — is MOBILE: U4.4's hand-back moves it automatically and routinel
 machine-local per-topic claim budget would therefore reset to zero on every lease
 move, and pacing/backoff would restart from scratch under exactly the flapping
 conditions the budget exists to bound. The per-topic claim budget and its backoff
-state are bound to the REPLICATED ownership/topic record (epoch-fenced writes on
-claim attempts), so the count follows the topic, not the deciding machine. Only
-probe memos (per-(claimant, owner, episode) reachability verdicts) stay
-machine-local — a verdict is only meaningful from the machine that judged it.
+state are carried on the REPLICATED `topic-claim-annotation` kind (§2.4 —
+epoch-independent, HLC-ordered; R-r3-1/R-r3-2: an ownership-record field could
+neither pass the strict placement receive-validation nor propagate through the
+fast-forward-only applier, and an epoch-bumping budget write would fence a live
+owner), so the count follows the topic, not the deciding machine. Only probe memos
+(per-(claimant, owner, episode) reachability verdicts) stay machine-local — a
+verdict is only meaningful from the machine that judged it.
 
 ### 2.6 Honesty surfaces (a refusal stays a refusal)
 
@@ -263,9 +298,10 @@ machine-local — a verdict is only meaningful from the machine that judged it.
   via the OwnerSuspectBreaker flap-accounting pattern (≤ one item per flap episode).
 - **A declined demote persists — across lease movement (R-r2-4):** the operator's
   "no" durably pins the topic against claim for that episode — conditions drifting
-  does not resurrect the ask. The declined-demote pin is persisted in the REPLICATED
-  ownership/topic record store (the `SessionOwnershipRegistry` record, converged via
-  the journal — the named store; never a sentinel-local file), because the claimer
+  does not resurrect the ask. The declined-demote pin is persisted as a REPLICATED
+  `topic-claim-annotation` record (§2.4 — the named carrier, journal-converged;
+  never a sentinel-local file, and never an ownership-record field, which could
+  not replicate; R-r3-1), because the claimer
   role moves with the lease (U4.4): a new holder must neither re-ask the operator
   nor claim a topic the operator just declined. "A Refusal Stays a Refusal" must
   survive the refusal's audience changing machines. Test:
@@ -281,9 +317,13 @@ machine-local — a verdict is only meaningful from the machine that judged it.
 2. *Temporal hysteresis* → §2.2.1 death-evidence bound + §2.5 claim budget/backoff +
    episode calm windows.
 3. *Claim-time re-assertion* → §2.2.6 re-read before CAS + §2.1 FSM semantics.
-4. *Atomic CAS + pin-repoint transaction boundary* → §2.4 pin-suspend joined to the
-   claim action inside the reconciler's single apply path (one record, one epoch
-   fence — the suspension field rides the claim write itself).
+4. *Atomic CAS + pin-repoint transaction boundary* → §2.4: the claim CAS and the
+   suspension annotation are emitted in the reconciler's single apply path, keyed
+   to the same episode id; the CAS stays the sole ownership authority and the
+   annotation is level-reconciled — a claim that landed without its annotation is
+   re-emitted idempotently on the next tick (R-r3-1; round 2's one-record claim
+   is superseded — the annotation is a separate record precisely so it can
+   replicate).
 5. *Reason-stamped nonce convention* → claims stamp `reason: stale-owner-release`
    + the episode id into the ownership action by EXTENDING the reconciler's existing
    nonce grammar — today `` `${self}:${reason}:${sessionKey}:${now}` ``
@@ -339,14 +379,16 @@ DERIVED from record status + evidence state, per this table:
 | `held` | record `active`; owner not expired (no open evidence episode) |
 | `stale` | record `active`; owner expired OR an evidence episode is open (ambiguity pending) |
 | `releasing` | record `transferring` (including `drainInFlight` within drain-grace), or owner self-fence observed with no claim landed yet |
-| `claimed` | record `active` via a `stale-owner-release` force-claim for the current episode; owner return pending (suspension field present) |
+| `claimed` | record `active` via a `stale-owner-release` force-claim for the current episode; owner return pending (a live suspension annotation present, §2.4) |
 
 ## 3. Multi-machine posture (mandatory)
 
 Inherently multi-machine. The ownership record stays the existing replicated L3
-state (journal-converged, epoch-fenced) — and per R-r2-4 it now also carries the
-per-topic claim budget, the declined-demote pin, and the §2.4 suspension field, so
-refusals and pacing follow the topic across lease movement. The decision trace is
+state (journal-converged, epoch-fenced) — and it stays SCHEMA-UNCHANGED (R-r3-1):
+the per-topic claim budget, the declined-demote pin, and the §2.4 suspension ride
+the NEW `topic-claim-annotation` replicated kind (epoch-independent, HLC-ordered),
+so refusals and pacing follow the topic across lease movement (R-r2-4) without
+touching the placement stream's strict schema. The decision trace is
 machine-local BY DESIGN (a verdict is only meaningful from the machine that judged
 it); probe memos/reachability verdicts are per-(claimant, owner, episode),
 machine-local, TTL-bounded — these are the ONLY machine-local state (R-r2-4).
@@ -355,13 +397,15 @@ absence fails closed (§2.2.1, as narrowed by R-r2-2: machine-death evidence rid
 the capacity heartbeat every version emits) and it is never probed on a new route
 (§2.2.2 uses the existing signed handshake), so an updated peer can never
 false-claim from an old-version owner; a claim never lands unless the claimant runs
-U4.2 (the only writer of the new evidence). Pre-U4.2 readers ignore the unknown
-`suspended` ownership field (§2.4). Single-machine install: strict no-op — both the
+U4.2 (the only writer of the new evidence). Pre-U4.2 peers never register the
+`topic-claim-annotation` kind and simply never sync it — a new registered kind is
+additive, so there is no unknown-field surface on any stream they do consume
+(§2.4, R-r3-1). Single-machine install: strict no-op — both the
 heartbeat-derivation and claim sides are subordinate to `sessionPool` being live AND
 ≥2 registered machines. 2-machine git-less mesh: claim path DISABLED, detection +
-escalation live (§2.2.4). Rollback tolerance: pre-U4.2 readers ignore unknown
-fields; a flag dropped mid-claim leaves the topic owned by the claimant via the
-normal record (servable).
+escalation live (§2.2.4). Rollback tolerance: pre-U4.2 peers never sync the
+annotation kind; a flag dropped mid-claim leaves the topic owned by the claimant
+via the normal record (servable).
 
 ## 4. Tests (tiers declared)
 
@@ -377,9 +421,11 @@ Unit: `expired-plus-all-transports-plus-quorum-plus-self-proof-allows-claim`;
 `concurrent-claims-arbiter-uniqueness` (lease-holder-only);
 `no-lease-holder-escalation-hosted-on-any-quorum-member` (R-r2-1);
 `stale-owner-return-loses-writes-and-tears-down` (fence + teardown);
-`claim-suspends-pin-via-ownership-record-not-pin-record` (R-r2-7);
+`claim-suspends-pin-via-annotation-kind-not-pin-or-ownership-record` (R-r3-1);
 `operator-repin-clears-suspension` (R-r2-7);
-`suspension-field-passes-applier-carried-field-validation` (R-r2-7);
+`annotation-kind-passes-generic-envelope-validation-and-never-touches-placement-schema`
+(R-r3-1 — and a pre-U4.2 peer's placement stream is never suspect-halted by it);
+`annotation-write-never-bumps-ownership-epoch` (R-r3-2);
 `claims-are-capped-and-paced-per-tick`;
 `declined-demote-and-budget-survive-lease-move` (R-r2-4);
 `two-machine-gitless-claim-path-disabled`;
@@ -422,8 +468,9 @@ proactive trigger ("user asks 'why did my conversation move machines by itself?'
 read the claim trace + placement ownershipLeaseState" + "'is auto-failover
 healthy?' → `GET /pool/stale-owner-release`") + the matching `migrateClaudeMd`
 patch. Rollback = drop the flag; ownership reverts to explicit-transfer-only +
-sentinel detection (today); a lingering `suspended` field is ignored by all readers
-and cleared by the next operator re-pin.
+sentinel detection (today); lingering `topic-claim-annotation` records are inert
+(derived state only — readers that don't consult them lose nothing) and the
+suspension is cleared by the next operator re-pin.
 
 ## Frontloaded Decisions
 
@@ -450,12 +497,16 @@ and cleared by the next operator re-pin.
    increment E toward exactly-once.
 7. **Bounded everything** (claims per tick, per-topic budget, probe breaker), loud
    give-ups, durable refusal traces, episode-deduped operator asks — and refusals +
-   budgets ride the REPLICATED ownership record so they survive lease movement
-   (R-r2-4); only probe memos are machine-local.
-8. **Claim suspends the pin — via the ownership record, decided jointly with U4.1
-   (R-r2-7):** the `suspended` field rides the claim write; U4.1's `pinState`
-   reserves `suspended-pending-owner-return` derived at read time; the pin record
-   is never touched; an operator re-pin clears it. No reconciler tug-of-war, ever.
+   budgets ride the REPLICATED `topic-claim-annotation` kind so they survive lease
+   movement (R-r2-4, carrier corrected R-r3-1); only probe memos are machine-local.
+8. **Claim suspends the pin — via the `topic-claim-annotation` kind, decided
+   jointly with U4.1 (R-r3-1/R-r3-2, superseding R-r2-7's ownership-record
+   field, which grounding shows could neither pass the strict placement
+   receive-validation nor propagate through the fast-forward applier):** the
+   annotation is epoch-independent — never an ownership CAS, so the fence is
+   untouched; U4.1's `pinState` reserves `suspended-pending-owner-return` derived
+   at read time from the annotation; the pin record is never touched; an operator
+   re-pin clears it. No reconciler tug-of-war, ever.
 9. **Graduation is telemetry-judged (R-r2-6):** `GET /pool/stale-owner-release` is
    the FD-7-style surface; the quantified soak criteria in §5 are read off it, not
    asserted.

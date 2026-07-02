@@ -148,10 +148,24 @@ optional):
 
 - **Boot-time full-stream fold.** A dedicated fold path (`foldPinRecords()` on the
   reader, used only for `topic-pin-record`) streams EVERY entry of the kind — active
-  file AND archives, in order — WITHOUT the `READER_MAX_LIMIT` clamp (the clamp
-  exists to bound generic tail reads; the fold is bounded by pin volume, which
-  `rotateKeep: 0` + one-record-per-topic compaction pressure keeps tiny), folding
-  into a per-key latest map by HLC (tombstone-respecting per §2B).
+  file AND archives, in order, across the OWN stream **and every peer-replica
+  stream** (the fold MUST cover replica streams; a fold over the own stream alone
+  would blind the effective map to every peer's pins) — WITHOUT the
+  `READER_MAX_LIMIT` clamp (the clamp exists to bound generic tail reads), folding
+  into a per-key latest map by HLC (tombstone-respecting per §2B). *The honest
+  bound (R-r3-3):* round 2 cited "one-record-per-topic compaction pressure" — NO
+  such mechanism exists (the journal is append-only; `rotateKeep: 0` retains every
+  archive; entries accumulate per pin EVENT). The true fold bound is the **total
+  retained `topic-pin-record` bytes across active + archive files, own and
+  peer-replica streams**. That is honestly small: pins are OPERATOR actions —
+  low-frequency by nature — so the worst realistic case is thousands of pin events
+  = single-digit MB, folded once at boot. Backstop, never assumption: a **fold
+  byte-guard** (`ws13FoldMaxBytes`, default 64MB) that on breach folds NEWEST-FIRST
+  up to the budget and LOUDLY escalates — ONE deduped attention item naming the
+  truncation (which byte ranges of which streams went unfolded) — never a silent
+  truncation. If pin event volume ever grows toward the guard, per-key
+  rewrite-compaction at rotation is the named tracked follow-up (not built now;
+  the guard makes the need visible instead of silent).
 - **Incremental offset-tracked tail.** After the boot fold, the 30s tick updates the
   map incrementally: per-journal-file byte offsets are tracked and only appended
   bytes are re-scanned — the TokenLedgerPoller pattern made explicit (idempotent
@@ -169,22 +183,49 @@ this design by construction: >500 pin events across many topics plus a rotation,
 the fold still returns the winning record for a topic untouched since the earliest
 events.
 
-*HLC skew gate (fixes defect 6) (R-r2-1).* The pin advisory merge/fold skew-gates
-every record HLC through the existing `HybridLogicalClock.receive()` contract
-(clamped `maxDriftMs`, default 5min, floor 60s / ceiling 15min): a record whose
-physical component is future-skewed beyond the clamp is REJECTED from the fold —
-never merged, never able to win `compareHlc`. Disposition of a rejected record is
-**quarantine + ONE deduped attention item** (key `u41:pin-hlc-skew:<originMachineId>`,
-coalescing all quarantined records from that origin), NEVER a silent drop: the
-record stays on disk, excluded from the effective map, so a legitimate-but-misclocked
-peer is diagnosable rather than erased. Defense-in-depth: the same shared gate
-function ALSO runs at the inbound chokepoint — `JournalSyncApplier`'s registered
-replicated-kind receive-validation branch (`JournalSyncApplier.ts:564-598`) for the
-`topic-pin-record` kind — so freshly-received poison is refused at the door AND
-already-persisted poison is refused at the fold (the fold-side gate is load-bearing;
-the applier-side gate is the cheap early refusal). Without this gate, tombstones
-(§2B) and `rotateKeep: 0` (above) would make a future-skewed pin IMMORTAL — the
-skew gate is what makes both fixes sound.
+*HLC skew gate (fixes defect 6) (R-r2-1; composition + durability hardened
+R-r3-1/R-r3-2).* The pin advisory merge/fold skew-gates every record HLC through
+the existing `HybridLogicalClock.receive()` contract (clamped `maxDriftMs`, default
+5min, floor 60s / ceiling 15min): a record whose physical component is
+future-skewed beyond the clamp is REJECTED from the fold — never merged, never able
+to win `compareHlc`.
+
+- **The fold-side gate is the SOLE skew-exclusion authority (R-r3-1).** Round 2's
+  "defense-in-depth" applier-door refusal is DROPPED. `JournalSyncApplier`'s only
+  per-entry refusal path marks the peer stream suspect and HALTS the batch at that
+  seq (rule 2, `JournalSyncApplier.ts:462-467`; seq must be exactly
+  `lastHeldSeq + 1`, `:544`) — so refusing one misclocked pin record at the door
+  would permanently wedge that peer's ENTIRE `topic-pin-record` stream: the
+  quarantine attention item never fires (the record never lands to be
+  quarantined), and every tombstone behind it stops flowing (the defect-2 fix
+  dies). A skewed record is therefore ACCEPTED-AND-PERSISTED at the applier
+  (stream liveness preserved) and excluded at the fold — which is exactly why the
+  fold-side gate is load-bearing: the fold is the only place a skew exclusion can
+  act per-record without collateral damage to the rest of the stream.
+- **The quarantine is STICKY — durable across clock progress (R-r3-2).**
+  `HybridLogicalClock.receive()` rejects on `remote.physical −
+  max(last.physical, poolReference) > maxDriftMs`
+  (`HybridLogicalClock.ts:333-341`) — that reference MOVES with wall time, so a
+  +Δ-skewed record would silently un-quarantine after ~Δ and then WIN `compareHlc`
+  over every tombstone and re-pin the operator minted during the quarantine window
+  (retroactive resurrection; a point-in-time exclusion cannot hold across a time
+  advance). Therefore: on first skew rejection, `(recordKey, offending hlc)` is
+  persisted to a durable quarantine set stored beside the pin store
+  (`state/session-pool/topic-pin-skew-quarantine.json`, atomic-JSON like its
+  sibling), and every future fold excludes any record matching that exact
+  `(key, hlc)` REGARDLESS of clock progress. It is cleared only two ways: operator
+  ack (the skew attention item gains an ack action that clears that origin's
+  entries), or supersession by a NEWER honest record — a higher HLC that passes
+  the gate — at which point the quarantined entry is dead by ordering anyway.
+  Bound: tiny — one entry per poisoned record, and poisoned records are rare by
+  construction.
+
+Disposition of a rejected record remains **quarantine + ONE deduped attention item**
+(key `u41:pin-hlc-skew:<originMachineId>`, coalescing all quarantined records from
+that origin), NEVER a silent drop: the record stays on disk, excluded from the
+effective map, so a legitimate-but-misclocked peer is diagnosable rather than
+erased. Without this gate, tombstones (§2B) and `rotateKeep: 0` (above) would make
+a future-skewed pin IMMORTAL — the skew gate is what makes both fixes sound.
 
 **D. Convergence + actuation verification (fixes defects 1+5).** ONE convergence
 engine: becoming placement router (lease acquisition or boot) triggers one immediate
@@ -199,11 +240,13 @@ trigger a transfer storm; test `replay-is-bounded-and-paced`). After convergence
 the placement read reflects the VERIFIED actual owner vs the pin:
 `GET /pool/placement` gains `pinState` + `pinHeldSince`.
 
-*`pinState` enum (R-r2):* `actuated | pending | diverged |
-pin-held-pending-owner-return`. The fourth value is RESERVED here so the two
-sibling specs' schemas compose: it represents U4.2's pin suspension when a stale
-owner's topic is claimed (a claim SUSPENDS the pin rather than leaving pin↔owner
-divergence for the reconciler to fight). Its semantics are deferred entirely to
+*`pinState` enum (R-r2; joint value renamed R-r3-4):* `actuated | pending |
+diverged | suspended-pending-owner-return`. The fourth value is RESERVED here so
+the two sibling specs' schemas compose — round 2 shipped it here as
+`pin-held-pending-owner-return` while U4.2 reserved `suspended-pending-owner-return`;
+a joint enum must be ONE string, and U4.2's name wins (R-r3-4). It represents
+U4.2's pin suspension when a stale owner's topic is claimed (a claim SUSPENDS the
+pin rather than leaving pin↔owner divergence for the reconciler to fight). Its semantics are deferred entirely to
 `docs/specs/u4-2-stale-owner-release.md` §2.4 — U4.1 machinery never emits it, but
 readers/renderers of `pinState` MUST tolerate it from day one. *`pinHeldSince`
 source (R-r2):* declared as the winning pin record's **HLC physical component** —
@@ -214,16 +257,17 @@ with the ordering authority.
 deduped attention item per episode (P17) — declarative intent with no controller
 escalation is a wish.
 
-*P17 dedup keys + episode boundaries (R-r2).* The three new attention items (plus
-the skew item from §2C) are keyed and bounded as follows — one item per episode,
-re-raised only when a NEW episode opens:
+*P17 dedup keys + episode boundaries (R-r2).* The new attention items (including
+the skew and fold-guard items from §2C) are keyed and bounded as follows — one
+item per episode, re-raised only when a NEW episode opens:
 
 | Item | Dedup key | Episode opens | Episode closes |
 |---|---|---|---|
 | Corrupt pin store quarantined | `u41:pin-corrupt:<storeFilePath>` | a quarantine event | operator ack (attention resolve) |
 | Aged pending pin | `u41:pin-pending-aged:<topicId>` | pending age > `ws13PendingPinMaxAgeMs` | pin fulfils, or is cleared/tombstoned |
 | Pin diverged | `u41:pin-diverged:<topicId>` | desired≠actual persists past `ws13DivergedWindowMs` | `pinState` returns `actuated`, or the pin is cleared/tombstoned |
-| Skew-quarantined pin record | `u41:pin-hlc-skew:<originMachineId>` | first quarantined record from that origin | operator ack (attention resolve) |
+| Skew-quarantined pin record | `u41:pin-hlc-skew:<originMachineId>` | first quarantined record from that origin | operator ack (attention resolve — also clears that origin's sticky quarantine entries), or every quarantined `(key, hlc)` superseded by a newer honest record (R-r3-2) |
+| Fold byte-guard breach | `u41:pin-fold-truncated` | fold exceeds `ws13FoldMaxBytes` (newest-first truncation engaged) | a full fold completes within budget (R-r3-3) |
 
 A flap WITHIN an open episode never re-raises (the episode boundary is the dedup
 boundary, not the tick).
@@ -293,6 +337,7 @@ deferred tuning decisions:
 | Moves-per-tick cap | `multiMachine.seamlessness.ws13MaxMovesPerTick` | 2 | NEW — paces §2D convergence; a lease flap can never trigger a transfer storm |
 | Divergence window | `multiMachine.seamlessness.ws13DivergedWindowMs` | 600000 (10min) | NEW — 20 ticks of persistent desired≠actual before `diverged` + its attention item |
 | HLC skew clamp | (constructor `maxDriftMs`, clamped) | 300000 (5min; clamp floor 60s / ceiling 15min) | exists today (`clampMaxDriftMs`, `HybridLogicalClock.ts:113-134`) — the §2C gate reuses it, no new key |
+| Fold byte-guard | `multiMachine.seamlessness.ws13FoldMaxBytes` | 67108864 (64MB) | NEW (R-r3-3) — on breach the fold truncates newest-first and raises the `u41:pin-fold-truncated` item; never a silent truncation |
 
 ## 3. Multi-machine posture (mandatory)
 
@@ -305,7 +350,8 @@ deferred tuning decisions:
 - **Conflict rule:** HLC-highest-wins via the existing `compareHlc`
   (physical→logical→node) — NEVER wall-clock `pinnedAt`, which is display/audit
   metadata only. The rule is sound ONLY behind the §2C skew gate: a future-skewed
-  stamp is quarantined before it can enter the comparison (R-r2-1). Divergence is
+  stamp is quarantined — stickily, durable across clock progress (R-r3-2) — before
+  it can enter the comparison (R-r2-1). Divergence is
   surfaced two ways: `pinState: diverged` on the placement read, and a daily G1
   coherence-audit line item checking the local-vs-replicated pin agreement
   invariant (the Cross-Store Coherence standard's declared-invariant requirement
@@ -327,6 +373,15 @@ Unit: `unpin-emits-tombstone`; `stale-replicated-pin-never-resurrects-after-unpi
 `future-skewed-pin-hlc-is-quarantined-never-merged-never-immortal` (R-r2-1 — a
 record past the `maxDriftMs` clamp is excluded from the fold, quarantined on disk,
 raises the deduped item, and cannot beat a tombstone);
+`skew-quarantine-is-sticky-across-clock-advance` (R-r3-2 — the exclusion HOLDS
+after the clock advances past the skew delta: the record never un-quarantines and
+never beats a tombstone or re-pin minted during the quarantine window; cleared
+only by operator ack or a newer honest record);
+`skewed-pin-record-is-accepted-at-applier-stream-never-suspect-halted` (R-r3-1 —
+a misclocked record persists at the applier, the peer's `topic-pin-record` stream
+stays live, and tombstones behind it keep flowing);
+`fold-byte-guard-truncates-newest-first-and-escalates-loudly` (R-r3-3 — breach
+raises the `u41:pin-fold-truncated` item naming the unfolded ranges; never silent);
 `corrupt-pin-store-quarantines-loudly-never-wipes`;
 `pending-pin-fulfilment-requires-sustained-online`;
 `case-a-transfer-not-initiated-toward-offline-target` (R-r2-2 — local pin to an
@@ -339,11 +394,13 @@ routes.ts:13391 gap);
 `pinnedBy-resolves-operator-binding-else-agent-kind`.
 Integration: `lease-acquisition-triggers-one-reconciler-tick` (epoch-fenced — a
 stale router's tick initiates nothing); `placement-read-reports-actuated-vs-pending-vs-diverged`
-(and tolerates the reserved `pin-held-pending-owner-return` value; R-r2);
+(and tolerates the reserved `suspended-pending-owner-return` value; R-r2, renamed
+R-r3-4);
 `aged-pending-pin-raises-one-deduped-attention-item` (covers BOTH the placement-side
 and the owner-side Case-A pending; R-r2-2); `topic-pin-record-stream-is-answer-complete`
-(satisfied by the §2C fold design: >500 pin events + rotation, the fold — not the
-clamped tail read — returns the winning record for a long-untouched topic; R-r2-3);
+(satisfied by the §2C fold design: >500 pin events + rotation, own AND peer-replica
+streams, the fold — not the clamped tail read — returns the winning record for a
+long-untouched topic; R-r2-3, replica coverage R-r3-3);
 `incremental-tail-is-offset-idempotent` (re-scan of unchanged bytes is a no-op;
 rotation resets the offset safely; R-r2-3);
 `quota-blocked-pinned-machine-still-wins-flagged` (reaffirms shipped semantics);
@@ -420,7 +477,12 @@ than its bound.
    quotaState never evicts operator intent).
 3. **HLC-highest-wins is the only conflict rule**; `pinnedAt` is display-only —
    and the rule is skew-gated: a record HLC past the clamped `maxDriftMs` is
-   quarantined loudly, never merged, never immortal (R-r2-1).
+   quarantined loudly, never merged, never immortal (R-r2-1). The exclusion acts
+   ONLY at the fold — the applier accepts-and-persists a skewed record, because
+   its sole refusal path would suspect-halt the peer's whole stream (R-r3-1) —
+   and the quarantine is STICKY: a durable `(key, hlc)` set beside the pin store,
+   immune to clock progress, cleared only by operator ack or a newer honest
+   record (R-r3-2).
 4. **pinnedBy is local-only provenance** ({operator|agent} domain from the verified
    topic-operator binding; replicated record stays non-PII).
 5. **Pending-pin: queued-never-rerouted preserved**, with sustained-online
@@ -430,12 +492,18 @@ than its bound.
    yields `pending`, never a silent 2.5-minute transfer/abort churn loop (R-r2-2).
 6. **Corrupt store quarantines loudly; journal stream answer-complete** — storage
    via `rotateKeep: 0` AND read via the boot-time full-stream fold (dedicated
-   unclamped fold path over active file + archives) + offset-tracked incremental
-   tail (TokenLedgerPoller pattern); the snapshot-store alternative is rejected
-   (R-r2-3). Both are correctness fixes to the foundation, in scope here.
+   unclamped fold path over active file + archives, own AND peer-replica streams)
+   + offset-tracked incremental tail (TokenLedgerPoller pattern); the
+   snapshot-store alternative is rejected (R-r2-3). Both are correctness fixes to
+   the foundation, in scope here. The fold's honest bound is total retained
+   record bytes (no compaction mechanism exists), argued small by the operator
+   event rate and backstopped by the loud newest-first `ws13FoldMaxBytes`
+   byte-guard — never a silent truncation; per-key rewrite-compaction at rotation
+   is the tracked follow-up (R-r3-3).
 7. **Actuation verification is part of the feature** (pinState on the placement
    read + G1 agreement-invariant line): a pin without verify-after is a wish.
-   `pinState` reserves `pin-held-pending-owner-return` for U4.2 (semantics in
+   `pinState` reserves `suspended-pending-owner-return` for U4.2 (the joint enum
+   value, renamed to match U4.2 exactly — R-r3-4; semantics in
    `docs/specs/u4-2-stale-owner-release.md` §2.4); `pinHeldSince` is the winning
    record's HLC physical component (R-r2).
 8. **Every knob is named and defaulted in §2.G** — `ws13DebounceMs` (the corrected
