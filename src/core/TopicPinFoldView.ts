@@ -41,6 +41,41 @@ import type { PinFoldOffsets, PinFoldResult } from './CoherenceJournalReader.js'
 import type { TopicPinSkewQuarantine } from './TopicPinSkewQuarantine.js';
 import type { TopicPlacement } from './PlacementExecutor.js';
 
+/**
+ * The pool-relative physical-time floor for the skew gate (foundation spec
+ * §3.4; fb-1d51e996-0a3): `max(now, freshest clock-OK peer heartbeat
+ * self-stamp)`. `receive()` deliberately never consults `now()` itself — its
+ * reference is `max(last.physical, poolReference)` — so the CALLER must supply
+ * a floor that MOVES with wall time. Without one, a quiet fold clock's
+ * `last.physical` freezes at its construction seed (server boot) and every
+ * honest record authored more than `maxDriftMs` later is falsely quarantined
+ * as "skew-ahead" — STICKILY, by design. Pins are rare operator events, so the
+ * pin stream is almost always quiet: the frozen reference killed pin
+ * replication between long-running servers (live-reproduced 2026-07-02).
+ *
+ * Pool-relative, per §3.4: a receiver whose own NTP lags must not quarantine a
+ * legitimately-ahead peer, so the freshest self-reported heartbeat stamp of
+ * each clock-OK peer raises the floor above a slow local `now()`. A peer whose
+ * clock the registry's skew FSM already distrusts (`clockSkewStatus !== 'ok'`)
+ * NEVER raises the floor — a suspect clock must not widen the acceptance
+ * window. `now()` participates only as a FLOOR inside the max (§3.4 forbids
+ * the BARE local now() AS the reference — a floor can only raise the
+ * reference, never cause a false rejection). Degenerate case (single machine /
+ * no peers): `now()` alone — the pool is self.
+ */
+export function poolReferenceFromCapacities(
+  nowMs: number,
+  capacities: Array<{ clockSkewStatus?: string; selfReportedLastSeen?: string }>,
+): number {
+  let ref = nowMs;
+  for (const c of capacities) {
+    if (c.clockSkewStatus !== 'ok') continue; // a suspect clock never raises the floor
+    const t = c.selfReportedLastSeen ? Date.parse(c.selfReportedLastSeen) : Number.NaN;
+    if (Number.isFinite(t) && t > ref) ref = t;
+  }
+  return ref;
+}
+
 /** The reader seam (CoherenceJournalReader.foldPinRecords — injectable for tests). */
 export interface PinFoldReader {
   foldPinRecords(opts: { priorOffsets?: PinFoldOffsets; maxBytes?: number }): PinFoldResult;
@@ -55,7 +90,12 @@ export interface TopicPinFoldViewDeps {
   maxDriftMs?: number;
   /** ws13FoldMaxBytes, read live (default 64MB upstream). */
   foldMaxBytes?: () => number;
-  /** Optional observed pool-relative physical-time floor (heartbeat median). */
+  /** Observed pool-relative physical-time floor for the skew gate (§3.4 —
+   *  `poolReferenceFromCapacities` in production). The fold ALWAYS floors the
+   *  reference at its own `now()` regardless (fb-1d51e996-0a3: a missing dep
+   *  must never re-freeze the reference at the fold clock's boot seed); this
+   *  dep adds the pool-relative part (clock-OK peer heartbeat stamps) so a
+   *  slow LOCAL clock doesn't falsely quarantine an ahead-but-honest peer. */
   poolReference?: () => number | undefined;
   now?: () => number;
   /** Fired ONCE per newly-quarantined record (upstream dedupes per-origin, P17). */
@@ -120,6 +160,16 @@ export class TopicPinFoldView {
     this.totalFolds++;
 
     const clock = this.foldClock();
+    // fb-1d51e996-0a3 (§3.4): ONE moving, pool-relative reference per refresh.
+    // receive()'s reference is max(last.physical, poolReference) and NEVER the
+    // bare now() — so without this floor a quiet fold clock freezes at its
+    // construction seed and falsely skew-quarantines (stickily) every honest
+    // record authored > maxDriftMs later. now() is the floor; the wired dep
+    // raises it with clock-OK peer heartbeat stamps (pool-relative). A faulty
+    // dep degrades to the now() floor — never back to the frozen reference.
+    let observedPool = 0;
+    try { observedPool = this.d.poolReference?.() ?? 0; } catch { /* @silent-fallback-ok — the now() floor stands; a dep fault must not re-freeze the gate or fail the fold */ }
+    const poolReference = Math.max(this.now(), Number.isFinite(observedPool) ? observedPool : 0);
     for (const entry of res.entries) {
       const recordKey = typeof entry.data.recordKey === 'string' ? entry.data.recordKey : null;
       if (recordKey === null) continue;
@@ -135,8 +185,7 @@ export class TopicPinFoldView {
       if (this.d.quarantine.has(recordKey, hlc)) continue;
       // The skew gate (R-r2-1): the existing receive() contract. Rejection ⇒
       // durable quarantine + loud (deduped upstream) escalation; NEVER merged.
-      const poolReference = this.d.poolReference?.();
-      const received = clock.receive(hlc, poolReference !== undefined ? { poolReference } : {});
+      const received = clock.receive(hlc, { poolReference });
       if (received.rejected) {
         const newlyAdded = this.d.quarantine.add({ key: recordKey, hlc, origin: entry.origin });
         if (newlyAdded) {
@@ -242,9 +291,18 @@ export class TopicPinFoldView {
     recordKeys: number;
     truncationEpisodeOpen: boolean;
     quarantined: number;
+    skewReference: number;
   } {
     let quarantined = 0;
     try { quarantined = this.d.quarantine.all().length; } catch { /* best-effort */ }
+    // The LIVE skew-gate floor a refresh would use right now (fb-1d51e996-0a3
+    // diagnosability: a frozen reference is visible on GET /pool/pin-quarantine
+    // instead of only in a quarantine log line after the damage).
+    let skewReference = this.now();
+    try {
+      const observed = this.d.poolReference?.() ?? 0;
+      if (Number.isFinite(observed) && observed > skewReference) skewReference = observed;
+    } catch { /* @silent-fallback-ok — observability read; the now() floor stands */ }
     return {
       lastFoldAt: this.lastFoldAtMs ? new Date(this.lastFoldAtMs).toISOString() : null,
       totalFolds: this.totalFolds,
@@ -252,6 +310,7 @@ export class TopicPinFoldView {
       recordKeys: this.winners.size,
       truncationEpisodeOpen: this.truncationEpisodeOpen,
       quarantined,
+      skewReference,
     };
   }
 }

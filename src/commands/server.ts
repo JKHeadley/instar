@@ -17509,7 +17509,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // would suspect-halt the peer's whole stream) and quarantined STICKILY +
           // DURABLY (R-r3-2) beside the pin store.
           const { TopicPinSkewQuarantine } = await import('../core/TopicPinSkewQuarantine.js');
-          const { TopicPinFoldView } = await import('../core/TopicPinFoldView.js');
+          const { TopicPinFoldView, poolReferenceFromCapacities } = await import('../core/TopicPinFoldView.js');
           const { SustainedOnlineTracker } = await import('../core/SustainedOnlineTracker.js');
           const autoSessionsMod = await import('../core/AutonomousSessions.js');
           const pinSkewQuarantine = new TopicPinSkewQuarantine({
@@ -17532,6 +17532,26 @@ export async function startServer(options: StartOptions): Promise<void> {
             reader: pinAdvisoryReader,
             quarantine: pinSkewQuarantine,
             selfNode: () => _meshSelfId, // late-bound — resolves by first fold
+            // fb-1d51e996-0a3 — the §3.4 pool-relative skew reference. receive()'s
+            // reference is max(last.physical, poolReference), NEVER the bare local
+            // now(): with this dep unwired, a quiet fold clock froze at server boot
+            // and stickily false-quarantined every honest pin record authored more
+            // than maxDriftMs (5min) later — pins are rare events, so this killed
+            // pin replication between long-running servers (live evidence 2026-07-02:
+            // the Laptop quarantined the Mini's honest unpin tombstone against a
+            // 46-min-stale boot-time reference; the Mini even quarantined its OWN
+            // fresh PUT after a bounce). max(now, freshest clock-OK peer heartbeat
+            // self-stamp): moves with wall time AND is pool-relative, so a
+            // slow-clocked receiver doesn't quarantine a legitimately-ahead peer.
+            // Suspect-clocked peers (registry skew FSM) never raise the floor.
+            // Late-bound closure: machinePoolRegistry is assigned during boot and
+            // read at fold time; no registry yet → now() alone (the single-machine
+            // degenerate case — the pool is self).
+            poolReference: () => {
+              try {
+                return poolReferenceFromCapacities(Date.now(), machinePoolRegistry?.getCapacities() ?? []);
+              } catch { return Date.now(); /* @silent-fallback-ok — a registry fault degrades to the moving now() floor, never back to the frozen boot-seed reference */ }
+            },
             foldMaxBytes: () => {
               const v = ws13Cfg().ws13FoldMaxBytes;
               return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 64 * 1024 * 1024;

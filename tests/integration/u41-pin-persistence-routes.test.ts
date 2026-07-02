@@ -257,6 +257,11 @@ describe('U4.1 pin-persistence routes', () => {
     expect(q).toHaveLength(1);
     expect(q[0].origin).toBe('m_fast');
     expect(r.body.fold).toBeTruthy(); // the fold view's status block
+    // fb-1d51e996-0a3 — the skew-gate floor is exposed and NOT frozen at a
+    // construction seed: it tracks the live wall clock (§3.4 moving reference).
+    const skewReference = (r.body.fold as { skewReference: number }).skewReference;
+    expect(Number.isFinite(skewReference)).toBe(true);
+    expect(Math.abs(skewReference - Date.now())).toBeLessThan(60_000);
 
     const darkApp = express();
     darkApp.use(express.json());

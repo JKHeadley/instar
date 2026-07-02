@@ -19,7 +19,7 @@ import path from 'node:path';
 
 import { TopicPlacementPinStore } from '../../src/core/TopicPlacementPinStore.js';
 import { TopicPinSkewQuarantine } from '../../src/core/TopicPinSkewQuarantine.js';
-import { TopicPinFoldView, type PinFoldReader } from '../../src/core/TopicPinFoldView.js';
+import { TopicPinFoldView, poolReferenceFromCapacities, type PinFoldReader } from '../../src/core/TopicPinFoldView.js';
 import { setPinWithOneHlc, clearPinWithTombstone, type PinMutationEmitter } from '../../src/core/TopicPinMutation.js';
 import { compareHlc, buildTopicPinPut, buildTopicPinTombstone, TOPIC_PIN_KIND_REGISTRATION, TOPIC_PIN_RECORD_KIND } from '../../src/core/TopicPinReplicatedStore.js';
 import { LeaseAcquisitionTrigger } from '../../src/core/LeaseAcquisitionTrigger.js';
@@ -306,6 +306,181 @@ describe('skew-quarantine-is-sticky-across-clock-advance (R-r3-2 / R-r4-1)', () 
     // the quarantined entry is dead by ordering anyway → pruned.
     expect(q.pruneSuperseded('13481', { physical: NOW + skewDelta + 1, logical: 0, node: 'm_a' })).toBe(1);
     expect(q.has('13481', skewedHlc)).toBe(false);
+  });
+});
+
+// ── §3.4 pool-relative skew reference (fb-1d51e996-0a3) ──────────────────────
+// The live-reproduced 2026-07-02 defect: nothing supplied the fold view's
+// poolReference dep, so receive()'s reference — max(last.physical,
+// poolReference ?? 0), NEVER the bare now() — froze at the fold clock's
+// construction seed (server boot) on a quiet stream. Pins are rare operator
+// events, so the stream is almost always quiet: every honest record authored
+// more than maxDriftMs (5min) after boot was falsely quarantined as
+// "skew-ahead", STICKILY. The original suite missed it because every harness
+// constructed a fresh clock right next to its records.
+describe('pool-relative skew reference — quiet streams accept honest records (fb-1d51e996-0a3)', () => {
+  const BOOT = NOW;
+  const QUIET = 46 * 60_000; // the live evidence: a 46-min-stale boot reference
+
+  it('an honest record authored 46min after the fold-clock seed, on a QUIET stream, is ACCEPTED (the frozen-reference false quarantine)', () => {
+    // Refresh #1 at boot seeds the fold clock (empty stream — quiet). Wall time
+    // then advances 46 minutes with NO accepted records, and the Mini's honest
+    // unpin-era record arrives. Without the moving now() floor the reference
+    // stays frozen at BOOT and this honest record is stickily quarantined —
+    // exactly the Laptop-quarantines-the-Mini live evidence.
+    let now = BOOT;
+    const q = new TopicPinSkewQuarantine({ filePath: path.join(tmp, 'quiet.json') });
+    const honest = pinPut(30223, 'm_mini', { physical: BOOT + QUIET - 1000, logical: 0, node: 'm_mini' });
+    const view = new TopicPinFoldView({
+      reader: scriptedReader([
+        { entries: [] }, // boot fold — quiet stream, clock seeds at BOOT
+        { entries: [{ data: honest, origin: 'm_mini', source: 'replica', machineId: 'm_mini' }] },
+      ]),
+      quarantine: q,
+      selfNode: () => 'm_self',
+      now: () => now,
+    });
+    view.refresh(); // boot
+    now = BOOT + QUIET;
+    view.refresh(); // the honest record, 46min later
+    expect(view.pins().get(30223)?.preferredMachine).toBe('m_mini'); // ACCEPTED
+    expect(q.all()).toHaveLength(0); // never quarantined
+  });
+
+  it('author-side: the own fold accepts its OWN fresh record after a quiet period (the Mini-quarantines-its-own-PUT arm)', () => {
+    let now = BOOT;
+    const q = new TopicPinSkewQuarantine({ filePath: path.join(tmp, 'own.json') });
+    const ownPut = pinPut(900, 'm_self', { physical: BOOT + QUIET, logical: 0, node: 'm_self' });
+    const view = new TopicPinFoldView({
+      reader: scriptedReader([
+        { entries: [] },
+        { entries: [{ data: ownPut, origin: 'm_self', source: 'own', machineId: 'm_self' }] },
+      ]),
+      quarantine: q,
+      selfNode: () => 'm_self',
+      now: () => now,
+    });
+    view.refresh();
+    now = BOOT + QUIET + 5_000;
+    view.refresh();
+    expect(view.pins().get(900)?.preferredMachine).toBe('m_self');
+    expect(q.all()).toHaveLength(0);
+  });
+
+  it('a genuinely future-skewed record — beyond maxDriftMs of the MOVING reference — is still REJECTED + stickily quarantined (no regression of the real protection)', () => {
+    let now = BOOT;
+    const q = new TopicPinSkewQuarantine({ filePath: path.join(tmp, 'poison.json') });
+    const raised: string[] = [];
+    const poison = pinPut(13481, 'm_evil', { physical: BOOT + QUIET + 10 * 60_000, logical: 0, node: 'm_fast' });
+    const view = new TopicPinFoldView({
+      reader: scriptedReader([
+        { entries: [] },
+        { entries: [{ data: poison, origin: 'm_fast', source: 'replica', machineId: 'm_fast' }] },
+      ]),
+      quarantine: q,
+      selfNode: () => 'm_self',
+      now: () => now,
+      onSkewQuarantined: (rec) => raised.push(rec.origin),
+    });
+    view.refresh();
+    now = BOOT + QUIET; // the reference MOVES to here — the poison is still +10min beyond it
+    view.refresh();
+    expect(view.pins().size).toBe(0);
+    expect(q.has('13481', { physical: BOOT + QUIET + 10 * 60_000, logical: 0, node: 'm_fast' })).toBe(true);
+    expect(raised).toEqual(['m_fast']);
+  });
+
+  it('the wired poolReference dep raises the floor when the LOCAL clock lags (§3.4 pool-relative: a slow receiver must not quarantine an ahead-but-honest peer)', () => {
+    // The receiver's own clock NEVER advances past boot (a lagging local NTP).
+    // The pool observed fresher clock-OK peer heartbeat stamps; the dep carries
+    // them, so the honest ahead-of-local record is accepted.
+    const q = new TopicPinSkewQuarantine({ filePath: path.join(tmp, 'lag.json') });
+    const honest = pinPut(30223, 'm_mini', { physical: BOOT + QUIET - 1000, logical: 0, node: 'm_mini' });
+    const view = new TopicPinFoldView({
+      reader: scriptedReader([
+        { entries: [] },
+        { entries: [{ data: honest, origin: 'm_mini', source: 'replica', machineId: 'm_mini' }] },
+      ]),
+      quarantine: q,
+      selfNode: () => 'm_self',
+      now: () => BOOT, // frozen local clock — the dep is what saves the record
+      poolReference: () => BOOT + QUIET,
+    });
+    view.refresh();
+    view.refresh();
+    expect(view.pins().get(30223)?.preferredMachine).toBe('m_mini');
+    expect(q.all()).toHaveLength(0);
+  });
+
+  it('a FAULTY poolReference dep degrades to the moving now() floor — never back to the frozen reference, never a fold fault', () => {
+    let now = BOOT;
+    const q = new TopicPinSkewQuarantine({ filePath: path.join(tmp, 'faulty.json') });
+    const honest = pinPut(30223, 'm_mini', { physical: BOOT + QUIET - 1000, logical: 0, node: 'm_mini' });
+    const view = new TopicPinFoldView({
+      reader: scriptedReader([
+        { entries: [] },
+        { entries: [{ data: honest, origin: 'm_mini', source: 'replica', machineId: 'm_mini' }] },
+      ]),
+      quarantine: q,
+      selfNode: () => 'm_self',
+      now: () => now,
+      poolReference: () => { throw new Error('registry fault'); },
+    });
+    view.refresh();
+    now = BOOT + QUIET;
+    view.refresh(); // must not throw; the now() floor stands
+    expect(view.pins().get(30223)?.preferredMachine).toBe('m_mini');
+    expect(q.all()).toHaveLength(0);
+  });
+
+  it('status().skewReference exposes the LIVE gate floor and MOVES with time (frozen-reference diagnosability)', () => {
+    let now = BOOT;
+    const { view } = foldView(scriptedReader([{ entries: [] }]), { now: () => now });
+    expect(view.status().skewReference).toBe(BOOT);
+    now = BOOT + QUIET;
+    expect(view.status().skewReference).toBe(BOOT + QUIET); // moves — never frozen at a seed
+  });
+
+  describe('poolReferenceFromCapacities (the production sourcing helper)', () => {
+    it('degenerate case — no peers: now() alone (the pool is self)', () => {
+      expect(poolReferenceFromCapacities(NOW, [])).toBe(NOW);
+    });
+
+    it('a fresher clock-OK peer heartbeat self-stamp raises the floor above a slow local now()', () => {
+      const ahead = NOW + 4 * 60_000;
+      expect(poolReferenceFromCapacities(NOW, [
+        { clockSkewStatus: 'ok', selfReportedLastSeen: new Date(ahead).toISOString() },
+        { clockSkewStatus: 'ok', selfReportedLastSeen: new Date(NOW - 60_000).toISOString() },
+      ])).toBe(ahead);
+    });
+
+    it('a SUSPECT-clocked peer never raises the floor (the registry skew FSM already distrusts it)', () => {
+      const ahead = NOW + 10 * 60_000;
+      for (const status of ['suspect-clock-removed', 'divergence-detected-once']) {
+        expect(poolReferenceFromCapacities(NOW, [
+          { clockSkewStatus: status, selfReportedLastSeen: new Date(ahead).toISOString() },
+        ])).toBe(NOW);
+      }
+    });
+
+    it('an older stamp never LOWERS the floor; malformed/absent stamps are ignored', () => {
+      expect(poolReferenceFromCapacities(NOW, [
+        { clockSkewStatus: 'ok', selfReportedLastSeen: new Date(NOW - 3_600_000).toISOString() },
+        { clockSkewStatus: 'ok', selfReportedLastSeen: 'not-a-date' },
+        { clockSkewStatus: 'ok' },
+      ])).toBe(NOW);
+    });
+  });
+
+  it('wiring integrity: the server.ts fold-view construction supplies the poolReference dep from the registry helper', () => {
+    // The defect was precisely an UNWIRED dep (the fold view honored it; nothing
+    // supplied it) — so the construction site itself is load-bearing. Source-grep
+    // pattern per this repo's wiring-integrity precedent.
+    const src = fs.readFileSync(path.resolve(__dirname, '../../src/commands/server.ts'), 'utf-8');
+    const ctor = src.slice(src.indexOf('const pinFoldView = new TopicPinFoldView({'));
+    const block = ctor.slice(0, ctor.indexOf('});') + 3);
+    expect(block).toContain('poolReference: () =>');
+    expect(block).toContain('poolReferenceFromCapacities(Date.now(), machinePoolRegistry?.getCapacities()');
   });
 });
 
