@@ -9,6 +9,17 @@ parent-fit: "State Convergence sub-standard: a declarative desired-state the sys
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; multi-transport-mesh-comms.md (soloCaptainHold); MULTI-MACHINE-SESSION-POOL-SPEC.md"
 project: "self-healing-mesh (topic 29836)"
 depends-on: "F4 preferredAwakeMachineId (multiMachine.leaseSelfHeal.preferredAwakeMachineId — the EXISTING preferred-captain authority; per-machine config read by shouldDeferToPreferred, soloCaptainHold eligibility, and the churn latch); FencedLease (epoch CAS, released tombstone, isStampCurrent staleness; canAcquire's held-by-live-peer refusal is the state the R-r2-1 consent branch opens); churnBreaker (leaseSelfHeal.churnDetector — hand-back flips MUST feed it); lease pull loop (~5s tick, the free health-observation carrier); U4.3 rope-health snapshot (the reachability source — HARD build-order dependency, R-r2-7: the resolver is process-private pre-U4.3, so no health source exists before the snapshot seam); pollFollowsLease (B1 — HARD graduation dependency, see §5); delivery canary (post-hand-back verification)"
+review-convergence: "2026-07-02T07:29:45.416Z"
+review-iterations: 3
+review-completed-at: "2026-07-02T07:29:45.416Z"
+review-report: "docs/specs/reports/u4-4-lease-handback-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 0
+contested-then-cleared: 2
+approved: true
+approved-basis: "Operator preapproval for spec approvals in this session (topic 29836, 2026-07-02): 'Full preapproval granted … spec approvals, server restarts, deployment, and all in-scope reversible decisions.' Recorded transparently, not silently self-granted."
 ---
 
 # U4.4 — Lease Hand-Back to the Preferred Captain
