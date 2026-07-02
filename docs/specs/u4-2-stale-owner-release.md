@@ -5,7 +5,7 @@ author: "echo"
 status: "draft"
 parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 sibling-principles: "The Agent Is Always Reachable; Verify the State, Not Its Symbol; A Refusal Stays a Refusal; Bounded Blast Radius; A Dark Feature Guards Nothing"
-lessons-engaged: "stranded-inbound-self-heal.md §Deferred-v2 (CMT-1786, all seven prerequisites walked in §2.7); P19 (bounded loops); P20 (verify the state); P17 (one deduped item); mesh-lease-tick-wedge-rootcause (local memory, topic 27515); Live-User-Channel Proof Before Done"
+lessons-engaged: "stranded-inbound-self-heal.md §Deferred-v2 (CMT-1786 <!-- tracked: CMT-1786 -->, all seven prerequisites walked in §2.7); P19 (bounded loops); P20 (verify the state); P17 (one deduped item); mesh-lease-tick-wedge-rootcause (local memory, topic 27515); Live-User-Channel Proof Before Done"
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; docs/specs/stranded-inbound-self-heal.md; MULTI-MACHINE-SESSION-POOL-SPEC.md; MULTI-MACHINE-SEAMLESSNESS-SPEC.md"
 project: "self-healing-mesh (topic 29836)"
 depends-on: "OwnershipReconciler (WS1.3 Case C force-claim — the machinery this EXTENDS); SessionOwnership FSM (ownershipEpoch fence, applyOwnershipAction); StrandedTopicSentinel (detection layer, loadBearing); fenced serving lease (the claim ARBITER); ChurnBreaker (claimer-availability composition, §2.1); multiMachine.meshTransport (authenticated probes); PeerEndpointRecorder (advert-set provenance, §2.2.2); WorkingSetPullCoordinator; MessageProcessingLedger; U4.1 (pin suspend interaction, §2.4); U4.4 (lease hand-back moves the claimer role, §2.5/§2.6)"
@@ -33,7 +33,8 @@ machinery deliberately stops short: `OwnershipReconciler` Case C force-claims on
 PINNED topics with death evidence + quorum; `StrandedTopicSentinel` (loadBearing,
 detection-only) tells the operator, because the prior converged spec
 `stranded-inbound-self-heal.md` ruled auto-failover unsafe without seven named
-prerequisites and deferred it as **CMT-1786**. U4.2 IS that deferred v2, with the
+prerequisites and deferred it as **CMT-1786** <!-- tracked: CMT-1786 -->. U4.2 IS
+that deferred v2 <!-- tracked: CMT-1786 -->, with the
 prerequisites now satisfiable (§2.7).
 
 **What this spec does NOT claim to fix:** the 2026-06-23 lease-tick wedge
