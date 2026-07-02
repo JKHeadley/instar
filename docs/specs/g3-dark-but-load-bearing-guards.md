@@ -8,6 +8,18 @@ sibling-principles: "Verify the State, Not Its Symbol; Signal vs. Authority (thi
 parent-spec: "docs/specs/GUARD-POSTURE-ENDPOINT-SPEC.md; docs/STANDARDS-REGISTRY.md (A Dark Feature Guards Nothing — ratified 2026-07-01, PR #1316)"
 project: "self-healing-mesh (topic 29836)"
 upstream-filings: "fb-dd043916-28f (the dark-but-load-bearing gap named in the S1-S6 postmortem entries)"
+review-convergence: "2026-07-02T03:44:29.799Z"
+review-iterations: 6
+review-completed-at: "2026-07-02T03:44:29.799Z"
+review-report: "docs/specs/reports/g3-dark-but-load-bearing-guards-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+cross-model-review-reason: "codex GPT-5.5 external every round; R2-R6 MINOR"
+single-run-completable: true
+frontloaded-decisions: 13
+cheap-to-change-tags: 0
+contested-then-cleared: 0
+approved: true
+approved-by: "operator preapproval — topic 29836 (self-healing-mesh project spec approvals)"
 ---
 
 # G3 — Dark-but-Load-Bearing Guard Classification
