@@ -25,22 +25,23 @@ import { LLM_BENCH_COVERAGE } from '../../src/data/llmBenchCoverage.js';
 // component without bench coverage — author its bench task instead, or argue
 // a real exemption in the map (both are visible, reviewed acts). ──
 const PENDING_BASELINE = [
-  'AutoApprover', 'CartographerSweep', 'CoherenceGate', 'CommitmentSentinel',
-  'ContextualEvaluator', 'DiscoveryEvaluator', 'InputDetector', 'InputGuard',
-  'IntegrationGate', 'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
-  'PresenceProxy', 'ProjectDriftChecker', 'PromiseBeacon', 'PromptGate',
-  'RelationshipManager', 'ResumeQueueDrainer', 'ResumeValidator',
-  'SelfKnowledgeTree', 'SessionActivitySentinel', 'SessionSummarySentinel',
-  'SessionWatchdog', 'SlackAdapter', 'StallTriageNurse',
+  // Wave-3 only — the wave-2 set graduated to covered/exempt on 2026-07-02
+  // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
+  'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
+  'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
+  'PreCompactionFlush', 'RelationshipManager', 'SelfKnowledgeTree',
   'StandardsConformanceReviewer', 'StandardsCoverageEnrichment',
-  'TaskClassifier', 'TelegramAdapter', 'TemporalCoherenceChecker',
-  'TopicIntentArcCheck', 'TopicIntentExtractor', 'TopicSummarizer',
-  'TreeSynthesis', 'TreeTriage', 'UnjustifiedStopGate', 'a2a-checkin',
+  'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
   'crossModelReviewer', 'mentor-stage-b', 'openConversationBrief',
-  'OverrideDetector', 'PreCompactionFlush',
 ].sort();
 
-const EXEMPT_BASELINE = ['InteractivePoolCanaryJudge'].sort();
+const EXEMPT_BASELINE = [
+  'InteractivePoolCanaryJudge',
+  // Wave-2 argued exemptions (2026-07-02) — each argues a real reason in
+  // src/data/llmBenchCoverage.ts; evidence trail in the bench harness's
+  // tasks-wave2/SKIPPED.md (grep-verified delegation/alias/unwired claims).
+  'IntegrationGate', 'CoherenceGate', 'AutoApprover', 'InputDetector', 'PromiseBeacon',
+].sort();
 
 describe('llm-bench-coverage ratchet', () => {
   it('every COMPONENT_CATEGORY key has a bench-coverage entry (new LLM components must decide their benchmark story)', () => {

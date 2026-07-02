@@ -49,31 +49,51 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
       'judges a FIXED known-answer canary probe — the canary is its own benchmark; a bench task would re-test the same constant',
   },
 
-  // ── Wave 2 (sentinels/gates/extractors still to author) ──
-  InputDetector: { pending: 'wave-2' },
-  InputGuard: { pending: 'wave-2' },
-  SessionActivitySentinel: { pending: 'wave-2' },
-  StallTriageNurse: { pending: 'wave-2' },
-  CommitmentSentinel: { pending: 'wave-2' },
-  PresenceProxy: { pending: 'wave-2' },
-  PromiseBeacon: { pending: 'wave-2' },
-  ProjectDriftChecker: { pending: 'wave-2' },
-  TemporalCoherenceChecker: { pending: 'wave-2' },
-  SessionWatchdog: { pending: 'wave-2' },
-  ResumeQueueDrainer: { pending: 'wave-2' },
-  TopicIntentArcCheck: { pending: 'wave-2' },
-  SlackAdapter: { pending: 'wave-2' },
-  TelegramAdapter: { pending: 'wave-2' },
-  PromptGate: { pending: 'wave-2' },
-  AutoApprover: { pending: 'wave-2' },
-  IntegrationGate: { pending: 'wave-2' },
-  UnjustifiedStopGate: { pending: 'wave-2' },
-  CoherenceGate: { pending: 'wave-2' },
-  OverrideDetector: { pending: 'wave-2' },
-  TaskClassifier: { pending: 'wave-2' },
-  ResumeValidator: { pending: 'wave-2' },
-  SessionSummarySentinel: { pending: 'wave-2' },
-  TopicIntentExtractor: { pending: 'wave-2' },
+  // ── Covered by Wave 2 (authored 2026-07-02; tasks-wave2/ in the bench harness) ──
+  InputGuard: { task: 'input-guard-coherence' },
+  SessionActivitySentinel: { task: 'activity-digest' },
+  StallTriageNurse: { task: 'stall-triage-diagnosis' },
+  CommitmentSentinel: { task: 'commitment-detector' },
+  PresenceProxy: { task: 'presence-tier3-stall' },
+  ProjectDriftChecker: { task: 'project-drift-check' },
+  TemporalCoherenceChecker: { task: 'temporal-coherence' },
+  SessionWatchdog: { task: 'watchdog-stuck-judge' },
+  ResumeQueueDrainer: { task: 'resume-sanity-check' },
+  TopicIntentArcCheck: { task: 'arc-check-classify' },
+  TelegramAdapter: { task: 'telegram-stall-confirm' },
+  // SlackAdapter.confirmStallAlert builds a byte-identical prompt to
+  // TelegramAdapter's (verified by diff) — the same task id covers both
+  // (precedent: CompletionEvaluator maps two surfaces to two ids).
+  SlackAdapter: { task: 'telegram-stall-confirm' },
+  PromptGate: { task: 'prompt-gate-detect' },
+  UnjustifiedStopGate: { task: 'unjustified-stop-gate' },
+  OverrideDetector: { task: 'override-detector' },
+  TaskClassifier: { task: 'task-classifier' },
+  ResumeValidator: { task: 'resume-validator' },
+  SessionSummarySentinel: { task: 'session-summary-sentinel' },
+  TopicIntentExtractor: { task: 'topic-intent-extractor' },
+
+  // ── Wave-2 argued exemptions (evidence: tasks-wave2/SKIPPED.md in the bench harness) ──
+  IntegrationGate: {
+    exempt:
+      'no LLM prompt of its own — delegates to JobReflector.reflect() (attribution JobReflector, tracked wave-3); zero LLM-provider callsites of its own in IntegrationGate.ts',
+  },
+  CoherenceGate: {
+    exempt:
+      'no callsite carries attribution CoherenceGate — all LLM calls flow through CoherenceReviewer.callApi() (incl. the DynamicReviewer subclass), covered by gate-triage',
+  },
+  AutoApprover: {
+    exempt:
+      'mechanical key injection + audit logging, no LLM callsite; the upstream judgment is InputClassifier.classify(), covered by input-classifier',
+  },
+  InputDetector: {
+    exempt:
+      'attribution-manifest alias only (a legacy prompt-pattern matcher); the live InputDetector class in PromptGate.ts calls with attribution PromptGate, covered by prompt-gate-detect',
+  },
+  PromiseBeacon: {
+    exempt:
+      'no live LLM prompt — generateStatusLine/classifyProgress hooks are unwired at the construction site (server.ts); the enqueue path resolves templated strings; revisit if a generator is wired',
+  },
 
   // ── Wave 3 (reflectors + background/job tasks) ──
   JobReflector: { pending: 'wave-3' },
