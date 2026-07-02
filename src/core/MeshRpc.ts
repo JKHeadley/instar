@@ -47,6 +47,28 @@ export type MeshCommand =
       target: MachineId;
       ownershipEpoch: number;
     }
+  | {
+      // U4.4 lease hand-back offer (docs/specs/u4-4-lease-handback.md, R-r2-2):
+      // the CURRENT lease holder offers the serving lease BACK to the F4
+      // preferred captain, carrying the SIGNED, epoch-bound, TTL-bounded,
+      // SINGLE-USE consent token the target presents at acquire time (the
+      // `handbackOpts` branch of FencedLease.canAcquire). RBAC: its OWN case,
+      // default-deny — ONLY the machine currently holding the serving lease may
+      // send it (verified against the live lease, mirroring the drain verb's
+      // role-checked posture). Typed handler responses: `accept` /
+      // `declined:churn-latched` / `declined:quota` / `declined:legacy-peer`;
+      // on timeout/silence the holder KEEPS HOLDING (claim-before-release — a
+      // failed hand-back can never leave zero holders). Replay: rides the
+      // standard envelope nonce guard AND the single-use consent token — a
+      // replayed offer never re-authorizes a second claim. Version skew: an old
+      // peer without the verb fails closed (403/`no-handler`); the sender
+      // classifies that as peer-cannot-hand-back and STOPS re-offering for the
+      // episode (degrade to today's sticky behavior, never hammer an old peer).
+      type: 'handback-offer';
+      proposedEpoch: number;
+      consentToken: import('./FencedLease.js').HandbackConsentToken;
+      expiresAt: string;
+    }
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
@@ -289,7 +311,8 @@ export type RbacReason =
   | 'release-unauthorized'
   | 'drain-unauthorized'
   | 'slice-renew-unauthorized'
-  | 'mandate-deliver-unauthorized';
+  | 'mandate-deliver-unauthorized'
+  | 'handback-offer-unauthorized';
 
 export interface RbacDeps {
   /** The machine currently holding the router lease (verify-on-read, §L1), or null. */
@@ -342,6 +365,14 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // lease-holder — may order an owner to drain; a peer (even the transfer
       // TARGET) may not.
       return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'drain-unauthorized' };
+    case 'handback-offer':
+      // U4.4 (R-r2-2): only the CURRENT lease holder may offer the lease back —
+      // verified against the live lease view, default-deny, its OWN refusal
+      // reason (mirrors the drain verb's posture). A non-holder — including the
+      // preferred captain itself — can never manufacture a hand-back offer;
+      // the LOAD-BEARING authority remains the holder-signed consent token the
+      // handler verifies at acquire time (this gate is the coarse pre-filter).
+      return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'handback-offer-unauthorized' };
     case 'claim': {
       // The router's assigned target for this session, OR the router on a failover re-place.
       if (deps.placementTargetOf(command.session) === sender) return { ok: true, reason: 'ok' };
@@ -486,6 +517,7 @@ function statusForReason(reason: string): number {
     case 'drain-unauthorized':
     case 'slice-renew-unauthorized':
     case 'mandate-deliver-unauthorized':
+    case 'handback-offer-unauthorized':
       return 403;
     case 'replayed-nonce':
     case 'stale-timestamp':

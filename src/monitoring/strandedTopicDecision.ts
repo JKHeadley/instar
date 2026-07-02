@@ -68,6 +68,17 @@ export interface StrandedDecisionInput {
   now: number;
   cfg: StrandedDecisionConfig;
   /**
+   * U4.2 R-r2-1 (quorum-member-hosted escalation): when TRUE and this machine
+   * observes a MAJORITY partition, the not-lease-holder early no-op is relaxed
+   * for the DETECTION + ESCALATION path only — so a no-lease-holder mesh (the
+   * exhausted-churn-breaker + dead-preferred-captain composition) still reaches
+   * the operator. The attention item is episode-keyed, so N machines raising
+   * the same strand collapse via the existing P17 pool-wide coalesce to ONE
+   * item. The CLAIM path (OwnershipReconciler) stays lease-holder-only.
+   * Default false = today's behavior byte-for-byte.
+   */
+  escalationQuorumHosted?: boolean;
+  /**
    * Resolve a topic's ChannelScope from its owning adapter binding. Returns
    * undefined when the scope can't be fully derived (the common Telegram case —
    * see the spec's honesty note) → the adapter arm SKIPs and the quota arm
@@ -118,8 +129,19 @@ export function evaluateStrandedTopics(
   // Early no-op gates (spec step 1). A single-machine agent can't strand on a
   // peer; a non-lease-holder is not the sole actor. Drop the dwell map so a
   // demotion/scale-down doesn't carry stale anchors.
-  if (capacities.length < 2 || !holdsLease) {
+  // U4.2 R-r2-1: with escalationQuorumHosted, ANY quorum member may DETECT and
+  // ESCALATE (episode-keyed item, P17-coalesced) — otherwise an exhausted churn
+  // breaker with a dead preferred captain leaves NO lease holder, no claim, no
+  // escalation AND no sentinel. Only the claim stays lease-holder-only.
+  if (capacities.length < 2) {
     return { strandedSet: [], cantAssessCount: 0, nextStrandedSince: {} };
+  }
+  if (!holdsLease) {
+    const online = capacities.filter((c) => c.online).length;
+    const inQuorum = online * 2 > capacities.length;
+    if (!(input.escalationQuorumHosted === true && inQuorum)) {
+      return { strandedSet: [], cantAssessCount: 0, nextStrandedSince: {} };
+    }
   }
 
   const capById = new Map<string, MachineCapacity>();

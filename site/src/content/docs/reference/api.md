@@ -610,6 +610,18 @@ never the agent. With no mandate issued, every evaluation denies. Every decision
 ## /ping
 - `GET /ping`
 
+## /pool
+- `GET /pool` — the machine pool: router, nicknames, hardware, online status, load, quota state
+- `GET /pool/placement` — which machine owns a topic + the reason (`pinned`/`placed`/`unowned`)
+- `POST /pool/transfer` — deterministic topic move to a nickname/machineId (the validated planner)
+- `GET /pool/queue` — durable inbound-queue counts + hold/flap state (503 while dark)
+- `GET /pool/reconciler` — WS1.3 ownership reconciler status (+ `?topic=N` per-topic explain)
+- `GET /pool/stale-owner-release` — U4.2 stale-owner release telemetry: attempts, would-claims (dry-run), refusals by reason, evidence classes, P19 give-ups, probe-breaker state, open episodes (503 when dark; see [Multi-machine](/features/multi-machine/))
+- `GET /pool/lease-handback` — U4.4 lease hand-back reconciler status: state, hysteresis window, operator-latch visibility, last episode, counters (503 when the mesh is dark)
+- `POST /pool/lease-handback/latch` — write the operator-flip latch marker (the captain-flip playbook's POST step; suppresses automated hand-back — the human always wins)
+- `DELETE /pool/lease-handback/latch` — clear the latch early (PIN-gated: re-enables automation against a human decision, so the dashboard PIN is required)
+- `GET /pool/poll-cache` — the shared per-peer pool-scope poll cache (WS4.4(f))
+
 ## /project-map
 - `GET /project-map`
 - `POST /project-map/refresh`

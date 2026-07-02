@@ -40,7 +40,9 @@ import type { SessionOwnershipRegistry, CasResult } from './SessionOwnershipRegi
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { TopicPin, TopicPlacementPinStore } from './TopicPlacementPinStore.js';
 import { compareHlc } from './TopicPinReplicatedStore.js';
+import { claimSuspensionExcludesPin } from './TopicClaimAnnotationStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
+import type { StaleOwnerReleaseEngine } from './StaleOwnerReleaseEngine.js';
 
 export interface ReconcilerMachineView {
   machineId: string;
@@ -92,7 +94,7 @@ export interface OwnershipReconcilerDeps {
    */
   isTopicBusy: (sessionKey: string) => boolean;
   /** Journal pairing (§3.3): every landed CAS emits a placement entry. */
-  emitPlacement: (sessionKey: string, r: CasResult & { ok: true }, reason: 'reconcile-transfer' | 'reconcile-claim' | 'reconcile-force-claim' | 'reconcile-adopt' | 'reconcile-abort-transfer') => void;
+  emitPlacement: (sessionKey: string, r: CasResult & { ok: true }, reason: 'reconcile-transfer' | 'reconcile-claim' | 'reconcile-force-claim' | 'reconcile-adopt' | 'reconcile-abort-transfer' | 'stale-owner-release') => void;
   /** Fix #3 / Finding N4: how long a `transferring` may sit (from its `timestamp`) before
    *  the owner aborts a transfer toward an unreachable target. Default 120s. */
   transferDeadlineMs?: number;
@@ -102,6 +104,23 @@ export interface OwnershipReconcilerDeps {
   safePointDeadlineMs?: number;
   /** Owner-death evidence: offline AND lastSeen older than this. */
   deathEvidenceMs?: number;
+  /**
+   * U4.2 (stale-owner-release) — the evidence-upgraded Case C engine. When
+   * ACTIVE (feature resolved on), the engine runs as part of THIS tick (one
+   * actor: the reconciler stays the sole takeover authority, spec §2.7.6) and
+   * the legacy pin-loop force-claim branch is SUPERSEDED by the engine's
+   * evidence bar (which covers pinned AND unpinned topics, lease-holder-only).
+   * Absent / inactive ⇒ byte-for-byte today's behavior.
+   */
+  staleOwnerEngine?: () => StaleOwnerReleaseEngine | null;
+  /**
+   * U4.2 §2.4 — merged claim-suspension annotations per topic (the replicated
+   * `topic-claim-annotation` read). effectivePins() consults this BEFORE
+   * adopting or driving a pin: a pin whose HLC is not newer than the live
+   * suspension is SUSPENDED (derived state — the pin record is never written);
+   * a later operator re-pin (fresh HLC) clears the suspension.
+   */
+  claimSuspensions?: () => Map<number, { suspended: boolean; hlc: HlcTimestamp }>;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -118,6 +137,9 @@ export interface ReconcileTickReport {
   deferredBusy: number;
   deferredDebounce: number;
   deferredNoEvidence: number;
+  /** U4.2 named code fix: a LOCAL pin toward an unknown/offline machine defers
+   *  the cooperative transfer (the same online-gate advisory pins already had). */
+  deferredTargetOffline: number;
   dryRun: boolean;
   skipped?: 'disabled' | 'single-machine' | 'self-id-unresolved';
 }
@@ -128,7 +150,7 @@ export interface ReconcileTickReport {
 export type ReconcileDecision =
   | 'no-pin' | 'converged' | 'claim' | 'await-other-claim' | 'adopt' | 'transfer'
   | 'deferred-debounce' | 'deferred-busy' | 'force-claim' | 'deferred-no-evidence'
-  | 'abort-transfer' | 'not-my-move' | 'skipped';
+  | 'deferred-target-offline' | 'abort-transfer' | 'not-my-move' | 'skipped';
 
 export interface TopicReconcileExplanation {
   sessionKey: string;
@@ -202,7 +224,10 @@ export class OwnershipReconciler {
     const ps = this.d.pinStore();
     const local = ps ? ps.all() : {}; // null until _topicPinStore resolves at boot → no pins (natural no-op)
     const advisory = this.d.advisoryPins?.();
-    if (!advisory || advisory.size === 0) return local;
+    // U4.2 §2.4: the claim-suspension read applies to LOCAL pins too — a
+    // suspension must hold even when no advisory pins exist (the early-return
+    // path), or the local reconciler would fight a stale-owner claim.
+    if (!advisory || advisory.size === 0) return this.applyClaimSuspensions(local);
     // Validate PRIMARY = membership/liveness (skew-proof): only act on a replicated pin
     // whose target is a KNOWN and currently-ONLINE machine (Findings N2/SE4/AD5). A stale
     // advisory pointing at a departed/offline machine must NOT trigger a transfer.
@@ -219,6 +244,29 @@ export class OwnershipReconciler {
         out[key] = advPin; // replicated intent is newer (HLC) → it wins (N3)
       }
     }
+    return this.applyClaimSuspensions(out);
+  }
+
+  /**
+   * U4.2 §2.4 — a stale-owner claim SUSPENDS the topic's pin (derived at read
+   * time from the replicated `topic-claim-annotation`; the pin record is never
+   * written). A pin whose HLC is NOT strictly newer than the live suspension is
+   * excluded here, so the reconciler never fights the claim (no claim/transfer-
+   * back oscillation). A later operator re-pin carries a fresher HLC and WINS —
+   * the operator's newer statement clears the suspension.
+   */
+  private applyClaimSuspensions(pins: Record<string, TopicPin>): Record<string, TopicPin> {
+    const suspensions = this.d.claimSuspensions?.();
+    if (!suspensions || suspensions.size === 0) return pins;
+    const out: Record<string, TopicPin> = {};
+    for (const [key, pin] of Object.entries(pins)) {
+      const s = suspensions.get(Number(key));
+      // ONE comparison authority (shared with the closeout veto wiring).
+      if (claimSuspensionExcludesPin(pin.hlc ?? this.deriveLocalPinHlc(pin), s)) {
+        continue; // suspended-pending-owner-return
+      }
+      out[key] = pin;
+    }
     return out;
   }
 
@@ -229,16 +277,32 @@ export class OwnershipReconciler {
   tick(): ReconcileTickReport {
     const report: ReconcileTickReport = {
       examined: 0, transfers: 0, claims: 0, forceClaims: 0, adoptions: 0, aborts: 0,
-      deferredBusy: 0, deferredDebounce: 0, deferredNoEvidence: 0,
+      deferredBusy: 0, deferredDebounce: 0, deferredNoEvidence: 0, deferredTargetOffline: 0,
       dryRun: this.d.dryRun(),
+    };
+    // U4.2 — the stale-owner-release engine rides THIS tick (one actor: the
+    // reconciler stays the sole takeover authority) but gates INDEPENDENTLY:
+    // its evidence pass runs whenever its own feature resolves active, even if
+    // the pin-reconcile layer (ws13Reconcile) is disabled. All engine gates
+    // (≥2 machines, self id, lease-holder for claims) live inside the engine.
+    const runStaleOwnerPass = () => {
+      const engine = this.d.staleOwnerEngine?.() ?? null;
+      if (!engine || !engine.isActive()) return;
+      try {
+        engine.tick();
+      } catch (err) {
+        this.log(`stale-owner pass error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     };
     if (!this.d.enabled()) {
       report.skipped = 'disabled';
+      runStaleOwnerPass();
       return this.finish(report);
     }
     const machines = this.d.machines();
     if (machines.length < 2) {
       // Spec invariant 6: single-machine strict no-op — no machinery entered.
+      // (The engine is also a strict single-machine no-op — nothing to run.)
       report.skipped = 'single-machine';
       return this.finish(report);
     }
@@ -251,6 +315,7 @@ export class OwnershipReconciler {
       return this.finish(report);
     }
     const byId = new Map(machines.map((m) => [m.machineId, m]));
+    const staleOwnerActive = !!(this.d.staleOwnerEngine?.()?.isActive());
 
     for (const [sessionKey, pin] of Object.entries(this.effectivePins())) {
       if (!pin.pinned || !pin.preferredMachine) continue;
@@ -313,6 +378,15 @@ export class OwnershipReconciler {
           report.deferredDebounce++;
           continue;
         }
+        // U4.2 named code fix: LOCAL pins in the cooperative path gain the same
+        // online-gate the advisory pins already have — never start a transfer
+        // toward an unknown/offline machine (the N4 abort would only have to
+        // unwind it later).
+        const targetView = byId.get(pin.preferredMachine);
+        if (!targetView || !targetView.online) {
+          report.deferredTargetOffline++;
+          continue;
+        }
         // Bounded safe point: wait for idle, but never past the deadline.
         const busy = this.d.isTopicBusy(sessionKey);
         const pastDeadline = now - since >= (this.d.safePointDeadlineMs ?? DEFAULT_SAFE_POINT_DEADLINE_MS);
@@ -326,6 +400,14 @@ export class OwnershipReconciler {
 
       // ── Case C: the pin names ME but a DEAD machine holds the record → force.
       if (pin.preferredMachine === self) {
+        if (staleOwnerActive) {
+          // U4.2: the evidence-upgraded engine SUPERSEDES the legacy pin-based
+          // force-claim (it covers pinned AND unpinned topics with the full
+          // §2.2 evidence bar, lease-holder-only). The legacy weaker bar must
+          // not race it — this branch defers to the engine pass below.
+          report.deferredNoEvidence++;
+          continue;
+        }
         const ownerView = owner ? byId.get(owner) : undefined;
         const ownerProvablyDead = !!ownerView
           && !ownerView.online
@@ -351,7 +433,36 @@ export class OwnershipReconciler {
       }
       // Neither owner nor pin target: not my move this tick.
     }
+    // U4.2 — the stale-owner evidence pass (claims for provably-dead owners,
+    // pinned AND unpinned; ambiguity escalation on any quorum member).
+    runStaleOwnerPass();
     return this.finish(report);
+  }
+
+  /**
+   * U4.2 — the engine's single CAS funnel (one actor, §2.7.6). Stamps the
+   * EXTENDED nonce grammar `${self}:stale-owner-release:${sessionKey}:${episodeId}:${now}`
+   * (§2.7.5 — visible in the decision trace + reap-log) and pairs the landed
+   * CAS with a placement emission exactly like every other reconciler action.
+   */
+  actStaleOwnerForceClaim(sessionKey: string, episodeId: string): boolean {
+    const self = this.d.selfMachineId() ?? '';
+    const r = this.d.ownership.cas(
+      { type: 'force-claim', machineId: self },
+      {
+        sessionKey,
+        sender: self,
+        nonce: `${self}:stale-owner-release:${sessionKey}:${episodeId}:${this.now()}`,
+      },
+    );
+    if (r.ok) {
+      this.log(`stale-owner-release force-claim landed for ${sessionKey} (episode ${episodeId}, epoch ${r.record.ownershipEpoch})`);
+      try { this.d.emitPlacement(sessionKey, r, 'stale-owner-release'); } catch { /* @silent-fallback-ok — §3.3 journal pairing is observability; a failed emission must never endanger or roll back the landed CAS */ }
+      this.conflictSince.delete(sessionKey);
+      return true;
+    }
+    this.log(`stale-owner-release force-claim rejected for ${sessionKey} (${'reason' in r ? r.reason : 'unknown'})`);
+    return false;
   }
 
   private act(
@@ -434,6 +545,10 @@ export class OwnershipReconciler {
       if (Number.isFinite(pinAgeMs) && pinAgeMs < debounceMs) {
         return { ...ctx, decision: 'deferred-debounce', reason: `pin age ${Math.round(pinAgeMs)}ms < debounce ${debounceMs}ms` };
       }
+      const tv = machines.find((m) => m.machineId === pin.preferredMachine);
+      if (!tv || !tv.online) {
+        return { ...ctx, decision: 'deferred-target-offline', reason: `pin target ${pin.preferredMachine} unknown/offline — cooperative transfer deferred (U4.2 online-gate)` };
+      }
       const since = this.conflictSince.get(sessionKey) ?? now;
       const busy = this.d.isTopicBusy(sessionKey);
       const pastDeadline = now - since >= (this.d.safePointDeadlineMs ?? DEFAULT_SAFE_POINT_DEADLINE_MS);
@@ -443,6 +558,9 @@ export class OwnershipReconciler {
       return { ...ctx, decision: 'transfer', reason: `I am the live owner, pin → ${pin.preferredMachine} → would transfer` };
     }
     if (pin.preferredMachine === self) {
+      if (this.d.staleOwnerEngine?.()?.isActive()) {
+        return { ...ctx, decision: 'deferred-no-evidence', reason: 'stale-owner-release engine owns force-claims (evidence-upgraded Case C, lease-holder-only)' };
+      }
       const byId = new Map(machines.map((m) => [m.machineId, m]));
       const ownerView = owner ? byId.get(owner) : undefined;
       const ownerProvablyDead = !!ownerView && !ownerView.online

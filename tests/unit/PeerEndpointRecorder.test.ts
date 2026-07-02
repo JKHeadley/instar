@@ -94,3 +94,20 @@ describe('PeerEndpointRecorder.record', () => {
     expect(getWrites()).toBe(0);
   });
 });
+
+describe('forged-advert-set-from-non-owner-rejected (U4.2 R-r2-5b — the per-entry authenticated binding)', () => {
+  it('a write under authenticated peer B NEVER mutates peer A\'s entry (the binding the stale-owner disproof rests on)', () => {
+    // A's advert set is the multi-transport truth the U4.2 all-ropes disproof
+    // reads. B (a non-owner) advertising a shrunk, attacker-controlled set must
+    // land in B's OWN entry only — record()'s peerMachineId is the
+    // cryptographically-verified sender at every callsite, and the write
+    // target is keyed on exactly that id.
+    const { rec, store } = mkRecorder({ known: { m_A: [TS, LAN], m_B: [] } });
+    const wrote = rec.record('m_B', [CF]);
+    expect(wrote).toBe(true);
+    expect(store['m_B']).toEqual([CF]);
+    // A's entry is byte-identical — B cannot shrink A's advert set to a rope
+    // it controls and manufacture "unreachable on every transport".
+    expect(store['m_A']).toEqual([TS, LAN]);
+  });
+});

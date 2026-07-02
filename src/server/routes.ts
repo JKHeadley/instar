@@ -1184,6 +1184,15 @@ export interface RouteContext {
   topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
   /** Fix #3 observability: the WS1.3 OwnershipReconciler (for GET /pool/reconciler). */
   ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler | null;
+  /** U4.2 — stale-owner release engine (status route; 503 when dark/absent). */
+  staleOwnerEngine?: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerReleaseEngine | null;
+  /** U4.4 — lease hand-back status + the operator-flip latch levers. */
+  leaseHandback?: {
+    status(): import('../core/LeaseHandbackReconciler.js').LeaseHandbackStatus;
+    latchWrite(reason?: string): import('../core/handbackLatch.js').HandbackLatchRecord;
+    latchClear(): void;
+    latchRecord(): import('../core/handbackLatch.js').HandbackLatchRecord | null;
+  } | null;
   /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
   secretSync?: import('../core/SecretSync.js').SecretSyncHandle | null;
   /** U4.5 rope-health alerts monitor (u4-5-rope-health-alerts) — backs
@@ -13574,6 +13583,67 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ status: ctx.ownershipReconciler.status() });
   });
 
+  // GET /pool/stale-owner-release — U4.2 §2.9 (docs/specs/u4-2-stale-owner-release.md,
+  // R-r2-6): the FD-7-style telemetry surface the dry-run soak is judged on BEFORE
+  // graduation — counters for attempts / would-claims / refusals BY REASON, the
+  // evidence-class distribution, P19 give-ups, probe-breaker state, and the last +
+  // open episodes. Read-only, credential-free (machine ids, topic ids, verdict
+  // labels). 503 when the feature is dark / single-machine / pool dark.
+  router.get('/pool/stale-owner-release', (_req, res) => {
+    if (!ctx.staleOwnerEngine || !ctx.staleOwnerEngine.isActive()) {
+      res.status(503).json({ error: 'stale-owner release not active (feature dark / single-machine / pool dark)' });
+      return;
+    }
+    res.json(ctx.staleOwnerEngine.status());
+  });
+
+  // GET /pool/lease-handback — U4.4 (docs/specs/u4-4-lease-handback.md §4): the
+  // hand-back reconciler's status (state machine position, hysteresis window,
+  // latch visibility — "hand-back suppressed until <t> — operator flip", last
+  // episode, per-event counters). Read-only. 503 when the reconciler is absent
+  // (single-machine / mesh dark); when merely HARD-DARK (enabled:false) the
+  // status answers honestly with enabled:false — the loud-latch visibility the
+  // spec requires must survive the feature being off.
+  router.get('/pool/lease-handback', (_req, res) => {
+    if (!ctx.leaseHandback) {
+      res.status(503).json({ error: 'lease hand-back reconciler not constructed (single-machine / mesh dark)' });
+      return;
+    }
+    res.json({ ...ctx.leaseHandback.status(), latch: ctx.leaseHandback.latchRecord() });
+  });
+
+  // POST /pool/lease-handback/latch — U4.4 R-r2-5 ("the human always wins", with a
+  // MECHANICAL attribution definition): the operator-flip latch marker is WRITTEN
+  // BY the explicit flip action itself — the PIN-gated captain-flip lever calls
+  // this, and until that lever ships the manual captain-flip playbook's explicit
+  // POST step lands here. Writing the latch only SUPPRESSES automation (the safe
+  // direction — the reconciler goes fully inert), so Bearer suffices; body:
+  // { reason?: string }. NEVER inferred from a transfer's origin.
+  router.post('/pool/lease-handback/latch', (req, res) => {
+    if (!ctx.leaseHandback) {
+      res.status(503).json({ error: 'lease hand-back reconciler not constructed (single-machine / mesh dark)' });
+      return;
+    }
+    const reason = typeof (req.body ?? {}).reason === 'string' ? String((req.body as { reason: string }).reason).slice(0, 300) : undefined;
+    const latch = ctx.leaseHandback.latchWrite(reason);
+    res.json({ ok: true, latch });
+  });
+
+  // DELETE /pool/lease-handback/latch — clear the operator latch EARLY (the
+  // re-flip / config-edit path). Clearing RE-ENABLES automation against a human
+  // decision, so it is PIN-GATED (checkMandatePin — Know Your Principal): the
+  // agent's Bearer token is structurally insufficient to un-latch the human's
+  // flip. Body: { pin: "<dashboard PIN>" }.
+  router.delete('/pool/lease-handback/latch', (req, res) => {
+    if (!ctx.leaseHandback) {
+      res.status(503).json({ error: 'lease hand-back reconciler not constructed (single-machine / mesh dark)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return; // response already sent on failure
+    ctx.leaseHandback.latchClear();
+    res.json({ ok: true });
+  });
+
   // GET /pool/poller-count — B5 (multimachine-lease-poll-robustness, Decision 11):
   // the exactly-one-Telegram-listener verdict over the pool — ok (exactly one
   // fresh poller) / dual (≥2 → 409 war) / silence (real zero) / indeterminate (a
@@ -13840,10 +13910,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // incident). `since` is the conflicting pin's own set-time: the divergence
     // cannot predate the pin that defines it.
     const pendingReplacement = !!(pinnedTo && owner && owner !== pinnedTo);
+    // U4.2 §2.9 (R-r2 minor): `ownershipLeaseState` DERIVED from record status +
+    // evidence state per the spec's table (held | stale | releasing | claimed).
+    // Absent when the stale-owner engine is dark (no evidence state to derive
+    // from beyond the record itself — still derived, evidence inputs false).
+    const ownershipLeaseState = await (async () => {
+      try {
+        const { deriveOwnershipLeaseState } = await import('../core/StaleOwnerReleaseEngine.js');
+        const record = ctx.sessionOwnershipRegistry!.read(topicId);
+        const engineStatus = ctx.staleOwnerEngine?.isActive() ? ctx.staleOwnerEngine.status() : null;
+        const evidenceEpisodeOpen = !!engineStatus?.openEpisodes.some((e) => e.owner === record?.ownerMachineId);
+        const suspensionAnnotationPresent = typeof record?.nonce === 'string' && record.nonce.includes(':stale-owner-release:');
+        return deriveOwnershipLeaseState(record, { evidenceEpisodeOpen, suspensionAnnotationPresent });
+      } catch {
+        return null; /* @silent-fallback-ok — a derivation fault omits the ADVISORY field; owner/pin/lease facts above stay authoritative */
+      }
+    })();
     res.json({
       ...description,
       pendingReplacement,
       ...(pendingReplacement && pin ? { pendingSince: pin.updatedAt } : {}),
+      ...(ownershipLeaseState ? { ownershipLeaseState } : {}),
       answeredBy: holderUrl ? 'local-fallback' : 'local',
     });
   });

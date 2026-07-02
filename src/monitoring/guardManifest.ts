@@ -147,6 +147,53 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     component: 'OwnerHoldVerdict',
     description: 'Hold-for-stability: briefly-wobbly machines get up to holdMaxMs to recover before their conversations move (ships dark; trails inboundQueue one stage).',
   },
+  {
+    // U4.2 stale-owner release (docs/specs/u4-2-stale-owner-release.md §5) —
+    // `enabled` is deliberately OMITTED from ConfigDefaults (developmentAgent
+    // dark-feature gate: dev-live-in-dryRun, dark fleet; DEV_GATED_FEATURES).
+    // defaultEnabled:false reflects the fleet default.
+    key: 'multiMachine.sessionPool.staleOwnerRelease.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.sessionPool.staleOwnerRelease.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.sessionPool.staleOwnerRelease.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'StaleOwnerReleaseEngine',
+    description:
+      "U4.2 stale-owner release — the serving-lease holder force-claims a provably-dead owner's topics behind the §2.2 evidence bar (ships dev-dry-run / dark fleet; graduation soak-gated).",
+    // G3 load-bearing (spec §5): this feature class is literally on the
+    // postmortem's existed-but-dark list — a stalled dark/dry-run posture must
+    // classify LOUDLY per #1318, never sit quiet.
+    loadBearing: true,
+    criticalPath: 'topic reachability when its owner machine dies (auto-failover of stranded topics)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-02',
+  },
+  {
+    // U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md §5) — ACTION-BEARING
+    // lease authority; ships HARD-DARK everywhere (enabled:false + dryRun:true,
+    // DARK_GATE_EXCLUSIONS) until the live two-machine pair verification passes.
+    key: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'LeaseHandbackReconciler',
+    description:
+      'U4.4 lease hand-back — drives the serving lease back to the F4 preferred captain after a failover (hysteresis-gated, claim-before-release via signed consent token; ships hard-dark, live-pair-verified before enablement).',
+    // G3 load-bearing (spec §5, R-r2-7): deliberately hard-dark past any
+    // reasonable soak until the live-pair drive — the soak constants make the
+    // pre-graduation posture classify loadBearingSoaking within its window; a
+    // stall past it falls to the loud Gap, with the manual captain-flip playbook
+    // as the recorded interim operator fallback.
+    loadBearing: true,
+    criticalPath: 'serving-lease returns to intended captain (mesh drifts off the always-on machine after failover)',
+    soakWindowDays: 60,
+    declaredLoadBearingAt: '2026-07-02',
+  },
   // ── Session lifecycle guards ──
   {
     key: 'monitoring.sessionReaper.enabled',

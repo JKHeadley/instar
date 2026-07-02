@@ -876,6 +876,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       soloCaptainHold: {
         enabled: false,
       },
+      // U4.4 (docs/specs/u4-4-lease-handback.md §5) — hand the lease BACK to the
+      // F4 preferred captain after a failover. ACTION-BEARING lease authority
+      // (moves real serving authority) → ships HARD-DARK on EVERY agent (dev
+      // included), enabled:false + dryRun:true, classified in
+      // DARK_GATE_EXCLUSIONS (action-bearing) exactly like its F2/F3/L3
+      // siblings. dryRun:false additionally REQUIRES pollFollowsLease live —
+      // validated at boot (validateHandbackEnableChokepoint), refused loudly.
+      preferredCaptainHandback: {
+        enabled: false,
+        dryRun: true,
+        healthWindowMs: 600000,
+        deferralCeilingMs: 7200000,
+        operatorLatchMs: 86400000,
+        maxPerWindow: 2,
+        windowMs: 21600000,
+      },
       preferredAwakeMachineId: null,
       // B2 (multimachine-lease-poll-robustness, Decision 8) — the flap breaker.
       // `enabled` OMITTED ⇒ developmentAgent gate; dryRun:true observes/logs the
@@ -1174,6 +1190,25 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         holdMaxMs: 90000,
         holdRecheckMs: 10000,
         flapThresholdPerHour: 6,
+      },
+      // U4.2 (docs/specs/u4-2-stale-owner-release.md §5) — stale-owner release
+      // (the CMT-1786 auto-failover as Case C's evidence upgrade). `enabled` is
+      // DELIBERATELY OMITTED (never hardcoded false) so resolveDevAgentGate
+      // decides at runtime — dev-live-in-dryRun, DARK on the fleet; registered
+      // in DEV_GATED_FEATURES. dryRun:true is the canary: the evidence pass +
+      // /pool/stale-owner-release surface run live but no CAS ever lands until
+      // a deliberate dryRun:false (gated on the §5 quantified soak). Subordinate
+      // to sessionPool being live AND ≥2 registered machines. The §2.3
+      // TTL-ordering invariant is validated at startup (a violating combination
+      // is REJECTED loudly, never degraded silently).
+      staleOwnerRelease: {
+        dryRun: true,
+        deathEvidenceMs: 180000,
+        probeTimeoutMs: 8000,
+        ambiguityCeilingMultiple: 3,
+        maxClaimsPerTick: 2,
+        bootstrapNonObservationMultiple: 3,
+        selfFenceTtlMs: 60000,
       },
     },
     // Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7). DARK-SHIP: `enabled` is

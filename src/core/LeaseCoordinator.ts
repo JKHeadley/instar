@@ -20,7 +20,7 @@
  * self-suspend logic are unit-testable with in-memory fakes.
  */
 
-import { FencedLease, type StaleHolderTakeoverOpts } from './FencedLease.js';
+import { FencedLease, type StaleHolderTakeoverOpts, type HandbackConsentToken } from './FencedLease.js';
 import type { LeaseRecord } from './types.js';
 
 /** Durable (git-backed) view + CAS write of the lease. */
@@ -596,6 +596,74 @@ export class LeaseCoordinator {
     this.emitEpoch(res.observed.epoch);
     this.log(`consent acquire lost CAS to epoch ${res.observed.epoch}`);
     return false;
+  }
+
+  // ── U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md) ────────
+
+  /** Used consent-token nonces per holder (single-use enforcement on the
+   *  ACQUIRING side). In-memory: a restart forgets, but the token TTL is short
+   *  and the envelope nonce guard is durable — the safe direction. */
+  private usedHandbackNonces = new Map<string, Set<number>>();
+
+  /**
+   * HOLDER side — mint the SIGNED, epoch-bound, TTL-bounded, SINGLE-USE consent
+   * token a `handback-offer` carries (R-r2-1). Refuses (null) unless THIS
+   * machine currently holds a valid lease — a non-holder can never mint
+   * consent for a lease it does not hold.
+   */
+  mintHandbackConsent(target: string, ttlMs: number): HandbackConsentToken | null {
+    if (!this.holdsLease()) return null;
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId) return null;
+    const expiresAt = new Date(this.now() + Math.max(1_000, ttlMs)).toISOString();
+    return this.fl.signHandbackConsent(view.epoch, target, expiresAt, this.nextNonce());
+  }
+
+  /**
+   * PREFERRED-CAPTAIN side — claim the lease by presenting the holder's consent
+   * token through the `handbackOpts` branch of canAcquire (R-r2-1). Claim-
+   * before-release: on success the CAS advances the epoch and the old holder
+   * steps down by observing it (isStampCurrent fencing — no double-serve
+   * window); on ANY failure nothing changes and the holder keeps holding (a
+   * failed hand-back can never leave zero holders). Single-use: the token's
+   * (holder, nonce) is burned on FIRST presentation, success or not.
+   */
+  async acquireOnHandbackConsent(token: HandbackConsentToken): Promise<{ ok: boolean; reason: string }> {
+    const view = this.effectiveView();
+    const used = this.usedHandbackNonces.get(token?.holder ?? '') ?? new Set<number>();
+    const alreadyUsed = used.has(token?.nonce);
+    const decision = this.fl.canAcquire(view.lease, this.d.presumedDeadHolders(), this.now(), undefined, {
+      token,
+      alreadyUsed,
+    });
+    // Burn the nonce on first presentation (replay/reuse fail-closed after).
+    if (token && typeof token.nonce === 'number') {
+      used.add(token.nonce);
+      this.usedHandbackNonces.set(token.holder, used);
+      if (used.size > 256) {
+        // bounded memory: keep the newest nonces
+        const keep = [...used].sort((a, b) => b - a).slice(0, 128);
+        this.usedHandbackNonces.set(token.holder, new Set(keep));
+      }
+    }
+    if (!decision.can || !decision.reason.startsWith('handback-consent')) {
+      // FAIL-CLOSED: only the consent branch may authorize this path — a
+      // coincidentally-expired lease must not turn a bad token into a claim.
+      return { ok: false, reason: decision.can ? `non-consent-grant-refused (${decision.reason})` : decision.reason };
+    }
+    const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
+    const res = this.d.store.casWrite(candidate);
+    if (res.ok) {
+      this.selfIssued = candidate;
+      await this.broadcast(candidate);
+      this.markRenewOk();
+      this.emitEpoch(candidate.epoch);
+      this.log(`acquired lease on hand-back consent at epoch ${candidate.epoch} (from ${token.holder})`);
+      return { ok: true, reason: 'handback-claimed' };
+    }
+    this.emitEpoch(res.observed.epoch);
+    this.log(`hand-back consent acquire lost CAS to epoch ${res.observed.epoch} — holder keeps holding`);
+    return { ok: false, reason: 'cas-lost' };
   }
 
   /**

@@ -490,6 +490,15 @@ export class AgentServer {
     topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore;
     /** Fix #3 observability: the WS1.3 OwnershipReconciler (for the /pool/reconciler readout). */
     ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler;
+    /** U4.2 — the stale-owner release engine (GET /pool/stale-owner-release; 503 when dark). */
+    staleOwnerEngine?: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerReleaseEngine;
+    /** U4.4 — the lease hand-back reconciler + the operator-flip latch levers. */
+    leaseHandback?: {
+      status(): import('../core/LeaseHandbackReconciler.js').LeaseHandbackStatus;
+      latchWrite(reason?: string): import('../core/handbackLatch.js').HandbackLatchRecord;
+      latchClear(): void;
+      latchRecord(): import('../core/handbackLatch.js').HandbackLatchRecord | null;
+    };
     /** Pool Dashboard Streaming (§2.3) — shared single-use ticket store the
      *  WebSocketManager's /pool-stream upgrade consumes. */
     streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
@@ -2454,6 +2463,8 @@ export class AgentServer {
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
       ownershipReconciler: options.ownershipReconciler ?? null,
+      staleOwnerEngine: options.staleOwnerEngine ?? null,
+      leaseHandback: options.leaseHandback ?? null,
       secretSync: options.secretSync ?? null,
       ropeHealthMonitor: options.ropeHealthMonitor ?? null,
       meshSelfId: options.meshSelfId ?? null,

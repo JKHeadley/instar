@@ -87,6 +87,11 @@ export interface StrandedTopicSentinelDeps {
   resolveScope?: (sessionKey: string) => ChannelScope | undefined;
   /** Resolve a machine's display nickname (for the item text). */
   nicknameOf?: (machineId: string) => string;
+  /** U4.2 R-r2-1: relax the not-lease-holder gate for DETECTION + ESCALATION
+   *  only when this machine sits in a majority partition (episode-keyed items
+   *  P17-coalesce pool-wide). Wired from the staleOwnerRelease feature gate;
+   *  absent/false = today's behavior. */
+  escalationQuorumHosted?: () => boolean;
   /** Override Date.now (tests). */
   now?: () => number;
 }
@@ -158,6 +163,9 @@ export class StrandedTopicSentinel extends EventEmitter {
       now,
       cfg: { dwellMs: this.cfg.dwellMs, freshnessBoundMs: this.cfg.freshnessBoundMs },
       resolveScope: this.deps.resolveScope,
+      escalationQuorumHosted: (() => {
+        try { return this.deps.escalationQuorumHosted?.() === true; } catch { return false; /* @silent-fallback-ok — an unreadable gate reads as today's lease-holder-only behavior (fail toward the stricter gate) */ }
+      })(),
     });
 
     // Reconcile the dwell map (delete stale keys — spec step 2).

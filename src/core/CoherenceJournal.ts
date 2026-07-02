@@ -42,9 +42,9 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -306,6 +306,9 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // configHome + every credential field are stripped at the projector).
   'subscription-account-meta': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
   'topic-pin-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
+  // U4.2 (stale-owner-release §2.4): claim suspension + per-topic claim budget +
+  // declined-demote pins. Written only on claim/decline transitions — tiny volume.
+  'topic-claim-annotation': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -497,7 +500,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -515,6 +518,7 @@ export class CoherenceJournal {
     'threadline-pairing-record': 0,
     'subscription-account-meta': 0,
     'topic-pin-record': 0,
+    'topic-claim-annotation': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -535,6 +539,7 @@ export class CoherenceJournal {
     'threadline-pairing-record': new Set(),
     'subscription-account-meta': new Set(),
     'topic-pin-record': new Set(),
+    'topic-claim-annotation': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -585,6 +590,7 @@ export class CoherenceJournal {
       'threadline-pairing-record': config.retention?.['threadline-pairing-record'] ?? DEFAULT_RETENTION['threadline-pairing-record'],
       'subscription-account-meta': config.retention?.['subscription-account-meta'] ?? DEFAULT_RETENTION['subscription-account-meta'],
       'topic-pin-record': config.retention?.['topic-pin-record'] ?? DEFAULT_RETENTION['topic-pin-record'],
+      'topic-claim-annotation': config.retention?.['topic-claim-annotation'] ?? DEFAULT_RETENTION['topic-claim-annotation'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -618,6 +624,7 @@ export class CoherenceJournal {
       'threadline-pairing-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'subscription-account-meta': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'topic-pin-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'topic-claim-annotation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 

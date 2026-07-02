@@ -30,6 +30,7 @@ import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstan
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
+import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
@@ -782,6 +783,52 @@ let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null =
 // the `/pool/reconciler` readout (status + per-topic explain) can reach it. Null until the
 // pool block constructs it (single-machine / dark → stays null → the route 503s).
 let _ownershipReconciler: import('../core/OwnershipReconciler.js').OwnershipReconciler | null = null;
+// U4.2 stale-owner release — the evidence-upgraded Case C engine, hoisted so the
+// GET /pool/stale-owner-release route + the reconciler dep can reach it. Null
+// until the pool block constructs it (single-machine / dark → the route 503s).
+let _staleOwnerEngine: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerReleaseEngine | null = null;
+// U4.4 lease hand-back — the F4 reconciler, hoisted so the lease pull tick hook
+// (constructed early) and the /pool surfaces (constructed late) can reach it.
+let _leaseHandbackReconciler: import('../core/LeaseHandbackReconciler.js').LeaseHandbackReconciler | null = null;
+// U4.4 — the /pool/lease-handback route surface (status + the R-r2-5 operator
+// latch levers), assembled where the reconciler is constructed.
+let _leaseHandbackCtx: {
+  status(): import('../core/LeaseHandbackReconciler.js').LeaseHandbackStatus;
+  latchWrite(reason?: string): import('../core/handbackLatch.js').HandbackLatchRecord;
+  latchClear(): void;
+  latchRecord(): import('../core/handbackLatch.js').HandbackLatchRecord | null;
+} | null = null;
+// U4.2 evidence-5 mirror freshness — stamped whenever a journal-sync exchange
+// with a peer SUCCEEDS (an empty delta is still a successful sync). Null until
+// the first success; a mirror never synced inside the window classifies
+// AMBIGUITY (fail closed) in the evidence bar.
+let _journalSyncLastOkMs: number | null = null;
+// U4.2 evidence seams, assigned in the lease-transport block (which owns the
+// identity manager + the authenticated dial machinery) and read late-bound by
+// the engine. Null = the mesh substrate is absent → the engine fails closed.
+let _staleOwnerAdvertSet: ((machineId: string) => { endpoints: Array<{ kind: string; url: string }>; fresh: boolean }) | null = null;
+// U4.2 §2.4/§2.3 — the merged claim-suspension view (engine-gated: empty while the
+// feature is dark). Assigned at reconciler construction; consulted BOTH by the
+// reconciler's effectivePins() and by the SessionReaper closeout's pin-conflict
+// veto (a SUSPENDED pin is not "the reconciler bringing the topic back", so it
+// must not veto the returned owner's post-claim teardown).
+let _sorClaimSuspensionsRead: (() => Map<number, { suspended: boolean; hlc: import('../core/HybridLogicalClock.js').HlcTimestamp }>) | null = null;
+let _staleOwnerProbeEndpoint: ((machineId: string, endpoint: { kind: string; url: string }, timeoutMs: number) => Promise<boolean>) | null = null;
+let _staleOwnerSelfProof: (() => Promise<boolean>) | null = null;
+let _hasDurableLeaseAuthority: (() => boolean) | null = null;
+// Attention seam shared by U4.2 (ambiguity escalation / P19 give-ups) and U4.4
+// (deferral-ceiling / episode-cap notices); assigned where the telegram adapter
+// exists. Items are episode-keyed and deduped by the attention store.
+let _meshAttentionRaise: ((item: { id: string; title: string; body: string; priority: string; sourceContext: string }) => void) | null = null;
+// U4.4 offer transport (assigned where the MeshRpcClient exists). Null = no
+// mesh client yet → sendOffer reports 'timeout' and the holder keeps holding.
+// U4.4 — used consent-token keys on the RECEIVING side (single-use; the token
+// TTL is 60s so a bounded in-memory set suffices) + the delivery canary seam.
+const _handbackSeenTokens = new Set<string>();
+let _handbackCanary: ((oldHolder: string) => Promise<boolean>) | null = null;
+let _handbackSendOffer:
+  | ((target: string, offer: { proposedEpoch: number; consentToken: import('../core/FencedLease.js').HandbackConsentToken; expiresAt: string }) => Promise<import('../core/LeaseHandbackReconciler.js').HandbackOfferResponse>)
+  | null = null;
 // Subscription & Auth Standard P1.3 — quota-aware account-swap scheduler. Null
 // until wired (requires SessionRefresh + the subscription pool).
 let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null = null;
@@ -3683,6 +3730,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       stateDir: config.stateDir,
       multiMachine: config.multiMachine,
       developmentAgent: (config as { developmentAgent?: boolean }).developmentAgent,
+      // U4.4 — the hand-back reconciler's observation rides the existing lease
+      // pull tick (late-bound: the reconciler is constructed after boot wiring).
+      onLeasePullTick: () => _leaseHandbackReconciler?.observe(),
     });
     const machineRole = coordinator.start();
     if (coordinator.enabled) {
@@ -3901,6 +3951,39 @@ export async function startServer(options: StartOptions): Promise<void> {
     const stateSync = assertStateSyncInvariants(config.multiMachine);
     void stateSync; // foundation knobs are consumed by the store PRs (WS2.1+)
 
+    // U4.2 (§2.3 TTL-ordering invariant, R-r2-3) — "expired implies self-fenced
+    // by construction" holds ONLY when deathEvidenceMs > selfFenceTtlMs + one
+    // reconciler tick + clock-skew slack. A violating combination is REJECTED at
+    // startup (the reject-nonsensical-combinations pattern), never degraded
+    // silently. U4.4 (§5 enable chokepoint) — dryRun:false with pollFollowsLease
+    // still dry-run is REFUSED loudly (a lease/ingress split).
+    {
+      const { validateStaleOwnerReleaseInvariants, DEFAULT_STALE_OWNER_RELEASE_CONFIG } = await import('../core/StaleOwnerReleaseEngine.js');
+      const sorCfg = config.multiMachine?.sessionPool?.staleOwnerRelease ?? {};
+      const tickMs = Math.max(5000, (config.multiMachine?.seamlessness as { ws13TickMs?: number } | undefined)?.ws13TickMs ?? 30000);
+      const skewSlackMs = 2 * (config.multiMachine?.sessionPool?.maxExpectedNtpDriftMs ?? 250);
+      const sorErr = validateStaleOwnerReleaseInvariants(
+        {
+          deathEvidenceMs: sorCfg.deathEvidenceMs ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.deathEvidenceMs,
+          selfFenceTtlMs: sorCfg.selfFenceTtlMs ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.selfFenceTtlMs,
+        },
+        tickMs,
+        skewSlackMs,
+      );
+      if (sorErr) throw new Error(sorErr);
+      const { validateHandbackEnableChokepoint } = await import('../core/LeaseHandbackReconciler.js');
+      const hbCfg = config.multiMachine?.leaseSelfHeal?.preferredCaptainHandback ?? {};
+      const pollLive =
+        resolveDevAgentGate(config.multiMachine?.pollFollowsLease?.enabled, config) &&
+        config.multiMachine?.pollFollowsLease?.dryRun === false;
+      const hbErr = validateHandbackEnableChokepoint(
+        { enabled: hbCfg.enabled === true, dryRun: hbCfg.dryRun !== false },
+        pollLive,
+        /* hasPollerSplit — conservative: any instar install runs the lifeline poller split */ true,
+      );
+      if (hbErr) throw new Error(hbErr);
+    }
+
     // The replicated-kind registry (Component 2). Ships EMPTY in this step — the
     // first concrete store (WS2.1) registers its kind onto it. Constructed here so
     // the substrate is wired and the per-store stateSyncReceive advert can be
@@ -4033,6 +4116,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { TOPIC_PIN_KIND_REGISTRATION } = await import('../core/TopicPinReplicatedStore.js');
     replicatedKindRegistry.register(TOPIC_PIN_KIND_REGISTRATION);
 
+    // U4.2 (docs/specs/u4-2-stale-owner-release.md §2.4, R-r3-1) — register the
+    // `topic-claim-annotation` kind (claim suspension + per-topic claim budget +
+    // declined-demote pins; epoch-INDEPENDENT, generic-envelope-validated). A new
+    // registered KIND is additive — pre-U4.2 peers never register it and simply
+    // never sync it (no unknown-FIELD surface on any stream they consume).
+    // Registration is INERT; emission stays gated behind the staleOwnerRelease
+    // feature gate below.
+    const { TOPIC_CLAIM_ANNOTATION_KIND_REGISTRATION } = await import('../core/TopicClaimAnnotationStore.js');
+    replicatedKindRegistry.register(TOPIC_CLAIM_ANNOTATION_KIND_REGISTRATION);
+
     // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
     //    substrate above ships the registry + receive/serve machinery + advert; THIS
     //    wires the SEND half that was deferred ("the journal-backed emitter is attached
@@ -4156,11 +4249,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       (config as { multiMachine?: { seamlessness?: { ws13PinReplicate?: boolean } } }).multiMachine?.seamlessness?.ws13PinReplicate,
       config,
     );
+    // U4.2 — the `topicClaimAnnotations` store gates on the staleOwnerRelease
+    // feature (dev-live-in-dryRun / fleet-dark; `enabled` omitted from defaults).
+    // Emission additionally requires the annotation writes themselves (claim /
+    // decline transitions), so a dark agent never emits the kind.
+    const _staleOwnerReleaseResolved = resolveDevAgentGate(
+      config.multiMachine?.sessionPool?.staleOwnerRelease?.enabled,
+      config,
+    );
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
-      return _accountFollowMeEnabled || _pinReplicateEnabled || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
+      return _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -4700,6 +4802,185 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         coordinator.attachLeaseCoordinator(leaseCoordinator);
         leaseCoordinatorRef = leaseCoordinator;
+
+        // ── U4.2 evidence seams (docs/specs/u4-2-stale-owner-release.md §2.2) ──
+        // Advert-set provenance (R-r2-5b): endpoints recorded ONLY by the
+        // PeerEndpointRecorder out of the signed lease RPC (bound to the
+        // cryptographically-verified sender), read back from the identity
+        // registry's per-peer entry. The git registry's lastKnownUrl is NOT
+        // acceptable disproof input and is deliberately not consulted here.
+        _staleOwnerAdvertSet = (machineId) => {
+          const eps = (idMgr.getMachineEndpoints(machineId) ?? []) as Array<{ kind: string; url: string }>;
+          // Freshness bound: the peer must still be a registered, non-revoked
+          // machine with a durable heartbeat newer than the staleness ceiling
+          // (an ancient advert set — the owner may have moved networks — is
+          // ambiguity, never disproof).
+          let fresh = false;
+          try {
+            const reg = idMgr.loadRegistry();
+            const entry = (reg.machines ?? {})[machineId] as { revokedAt?: string; lastSeen?: string } | undefined;
+            const lastSeenMs = entry?.lastSeen ? Date.parse(entry.lastSeen) : NaN;
+            fresh = !!entry && !entry.revokedAt && Number.isFinite(lastSeenMs) && Date.now() - lastSeenMs < 7 * 24 * 3_600_000;
+          } catch { fresh = false; /* @silent-fallback-ok — an unreadable registry reads as not-fresh ⇒ the evidence bar classifies AMBIGUITY (fail closed), never disproof */ }
+          return { endpoints: eps.filter((e) => typeof e?.url === 'string' && typeof e?.kind === 'string'), fresh };
+        };
+        // Authenticated signed-handshake probe of ONE advertised transport: an
+        // identity-verified /api/lease/pull round-trip (the same dial the lease
+        // wire uses; verifyLeaseAckIdentity binds the responder).
+        _staleOwnerProbeEndpoint = async (machineId, endpoint, _timeoutMs) => {
+          if (!leaseTransport?.pullPeer) return false;
+          try {
+            const lease = await leaseTransport.pullPeer({
+              machineId,
+              url: endpoint.url,
+              endpoints: [endpoint as import('../core/types.js').MeshEndpoint],
+              publicKeyPem: idMgr.getSigningPublicKeyPem(machineId),
+              meshAckCapable: !!idMgr.getSigningPublicKeyPem(machineId),
+            });
+            return lease !== null;
+          } catch {
+            return false; /* @silent-fallback-ok — an errored probe is unreachability EVIDENCE for this endpoint, consumed by a fail-closed evidence bar */
+          }
+        };
+        // Claimant self-connectivity proof (evidence 4): an authenticated probe
+        // of a THIRD peer; 2-machine case → verified reach of the durable lease
+        // authority (git). A claimer with a broken NIC must never claim.
+        _hasDurableLeaseAuthority = () => !!gitSyncRef;
+        _staleOwnerSelfProof = async () => {
+          try {
+            const reg = idMgr.loadRegistry();
+            const peers = Object.entries(reg.machines ?? {}).filter(
+              ([id, e]) => id !== selfMachineId && !(e as { revokedAt?: string }).revokedAt,
+            );
+            if (peers.length >= 2 && leaseTransport?.pullPeer) {
+              // Probe any OTHER peer (the engine excludes the suspect owner by
+              // probing it separately; reaching ANY peer proves our egress).
+              for (const [id, e] of peers) {
+                const entry = e as { lastKnownUrl?: string; endpoints?: import('../core/types.js').MeshEndpoint[] };
+                const url = entry.lastKnownUrl ?? entry.endpoints?.[0]?.url;
+                if (!url) continue;
+                const lease = await leaseTransport.pullPeer({
+                  machineId: id,
+                  url,
+                  endpoints: entry.endpoints,
+                  publicKeyPem: idMgr.getSigningPublicKeyPem(id),
+                  meshAckCapable: (entry.endpoints?.length ?? 0) > 0 && !!idMgr.getSigningPublicKeyPem(id),
+                });
+                if (lease !== null) return true;
+              }
+              return false;
+            }
+            // 2-machine mesh: verified reach of the durable lease authority.
+            if (gitSyncRef) {
+              const read = leaseStore.read();
+              return read !== null && read !== undefined;
+            }
+            return false; // 2-machine git-less: no self-proof source (claim path disabled upstream)
+          } catch {
+            return false; /* @silent-fallback-ok — a failed self-proof means WE may be the partitioned one; the evidence bar refuses the claim (fail closed) */
+          }
+        };
+
+        // ── U4.4 lease hand-back reconciler (docs/specs/u4-4-lease-handback.md) ──
+        // Constructed here (the lease block owns every authority input); its
+        // observation rides the coordinator's lease pull tick via the
+        // onLeasePullTick hook wired at coordinator construction. Ships
+        // HARD-DARK (enabled:false + dryRun:true — DARK_GATE_EXCLUSIONS).
+        {
+          const { LeaseHandbackReconciler, DEFAULT_LEASE_HANDBACK_CONFIG, HANDBACK_CONSENT_TTL_MS } = await import('../core/LeaseHandbackReconciler.js');
+          void HANDBACK_CONSENT_TTL_MS;
+          const { readHandbackLatchUntilMs } = await import('../core/handbackLatch.js');
+          const { ropeReachableOnAnyRope } = await import('../core/ropeHealth.js');
+          const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+          const hbCfgRead = () => {
+            const c = config.multiMachine?.leaseSelfHeal?.preferredCaptainHandback ?? {};
+            return {
+              enabled: c.enabled === true,
+              dryRun: c.dryRun !== false,
+              healthWindowMs: c.healthWindowMs ?? DEFAULT_LEASE_HANDBACK_CONFIG.healthWindowMs,
+              deferralCeilingMs: c.deferralCeilingMs ?? DEFAULT_LEASE_HANDBACK_CONFIG.deferralCeilingMs,
+              operatorLatchMs: c.operatorLatchMs ?? DEFAULT_LEASE_HANDBACK_CONFIG.operatorLatchMs,
+              maxPerWindow: c.maxPerWindow ?? DEFAULT_LEASE_HANDBACK_CONFIG.maxPerWindow,
+              windowMs: c.windowMs ?? DEFAULT_LEASE_HANDBACK_CONFIG.windowMs,
+            };
+          };
+          _leaseHandbackReconciler = new LeaseHandbackReconciler({
+            config: hbCfgRead,
+            selfMachineId: () => selfMachineId,
+            // F4's ONE authority — the SAME config field shouldDeferToPreferred
+            // reads (multiMachine.leaseSelfHeal.preferredAwakeMachineId).
+            preferredAwakeMachineId: () => config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null,
+            holdsLease: () => coordinator.holdsLease(),
+            currentEpoch: () => leaseCoordinator.currentEpoch(),
+            preferredHealth: (machineId) => {
+              const cap = (() => {
+                try { return machinePoolRegistry?.getCapacities().find((c) => c.machineId === machineId); } catch { return undefined; /* @silent-fallback-ok — no pool view reads as not-healthy → defer (the safe direction) */ }
+              })();
+              return {
+                heartbeatFresh: cap?.online === true,
+                // U4.3 rope-health snapshot seam (R-r2-7): absent record/provider
+                // reads NOT-healthy → defer. U4.3 registers the real provider.
+                ropeReachable: ropeReachableOnAnyRope(machineId),
+                leaseEligible: !!cap,
+                quotaOk: cap?.quotaState?.blocked !== true,
+              };
+            },
+            cleanBoundary: () => {
+              const counts = (() => {
+                try { return _inboundQueue?.snapshot().counts; } catch { return undefined; /* @silent-fallback-ok — an unreadable queue reads as quiet=false via queuedInbound 1 below */ }
+              })();
+              const queuedInbound = counts ? (counts.queued ?? 0) + (counts.claimed ?? 0) : 0;
+              let msSinceLastIngress: number | null = null;
+              try {
+                const st = fs.statSync(path.join(config.stateDir, 'state', 'serve-progress.json'));
+                msSinceLastIngress = Date.now() - st.mtimeMs;
+              } catch { msSinceLastIngress = null; /* @silent-fallback-ok — no serve-progress signal = no recent-ingress evidence; the other two boundary signals still gate */ }
+              return {
+                inFlightForwards: (currentInboundByTopic?.size ?? 0) > 0,
+                queuedInbound,
+                msSinceLastIngress,
+              };
+            },
+            kickInboundDrain: () => {
+              // One event-triggered drain pass (the existing durable inbound-queue
+              // semantics). The step-down stays deferred until counts read 0.
+              try { void _inboundQueue?.onMachineOnline(); } catch { /* @silent-fallback-ok — drain kick is best-effort; the boundary re-checks next tick */ }
+            },
+            splitBrainActive: () => {
+              try { return coordinator.getSyncStatus().splitBrainState !== 'clear'; } catch { return true; /* @silent-fallback-ok — an unreadable sync status reads as split-brain-active → suppress (the safe direction) */ }
+            },
+            churnLatched: () => coordinator.churnBreakerLatched(),
+            // Hand-backs COUNT as flips: the step-down role transition feeds the
+            // breaker via the coordinator's reconcileRoleToLease recordFlip path
+            // (a second explicit record here would double-count one hand-back).
+            recordChurnFlip: () => { /* counted structurally by the role transition */ },
+            operatorLatchUntilMs: () => readHandbackLatchUntilMs(config.stateDir),
+            mintConsentToken: (target, ttlMs) => leaseCoordinator.mintHandbackConsent(target, ttlMs),
+            sendOffer: async (target, offer) => {
+              if (!_handbackSendOffer) return 'timeout';
+              return _handbackSendOffer(target, offer);
+            },
+            metric: (event) => {
+              try {
+                getFeatureMetricsRecorder()?.record({ feature: 'lease-handback', kind: 'event', outcome: event === 'failure' ? 'error' : 'fired', verdictId: event });
+              } catch { /* metrics never gate */ }
+            },
+            notify: (key, title, body) => {
+              try { _meshAttentionRaise?.({ id: key, title, body, priority: 'medium', sourceContext: 'lease-handback' }); } catch { /* notice is best-effort */ }
+            },
+            logger: (m) => console.log(pc.dim(`  ${m}`)),
+          });
+          // The /pool/lease-handback route surface (status + the R-r2-5 operator
+          // latch levers). latchWrite is the flip-action's POST step — the
+          // configured operatorLatchMs is the TTL (default 24h).
+          const { writeHandbackLatch, clearHandbackLatch, readHandbackLatchRecord } = await import('../core/handbackLatch.js');
+          _leaseHandbackCtx = {
+            status: () => _leaseHandbackReconciler!.status(),
+            latchWrite: (reason?: string) => writeHandbackLatch(config.stateDir, hbCfgRead().operatorLatchMs, reason),
+            latchClear: () => clearHandbackLatch(config.stateDir),
+            latchRecord: () => readHandbackLatchRecord(config.stateDir),
+          };
+        }
         // G3 — lease-gated spawn: wire the "do I hold the lease?" accessor so the
         // spawn gate can fire. Setting this non-null also flips the gate out of its
         // single-machine no-op (it now consults the real lease). The flag accessor
@@ -16012,11 +16293,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         // WS1.3: pin-conflict do-not-act — a pin naming THIS machine while the
         // owner is elsewhere means the reconciler is bringing the topic back;
         // the closeout holds instead of attacking the session the pin wants here.
+        // U4.2 §2.3 exception: a pin SUSPENDED by a live stale-owner claim
+        // annotation is NOT being brought back (effectivePins excludes it), so
+        // it must not veto the returned owner's teardown — the same comparison
+        // authority the reconciler uses (claimSuspensionExcludesPin). Feature
+        // dark ⇒ the suspension view is empty ⇒ byte-identical veto behavior.
         topicPinnedHere: (topicId) => {
           try {
             const self = _meshSelfId;
             const pin = _topicPinStore?.get(String(topicId));
-            return !!self && !!pin && pin.pinned && pin.preferredMachine === self;
+            if (!self || !pin || !pin.pinned || pin.preferredMachine !== self) return false;
+            const suspension = _sorClaimSuspensionsRead?.().get(Number(topicId));
+            if (suspension) {
+              const pinHlc = pin.hlc ?? { physical: Date.parse(pin.updatedAt) || 0, logical: 0, node: self };
+              if (claimSuspensionExcludesPin(pinHlc, suspension)) return false;
+            }
+            return true;
           } catch { return false; /* @silent-fallback-ok — no pin signal → hold not applied, closeout behaves as before */ }
         },
         // WS1.2 P19 breaker escalation: ONE deduped attention item when the
@@ -17198,6 +17490,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { mergeUnionToPins, compareHlc, TOPIC_PIN_RECORD_KIND } = await import('../core/TopicPinReplicatedStore.js');
           const { CoherenceJournalReader: PinAdvReader } = await import('../core/CoherenceJournalReader.js');
           const pinAdvisoryReader = new PinAdvReader({ stateDir: config.stateDir });
+          const { mergeUnionToClaimAnnotations, TOPIC_CLAIM_ANNOTATION_KIND, TOPIC_CLAIM_ANNOTATION_STORE_KEY, buildClaimAnnotationPut, deriveClaimAnnotationRecordKey } = await import('../core/TopicClaimAnnotationStore.js');
           const reconciler = new OwnershipReconciler({
             // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
             // read ws13Reconcile through resolveDevAgentGate so the reconcile loop
@@ -17230,13 +17523,31 @@ export async function startServer(options: StartOptions): Promise<void> {
             ownership: ownReg,
             machines: () => {
               try {
+                // U4.2 R-r2-5a (named prerequisite fix): Case C's staleness feed is the
+                // ROUTER/OBSERVER-stamped arrival time (routerReceivedAt), NEVER the
+                // machine's self-reported wall clock — MachinePoolRegistry's own §L2
+                // header forbids the self-reported input ("a fast-clocked machine must
+                // not appear fresher than it is").
                 return (machinePoolRegistry?.getCapacities() ?? []).map((c) => ({
                   machineId: c.machineId,
                   online: !!c.online,
-                  lastSeenMs: c.selfReportedLastSeen ? Date.parse(c.selfReportedLastSeen) || 0 : 0,
+                  lastSeenMs: c.routerReceivedAt ? Date.parse(c.routerReceivedAt) || 0 : 0,
                 }));
               } catch { return []; /* @silent-fallback-ok — no pool view → module's single-machine strict no-op */ }
             },
+            staleOwnerEngine: () => _staleOwnerEngine,
+            claimSuspensions: (_sorClaimSuspensionsRead = () => {
+              try {
+                if (!_staleOwnerEngine?.isActive()) return new Map();
+                const res = pinAdvisoryReader.query({ kind: TOPIC_CLAIM_ANNOTATION_KIND, limit: 2000 });
+                const merged = mergeUnionToClaimAnnotations(
+                  res.entries.map((e) => ({ data: e.data, origin: typeof e.data.origin === 'string' ? e.data.origin : '' })),
+                );
+                const out = new Map<number, { suspended: boolean; hlc: import('../core/HybridLogicalClock.js').HlcTimestamp }>();
+                for (const [topic, a] of merged) out.set(topic, { suspended: a.suspended, hlc: a.hlc });
+                return out;
+              } catch { return new Map(); /* @silent-fallback-ok — an unreadable annotation view reads as no suspensions this tick; the next tick retries */ }
+            }),
             isTopicBusy: (sessionKey) => {
               try {
                 // Conservative safe-point signal: an inbound for this topic is
@@ -17271,6 +17582,115 @@ export async function startServer(options: StartOptions): Promise<void> {
             logger: (m) => console.log(pc.dim(`  ${m}`)),
           });
           _ownershipReconciler = reconciler; // hoist for the /pool/reconciler readout
+
+          // ── U4.2 stale-owner release engine (docs/specs/u4-2-stale-owner-release.md) ──
+          // Case C's evidence upgrade, invoked FROM reconciler.tick() (one actor;
+          // claims funnel through reconciler.actStaleOwnerForceClaim). Dev-gate:
+          // dev-live-in-dryRun / dark fleet; subordinate to sessionPool live AND
+          // ≥2 machines (the engine's own gates).
+          {
+            const { StaleOwnerReleaseEngine, DEFAULT_STALE_OWNER_RELEASE_CONFIG } = await import('../core/StaleOwnerReleaseEngine.js');
+            const { MachineHeartbeat: SorHeartbeatReader } = await import('../core/MachineHeartbeat.js');
+            const sorHeartbeatReader = new SorHeartbeatReader({ stateDir: config.stateDir, machineId: 'stale-owner-release-reader' });
+            const sorCfgRead = () => {
+              const c = config.multiMachine?.sessionPool?.staleOwnerRelease ?? {};
+              const poolLive =
+                config.multiMachine?.sessionPool?.enabled === true &&
+                (config.multiMachine?.sessionPool?.stage ?? 'dark') !== 'dark';
+              return {
+                enabled: resolveDevAgentGate(c.enabled, config) && poolLive,
+                dryRun: c.dryRun !== false,
+                deathEvidenceMs: c.deathEvidenceMs ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.deathEvidenceMs,
+                probeTimeoutMs: c.probeTimeoutMs ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.probeTimeoutMs,
+                ambiguityCeilingMultiple: c.ambiguityCeilingMultiple ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.ambiguityCeilingMultiple,
+                maxClaimsPerTick: c.maxClaimsPerTick ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.maxClaimsPerTick,
+                bootstrapNonObservationMultiple: c.bootstrapNonObservationMultiple ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.bootstrapNonObservationMultiple,
+                selfFenceTtlMs: c.selfFenceTtlMs ?? DEFAULT_STALE_OWNER_RELEASE_CONFIG.selfFenceTtlMs,
+              };
+            };
+            const sorMachines = () => {
+              try {
+                return (machinePoolRegistry?.getCapacities() ?? []).map((c) => ({
+                  machineId: c.machineId,
+                  online: !!c.online,
+                  // R-r2-5a: OBSERVER-stamped arrival time, never self-reported.
+                  observerLastSeenMs: c.routerReceivedAt ? Date.parse(c.routerReceivedAt) || 0 : 0,
+                }));
+              } catch { return []; /* @silent-fallback-ok — no pool view → the engine's single-machine strict no-op */ }
+            };
+            const sorReadAnnotations = () => {
+              const res = pinAdvisoryReader.query({ kind: TOPIC_CLAIM_ANNOTATION_KIND, limit: 2000 });
+              return mergeUnionToClaimAnnotations(
+                res.entries.map((e) => ({ data: e.data, origin: typeof e.data.origin === 'string' ? e.data.origin : '' })),
+              );
+            };
+            const sorTracePath = path.join(config.stateDir, '..', 'logs', 'stale-owner-release.jsonl');
+            _staleOwnerEngine = new StaleOwnerReleaseEngine({
+              enabled: () => sorCfgRead().enabled,
+              dryRun: () => sorCfgRead().dryRun,
+              config: sorCfgRead,
+              selfMachineId: () => _meshSelfId,
+              machines: sorMachines,
+              holdsLease: () => {
+                try { return coordinator.holdsLease(); } catch { return false; /* @silent-fallback-ok — an unreadable lease reads as not-holder → the claim arbiter refuses (fail closed) */ }
+              },
+              listOwnershipRecords: () => {
+                try { return ownReg.all(); } catch { return []; /* @silent-fallback-ok — no records → nothing to evaluate this tick */ }
+              },
+              durableLastKnownHeartbeatMs: (machineId) => {
+                try {
+                  const rec = sorHeartbeatReader.read(machineId);
+                  const t = rec ? Date.parse(rec.lastHeartbeatAt) : NaN;
+                  return Number.isFinite(t) ? t : null;
+                } catch { return null; /* @silent-fallback-ok — no durable heartbeat = null; the bootstrap rule treats it as its tie-breaker's long-dead arm */ }
+              },
+              advertSet: (machineId) => (_staleOwnerAdvertSet ? _staleOwnerAdvertSet(machineId) : { endpoints: [], fresh: false }),
+              probeEndpoint: (machineId, endpoint, timeoutMs) =>
+                _staleOwnerProbeEndpoint ? _staleOwnerProbeEndpoint(machineId, endpoint, timeoutMs) : Promise.resolve(false),
+              selfConnectivityProof: () => (_staleOwnerSelfProof ? _staleOwnerSelfProof() : Promise.resolve(false)),
+              hasDurableLeaseAuthority: () => (_hasDurableLeaseAuthority ? _hasDurableLeaseAuthority() : false),
+              evidenceMirror: () => ({
+                lastSyncOkMs: _journalSyncLastOkMs,
+                lastOwnerSideEffectMs: (machineId) => {
+                  try {
+                    let newest: number | null = null;
+                    for (const kind of ['topic-placement', 'session-lifecycle'] as const) {
+                      const res = pinAdvisoryReader.query({ kind, machine: machineId, limit: 1 });
+                      const st = res.streams[machineId];
+                      const t = st?.lastTs ? Date.parse(st.lastTs) : NaN;
+                      if (Number.isFinite(t)) newest = newest === null ? t : Math.max(newest, t);
+                    }
+                    return newest;
+                  } catch { return null; /* @silent-fallback-ok — an unreadable mirror yields null; combined with the sync-freshness gate this stays fail-closed */ }
+                },
+              }),
+              claimAnnotations: () => {
+                try { return sorReadAnnotations(); } catch { return new Map(); /* @silent-fallback-ok — an unreadable annotation view reads as empty budgets; claims still capped per tick */ }
+              },
+              actForceClaim: (sessionKey, episodeId) => reconciler.actStaleOwnerForceClaim(sessionKey, episodeId),
+              emitClaimAnnotation: (input) => {
+                const recordKey = deriveClaimAnnotationRecordKey(input.topic, input.episodeId);
+                if (!recordKey || !replicatedRecordEmitter) return;
+                replicatedRecordEmitter.emit(TOPIC_CLAIM_ANNOTATION_STORE_KEY, recordKey, buildClaimAnnotationPut(input));
+              },
+              pullWorkingSet: (topic) => {
+                try { workingSetPullCoordinator?.onTopicAccepted(topic); } catch { /* @silent-fallback-ok — the carrier queues durably; a failed kick is retried by its own sweep */ }
+              },
+              onClaimed: (topic, episodeId, prevOwner) => {
+                console.log(pc.yellow(`  [StaleOwnerRelease] claimed topic ${topic} from ${prevOwner} (episode ${episodeId}) — resume rides the paced queue`));
+              },
+              trace: (entry) => {
+                try {
+                  fs.mkdirSync(path.dirname(sorTracePath), { recursive: true });
+                  fs.appendFileSync(sorTracePath, JSON.stringify(entry) + '\n');
+                } catch { /* trace is observability — never gates a verdict */ }
+              },
+              raiseAttention: (item) => {
+                try { _meshAttentionRaise?.(item); } catch { /* attention raise is best-effort; the trace already recorded the escalation */ }
+              },
+              logger: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+          }
           const tickMs = Math.max(5000, ws13Cfg().ws13TickMs ?? 30000);
           const ws13Timer = setInterval(() => {
             try {
@@ -18113,6 +18533,66 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ...outcome,
               };
             },
+            // U4.4 — handback-offer (PREFERRED-CAPTAIN side). RBAC already proved
+            // the SENDER is the current lease holder; the LOAD-BEARING authority is
+            // the holder-signed consent token presented at acquire time (the
+            // handbackOpts branch — fail-closed on expiry/replay/reuse). Typed
+            // declines; on 'accept' the claim + delivery-canary run async
+            // (claim-before-release: the holder keeps holding until the higher
+            // epoch lands; a silent claim changes nothing).
+            'handback-offer': async (cmd, sender) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'handback-offer' };
+              const { decideHandbackOffer } = await import('../core/LeaseHandbackReconciler.js');
+              const { getFeatureMetricsRecorder: hbMetrics } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+              const hb = config.multiMachine?.leaseSelfHeal?.preferredCaptainHandback ?? {};
+              const token = c.consentToken;
+              const tokenKey = `${token?.holder ?? ''}:${token?.nonce ?? ''}`;
+              const decision = decideHandbackOffer({
+                // Receiving-side authority gate: accepting moves REAL serving
+                // authority, so dry-run also declines (the graduated ladder).
+                enabled: hb.enabled === true && hb.dryRun === false,
+                selfMachineId: meshSelfId,
+                preferredAwakeMachineId: config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null,
+                churnLatched: coordinator?.churnBreakerLatched() ?? false,
+                quotaBlocked: machinePoolRegistry?.getCapacity(meshSelfId)?.quotaState?.blocked === true,
+                tokenAlreadyUsed: _handbackSeenTokens.has(tokenKey),
+              });
+              if (decision === 'accept') {
+                _handbackSeenTokens.add(tokenKey);
+                if (_handbackSeenTokens.size > 512) _handbackSeenTokens.clear(); // bounded; token TTL is 60s
+                void (async () => {
+                  try {
+                    const res = await coordinator.acquireLeaseOnHandbackConsent(token);
+                    if (!res.ok) {
+                      console.log(pc.yellow(`  [LeaseHandback] consent claim did not land (${res.reason}) — old holder keeps holding`));
+                      return;
+                    }
+                    // Post-hand-back verification (Runtime End-to-End Proof): one
+                    // delivery-canary round-trip through the REAL signed mesh RPC
+                    // back to the OLD holder + a live lease check on this side.
+                    let canaryOk = false;
+                    try {
+                      canaryOk = (await _handbackCanary?.(sender)) === true;
+                    } catch { canaryOk = false; /* @silent-fallback-ok — a canary fault IS a canary failure; escalated loudly below, never silent */ }
+                    try {
+                      hbMetrics()?.record({ feature: 'lease-handback', kind: 'event', outcome: canaryOk ? 'fired' : 'error', verdictId: canaryOk ? 'canary-verify-ok' : 'canary-verify-fail' });
+                    } catch { /* metrics never gate */ }
+                    if (!canaryOk) {
+                      _meshAttentionRaise?.({
+                        id: `lease-handback-canary:${Date.now()}`,
+                        title: 'Lease hand-back completed but the delivery canary FAILED',
+                        body: `This machine claimed the serving lease back from ${sender} but could not verify an end-to-end mesh round-trip afterward. Ingress may be degraded — check /pool and the mesh ropes.`,
+                        priority: 'high',
+                        sourceContext: 'lease-handback',
+                      });
+                    }
+                  } catch (err) {
+                    console.log(pc.yellow(`  [LeaseHandback] consent claim error: ${err instanceof Error ? err.message : String(err)}`));
+                  }
+                })();
+              }
+              return { response: decision };
+            },
             'secret-share': (cmd, sender) =>
               _secretShareHandler
                 ? _secretShareHandler.handle(cmd as { type: 'secret-share'; encrypted: string }, sender)
@@ -18215,6 +18695,43 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerUrl = (machineId: string): string | null =>
             meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
           _meshSelfId = meshSelfId;
+          // U4.4 — the offer transport (HOLDER side) + the post-hand-back delivery
+          // canary (PREFERRED side), both over the signed mesh RPC.
+          _handbackSendOffer = async (target, offer) => {
+            const url = peerUrl(target);
+            if (!url) return 'timeout';
+            try {
+              const res = await meshClient.send(
+                { machineId: target, url },
+                { type: 'handback-offer', proposedEpoch: offer.proposedEpoch, consentToken: offer.consentToken, expiresAt: offer.expiresAt },
+                0,
+                { timeoutMs: 15_000 },
+              );
+              if (res.ok) {
+                const r = (res.result ?? {}) as { response?: string };
+                if (r.response === 'accept') return 'accept';
+                if (r.response === 'declined:churn-latched' || r.response === 'declined:quota' || r.response === 'declined:legacy-peer') return r.response;
+                return 'declined:other';
+              }
+              // Version skew (R-r2-2): 403 handback-offer-unauthorized / 501
+              // no-handler ⇒ peer-cannot-hand-back → the sender stops re-offering
+              // for the episode (degrade to today's sticky behavior).
+              if (res.reason === 'no-handler' || res.reason === 'handback-offer-unauthorized') return 'declined:legacy-peer';
+              return 'declined:other';
+            } catch {
+              return 'timeout'; /* @silent-fallback-ok — a transport fault reads as timeout: the holder KEEPS HOLDING (claim-before-release, the safe direction) */
+            }
+          };
+          _handbackCanary = async (oldHolder) => {
+            // One identity-authenticated round-trip through the REAL mesh RPC to
+            // the old holder, plus a live lease check on THIS side — proves the
+            // new holder's mesh path is genuinely serving after the hand-back.
+            if (!(coordinator?.holdsLease() ?? false)) return false;
+            const url = peerUrl(oldHolder);
+            if (!url) return false;
+            const res = await meshClient.send({ machineId: oldHolder, url }, { type: 'session-status' }, 0, { timeoutMs: 10_000 });
+            return res.ok === true;
+          };
           // WS5.2 R4a — operator/issuer leg: deliver an R4a-signed account-follow-me mandate to a
           // REMOTE target over the signed mesh `account-follow-me-mandate-deliver` verb. Every
           // failure shape maps to an explicit outcome the issue-for-machine route surfaces honestly
@@ -19221,6 +19738,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                         { type: 'journal-sync', request: { machineId, kind, fromSeq } },
                         0,
                       );
+                      if (res.ok) _journalSyncLastOkMs = Date.now(); // U4.2 evidence-5 mirror freshness (an empty delta is still a successful sync)
                       if (res.ok && res.result && typeof res.result === 'object' && 'batch' in (res.result as object)) {
                         const b = (res.result as { batch?: unknown }).batch;
                         if (Array.isArray(b) && b.length > 0) {
@@ -19709,6 +20227,22 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Lease-holder is the sole actor; single-machine = strict no-op. GET /guards.
     // Wired here (late) because it depends on machinePoolRegistry +
     // sessionOwnershipRegistry + _meshSelfId, all assigned during pool boot.
+    // U4.2 / U4.4 shared attention seam — episode-keyed, deduped by the
+    // attention store; created topics ride the existing flood budgets.
+    _meshAttentionRaise = (item) => {
+      if (!telegram) return;
+      void telegram.createAttentionItem({
+        id: item.id,
+        title: item.title,
+        summary: item.title,
+        description: item.body,
+        category: 'agent-health',
+        priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+        sourceContext: item.sourceContext,
+        lane: 'agent-health',
+        healthKey: item.id,
+      });
+    };
     const _strandedEnabled = resolveDevAgentGate(config.monitoring?.strandedTopicSentinel?.enabled, config);
     if (_strandedEnabled && machinePoolRegistry && sessionOwnershipRegistry) {
       try {
@@ -19738,6 +20272,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             },
             nicknameOf: _nickById,
+            // U4.2 R-r2-1: the DETECTION + ESCALATION path is hosted on ANY
+            // quorum member when stale-owner release is active — a
+            // no-lease-holder mesh still reaches the operator. The CLAIM stays
+            // lease-holder-only (OwnershipReconciler).
+            escalationQuorumHosted: () => _staleOwnerEngine?.isActive() === true,
             now: () => Date.now(),
           },
           { ...config.monitoring?.strandedTopicSentinel, enabled: _strandedEnabled },
@@ -19853,7 +20392,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       ropeHealthMonitor = null;
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

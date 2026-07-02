@@ -331,6 +331,13 @@ describe('lint-dev-agent-dark-gate', () => {
     // `intelligence.spawnCap.interactivePriority` block (NO `enabled` literal — rides
     // the dev-gate, NO new attributed path), shifting every key below it DOWN by +6.
     // RE-VERIFIED via the attributor.
+    // REBASE onto JKHeadley/main @ v1.3.711 (U4.3+U4.5 #1323 + tone-gate #1325):
+    // main inserted monitoring.ropeHealth (+14, OMITS enabled — dev-gated) near the
+    // top and multiMachine.meshTransport.ropeRecoveryProbe (~25 lines, OMITS enabled
+    // — dev-gated) above sessionPool. NEITHER adds an attributed path; they shift
+    // every `enabled: false` line below them. Every key below RE-VERIFIED via the
+    // attributor against the MERGED ConfigDefaults (25 entries, each a real
+    // `enabled: false,` line).
     const EXPECTED: Record<string, string> = {
       // autonomous-progress-heartbeat (AutonomousProgressHeartbeat): a new
       // monitoring.autonomousProgressHeartbeat ConfigDefaults block (+13 lines)
@@ -353,16 +360,6 @@ describe('lint-dev-agent-dark-gate', () => {
       // key below it DOWN by +14. RE-VERIFIED by hand via the attributor on the edited
       // ConfigDefaults (each key maps to a real `enabled: false,` line). Flag SET
       // unchanged (still 22).
-      // U4.3 + U4.5 (u4-rope-probe-alerts, 2026-07-02): TWO new dev-gated blocks,
-      // NEITHER carrying an `enabled:` literal (both OMIT it so resolveDevAgentGate
-      // decides — registered in DEV_GATED_FEATURES as ropeRecoveryProbe +
-      // ropeHealthAlerts). (1) monitoring.ropeHealth (+14 lines incl. comment,
-      // inserted after autonomousHeartbeat) shifts EVERY `enabled:` line below it
-      // DOWN by +14. (2) multiMachine.meshTransport gained the flat recoveryProbe*
-      // knobs (+11 lines, inside the meshTransport block ABOVE sessionPool),
-      // shifting sessionPool-onward lines a FURTHER +11 (total +25 there). The
-      // attributed path SET is UNCHANGED. Every line below RE-VERIFIED by hand via
-      // the attributor on the edited ConfigDefaults.
       '236': 'monitoring.sessionReaper.enabled',
       '294': 'monitoring.agentWorktreeReaper.enabled',
       // REBASE onto current main (incl. operator-auth-request #1138 authorizationRequests +
@@ -416,6 +413,18 @@ describe('lint-dev-agent-dark-gate', () => {
       // inserted ABOVE sessionPool — together shifting every sessionPool-onward
       // `enabled: false` line by +24 (956→980, 981→1005). RE-VERIFIED via the attributor.
       '877': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      // U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md §5, R-r2-4): a NEW
+      // multiMachine.leaseSelfHeal.preferredCaptainHandback block with an EXPLICIT
+      // `enabled: false` (+ dryRun:true + 5 tunables, ~16 lines incl. comment) was
+      // inserted right after soloCaptainHold. UNLIKE the dev-gated features it ships
+      // HARD-DARK (action-bearing lease authority — DARK_GATE_EXCLUSIONS, matching its
+      // F2/F3/L3 siblings), so its `enabled: false` literal IS attributed here (873)
+      // and every key below the leaseSelfHeal block shifts DOWN by +16. U4.2
+      // staleOwnerRelease (same PR) appends a sessionPool block that OMITS `enabled`
+      // (dev-gated — DEV_GATED_FEATURES) so it adds NO attributed path, only a +19
+      // shift below the sessionPool block. RE-VERIFIED via the attributor on the
+      // edited ConfigDefaults (each maps to a real `enabled: false,` line).
+      '887': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -469,10 +478,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // `enabled` (dev-gated via resolveDevAgentGate), so NO new attributed path; it
       // only shifts every sessionPool-onward `enabled: false` line DOWN by +7.
       // RE-VERIFIED via the attributor on the edited ConfigDefaults (uniform +7).
-      '1108': 'multiMachine.sessionPool.enabled',
-      '1134': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1144': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1173': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1124': 'multiMachine.sessionPool.enabled',
+      '1150': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1160': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1189': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -515,7 +524,13 @@ describe('lint-dev-agent-dark-gate', () => {
       // so it introduces NO new attributed path — it ONLY shifts every `enabled: false`
       // key below it DOWN by +9. RE-VERIFIED by hand via the attributor on the edited
       // ConfigDefaults (each still maps to a real `enabled: false,` line).
-      '1342': 'multiMachine.stateSync.threadlinePairing.enabled',
+      // REBASE onto JKHeadley/main after #1324 (scope-accretion): main's
+      // completionDiscipline.scopeAccretion block (+19, `enabled: true` — not an
+      // attributed dark-gate literal) sits between stateSync and cartographer;
+      // this branch's U4.2/U4.4 blocks shift stateSync/cartographer further.
+      // Every key RE-VERIFIED via the attributor on the rebase-MERGED
+      // ConfigDefaults (each maps to a real `enabled: false,` line).
+      '1377': 'multiMachine.stateSync.threadlinePairing.enabled',
       // autonomous-scope-accretion-completion §4: a NEW
       // autonomousSessions.completionDiscipline.scopeAccretion block (`enabled: true`
       // + breakerK — default ON, the documented maturation-path exception) plus the
@@ -527,9 +542,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // line-map (1464→1483, 1509→1528, 1534→1553). RE-VERIFIED via the attributor
       // on the rebase-MERGED ConfigDefaults (each still maps to a real
       // `enabled: false,` line).
-      '1483': 'cartographer.freshnessSweep.enabled',
-      '1528': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1553': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1518': 'cartographer.freshnessSweep.enabled',
+      '1563': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1588': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

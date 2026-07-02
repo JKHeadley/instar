@@ -312,6 +312,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Signal-only local recorder + ONE deduped attention item; reads git status/diff + lsof read-only; no egress, no spend, no destructive action. The optional preservation is a NON-destructive patch write (git diff → a state-dir file) behind an off-by-default preserveWork sub-flag — it never mutates the worktree, its index, or any ref.',
   },
   {
+    name: 'staleOwnerRelease',
+    configPath: 'multiMachine.sessionPool.staleOwnerRelease.enabled',
+    description:
+      'U4.2 stale-owner release (docs/specs/u4-2-stale-owner-release.md) — the CMT-1786 auto-failover: the serving-lease holder force-claims a provably-dead owner\'s topics behind the §2.2 evidence bar (death + all-transport disproof + quorum + claimant self-proof + side-effect recency), with the replicated topic-claim-annotation carrying budgets/suspensions/refusals across lease movement.',
+    justification:
+      'Ships dryRun:true (the dry-run canary): on a dev agent the evidence pass, probes, decision trace (logs/stale-owner-release.jsonl) and GET /pool/stale-owner-release all run LIVE, but the engine logs would-claims and NEVER lands a force-claim CAS while dryRun holds — zero authority moves; graduation past dry-run is gated on the spec §5 quantified soak (≥5 operator-corroborated would-claims, zero wrong) PLUS the emission-fence + observer-staleness prerequisites. Additionally subordinate to multiMachine.sessionPool being live AND ≥2 registered machines (strict no-op otherwise). Probes are read-only authenticated handshakes to the operator\'s OWN machines — no external egress, no spend, no destructive action while the canary holds. Same dogfooding posture as topicProfiles / credentialRepointing.',
+  },
+  {
     name: 'strandedTopicSentinel',
     configPath: 'monitoring.strandedTopicSentinel.enabled',
     description:
@@ -627,6 +635,12 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     configPath: 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
     category: 'action-bearing',
     reason: 'multi-transport-mesh-comms Layer 3 — when enabled, a preferred stationary captain RETAINS the awake lease (a live authority change) instead of self-suspending when its sole peer is presumed-gone by liveness-silence. Ships hard-dark on EVERY agent because it changes who-is-awake under partition; preferred-awake + liveness gated; MUST be live-verified on the real Mini+Laptop pair (physically sever the peer, then return it at a higher epoch and assert one-tick stand-down) before enablement. Off ⇒ renew() is byte-for-byte the legacy self-fence. Opt-in per agent after soak. Spec: docs/specs/multi-transport-mesh-comms.md.',
+  },
+  {
+    configPath: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+    category: 'action-bearing',
+    reason:
+      'U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md, R-r2-4) — when enabled, the serving lease is HANDED BACK to the F4 preferred captain (a live authority change: claim-before-release via a holder-signed single-use consent token). Ships hard-dark on EVERY agent (dev included) like its F2/F3/L3 siblings because it moves who-is-awake; MUST be live-verified on the real Mini+Laptop pair (fail over, heal, watch the hand-back fire at a clean boundary, canary-verify ingress) before any enablement, then dev-dry-run → dev-live → fleet. dryRun:false is additionally boot-refused unless pollFollowsLease is live (the lease/ingress-split chokepoint). Documented Maturation-Path exception.',
   },
   {
     configPath: 'threadline.a2aCheckIn.enabled',

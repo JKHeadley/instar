@@ -116,6 +116,13 @@ export interface CoordinatorConfig {
    * fleet). Threaded from the server's top-level `config.developmentAgent`.
    */
   developmentAgent?: boolean;
+  /**
+   * U4.4 (lease hand-back) — invoked once per lease PULL tick (~5s), AFTER the
+   * pull folded peer state in. The hand-back reconciler's observation rides
+   * this existing tick (spec: "no new dial loop"); the callback is throw-
+   * guarded so an observer fault can never wedge the pull loop.
+   */
+  onLeasePullTick?: () => void;
 }
 
 export interface CoordinatorEvents {
@@ -1086,6 +1093,31 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * U4.4 — acquire the lease by presenting the holder's signed hand-back
+   * consent token (the `handbackOpts` branch of canAcquire; claim-before-
+   * release). Called by the handback-offer handler on the PREFERRED CAPTAIN.
+   * On success reconciles role → awake; on ANY failure nothing changes (the
+   * holder keeps holding — zero-holder states impossible by construction).
+   */
+  async acquireLeaseOnHandbackConsent(
+    token: import('./FencedLease.js').HandbackConsentToken,
+  ): Promise<{ ok: boolean; reason: string }> {
+    if (!this.leaseCoordinator) return { ok: false, reason: 'no-lease-coordinator' };
+    const res = await this.leaseCoordinator.acquireOnHandbackConsent(token);
+    if (res.ok) this.reconcileRoleToLease('handback-consent');
+    return res;
+  }
+
+  /** U4.4 — is the churn breaker currently latched (breaker wins over hand-back)? */
+  churnBreakerLatched(): boolean {
+    try {
+      return this.getChurnBreaker()?.tick().latched ?? false;
+    } catch {
+      return false; /* @silent-fallback-ok — a breaker read fault reads as not-latched; the hand-back reconciler's other bounds (episode cap, hysteresis) still apply */
+    }
+  }
+
+  /**
    * Drive the lease on each monitor tick: renew if we hold it, else attempt
    * failover acquisition. Reconciles role afterward. Fire-and-forget safe.
    */
@@ -1242,6 +1274,11 @@ export class MultiMachineCoordinator extends EventEmitter {
     try {
       // F1a — bounded await: a hung peer pull can never wedge the pull loop.
       await this.withTickTimeout('pullFromPeers', () => this.leaseCoordinator!.pullFromPeers());
+      // U4.4 — hand-back observation rides this existing pull tick (no new dial
+      // loop). Throw-guarded: an observer fault never wedges the pull loop.
+      try {
+        this.config.onLeasePullTick?.();
+      } catch { /* @silent-fallback-ok — observation is signal-only; the next tick retries */ }
       // Only reconcile role / surface split-brain when a peer lease was actually
       // OBSERVED. A solo machine (no peers, or no peer lease seen this boot) must
       // NEVER be demoted by the pull loop on a transient self-lease lapse — that

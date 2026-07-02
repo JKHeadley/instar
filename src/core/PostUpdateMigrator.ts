@@ -119,6 +119,18 @@ Work an autonomous run ITSELF creates joins its completion bar (spec: autonomous
 - **When to use** (PROACTIVE): user asks "why won't my autonomous run finish?" → read the hold reason (it lists the exact unbuilt paths); "let it defer those specs" → drive the ratification (conversational or PIN route), never edit server state by hand. Every run exit — met, expiry, emergency-stop, hard-blocker — enumerates any unbuilt accreted work; a silent clock-out is structurally closed.\n`;
 }
 
+export function MESH_SELF_HEALING_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mesh Self-Healing: stale-owner release + lease hand-back (U4.2 / U4.4 — ships dark/dry-run)
+
+Two reconcilers keep a multi-machine mesh from drifting into the wrong shape. Both are graduated-rollout features: U4.2 rides the dev-gate in dryRun (would-claims logged, no authority moves), U4.4 ships HARD-DARK (action-bearing) until live-pair verified. Single-machine agents are a strict no-op.
+- **Stale-owner release (U4.2):** when a topic's owner machine is provably dead/dark, the serving-lease holder force-claims its topics behind a fail-closed evidence bar (observer-stamped death evidence + unreachable on EVERY owner-authenticated transport + quorum + claimant self-connectivity proof + side-effect recency over a fresh mirror). Every verdict INCLUDING refusals lands in \`logs/stale-owner-release.jsonl\`; ambiguity past the ceiling raises ONE deduped attention item ("your call: demote or wait") — an operator "no" durably blocks the episode's claims on every machine.
+- **Is auto-failover healthy? / soak telemetry:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/stale-owner-release\` → attempts, would-claims (dry-run), refusals BY REASON, evidence classes, P19 give-ups, probe-breaker state, open episodes (503 when dark).
+- **Lease hand-back (U4.4):** after a failover, the serving lease is handed BACK to the F4 preferred captain (\`preferredAwakeMachineId\`) once it is continuously healthy (10m hysteresis), at a clean boundary, claim-before-release via a holder-signed single-use consent token — a failed claim leaves the holder holding (zero-holder impossible). Status: \`GET /pool/lease-handback\`.
+- **The human always wins:** an operator captain-flip writes the latch (\`POST /pool/lease-handback/latch\`) and the reconciler goes fully inert for 24h — a lease move WITHOUT the marker is just a lease move. Clearing early is PIN-gated (\`DELETE /pool/lease-handback/latch\`); NEVER clear the latch to route around a human decision.
+- **When to use** (PROACTIVE — these are the triggers): user asks "why did my conversation move machines by itself?" → read the claim trace (\`logs/stale-owner-release.jsonl\`) + \`GET /pool/placement?topic=N\` and explain the episode honestly. "why did serving move back to the Mini by itself?" → the hand-back reconciler; \`GET /pool/lease-handback\` names the episode + latch state. "is auto-failover healthy?" → \`GET /pool/stale-owner-release\`.
+`;
+}
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -4308,6 +4320,20 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Playwright Profile Registry section');
     }
 
+    // Mesh Self-Healing (U4.2 stale-owner release + U4.4 lease hand-back —
+    // docs/specs/u4-2-stale-owner-release.md §5 + u4-4-lease-handback.md §5) —
+    // Agent Awareness Standard + Migration Parity item 3: existing agents learn
+    // the two proactive triggers ("why did my conversation move machines by
+    // itself?" → the claim trace + placement; "why did serving move back to the
+    // Mini by itself?" → the hand-back reconciler + latch), the two status
+    // surfaces, and the human-always-wins latch rule. Honestly tagged
+    // dark/dry-run (Maturity Honesty). Content-sniffed on the heading.
+    if (!content.includes('Mesh Self-Healing')) {
+      content += MESH_SELF_HEALING_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mesh Self-Healing (U4.2/U4.4) section');
+    }
+
     // Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — Agent Awareness +
     // Migration Parity: existing agents learn the dark/opt-in load-on-demand
     // capability, the /mcp/* surface, the Know-Your-Principal authorization rule,
@@ -7564,6 +7590,13 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // G1 cold-start lifeline fallback: framework-agnostic server behavior — a
       // Codex/Gemini agent must also be able to explain "why did I get a go-to-
       // lifeline message?" (the standard fires for every framework's sessions).
+      // Mesh Self-Healing (U4.2 stale-owner release + U4.4 lease hand-back):
+      // framework-agnostic HTTP surfaces — a Codex/Gemini agent asked "why did
+      // my conversation move machines by itself?" / "is auto-failover healthy?"
+      // must know the claim trace + GET /pool/stale-owner-release +
+      // GET /pool/lease-handback (and the human-always-wins latch rule) or it
+      // will guess. Mirrored like every agent-facing capability.
+      '### Mesh Self-Healing: stale-owner release + lease hand-back',
       '### Cold-Start Lifeline Fallback',
     ];
 

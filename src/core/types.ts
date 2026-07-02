@@ -2165,6 +2165,31 @@ export interface LeaseSelfHealConfig {
    */
   soloCaptainHold?: { enabled?: boolean };
   /**
+   * U4.4 (docs/specs/u4-4-lease-handback.md) — the reconciler for the F4
+   * preference: after a failover, the serving lease is handed BACK to the
+   * preferred captain once continuously healthy for `healthWindowMs`, at a
+   * clean boundary, claim-before-release via a signed single-use consent
+   * token. ACTION-BEARING lease authority: ships HARD-DARK (`enabled:false` +
+   * `dryRun:true`, DARK_GATE_EXCLUSIONS) like its F2/F3/L3 siblings;
+   * `dryRun:false` additionally REQUIRES pollFollowsLease live (validated at
+   * boot — a lease/ingress split is refused loudly).
+   */
+  preferredCaptainHandback?: {
+    enabled?: boolean;
+    /** Default true — logs would-hand-back without minting/sending offers. */
+    dryRun?: boolean;
+    /** Continuous preferred-captain health required to arm. Default 600000 (10m). */
+    healthWindowMs?: number;
+    /** Continuous deferral before ONE notice + boundary relaxation. Default 7200000 (2h). */
+    deferralCeilingMs?: number;
+    /** Operator-flip latch TTL (written BY the flip action). Default 86400000 (24h). */
+    operatorLatchMs?: number;
+    /** Episode cap (offers + hand-backs) per rolling windowMs. Default 2. */
+    maxPerWindow?: number;
+    /** Episode-cap rolling window. Default 21600000 (6h). */
+    windowMs?: number;
+  };
+  /**
    * F4 — preferred-awake machine (opt-in). null = off (today's behavior). When
    * set, the named (SAS-verified) machine wins ties ONLY while healthy, applied
    * only on cross-machine agreement; disagreement falls back to lower-machineId.
@@ -2659,6 +2684,32 @@ export interface SessionPoolConfig {
   /** Hold-for-stability policy (same spec §4) — trails inboundQueue one
    *  rollout stage behind by operator discipline. */
   holdForStability?: Partial<import('./inboundQueueConfig.js').HoldForStabilityConfig>;
+  /**
+   * U4.2 (docs/specs/u4-2-stale-owner-release.md §5) — the CMT-1786
+   * auto-failover: the serving-lease holder force-claims a provably-dead
+   * owner's topics behind the §2.2 evidence bar. `enabled` DELIBERATELY
+   * OMITTED from ConfigDefaults (developmentAgent gate — dev-live-in-dryRun,
+   * dark fleet; DEV_GATED_FEATURES). Subordinate to sessionPool being live
+   * AND ≥2 registered machines. The §2.3 TTL-ordering invariant
+   * (deathEvidenceMs > selfFenceTtlMs + tick + skew) is validated at startup.
+   */
+  staleOwnerRelease?: {
+    enabled?: boolean;
+    /** Default true — logs would-claims without landing a CAS. */
+    dryRun?: boolean;
+    /** Death-evidence bound (observer monotonic). Default 180000. */
+    deathEvidenceMs?: number;
+    /** Per-endpoint authenticated-probe timeout. Default 8000 (< lease 30s). */
+    probeTimeoutMs?: number;
+    /** Ambiguity escalates after this × deathEvidenceMs. Default 3. */
+    ambiguityCeilingMultiple?: number;
+    /** P19 per-tick claim cap. Default 2. */
+    maxClaimsPerTick?: number;
+    /** Bootstrap (R-r2-2): never-observed-since-boot expiry multiple. Default 3. */
+    bootstrapNonObservationMultiple?: number;
+    /** The owner self-fence TTL the §2.3 ordering invariant checks against. Default 60000. */
+    selfFenceTtlMs?: number;
+  };
   /**
    * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
    * timestamp is outside |now - ts| is rejected `stale-timestamp`. Default 30000.

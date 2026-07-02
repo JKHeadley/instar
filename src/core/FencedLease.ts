@@ -67,6 +67,43 @@ export interface StaleHolderTakeoverOpts {
   nonRenewalThresholdMs: number;
 }
 
+/**
+ * U4.4 (lease hand-back, R-r2-1) — the SIGNED, epoch-bound, TTL-bounded,
+ * SINGLE-USE holder consent token. `canAcquire` returns `held-by-live-peer`
+ * for a live, healthy holder — which is EXACTLY the hand-back state (the
+ * holder is alive and CONSENTING, not stale). The consent token is the
+ * holder's cryptographic authorization for ONE named target to claim at the
+ * next epoch. Minted by the holder (signed with its machine key), bound to
+ * the holder's CURRENT epoch + the offered target + an expiry + a fresh
+ * nonce. Presented at acquire time via `HandbackTakeoverOpts` (the
+ * `handbackOpts` analogue of `StaleHolderTakeoverOpts`).
+ */
+export interface HandbackConsentToken {
+  /** The consenting CURRENT holder (the signer). */
+  holder: string;
+  /** The holder's current epoch the consent is bound to. */
+  epoch: number;
+  /** The ONLY machine this token authorizes to claim. */
+  target: string;
+  /** ISO expiry — a token older than this is dead (TTL-bounded). */
+  expiresAt: string;
+  /** Single-use id, holder-scoped (the acquirer records used nonces). */
+  nonce: number;
+  /** Holder's Ed25519 signature over the canonical form. */
+  signature: string;
+}
+
+/**
+ * U4.4 inputs to `canAcquire`, passed ONLY when a handback-offer delivered a
+ * consent token. FAIL-CLOSED default: absent / invalid / expired / replayed /
+ * reused token ⇒ the legacy `held-by-live-peer` refusal, unchanged.
+ */
+export interface HandbackTakeoverOpts {
+  token: HandbackConsentToken;
+  /** Single-use enforcement: the caller's used-(holder,nonce) check. */
+  alreadyUsed: boolean;
+}
+
 const DEFAULT_CAS_MAX_RETRIES = 5;
 
 export class FencedLease {
@@ -138,6 +175,40 @@ export class FencedLease {
     };
     const signature = this.crypto.sign(FencedLease.canonicalize(base));
     return { ...base, signature };
+  }
+
+  // ── U4.4 hand-back consent token (mint + verify) ──────────────────
+
+  /** Stable, field-ordered serialization of the signable consent fields. The
+   *  leading discriminator prevents cross-protocol confusion with a lease
+   *  record's canonical form (a consent token can never verify as a lease). */
+  static canonicalizeHandbackConsent(
+    t: Pick<HandbackConsentToken, 'holder' | 'epoch' | 'target' | 'expiresAt' | 'nonce'>,
+  ): string {
+    return JSON.stringify(['handback-consent', t.holder, t.epoch, t.target, t.expiresAt, t.nonce]);
+  }
+
+  /** Mint a consent token naming THIS machine as the consenting holder.
+   *  The CALLER (LeaseCoordinator) is responsible for only minting while it
+   *  actually holds the lease at `epoch`. */
+  signHandbackConsent(epoch: number, target: string, expiresAtIso: string, nonce: number): HandbackConsentToken {
+    const base = {
+      holder: this.crypto.selfMachineId,
+      epoch,
+      target,
+      expiresAt: expiresAtIso,
+      nonce,
+    };
+    return { ...base, signature: this.crypto.sign(FencedLease.canonicalizeHandbackConsent(base)) };
+  }
+
+  /** Verify a consent token's signature against its claimed holder's
+   *  REGISTERED key (an unknown/forged holder never verifies). */
+  verifyHandbackConsent(token: HandbackConsentToken): boolean {
+    if (!token || typeof token.holder !== 'string' || typeof token.epoch !== 'number') return false;
+    if (typeof token.target !== 'string' || typeof token.expiresAt !== 'string') return false;
+    if (typeof token.nonce !== 'number' || typeof token.signature !== 'string') return false;
+    return this.crypto.verify(FencedLease.canonicalizeHandbackConsent(token), token.signature, token.holder);
   }
 
   /** Verify a lease's signature against its claimed holder's registered key. */
@@ -236,6 +307,7 @@ export class FencedLease {
     presumedDeadHolders: ReadonlySet<string>,
     nowMs: number,
     staleHolderOpts?: StaleHolderTakeoverOpts,
+    handbackOpts?: HandbackTakeoverOpts,
   ): AcquireDecision {
     if (!currentLease) return { can: true, reason: 'no-current-lease' };
     if (this.isExpired(currentLease, nowMs)) return { can: true, reason: 'current-lease-expired' };
@@ -262,6 +334,34 @@ export class FencedLease {
       ) {
         const stalledS = Math.round((monotonicNowMs - freshObservedMonoMs) / 1000);
         return { can: true, reason: `holder-not-renewing (nonce watermark stalled ${stalledS}s)` };
+      }
+    }
+    // U4.4 (preferredCaptainHandback, R-r2-1) — the consent-authorized
+    // acquisition branch. `held-by-live-peer` is EXACTLY the hand-back state
+    // (the holder is alive and consenting, not stale), so a claim is granted
+    // ONLY when the presented consent token:
+    //   • verifies against the HOLDER's registered key (unforgeable),
+    //   • names THIS machine as the target,
+    //   • matches the LIVE lease's holder AND epoch (epoch-bound — a token
+    //     minted for an older epoch is dead the moment the lease moves),
+    //   • is unexpired (TTL-bounded), and
+    //   • is unused (single-use — the caller's used-nonce check).
+    // FAIL-CLOSED default: absent/invalid/expired/replayed/reused token ⇒ the
+    // legacy `held-by-live-peer` refusal below, byte-for-byte unchanged.
+    if (handbackOpts) {
+      const t = handbackOpts.token;
+      const expMs = Date.parse(t?.expiresAt ?? '');
+      if (
+        !handbackOpts.alreadyUsed &&
+        t &&
+        t.target === this.crypto.selfMachineId &&
+        t.holder === currentLease.holder &&
+        t.epoch === currentLease.epoch &&
+        Number.isFinite(expMs) &&
+        nowMs < expMs &&
+        this.verifyHandbackConsent(t)
+      ) {
+        return { can: true, reason: `handback-consent (from ${t.holder} at epoch ${t.epoch})` };
       }
     }
     return { can: false, reason: `held-by-live-peer (${currentLease.holder})` };
