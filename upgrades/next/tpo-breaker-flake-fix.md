@@ -1,0 +1,12 @@
+<!-- internal-only -->
+# fix(tests): de-flake the §10.4 circuit-breaker tests (wait on the trip's terminal signal)
+
+## What Changed
+
+The five circuit-breaker tests in `tests/unit/TopicProfileOrchestrator.test.ts` synchronized on `parkedFor(...) !== null` — an intermediate state that `parkAndRevert` makes visible before its internal `flushDurably` await yields control. Under CI load, the 10ms poll could observe the park and assert on trip effects (un-park, `breaker-revert` audit, disclosure) that had not executed yet, failing the shard intermittently (twice on PR #1320's CI tonight; reproduced locally on iteration 1 of a 15-run loop). The tests now synchronize on the `breaker-revert` audit — emitted after every other synchronous trip side-effect — via a shared `waitForBreakerTrip(h)` helper. Test-only; no runtime source touched.
+
+## Evidence
+
+- Pre-fix: `tests/unit/TopicProfileOrchestrator.test.ts` failed iteration 1/15 of a local repetition loop with the exact CI assertion (`expected [] to include '7'` at the `unparks` check), matching both CI shard 2/4 failures on PR #1320 (runs 28573712457 and its predecessor).
+- Post-fix: 25 consecutive local runs green under concurrent benchmark load on the same machine.
+- Full unit suite green at push (husky pre-push).
