@@ -9,6 +9,17 @@ lessons-engaged: "P14 (a recurrence is a root cause); P17 (one deduped attention
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; MULTI-MACHINE-SESSION-POOL-SPEC.md"
 project: "self-healing-mesh (topic 29836)"
 depends-on: "TopicPlacementPinStore; TopicPinReplicatedStore (kind topic-pin-record, gates multiMachine.seamlessness.ws13PinReplicate/ws13Reconcile); OwnershipReconciler (WS1.3); PlacementExecutor; HybridLogicalClock (receive()/SkewRejection); CoherenceJournalReader; GET /pool/placement; G3 dark-but-load-bearing guards classification (#1318)"
+review-convergence: "2026-07-02T07:34:23.716Z"
+review-iterations: 5
+review-completed-at: "2026-07-02T07:34:23.716Z"
+review-report: "docs/specs/reports/u4-1-pin-persistence-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 10
+cheap-to-change-tags: 0
+contested-then-cleared: 0
+approved: true
+approved-basis: "Operator preapproval for spec approvals in this session (topic 29836, 2026-07-02): 'Full preapproval granted … spec approvals, server restarts, deployment, and all in-scope reversible decisions.' Recorded transparently, not silently self-granted."
 ---
 
 # U4.1 — Pin Persistence: graduate and harden the WS1.3 pin machinery
