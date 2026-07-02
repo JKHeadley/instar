@@ -9,7 +9,7 @@ lessons-engaged: "AUTONOMOUS-COMPLETION-DISCIPLINE.md (the judge/signal architec
 parent-spec: "docs/specs/AUTONOMOUS-COMPLETION-DISCIPLINE.md"
 project: "self-healing-mesh (topic 29836)"
 eli16-overview: "docs/specs/autonomous-scope-accretion-completion.eli16.md"
-depends-on: "CompletionEvaluator (src/core/CompletionEvaluator.ts — instruction-inert transcript fence; PROMPT_VERSION canary); POST /autonomous/evaluate-completion (src/server/routes.ts — the server-side chokepoint the deterministic core now lives in); autonomous stop hook (.claude/skills/autonomous/hooks/autonomous-stop-hook.sh — CD_JUDGE_TAIL window, CD_MIGHT_BE_DONE gate, cd_record_judge_failure breaker, hard-blocker exit path); parseStopSignals (src/server/routes.ts:~4483 — gains ONE advisory boolean only); Telegram inbound history (per-topic JSONL written by TelegramAdapter — the REAL operator-message store; NOT src/messaging/MessageStore.ts, which is the agent-to-agent store); TopicOperatorStore (verified auto-bound operator per topic); setup-autonomous.sh + the run registration path (where the server-side start snapshot is taken); PostUpdateMigrator upgrade() marker mechanism (REALCHECK_VERIFY precedent); SafeGitExecutor/read-only git plumbing for the Stop-time sweep"
+depends-on: "CompletionEvaluator (src/core/CompletionEvaluator.ts — instruction-inert transcript fence; PROMPT_VERSION canary); POST /autonomous/evaluate-completion (src/server/routes.ts — the server-side chokepoint the deterministic core now lives in); autonomous stop hook (.claude/skills/autonomous/hooks/autonomous-stop-hook.sh — CD_JUDGE_TAIL window, CD_MIGHT_BE_DONE gate, cd_record_judge_failure breaker, hard-blocker exit path); parseStopSignals (src/server/routes.ts:~4483 — gains ONE advisory boolean only); the server's in-process Telegram receive path (TelegramAdapter long-poll — where R45's trigger/confirmation matching runs; NOT src/messaging/MessageStore.ts, the agent-to-agent store, and NOT any on-disk history file); TopicOperatorStore (verified auto-bound operator per topic); setup-autonomous.sh + the run registration path (where the server-side start snapshot is taken); PostUpdateMigrator upgrade() marker mechanism (REALCHECK_VERIFY precedent); SafeGitExecutor/read-only git plumbing for the Stop-time sweep"
 ---
 
 # Autonomous Scope-Accretion Completion Discipline
@@ -84,7 +84,14 @@ snapshot below, persists the server-owned run record
 (`state/autonomous-server/<topicId>.<runId>.json`, written only by the server), and
 returns `{ runId }`; setup writes the runId into the state-file frontmatter so the
 hook can echo it. The body ALSO carries `endAt` (R43 — the duration ceiling, so the
-server can judge expiry without the state file). **Run-record lifecycle (R43,
+server can judge expiry without the state file). **Route authority boundary (R49):**
+`POST /autonomous/register` requires the same Bearer auth as every `/autonomous`
+route (localhost trust plane — the setup path is the intended caller; there is no
+finer ambient caller identity, per the R12 bound). The server CLAMPS `endAt` to
+`now + autonomousSessions.maxDurationMs` (a session cannot register an unbounded
+run), and the declared-deliverables list is operator-visible by construction: it is
+part of the session-setup summary the operator confirms in-topic before the run
+starts — the registration merely records what the operator already saw. **Run-record lifecycle (R43,
 normative):** a record is ACTIVE from registration until it becomes TERMINAL — a
 `met:true` final verdict at the chokepoint marks it terminal; `endAt` passage marks
 it expired; the run-end call (R44) marks it ended. **One registration per active
@@ -131,7 +138,9 @@ escape):
 - **Per root:** committed arm = `git log --branches --not <startSHA>
   --diff-filter=ACR --name-only` (R41 — ALL local branches, not `..HEAD`: round 4
   caught that commit-on-branch-then-switch-back is a normal-workflow escape; local
-  branches only, so fetched peer work is never attributed). **Attribution scope
+  branches only, so fetched peer work is never attributed; and COMMITS are
+  attributed, never branches per se — a pre-existing branch with no post-`startSHA`
+  commits contributes nothing). **Attribution scope
   (R48 — round 5's false-hold refinement):** the all-branches arm applies to the
   run's registered `work_dir` root and to worktrees CREATED in-run (unambiguously
   this run's work); for the SHARED agent-home base root, only `HEAD` +
@@ -320,6 +329,9 @@ Two ratification paths, both terminating in server-owned records:
      `TelegramAdapter.sendToTopic` under the server's own bot credentials (R37 —
      component named): "Ratify deferring these N artifacts? <exact repo-relative
      paths> — reply to this message with yes/approve, or use the dashboard." The
+     message includes the dashboard deep link to the PIN-gated ratify surface (the
+     one-tap path — the conversational reply is the convenience, never the only
+     ergonomic option). The
      enumeration is clamped (50 paths + "and N more"); if chunked by message-size
      limits, the FIRST chunk's message id is the anchor. The send response's message
      id is recorded in the server run record. Enumerations are deduped per
