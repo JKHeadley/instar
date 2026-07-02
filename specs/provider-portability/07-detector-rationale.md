@@ -99,6 +99,14 @@ For each detector, four lines plus a one-line conclusion:
 - **Fallback:** alternative capture via session attach if capture-pane fails.
 - **→ Verdict:** deterministic + light canary (shares process-lifecycle's cadence).
 
+### `adapters/anthropic-headless/control/authCredentialInjection.ts` — credential-validity probe
+
+- **Criticality:** minor-degradation. A wrong verdict surfaces as a loud AuthError, or the credential fails loudly downstream — never silent corruption; the probe is a pre-check convenience, not the authority.
+- **Frequency:** per-enrollment / per-verification event (rare).
+- **Stability:** very-stable — official public Messages-API HTTP status semantics (401/403 for bad credentials), not a scraped surface.
+- **Fallback:** every downstream call with the same credential fails loudly on its own; `mapApiError` classifies non-ok statuses.
+- **→ Verdict:** deterministic, exempt-from-canary (stable public API contract + loud failure path). Probe model config-overridable via `intelligence.pinnedModels.anthropicCredentialProbe` (2026-07-02).
+
 ### `adapters/anthropic-interactive-pool/pool.ts` — waitForReady static idle-marker check
 
 - **Criticality:** moderate (pool boot signal — wrong "ready" hands out an unready session, but the first real prompt against that session will fail loudly).

@@ -3568,6 +3568,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         ...(config.enabledFrameworks ? { enabledFrameworks: config.enabledFrameworks } : {}),
         ...(config.sessions?.claudePath ? { claudePath: config.sessions.claudePath } : {}),
         ...(config.sessions?.tmuxPath ? { tmuxPath: config.sessions.tmuxPath } : {}),
+        // Pinned-callsite override (intelligence.pinnedModels) — absent ⇒ the
+        // adapter's ANTHROPIC_MODELS.haiku default (LLM-ROUTING-REGISTRY risk #7).
+        ...(config.intelligence?.pinnedModels?.anthropicCredentialProbe
+          ? { headless: { credentialProbeModel: config.intelligence.pinnedModels.anthropicCredentialProbe } }
+          : {}),
         pool: {
           poolSize: subscriptionPathConfig?.poolSize ?? 2,
           // One model per pool; 'haiku' default keeps sentinel chatter off
@@ -9739,7 +9744,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         version: startupVersion,
       });
 
-      const dispatchExecutor = new DispatchExecutor(config.projectDir, sessionManager);
+      const dispatchExecutor = new DispatchExecutor(config.projectDir, sessionManager, {
+        // Pinned-callsite override (intelligence.pinnedModels) — absent ⇒ 'haiku'
+        // inline default inside DispatchExecutor (LLM-ROUTING-REGISTRY risk #3).
+        ...(config.intelligence?.pinnedModels?.dispatchAgentic
+          ? { agenticModel: config.intelligence.pinnedModels.dispatchAgentic }
+          : {}),
+      });
       autoDispatcher = new AutoDispatcher(
         dispatches,
         dispatchExecutor,

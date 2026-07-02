@@ -28,17 +28,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Codex model used by setup-wizard and secret-setup micro-sessions when
- * the host framework is codex-cli. Codex CLI's bundled default
- * (gpt-5.2-codex) was retired from ChatGPT-subscription accounts on
- * 2026-04-14 and is API-only since. The wizard targets the subscription
- * path by default, so we pin to a model empirically confirmed-working on
- * ChatGPT auth (see src/providers/adapters/openai-codex/models.ts for
- * the full availability matrix).
- *
- * Exported for the tests-suite canary that asserts this constant is
+ * the host framework is codex-cli. Single source of truth:
+ * setup-wizard/model-constants.ts (env-overridable via
+ * INSTAR_WIZARD_CODEX_MODEL — the wizard runs pre-config, so an env var
+ * is its override surface; LLM-ROUTING-REGISTRY.md risk item #5).
+ * Re-exported for the tests-suite canary that asserts this constant is
  * passed to every codex spawn in setup.ts.
  */
-export const WIZARD_CODEX_MODEL = 'gpt-5.3-codex';
+import { WIZARD_CODEX_MODEL } from './setup-wizard/model-constants.js';
+export { WIZARD_CODEX_MODEL };
 
 import { detectClaudePath, detectCodexPath, detectGeminiPath, detectGhPath, checkFrameworkPrerequisite } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
