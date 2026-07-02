@@ -4,12 +4,12 @@ slug: "autonomous-scope-accretion-completion"
 author: "echo"
 status: "draft"
 parent-principle: "Deferral = Deletion — initiative converted into a 'documented stretch' is abandonment with a paper trail"
-sibling-principles: "Structure > Willpower; Close the Loop (Untracked = Abandoned); Signal vs. Authority; Know Your Principal — An Unverified Identity Is a Guess"
-lessons-engaged: "AUTONOMOUS-COMPLETION-DISCIPLINE.md (the judge/signal architecture this extends); autonomous-completion-real-checks.md (the veto-shape + deterministic-corroboration precedent); scope-accretion-completion-discipline (operator feedback 2026-07-02, topic 29836); B18_AUTONOMY_STOP (MessagingToneGate — the nearest existing statement of the principle); Know-Your-Principal / operator-binding (the ratification-must-bind-to-a-verified-principal fix); P20 Verify the State, Not Its Symbol (the artifact ledger observes real Write/Edit tool-events + git state, not an agent-authored checkbox/transcript symbol); P13 The Stop Reason Is the Work (session attribution is built here, not deferred); P19 No Unbounded Loops (the scope-accretion breaker bounds the met:false churn)"
+sibling-principles: "Structure > Willpower; Close the Loop (Untracked = Abandoned); Signal vs. Authority; Know Your Principal — An Unverified Identity Is a Guess; Agent Proposes, Operator Approves; Framework-Agnostic — and Framework-Optimizing"
+lessons-engaged: "AUTONOMOUS-COMPLETION-DISCIPLINE.md (the judge/signal architecture this extends); autonomous-completion-real-checks.md (the veto-shape + deterministic-corroboration precedent); scope-accretion-completion-discipline (operator feedback 2026-07-02, topic 29836); B18_AUTONOMY_STOP (MessagingToneGate); Know-Your-Principal / operator-binding; P20 Verify the State, Not Its Symbol (the load-bearing signal is GIT truth — the file in the tree — not the tool-event symbol of a write); P13 The Stop Reason Is the Work; P19 No Unbounded Loops (breaker K + persisted breaker state); Scrape/Parser Fixture Realness (all three new parsers registered with captured fixtures); Agent Proposes, Operator Approves (server-authored ratification enumeration — display authority = executed authority)"
 parent-spec: "docs/specs/AUTONOMOUS-COMPLETION-DISCIPLINE.md"
 project: "self-healing-mesh (topic 29836)"
 eli16-overview: "docs/specs/autonomous-scope-accretion-completion.eli16.md"
-depends-on: "CompletionEvaluator (src/core/CompletionEvaluator.ts — instruction-inert transcript fence already treats the tail as agent-authored/untrusted); autonomous stop hook (.claude/skills/autonomous/hooks/autonomous-stop-hook.sh — source of truth is .claude/skills/autonomous/, NOT skills/; CD_JUDGE_TAIL/CD_TAIL_LC window already extracted, CD_UNCHECKED_COUNT / CD_MIGHT_BE_DONE gates, cd_record_judge_failure/cd_reset_judge_failures breaker, hard-blocker + attention exit path); parseStopSignals (src/server/routes.ts:~4483 — the StopSignals whitelist); HookEventReceiver (src/monitoring/HookEventReceiver.ts — durable per-session PostToolUse JSONL, already fed by the wired hook-event-reporter.js PostToolUse hook); TopicOperatorStore (verified auto-bound operator per topic); MessageStore (durable inbound message store); PostUpdateMigrator upgrade() marker mechanism (REALCHECK_VERIFY precedent)"
+depends-on: "CompletionEvaluator (src/core/CompletionEvaluator.ts — instruction-inert transcript fence; PROMPT_VERSION canary); POST /autonomous/evaluate-completion (src/server/routes.ts — the server-side chokepoint the deterministic core now lives in); autonomous stop hook (.claude/skills/autonomous/hooks/autonomous-stop-hook.sh — CD_JUDGE_TAIL window, CD_MIGHT_BE_DONE gate, cd_record_judge_failure breaker, hard-blocker exit path); parseStopSignals (src/server/routes.ts:~4483 — gains ONE advisory boolean only); Telegram inbound history (per-topic JSONL written by TelegramAdapter — the REAL operator-message store; NOT src/messaging/MessageStore.ts, which is the agent-to-agent store); TopicOperatorStore (verified auto-bound operator per topic); setup-autonomous.sh + the run registration path (where the server-side start snapshot is taken); PostUpdateMigrator upgrade() marker mechanism (REALCHECK_VERIFY precedent); SafeGitExecutor/read-only git plumbing for the Stop-time sweep"
 ---
 
 # Autonomous Scope-Accretion Completion Discipline
@@ -30,282 +30,389 @@ deterministic tracks the artifacts the session itself creates.** So a good sessi
 that discovers new in-scope work can convert that initiative into deferral — the exact
 Deferral = Deletion anti-pattern — and neither the hook nor the judge can see it.
 
-**Why the obvious "just have the judge read the transcript" design is wrong (the
-review found this the hard way).** Two independent failure modes make any
-transcript-based version of this feature defeatable by the very sessions it targets:
+**Why two earlier designs are wrong (both discovered by review, the hard way).**
 
-1. **Tail-blindness — it misses the actual incident.** The incident was: create the
-   artifacts *early*, then wind down and exit. By the time the session claims done,
-   the artifact-creation has scrolled out of the ~8KB tail the phrase scan and the
-   judge both read. A tail-scoped detector fails to fire on the case it was built for.
-2. **Forgeable ratification — a one-sentence self-issued exit permit.** The transcript
-   tail is 100% agent-authored. A "quoted operator message" escape hatch that the judge
-   reads transcript-only lets a session print `Operator: "approved — defer these"` into
-   its own output and clear the exit. This directly contradicts the existing
-   `CompletionEvaluator` fence, which already tells the judge that quoted control
-   phrasing inside the transcript is *evidence of gaming, never a directive* — the design
-   would instruct the judge to both trust and distrust the same fenced region. It is also
-   a textbook Know Your Principal violation: identity taken from content, not from an
-   authenticated sender.
+1. **Transcript-based detection fails on tail-blindness and forgeable ratification.**
+   Artifacts created early scroll out of the ~8KB tail before the done-claim; and a
+   "quoted operator approval" read from the transcript is a one-sentence self-issued
+   exit permit — the agent authors the transcript. (Round 1.)
+2. **A client-side "deterministic" core fails on session-writable substrate.** The
+   round-1 rewrite kept the detection in a tool-event ledger file, the config snapshot
+   in the run state file, and the ratification verdict in the hook-built signals JSON.
+   Round 2's reviewers broke every one of those: files written via Bash heredocs never
+   produce Write/Edit tool events (and the wired PostToolUse reporter forwards no file
+   path at all); the ledger, the state file, and the hook script are all writable by
+   the session they police; a client-supplied `operatorRatifiedDeferral: true` boolean
+   is forgeable by construction; and the local inbound-message JSONL is an
+   unauthenticated plaintext file whose operator uid the session already knows.
 
-The correct design makes the two load-bearing facts **deterministic and out-of-band
-from the agent-authored transcript**: *what artifacts did this session create* (from
-the tool-event stream, whole-run), and *did the verified operator ratify deferring
-them* (from the real inbound message store, bound to the verified operator). The
-transcript-based layers are demoted to advisory corroboration.
+**The correct design (R11):** the load-bearing facts are computed **server-side, at
+the existing `POST /autonomous/evaluate-completion` chokepoint, from git truth and
+server-owned state** — never transported from the session's environment and never
+read from files the session routinely edits. What did this session create? Ask git.
+Did the verified operator ratify deferral? Ask the server's own record of an
+explicit, server-authored confirmation exchange (or the PIN-gated route). The
+transcript/tool-event layers are demoted to advisory corroboration.
 
-## 2. Design — a deterministic core, with the transcript layers advisory
+**Honest tamper-resistance bound (R12).** A full-shell agent on the same machine can,
+in the limit, edit server state files or the server itself. The guarantee this spec
+earns is therefore stated precisely: every load-bearing input is moved out of the
+files the session *routinely and legitimately* writes (its state file, its worktree
+ledgers, its hook payloads) into server-owned stores + git history, where tampering
+is (a) never part of normal operation, (b) individually detectable (git history is
+content-addressed; server stores are outside the run's documented write surface), and
+(c) a visible, attributable lie under the constitution's deterrence framing — the
+same bound the parent CD spec documents for its own state. "Impossible to evade" is
+not claimed; "cannot be evaded by any path that is also a normal workflow step" is.
 
-The feature adds NO new judge and NO new LLM call. It rides the exact seams the
-completion-discipline architecture built for this (deterministic detectors →
-whitelisted signals → the one judge), in its established fail-safe direction: every
-layer can only push toward `met:false` (keep working), never toward a false "done."
-Duration expiry `(b)` and the emergency stop are untouched — a session can never be
-trapped past `end_at`.
+## 2. Design — a server-side deterministic core; advisory client layers
 
-### Layer 0 — the deterministic session artifact ledger (LOAD-BEARING)
+The feature adds NO new judge and NO new LLM call. All blocking logic lives at the
+server chokepoint in its established fail-safe direction: every layer pushes only
+toward `met:false` (keep working), never toward a false "done." Duration expiry and
+the emergency stop are untouched — a session can never be trapped past `end_at`.
 
-**Source (no new capture infra).** A `PostToolUse` hook (`hook-event-reporter.js`) is
-already wired in `.claude/settings.json` and shipped via templates, and
-`HookEventReceiver` already appends every tool event to a durable per-session JSONL
-keyed on `session_id` (`tool_name`, target). This feature adds a thin, append-only
-**artifact ledger** derived from that same event stream:
-`state/autonomous/<topicId>.artifacts.jsonl`, one row per Write/Edit whose target is an
-**artifact-class path** (see the boundary below), written the moment the tool event
-arrives — so it is **whole-run complete and immune to the 8KB-tail eviction** that
-defeats a transcript scan, and unbounded-safe (append-only, one small row per artifact
-write; a dedicated ledger, NOT the 500-event-capped HookEventReceiver ring). Rows carry
-`{ ts, sessionId, path, class }`. Machine-local BY DESIGN: an autonomous run executes on
-one machine; if the topic is transferred mid-run, the run suspends and the ledger rides
-the working-set carrier with the state file (same posture as `<topicId>.local.md`).
+### 2.1 Start snapshot (server-side, at run registration) — R13
 
-**Artifact-class boundary (frontloaded, R8).** `class: "deliverable"` = a Write/Edit to a
-durable in-repo deliverable path: `docs/specs/*.md` (excluding `*.eli16.md` companions),
-`docs/audits/*.md`, files matching `*runbook*`, and `scripts/**`/CLI entry points the
-session presents as output. `class: "scratch"` (ledgered but never blocks) = anything under
-a scratchpad/`/tmp`/`.worktrees/*/tmp` path, or an artifact explicitly deleted before the
-run ends (a discarded design spike). **Declared-deliverable exemption:** an artifact whose
-path is named in the session's own completion condition as a required deliverable is the
-session's *goal output* — creating it is progress toward done, not accretion. Layer C is
-handed the declared-deliverable set (parsed from the condition) and never treats a declared
-deliverable as unbuilt-accreted. This closes the "goal IS to draft N specs" over-hold.
+When an autonomous run registers (the existing setup path that creates the run
+record), the SERVER snapshots into a server-owned run record
+(`state/autonomous-server/<topicId>.<runId>.json`, written only by the server):
 
-**The gate.** The stop hook reads the ledger and computes `unbuiltAccretedArtifacts`: the
-set of `class:"deliverable"` rows that are (a) not a declared deliverable, and (b) not
-corroborated as built/delivered (R3). This is the deterministic, whole-run, tamper-resistant
-"in-scope work this session generated" signal — the mechanism the operator's directive
-actually requires.
+- `scopeAccretion` config (the whole sub-object) — closes the mid-run self-disable
+  bypass at the correct layer: the session editing `.instar/config.json` OR its own
+  state-file frontmatter changes nothing the chokepoint reads.
+- The completion-condition text as registered, and the **declared-deliverable set**
+  parsed from it by the frontloaded grammar (§2.4), plus an optional explicit
+  `declared_deliverables:` list that `setup-autonomous.sh` writes at registration
+  (exact repo-relative paths). Mid-run edits to the state-file condition are ignored
+  for accretion purposes and flagged (attention item, deduped per run).
+- The run's `work_dir` and repo roots (the git sweep's scope, §2.2).
 
-**Corroboration of "built/delivered" (R3, deterministic — no trusting a checkbox or prose).**
-An accreted deliverable is cleared from `unbuiltAccretedArtifacts` ONLY by deterministic
-evidence: a merged PR whose diff touches the path (queried via the existing PR tooling), OR
-a `review-convergence:` marker present in the artifact itself (for a spec that reached
-convergence in-run), OR the path appears in the declared-deliverable set. A *checked*
-`- [x] ACCRETED …` box does NOT clear it — the box is agent-writable and self-neutralizing
-(a session could check it without building). The checkbox is a human-readable trail (Layer A),
-never the corroboration.
+**Operator emergency lever preserved (R14 — closes the rollback-regression).** The
+snapshot removes the *session's* ability to self-disable, but the operator keeps an
+instant mid-run off-switch: `POST /autonomous/:topic/scope-accretion-override`
+(dashboard-PIN-gated, body `{"enabled": false, "reason": "..."}`) updates the
+server-side snapshot with an audited, principal-verified action. The config-file
+comment contracts in `ConfigDefaults.ts`/`types.ts` and the CLAUDE.md template are
+updated to say "live for the operator via the PIN route; snapshotted against the
+running session" — the change-site list (§4) includes those doc edits.
 
-### Layer A — the recording duty (SKILL.md contract; agent-facing, advisory)
+### 2.2 Layer 0 — the git-truth accretion sweep (LOAD-BEARING) — R15
 
-The autonomous skill's work-loop and completion guidance gain the scope-accretion rule: the
-moment the session creates an in-scope deliverable, it SHOULD append
-`- [ ] ACCRETED(<ISO date>): <artifact path> — build/converge/deliver, or obtain operator
-ratification to defer`. This keeps a legible human trail and lets the existing
-`CD_UNCHECKED_COUNT` gate hold the run for the common honest case. **Honest reframe (R9):**
-Layer A is willpower-assist, NOT the load-bearing gate — a lazy/misbehaving session that never
-writes the task, or self-checks it, is caught by Layer 0's deterministic ledger regardless. The
-safety argument does not depend on Layer A running.
+At evaluate-completion time (and ONLY then — the judge path already fires only when
+`CD_MIGHT_BE_DONE`), the server computes the accreted-artifact set from **git state**
+in the snapshotted repo roots:
 
-### Layer B — the evasion detector (deterministic hook signal; advisory)
+- New tracked/untracked files since `started_at` matching deliverable globs:
+  `git log --since <started_at> --diff-filter=ACR --name-only` (committed) plus
+  `git status --porcelain` (uncommitted), filtered by class globs (§2.4).
+- The sweep is read-only, bounded (`-m`-style timeout, path-count clamp of 200), and
+  runs in-process on the server — no data crosses from the session's environment.
 
-The stop hook's deterministic-signals block gains a high-precision scan **of the
-already-extracted `CD_JUDGE_TAIL`/`CD_TAIL_LC` window (R7 — no second transcript read; a
-long run's transcript is tens of MB and must not be re-scanned on every Stop)** for
-accretion-evasion vocabulary — "documented stretch", "filed for a future session", "out of
-(the) completion condition", "drafts for later", "deferred as a follow-up spec". It sets
-`scopeAccretionSuspected` in the signals payload (whitelisted in `parseStopSignals`). To avoid
-tripping on quoted file content / diffs / this very spec's vocabulary, the scan excludes lines
-inside tool-output and fenced/quoted regions of the tail (matching the existing milestone/
-injection extraction rules). **Advisory by construction:** it is a corroborating hint to the
-judge, never a backstop — Layer 0 (not the tail) is the real defense against a paraphrased or
-scrolled-out evasion, so false negatives here are harmless.
+Why git truth: it catches files created by Write/Edit, Bash heredocs, `tee`, `cp`,
+`mv`-from-scratch, python scripts, and subagent sessions identically (P20 — the file
+in the tree is the state; the tool event was only a symbol). It is also
+**framework-agnostic by construction** (R16): a Codex/Gemini/pi autonomous run gets
+the identical load-bearing guarantee, because the server asks git, not the engine's
+hook layer. This resolves the framework-agnostic conformance flag for the
+load-bearing core; the advisory tool-event ledger below remains Claude-first with
+Codex wiring, and gemini/pi are explicitly advisory-absent (named, honest).
 
-### Layer C — the judge clause (the authority, fed deterministic signals)
+**Deletion is not an exit (R17 — closes the deletion-beats-deferral inversion).** An
+accreted deliverable that disappears from the working tree before run end does NOT
+reclassify to scratch. It stays in the unbuilt set flagged `deleted:true`, and the
+exit surface (hard-blocker/attention/final notice) lists deleted accreted
+deliverables loudly ("session deleted N accreted deliverables: <basenames>").
+Ratification clears it like any other accreted artifact. Genuine throwaway spikes
+belong under scratchpad paths from the start; git-restorable deletion of committed
+work is visible in the sweep's committed arm regardless.
 
-`CompletionEvaluator.evaluate`'s prompt builder gains the scope-accretion rule and is handed
-three deterministic inputs (never a quoted operator message):
+### 2.3 Advisory tool-event ledger (corroboration only) — R18
 
-- `unbuiltAccretedArtifacts` (from Layer 0) — paths + classes of in-scope deliverables this
-  session created that are not corroborated as built and not declared deliverables.
-- `operatorRatifiedDeferral` (from R1 below) — a **verified** boolean + the ratified artifact set.
-- `scopeAccretionSuspected` (from Layer B) — advisory.
+The per-session PostToolUse stream feeds a server-written advisory ledger
+(`state/autonomous-server/<topicId>.<runId>.artifacts.jsonl`) used for attribution
+detail (which turn, which tool) — never for the blocking set. Because the wired
+reporter today forwards only `{event, session_id, tool_name}` (no path), this layer
+requires the reporter payload to add `file_path` for Write/Edit events — a
+template-hook change shipped via the always-overwrite migration, listed in §4, and
+**gated so the payload change is benign everywhere** (3-field payload remains valid;
+the receiver treats `file_path` as optional). Codex gets a PostToolUse reporter group
+added to `buildInstarCodexHookGroups` (verified feasible — Codex supports
+PostToolUse); gemini/pi have no hook layer and are named advisory-absent. The
+session→topic resolution uses a server-side cached map built at run registration
+(sessionId ↔ topicId, refreshed on the existing session-respawn record path) — a
+resolution miss degrades the ADVISORY layer only (R19; the git sweep is unaffected).
 
-Rule: *if `unbuiltAccretedArtifacts` is non-empty and those artifacts are not covered by
-`operatorRatifiedDeferral`, the condition is NOT met.* The judge NEVER reads a quoted operator
-message; the fence's "quoted operator text = gaming" directive stays fully intact. The
-evaluator's conservative parse (`ambiguous → met:false → keep working`) and the P13
-stop-rationale judge's fail-open semantics are untouched.
+### 2.4 Artifact classes + declared-deliverable grammar (frontloaded) — R20
 
-**Exact config-gating seam (integration finding — the rollback must be mechanically real).**
-`CompletionEvaluator.buildPrompt` is a pure function of `(condition, transcriptTail, signals)`
-with no config access, so `scopeAccretion.enabled` cannot be read inside the judge. The gate
-lives in the hook + the payload: when `scopeAccretion.enabled` is false (read from the run's
-start snapshot, §4/R4), the hook OMITS the `unbuiltAccretedArtifacts` / `scopeAccretionSuspected`
-fields from the signals JSON built in `build_signals_json` (autonomous-stop-hook.sh), and
-`buildPrompt` gates the scope-accretion clause on `signals.unbuiltAccretedArtifacts !== undefined`
-— riding the existing `if (signals)` field-presence pattern. So "rollback = set false" drops both
-the signal AND the clause with no dead TS branch. The `parseStopSignals` whitelist
-(routes.ts:~4483) gains `scopeAccretionSuspected` (boolean), `unbuiltAccretedArtifacts`
-(string[]), and `operatorRatifiedDeferral` (boolean) + `ratifiedArtifacts` (string[]).
+Class globs (path-based, fully deterministic — the "CLI entry points the session
+presents as output" clause is DROPPED as undecidable):
 
-### R1 — verified-operator ratification signal (deterministic, out-of-band)
+- `deliverable`: `docs/specs/**/*.md` (excluding `*.eli16.md`), `docs/audits/**/*.md`,
+  `**/*runbook*.md`, `scripts/**`, `docs/incidents/**/*.md`.
+- `companion`: `docs/specs/**/*.eli16.md` — tied to its parent spec path; cleared iff
+  the parent clears (a companion alone never blocks and never evades: a "spec" written
+  only as an eli16 file has no cleared parent and surfaces via the advisory flag below).
+- `scratch`: anything under the scratchpad/`/tmp`/`.worktrees/*/tmp` conventions —
+  ledgered, never blocks.
+- `out-of-allowlist doc` (advisory): any other new tracked `docs/**/*.md` or `*.md` at
+  repo root → sets `scopeAccretionSuspected` (it does not block; it makes evasion by
+  path choice visible to the judge and the exit notice).
 
-Ratification is resolved by a deterministic pre-check, NOT by the judge reading the transcript:
+Declared-deliverable extraction grammar: repo-relative path tokens in the registered
+condition text matching `[A-Za-z0-9_./-]+\.(md|sh|mjs|ts|py)` that also match a
+deliverable glob, UNION the explicit `declared_deliverables:` list from registration.
+**A pathless condition ("draft five specs…") declares NOTHING** — that is the honest
+reading of the motivating incident: drafting was the abandonment, so drafts are held
+unless the operator declared them at setup or ratifies at exit. (The registration-time
+list is the escape for genuinely draft-only missions; it is operator-confirmed at
+setup, which bounds the "word the condition broadly" gaming lens.)
 
-1. Read the topic's real inbound messages from `MessageStore` within the session window
-   `[started_at, now]`.
-2. For each candidate, resolve the sender against `TopicOperatorStore` — the authenticated,
-   auto-bound **verified operator** for the topic (authenticated sender id, never a content
-   name; a blank/unverifiable sender is refused, mirroring the `POST /topic-operator`
-   400-on-blank-uid rule).
-3. A message ratifies deferral iff it is from the verified operator AND expresses an explicit
-   defer/ratify intent referencing the accreted work (deterministic vocabulary +
-   artifact-reference match). The natural conversational path is preserved — the operator just
-   replies "yes, defer those to a later session" in-topic — but the binding is to a verified
-   principal and a real stored message, not agent prose.
-4. Emit `{ operatorRatifiedDeferral: bool, ratifiedArtifacts: string[], verifiedOperatorUidHash,
-   messageId }` into the signals payload. The judge reads the boolean/set only.
+### 2.5 Corroboration of "built/delivered" (per-class, monotone, cached) — R21
 
-An explicit operator-authenticated route (`POST /autonomous/:topic/ratify-deferral`,
-dashboard-PIN-gated) is provided as the phone-first, unambiguous alternative to the phrase match
-(same verified-principal guarantee). This is the Know-Your-Principal fix: ratification can never
-come from content the session authored.
+An accreted deliverable clears ONLY by class-appropriate deterministic evidence,
+computed server-side at judge-fire time:
 
-## 3. Safety analysis (why this cannot wedge a run — corrected math, R6)
+- **Spec:** the convergence ceremony's REPORT artifact exists at
+  `docs/specs/reports/<slug>-convergence.md` (the artifact the ceremony writes — a
+  self-inserted `review-convergence:` frontmatter line clears NOTHING, closing the
+  self-stamp hole), OR a merged PR whose diff touches **at least one non-`docs/**`
+  path** attributable to the spec's implementation. An artifact's own file NEVER
+  corroborates itself, and a docs-only merged PR NEVER corroborates a spec (closing
+  merge-your-own-spec).
+- **Audit/runbook/incident doc:** merged PR containing the file, or declared.
+- **Script:** merged PR touching the script path.
 
-The judge fires only when the checkbox scan says zero unchecked tasks (the existing
-`CD_MIGHT_BE_DONE` gate), so Layers B/C engage at the moment the session claims done. Every
-added path is monotone toward "keep working": Layer 0 only computes a set, Layer A only appends
-unchecked rows, Layer B only sets a boolean, Layer C only adds a reason to keep working. There
-is no code path that manufactures a false "done."
+Cost discipline (R22): corroboration runs only on the judge path; merged-PR evidence
+is fetched with ONE batched query per evaluation (`gh pr list --state merged
+--search "merged:><started_at>"` + name-only diffs), each call `-m`-bounded (10s
+total budget); positive corroborations are PERSISTED in the server run record
+(monotone — a merged PR stays merged; never re-queried); negatives carry a 5-minute
+TTL. A network failure leaves artifacts uncorroborated (fail toward keep-working),
+bounded by the breaker (§3) — never a wedge, and the failure is named in the judge
+context (`corroborationDegraded: true`).
 
-**The real bound on a false-positive / unbuildable-accretion loop (the review corrected the
-original spec here).** The CD circuit breaker counts only judge *failures* (timeout/unreachable)
-and a successful `met:false` *resets* it — so the breaker does NOT bound a `met:false` loop, and
-an unchecked ACCRETED task keeps `CD_MIGHT_BE_DONE` false so the judge never even re-fires. Left
-unbounded, an accreted deliverable the session genuinely cannot build in-window (needs a design
-decision, or the operator is asleep so no ratification is possible) would churn continuation
-turns to the duration ceiling. The fix, in the fail-safe direction:
+### 2.6 Ratification — verified-principal, display-integral, server-resolved — R23
 
-- **Hard-blocker escape.** SKILL.md directs the agent to emit a `<hard-blocker>` (the existing
-  clean-exit + attention-item path) for an accreted deliverable it cannot complete in-window —
-  routing the stuck item to the operator instead of churning silently.
-- **Scope-accretion breaker (structural backstop).** After K consecutive continuation
-  iterations with an unchanged `unbuiltAccretedArtifacts` set and no corroborated progress, the
-  hook auto-emits a hard-blocker/attention surfacing the stuck accreted item to the operator
-  (deduped), then permits the existing clean exit. So the worst case is "surface to operator and
-  stop," never "churn to `end_at` silently" and never a wedge.
+Ratification NEVER travels as a client-supplied signal. `parseStopSignals` gains ONE
+new whitelisted field total: the advisory boolean `scopeAccretionSuspected` (Layer B,
+§2.7). The blocking inputs (`unbuiltAccretedArtifacts`, ratification state) are
+computed inside the route. `POST /autonomous/evaluate-completion`'s body gains
+`topicId` + `runId` (whitelist-validated; absent topicId = accretion gate inert for
+legacy callers, honest degradation logged).
+
+Two ratification paths, both terminating in server-owned records:
+
+1. **PIN route (authoritative, phone-first):**
+   `POST /autonomous/:topic/ratify-deferral` (dashboard-PIN-gated). Body
+   `{"artifacts": ["<repo-relative path>", ...]}` or `{"all": true}` (ratifies the
+   set enumerated in the server's current unbuilt list at call time — the response
+   echoes exactly what was ratified). Persisted into the server run record
+   (survives restarts); audited.
+
+2. **Conversational path (proposal → server-authored enumeration → confirmation).**
+   Closes the display-integrity gap (Agent Proposes, Operator Approves): the operator
+   must approve a SERVER-authored statement whose displayed set is byte-identical to
+   what executes.
+   - Trigger: a deterministic scan of the topic's REAL inbound history (the per-topic
+     Telegram JSONL the adapter writes — NOT `MessageStore`, which is the A2A store;
+     store identity corrected per review) for defer-intent vocabulary
+     (frontloaded list: "defer", "later session", "don't build", "skip building",
+     "leave for a future", "ratify deferral") from the VERIFIED operator
+     (TopicOperatorStore uid match on the authenticated sender id), windowed to
+     `[max(started_at, oldest unbuilt artifact ts), now]` with an indexed/windowed
+     read (never a full-store scan).
+   - On trigger, the SERVER (not the session) sends the enumeration: "Ratify
+     deferring these N artifacts? <exact repo-relative paths> — reply yes/approve, or
+     use the dashboard." The enumeration message id is recorded server-side.
+   - ONLY an affirmative reply ("yes", "approve", "confirm", "👍") from the verified
+     operator that POST-DATES the enumeration binds — and it binds exactly the
+     enumerated set (recorded by message-id chain). A pre-accretion blanket "defer
+     those" alone ratifies NOTHING (it can only trigger an enumeration of artifacts
+     that already exist); vocabulary-only matches with no enumeration-confirmation
+     resolve to the EMPTY set.
+   - The forged-JSONL vector is bounded honestly (R24): a forged inbound row could at
+     most trigger an ENUMERATION (visible to the real operator in the real topic);
+     it cannot confirm, because the confirmation must post-date the server's own
+     recorded enumeration message id — an out-of-band anchor the session cannot
+     pre-author. Residual risk (forging a confirmation row after inducing an
+     enumeration) is named in §6 with the same-machine bound of R12, and the exit
+     notice always lists ratified-deferred artifacts, making a forged ratification a
+     visible, attributable lie in the operator's own topic.
+
+### 2.7 Advisory layers A and B (unchanged in role, honest in claims)
+
+- **Layer A (recording duty, SKILL.md):** the session SHOULD append
+  `- [ ] ACCRETED(<ISO date>): <path> — build/converge/deliver, or obtain operator
+  ratification` the moment it creates a deliverable. Willpower-assist for the honest
+  case; carries zero safety weight (R9 retained).
+- **Layer B (evasion-vocabulary scan):** the stop hook scans the already-extracted
+  `CD_JUDGE_TAIL`/`CD_TAIL_LC` window (no second transcript read) for accretion-evasion
+  vocabulary ("documented stretch", "filed for a future session", "out of (the)
+  completion condition", "drafts for later", "deferred as a follow-up spec") and sets
+  the advisory `scopeAccretionSuspected` boolean. The fenced/quoted-region exclusion
+  is NEW bash logic (the milestone/injection scans are plain substring matches — the
+  round-1 claim that exclusion rules exist to reuse was wrong and is corrected here);
+  it ships with captured-fixture tests (§5). Advisory by construction; false negatives
+  are harmless (Layer 0 is the defense).
+
+### 2.8 The gate at the chokepoint (deterministic; the judge is not laundered) — R25
+
+Per the Signal-vs-Authority review: the accretion hold is a DETERMINISTIC invariant,
+so it is enforced deterministically at the route — not paraphrased into the judge
+prompt as if it were judgment. Order of operations in
+`POST /autonomous/evaluate-completion`:
+
+1. Compute the sweep (§2.2), corroboration (§2.5), ratification state (§2.6).
+2. If unratified, uncorroborated, non-declared deliverables remain → return
+   `met:false` with machine-readable `reason: "scope-accretion-hold"` + the path list
+   (clamped to 50 + "and N more") WITHOUT spending the judge LLM call. The hook
+   surfaces the hold verbatim to the session (it knows exactly what to build).
+3. Otherwise → the judge runs exactly as today; the accretion facts ride along as
+   CONTEXT lines in the signals block (advisory corroboration for its narrative
+   verdict), gated on field presence so disabled mode is byte-identical
+   (`PROMPT_VERSION` bumps with the block change; §4).
+
+Rollback = the snapshot's `enabled:false` (config at start, or the operator PIN
+override): step 1 short-circuits to "no hold", no sweep runs, the judge prompt is
+byte-identical to today.
+
+## 3. Safety analysis — bounded, monotone, no wedge
+
+Every added path is monotone toward "keep working"; there is no code path that
+manufactures a false "done." The judge fires only when the checkbox scan says zero
+unchecked tasks, so the sweep cost lands only on done-claims (R22).
+
+**The bound on an unbuildable-accretion loop (P19, persisted breaker) — R26.** The CD
+circuit breaker counts only judge *failures*, so it cannot bound a legitimate
+`met:false` loop. The scope-accretion breaker is its own persisted server-side state:
+`{ accretedSetHash, firstSeenAt, consecutiveHolds, lastProgressAt }` in the run
+record. `K = 3` consecutive scope-accretion holds with an unchanged set hash and no
+new corroboration/ratification (config `scopeAccretion.breakerK`, default 3, min 2)
+trips the breaker: ONE loud, distinctly-labeled attention item + topic notice —
+"exiting via scope-accretion breaker with N unbuilt accreted artifacts: <list>
+(deleted: <sublist>)" — carrying the P13 stop-rationale classification verdict
+(recorded, never bypassed: a `buildable` verdict is DISPLAYED in the item so the
+operator sees the evasion shape; the breaker still permits the clean exit to
+preserve the no-wedge guarantee). The set hash changing, or any new corroboration,
+resets the counter. The session's honest early exit for a genuinely blocked artifact
+remains the existing `<hard-blocker>` path, unchanged.
+
+**Why the breaker is not a cheap exit lever:** the price is K judge-path holds PLUS a
+permanently-recorded, operator-visible item enumerating exactly what was abandoned —
+the incident's silent exit is structurally impossible; what remains is a loud one,
+which is the honest floor for a machine that cannot compel work.
 
 ## 4. Config, migration parity + awareness
 
-- **Config off-switch, snapshot-at-start (R4 — closes the self-disable bypass).**
-  `autonomousSessions.completionDiscipline.scopeAccretion.enabled` (default TRUE — the change only
-  refuses premature completion, the safe direction). The value is **snapshotted into the run's
-  state file at session start**; the chokepoint reads the snapshot, NOT a live re-read of the
-  session-writable `.instar/config.json`. This preserves the operator's "edit config between runs,
-  no restart" ergonomics while removing the bypass where a blocked session writes `enabled:false`
-  to its own config mid-run. A mid-run edit to any `completionDiscipline.*` key by the running
-  session is ignored for that run and flagged to the operator (attention item). Rollback = set
-  false before a run: the clause + signals are omitted; Layer A guidance text remains (a recorded
-  task is always legitimate).
-- **Audit-logging discipline (R5).** New signals are audited as booleans + matched-**pattern-name**
-  + artifact-path basenames only — NEVER raw transcript text or operator-message bodies. The
-  ratification record stores `{ operatorRatifiedDeferral, verifiedOperatorUidHash, messageId }`,
-  never the message content; all evidence fields pass the realcheck secret-scrub before write.
-- **Marker bump (REALCHECK_VERIFY precedent, verbatim mechanism):** the `PostUpdateMigrator.upgrade()`
-  calls for the stop hook, `SKILL.md`, and `setup-autonomous.sh` bump their marker to
-  `SCOPE_ACCRETION`; the sentinel comment is embedded in all three bundled files. Existing agents
-  receive the new content on their next update; customized files (missing the stock fingerprint) are
-  skipped, per the mechanism's contract.
-- **CLAUDE.md awareness:** the agent template's autonomous-mode section gains the scope-accretion
-  rule + proactive trigger ("drafted a new in-scope deliverable mid-session → it joins your
-  completion bar automatically; build/converge/deliver it or get the operator to ratify deferring
-  it — a `<hard-blocker>` is the honest exit if you can't"), with the matching content-sniffed
-  `migrateClaudeMd` append.
-- **Complete change-site list (integration finding — parity with the `realCheck` precedent):**
-  the config default is added to `src/config/ConfigDefaults.ts` (where `realCheck`'s default lives)
-  and the `completionDiscipline` sub-object in `src/core/types.ts` gains the `scopeAccretion`
-  shape, so `GET /config` + capabilities surface it (the hook's absence-defaults-TRUE still holds
-  as belt-and-suspenders). Signal serialization changes `build_signals_json`
-  (autonomous-stop-hook.sh); the artifact-ledger reader is a new hook helper over
-  `state/autonomous/<topicId>.artifacts.jsonl`; the ledger writer rides the existing
-  `HookEventReceiver` PostToolUse path (a filtered append, no new hook wiring).
-- **Multi-machine posture (Cross-Machine Coherence):** all new state is **machine-local BY DESIGN**
-  — the artifact ledger + ACCRETED tasks live beside `<topicId>.local.md` and ride the working-set
-  carrier on a pool transfer (the run suspends on transfer per the autonomous-run-move contract);
-  the signals are ephemeral (recomputed each Stop) and the config snapshot is machine-local. No mesh
-  replication is needed or wanted (an autonomous run executes on exactly one machine).
-- **Dev-first soak ("dark for fleet, live on me" convention):** although default-ON is justified
-  (monotone-safe + operator-requested), the phrase scanner is a NEW detector class — its
-  false-positive / wasted-round rate is observed on the development agent first (feature-metrics
-  key `scope-accretion`) before the fleet default is trusted; the deterministic Layer 0 core carries
-  the guarantee regardless.
+- **Config:** `autonomousSessions.completionDiscipline.scopeAccretion` =
+  `{ enabled: true, breakerK: 3 }` (defaults in `ConfigDefaults.ts`; shape in
+  `types.ts`). Default ON (monotone-safe, operator-requested). Snapshot semantics +
+  operator PIN override per §2.1 — the "instant rollback" comment text in
+  `ConfigDefaults.ts`/`types.ts` and the CLAUDE.md template is REWORDED (change
+  sites listed) to name the PIN route as the live lever.
+- **Complete change-site list (R27):** `src/server/routes.ts` (evaluate-completion:
+  topicId/runId body fields, the deterministic gate, the two new PIN-gated routes:
+  ratify-deferral + scope-accretion-override; `parseStopSignals`: + `scopeAccretionSuspected`
+  boolean only); `src/core/CompletionEvaluator.ts` (context lines, field-gated;
+  `PROMPT_VERSION` bump + canary test); the server run-record store (new module,
+  `state/autonomous-server/`); the git sweep helper (read-only, SafeGitExecutor-familied);
+  the reporter payload `file_path` extension in BOTH duplicated template copies
+  (`src/commands/init.ts` + `src/core/PostUpdateMigrator.ts` — kept in sync, receiver
+  treats it optional); `buildInstarCodexHookGroups` (+ PostToolUse reporter group);
+  `.claude/skills/autonomous/hooks/autonomous-stop-hook.sh` (Layer B scan; surface the
+  hold reason; marker bump `SCOPE_ACCRETION`); `SKILL.md` + `setup-autonomous.sh`
+  (Layer A duty; `declared_deliverables:` registration; marker bump); `PostUpdateMigrator`
+  (marker bumps, REALCHECK_VERIFY-precedent); CLAUDE.md template awareness section +
+  `migrateClaudeMd`; feature-metrics key `scope-accretion` (holds, breaker trips,
+  ratifications, sweep latency).
+- **Multi-machine posture:** all new state is machine-local BY DESIGN (a run executes
+  on one machine); the server run record + advisory ledger ride the working-set
+  carrier on transfer (verified: the manifest nominates `autonomous/<topic>.*` by
+  prefix — the server-record path is added to the manifest's nomination globs, listed
+  as a change site). Signals are recomputed per evaluation.
+- **Ledger/record lifecycle (R28):** on run end the server run record + advisory
+  ledger are archived beside the state-file archive (same retention), so the carrier
+  never ships stale live records.
+- **Audit discipline:** booleans + pattern-names + path basenames only; ratification
+  records store `{ enumerationMessageId, confirmationMessageId, verifiedOperatorUidHash,
+  ratifiedArtifacts }`, never message bodies; realcheck secret-scrub before write.
+- **Dev-first soak:** feature-metrics observed on the development agent before the
+  fleet default is trusted (`scope-accretion` key); the deterministic core carries the
+  guarantee regardless. Maturation-path note: default-ON everywhere is the documented,
+  justified exception (monotone-safe discipline fix, operator-directed) — recorded
+  here explicitly so the conformance gate's dev-agent-first check reads an honest
+  declaration rather than silence.
 
-## 5. Tests (tiers declared)
+## 5. Tests (tiers declared; parsers registered with captured fixtures)
 
-Unit: `parseStopSignals-whitelists-scopeAccretionSuspected-and-unbuiltAccreted-and-ratified`
-(and rejects unknown fields); artifact-ledger classifier (`deliverable` vs `scratch` vs
-declared-deliverable-exempt, per path); corroboration resolver (merged-PR / convergence-marker
-/ declared → cleared; checked-checkbox-alone → NOT cleared); R1 ratification resolver
-(verified-operator match → true; non-operator sender → false; blank/unverifiable sender →
-refused; content-name never binds); config snapshot-at-start honored (mid-run enabled:false
-ignored); `evaluate-prompt-carries-accretion-clause-when-enabled` / `-omits-when-disabled`
-(prompt-content assertions — the judge verdict itself is LLM output, not unit-asserted);
-`phrase-scan-positives` / `-negatives` (each canonical phrase; quoting this spec's vocabulary in
-a diff, ordinary "stretch goal" in a plan doc); signal-fails-toward-continue (any resolver error
-⇒ signal absent ⇒ behavior identical to today for the false-negative direction, and the
-deterministic ledger still holds the run). Hook: extend the existing stop-hook test harness — an
-unbuilt-accreted ledger entry blocks exit; a corroborated one does not; the scope-accretion
-breaker fires after K met:false and routes to hard-blocker; Layer B reads CD_JUDGE_TAIL (no
-second transcript read). Integration: `POST /autonomous/evaluate-completion` round-trips the new
-signals; `POST /autonomous/:topic/ratify-deferral` (PIN-gated) sets the verified signal; config
-off-switch honored live. E2E (feature-alive): a run that Writes `docs/specs/foo.md` mid-run and
-then presents a met-looking transcript does NOT exit until foo.md is corroborated-built or the
-verified operator ratifies (rides the existing CD e2e pattern).
+**Fixture realness (R29):** the three new text parsers are REGISTERED per the
+standard, each fed byte-for-byte captured fixtures under `tests/fixtures/captured/`:
+(1) Layer B scan — a real autonomous-run transcript tail (incl. fenced/quoted regions
+and ANSI); (2) ratification trigger + confirmation matcher — real per-topic Telegram
+JSONL rows; (3) declared-deliverable grammar — real registered completion-condition
+texts (including the pathless "draft five specs" incident shape asserting EMPTY set).
+
+Unit: sweep classifier (per class glob; deletion flag; out-of-allowlist advisory;
+clamps); corroboration resolver (report-exists / merged-PR-with-non-docs-path /
+declared → cleared; self-file, docs-only PR, self-inserted frontmatter marker,
+checked checkbox → NOT cleared; positive-persistence monotonicity; negative TTL);
+ratification (PIN route body forms; enumeration→confirmation ordering; pre-dated
+blanket → empty; non-operator sender → refused; vocabulary-only → empty);
+snapshot semantics (mid-run config/state-file/condition edits ignored + flagged;
+PIN override honored); breaker (K holds → trip with recorded P13 verdict; set-change
+resets; persisted across server restart); `parseStopSignals` whitelists
+`scopeAccretionSuspected` only and rejects client-supplied `unbuiltAccretedArtifacts`
+/`operatorRatifiedDeferral`; prompt byte-identity when disabled + `PROMPT_VERSION`
+canary. Hook: hold-reason surfaced; Layer B fixture positives/negatives; no second
+transcript read. Integration: evaluate-completion round-trips topicId → hold →
+ratify → met-path; both PIN routes (auth, contract, persistence); timeout/degraded
+corroboration path. E2E (feature-alive): a run that creates `docs/specs/foo.md` VIA
+BASH HEREDOC (the required evasion-shaped case) and presents a met-looking transcript
+does NOT exit until corroborated/ratified; and the breaker-exit E2E asserting the
+loud labeled item. Wiring-integrity: reporter payload carries a real `file_path`
+end-to-end into the advisory ledger on both template copies; Codex PostToolUse group
+fires.
 
 ## Frontloaded Decisions
 
-1. **Layer 0 (deterministic tool-event artifact ledger) is the load-bearing mechanism** — not
-   the checkbox scan (self-writable) and not a transcript scan (tail-blind). Session attribution
-   is native to the ledger; this supersedes the old "defer InitiativeTracker" framing (R10 — no
-   deferral: the durable session-attributed signal the externals asked for is built here in v1).
-2. **Ratification is a deterministic verified-operator signal** (R1), resolved against
-   `MessageStore` + `TopicOperatorStore` or a PIN-gated route — NEVER a transcript-quoted
-   message. Governing standard: Know Your Principal. The `CompletionEvaluator` fence's "quoted
-   operator text = gaming" directive is preserved unchanged.
-3. **"Built/delivered" is corroborated deterministically** (R3): merged-PR-touches-path OR
-   in-artifact convergence marker OR declared-deliverable — a checked ACCRETED box alone never
-   clears an artifact.
-4. **Artifact-class boundary + declared-deliverable exemption are path-based and frontloaded**
-   (R8) — a session whose goal IS to produce document X is not held for producing X.
-5. **Config is snapshotted at session start** (R4) — a running session cannot disable its own
-   guard by editing `.instar/config.json`; a mid-run `completionDiscipline.*` edit is ignored +
-   flagged.
-6. **The met:false / unbuildable-accretion loop is bounded** (R6) by a hard-blocker escape +
-   a scope-accretion breaker (surface-to-operator-and-stop), never a silent churn to `end_at`.
-   §3 corrects the original spec's wrong circuit-breaker citation.
-7. **Default ON with a chokepoint off-switch** — the change is monotone-safe and directly
-   operator-requested; dark-shipping a discipline fix the operator asked for would itself be
-   "A Dark Feature Guards Nothing." (Decision-Completeness reviewer contested and cleared this:
-   user-visible behavior change, but bounded by the untouched duration ceiling; no new
-   unbounded cost, no external side-effect, no identity mutation.)
-8. **Layers A/B are advisory; Layer 0 + R1 are the deterministic core** (R9) — the safety
-   argument does not depend on the agent writing a checkbox or on the phrase list's recall.
-9. **New signals audited as booleans + pattern-name + path basenames only** (R5) — never raw
-   transcript or operator-message bodies; secret-scrubbed.
+1. **The load-bearing mechanism is the server-side git-truth sweep at the
+   evaluate-completion chokepoint** (R15) — not a transcript scan (tail-blind), not
+   the checkbox (self-writable), not a client-side tool-event ledger (Bash-bypassable,
+   session-writable, path-less in today's payload). Tool events survive only as an
+   advisory attribution ledger (R18).
+2. **No blocking input is client-transported** (R23): `parseStopSignals` gains only
+   the advisory `scopeAccretionSuspected`; the route computes the rest server-side.
+   `evaluate-completion` gains `topicId`/`runId` body fields.
+3. **Ratification is display-integral**: PIN route, or verified-operator confirmation
+   of a SERVER-authored enumeration that post-dates the artifacts and is bound by
+   message-id chain (R23/R24). Blanket pre-accretion phrases ratify nothing. Store
+   identity corrected: the per-topic Telegram inbound JSONL, not `MessageStore`.
+4. **Corroboration is per-class and never self-authorable** (R21): convergence
+   REPORT artifact (not a frontmatter line), merged PR with ≥1 non-docs path (never
+   the artifact's own file alone), or registration-declared. Positives persist
+   (monotone); one batched bounded query per evaluation.
+5. **Class boundary is glob-only** (R20): the undecidable "presents as output" clause
+   is dropped; eli16 companions clear with their parent; out-of-allowlist docs are
+   advisory-flagged, never blocking.
+6. **Declared-deliverable grammar is fixed** (R20): path-token regex ∩ deliverable
+   globs, ∪ explicit registration list; pathless conditions declare nothing.
+7. **Config snapshots at registration, server-side; the operator's live lever is the
+   PIN override route** (R13/R14); mid-run session-side edits (config, state file,
+   condition text) are ignored + flagged.
+8. **Deletion of an accreted deliverable never clears it silently** (R17) — flagged,
+   listed loudly at exit, clearable only by ratification/corroboration.
+9. **The hold is a deterministic pre-judge gate** (R25) — the judge is not asked to
+   re-decide a regex's verdict; it receives the facts as context on the met-path only.
+10. **Breaker: K=3 (config `breakerK`), persisted state, loud labeled exit carrying
+    the P13 classification** (R26) — surface-to-operator-and-stop, never silent churn,
+    never a wedge.
+11. **Default ON with the documented maturation-path exception** (contested and
+    cleared in round 1; re-affirmed with the R14 operator lever in place).
+12. **Framework parity by construction** (R16): the load-bearing core is
+    engine-independent (git + server); Codex gains the advisory PostToolUse group;
+    gemini/pi named advisory-absent. Honest degradation, never silent absence.
 
 ## Open questions
 
 None.
-</content>
-</invoke>
