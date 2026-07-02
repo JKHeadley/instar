@@ -567,7 +567,11 @@ export class ThreadlineRouter {
       target: { agent: this.config.localAgent, machine: this.config.localMachine },
       reason: `Resume thread ${threadId} with ${entry.remoteAgent}`,
       context: prompt,
-      priority: message.priority === 'critical' ? 'critical' : 'medium',
+      // Preserve full priority enum so SpawnRequestManager can override
+      // session cap for both `critical` AND `high`. Previously this narrowed
+      // to medium-or-critical, silently demoting `high` traffic below the
+      // override threshold even when the sender explicitly tagged it urgent.
+      priority: message.priority,
       pendingMessages: [message.id],
     });
 
@@ -577,7 +581,11 @@ export class ThreadlineRouter {
           requester: message.from,
           target: { agent: this.config.localAgent, machine: this.config.localMachine },
           reason: `Resume thread ${threadId}`,
-          priority: message.priority === 'critical' ? 'critical' : 'medium',
+          // Preserve full priority enum so SpawnRequestManager can override
+      // session cap for both `critical` AND `high`. Previously this narrowed
+      // to medium-or-critical, silently demoting `high` traffic below the
+      // override threshold even when the sender explicitly tagged it urgent.
+      priority: message.priority,
         },
         spawnResult,
       );
@@ -638,7 +646,11 @@ export class ThreadlineRouter {
       target: { agent: this.config.localAgent, machine: this.config.localMachine },
       reason: `New thread from ${message.from.agent}: ${message.subject}`,
       context: prompt,
-      priority: message.priority === 'critical' ? 'critical' : 'medium',
+      // Preserve full priority enum so SpawnRequestManager can override
+      // session cap for both `critical` AND `high`. Previously this narrowed
+      // to medium-or-critical, silently demoting `high` traffic below the
+      // override threshold even when the sender explicitly tagged it urgent.
+      priority: message.priority,
       pendingMessages: [message.id],
     });
 
@@ -648,7 +660,11 @@ export class ThreadlineRouter {
           requester: message.from,
           target: { agent: this.config.localAgent, machine: this.config.localMachine },
           reason: `New thread from ${message.from.agent}`,
-          priority: message.priority === 'critical' ? 'critical' : 'medium',
+          // Preserve full priority enum so SpawnRequestManager can override
+      // session cap for both `critical` AND `high`. Previously this narrowed
+      // to medium-or-critical, silently demoting `high` traffic below the
+      // override threshold even when the sender explicitly tagged it urgent.
+      priority: message.priority,
         },
         spawnResult,
       );

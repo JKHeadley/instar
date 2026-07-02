@@ -6332,7 +6332,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // manager it belongs to (for re-entrant evaluate() calls during drain).
     let spawnManager: SpawnRequestManager;
     spawnManager = new SpawnRequestManager({
-      maxSessions: config.sessions.maxSessions ?? 5,
+      // Live accessor — re-reads on every evaluate(), so config edits to
+      // `sessions.maxSessions` (raising or lowering the cap at runtime) take
+      // effect without a server restart. Closes the spawn-cap split-brain
+      // bug from the 2026-05-23 codex shortcomings audit (item #2).
+      maxSessions: () => config.sessions.maxSessions ?? 5,
       getActiveSessions: () => sessionManager.listRunningSessions(),
       spawnSession: async (prompt, opts) => {
         const session = await sessionManager.spawnSession({

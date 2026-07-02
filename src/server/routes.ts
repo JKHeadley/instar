@@ -2884,12 +2884,31 @@ export function createRoutes(ctx: RouteContext): Router {
     const sessions = ctx.sessionManager.listRunningSessions();
     const schedulerStatus = ctx.scheduler?.getStatus() ?? null;
 
+    // Expose the spawn manager's live cap alongside the configured cap so
+    // operators can detect split-brain at a glance (audit 2026-05-23, #2).
+    // With the live-accessor wiring in server.ts both values are pinned to
+    // the same source of truth — divergence indicates a bypass and is a bug
+    // worth surfacing in the response itself rather than swallowing.
+    const configMax = ctx.config.sessions.maxSessions;
+    const spawnManagerMax = ctx.spawnManager?.getMaxSessions() ?? null;
+    const sessionsBlock: Record<string, unknown> = {
+      running: sessions.length,
+      max: configMax,
+      list: sessions.map(s => ({ id: s.id, name: s.name, jobSlug: s.jobSlug })),
+    };
+    if (spawnManagerMax !== null) {
+      sessionsBlock.spawnManagerMax = spawnManagerMax;
+      if (spawnManagerMax !== configMax) {
+        sessionsBlock.capParityDrift = {
+          configMax,
+          spawnManagerMax,
+          note: 'Spawn manager cap diverges from configured cap — likely constructed with a legacy number snapshot instead of a live accessor. Restart the server to reconcile.',
+        };
+      }
+    }
+
     res.json({
-      sessions: {
-        running: sessions.length,
-        max: ctx.config.sessions.maxSessions,
-        list: sessions.map(s => ({ id: s.id, name: s.name, jobSlug: s.jobSlug })),
-      },
+      sessions: sessionsBlock,
       scheduler: schedulerStatus,
     });
   });
@@ -12260,12 +12279,27 @@ export function createRoutes(ctx: RouteContext): Router {
       timeoutSeconds,
       originTopicId,
       purpose,
+      priority,
     } = req.body;
 
     if (!targetAgent || !message) {
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
     }
+
+    // Caller-supplied envelope priority. Validate against the
+    // MessagePriority enum (`critical | high | medium | low`) and default
+    // to `medium` when omitted or invalid. This is what lets a caller
+    // mark traffic as `critical` so SpawnRequestManager's session-cap
+    // override actually fires (it ignores anything below `high`). Prior
+    // to this, the local-delivery envelope hardcoded `medium`, which
+    // silently capped urgent agent-to-agent coordination.
+    const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
+    type EnvPriority = (typeof VALID_PRIORITIES)[number];
+    const resolvedPriority: EnvPriority =
+      typeof priority === 'string' && (VALID_PRIORITIES as readonly string[]).includes(priority)
+        ? (priority as EnvPriority)
+        : 'medium';
 
     // THREAD-TOPIC-LINKAGE-SPEC.md: validate the optional originTopicId early.
     // We accept either number or numeric string; ignore on type mismatch (the
@@ -12510,7 +12544,7 @@ export function createRoutes(ctx: RouteContext): Router {
                     from: { agent: ctx.config.projectName, session: 'threadline', machine: 'local' },
                     to: { agent: localTarget.name, session: 'best', machine: 'local' },
                     type: 'request' as const,
-                    priority: 'medium' as const,
+                    priority: resolvedPriority,
                     subject: 'Relay message',
                     body: message,
                     threadId: effectiveThreadId,

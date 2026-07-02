@@ -3257,6 +3257,50 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.skipped.push('config.json: dashboard PIN already set');
     }
 
+    // Single-source-of-truth canonicalization for `maxSessions` (audit
+    // 2026-05-23, item #10). The canonical home is `sessions.maxSessions`.
+    // Historic configs may carry a top-level `maxSessions` that pre-dated
+    // the `sessions` block, or a hand-edit may have duplicated the key.
+    // Behavior:
+    //   - top-level only        → hoist into sessions.maxSessions, delete top-level
+    //   - both, agree           → delete top-level, keep canonical
+    //   - both, disagree        → keep canonical (sessions.maxSessions wins),
+    //                             record explicit drift entry in audit log
+    //   - canonical only        → no-op
+    // Idempotent: re-running is safe — the top-level key is gone after the
+    // first pass and the canonical key stays untouched.
+    const legacyTopLevel = (config as Record<string, unknown>).maxSessions;
+    const sessionsBlock = (config.sessions as Record<string, unknown> | undefined) ?? undefined;
+    if (legacyTopLevel !== undefined) {
+      const sessionsCanonical = sessionsBlock?.maxSessions;
+      if (sessionsCanonical === undefined) {
+        if (!sessionsBlock) {
+          config.sessions = { maxSessions: legacyTopLevel } as Record<string, unknown>;
+        } else {
+          (sessionsBlock as Record<string, unknown>).maxSessions = legacyTopLevel;
+        }
+        delete (config as Record<string, unknown>).maxSessions;
+        patched = true;
+        result.upgraded.push(
+          `config.json: hoisted legacy top-level maxSessions=${JSON.stringify(legacyTopLevel)} into sessions.maxSessions`,
+        );
+      } else if (sessionsCanonical === legacyTopLevel) {
+        delete (config as Record<string, unknown>).maxSessions;
+        patched = true;
+        result.upgraded.push(
+          `config.json: removed redundant top-level maxSessions (agreed with sessions.maxSessions=${JSON.stringify(sessionsCanonical)})`,
+        );
+      } else {
+        delete (config as Record<string, unknown>).maxSessions;
+        patched = true;
+        result.upgraded.push(
+          `config.json: removed conflicting top-level maxSessions=${JSON.stringify(legacyTopLevel)}; ` +
+          `kept canonical sessions.maxSessions=${JSON.stringify(sessionsCanonical)} ` +
+          `(operator should verify intended value)`,
+        );
+      }
+    }
+
     // Apply defaults from the canonical ConfigDefaults registry.
     // This single call replaces ALL individual migration blocks (externalOperations,
     // promptGate, threadline, etc.). Adding a new default to ConfigDefaults.ts

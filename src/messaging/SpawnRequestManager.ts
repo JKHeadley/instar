@@ -139,8 +139,18 @@ const AGENT_ATTRIBUTABLE_CAUSES: ReadonlySet<SpawnFailureCause> = new Set([
 ]);
 
 export interface SpawnRequestManagerConfig {
-  /** Max concurrent sessions allowed */
-  maxSessions: number;
+  /**
+   * Max concurrent sessions allowed.
+   *
+   * **Live accessor preferred.** When provided as a function the manager
+   * re-reads on every `evaluate()` call so config-reload paths (raising or
+   * lowering the cap at runtime) take immediate effect. Passing a `number`
+   * is supported for backward compatibility, but it captures the cap at
+   * construction time — config edits to `sessions.maxSessions` won't be
+   * honored until the next restart. New callers should pass a closure that
+   * reads from the live config object.
+   */
+  maxSessions: number | (() => number);
   /** Function to list current running sessions */
   getActiveSessions: () => Session[];
   /**
@@ -341,6 +351,27 @@ export class SpawnRequestManager {
     this.#nowFn = config.nowFn ?? (() => Date.now());
   }
 
+  /**
+   * Resolve the current max-sessions cap, supporting both number (legacy,
+   * construction-time snapshot) and live accessor (preferred). Defensive
+   * non-finite values fall back to 1 so a misconfigured accessor can't
+   * accidentally unblock unbounded spawning.
+   */
+  #resolveMaxSessions(): number {
+    const raw = this.#config.maxSessions;
+    const v = typeof raw === 'function' ? raw() : raw;
+    return Number.isFinite(v) && v > 0 ? v : 1;
+  }
+
+  /**
+   * Public accessor for the current cap — used by status routes and the
+   * parity probe in server.ts to verify spawn-manager and `/status` agree
+   * on the same value. Read live; never cached.
+   */
+  getMaxSessions(): number {
+    return this.#resolveMaxSessions();
+  }
+
   // ── §4.2 helpers ────────────────────────────────────────────
 
   /**
@@ -511,13 +542,18 @@ export class SpawnRequestManager {
       };
     }
 
-    // Check session limits
+    // Check session limits — read the cap live so runtime config edits to
+    // `sessions.maxSessions` take effect without a process restart. Prior
+    // behavior captured the cap at construction time, producing a split
+    // brain where operators saw the new cap via /status but the spawn
+    // manager kept enforcing the old one (audit 2026-05-23, item #2).
     const activeSessions = this.#config.getActiveSessions();
-    if (activeSessions.length >= this.#config.maxSessions) {
+    const maxSessions = this.#resolveMaxSessions();
+    if (activeSessions.length >= maxSessions) {
       if (request.priority !== 'critical' && request.priority !== 'high') {
         return {
           approved: false,
-          reason: `Session limit reached (${activeSessions.length}/${this.#config.maxSessions}). Priority ${request.priority} insufficient to override.`,
+          reason: `Session limit reached (${activeSessions.length}/${maxSessions}). Priority ${request.priority} insufficient to override.`,
           retryAfterMs: 60_000,
         };
       }
