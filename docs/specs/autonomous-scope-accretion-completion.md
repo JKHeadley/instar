@@ -8,8 +8,18 @@ sibling-principles: "Structure > Willpower; Close the Loop (Untracked = Abandone
 lessons-engaged: "AUTONOMOUS-COMPLETION-DISCIPLINE.md (the judge/signal architecture this extends); autonomous-completion-real-checks.md (the veto-shape + deterministic-corroboration precedent); scope-accretion-completion-discipline (operator feedback 2026-07-02, topic 29836); B18_AUTONOMY_STOP (MessagingToneGate); Know-Your-Principal / operator-binding; P20 Verify the State, Not Its Symbol (the load-bearing signal is GIT truth — the file in the tree — not the tool-event symbol of a write); P13 The Stop Reason Is the Work; P19 No Unbounded Loops (breaker K + persisted breaker state); Scrape/Parser Fixture Realness (all three new parsers registered with captured fixtures); Agent Proposes, Operator Approves (server-authored ratification enumeration — display authority = executed authority)"
 parent-spec: "docs/specs/AUTONOMOUS-COMPLETION-DISCIPLINE.md"
 project: "self-healing-mesh (topic 29836)"
-eli16-overview: "docs/specs/autonomous-scope-accretion-completion.eli16.md"
 depends-on: "CompletionEvaluator (src/core/CompletionEvaluator.ts — instruction-inert transcript fence; PROMPT_VERSION canary); POST /autonomous/evaluate-completion (src/server/routes.ts — the server-side chokepoint the deterministic core now lives in); autonomous stop hook (.claude/skills/autonomous/hooks/autonomous-stop-hook.sh — CD_JUDGE_TAIL window, CD_MIGHT_BE_DONE gate, cd_record_judge_failure breaker, hard-blocker exit path); parseStopSignals (src/server/routes.ts:~4483 — gains ONE advisory boolean only); the server's in-process Telegram receive path (TelegramAdapter long-poll — where R45's trigger/confirmation matching runs; NOT src/messaging/MessageStore.ts, the agent-to-agent store, and NOT any on-disk history file); TopicOperatorStore (verified auto-bound operator per topic); setup-autonomous.sh + the run registration path (where the server-side start snapshot is taken); PostUpdateMigrator upgrade() marker mechanism (REALCHECK_VERIFY precedent); SafeGitExecutor/read-only git plumbing for the Stop-time sweep"
+review-convergence: "2026-07-02T07:12:34.129Z"
+review-iterations: 7
+review-completed-at: "2026-07-02T07:12:34.129Z"
+review-report: "docs/specs/reports/autonomous-scope-accretion-completion-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 12
+cheap-to-change-tags: 0
+contested-then-cleared: 1
+approved: true
+approved-basis: "Operator preapproval for spec approvals in this session (topic 29836, 2026-07-02): 'Full preapproval granted … spec approvals, server restarts, deployment, and all in-scope reversible decisions.' Recorded transparently, not silently self-granted."
 ---
 
 # Autonomous Scope-Accretion Completion Discipline
