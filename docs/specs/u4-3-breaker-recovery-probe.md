@@ -8,6 +8,17 @@ sibling-principles: "The Agent Is Always Reachable — A Guaranteed Reachability
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; multi-transport-mesh-comms.md"
 project: "self-healing-mesh (topic 29836)"
 depends-on: "PeerEndpointResolver (src/core/PeerEndpointResolver.ts — the REAL per-(peer,kind) health primitive: consecutiveFailures/unhealthyAfterFailures dead-marking, RECOVERY_HYSTERESIS=3, FAILRATE_DEMOTE EWMA, isProbeDue exponential backoff base 5s capped at maxProbeBackoffMs); HttpLeaseTransport.hedge (src/core/HttpLeaseTransport.ts — the hedge-winner-abort this spec fixes); MeshRpcDispatcher deliverMessage contract (the G4 canary PAYLOAD contract — signed bogus-uid probe answered by a TYPED refusal); MultiMachineCoordinator lease pull loop (the free ~5s carrier); guardManifest (G3 loadBearing classification, PR #1318)"
+review-convergence: "2026-07-02T07:40:47.428Z"
+review-iterations: 4
+review-completed-at: "2026-07-02T07:40:47.428Z"
+review-report: "docs/specs/reports/u4-3-breaker-recovery-probe-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 8
+cheap-to-change-tags: 0
+contested-then-cleared: 2
+approved: true
+approved-basis: "Operator preapproval for spec approvals in this session (topic 29836, 2026-07-02): 'Full preapproval granted … spec approvals, server restarts, deployment, and all in-scope reversible decisions.' Recorded transparently, not silently self-granted."
 ---
 
 # U4.3 — Traffic-Independent Rope-Health Recovery Probe

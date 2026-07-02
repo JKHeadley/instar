@@ -8,6 +8,17 @@ sibling-principles: "Cross-Machine Coherence — One Agent, Robust Under Degrade
 parent-spec: "docs/specs/U4-mesh-self-healing-index.md; multi-transport-mesh-comms.md; MULTI-MACHINE-SESSION-POOL-SPEC.md"
 project: "self-healing-mesh (topic 29836)"
 depends-on: "U4.3 rope-health snapshot (HARD dependency — the authed GET /health ropeHealth per-(peer,kind) state; build order U4.3 → U4.5; there is NO usable interim source: /health today carries advertised kinds only and the resolver map is process-private); git-synced coarse MachineHeartbeat (the mesh-INDEPENDENT liveness discriminator for the urgent tier — R-r2-1); SleepWakeDetector wake event (OWN-machine, retrospective — feeds only the self-wake grace window, never a peer-sleep signal); machine-registry online/last-seen (staleness only — failoverThresholdMs default 15 min); WS4.2 emptyState semantics (offline-since vs unreachable); tailscale status --json via bounded exec (the key-expiry source — R-r2-3); guardManifest (G3)"
+review-convergence: "2026-07-02T07:40:47.478Z"
+review-iterations: 5
+review-completed-at: "2026-07-02T07:40:47.478Z"
+review-report: "docs/specs/reports/u4-5-rope-health-alerts-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 7
+cheap-to-change-tags: 0
+contested-then-cleared: 2
+approved: true
+approved-basis: "Operator preapproval for spec approvals in this session (topic 29836, 2026-07-02): 'Full preapproval granted … spec approvals, server restarts, deployment, and all in-scope reversible decisions.' Recorded transparently, not silently self-granted."
 ---
 
 # U4.5 — Rope-Health Alerts
