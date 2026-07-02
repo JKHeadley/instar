@@ -1,5 +1,5 @@
 ---
-title: "Autonomous Scope-Accretion Completion Discipline — work a session generates joins its completion bar"
+title: "Autonomous Scope-Accretion Completion Discipline — silent deferral of session-generated work becomes structurally impossible"
 slug: "autonomous-scope-accretion-completion"
 author: "echo"
 status: "draft"
@@ -131,8 +131,14 @@ escape):
 - **Per root:** committed arm = `git log --branches --not <startSHA>
   --diff-filter=ACR --name-only` (R41 — ALL local branches, not `..HEAD`: round 4
   caught that commit-on-branch-then-switch-back is a normal-workflow escape; local
-  branches only, so fetched peer work is never attributed — a false hold from a
-  stray local branch stays breaker-bounded, the safe direction). SHA-anchored, never
+  branches only, so fetched peer work is never attributed). **Attribution scope
+  (R48 — round 5's false-hold refinement):** the all-branches arm applies to the
+  run's registered `work_dir` root and to worktrees CREATED in-run (unambiguously
+  this run's work); for the SHARED agent-home base root, only `HEAD` +
+  `status --porcelain` are attributed (concurrent work by other sessions in the
+  shared clone must not hold this run). The residual (this run commits to a
+  non-HEAD branch of the shared root) is named in §6; a false hold from a stray
+  local branch in the run's own roots stays breaker-bounded, the safe direction. SHA-anchored, never
   `--since` (commit dates are author-settable). Uncommitted arm = `git status
   --porcelain` with the porcelain mapping FIXED (R42): `??` untracked and `A`/`M`
   states = present; `R`/`C` rename/copy = the NEW path is present (old path treated
@@ -301,15 +307,15 @@ Two ratification paths, both terminating in server-owned records:
    Closes the display-integrity gap (Agent Proposes, Operator Approves): the operator
    must approve a SERVER-authored statement whose displayed set is byte-identical to
    what executes.
-   - Trigger: a deterministic scan of the topic's REAL inbound history (the
-     adapter's single `telegram-messages.jsonl`, filtered per-topic on read — rows
-     carry `messageId` + `telegramUserId`; NOT `MessageStore`, which is the A2A
-     store) for defer-intent vocabulary
+   - Trigger: a deterministic match run AT THE LIVE RECEIVE PATH (R45) — as each
+     inbound topic message passes through the server's own Telegram receive
+     handling it is checked for defer-intent vocabulary
      (frontloaded list: "defer", "later session", "don't build", "skip building",
      "leave for a future", "ratify deferral") from the VERIFIED operator
-     (TopicOperatorStore uid match on the authenticated sender id), windowed to
-     `[max(started_at, oldest unbuilt artifact ts), now]` with an indexed/windowed
-     read (never a full-store scan).
+     (TopicOperatorStore uid match on the authenticated sender id), within the
+     window `[max(started_at, oldest unbuilt artifact ts), now]`. Matched trigger
+     events persist as server-owned records in the run record — never re-read from
+     any history file (NOT `MessageStore`, the A2A store; not the adapter JSONL).
    - On trigger, the SERVER (not the session) sends the enumeration via
      `TelegramAdapter.sendToTopic` under the server's own bot credentials (R37 —
      component named): "Ratify deferring these N artifacts? <exact repo-relative
@@ -329,18 +335,14 @@ Two ratification paths, both terminating in server-owned records:
      toward exit, so it is strict). A pre-accretion blanket "defer those" alone
      ratifies NOTHING; vocabulary-only matches with no anchored confirmation resolve
      to the EMPTY set.
-   - The forged-JSONL vector is bounded honestly (R24, reframed by round 3): the
-     anchor is an ORDERING constraint, not an authenticity proof — confirmations are
-     read from the same local history file, so a session could observe the delivered
-     enumeration and append a forged reply-anchored affirmative after it. What the
-     design guarantees is that this forgery is a deliberate TWO-STEP fabrication
-     that is never a normal workflow step, that the enumeration genuinely lands in
-     the operator's real topic (so the attempt is visible live), and that the exit
-     notice always lists ratified-deferred artifacts — R12 deterrence, not
-     impossibility (§6). Hardening option the builder SHOULD take: consume
-     confirmations at the server's in-process Telegram receive path (the server
-     long-polls Telegram itself) rather than re-reading the on-disk history — that
-     eliminates the forged-row vector outright at near-zero cost.
+   - Why this is out-of-band (R24, superseded by R45): because BOTH trigger and
+     confirmation exist only as server-persisted records of messages the server
+     itself received from Telegram, a session cannot author a trigger or a
+     confirmation by writing to ANY local file — the forged-row vector of earlier
+     rounds does not exist in this design (there is no file the matcher reads).
+     What remains is the R12 same-machine limit (§6): a process that can rewrite
+     the server's own run records can rewrite anything; that is tamper-class, not
+     workflow-class.
 
 ### 2.7 Advisory layers A and B (unchanged in role, honest in claims)
 
@@ -489,9 +491,12 @@ structurally impossible on every path.
 **Fixture realness (R29):** the three new text parsers are REGISTERED per the
 standard, each fed byte-for-byte captured fixtures under `tests/fixtures/captured/`:
 (1) Layer B scan — a real autonomous-run transcript tail (incl. fenced/quoted regions
-and ANSI); (2) ratification trigger + confirmation matcher — real per-topic Telegram
-JSONL rows; (3) declared-deliverable grammar — real registered completion-condition
-texts (including the pathless "draft five specs" incident shape asserting EMPTY set).
+and ANSI); (2) ratification trigger + confirmation matcher — captured REAL Telegram
+receive-path message payloads (the update objects as the server receives them, incl.
+reply_to_message shapes; per R45 the matcher consumes live receive-path messages,
+so the fixtures are receive-path payloads, not file rows); (3) declared-deliverable
+grammar — real registered completion-condition texts (including the pathless "draft
+five specs" incident shape asserting EMPTY set).
 
 Unit: sweep classifier (per class glob; deletion flag; out-of-allowlist advisory;
 clamps); corroboration resolver (report-exists / merged-PR-with-non-docs-path /
@@ -528,15 +533,18 @@ fires.
    SERVER-registered condition (R36). The run lifecycle is anchored by the new
    `POST /autonomous/register` route (R30) — one registration per active run,
    immutable declared list.
-3. **Ratification is display-integral**: PIN route, or verified-operator confirmation
-   of a SERVER-authored enumeration that post-dates the artifacts and is bound by
-   message-id chain (R23/R24). Blanket pre-accretion phrases ratify nothing. Store
-   identity corrected: the per-topic Telegram inbound JSONL, not `MessageStore`.
-4. **Corroboration is per-class and never self-authorable** (R21+R32+R33+R34):
-   spec-class clears by report+server-recorded-ceremony-evidence or the exact
-   merged-PR predicate (≥1 non-docs path, ≥10 non-docs lines, never the artifact's
-   own file alone); git-first evidence (SHA-anchored), gh fallback; positives
-   persist (monotone).
+3. **Ratification is display-integral and receive-path-only**: PIN route, or
+   verified-operator confirmation of a SERVER-authored enumeration that post-dates
+   the artifacts and is bound by message-id chain (R23), with BOTH trigger and
+   confirmation matched only at the server's live Telegram receive path and
+   persisted as server-owned records (R45) — no on-disk message file is part of the
+   mechanism. Blanket pre-accretion phrases ratify nothing.
+4. **Corroboration is per-class and never self-authorable** (R21+R32+R33+R34) —
+   evidence is typed attestations: server-recorded ceremony evidence (with the
+   report artifact), the exact merged-PR predicate (≥1 non-docs path, ≥10 non-docs
+   lines, never the artifact's own file alone) with `gh` as the merged-PR
+   authority and local git as a positive-only shortcut, registration-declared, or
+   operator ratification. Positives persist (monotone).
 5. **Class boundary is glob-only** (R20): the undecidable "presents as output" clause
    is dropped; eli16 companions clear with their parent; out-of-allowlist docs are
    advisory-flagged, never blocking.
@@ -567,13 +575,25 @@ fires.
   files or the server itself. Bound: no load-bearing input lives in files the
   session routinely writes; tampering is never a normal workflow step, is
   individually detectable, and is a visible attributable lie (constitution framing).
-- **Forged confirmation (two-step):** induce an enumeration, then append a forged
-  reply-anchored operator row to the local history. Non-normal-workflow, visible
-  live in the operator's real topic, listed at exit; eliminated outright if the
-  builder takes the in-process receive-path option (R24).
+- **Forged confirmation:** does not exist as a file-write vector in this design —
+  triggers and confirmations are only ever server-persisted records of messages the
+  server itself received from Telegram (R45). The residual is same-machine
+  tamper-class only (rewriting the server's own run records), covered by the first
+  bound above.
 - **Out-of-root writes:** deliverables written to repos/dirs outside the swept root
   set (R31) are invisible to the blocking sweep; the advisory ledger flags them as
   suspected when it saw the Write. Accepted bound, stated.
+- **Shared-root non-HEAD branches (R48):** a run committing deliverables to a
+  non-HEAD branch of the SHARED agent-home root evades the committed arm there
+  (attribution is HEAD-only on shared roots to avoid false holds from concurrent
+  sessions). The run's own work_dir/worktrees have full all-branches coverage;
+  shared-root deliverable work normally lands via PR (the corroboration arm sees
+  it). Accepted, named.
+- **runId cross-check (builder note):** evaluate-completion callers present
+  topicId/runId; the server verifies the pair against its own registration record
+  and refuses mismatches — a session presenting ANOTHER topic's identifiers is
+  refused by the pair check, and forging the pair requires reading the other run's
+  state file (tamper-class, first bound).
 - **Backdated commits:** mitigated by SHA-anchored sweeps (R31) — a commit is seen
   regardless of its dates; only history rewritten below the recorded start-SHA
   evades, which is tamper-class, not workflow-class.
