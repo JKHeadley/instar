@@ -1144,6 +1144,24 @@
       "grandfathered": false
     },
     {
+      "category": "guard-accepted-fallbacks",
+      "description": "Durable, per-machine OWNED operator-accept records for the G3 dark-but-load-bearing classification (g3-dark-but-load-bearing-guards §2.4) - keyed <machineId>:<guardKey> -> {reason, owner, acceptedAt}. Suppresses a load-bearing guard's loadBearingGap into a VISIBLE accepted-risk row. Reserved for a genuine PIN-authenticated operator decision; per-machine (an accept on one machine never silences a peer's gap). Machine-local decision record, never authority over a peer.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/guard-accepted-fallbacks.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 100,
+        "note": "Bounded by the curated load-bearing guard set (currently small): one record per <machineId>:<guardKey>. Each record is RESOLVED by graduating the guard or by an operator DELETE-revoke; never grows unbounded."
+      }
+    },
+    {
       "category": "remote-close-audit",
       "description": "Relaying machine's append-only record of every relayed session-close ORDER (REMOTE-SESSION-CLOSE-SPEC §2.3) - target machine, sessionUuid, observed outcome. The owner's reap-log is the authoritative record of the kill; this is the order-end manifest so a relayed kill sweep cannot be traceless on the relayer. Machine-local audit history, never authority.",
       "scope": "machine-local",

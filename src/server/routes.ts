@@ -79,6 +79,13 @@ import {
   resolveGuardConfigSnapshot,
 } from '../monitoring/guardPosture.js';
 import { buildGuardInventory } from '../monitoring/guardPostureView.js';
+import {
+  readAcceptedFallbacks,
+  scopeAcceptedFallbacks,
+  writeAcceptedFallback,
+  deleteAcceptedFallback,
+} from '../monitoring/guardAcceptedFallbacks.js';
+import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
@@ -5911,12 +5918,17 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(500).json({ error: `guard inventory unavailable: config read failed (${snapshot.readError})` });
       return;
     }
+    const selfMachineId = ctx.meshSelfId ?? null;
+    // G3 (§2.6): ONE accept-file read per request, scoped to THIS machine, threaded
+    // in — buildGuardInventory + deriveGuardRow stay PURE (the caller does the I/O).
+    const acceptedFallbacks = scopeAcceptedFallbacks(readAcceptedFallbacks(stateDir), selfMachineId);
     const inventory = buildGuardInventory({
       snapshot,
       bootSnapshot: readGuardPostureBootSnapshot(stateDir),
       registry: ctx.guardRegistry ?? new GuardRegistry(),
+      now: Date.now(),
+      acceptedFallbacks,
     });
-    const selfMachineId = ctx.meshSelfId ?? null;
     const body: Record<string, unknown> = {
       machineId: selfMachineId,
       nickname: selfMachineId
@@ -6022,6 +6034,44 @@ export function createRoutes(ctx: RouteContext): Router {
         },
       });
     });
+  });
+
+  // ── G3: owned operator-accept of a load-bearing guard's dark-but-load-bearing
+  // gap (g3-dark-but-load-bearing-guards §2.4). PIN-GATED (checkMandatePin; Know
+  // Your Principal — a Bearer token cannot accept a SAFETY RISK for the operator).
+  // Per-machine record: state/guard-accepted-fallbacks.json keyed <machineId>:<key>.
+  // BOTH `reason` and `owner` are REQUIRED — the PIN proves only "a PIN-holder,"
+  // not a NAMED operator, so `owner` cannot be derived (Decision 12).
+  router.post('/guards/:key/accept-fallback', (req, res) => {
+    if (!checkMandatePin(req, res)) return; // response already sent on failure
+    const key = req.params.key;
+    const entry = GUARD_MANIFEST.find((e) => e.key === key);
+    if (!entry || !entry.loadBearing) {
+      res.status(404).json({ error: `no load-bearing guard "${key}" — accept-fallback applies only to a load-bearing guard` });
+      return;
+    }
+    const b = req.body ?? {};
+    const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
+    const owner = typeof b.owner === 'string' ? b.owner.trim() : '';
+    if (!reason || !owner) {
+      res.status(400).json({ error: 'reason and owner are BOTH required (an owned acceptance, not a shrug)' });
+      return;
+    }
+    const record = writeAcceptedFallback(ctx.config.stateDir, ctx.meshSelfId ?? null, key, reason, owner);
+    res.json({ ok: true, key, accepted: record });
+  });
+
+  // Revoke a per-machine accept — the gap reopens (loud again). Touches ONLY the
+  // JSON operator record, never the manifest soak constant (reboot-stable, §2.4).
+  router.delete('/guards/:key/accept-fallback', (req, res) => {
+    if (!checkMandatePin(req, res)) return; // response already sent on failure
+    const key = req.params.key;
+    const removed = deleteAcceptedFallback(ctx.config.stateDir, ctx.meshSelfId ?? null, key);
+    if (!removed) {
+      res.status(404).json({ error: `no accepted-fallback record for "${key}" on this machine` });
+      return;
+    }
+    res.json({ ok: true, key, revoked: true });
   });
 
   // Coherence Journal merged read API (COHERENCE-JOURNAL-SPEC §3.5). The

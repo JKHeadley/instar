@@ -100,6 +100,7 @@ import { SessionWatchdog } from '../monitoring/SessionWatchdog.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { resolveGuardConfigSnapshot, readGuardPostureBootSnapshot } from '../monitoring/guardPosture.js';
 import { buildGuardInventory, buildHeartbeatPostureBlock } from '../monitoring/guardPostureView.js';
+import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe.js';
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { isPeerUrlAllowedForCredentials } from '../server/peerUrlGuard.js';
@@ -14178,6 +14179,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 snapshot: snap,
                 bootSnapshot: readGuardPostureBootSnapshot(config.stateDir),
                 registry: guardRegistry,
+                now: Date.now(),
+                // G3 (§2.6): thread THIS machine's operator-accept map (one read),
+                // so an accepted load-bearing guard never surfaces as a gap here.
+                acceptedFallbacks: scopeAcceptedFallbacks(readAcceptedFallbacks(config.stateDir), _meshSelfId ?? null),
               });
             } catch { return null; /* @silent-fallback-ok — probe degrades to no-local-posture for this tick; the route surfaces config errors loudly */ }
           },
@@ -14217,6 +14222,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             await telegram.createAttentionItem(item);
           },
           stateDir: config.stateDir,
+          // G3 (§6): the load-bearing-gap ATTENTION alert defaults on (soak-gated is
+          // automatic — soak windows are manifest constants). Rollback = set this
+          // false; /guards keeps the classification either way.
+          alertLoadBearingGaps:
+            (config.monitoring as { guardPostureProbe?: { alertLoadBearingGaps?: boolean } } | undefined)
+              ?.guardPostureProbe?.alertLoadBearingGaps ?? true,
         }),
         ...createPlatformProbes({
           tmuxPath,
@@ -16629,6 +16640,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                 snapshot: snap,
                 bootSnapshot: readGuardPostureBootSnapshot(config.stateDir),
                 registry: guardRegistry,
+                now: Date.now(),
+                // G3 (§2.6, round-4 3rd-site fix): the heartbeat compute MUST thread
+                // the local accept map + now, else an operator-accepted load-bearing
+                // guard is re-derived as a Gap here and shipped to peers as a FALSE
+                // load-bearing-gap (and the soak lapse would misfire with an unthreaded now).
+                acceptedFallbacks: scopeAcceptedFallbacks(readAcceptedFallbacks(config.stateDir), _meshSelfId ?? null),
               });
               return buildHeartbeatPostureBlock(inv, new Date().toISOString());
             } catch (err) {
