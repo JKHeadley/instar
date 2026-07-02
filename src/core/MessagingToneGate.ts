@@ -1048,9 +1048,10 @@ These rules only fire when the producer has explicitly marked the candidate as a
 ## Response format
 
 Respond EXCLUSIVELY with valid JSON:
+(Escaping rule: when quoting the candidate inside issue/suggestion strings, use single quotes or escaped \\" — a raw double quote inside a JSON string breaks the parser and voids your verdict.)
 {
   "pass": boolean,
-  "rule": "<rule id from the lists above, or empty string if pass is true>",
+  "rule": "<the FULL rule identifier from the lists above, byte-identical to how it appears there (e.g. B15_CONTEXT_DEATH_STOP — never the bare number like B15), or empty string if pass is true>",
   "issue": "<for B1–B7: cite the detected literal artifact. For behavioral rules (B15–B18): state in your own words WHICH intent you detected and WHY this candidate expresses it (1–2 sentences). Empty if pass is true.>",
   "suggestion": "<how to rephrase — empty if pass is true>",
   "structured": {
@@ -1063,7 +1064,7 @@ Respond EXCLUSIVELY with valid JSON:
   }
 }
 
-If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be exactly one of B1–B9, B11, B12, B13, B14, B15, B16, B17, B18, B19, or B20 (no other values — inventing rule ids is itself a violation). For a self-stop judgment, keep the structured block CONSISTENT (do not say proposed_stop:false while listing deferred_items; do not say agent_state_reason_present:true while stop_reason_kind is completion/none).
+If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be the FULL identifier of exactly one rule from the lists above, byte-identical to how it is written there (e.g. B15_CONTEXT_DEATH_STOP, B16_UNVERIFIED_WALL, B17_FALSE_BLOCKER — NEVER the bare number like "B15"; a bare or invented id fails the parser and is itself a violation). For a self-stop judgment, keep the structured block CONSISTENT (do not say proposed_stop:false while listing deferred_items; do not say agent_state_reason_present:true while stop_reason_kind is completion/none).
 
 Channel: ${channel}
 ${kindSection}${contextSection}${signalsSection}${gateSignalsSection}${styleSection}${agentStateSection}${standingAuthSection}
