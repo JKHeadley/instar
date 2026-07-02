@@ -78,8 +78,12 @@ describe('MessagingToneGate — B15_CONTEXT_DEATH_STOP', () => {
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate.', { channel: 'telegram' });
     const prompt = getPrompt();
-    // The response-format section enumerates allowed rule ids; B15 must be there.
-    expect(prompt).toMatch(/B1[–-]B9.*B11.*B12.*B13.*B14.*B15/);
+    // The response-format constraint demands the FULL rule identifier (the
+    // short-id enumeration was removed 2026-07-02 — it taught models the form
+    // the parser rejects); B15's full id must be citable from the rule lists.
+    expect(prompt).toMatch(/FULL identifier/);
+    expect(prompt).toMatch(/B15_CONTEXT_DEATH_STOP/);
+    expect(prompt).not.toMatch(/rule MUST be exactly one of B1[–-]B9/);
   });
 
   it('accepts B15 as a valid rule id without fail-opening (no invalidRule flag)', async () => {

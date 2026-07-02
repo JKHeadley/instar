@@ -77,7 +77,10 @@ describe('MessagingToneGate — B16_UNVERIFIED_WALL', () => {
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate.', { channel: 'telegram' });
     const prompt = getPrompt();
-    expect(prompt).toMatch(/B14.*B15.*B16/);
+    // Full-id contract (2026-07-02): B16 is citable via its FULL identifier
+    // in the rule lists; the constraint demands the full form.
+    expect(prompt).toMatch(/B16_UNVERIFIED_WALL/);
+    expect(prompt).toMatch(/FULL identifier/);
   });
 
   it('accepts B16 as a valid rule id without fail-opening (the /goal-style unverified wall)', async () => {

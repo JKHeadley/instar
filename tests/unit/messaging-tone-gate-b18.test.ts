@@ -73,10 +73,11 @@ describe('MessagingToneGate — B18_AUTONOMY_STOP', () => {
     const { provider, getPrompt } = captureProvider({ pass: true, rule: '', issue: '', suggestion: '' });
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate.', { channel: 'telegram' });
-    // The LLM must be told B18 is a citable rule id, else it would never cite it.
-    // The enumeration now runs through B20 ("…B17, B18, B19, or B20").
-    expect(getPrompt()).toMatch(/B17,\s*B18/);
-    expect(getPrompt()).toMatch(/or\s*B20/);
+    // The LLM must be told B18 is a citable rule id, else it would never cite
+    // it. Under the full-id contract (2026-07-02) citability comes from the
+    // rule LISTS rendering every full identifier, through B20.
+    expect(getPrompt()).toMatch(/B18_AUTONOMY_STOP/);
+    expect(getPrompt()).toMatch(/B20_INTERNAL_ID_LEAK/);
   });
 
   it('accepts B18 as a valid rule id without fail-opening (no invalidRule flag)', async () => {
