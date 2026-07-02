@@ -12186,7 +12186,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
 
     try {
-      const ts = await ctx.slack.sendToChannel(channelId, text, { thread_ts });
+      // Per-call formatter opt-out (roadmap 0.1): a caller that already
+      // authors Slack mrkdwn passes metadata.formatMode 'legacy-passthrough'
+      // so the GFM->mrkdwn converter does not re-process its bytes.
+      const requestedFormatMode = metadata?.formatMode;
+      const formatMode =
+        requestedFormatMode === 'legacy-passthrough' || requestedFormatMode === 'mrkdwn'
+          ? requestedFormatMode
+          : undefined;
+      const ts = await ctx.slack.sendToChannel(channelId, text, { thread_ts, formatMode });
 
       // Notify onMessageLogged that the agent responded (so PresenceProxy cancels standby)
       if (ctx.slack.onMessageLogged) {

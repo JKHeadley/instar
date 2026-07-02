@@ -72,6 +72,11 @@ src/
                   # 'markdown' — flip to 'legacy-passthrough' in .instar/config.json
                   # for byte-for-byte rollback; per-call `_formatMode: 'html'` opt-out
                   # for callers already producing Telegram HTML),
+                  # slack/SlackMrkdwnFormatter (GFM→mrkdwn for Slack; default
+                  # 'mrkdwn' — flip to 'legacy-passthrough' in the slack messaging
+                  # config block for byte-for-byte rollback; per-call
+                  # `formatMode: 'legacy-passthrough'` opt-out for callers already
+                  # producing mrkdwn),
                   # MessageRouter (topic → adapter routing),
                   # DeliveryRetryManager (retry on failed delivery),
                   # PendingRelayStore (durable SQLite queue for Telegram relay;

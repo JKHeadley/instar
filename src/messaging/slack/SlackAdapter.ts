@@ -28,7 +28,9 @@ import { FileHandler } from './FileHandler.js';
 import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
-import { sanitizeDisplayName, validateChannelId, escapeMrkdwn } from './sanitize.js';
+import { sanitizeDisplayName, validateChannelId } from './sanitize.js';
+import { applySlackFormatter, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
+import type { SlackApiResponse } from './SlackApiClient.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
 
@@ -330,10 +332,28 @@ export class SlackAdapter implements MessagingAdapter {
         params.thread_ts = (message as unknown as Record<string, unknown>).threadTs;
       }
 
-      lastResult = await this.apiClient.call('chat.postMessage', params);
+      lastResult = await this.formattedApiCall('chat.postMessage', params);
     }
 
     return lastResult;
+  }
+
+  /**
+   * The single outbound formatting chokepoint (roadmap 0.1) — every
+   * user-visible send (chat.postMessage / chat.update / chat.postEphemeral)
+   * funnels through here so agent-authored GitHub markdown renders as native
+   * Slack mrkdwn instead of literal `**asterisks**`.
+   *
+   * Mirrors TelegramAdapter.apiCall + applyTelegramFormatter: default ON
+   * ('mrkdwn'); rollback via `formatMode: 'legacy-passthrough'` in the slack
+   * messaging config block; per-call opt-out via `params._formatMode` (set by
+   * `sendToChannel`'s `options.formatMode`) for callers that already author
+   * mrkdwn. Non-send methods and Block Kit payloads pass through unchanged —
+   * see applySlackFormatter for the exact skip rules.
+   */
+  private formattedApiCall(method: string, params: Record<string, unknown>): Promise<SlackApiResponse> {
+    const { outgoingParams } = applySlackFormatter(method, params, this.config.formatMode);
+    return this.apiClient.call(method, outgoingParams);
   }
 
   onMessage(handler: (message: Message) => Promise<void>): void {
@@ -471,12 +491,19 @@ export class SlackAdapter implements MessagingAdapter {
    * routing key here: if `channelId` contains ':' we split it and thread the reply
    * under the embedded thread_ts. An explicit `options.thread_ts` always wins.
    */
-  async sendToChannel(channelId: string, text: string, options?: { thread_ts?: string }): Promise<string> {
+  async sendToChannel(
+    channelId: string,
+    text: string,
+    options?: { thread_ts?: string; formatMode?: SlackFormatMode },
+  ): Promise<string> {
     const parsed = this.parseRoutingKey(channelId);
     const params: Record<string, unknown> = { channel: parsed.channelId, text };
     const threadTs = options?.thread_ts ?? parsed.threadTs;
     if (threadTs) params.thread_ts = threadTs;
-    const result = await this.apiClient.call('chat.postMessage', params);
+    // Per-call formatter opt-out for callers that already author mrkdwn
+    // (stripped from params inside the formatting funnel, never sent to Slack).
+    if (options?.formatMode) params._formatMode = options.formatMode;
+    const result = await this.formattedApiCall('chat.postMessage', params);
     return result.ts as string;
   }
 
@@ -492,7 +519,7 @@ export class SlackAdapter implements MessagingAdapter {
 
   /** Update an existing message. */
   async updateMessage(channelId: string, timestamp: string, text: string): Promise<void> {
-    await this.apiClient.call('chat.update', { channel: channelId, ts: timestamp, text });
+    await this.formattedApiCall('chat.update', { channel: channelId, ts: timestamp, text });
   }
 
   /** Pin a message. */
@@ -502,14 +529,16 @@ export class SlackAdapter implements MessagingAdapter {
 
   /** Send an ephemeral message (visible only to one user). */
   async postEphemeral(channelId: string, userId: string, text: string): Promise<void> {
-    await this.apiClient.call('chat.postEphemeral', { channel: channelId, user: userId, text });
+    await this.formattedApiCall('chat.postEphemeral', { channel: channelId, user: userId, text });
   }
 
   /** Send a message with Block Kit blocks. */
   async sendBlocks(channelId: string, blocks: unknown[], text?: string): Promise<string> {
     const params: Record<string, unknown> = { channel: channelId, blocks };
     if (text) params.text = text; // Fallback text for notifications
-    const result = await this.apiClient.call('chat.postMessage', params);
+    // Routed through the formatting funnel for uniformity — Block Kit payloads
+    // are skipped there by rule (blocks are authored deliberately).
+    const result = await this.formattedApiCall('chat.postMessage', params);
     return result.ts as string;
   }
 

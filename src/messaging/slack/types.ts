@@ -50,6 +50,17 @@ export interface SlackConfig {
    * DMs always use "all" mode regardless of this setting.
    */
   respondMode?: SlackRespondMode;
+  /**
+   * Outbound GFM→mrkdwn formatter mode (roadmap 0.1). Default `'mrkdwn'` —
+   * agent-authored GitHub-flavored markdown is converted to native Slack
+   * mrkdwn at the outbound chokepoint (so `**bold**` renders bold instead of
+   * as literal asterisks). Flip to `'legacy-passthrough'` for byte-for-byte
+   * pre-formatter behavior (the rollback lever, mirroring
+   * `telegramFormatMode`). Callers that already author mrkdwn opt out
+   * per-call via `sendToChannel(..., { formatMode: 'legacy-passthrough' })`.
+   * See src/messaging/slack/SlackMrkdwnFormatter.ts.
+   */
+  formatMode?: 'mrkdwn' | 'legacy-passthrough';
   /** Audio file transcription provider */
   audioTranscriptionProvider?: 'groq' | 'openai';
   /** Stall detection timeout in minutes (default: 5) */

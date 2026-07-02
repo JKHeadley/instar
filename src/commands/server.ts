@@ -6137,7 +6137,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                     await _slackAdapter.relayPrompt(channelId, prompt.id, question, options);
                   } else {
                     await _slackAdapter.sendToChannel(channelId,
-                      `⏳ *Agent needs your input:*\n${question}\n\n_Reply in this channel to respond._`
+                      `⏳ *Agent needs your input:*\n${question}\n\n_Reply in this channel to respond._`,
+                      // Already-authored mrkdwn (single-asterisk bold) — opt out
+                      // of the GFM->mrkdwn converter (roadmap 0.1).
+                      { formatMode: 'legacy-passthrough' }
                     );
                   }
                   console.log(`[PromptGate] Relayed ${prompt.type} prompt to Slack channel ${channelId}`);
