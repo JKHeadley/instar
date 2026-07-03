@@ -170,6 +170,37 @@ assuming; and a corrupted line in the middle of the recovery journal now stops
 recovery loudly (preserving everything for inspection) instead of silently
 skipping a committed record.
 
+## Round-9 hardening (the last crash-path corner, and dead weight removed)
+
+Round 8 found one real blocker plus polish; all closed:
+
+- **A crashed one-off notice now retries instead of being silently dropped.** The
+  round-7 "I'm about to send this" note resolves at restart by WHO sent it. For a
+  reminder, "it may have posted" safely skips one beat — the next reminder comes on
+  schedule. But a one-off notice ("your session was restarted") has no next beat:
+  treating its unknown outcome as "may have posted" made the suppression permanent,
+  and the notice could be lost with paperwork that looks like a delivery. The note
+  now records which kind of sender wrote it, and at restart a one-off notice's
+  unresolved note resolves toward RETRY. The honest trade: if the crashed send had
+  actually posted, you may see the same notice twice (visible, bounded) — never a
+  notice silently lost.
+- **A journal line from a newer version no longer looks like corruption.** After a
+  rollback, the recovery journal can hold a record type the older code doesn't
+  know. That's version skew, not damage: recovery now skips applying it, keeps the
+  line untouched for the future re-upgrade, and says so once — instead of tripping
+  the loud corruption alarm on every rotated file.
+- **A write-only "checkpoint" record was deleted.** Rotation used to write an
+  anchor record that nothing ever read — dead weight that could only cause the
+  false-corruption problem above. Recovery reads its position from the snapshot
+  itself; the anchor is gone.
+- **Small print pinned:** the reminder-key format is now spelled out at both places
+  that mention it (one canonical encoding, so two implementations can't drift); a
+  future sender wanting its own "promise number" must also define when its entries
+  retire, or it belongs on the short-window lane; re-enabling the feature after a
+  rollback needs no special path (the normal startup pass absorbs whatever is on
+  disk); and the 14-day grace clock for old ungated sessions now names the file
+  that anchors it.
+
 ## Open questions
 
 None. Earlier drafts had two, and both turned out to be items already tracked on
