@@ -89,8 +89,12 @@ and the latest round closed the last known holes:
   density limit per stretch of numbers, so no amount of spreading can crowd a real
   conversation out.
 - **The promise's thread-note is sanity-checked before use.** If that note is ever
-  corrupted (a bug, a bad migration), delivery falls back to the normal lookup and
-  raises one visible alert — never a silent redirect into the wrong thread.
+  corrupted (a bug, a bad migration), delivery STOPS with one visible alert and the
+  usual retry/escalation — never a silent redirect into the wrong thread. (Round 7
+  tightened this: an earlier draft "fell back to the normal lookup" on corruption,
+  but the normal lookup can itself point at the wrong thread in exactly the
+  situation the note exists for — so a detected-corrupt note now refuses to deliver
+  at all.)
 - **No double-posting even if the server dies mid-bookkeeping.** Finishing a send
   updates two separate files; we pinned the order so that a crash between the two
   can only leave a harmless expiring leftover, never a repeated message.
@@ -101,6 +105,36 @@ and the latest round closed the last known holes:
 
 None of this changes what users see; it changes what can silently go wrong (now:
 nothing we know of).
+
+## Round-7 hardening (crash windows and one identity rule)
+
+Round 6 was the first review with zero critical findings; what remained were four
+narrow seams, each now closed:
+
+- **A note-to-self before every send.** If the server died in the split second
+  between a message actually posting and the bookkeeping that records it, a repeat
+  post was possible. The sender now writes a durable "I'm about to send this" note
+  first; on restart, an unresolved note is treated as "it may have posted" — worst
+  case is one skipped heartbeat (the next one comes on schedule), never a
+  double-post.
+- **One name authority.** Each shared record carried both a structured identity and
+  a display name, and a crafted record could make the two disagree — with two rules
+  reading different fields. The structured identity is now the only authority; the
+  display name is recomputed from it, and a record whose name disagrees is refused
+  everywhere, identically.
+- **Restart bookkeeping can't resurrect a deleted forwarding note.** The
+  round-6 "ownership beats forwarding note" rule deletes stale notes — but a
+  restart replaying old bookkeeping could have brought one back. The restart path
+  now re-applies the same ownership-wins rule after replaying, and the reading
+  position for records from other machines is saved together with the state it
+  produced, so nothing is lost or resurrected across a crash.
+- **Corrupt promise-notes refuse instead of guessing** (the bullet updated above).
+
+Plus small honesty notes: the anti-flood limits are per-machine (a vandal actively
+flooding can make machines briefly disagree about the vandal's own records — loud,
+bounded, self-healing, and real conversations are unaffected); and a crash at the
+exact wrong moment can leave one harmless permanently-parked delivery pin (a
+cleanup sweep is the named follow-up).
 
 ## Open questions
 
