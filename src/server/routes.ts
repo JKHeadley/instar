@@ -12500,6 +12500,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // ── X-Instar-DeliveryId idempotency (spec §2.4) ──
+    // Mirrors /telegram/reply: a duplicate POST with the same delivery-id
+    // returns 200 idempotent WITHOUT re-sending. This closes the
+    // "200-but-client-blind" double-send class where a redrive re-posts a
+    // message that actually landed the first time but the script-side response
+    // was lost. The id is recorded only AFTER a successful send (below), so a
+    // failed send never poisons the id. (The durable id-ledger of §2.4 is a
+    // tracked follow-up; this in-memory LRU is the deployed-Telegram-parity
+    // baseline.)
+    const slackDeliveryIdHeader = req.headers['x-instar-deliveryid'];
+    const slackDeliveryId = Array.isArray(slackDeliveryIdHeader)
+      ? slackDeliveryIdHeader[0]
+      : slackDeliveryIdHeader;
+    const hasSlackDeliveryId =
+      typeof slackDeliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(slackDeliveryId);
+    if (hasSlackDeliveryId && deliveryLruHas(slackDeliveryId as string)) {
+      res.json({ ok: true, topicId: channelId, idempotent: true });
+      return;
+    }
+
     if (
       await checkOutboundMessage(text, 'slack', res, {
         allowDebugText: metadata?.allowDebugText === true,
@@ -12533,6 +12553,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         () => ctx.slack!.sendToChannel(channelId, text, { thread_ts, formatMode }),
         SLACK_ADAPTER_SEND_TIMEOUT_MS,
       );
+
+      // Record the delivery-id ONLY after a successful send (spec §2.4) — a
+      // failed send (which throws before here, incl. the ambiguous 408
+      // timeout) must not poison the id so its legitimate retry isn't lost.
+      if (hasSlackDeliveryId) {
+        deliveryLruRecord(slackDeliveryId as string);
+      }
 
       // Notify onMessageLogged that the agent responded (so PresenceProxy cancels standby)
       if (ctx.slack.onMessageLogged) {

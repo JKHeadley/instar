@@ -7984,9 +7984,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       shippedMarker: 'slack-reply.sh — Send a message to a Slack channel via the instar server',
       label: 'scripts/slack-reply.sh',
       result,
-      // Threads-as-sessions (§5.3): refresh a deployed script that lacks the
-      // optional thread_ts 2nd-arg support, so thread replies route correctly.
-      featureMarker: 'slack-reply-feature: thread-ts-arg',
+      // slack-outbound-robustness §2.6/R8-M1 Arm C: refresh a deployed script
+      // that lacks the pre-POST X-Instar-DeliveryId mint + 409-non-losing
+      // classification. This marker supersedes the thread-ts-arg one (the new
+      // template contains BOTH), so a deployed thread-ts-arg-but-no-delivery-id
+      // script is correctly refreshed.
+      featureMarker: 'slack-reply-feature: delivery-id',
     });
 
     // WhatsApp reply script — lives in .instar/scripts/ per init.ts, not

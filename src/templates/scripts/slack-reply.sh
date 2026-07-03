@@ -16,6 +16,7 @@
 # 1699999999.000100 (digits + a single dot). Omit it for a channel-level reply
 # (today's default behavior, unchanged).
 # slack-reply-feature: thread-ts-arg
+# slack-reply-feature: delivery-id  (pre-POST X-Instar-DeliveryId + 409 non-losing, §2.6/R8-M1 Arm C)
 
 set -euo pipefail
 
@@ -92,12 +93,22 @@ else
   BODY_JSON="{\"text\": ${ESCAPED}}"
 fi
 
+# ── delivery-id minted BEFORE the first POST (spec slack-outbound-robustness
+# §2.6 / §2.4) ──
+# Sent as X-Instar-DeliveryId on the INITIAL send so the server records THIS id
+# the moment the send lands; a duplicate POST with the same id is then answered
+# idempotent:true instead of re-posting (the double-post window the deployed
+# headerless send left open). A mint failure (python3 gone) degrades to today's
+# headerless send — fail toward delivery, never a refused send.
+DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+
 # Send via Instar server
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
   "http://localhost:${PORT}/slack/reply/${CHANNEL_ID}" \
   -H "Content-Type: application/json" \
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
   ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
+  ${DELIVERY_ID:+-H "X-Instar-DeliveryId: $DELIVERY_ID"} \
   -d "$BODY_JSON")
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
@@ -115,6 +126,25 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "  If the message is there, proceed; if not, retry with a shorter/simpler version." >&2
   echo "AMBIGUOUS (HTTP 408): outcome unknown — verify in conversation before retrying"
   exit 0
+elif [ "$HTTP_CODE" = "409" ]; then
+  # 409 delivery-in-flight (spec R8-M1 Arm C): the server's §2.4 single-flight
+  # reservation saw a concurrent POST for THIS delivery-id still in flight — the
+  # message is ALREADY being delivered under this id. This is NON-LOSING:
+  # do NOT re-send (that is the double-post the reservation exists to close) and
+  # do NOT drop. Exit 0; the in-flight call owns delivery. An UNSTRUCTURED 409
+  # is a genuine conflict → terminal (exit 1).
+  IN_FLIGHT_CODE=$(echo "$BODY" | python3 -c 'import sys,json
+try:
+  print(json.load(sys.stdin).get("error",""))
+except Exception:
+  print("")' 2>/dev/null || echo "")
+  if [ "$IN_FLIGHT_CODE" = "delivery-in-flight" ]; then
+    echo "IN-FLIGHT (HTTP 409): this message is already being delivered under the same id; not re-sending." >&2
+    echo "IN-FLIGHT (HTTP 409): delivery in progress — not re-sent (idempotent)"
+    exit 0
+  fi
+  echo "Failed (HTTP ${HTTP_CODE}): ${BODY}" >&2
+  exit 1
 elif [ "$HTTP_CODE" = "422" ]; then
   ISSUE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("issue","unknown"))' 2>/dev/null || echo "unknown")
   SUGGESTION=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("suggestion",""))' 2>/dev/null || echo "")
