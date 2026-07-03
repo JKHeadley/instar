@@ -96,7 +96,8 @@ export class MachineCoherenceEpisodeManager {
     private readonly stateDir: string,
     private readonly cfg: MachineCoherenceResolvedConfig,
   ) {
-    this.logPath = path.join(stateDir, 'logs', 'machine-coherence.jsonl');
+    // Agent-root logs dir (stateDir is `<agent>/.instar`; logs live at `<agent>/logs`).
+    this.logPath = path.join(stateDir, '..', 'logs', 'machine-coherence.jsonl');
     const read = readEpisodeFile(stateDir);
     if (read.status === 'ok') {
       this.file = read.file;

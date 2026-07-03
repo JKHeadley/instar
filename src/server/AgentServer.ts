@@ -456,6 +456,7 @@ export class AgentServer {
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
     /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
     getInboundQueue?: () => import('../core/QueueDrainLoop.js').QueueDrainLoop | null;
+    getMachineCoherence?: () => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
@@ -2482,6 +2483,7 @@ export class AgentServer {
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
       getInboundQueue: options.getInboundQueue ?? null,
+      getMachineCoherence: options.getMachineCoherence ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       commitmentReplicaStore: options.commitmentReplicaStore ?? null,

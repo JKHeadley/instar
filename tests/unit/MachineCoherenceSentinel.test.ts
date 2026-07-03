@@ -5,7 +5,11 @@
  * per-tick classification pass over the pool view, the §3.4 election over
  * live-guard candidates, fail-toward-silence, and the §6 status snapshot.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   MachineCoherenceSentinel,
   resolveMachineCoherenceConfig,
@@ -284,6 +288,55 @@ describe('MachineCoherenceSentinel — §3.3 confirmation engine (R2-L3 consecut
     tickAt(30_000);
     expect(s.status().counters.pendingRows).toBe(0);
     expect(s.status().counters.confirmedRows).toBe(0);
+  });
+});
+
+describe('MachineCoherenceSentinel — episode machinery wiring (C₁b-iii-b4)', () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => { for (const d of tmpDirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/MachineCoherenceSentinel.test.ts' }); });
+
+  function withStateDir() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-sentinel-'));
+    tmpDirs.push(root);
+    return path.join(root, '.instar'); // stateDir convention (<agent>/.instar)
+  }
+
+  function skewCap(machineId: string, dev: 'true' | 'false') {
+    return cap(machineId, {
+      coherenceAdvert: { instarVersion: '1.3.729', protocolVersion: 1, manifestHash: 'e'.repeat(64), guard: 'live', beatSeq: 1, flags: { developmentAgent: dev } },
+      coherenceAdvertReceivedAt: new Date(NOW - 5_000).toISOString(),
+    });
+  }
+
+  it('with a stateDir + live raiser, a confirmed skew drives the EpisodeManager and drainPendingEffects returns a real raise', () => {
+    const stateDir = withStateDir();
+    let clock = NOW;
+    const cfg = resolveMachineCoherenceConfig({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, warmupTicks: 0, flagConfirmTicks: 1 } } });
+    const s = new MachineCoherenceSentinel(
+      {
+        listCapacities: () => [skewCap('m_self', 'true'), skewCap('m_peer', 'false')],
+        selfMachineId: () => 'm_self',
+        leaseHolderMachineId: () => 'm_self',
+        now: () => clock,
+        stateDir: () => stateDir,
+        nicknameOf: (m) => (m === 'm_self' ? 'the laptop' : 'the mini'),
+      },
+      cfg,
+    );
+    s.tick();          // confirm (flagConfirmTicks:1) + reconcile → open + raise
+    const effects = s.drainPendingEffects();
+    expect(effects.find((e) => e.kind === 'raise')).toBeDefined();
+    expect(s.status().openEpisode).not.toBeNull();
+    expect(s.status().episodeCounters?.itemsRaised).toBe(1);
+    // Draining clears the queue.
+    expect(s.drainPendingEffects()).toEqual([]);
+  });
+
+  it('without a stateDir, the sentinel runs classification only — no episode, empty drain', () => {
+    const s = makeSentinel({ capacities: [cap('m_self', freshAdvert('live')), cap('m_peer', freshAdvert('live'))] });
+    s.tick();
+    expect(s.status().openEpisode).toBeNull();
+    expect(s.drainPendingEffects()).toEqual([]);
   });
 });
 

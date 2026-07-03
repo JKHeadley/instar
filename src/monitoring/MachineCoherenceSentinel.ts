@@ -42,6 +42,7 @@ import {
   type SkewRow,
   type SkewDimension,
 } from './machineCoherenceEvaluate.js';
+import { MachineCoherenceEpisodeManager, type EpisodeEffect } from './machineCoherenceEpisodeManager.js';
 
 /** Per-row confirmation state (machine-coherence-guard §3.3, R2-L3). */
 interface RowConfirmState {
@@ -125,6 +126,12 @@ export interface MachineCoherenceSentinelDeps {
   leaseHolderMachineId: () => string | null;
   /** Wall clock — injectable for tests. */
   now?: () => number;
+  /** The per-agent state root (`<agent>/.instar`). When provided, the sentinel
+   *  owns a durable EpisodeManager (§4 episode machinery); when absent (pure
+   *  unit tests), the sentinel runs classification + confirmation only. */
+  stateDir?: () => string | null;
+  /** machineId → operator-facing nickname (registry display label). */
+  nicknameOf?: (machineId: string) => string;
 }
 
 /** The §6 status snapshot (the future `GET /pool/machine-coherence` body core). */
@@ -136,8 +143,10 @@ export interface MachineCoherenceStatus {
   machinesCompared: number;
   peerClassifications: { compared: number; unknown: number; advertStale: number; advertRejected: number };
   raiser: { machineId: string | null; isSelf: boolean; candidates: string[] };
-  /** Episode machinery is a Session-B sub-unit — always null until it lands. */
-  openEpisode: null;
+  /** The open episode (§4), or null when none / the durable machinery is unwired. */
+  openEpisode: { episodeId: string; rows: number; suspended: boolean; itemRaisedAt: string | null } | null;
+  /** Episode lifecycle counters (§4.5) — present only when the machinery is wired. */
+  episodeCounters?: import('./machineCoherenceEpisodeManager.js').EpisodeManagerCounters;
   /**
    * `skewsConfirmed` is CUMULATIVE (a counter of confirmation transitions, not a
    * live gauge). `confirmedRows`/`pendingRows` are the live gauges — how many
@@ -163,11 +172,34 @@ export class MachineCoherenceSentinel {
   private lastTickRowIds = new Set<string>();
   /** Cumulative count of confirmation transitions (never decremented). */
   private skewsConfirmed = 0;
+  /** The §4 episode machinery (constructed only when a stateDir is provided). */
+  private episode?: MachineCoherenceEpisodeManager;
+  /** Effects the last tick produced, awaiting execution by the caller (server). */
+  private pendingEffects: EpisodeEffect[] = [];
 
   constructor(
     private readonly deps: MachineCoherenceSentinelDeps,
     private readonly cfg: MachineCoherenceResolvedConfig,
-  ) {}
+  ) {
+    const dir = this.deps.stateDir?.() ?? null;
+    if (dir) this.episode = new MachineCoherenceEpisodeManager(dir, cfg);
+  }
+
+  /**
+   * Drain the effects the last reconcile produced (raise/append/resolve). The
+   * caller (server) executes them against the telegram adapter, keeping the
+   * sentinel Tier-0 and its tick synchronous. Empty on a dark/no-episode agent.
+   */
+  drainPendingEffects(): EpisodeEffect[] {
+    const out = this.pendingEffects;
+    this.pendingEffects = [];
+    return out;
+  }
+
+  /** Passthrough for the conversational reply path (b3): the durable "leave it" ack. */
+  setOperatorAck(ack: boolean): void {
+    this.episode?.setOperatorAck(ack);
+  }
 
   /**
    * Whether this tick is still inside the N8 post-boot warm-up window:
@@ -224,6 +256,24 @@ export class MachineCoherenceSentinel {
       this.lastRaiser = electRaiser(candidates, this.deps.leaseHolderMachineId());
       // ── §3.3 dimension comparison + confirmation counters (R2-L3, M6) ──
       this.updateConfirmation(nowMs);
+      // ── §4 episode reconcile (when the durable machinery is wired) ──
+      if (this.episode && !this.inWarmup()) {
+        const online = new Set(this.lastClassified.map((p) => p.machineId));
+        const compared = new Set(this.lastClassified.filter((p) => p.cls === 'compared').map((p) => p.machineId));
+        const nick = this.deps.nicknameOf ?? ((m: string) => m);
+        const effects = this.episode.reconcile({
+          confirmedRows: this.confirmedSkewRows(),
+          comparedMachineIds: compared,
+          onlineMachineIds: online,
+          selfMachineId: self,
+          raiserMachineId: this.lastRaiser,
+          leaseHolderMachineId: this.deps.leaseHolderMachineId(),
+          nicknameOf: nick,
+          now: nowMs,
+        });
+        const expiries = this.episode.expireIfStale(nowMs, nick);
+        this.pendingEffects.push(...effects, ...expiries);
+      }
     } catch {
       // Fail toward silence (§3.3): no emit, a visible error counter. The
       // confirmation state is LEFT INTACT on an error tick (a transient pool-read
@@ -348,7 +398,8 @@ export class MachineCoherenceSentinel {
         isSelf: this.lastRaiser !== null && this.lastRaiser === self,
         candidates: [...this.lastCandidates],
       },
-      openEpisode: null,
+      openEpisode: this.episode?.status().openEpisode ?? null,
+      episodeCounters: this.episode?.status().counters,
       counters: {
         ticks: this.ticks,
         skewsConfirmed: this.skewsConfirmed,

@@ -1136,6 +1136,7 @@ export interface RouteContext {
    *  constructed in the mesh block after the server). Null/absent or a null
    *  return = the queue is dark/gated; GET /pool/queue answers 503. */
   getInboundQueue?: (() => import('../core/QueueDrainLoop.js').QueueDrainLoop | null) | null;
+  getMachineCoherence?: (() => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null) | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -13893,6 +13894,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       custodyDurability: 'unknown',
       oldestQueuedAgeMs: snap.counts.oldestQueuedAt ? Math.max(0, Date.now() - Date.parse(snap.counts.oldestQueuedAt)) : null,
     });
+  });
+
+  // GET /pool/machine-coherence — the machine-coherence guard's §6 status snapshot
+  // (machine-coherence-guard §3.3/§3.4/§4). 503 when the guard is dark on this
+  // agent (dev-gated: `enabled` OMITTED → resolveDevAgentGate; never constructed
+  // on the fleet). Read-only observability — the guard is pure signal.
+  router.get('/pool/machine-coherence', (_req, res) => {
+    const sentinel = ctx.getMachineCoherence?.() ?? null;
+    if (!sentinel) {
+      res.status(503).json({ error: 'machine-coherence guard not enabled on this agent (dev-gated dark; monitoring.machineCoherence.enabled)' });
+      return;
+    }
+    res.json(sentinel.status());
   });
 
   // ── Replicated-store conflict + rollback surfaces (multi-machine-replicated-
