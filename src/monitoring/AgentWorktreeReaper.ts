@@ -32,6 +32,16 @@ export interface AgentWorktreeReaperConfig {
   enabled: boolean;
   dryRun: boolean;
   reapIntervalMs: number;
+  /**
+   * Delay before the ONE-TIME initial pass after start() (default 15 min).
+   * Without it the reaper's first pass is a full `reapIntervalMs` (24h) after
+   * boot — and because agent servers restart far more often than daily, the
+   * interval timer resets forever and an enabled+armed reaper NEVER runs a
+   * single pass (the 2026-07-02 incident: 86 worktrees / 25GB accumulated with
+   * the feature switched on). The delay keeps the pass off the busy post-boot
+   * window; <= 0 disables the initial pass (interval-only — the rollback lever).
+   */
+  initialPassDelayMs: number;
   /** Bounded blast radius per pass. */
   maxReapsPerPass: number;
   /**
@@ -55,6 +65,7 @@ export const DEFAULT_AGENT_WORKTREE_REAPER_CONFIG: AgentWorktreeReaperConfig = {
   enabled: false,
   dryRun: true,
   reapIntervalMs: 24 * 3600 * 1000,
+  initialPassDelayMs: 15 * 60 * 1000,
   maxReapsPerPass: 20,
   maxReclaimFailuresPerPath: 3,
   githubMergeCheck: true,
@@ -100,6 +111,7 @@ export class AgentWorktreeReaper extends EventEmitter {
   private readonly deps: AgentWorktreeReaperDeps;
   private readonly now: () => number;
   private timer?: NodeJS.Timeout;
+  private initialTimer?: NodeJS.Timeout;
   private running = false;
   private lastPassAt = 0;
   private reapedLastPass = 0;
@@ -120,10 +132,22 @@ export class AgentWorktreeReaper extends EventEmitter {
     if (this.timer || !this.cfg.enabled) return;
     this.timer = setInterval(() => { void this.reap(); }, this.cfg.reapIntervalMs);
     if (typeof this.timer.unref === 'function') this.timer.unref();
+    // One-time initial pass shortly after boot. Without it, the first pass is a
+    // full reapIntervalMs (24h) away — which on real deployments (servers restart
+    // more often than daily, resetting the interval) means NO pass ever runs.
+    // Delayed past the busy post-boot window; disabled by initialPassDelayMs <= 0.
+    if (this.cfg.initialPassDelayMs > 0) {
+      this.initialTimer = setTimeout(() => {
+        this.initialTimer = undefined;
+        void this.reap();
+      }, this.cfg.initialPassDelayMs);
+      if (typeof this.initialTimer.unref === 'function') this.initialTimer.unref();
+    }
   }
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    if (this.initialTimer) { clearTimeout(this.initialTimer); this.initialTimer = undefined; }
   }
 
   private get killsEnabled(): boolean {
@@ -223,6 +247,7 @@ export class AgentWorktreeReaper extends EventEmitter {
   /** Observability snapshot for GET /worktrees/agent-reaper (no side effects). */
   snapshot(): {
     enabled: boolean; dryRun: boolean; lastPassAt: number; reapedLastPass: number;
+    initialPassPending: boolean;
     worktrees: WorktreeEvaluation[];
     reclaimable: number;
   } {
@@ -238,6 +263,7 @@ export class AgentWorktreeReaper extends EventEmitter {
       dryRun: this.cfg.dryRun,
       lastPassAt: this.lastPassAt,
       reapedLastPass: this.reapedLastPass,
+      initialPassPending: this.initialTimer !== undefined,
       worktrees,
       reclaimable: worktrees.filter((w) => w.verdict === 'reap-eligible').length,
     };

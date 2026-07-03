@@ -5182,6 +5182,10 @@ export interface MonitoringConfig {
     enabled?: boolean;
     dryRun?: boolean;
     reapIntervalMs?: number;
+    /** Delay before the one-time initial pass after boot (default 15 min).
+     *  Servers restart far more often than the 24h interval, so without an
+     *  initial pass the reaper never runs. <= 0 disables the initial pass. */
+    initialPassDelayMs?: number;
     maxReapsPerPass?: number;
     /** Catch multi-commit squash-merges via GitHub merged-PR state (default true;
      *  fail-safe to git-cherry-only). Set false to disable the network call. */

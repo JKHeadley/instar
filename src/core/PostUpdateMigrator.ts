@@ -6114,6 +6114,7 @@ CLI-created worktrees under \`~/.instar/agents/<agent>/.worktrees/\` accumulate 
 - See what's reclaimable (and why each is kept): \`curl -H "Authorization: Bearer $AUTH" http://localhost:4040/worktrees/agent-reaper\` → per-worktree verdict (in-use / uncommitted-changes / unmerged / reap-eligible) + the reclaimable count.
 - **Squash-merge detection (the accumulation fix):** the merged-check is patch-id (\`git cherry\`) FIRST — which cannot see a MULTI-commit branch that was SQUASH-merged (its commits' SHAs/patch-ids differ from the single squashed commit), so those worktrees used to pile up forever. The reaper now ALSO consults GitHub merged-PR state (ONE \`gh\` call per sweep) and treats a worktree as merged when its branch has a merged PR whose head commit EXACTLY matches the worktree's HEAD (so a branch with commits added AFTER the merge is still kept). Fail-safe: any \`gh\` error degrades to cherry-only (KEEP). Off-switch: \`{"monitoring": {"agentWorktreeReaper": {"githubMergeCheck": false}}}\`.
 - Review the dry-run report FIRST, then enable in \`.instar/config.json\`: \`{"monitoring": {"agentWorktreeReaper": {"enabled": true, "dryRun": false}}}\`. Tune \`maxReapsPerPass\` (default 20).
+- **Initial pass after boot:** an enabled reaper runs a ONE-TIME pass ~15 min after server start (then the 24h cadence). Before this, the first pass was a full 24h out and server restarts reset the timer — so an enabled+armed reaper never actually ran (the 2026-07-02 25GB accumulation). Disable via \`{"monitoring": {"agentWorktreeReaper": {"initialPassDelayMs": 0}}}\` (interval-only).
 - Pairs with the Spotlight-exclusion marker (fewer worktrees = less disk AND less macOS indexing). Proactive: user asks "why is my disk full of worktrees?" / "clean up old worktrees?" / "why is the reaper calling GitHub?" → GET /worktrees/agent-reaper; the gh call is the squash-merge detection above.
 `;
       content += '\n' + section;
@@ -6121,6 +6122,24 @@ CLI-created worktrees under \`~/.instar/agents/<agent>/.worktrees/\` accumulate 
       result.upgraded.push('CLAUDE.md: added Stale-Worktree Reclaim section');
     } else {
       result.skipped.push('CLAUDE.md: Stale-Worktree Reclaim section already present');
+    }
+
+    // AgentWorktreeReaper initial-pass addendum (reaper-never-fires fix): agents
+    // whose CLAUDE.md already carries the Stale-Worktree Reclaim section need the
+    // new initial-pass bullet inserted (the section-level migration above is
+    // install-once). Idempotent via content-sniffing on the config key name.
+    if (content.includes('/worktrees/agent-reaper') && !content.includes('initialPassDelayMs')) {
+      const anchorLine = '- Review the dry-run report FIRST, then enable in \`.instar/config.json\`: \`{"monitoring": {"agentWorktreeReaper": {"enabled": true, "dryRun": false}}}\`. Tune \`maxReapsPerPass\` (default 20).';
+      const initialPassBullet = `- **Initial pass after boot:** an enabled reaper runs a ONE-TIME pass ~15 min after server start (then the 24h cadence). Before this, the first pass was a full 24h out and server restarts reset the timer — so an enabled+armed reaper never actually ran (the 2026-07-02 25GB accumulation). Disable via \`{"monitoring": {"agentWorktreeReaper": {"initialPassDelayMs": 0}}}\` (interval-only).`;
+      if (content.includes(anchorLine)) {
+        content = content.replace(anchorLine, anchorLine + '\n' + initialPassBullet);
+      } else {
+        // Section text drifted — append the bullet at the end of the file instead
+        // of silently skipping (the awareness matters more than placement).
+        content += '\n' + initialPassBullet + '\n';
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added AgentWorktreeReaper initial-pass bullet');
     }
 
     // SessionReaper CPU-aware pressure + decision audit (RESPONSIBLE-RESOURCE-USAGE).

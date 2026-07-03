@@ -407,6 +407,92 @@ describe('makeAgentWorktreeReaperDeps.isClean — residue-aware + FAIL-CLOSED (w
   });
 });
 
+describe('AgentWorktreeReaper.start — one-time initial pass (reaper-never-fires fix)', () => {
+  // Root cause under test: start() used to schedule ONLY the 24h interval, and
+  // real servers restart more often than daily — so the interval reset forever
+  // and an enabled+armed reaper never ran a single pass (2026-07-02 incident:
+  // 86 worktrees / 25GB accumulated with the feature ON). The initial pass makes
+  // "enabled" mean "actually runs" on realistic server lifetimes.
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const DELAY = 15 * 60 * 1000;
+
+  it('fires ONE initial pass after initialPassDelayMs, before the 24h interval', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(DELAY - 1);
+    expect(passes).toHaveLength(0); // not before the delay
+    await vi.advanceTimersByTimeAsync(1);
+    expect(passes).toHaveLength(1); // exactly one initial pass
+    r.stop();
+  });
+
+  it('initial pass respects dry-run (classifies, never deletes)', async () => {
+    const removeWorktree = vi.fn();
+    const r = new AgentWorktreeReaper(deps({ removeWorktree }), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    r.start();
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(removeWorktree).not.toHaveBeenCalled();
+    r.stop();
+  });
+
+  it('no timers at all when the reaper is disabled', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: false, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(25 * 3600 * 1000);
+    expect(passes).toHaveLength(0);
+  });
+
+  it('initialPassDelayMs <= 0 disables the initial pass (interval-only rollback lever)', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, reapIntervalMs: 1000, initialPassDelayMs: 0 });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(passes).toHaveLength(0); // nothing before the interval
+    await vi.advanceTimersByTimeAsync(1);
+    expect(passes).toHaveLength(1); // interval behavior unchanged
+    r.stop();
+  });
+
+  it('stop() cancels the pending initial pass', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    r.stop();
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(passes).toHaveLength(0);
+  });
+
+  it('the 24h interval cadence is unchanged and keeps firing after the initial pass', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, reapIntervalMs: 24 * 3600 * 1000, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(DELAY);            // initial pass
+    await vi.advanceTimersByTimeAsync(24 * 3600 * 1000); // first interval pass
+    await vi.advanceTimersByTimeAsync(24 * 3600 * 1000); // second interval pass
+    expect(passes).toHaveLength(3);
+    r.stop();
+  });
+
+  it('snapshot reports initialPassPending honestly (pending → fired/stopped)', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    expect(r.snapshot().initialPassPending).toBe(false); // not started yet
+    r.start();
+    expect(r.snapshot().initialPassPending).toBe(true);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(r.snapshot().initialPassPending).toBe(false); // fired
+    r.stop();
+  });
+});
+
 describe('AgentWorktreeReaper — per-path reclaim-failure breaker (No Unbounded Loops)', () => {
   it('stops attempting a path after the failure cap, surfaces keep(reclaim-failed), emits breaker once', async () => {
     const removeWorktree = vi.fn(() => { throw new Error('cannot remove (permission)'); });

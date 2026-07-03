@@ -294,6 +294,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: false,
       dryRun: true,
       reapIntervalMs: 86_400_000,
+      initialPassDelayMs: 900_000,
       maxReapsPerPass: 20,
     },
     // OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
