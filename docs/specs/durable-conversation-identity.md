@@ -2,7 +2,12 @@
 title: "Durable, Channel-Agnostic Conversation Identity (the Phase-1 structural refactor): Spec"
 slug: "durable-conversation-identity"
 author: "echo"
-status: "draft"
+status: "converged r11 (round-11 verdict CONVERGED — 0 CRITICAL / 0 MAJOR; all round-1..11 findings folded: docs/specs/reports/durable-conversation-identity-round{2..11}-findings.md; decision-complete — ## Open questions verifiably empty since round 7)"
+review-convergence: "2026-07-03"
+review-convergence-detail: "11-round /spec-converge ceremony (Phase-2 registry rewrite reviewed rounds 2-11): internal multi-lens panel (adversarial, security, integration code-grounded, crash/replay-composition, decision-completeness, fail-direction, scalability, lessons-aware) + two external cross-model doors per round (pi→openai-codex/gpt-5.5; gemini-cli/gemini-2.5-pro; codex-cli honestly absent on this machine). Trajectory: 4C+16M → 1C+3M → 1C+4M → 0C+4M → 0C+3M → 0C+1M → 0C+1M → 0C+1M → 0C+0M (CONVERGED; the r11 sub-major findings folded editorially in the tag commit, enumerated in the round-11 report). Round-11 externals: gemini-2.5-pro fully clean (0/0/0/0); gpt-5.5 0C+0M+1m+1L with explicit CONVERGED statement. Registry core finding-free rounds 7-11."
+approved: true
+approval-basis: "standing Session-A operator preapproval (topic 29836, 2026-07-02 — spec approvals named in scope); build authorization for the §11 phased increments; every dark-ship gate and enforcement flip inside the spec keeps its own ladder"
+eli16-overview: "durable-conversation-identity.eli16.md"
 parent-principle: "Structure beats Willpower — durable identity must be a registry, not a convention three copies of a hash function remember"
 sibling-principles: "The Agent Is Always Reachable — A Guaranteed Reachability Floor; Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions; Know Your Principal — An Unverified Identity Is a Guess; A Refusal Stays a Refusal; Bounded Notification Surface (P17); Migration Parity; Close the Loop (Untracked = Abandoned); Bounded Blast Radius"
 lessons-engaged: "Structure beats Willpower (one registry, not three hashes) · Maturation Path — Every Feature Ships Enabled on Developer Agents (§9 dev-gated ladder) · The Agent Is Always Reachable, corollary 2 (§5 deterministic reachability arm) · A Refusal Stays a Refusal / P18 (§5 dryRun returns typed non-delivery, never success-shaped) · Bounded Notification Surface P17 (§5 funnel per-conversation + GLOBAL budgets + burst tests; §3.5 ingest-refusal aggregation) · Bounded Blast Radius (§3.3 mint-rate breaker) · Cross-Machine Coherence (§3.5 local-origin adoption; §5 owning-machine delivery) · Know Your Principal (§7 replicated entry is advisory, never delivery authority) · Migration Parity (§9 migrateConfig never materializes enabled:false; migrateClaudeMd) · Deferral = Deletion / Close the Loop (§11 Phase-2.1 tracked) · P7 LLM-Supervised Execution (§6.2 Tier 0 justified; declared in the `supervision` frontmatter key) · P14 Distrust Temporary Success (§3.3 birthday math honest; §6.2 journal-replay rebuild) · Convergent Merge Algebra [constitution standard] — the merge is a pure function of the record set (§3.5.1 collision-class canonical reservation; content-deterministic HLC compared value never clamped; atomic idempotent winner-flip; key-derived probe sequence against ONE GLOBAL taken set spanning all collision classes — R4-C1; alias derivation ASSIGNMENT-FILTERED so an alias can never shadow a reserved canonical or an assigned offset — R5-C1, with the filter RE-RUN over replayed state at every boot so the disjointness invariant holds at boot fixpoints too — R6-M3; the TUPLE is the sole ingest identity authority (the wire key is recomputed, never read) — R6-M2; the `≺` tuple-representative pinned content-only — R5-M4; durable-binding protection is a LOCAL delivery-time overlay §3.5.2 that also rides the binding record as `boundTuple` (R4-M1) gated by the shared id↔tuple coherence predicate at delivery (R5-M2) whose incoherent verdict is a typed refusal, never a delivery (R6-M4), NEVER a merge input — R3-C1/C2/C3) · Disaster-Recovery Completeness [spec-local shorthand] (§3.4/§6.2 both the JSON snapshot AND the journal enter the backup manifest, via a glob shape the DEPLOYED expandGlob actually resolves — R3-C4) · Ambiguous-Outcome Idempotency [spec-local shorthand] (§5 id<0 logical-send-identity dedup ships WITH the funnel; suppression is retirement-based for logical-identity callers, never a fixed window racing the real 6h beacon backoff — R3-M1/M2 — with a suppressed outcome DELIVERED-EQUIVALENT for sequencing so one lost ack can never mute a beacon — R7-M1; the identity-less content-hash lane is short-WINDOW-based, never the 7-day TTL — R7-M2; and the crash-window boot conversion is LANE-SCOPED, so a never-posted one-off notice resolves toward RETRY instead of a delivery-shaped silent loss — R8-M1) · Reuse over Re-implementation [spec-local shorthand of the parent principle] (§3.5/§4 shared foundation hardening primitives — no third hand-rolled copy of clamp/HLC; §3.4 backup rides the deployed glob resolver rather than extending it) · Runtime Kill-Switch [spec-local shorthand of the CommitmentTracker-freeze lesson] (§9 recording.enabled off-switch honors the freeze precedent)"
@@ -820,7 +825,13 @@ JSON snapshot is a rebuildable cache. The contract:
   staleness, journal retention, and boot-replay length all GROW — bounded operationally
   (the deduped unknown-op attention item MUST name the suspension, the pre-skew
   watermark, and the unapplied count) and inherently temporary (a rollback stay ends by
-  re-upgrading). §10 pins the shapes.
+  re-upgrading). The suspension is a first-class OBSERVABLE state, not only an alert
+  (R11-low-1): `GET /conversations/health` carries `snapshotSuspended`,
+  `firstUnappliedUnknownSeq`, `unappliedUnknownCount`, and `retainedJournalBytes`; and a
+  suspension persisting past `suspensionEscalationDays = 7` (or retained journal growth
+  past 10× `journalRotateBytes`) re-raises the attention item at HIGH — a weeks-long
+  rollback stay is an operator decision to surface loudly, never a silently compounding
+  cost. §10 pins the shapes.
 - **Append serialization — the journal has its OWN single-writer discipline (scalability-G3).**
   The serialized `mutate()` (§3.4 above) is scoped to the SNAPSHOT; it does NOT cover journal
   appends, so two probed/durable mints in the SAME tick could otherwise interleave `seq`
@@ -2980,7 +2991,12 @@ binding gap named in the audit closes to "creates the identity everything else c
   (R10-low-1): unknown ops at seq 100 AND 150 with known records between and after →
   partial "re-upgrade" recognizing only the op at 100 → assert suspension PERSISTS (150
   still unapplied, no flush) with 100 applied → a later re-upgrade recognizing 150 ends
-  the suspension and the flush resumes**; **a replay SPANNING a rotation boundary applies records in the single global `seq`
+  the suspension and the flush resumes; and the BACKUP-DURING-SUSPENSION restore shape
+  (R11-minor-1): enter suspension → rotate the journal → take a backup via the real
+  manifest → restore into a fresh stateDir → assert the restored rolled-back boot
+  composes the SAME state as the source (pre-skew snapshot + every retained rotation,
+  none pruned or omitted from the manifest) → "re-upgrade" on the restored copy → the
+  order-dependence probe still passes and the flush resumes**; **a replay SPANNING a rotation boundary applies records in the single global `seq`
   order — no skip, no double-apply — and the boot counter resumes from the max seen, never
   0/1 (R3-M14)**; **snapshot completeness (R4-M2 corollary, extended per R6-M1/M3): a
   snapshot taken after live bind-pins, unretired `ambiguous-send` entries, unresolved
