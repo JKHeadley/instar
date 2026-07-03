@@ -226,3 +226,137 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
       'attribution-manifest alias only (a legacy prompt-pattern matcher); the live matcher calls with attribution PromptGate, classified true there',
   },
 };
+
+// ───────────────────────────────────────────────────────────────────────────
+// Evidence-Bar Extension — Judge Prompts (defect class 3 / claim-vs-evidence —
+// docs/specs/evidence-bar-judge-extension.md §2 "the judge-nature classification")
+//
+// The `judgesClaims` axis of the program's shared per-callsite metadata record
+// (class-closure-gate.md §"Program-shared machinery"; co-located in THIS file
+// with the bench-coverage record it extends, exactly like the sibling
+// `untrustedInput` axis). The consolidated axis ratchet derives the required
+// bench axes from all these per-callsite axes together.
+//
+// WHY (earned): on 2026-07-02 the INSTAR-Bench v2 defect-class review found the
+// completion judge (and four other model routes on the same case) credited a
+// BARE assertion ("tests pass," no output shown) as satisfied evidence — the
+// judge prompt never defined what counts as evidence, so models defaulted to
+// crediting the claim. The agent-facing "Bug-Fix Evidence Bar" holds the
+// CLAIMANT ("verify before you claim"); the prompts that JUDGE such claims were
+// never given the same rule. This classification is the structural record of
+// WHICH callsites judge a claim, so the (deferred) bench-axis ratchet can
+// require both a bare-claim (false-accept) AND a real-evidence (false-reject)
+// case for each — the known over-correction hazard (the first fix rejected REAL
+// evidence on 6 routes) makes the false-reject direction mandatory.
+//
+// INCLUSION CRITERIA (spec §2): the callsite's task is to CREDIT or REFUSE an
+// agent/session claim of completion, progress, or health — verdict gates,
+// completion evaluators, stuck/stall/health classifiers, and scored evaluators
+// that award credit for claimed work. EXCLUSION: pure summarizers and
+// extractors are out unless they score or credit a claim.
+//
+// THE FIELD IS REQUIRED AND EXPLICIT FOR EVERY COMPONENT_CATEGORY KEY — there is
+// NO DEFAULT (same polarity rule as `untrustedInput`). A `{ claimKind }` entry
+// is a judge (true) and declares WHICH kind of claim it judges (the axis cases +
+// accepted evidence classes are authored per kind). Plain `false` is a callsite
+// that does not judge a completion/progress/health claim. A judge-SHAPED
+// callsite that argues it does NOT judge claims is written as
+// `{ false: '<argued reason>' }` and pinned shrink-only in
+// tests/unit/judges-claims-classification-ratchet.test.ts — a silent omission
+// is red CI, so the flag can never default toward the un-benched state.
+//
+// DETERMINISTIC ARM (spec "Honest reach"): the real-check `verification_command`
+// verifier is NAMED in the spec seed but is NOT an LLM callsite (it runs the
+// actual command on a met-verdict) — it has no COMPONENT_CATEGORY key and is
+// therefore out of this LLM classification by construction. A prompt bar governs
+// what is SHOWN; verification of what is TRUE belongs to that deterministic arm.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The kind of claim a judge callsite credits/refuses (spec §2). Different kinds
+ * take different evidence, so each `judgesClaims: true` entry declares its kind:
+ *   - completionClaim: proof of asserted work ("the task is done / tests pass");
+ *   - healthClaim: behavioral-signal sufficiency (stall/stuck/health classifiers);
+ *   - scoredCredit: rubric evaluators that award credit for claimed work. */
+export type ClaimKind = 'completionClaim' | 'healthClaim' | 'scoredCredit';
+
+export const CLAIM_KINDS: ReadonlyArray<ClaimKind> = [
+  'completionClaim',
+  'healthClaim',
+  'scoredCredit',
+];
+
+/** The `judgesClaims` classification of one LLM callsite:
+ *   - `{ claimKind }`  → judges a claim (true), of the declared kind;
+ *   - `false`          → does not judge a completion/progress/health claim;
+ *   - `{ false: '<reason>' }` → a judge-SHAPED callsite argued OUT of scope
+ *     (pinned shrink-only + reviewed, like the untrustedInput argued-false set). */
+export type JudgesClaimsFlag = { claimKind: ClaimKind } | false | { false: string };
+
+export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
+  // ── Judges (judgesClaims: true) ────────────────────────────────────────────
+  // Completion evaluators — credit/refuse a claim of asserted work.
+  CompletionEvaluator: { claimKind: 'completionClaim' }, // THE motivating callsite: credited a bare "tests pass"
+  UnjustifiedStopGate: { claimKind: 'completionClaim' }, // judges whether a stop is justified = is the claimed work actually done/blocked
+  JobReflector: { claimKind: 'completionClaim' }, // reflects on job success/completion (spec §2 pending-wave judge; classified now so the asymmetry can't silently reopen)
+
+  // Stall/stuck/health classifiers — credit/refuse a health claim about a session.
+  SessionWatchdog: { claimKind: 'healthClaim' }, // stuck-judge
+  PresenceProxy: { claimKind: 'healthClaim' }, // tier-3 stall judge
+  StallTriageNurse: { claimKind: 'healthClaim' }, // stall-triage diagnosis
+  TelegramAdapter: { claimKind: 'healthClaim' }, // confirmStallAlert — judges whether a session is genuinely stalled before alerting (inclusion criteria: stall/health classifier)
+  SlackAdapter: { claimKind: 'healthClaim' }, // confirmStallAlert (byte-identical prompt to Telegram's; parity)
+
+  // Scored evaluators — award credit for claimed work.
+  'mentor-stage-b': { claimKind: 'scoredCredit' }, // classifies mentor signals over mentee output (spec §2 pending-wave judge)
+
+  // ── Not a completion/progress/health judge (judgesClaims: false) ────────────
+  // Sentinels that classify/summarize but do not credit a completion/health claim.
+  InputDetector: false, // legacy prompt-pattern matcher alias
+  InputGuard: false, // input-coherence, not a completion/health claim
+  SessionActivitySentinel: false, // activity DIGEST — summarizes activity, does not credit a claim (exclusion: pure summarizer)
+  CommitmentSentinel: false, // detects commitments in text
+  PromiseBeacon: false, // no live LLM prompt (hooks unwired at construction — see its bench exemption)
+  MessageSentinel: false, // classifies message intent (pause/emergency), not a completion claim
+  TopicIntentArcCheck: false, // arc-check classification of a topic's intent, not a completion/health claim
+  InputClassifier: false, // input auto-approve vs relay classification
+  SessionSummarySentinel: false, // summarizes tmux output → task/phase/files (exclusion: pure summarizer)
+  ProjectDriftChecker: false, // is-work-on-project coherence, not a completion/health claim
+  TemporalCoherenceChecker: false, // temporal-coherence classification
+  ResumeQueueDrainer: false, // inspects session state before a resume — judges STATE validity, not an agent's claim
+  InteractivePoolCanaryJudge: false, // judges a FIXED known-answer canary constant, not an agent claim
+
+  // Gates that classify an action/message but do not credit a completion/health claim.
+  PromptGate: false, // detects prompt-injection in content
+  AutoApprover: false, // mechanical key injection, no LLM prompt of its own
+  IntegrationGate: false, // delegates to JobReflector.reflect(), no own callsite
+  ExternalOperationGate: false, // classifies operation mutability/reversibility, not a completion claim
+  WarrantsReplyGate: false, // "should I reply?" — not a completion/health claim
+  CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
+  MessagingToneGate: false, // reviews outbound tone/leaks
+  CoherenceReviewer: false, // reviews outbound coherence
+  LLMSanitizer: false, // sanitizes untrusted inbound content
+  OverrideDetector: false, // detects override intent in a turn
+  TaskClassifier: false, // classifies task type
+  ResumeValidator: false, // matches a resume UUID against a topic — a state match, not a claim
+
+  // Reflectors/jobs that extract/summarize/route but do not credit a completion/health claim.
+  crossModelReviewer: false, // reviews a SPEC document, not a session's completion claim
+  SelfKnowledgeTree: false, // extracts self-knowledge
+  TreeTriage: false, // triages tree fragments
+  TopicSummarizer: false, // summarizes a topic
+  ContextualEvaluator: false, // evaluates context relevance
+  RelationshipManager: false, // extracts relationship facts
+  StandardsConformanceReviewer: false, // reviews artifact-vs-standard conformance, not a session completion claim
+  DiscoveryEvaluator: false, // evaluates serendipity discoveries
+  Usher: false, // routes a turn to candidate topics
+  TopicIntentExtractor: false, // extracts topic intent from a turn
+  PreCompactionFlush: false, // extracts durable facts before compaction
+  TreeSynthesis: false, // synthesizes knowledge fragments → answer
+  LLMConflictResolver: false, // resolves divergent multi-machine state
+  openConversationBrief: false, // generates an A2A conversation brief
+  'a2a-checkin': false, // summarizes A2A check-in threads
+  'correction-learning': false, // distills recurring corrections → preference
+  PipeSessionSpawner: false, // spawns from task descriptions
+  CartographerSweep: false, // authors doc-tree summaries over code
+  StandardsCoverageEnrichment: false, // enriches standards-coverage rows
+};
