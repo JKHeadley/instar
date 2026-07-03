@@ -46,7 +46,17 @@ didn't my session move accounts?", there's now a written record with the exact
 reason (everyone's full / it moved recently / the destination wasn't clearly
 better / it was busy working). If the switching ever starts to misbehave
 again, a built-in circuit breaker pauses all planned moves for an hour and
-sends you one alert — not a flood.
+sends you one alert — not a flood. The misbehavior detector catches all the
+shapes we know: the simple back-and-forth between two accounts, the same
+back-and-forth spread across different sessions, and the sneakier version
+where a session gets pushed around a circle of three or more accounts.
+
+Two more things: you'll see fewer repeated "session restarted" notices (at
+most one per move, not one per hop), and you'll no longer get silence when
+things are genuinely stuck — if a session is forced to emergency-hop accounts
+repeatedly because everything is truly full, or it literally cannot move
+again for a while, you get exactly one clear alert about it instead of
+nothing.
 
 ## Decisions already made (so you don't have to open the technical spec)
 
@@ -56,8 +66,13 @@ sends you one alert — not a flood.
   change only tames the *optional* moves.
 - Sessions that run on the "default" account are never auto-moved, because
   moving them would quietly change which account all future new sessions use.
-- If the server restarts, it remembers recent moves and any open circuit-breaker
-  pause — a reboot can't reset the brakes.
+- If the server restarts, it remembers recent moves, any open circuit-breaker
+  pause (including exactly when that pause was due to end), and which sessions
+  were having trouble — a reboot can't reset any of the brakes.
+- One narrow piece stays off at first: the extra check that stops a *model*
+  change (not an account move) from interrupting quiet background helpers. It
+  gets its own on-switch later, so nothing about today's model-changing
+  behavior shifts by surprise on update day.
 - Everything ships in observe-only mode first: it writes down what it *would*
   have done for a while before it's allowed to actually refuse anything.
 

@@ -1,15 +1,15 @@
 ---
 slug: swap-continuity-antithrash
 title: Swap Continuity Under Pressure — Anti-Thrash Brakes + In-Flight Work Deferral (Roadmap 4.4, F3/P1-A6)
-status: draft (round-2 revision — all round-1 findings folded; see §15 disposition)
+status: draft (round-3 revision — all round-1 + round-2 findings folded; see §15/§16 dispositions)
 author: echo
 eli16-overview: swap-continuity-antithrash.eli16.md
 parent-principle: "No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes"
 constitution: Bounded Blast Radius (a quota optimization must not silently expand into "all my subagents were killed"); Structure beats Willpower (the anti-thrash rule lives at the swap chokepoint, not in prose); The User Experience Is the Product (F-series umbrella — the safety/continuity mechanism must not BE the disruption)
-lessons-engaged: "P19 (three brakes + a bounded, loud breaker on a repeating loop — §3, §3.5; the monitor's pre-existing silent-retry gap is ALSO fixed, §3.6); P17 (ONE deduped attention item per thrash episode / per failure streak / per ledger loss — §3.5, §3.6, §6.4); P18 (every refusal, deferral, drop, and failure is a counter + a ledger row; dry-run counters soak before authority — §6, §10); P14-family flap accounting (dwell + reversal state persisted, restart-safe — §3.2, §3.5); F3 finding family (killed-subagent enumeration + unanswered-inbound re-injection at the swap chokepoint — §4.3); Bounded-Notification-Surface lesson shape (bind the PRIMITIVE with a default class, never a per-caller table — §4.2); #1001 anti-mechanism (dev-gated key OMITTED from shipped config, never an explicit false — §7, §10); dynamic-MCP half-enable precedent (per-key config-liveness table — §7.1); CMT-1118 durable inbound queue named as the future inbound-mitigation source (§4.3); Signal vs. Authority (the gate's blocking authority argued, bounded, and classed — §4.4)."
+lessons-engaged: "P19 (three brakes + a bounded, loud breaker on a repeating loop — §3, §3.5; the monitor's pre-existing silent-retry gap is ALSO fixed, §3.6); P17 (ONE deduped attention item per thrash episode / per failure streak / per ledger loss — §3.5, §3.6, §6.4); P18 (every refusal, deferral, drop, and failure is a counter + a ledger row; dry-run counters soak before authority — §6, §10); P14-family flap accounting (dwell + reversal state persisted, restart-safe — §3.2, §3.5); F3 finding family (killed-subagent enumeration + unanswered-inbound re-injection at the swap chokepoint — §4.3); Bounded-Notification-Surface lesson shape (bind the PRIMITIVE with a default class, never a per-caller table — §4.2); #1001 anti-mechanism (dev-gated key OMITTED from shipped config, never an explicit false — §7, §10); dynamic-MCP half-enable precedent (per-key config-liveness table — §7.1); CMT-1118 durable inbound queue named as the future inbound-mitigation source (§4.3); Signal vs. Authority (the gate's blocking authority argued, bounded, and classed — §4.4); P20 Verify the State, Not Its Symbol (the work gate verifies live pane/process/subagent STATE before any kill and treats an unreadable symbol as indeterminate, never as idle — §4.1, I7); P7 supervision: Tier 0, declared (§4.4 — deterministic quota/state math at every decision point, no LLM policy judgment anywhere in either piece)."
 earned-from: 2026-07-02 proactive-swap thrash day (echo dev agent, v1.3.722 — 36 executed proactive swaps / 72 [SessionRefresh] account-swap log lines across 8 waves; repeated kills of six parallel build subagents during the U4 and Session-A autonomous runs); F3 finding family (inbound eaten by respawn) and P1-A6
 roadmap: Session A item 4.4 — "Continuity under pressure: proactive/reactive swap + model-swap + refresh defer while a turn or live subagents are in flight, or re-inject the last unanswered inbound + enumerate killed subagents"
-review-convergence: null   # round 2 in flight — has not converged
+review-convergence: null   # round 3 in flight — has not converged
 approved: false
 ---
 
@@ -28,6 +28,10 @@ Two composable pieces, independently shippable, sharing one observability spine:
 Piece 1 removes most of the kills. Piece 2 makes the remaining, genuinely-needed
 kills non-destructive to in-flight work. They compose but do not depend on each
 other.
+
+(Readers who want the plain-English version first: the eli16 companion,
+`swap-continuity-antithrash.eli16.md`, carries the whole design without the
+internal idiom — wall, dark, dev-gate, F3, P19 — used below.)
 
 ## 0. The four operator-demanded properties (the non-negotiable core)
 
@@ -58,6 +62,17 @@ outranks live work; only a wall does, and even the wall waits briefly and then
 pays the F3 mitigation toll.* This is not a softening of (d); it is (d) plus
 the continuity guarantee the operator already relies on, with the priority
 order stated instead of implied.
+
+**One delivery-honesty note on (d) and model-swap (R2-M4):** the account-swap,
+interactive-refresh, and unlisted-caller arms of (d) are delivered by the gate
+at the chokepoint from Piece 2's first rung. The MODEL-swap arm has two legs:
+its existing pane-idle refusal (live today) and the new SUBAGENT leg, which
+ships **dark** behind its own micro-flag (`subagentIdleLeg: false`, §4.2/§14-Q5)
+and graduates on its own rung (§10). Until that flip, a model-swap of a
+pane-idle session carrying live background subagents remains today's behavior.
+(d) is the design commitment this spec delivers; the model-swap subagent leg
+is the one arm whose delivery is explicitly staged — stated here so §0 never
+claims more than a given rung has actually shipped.
 
 ---
 
@@ -131,7 +146,7 @@ The monitor prechecks "an alternate below 80 exists"
 (`src/core/ProactiveSwapMonitor.ts:226-231`, `selectAccount(…, {softThresholdPct:
 this.thresholdPct}, c.accountId)`), then executes via the injected swap
 (`src/core/ProactiveSwapMonitor.ts:248-256`) which is wired to
-`QuotaAwareScheduler.onQuotaPressure` (`src/commands/server.ts:16023-16026`).
+`QuotaAwareScheduler.onQuotaPressure` (`src/commands/server.ts:16022-16025`).
 `onQuotaPressure` **re-selects the target itself**
 (`src/core/QuotaAwareScheduler.ts:224-228`) with a DIFFERENT threshold — the
 scheduler's `softThresholdPct` = `config.subscriptionPool.swapSoftThresholdPct`,
@@ -227,10 +242,15 @@ Refusal is per-candidate-session and logged with reason `all-hot` (§6). To
 keep the ledger write rate sane during a sustained all-hot afternoon, all-hot
 refusals are recorded as **state-transition rows**, not per-tick rows: one row
 when a candidate ENTERS all-hot refusal, one when it LEAVES, plus a low-rate
-heartbeat row (one per candidate per 30 min while the state persists) so a
-long episode stays externally provable (the I2 proof is preserved at ~2% of
-the naive write volume). The monitor keeps ticking; the moment a window resets
-and a genuinely-cool target appears, proactive swapping resumes on its own.
+heartbeat row (one per candidate per `allHotHeartbeatMs`, default 30 min,
+while the state persists) so a long episode stays externally provable (the I2
+proof is preserved at ~2% of the naive write volume). The same
+enter/leave/heartbeat treatment applies to `thrash-breaker` suppression rows,
+keyed on the episode's `episodeId` — the breaker evaluates before all-hot in
+the pipeline, so without this it would relocate the exact per-tick write
+pattern the state-transition scheme eliminates into every breaker-open hour.
+The monitor keeps ticking; the moment a window resets and a genuinely-cool
+target appears, proactive swapping resumes on its own.
 
 **The honest tradeoff, argued.** A refused proactive swap can mean the session
 hits the wall and takes the REACTIVE swap instead — one interruption at a
@@ -263,6 +283,28 @@ mechanically, and every hop is a `reactive` ledger row so a chain is visible.
 follow-up (`reactive-coolest-target`), deliberately NOT in this spec: it
 changes the reactive path's target choice, and I6 promises byte-identical
 reactive behavior.
+
+**The cascade carries its own P19 escalation (detection-only — I6-safe; closes
+the round-2 Standards-Conformance flag):** accepting the cascade with only a
+cap and passive ledger rows left "No Unbounded Loops" half-satisfied — the
+principle demands that sustained degradation SURFACE once, not merely be
+readable. Two detection-only triggers each raise ONE `episodeId`-deduped
+attention item ("session X has emergency-hopped accounts N times in the last
+30 min — the pool is genuinely saturated" / "session X is rate-capped on a
+walled account and cannot swap again this window"): (1) the same session's
+reactive hops reach `reactiveHopAlertThreshold` (default **2**) within
+`reversalWindowMs`; (2) the pre-existing refresh rate cap refuses a REACTIVE
+swap — the one state where a session is stranded on a walled account with no
+further mechanical rescue, which today is fully silent. Neither trigger
+refuses, delays, or re-targets anything (I6: reactive decision behavior stays
+byte-identical); this is the escalate-once arm, and the reactive continuity
+loop is hereby DECLARED the sanctioned Eternal-Sentinel exemption under P19
+(it never gives up; it now also never degrades silently). Fix-alongside, one
+layer below (the foundation gap the round-2 lessons audit surfaced): the
+reactive path's failure today is silent — `refreshFn`'s `false` return is
+discarded (`void`, `src/commands/server.ts:15974`) and a respawner throw is an
+unhandled rejection — so reactive execution failures now also write `failed`
+ledger rows through the §3.5 chokepoint and feed trigger (2)'s escalation.
 
 ### 3.2 Brake (b) — per-session dwell
 
@@ -297,7 +339,13 @@ snapshot that the decision logs (§6):
 1. **Absolute ceiling:** `bindingUtilization(target) < thresholdPct −
    targetHeadroomPct` — default ceiling **80 − 15 = 65%**. A target in the
    79%-band is never "better" in any way that survives the landed sessions'
-   own burn plus poll lag.
+   own burn plus poll lag. Stated explicitly: the 15-point headroom IS the
+   proxy for projected post-swap utilization — it is the margin budgeted for
+   the landed session's own burn plus one poll interval of reading lag, and
+   the per-target-per-tick cap (below) bounds the immediate pile-on. A
+   per-session burn-rate ESTIMATE feeding the filter is a named possible
+   refinement (`burn-aware-targeting`), not v1 — the fixed margin plus the cap
+   already bound the failure the estimate would predict.
 2. **Relative improvement:** `bindingUtilization(source) −
    bindingUtilization(target) ≥ minImprovementPct` — default **15 points**.
    Guards the case where the source reading is barely over threshold (80–81%)
@@ -381,13 +429,27 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   none writes the file directly. Rotation uses the O(1) segment helper
   (`maybeRotateJsonlSegment` + a cached byte counter — NOT the legacy
   whole-file `maybeRotateJsonl` rewrite, which is marked non-conformant),
-  size-rotated at 10 MB, keep 2 segments.
-- **Read path (never a per-decision scan):** hydrate ONCE at boot, bounded to
-  rows within `max(dwellMs, reversalWindowMs)` of now — INCLUDING the newest
-  rotated segment when the active file is younger than the window (a rotation
-  seconds before boot must not blind the brakes). After boot: an in-memory
-  per-session index, write-through on append. No decision ever re-reads the
-  file.
+  size-rotated at 10 MB, keep 2 segments. **Durability rules for
+  state-source duty (the ledger is both audit log AND restart-state
+  source):** every append is a single atomic line write; on hydration a
+  corrupt/partial trailing line is tolerated — treated as absent and counted
+  (`corruptLinesSkipped` on the status route), never allowed to poison the
+  derivation or abort the boot.
+- **Read path (never a per-decision scan):** hydrate ONCE at boot. The
+  hydration window is `hydrationWindowMs = max(dwellMs, reversalWindowMs,
+  thrashBreakerBackoffMs)` — the breaker backoff (60 min) is deliberately
+  inside the bound; a window that stopped at dwell (45 min) would silently
+  lose a live breaker episode in the second half of its backoff, the exact
+  §2.4 restart class this ledger exists to close. The read walks retained
+  segments NEWEST-FIRST (active file, then rotated segments) until the oldest
+  row read is older than the window — bounded by `keepSegments` = 2, so at
+  most active + 2 segments (~30 MB) at boot, one-time, off the hot path. If
+  retention cannot cover the window (all retained rows are younger than the
+  bound and a segment was evidently lost to rotation), the boot flags itself
+  UNDER-PRIMED honestly: one log line + a `hydration: 'under-primed'` status
+  field — never a silent cold index masquerading as a complete one. After
+  boot: an in-memory per-session index, write-through on append. No decision
+  ever re-reads the file.
 - **Reversal (refusal — same-session keyed):** a proactive swap intent whose
   `(from,to)` is the inverse of the same session's most recent executed swap
   within `reversalWindowMs` (default **1 800 000, 30 min**) is refused outright
@@ -401,6 +463,19 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   detector sees it. Refusal stays same-session-keyed on purpose — the
   legitimate 08:19 wave (different sessions, same pair, same direction under
   real pressure) must not be refused by a pair-level rule.
+- **Rotation (detection — direction-agnostic frequency, closes the N≥3
+  blind spot):** both reversal detectors key on pair INVERSION, so a
+  consistent-direction rotation (A→B→C→A) never trips them — it produces no
+  reverse edge while dwell merely PACES it (~one hop per session per 45 min:
+  incident-scale churn with every pair detector green). The third detector is
+  frequency, not direction: a session whose PROACTIVE executions reach
+  `swapFrequencyThreshold` (default **3**) within `swapFrequencyWindowMs`
+  (default **10 800 000, 3 h** — three hops in three hours means the session
+  is being moved at nearly the dwell floor, the rotation signature; a
+  legitimately-optimized session is moved once per standing wave, ~2.5–3 h)
+  ALSO increments the thrash counter (detection-only — refusal semantics
+  unchanged; dwell already paces the session, the breaker is what stops a
+  systemic rotation).
 - **Thrash episode / breaker:** ≥ `thrashBreakerThreshold` (default **2**)
   thrash-counter increments pool-wide within `reversalWindowMs` opens a breaker
   that suppresses ALL proactive swaps for `thrashBreakerBackoffMs` (default
@@ -411,20 +486,31 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   must be bounded and loud, never a silent permanent off). Reactive swaps
   ignore the breaker (I6).
 - **Breaker state survives restart (this spec must not re-create §2.4):**
-  breaker state is DERIVED, not stored — at boot, the same ledger hydration
-  that primes dwell re-derives the thrash counter and any open episode from
-  reversal-bearing rows within `reversalWindowMs` (episode identity =
-  `episodeId`, minted at open and stamped on every suppressed row). If the
-  derivation shows an episode whose backoff has not elapsed, the breaker boots
-  OPEN with the original deadline. The episode attention item is deduped on
-  the ledger-persisted `episodeId`, so a reconstructed episode does NOT
-  re-alert — the restart-heavy day that motivated §2.4 gets a breaker that
-  holds, silently, exactly as if the process had lived.
+  breaker state is DERIVED, not stored as separate authority — and the
+  derivation is anchored on the EPISODE, not on the reversal rows that opened
+  it (which age out of any window while the episode is still live). Every
+  episodeId-stamped row — the open-marker row written at episode open, every
+  suppressed/enter/leave/heartbeat row — carries `breakerOpenedAt` and
+  `breakerDeadline` (§6.1), so the deadline is IN the schema. At boot, the
+  hydration (whose window includes the full backoff — see the read path above)
+  re-derives from the MOST-RECENT episodeId-stamped row of ANY decision kind:
+  if its `breakerDeadline` has not elapsed, the breaker boots OPEN with the
+  ORIGINAL deadline. This works precisely when suppressed rows vastly
+  outnumber reversal rows (the normal shape of an open episode). The episode
+  attention item is deduped on the ledger-persisted `episodeId`, so a
+  reconstructed episode does NOT re-alert — the restart-heavy day that
+  motivated §2.4 gets a breaker that holds, silently, exactly as if the
+  process had lived.
 
-With brakes (a)+(c) working, reversals should be structurally impossible — the
-breaker is the belt-and-suspenders detector that PROVES it, and the alarm if a
-future change reopens the hole (the same role the guard-posture tripwire plays
-for config flips).
+With brakes (a)+(c) working, PAIR reversals (2-cycles) should be structurally
+impossible — the breaker is the belt-and-suspenders detector that proves that
+claim for 2-cycles and alarms if a future change reopens the hole (the same
+role the guard-posture tripwire plays for config flips). The claim is
+deliberately scoped: N≥3 rotations are NOT structurally impossible under
+(a)+(c) — they are individually-justified hops — which is exactly why the
+frequency detector above exists. The breaker's coverage is the union of the
+three detectors (same-session inversion, pair-level inversion, per-session
+frequency), not the first alone.
 
 ### 3.6 Execution-failure accounting (closes a pre-existing P19 gap)
 
@@ -433,14 +519,21 @@ retry next tick — no record, no backoff, no escalation. The draft's decision
 enum reproduced that hole; it is now closed:
 
 - A swap execution that fails writes a `decision: 'failed'` ledger row
-  (reason `swap-exec-failed`, sanitized error class only — never raw error
-  text that could carry paths/tokens).
+  (reason `swap-exec-failed`). `errorClass` is pinned normatively: the
+  error's CONSTRUCTOR NAME or a fixed enum mapping ONLY — never `.message`,
+  never `.stack`, never a truncated message (those can carry paths/tokens;
+  the anti-leak rule must be enforceable in review, not aspirational).
 - Each consecutive failure puts the SESSION into execution-failure backoff:
   skip it for `tickMs × 2^n` (n = consecutive failures, capped at `dwellMs`).
   A success resets the counter.
 - After **3** consecutive failures on one session: ONE deduped attention item
   (per session per episode) — "proactive swap for session X is failing
   repeatedly (reason class)". Counters on the status route (§6.3).
+- **Restart-proof like the breaker:** the failure-streak counter, its backoff,
+  and its episode dedupe key are re-derived at boot from `failed` rows inside
+  the same hydration window (§3.5) — a crash-loop day must not reset the
+  backoff each boot and re-alert once per restart, which would break
+  one-item-per-streak exactly when it matters.
 
 ---
 
@@ -463,12 +556,18 @@ I7 requires for proactive callers — and it is built on synchronous
 checkSessionWorkState(session) → 'working' | 'idle' | 'indeterminate'
 ```
 
-composing the ASYNC primitives that already exist for exactly this reason:
-`hasActiveProcessesAsync` for the child-process leg and the coalesced tmux
-pane capture (`tmuxExecCoalesced`) for the footer leg, plus
-`SubagentTracker.hasActiveSubagents` (O(1), in-memory, cannot block). A leg
-that cannot be read reports `indeterminate` instead of a silent `false`.
-"Non-baseline child process" means the canonical baseline filter in
+This is a new PUBLIC async method on `SessionManager` (the owner of the
+private primitives it composes — `SwapWorkGate`, a separate module, cannot
+reach them otherwise): the coalesced tmux pane capture (`tmuxExecCoalesced`)
+for the footer leg, and for the child-process leg a NEW batched path around
+the pure `computeHasActiveProcesses(panePid, psOutput)` — deliberately NOT
+`hasActiveProcessesAsync`, which both forks its own full `ps -eo` per call and
+folds its failure to `true`, the wrong shape twice over. Each leg that cannot
+be read reports its OWN `indeterminate` instead of a silent boolean — a
+genuinely-unprobeable process tree must surface as `busy-indeterminate` in the
+ledger, never masquerade as `busy-turn`. `SubagentTracker.hasActiveSubagents`
+(O(1), in-memory, cannot block) supplies the subagent leg. "Non-baseline child
+process" means the canonical baseline filter in
 `SessionManager.hasActiveProcesses` (the shell/tmux-infrastructure exclusion
 list) — defined by reference so the term is not free-floating.
 
@@ -477,9 +576,13 @@ synchronous probe path. At spec'd frequency (deferred intents re-checked per
 tick + per-10 s grace re-checks across a reactive wave), the sync path's 2–4
 blocking `execFileSync` forks (including a full `ps -eo` scan) would stall the
 server event loop for seconds at exactly the hot moment — the mesh lease tick
-(~5 s) and Telegram ingress share that loop. One shared `ps` snapshot is taken
-per re-check SWEEP (all sessions under evaluation in a tick share it), not per
-session.
+(~5 s) and Telegram ingress share that loop. The `ps` snapshot is shared
+through a short-TTL (~2 s) cache at the `SessionManager` level — NOT merely
+"once per monitor sweep": the sweep AND every concurrently-running reactive
+grace loop (K sessions walling near-simultaneously in an all-hot cascade, each
+re-checking every 10 s) reuse one process-table read within the TTL. One `ps`
+fork per ~2 s host-wide is the ceiling regardless of how many probes run; the
+wiring test pins it (§12).
 
 ```
 busy(session) :=
@@ -529,6 +632,25 @@ type SwapWorkGateCallerClass =
   | 'recovery'             // sentinel recovery respawn — exempt
 ```
 
+**Provenance invariant (I11): `callerClass` is set ONLY by server-internal
+call sites — never populated from request input.** The class is the sole
+authority deciding whether in-flight work is protected (`recovery` exempts the
+gate AND skips mitigations), so a wire-derived class would be a gate bypass by
+construction. `/sessions/refresh` pins `interactive-refresh` server-side; no
+route accepts a `callerClass` field, and the wiring test asserts none ever
+does (§12).
+
+**Recovery-class enumeration (the safe default's one blind spot, closed):**
+the `interactive-refresh` default is safe for every caller EXCEPT a recovery
+respawn — refusing a recovery because a wedged pane still SHOWS "working" is
+the deadlock §4.4 forbids. The known recovery call sites are therefore
+enumerated and tagged `recovery` at build time: the ContextWedgeSentinel fresh
+respawn, the stuck-signature (AUP/context-wall) recovery respawn, and the
+SessionWatchdog escalating-kill respawn. The §12 caller audit verifies the
+tag on each; any recovery-class caller added later that forgets the tag fails
+SAFE into refusal (nothing is killed) and surfaces immediately as a refused
+recovery in the reap-log — loud, not silent.
+
 **Gate-before-rate-guard (order is load-bearing):** the busy check runs BEFORE
 `refreshSession`'s rate-guard records the attempt. A deferred or refused
 attempt consumes ZERO of the 5-per-10-min rate budget — otherwise a busy
@@ -548,10 +670,14 @@ change: its idle check gains the SUBAGENT leg — a session at an idle prompt
 CAN have live background subagents; today's pane-only check would swap under
 them (the same footer blind spot F3 hit). Frontloaded decision (Q5, §14): the
 subagent leg ships behind its **own micro-flag on the model-swap config block**
-(`subagentIdleLeg`, default follows the model-swap feature's rollout stage),
-NOT inside `swapContinuity` — the pieces stay independently shippable, and a
-live feature's refusal surface must not silently change (or silently REVERT)
-when an unrelated flag flips.
+— `subagentIdleLeg`, **concrete default `false` (dark) everywhere**, graduating
+on its OWN explicit rollout rung (§10 rung 3a) — NOT inside `swapContinuity`
+and NOT "following the model-swap feature's stage" (model-swap is already
+live, so stage-following would resolve to ON and silently change a live
+refusal surface on deploy — the exact outcome this paragraph forbids). The
+pieces stay independently shippable; shipping this spec changes a live
+model-swap's refusal surface only at the deliberate flag flip, never on
+deploy. §0 carries the matching delivery-honesty note.
 
 **Deferral ownership (who holds what state):** `SwapWorkGate` is a STATELESS
 predicate — `busy()` and nothing else. `ProactiveSwapMonitor` owns the deferral
@@ -576,14 +702,24 @@ swap already moved it) is INVALIDATED (`decision: 'invalidated'`, reason
 dwell exists to prevent. The intent that finally fires is one that would have
 been approved fresh at that moment; deferral never launders a stale decision.
 
-**Defer→drop→regenerate churn brake:** after a `deferral-ceiling-dropped`, the
-(session, source→target pair) enters re-intent backoff for `dwellMs` (default)
-— a never-idle session on a hot account must not cycle
-defer→drop→regenerate→defer forever. Repeated defer observations within one
-intent episode are deduped in the ledger to first + final + `deferCount`
-(never one row per re-check). Deferred intents do NOT consume
-`maxSwapsPerCycle` slots — only executed swaps count against the per-tick
-budget (a wave of deferrals must not starve the tick's executable swaps).
+**Defer→drop→regenerate churn brake (keyed on the SESSION — the key is
+load-bearing):** after a `deferral-ceiling-dropped`, the SESSION enters
+re-intent backoff for `dwellMs` (default) — keyed on `(session)`, NOT on the
+(session, target-pair): a pair key is evaded by target rotation (drop on A→B,
+next tick selects A→C — not backed off — defer 30 min, drop, rotate back; the
+"must not cycle forever" promise dies whenever ≥2 cool targets exist). One
+session = one intent episode: the `deferralAgeMs` ceiling clock ALSO carries
+across target re-selection within the episode (a best-target change never
+resets the 30-min ceiling — the clock measures how long the SESSION's swap
+intent has been deferred, not how long the current target has been chosen).
+Repeated defer observations within one intent episode are deduped in the
+ledger to first + final + `deferCount` (never one row per re-check). The
+backoff is best-effort across restarts by DERIVATION, like everything else:
+`dropped` rows are in the hydration window (§3.5), so a restart re-primes it —
+stated so the restart path is a design property, not luck. Deferred intents do
+NOT consume `maxSwapsPerCycle` slots — only executed swaps count against the
+per-tick budget (a wave of deferrals must not starve the tick's executable
+swaps).
 
 `deferralCeilingMs` default: **1 800 000 (30 min)** — long enough for a real
 build/turn to land (p95 turn length on the autonomous runs is minutes, not
@@ -640,14 +776,36 @@ Both hooks already exist; this wires them:
    cannot be closed early by content), (b) attributed from the stored
    `SenderEnvelope` ("from <sender> at <time>"), never laundered into bare
    instruction position — the respawned session sees "a message from X awaits
-   an answer", not an anonymous imperative. Clamps: mitigation block ≤ 2 000
-   chars total; quoted inbound ≤ 1 000 chars (ellipsized); subagent list ≤ 10
-   entries then "+N more". Subagent `lastMessage` bodies are NOT included
-   (transcript PATHS land in the ledger row only, never bodies — §6.1).
+   an answer", not an anonymous imperative. **The attribution fields are the
+   SAME trust class as the body (this is load-bearing, R2-M1):** the sender
+   NAME (`fromUsername`/`fromFirstName`) is fully sender-controlled Telegram
+   payload — a hostile display name is an injection vector aimed at the
+   FRAMING position, which is MORE privileged than the escaped body it wraps.
+   Therefore the attribution fields are delimiter-neutralized AND
+   length-clamped (≤ 64 chars, ellipsized) by the same rule as the body, and
+   rendered INSIDE the quoted-data region — the only text outside the quoted
+   region is the FIXED template ("a message from the quoted sender below
+   awaits an answer"), which contains zero sender-derived bytes. A
+   spec-compliant build has no unneutralized sender-controlled byte anywhere
+   in the prompt. Clamps: mitigation block ≤ 2 000 chars total; quoted inbound
+   ≤ 1 000 chars (ellipsized); subagent list ≤ 10 entries then "+N more".
+   Subagent `lastMessage` bodies are NOT included (transcript PATHS land in
+   the ledger row only, never bodies — §6.1).
 
 Mitigations are additive to the respawn and never gate it — a failure to
 enumerate or resolve the inbound logs and proceeds (the kill is already
 justified when we reach here; the mitigation must not become a new wedge).
+
+**Respawn-notice hygiene (the mechanism must not become topic spam):** each
+account-swap respawn currently posts a per-swap "Session respawned." notice to
+the topic — across a reactive cascade that is a notice per hop, the
+notification shape this spec's own constitution line forbids. Swap respawns
+are therefore posted at most ONCE per session per swap episode (subsequent
+hops inside the same episode coalesce into the first notice's thread of
+meaning: the mitigation payload already tells the resumed conversation what
+happened). A `proceeded`-with-mitigations respawn keeps its one honest notice
+— the user should know work was interrupted; they should not be told five
+times in ten minutes.
 
 ### 4.4 Signal vs. Authority — why this gate may block (argued, not assumed)
 
@@ -664,14 +822,23 @@ I7 (its own uncertainty never strands either direction). A wrong "busy" costs
 a delayed optimization; a wrong "idle" costs what today's behavior ALWAYS
 costs. No unbounded or unappealable authority exists in the design.
 
+**Supervision tier (P7, declared):** Tier 0 — every decision point in both
+pieces is deterministic quota/state math over structural signals; no LLM
+policy judgment exists anywhere in the pipeline, so there is nothing for a
+Tier 1 supervisor to validate. This is the deterministic-evaluator carve-out,
+named rather than assumed.
+
 ### 4.5 `/sessions/refresh` refusal shape (interactive callers)
 
 The gate check runs PRE-202 — the route answers the truth synchronously
 instead of accepting-then-failing:
 
-- Busy → **HTTP 409** `{code: 'session_busy', turnInFlight: boolean,
+- Busy → **HTTP 409** `{code: 'session-busy', turnInFlight: boolean,
   subagents: [{agentType, ageMinutes}]}` (counts and ages only — no titles,
-  no transcript paths, no message content on the wire).
+  no transcript paths, no message content on the wire). One spelling
+  everywhere: the wire code and the §6.2 ledger reason are BOTH
+  `session-busy` (the round-2 `session_busy`/`session-busy` split is
+  resolved to the hyphenated form).
 - The request body gains optional `force: true` — overrides ONLY the work
   gate, NEVER the rate guard (a forced refresh still consumes rate budget and
   still respects the 5-per-10-min cap; `force` is not a rate bypass).
@@ -682,6 +849,13 @@ instead of accepting-then-failing:
   surface wants operator-attributed force, it must arrive via an
   operator-authenticated surface (dashboard PIN) — out of scope here, named so
   it is a decision and not an accident.
+- **Why bearer-level force is acceptable (stated, not assumed):** today EVERY
+  bearer refresh kills unconditionally — `force` merely restores the status
+  quo for a caller that explicitly asks for it, while the gate strictly ADDS
+  protection everywhere else; there is no regression surface. A distinct
+  force capability/scope (a token that can refresh but not force) is a named
+  hardening follow-up (`force-capability-scope`), not v1 — it would be the
+  first per-capability split in the Bearer model and deserves its own design.
 - Existing internal callers of `/sessions/refresh` and `refreshSession` are
   audited for the new refusal code as part of the build (test plan §12 —
   every caller either handles 409/`session-busy` or passes a deliberate
@@ -720,14 +894,20 @@ instead of accepting-then-failing:
   deferrals are distinguishable in the ledger (`busy-indeterminate`).
 - **I8 (breaker is bounded, loud, and restart-proof):** the thrash breaker
   always half-opens after its backoff, opening it raises exactly one deduped
-  attention item per `episodeId` (surviving restarts — §3.5), and no permanent
-  silent suppression state exists.
+  attention item per `episodeId` (surviving restarts — the hydration window
+  covers the FULL backoff and the deadline is carried in the schema, §3.5),
+  and no permanent silent suppression state exists.
 - **I9 (a deferred intent is never stale at fire time):** every deferral
   retry re-runs the full brake pipeline; an intent invalidated by an
   account-change underneath it never executes (§4.2).
 - **I10 (default-slot integrity):** no proactive swap ever changes which
   account the default config slot serves — untagged sessions are outside the
   proactive candidate set by construction (§3, Q3).
+- **I11 (callerClass provenance):** `callerClass` is set only by
+  server-internal call sites — no route ever populates it from request input
+  (§4.2). A wire-derived `recovery` class would bypass the gate and the
+  mitigations by construction; the wiring test pins that no route surfaces
+  the field.
 
 ## 6. Observability
 
@@ -760,25 +940,38 @@ matrix (● = always, ○ = when applicable, — = never):
 | `force` / `authLevel` | boolean / `'bearer'` | — | — | — | — | — | — | ○ |
 | `defaultAccountChanged` | boolean | ○ (reactive untagged) | — | — | — | — | — | ○ |
 | `episodeId` | string | ○ (breaker) | ○ (breaker/all-hot) | ○ | ○ | ○ | ○ (failure streak) | ○ |
-| `transition` | `'enter'\|'leave'\|'heartbeat'` | — | ○ (all-hot) | — | — | — | — | — |
-| `errorClass` | string (sanitized) | — | — | — | — | — | ● | — |
+| `breakerOpenedAt` / `breakerDeadline` | ISO-8601 / ISO-8601 | ○ (episodeId rows) | ○ (episodeId rows) | ○ | ○ | ○ | ○ | ○ |
+| `transition` | `'enter'\|'leave'\|'heartbeat'` | — | ○ (all-hot / thrash-breaker) | — | — | — | — | — |
+| `errorClass` | string (constructor-name/enum ONLY — §3.6) | — | — | — | — | — | ● | — |
 
 **Never in a row:** message bodies, subagent `lastMessage` content, raw error
-text, tokens, credentialed URLs. Transcript PATHS appear only in
-`killedSubagentList`; the status route (§6.3) serves counters only and no
-route serves raw rows.
+text (`errorClass` is a constructor name or fixed enum member, never
+`.message`/`.stack`), tokens, credentialed URLs. Transcript PATHS appear only
+in `killedSubagentList` — a LOCAL-ONLY debugging aid, excluded from any
+export/feedback bundle that leaves the machine. The status route (§6.3)
+serves counters only, and no DEDICATED route serves raw rows; stated
+honestly, the generic dashboard file viewer treats `state/swap-ledger.jsonl`
+like any other state file (readable by the same Bearer/PIN holder who can
+already read every state ledger and the transcripts themselves — no new
+privilege is created by this file).
 
 ### 6.2 Enums (single-sourced; §3/§4 reference these)
 
 - `decision`: `swapped | refused | deferred | dropped | invalidated | failed |
   proceeded` (`proceeded` = proceeded over busy with mitigations — reactive
-  after grace, or force).
+  after grace, or force; its `reason` carries the busy-state observed at kill
+  time: the `busy-*` member that was live when the grace deadline or force
+  fired).
 - `reason`: `all-hot | dwell | no-material-target | reversal | thrash-breaker
   | target-revalidation-failed | busy-turn | busy-subagents |
   busy-indeterminate | deferral-ceiling-dropped | intent-stale |
-  session-busy | swap-exec-failed`.
+  session-busy | swap-exec-failed` (one spelling — `session-busy` is also the
+  §4.5 wire code).
 - `breakerState`: `closed | open | half-open`.
-- `callerClass`: §4.2 (defined once as the gate's input type).
+- `callerClass`: §4.2 (defined once as the gate's input type; server-internal
+  only per I11).
+- `authLevel`: `bearer` (the only member in v1 — operator-attributed force is
+  the named `force-capability-scope` follow-up, §4.5).
 
 ### 6.3 Log lines + status surface
 
@@ -793,9 +986,13 @@ route serves raw rows.
   thrash: {reversalsDetected, pairLevelDetections, breakerState,
   breakerOpenedAt, episodes: [{episodeId, openedAt, expiresAt}]},
   execFailures: {bySession, streaks}, deferrals: {active, byReason, dropped,
-  invalidated, proceededWithMitigations}}` — the **thrash-detected counter**
-  the operator asks for lives here. All fields are LOCAL-SCOPE (this machine —
-  §8); the route documents that.
+  invalidated, proceededWithMitigations}, hydration:
+  'complete'|'under-primed', corruptLinesSkipped}` — the **thrash-detected
+  counter** the operator asks for lives here. All fields are LOCAL-SCOPE
+  (this machine — §8); the route documents that. **Surface scoping, stated:**
+  the counters are API-only in v1 — a dashboard tile rendering them is the
+  named follow-up `swap-brakes-dashboard-tile`, so nobody assumes the
+  operator's counter surfaces in the UI on day one.
 
 ### 6.4 Guard posture + attention hygiene
 
@@ -833,7 +1030,11 @@ route serves raw rows.
         "dwellMs": 2700000,       // 45 min
         "reversalWindowMs": 1800000,
         "thrashBreakerThreshold": 2,
-        "thrashBreakerBackoffMs": 3600000
+        "thrashBreakerBackoffMs": 3600000,
+        "swapFrequencyThreshold": 3,      // rotation detector: N proactive executions…
+        "swapFrequencyWindowMs": 10800000, // …of one session within 3 h feed the counter
+        "allHotHeartbeatMs": 1800000,     // all-hot/breaker heartbeat row cadence
+        "reactiveHopAlertThreshold": 2    // reactive hops per session per reversalWindowMs → ONE alert
       }
     }
     // Piece 2 (the work gate). The "swapContinuity" KEY IS OMITTED from the
@@ -854,8 +1055,8 @@ route serves raw rows.
 ```
 
 The model-swap subagent leg (Q5) is a micro-flag on the MODEL-SWAP config
-block (`subagentIdleLeg`, default follows that feature's rollout stage), not
-here — §4.2.
+block (`subagentIdleLeg`, **concrete default `false`** — never
+stage-following), not here — §4.2.
 
 All numeric reads use nullish coalescing (`?? default`, never `||` — zero is a
 legal disable for several of these).
@@ -956,12 +1157,22 @@ Consequences, stated honestly:
    while in dryRun these guards are `loadBearingSoaking` on `/guards`, with
    the bounded soak window — they lapse loud if the flip stalls.)
 3. **Live on dev:** flip both `dryRun:false` on echo. Run the §11 live proof.
+   **3a. Model-swap subagent leg (its own rung, deliberately separate):** only
+   after rung 3 is proven, flip `subagentIdleLeg: true` on the dev agent —
+   this is the first moment a live model-swap's refusal surface changes, and
+   it changes by explicit flip, never by deploy (§4.2, R2-M4).
 4. **Fleet default:** antiThrash defaults `enabled:true, dryRun:false` for any
    install that opts into `proactiveSwap.enabled` (the brake becomes part of
    the feature's definition — a proactive swapper without anti-thrash is the
    bug, not a configuration); swapContinuity graduates to fleet default-on one
    release later (it touches every refresh path, wider blast radius, longer
-   soak).
+   soak). **Multi-machine caveat, stated:** on an install where several
+   machines share the same accounts, machine-local brakes can still co-select
+   the same cool account from stale local views (§8's contention case at
+   fleet scale). The brake remains a STRICT improvement over today (which has
+   no brakes at all), so rung 4 is not gated on it — but the
+   `cross-machine-swap-contention` follow-up is the full fix and is named
+   here so the residual is a tracked decision, not a surprise.
 
 Rollback levers at every rung: `antiThrash.dryRun:true` restores v1.3.722
 decision behavior without losing observability; removing the dev-agent's
@@ -1005,7 +1216,14 @@ Run on the dev agent, real pool, real sessions:
   ceiling−1/at-ceiling; dwell at T+dwellMs−1/+1 (including ledger-hydrated
   dwell after a simulated restart); improvement bounds at exactly-15/14.9;
   reversal window edges; same-session refusal vs pair-level detection-only;
-  breaker open→half-open timing + restart re-derivation (episodeId dedupe);
+  the rotation-frequency detector at threshold−1/at-threshold (an A→B→C→A
+  rotation MUST open the breaker; a once-per-wave legitimate swap must NOT);
+  breaker open→half-open timing + restart re-derivation (episodeId dedupe,
+  deadline carried in-row, restart in the SECOND half of the backoff boots
+  OPEN — the R2-M2 regression case pinned; failure-streak backoff also
+  re-derived); hydration segment-walk (window spanning active + both rotated
+  segments; under-primed flag when retention cannot cover the window; corrupt
+  trailing line skipped + counted);
   the full I7 uncertainty×caller matrix (proactive/reactive/recovery ×
   working/idle/indeterminate × subagent-leg present/absent); filter→score→
   verify order (a hot target must be unreachable even when scoring prefers
@@ -1016,11 +1234,15 @@ Run on the dev agent, real pool, real sessions:
   newest-rotated-segment case; schema round-trip for every decision kind;
   mitigation payload clamps + delimiter neutralization.
 - **Integration (`tests/integration/`):** `/subscription-pool/proactive-swap`
-  additive `brakes`/`deferrals` fields; `/sessions/refresh` 409
-  `session_busy` shape + `force:true` semantics (force overrides the gate,
+  additive `brakes`/`deferrals`/`hydration` fields; `/sessions/refresh` 409
+  `session-busy` shape + `force:true` semantics (force overrides the gate,
   never the rate guard); ledger single-writer (concurrent decisions produce
   well-formed interleaved rows); per-key config liveness (§7.1 — a live-knob
-  change binds next tick; `swapContinuity.enabled` does not).
+  change binds next tick; `swapContinuity.enabled` does not); **migration
+  default-direction assertion:** an absent `antiThrash` block on a
+  `proactiveSwap.enabled:true` install MUST resolve `enabled:true,
+  dryRun:true` (a `false`-resolving builder mistake would skip the soak
+  fleet-wide).
 - **E2E (`tests/e2e/`):** feature-is-alive through the real server init path —
   with the features enabled the status fields and refusal codes are served
   (200, populated), with them dark the posture rows grade `dark-default` and
@@ -1031,7 +1253,11 @@ Run on the dev agent, real pool, real sessions:
   delegate to real implementations; the monitor→scheduler `targetAccountId`
   pass-through is pinned (the funnel contract §3.3); every existing
   `refreshSession` caller either handles the new refusal or declares a caller
-  class (the §4.5 caller audit, as a test).
+  class, and the three enumerated recovery call sites carry the `recovery`
+  tag (the §4.2/§4.5 caller audit, as a test); **no route surfaces
+  `callerClass` from request input (I11)**; **exactly one `ps` fork per
+  snapshot-TTL regardless of concurrent probe count** (the §4.1 shared-cache
+  mandate, pinned so a builder composing per-call primitives fails the test).
 - **P19 sustained-failure tests:** a permanently-busy session (footer wedged
   30+ min) produces bounded, constant-cost deferral rows (dedup holds) →
   ceiling drop → re-intent backoff — never unbounded rows or a stuck intent; a
@@ -1051,7 +1277,11 @@ Run on the dev agent, real pool, real sessions:
 | Swap execution throws | `failed` row + per-session exponential backoff (cap dwellMs); 3 consecutive → ONE deduped attention item (§3.6) — never a silent every-tick retry |
 | Thrash breaker wedges open | impossible by construction (time-based half-open, no external latch); state re-derived identically across restarts; posture visible on `/guards` |
 | Deferral records accumulate | per-session keyed map, entries die at execute/drop/ceiling/invalidate; hard cap = live session count; ledger rows deduped first/final/count |
-| Defer→drop→regenerate loop | re-intent backoff per (session, pair) after a ceiling drop (default dwellMs) — bounded churn (§4.2) |
+| Defer→drop→regenerate loop | re-intent backoff per SESSION after a ceiling drop (default dwellMs; target rotation cannot evade a session key) — bounded churn, re-derived from `dropped` rows across restarts (§4.2) |
+| N≥3 rotation (A→B→C→A) | pair detectors blind by design; the per-session frequency detector feeds the breaker at 3 executions / 3 h (§3.5) |
+| Reactive hop-chain in an all-hot pool | never refused (I6); capped by the refresh rate counter; ONE deduped escalation per episode at the hop threshold or on a rate-cap refusal (§3.1) |
+| Restart inside the second half of a breaker backoff | hydration window covers the FULL backoff; deadline carried in-row; breaker boots OPEN with the original deadline (§3.5, R2-M2) |
+| Ledger segment rotated inside the window | segment-walk reads newest-first across retained segments; if retention cannot cover the window the boot flags `under-primed` — never a silent cold index (§3.5) |
 | QuotaPoller stale during grace window | execute-time revalidation (§3.3) uses the freshest snapshot and refuses on ceiling breach — stale data fails toward NOT swapping (proactive) |
 | Server restart mid-deferral | pending deferrals dropped; intent regenerates from live quota state next tick (deferral state is derived) |
 | Server restart mid-breaker-backoff | breaker re-derives OPEN from the ledger with the original deadline; no re-alert (episodeId dedupe) |
@@ -1084,9 +1314,13 @@ Run on the dev agent, real pool, real sessions:
    exactly-once ingress ledger dark on this install). The durable inbound
    queue (CMT-1118) is the named future source (Close the Loop).
 5. **Q5 — the model-swap subagent leg ships behind its own micro-flag on the
-   model-swap config** (`subagentIdleLeg`), not inside `swapContinuity`. The
-   pieces stay independently shippable; a live feature's refusal surface must
-   not silently change or revert when an unrelated flag flips.
+   model-swap config** (`subagentIdleLeg`, **concrete default `false`**,
+   graduating on its own rung — §10 rung 3a), not inside `swapContinuity`. The
+   pieces stay independently shippable; a live feature's refusal surface
+   changes only at a deliberate flag flip, never on deploy and never when an
+   unrelated flag flips. (Round-2 R2-M4 killed the earlier "follows the
+   model-swap rollout stage" wording, which resolved to ON for a live
+   feature — self-contradictory with this same rule.)
 6. **Q6 — a per-caller deferral-ceiling override for autonomous runs is out
    of scope in v1.** The "swap at the next turn boundary" hook (the boundary
    the pool-transfer consent gate already uses) is the finer instrument, named
@@ -1153,6 +1387,48 @@ exception) rather than either the finding or the property being discarded.
 | L12 (rung-1 honesty) | Adopted — fleet opt-ins get dry-run rows at rung 1; stated in the ladder | §10 |
 | L13 (merged into B1-Q4) | Adopted via Q4 tri-state | §4.3, §14 |
 
+## 16. Round-2 findings disposition
+
+Every round-2 finding (report: `docs/specs/reports/
+swap-continuity-antithrash-round2-findings.md`, reviewed commit a7f6e2cb0) and
+what this revision did with it. Zero rejected; three deliberately scoped-down
+with the reason stated in-row (Adopted-scoped). No fold weakened any §0
+property — every major fix is additive or corrective within the round-2
+structure, as predicted in that report.
+
+| finding | disposition | where |
+|---|---|---|
+| R2-M1 (sender-attribution injection) | Adopted — attribution fields neutralized + clamped (≤64), rendered inside the quoted region; only fixed template text outside | §4.3(3) |
+| R2-M2 (breaker restart window arithmetic) | Adopted — hydration window includes the full backoff; newest-first segment walk with honest under-primed flag; breakerOpenedAt/breakerDeadline in-schema; derivation anchored on the most-recent episodeId row of any kind | §3.5, §6.1, I8, §13 |
+| R2-M3 (N≥3 rotation blind spot) | Adopted — direction-agnostic per-session frequency detector (3 executions / 3 h) feeds the breaker, detection-only; "structurally impossible" claim scoped to 2-cycles | §3.5, §7, §12 |
+| R2-M4 (subagentIdleLeg default contradiction) | Adopted — concrete default false, own rollout rung 3a; §0 carries the delivery-honesty note instead of the overclaim | §4.2, §0, §7, §10, §14-Q5 |
+| R2-M5 (re-intent backoff pair-keying) | Adopted — backoff AND ceiling clock keyed on the session; deferral age carries across target re-selection; restart re-derivation from dropped rows | §4.2, §13 |
+| R2-M6 (reactive cascade P19 + silent foundation) | Adopted — detection-only escalate-once per episode (hop threshold / rate-cap refusal); Eternal-Sentinel exemption declared; reactive failures write `failed` rows (fixes the silent `void` discard one layer down). I6 intact: nothing new refused | §3.1, §3.4-adjacent, §13 |
+| R2-m1 (raw-rows overstatement) | Adopted-scoped — wording corrected to "no dedicated route" + honest file-viewer note; deny-listing `state/` in the file viewer is an install-wide policy change deliberately left out of this spec's scope | §6.1 |
+| R2-m2 (breaker-row volume) | Adopted — thrash-breaker suppression gets the same enter/leave/heartbeat treatment, episodeId-keyed | §3.1, §6.1 |
+| R2-m3 (probe not deliverable as cited) | Adopted — public `checkSessionWorkState` on SessionManager; batched path around `computeHasActiveProcesses`; per-leg indeterminate; one-ps-per-TTL wiring test | §4.1, §12 |
+| R2-m4 (grace-loop ps fan-out) | Adopted — short-TTL shared ps snapshot cache at SessionManager level, covering sweeps AND concurrent grace loops | §4.1 |
+| R2-m5 (callerClass provenance) | Adopted — I11 + wiring test; no route surfaces the field | §4.2, I11, §12 |
+| R2-m6 (failure streak in-memory) | Adopted — streak/backoff/dedupe re-derived from `failed` rows at boot inside the hydration window | §3.6 |
+| R2-m7 (recovery callers unenumerated) | Adopted — three known recovery call sites enumerated + tagged; an untagged future one fails SAFE into refusal, visible in the reap-log | §4.2 |
+| R2-m8 (respawn-notice spam) | Adopted — one notice per session per swap episode; proceeded-kill keeps its single honest notice | §4.3 |
+| R2-m9 (P20 missing) | Adopted — P20 + the P7 Tier-0 declaration added to lessons-engaged | frontmatter, §4.4 |
+| R2-m10 (force breadth) | Adopted — no-regression rationale stated; `force-capability-scope` named as the hardening follow-up | §4.5 |
+| R2-m11 (ledger durability rules) | Adopted — atomic single-line appends; corrupt trailing line tolerated + counted | §3.5, §6.3 |
+| R2-m12 (projected utilization) | Adopted — headroom-as-burn-proxy stated explicitly; `burn-aware-targeting` named refinement | §3.3 |
+| R2-m13 (fleet rollout contention) | Adopted — rung-4 multi-machine caveat stated; strict-improvement argument; follow-up named as the full fix (no rollout gate — a braked installation is never worse than today's unbraked one) | §10 |
+| R2-L1 (transcript-path durability) | Adopted — local-only debugging aid, excluded from export/feedback bundles | §6.1 |
+| R2-L2 (errorClass undefined) | Adopted — constructor-name/fixed-enum only, never .message/.stack | §3.6, §6.1 |
+| R2-L3 (backoff lost on restart) | Adopted — re-derived from `dropped` rows (upgraded from "state best-effort" to derivation, since the hydration window already carries the rows) | §4.2 |
+| R2-L4 (heartbeat not a knob) | Adopted — `allHotHeartbeatMs` config knob | §3.1, §7 |
+| R2-L5 (enum edges) | Adopted — `authLevel` in §6.2; `proceeded` reason defined (the busy-* state at kill time) | §6.2 |
+| R2-L6 (spelling split) | Adopted — `session-busy` everywhere (wire + ledger) | §4.5, §6.2, §12 |
+| R2-L7 (dashboard scoping) | Adopted — API-only v1 stated; `swap-brakes-dashboard-tile` named follow-up | §6.3 |
+| R2-L8 (migration default direction) | Adopted — §12 integration assertion pins dryRun-true resolution | §12 |
+| R2-L9 (P7 tier undeclared) | Adopted — Tier 0 declared with the deterministic-evaluator rationale | §4.4 |
+| R2-L10 (glossary/density) | Adopted-scoped — eli16 pointer added at the top of the spec; a full in-spec glossary is deliberately skipped (the eli16 companion IS the plain-language surface; duplicating it inline drifts) | intro |
+| R2-L11 (1-line drift) | Adopted — `server.ts:16022-16025` | §2.2 |
+
 ## Open questions
 
 *(none — all resolved into §14 Frontloaded Decisions)*
@@ -1160,6 +1436,7 @@ exception) rather than either the finding or the property being discarded.
 ---
 
 *Draft authored 2026-07-02 (Session A, roadmap 4.4 + operator-priority thrash
-brake); round-2 revision same day (round-1 findings folded — §15). Evidence:
-`logs/server.log` (echo, v1.3.722). Convergence round 2 in flight; nothing
+brake); round-2 revision same day (round-1 findings folded — §15); round-3
+revision same day (round-2 findings folded — §16). Evidence:
+`logs/server.log` (echo, v1.3.722). Convergence round 3 in flight; nothing
 here is approved for build.*
