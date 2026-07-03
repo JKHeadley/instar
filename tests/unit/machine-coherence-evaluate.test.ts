@@ -8,6 +8,8 @@ import {
   classifyPeer,
   skewRowIdentity,
   rowIdentityHash,
+  classifyVersionSkew,
+  electRaiser,
 } from '../../src/monitoring/machineCoherenceEvaluate.js';
 import { MC_ROW_HASH_LEN } from '../../src/core/machineCoherenceManifest.js';
 
@@ -127,5 +129,52 @@ describe('rowIdentityHash (§3.2 marker hash)', () => {
     const row = skewRowIdentity('flag', 'k', { m_a: 'live', m_b: 'off' });
     expect(rowIdentityHash(row)).toBe(rowIdentityHash(row));
     expect(rowIdentityHash(row)).not.toBe(rowIdentityHash(row + 'x'));
+  });
+});
+
+describe('classifyVersionSkew (§3.3 version dimension — update-wave honesty)', () => {
+  it('identical versions → none', () => {
+    expect(classifyVersionSkew('1.3.729', '1.3.729')).toBe('none');
+  });
+  it('patch-only difference → patch-only (grace-gated: a normal update wave must not cry wolf)', () => {
+    expect(classifyVersionSkew('1.3.729', '1.3.730')).toBe('patch-only');
+  });
+  it('minor difference → major-minor (a real capability split, 2-tick confirm)', () => {
+    expect(classifyVersionSkew('1.3.729', '1.4.0')).toBe('major-minor');
+  });
+  it('major difference → major-minor', () => {
+    expect(classifyVersionSkew('1.3.729', '2.0.0')).toBe('major-minor');
+  });
+  it('an unparseable version that differs takes the QUIETER grace-gated path, never the loud one', () => {
+    expect(classifyVersionSkew('1.3.729', 'unknown')).toBe('patch-only');
+    expect(classifyVersionSkew('dev-build', 'unknown')).toBe('patch-only');
+  });
+  it('a prerelease/build suffix on the same major.minor stays patch-only', () => {
+    expect(classifyVersionSkew('1.3.729', '1.3.729-rc.1')).toBe('patch-only');
+  });
+});
+
+describe('electRaiser (§3.4 — deterministic, no coordination)', () => {
+  it('the serving-lease holder raises when it is a candidate', () => {
+    expect(electRaiser(['m_b', 'm_a'], 'm_b')).toBe('m_b');
+  });
+  it('falls to the lexicographically smallest candidate when the holder is not a candidate (dry-run/dark holder)', () => {
+    expect(electRaiser(['m_c', 'm_b'], 'm_a')).toBe('m_b');
+  });
+  it('falls to the smallest candidate when there is no lease holder at all', () => {
+    expect(electRaiser(['m_c', 'm_b'], null)).toBe('m_b');
+  });
+  it('zero candidates → null (nobody raises — a pool with no live guard honestly has none)', () => {
+    expect(electRaiser([], 'm_a')).toBeNull();
+  });
+  it('does not mutate the caller candidate list (sort works on a copy)', () => {
+    const candidates = ['m_c', 'm_b'];
+    electRaiser(candidates, null);
+    expect(candidates).toEqual(['m_c', 'm_b']);
+  });
+  it('every machine computes the SAME result from the same inputs (the shared-inputs property)', () => {
+    const inputs: [string[], string | null] = [['m_mini', 'm_laptop'], 'm_ghost'];
+    expect(electRaiser(...inputs)).toBe(electRaiser(...inputs));
+    expect(electRaiser(...inputs)).toBe('m_laptop');
   });
 });

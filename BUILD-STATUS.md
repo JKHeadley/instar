@@ -11,7 +11,7 @@
 | `de8ce26ad` | D₁ | §5a version telemetry: `captureHardware(ProcessIntegrity.runningVersion)` at the sole callsite (server.ts) + 3 editorial spec rephrases (orphan-deferral gate now passes WITHOUT the audited override) + eli16 header sync |
 | `6e413bfbf` | B | §3.2 advert transport: `src/core/machineCoherenceAdvert.ts` (builder + M4 receive clamp), `types.ts` MachineCapacity fields, `MachinePoolRegistry` receipt/carry-forward/rejection semantics (M5), `PeerPresencePuller` ratchet + R2-N1 spread + clamp-at-narrowing, `server.ts` UNCONDITIONAL emission (M3) with liveGet wiring (M8). 22 new + extended tests |
 | `dc0efd0c3` | D₂a | §5b NEW retained state: `HttpLeaseTransport.lastPulledByPeer` (dialed-id keyed, hearsay-proof, prune-on-depair) + `observedByPeer()` + `LeaseCoordinator.peerLeaseObservations()`. +5 tests |
-| (HEAD) | C₀ | `src/monitoring/machineCoherenceEvaluate.ts` — pure §3.3 helpers: `classifyPeer` (4 classes, pinned handling), `skewRowIdentity` (N1), `rowIdentityHash` (§3.2 marker format). 12 tests. Zero wiring — C₁ composes these |
+| `446e2016c` + HEAD | C₀ | `src/monitoring/machineCoherenceEvaluate.ts` — pure §3.3/§3.4 helpers: `classifyPeer` (4 classes, pinned handling), `skewRowIdentity` (N1), `rowIdentityHash` (§3.2 marker format), `classifyVersionSkew` (major-minor vs patch-only-grace), `electRaiser` (holder-if-candidate else lowest id). 24 tests. Zero wiring — C₁ composes these |
 
 ## Test / tsc state
 

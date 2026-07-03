@@ -97,3 +97,50 @@ export function skewRowIdentity(
 export function rowIdentityHash(rowIdentity: string): string {
   return crypto.createHash('sha256').update(rowIdentity).digest('hex').slice(0, MC_ROW_HASH_LEN);
 }
+
+/**
+ * Version-skew severity classification (spec §3.3 "Version skew"): differing
+ * MAJOR.MINOR confirms like flag skew (2 ticks — a real capability split);
+ * differing PATCH only confirms after `versionSkewGraceMs` (default 45 min) of
+ * continuous skew — a normal update wave rolls machines sequentially (the
+ * restart-cascade dampener alone batches up to 15 min), and alarming mid-wave
+ * would make every auto-update cry wolf. A non-semver-shaped version (clamp
+ * lets `[0-9A-Za-z.+-]` through) is conservatively `major-minor`-classed only
+ * when the leading numeric parts genuinely differ; otherwise patch-grace —
+ * fail toward the quieter, grace-gated path (the guard must not cry wolf on
+ * an exotic-but-equal-prefix version string).
+ */
+export function classifyVersionSkew(a: string, b: string): 'none' | 'patch-only' | 'major-minor' {
+  if (a === b) return 'none';
+  const parse = (v: string): [string, string] | null => {
+    const m = /^(\d+)\.(\d+)(?:\.|$|[+-])/.exec(v);
+    return m ? [m[1], m[2]] : null;
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  // Unparseable on either side: the versions DIFFER (a ≠ b) but a major.minor
+  // split cannot be proven — take the grace-gated patch path, never the loud one.
+  if (!pa || !pb) return 'patch-only';
+  return pa[0] === pb[0] && pa[1] === pb[1] ? 'patch-only' : 'major-minor';
+}
+
+/**
+ * Raiser election (spec §3.4 — deterministic, recomputed each tick, no
+ * coordination): the raiser is the serving-lease holder if it is a candidate;
+ * otherwise the lexicographically SMALLEST machineId among candidates. Every
+ * machine computes this from the same shared inputs (pool view + lease view)
+ * and compares the result to its own id — `raiser === self` gates ALL
+ * attention-surface mutations. Candidates are the machines whose advertised
+ * `guard` reads 'live' (a dry-run machine records would-raise locally, never
+ * raises; a dark/advert-less machine is not a candidate). Zero candidates →
+ * null (nobody raises — a pool with no live guard honestly has no live guard;
+ * the guard's own posture is a manifest row, so a HALF-dark pool is itself a
+ * named skew the live side alarms on).
+ */
+export function electRaiser(candidateMachineIds: readonly string[], leaseHolderMachineId: string | null): string | null {
+  if (candidateMachineIds.length === 0) return null;
+  if (leaseHolderMachineId !== null && candidateMachineIds.includes(leaseHolderMachineId)) {
+    return leaseHolderMachineId;
+  }
+  return [...candidateMachineIds].sort()[0];
+}
