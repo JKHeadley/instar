@@ -4,7 +4,7 @@ slug: "test-runner-concurrency-bound"
 author: "echo"
 status: draft
 parent-standard: "Bounded Blast Radius"
-eli16-overview: "docs/specs/test-runner-concurrency-bound.eli16.md"
+eli16-overview: "test-runner-concurrency-bound.eli16.md"
 lessons-engaged:
   - "P19 No Unbounded Loops — the acquisition poll carries all three brakes (bounded ingress via hard wait ceiling, breaker via typed-error exit, cost cap via write-skip + bounded logging); backoff is substituted by jitter with the substitution reasoned in §2.2"
   - "State-Not-Symbol / Verify-the-State — the fail-direction inversion (§1.1), the ancestry+holders re-entrancy cross-check (§2.5), the resolved-config pool check replacing the clamp-stamp symbol (§2.3), the matched-file-set classification replacing argv-existence (§2.3), and the read-side sanity RANGING of row ttlMs (§2.4) verify live state, never labels"
@@ -14,6 +14,15 @@ lessons-engaged:
   - "Distrust Temporary Success / P14 — the 2026-07-01 auto-heal non-firing is root-caused in this PR (§1.2), not built over"
   - "Close the Loop — the enforce flip is a tracked, bounded soak (§4), never an untracked intention"
   - "2026-06-20 fork-bomb + 2026-07-01 stale-holder postmortems — §1, §1.2"
+review-convergence: "2026-07-03T09:32:51.085Z"
+review-iterations: 10
+review-completed-at: "2026-07-03T09:32:51.085Z"
+review-report: "docs/specs/reports/test-runner-concurrency-bound-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 6
+cheap-to-change-tags: 2
+contested-then-cleared: 2
 ---
 
 # Test-Runner Concurrency Bound — a host-wide vitest semaphore (Bounded Blast Radius)
@@ -256,7 +265,7 @@ Resolved here so the /instar-dev build never stops to ask. The run-class design 
 
 ## Open questions
 
-*(none — both operator items ratified 2026-07-02, topic 30379; all remaining tunables are frontloaded above or explicitly tagged cheap-to-change-after behind the ratified dry-run phase)*
+*(none)*
 
 ## 5. Test plan (Testing Integrity — all three tiers)
 
