@@ -262,6 +262,9 @@ export class SwapLedger {
       });
       return true;
     } catch (err) {
+      // @silent-fallback-ok: NOT silent — the first failure warns loudly, the
+      // engine pauses proactive optimization while unwritable (I12), and lost
+      // rows are counted (rowsLostWhileDown / ledgerLostRefusals, R4-m1).
       if (this.writable) {
         this.writable = false;
         this.lostSinceMs = this.now();
@@ -303,7 +306,10 @@ export class SwapLedger {
       try {
         content = fs.readFileSync(f.file, 'utf-8');
       } catch {
-        continue; // unreadable segment — treated as absent
+        // @silent-fallback-ok: an unreadable segment is treated as absent —
+        // hydration stays partial and the incomplete window is surfaced via
+        // the hydration result's coveredWindow/corrupt fields, never hidden.
+        continue;
       }
       let fileOldest: number | null = null;
       for (const line of content.split('\n')) {

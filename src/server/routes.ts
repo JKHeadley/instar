@@ -7567,7 +7567,10 @@ export function createRoutes(ctx: RouteContext): Router {
       try {
         busy = await ctx.sessionRefresh.precheckInteractiveBusy(sessionName);
       } catch {
-        busy = null; // the gate is additive — a precheck error never blocks the route
+        // @silent-fallback-ok: the work gate is ADDITIVE (§4.5) — a precheck
+        // error must never block the refresh route; SwapWorkGate's own audit
+        // rows and logs carry the failure signal.
+        busy = null;
       }
       if (busy) {
         res.status(409).json({

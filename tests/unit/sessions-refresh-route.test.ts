@@ -121,6 +121,11 @@ describe('POST /sessions/refresh', () => {
       sessionName: 'echo-qalatra',
       followUpPrompt: 'continue',
       reason: 'mcp-install',
+      // swap-continuity-antithrash §4.5: the route now always forwards the
+      // work-gate flags — fresh passes through as given (absent here) and
+      // force is pinned to a strict boolean (default false).
+      fresh: undefined,
+      force: false,
     });
   });
 

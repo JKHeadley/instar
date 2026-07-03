@@ -556,7 +556,9 @@ export class SessionRefresh {
     try {
       knobs = ctx.getKnobs();
     } catch {
-      return {}; // a broken knob getter must never block a refresh
+      // @silent-fallback-ok: a broken knob getter reads as gate-dark — the
+      // work gate is ADDITIVE and must never block a refresh (§4.5).
+      return {};
     }
     if (!knobs.enabled) return {};
     const callerClass: SwapWorkGateCallerClass = opts.callerClass ?? 'interactive-refresh';
@@ -569,7 +571,9 @@ export class SessionRefresh {
     try {
       probe = await ctx.probe(opts.sessionName);
     } catch {
-      // Probe machinery itself failed — I7: uncertainty resolves busy.
+      // @silent-fallback-ok: probe machinery itself failed — I7: uncertainty
+      // resolves BUSY, the safe direction (the refresh is refused/deferred,
+      // never a wrong kill); the refusal itself is the loud surface.
       probe = {
         busy: true,
         turnLeg: 'indeterminate',
@@ -679,13 +683,18 @@ export class SessionRefresh {
     try {
       knobs = ctx.getKnobs();
     } catch {
-      return null; // a broken knob getter must never block a refresh
+      // @silent-fallback-ok: a broken knob getter reads as gate-dark — the
+      // work gate is ADDITIVE and must never block a refresh (§4.5).
+      return null;
     }
     if (!knobs.enabled || knobs.dryRun) return null;
     let probe: WorkProbeResult;
     try {
       probe = await ctx.probe(sessionName);
     } catch {
+      // @silent-fallback-ok: probe machinery failed — I7: uncertainty resolves
+      // BUSY, the safe direction (the caller gets the 409/refusal, never a
+      // wrong kill); the refusal itself is the loud surface.
       probe = {
         busy: true,
         turnLeg: 'indeterminate',
@@ -767,7 +776,8 @@ export class SessionRefresh {
           ...(forced ? { force: true } : {}),
         });
       } catch {
-        /* ledger hooks never gate the respawn */
+        /* @silent-fallback-ok: ledger hooks never gate the respawn — the
+           PROCEEDED console line below is the loud surface for this path */
       }
       console.log(
         `[SwapWorkGate] PROCEEDED-WITH-MITIGATIONS session=${opts.sessionName} caller=${forced ? 'interactive-refresh' : 'reactive-swap'} ` +
@@ -775,6 +785,8 @@ export class SessionRefresh {
       );
       return buildMitigationPayload({ killedSubagents: killed, inbound });
     } catch {
+      // @silent-fallback-ok: mitigations are best-effort and never gate the
+      // respawn — the console.warn here IS the report; the respawn proceeds.
       console.warn(
         `[SwapWorkGate] mitigation payload failed for session=${opts.sessionName} — proceeding without it (mitigations never gate the respawn)`,
       );

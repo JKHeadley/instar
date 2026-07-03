@@ -372,7 +372,10 @@ export class ProactiveSwapMonitor {
         try {
           probe = await this.cfg.workGate.probe(c.sessionName);
         } catch {
-          probe = null; // probe machinery itself failed → treat as indeterminate
+          // @silent-fallback-ok: probe machinery itself failed → indeterminate,
+          // which resolves BUSY (I7) — the swap is DEFERRED, the safe direction;
+          // the deferral is recorded on the anti-thrash engine below.
+          probe = null;
         }
         const busy = probe ? probe.busy : true;
         if (busy) {
@@ -612,6 +615,8 @@ export class ProactiveSwapMonitor {
     try {
       return this.cfg.antiThrash?.getKnobs() ?? null;
     } catch {
+      // @silent-fallback-ok: a broken knob getter reads as feature-dark (null)
+      // — the brakes simply stay out of the path; legacy swap behavior holds.
       return null;
     }
   }
@@ -620,6 +625,7 @@ export class ProactiveSwapMonitor {
     try {
       return this.cfg.workGate?.getContinuity() ?? null;
     } catch {
+      // @silent-fallback-ok: same feature-dark degrade as safeKnobs above.
       return null;
     }
   }

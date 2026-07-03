@@ -85,6 +85,9 @@ export class SwapWorkGate {
     try {
       turnLeg = await this.deps.checkSessionWorkState(tmuxSession);
     } catch {
+      // @silent-fallback-ok: leg-probe failure resolves to indeterminate,
+      // which the gate reads as BUSY (I7) — the safe direction (defer, never
+      // a wrong kill); the busy-indeterminate reason surfaces on the refusal.
       turnLeg = 'indeterminate';
     }
 
@@ -95,6 +98,8 @@ export class SwapWorkGate {
     try {
       claudeSessionId = this.deps.getClaudeSessionId(tmuxSession);
     } catch {
+      // @silent-fallback-ok: no resolvable claude session id → the subagent
+      // leg reads STRUCTURALLY absent (R3-L1 pin) — same as the null return.
       claudeSessionId = null;
     }
     if (claudeSessionId === null) {

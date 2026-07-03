@@ -79,3 +79,40 @@ DEV_GATED_FEATURES + guard-manifest registration, CLAUDE.md template +
 PostUpdateMigrator awareness, and the release-note fragment. No new runtime
 side effects beyond those reviewed above — this section records that the
 dark/dry-run posture described above is now actually reachable end-to-end.
+
+## CI-green follow-up (third commit of this build)
+
+Scope: zero-runtime-behavior commit that turns the two red unit shards green.
+(1) Two pre-existing tests asserted the PRE-brake `/sessions/refresh` call
+shape (`refreshSession({ sessionName, followUpPrompt, reason, fresh })` and
+the exact-args spy without `force`); both now assert the documented §4.5
+shape (fresh forwarded, `force` pinned to a strict boolean, default false).
+(2) The no-silent-fallbacks ratchet counted 503 vs baseline 491: a
+base-vs-HEAD set-diff of the exact test heuristic showed the PR added 13
+genuinely-new flagged catches (every other +entry is a symmetric line-shift
+artifact — 59/59 commands/server.ts, 31/31 AgentServer.ts, 19/19 routes.ts,
+7/7 SessionManager.ts, 5/5 PostUpdateMigrator.ts). All 13 are the feature's
+DESIGNED fail-safes, each failing toward the safe direction: SwapWorkGate
+probe legs → indeterminate reads BUSY (I7, defer — never a wrong kill);
+SessionRefresh work-gate knob/probe/mitigation arms → gate-dark or refusal
+(the gate is ADDITIVE, §4.5 — a broken gate must never block a refresh, and
+mitigations never gate the respawn); ProactiveSwapMonitor safe-knob reads →
+feature-dark (legacy behavior holds); SwapLedger append/hydrate → loud warn
++ I12 optimization pause + counted loss classes (R4-m1), partial hydration
+surfaced via coveredWindow/corrupt. Each now carries an in-brace
+`@silent-fallback-ok` justification; the heuristic count returns to 490
+(≤ 491 baseline) — no baseline bump.
+
+Side-effects review of THIS commit: over-block — none (comments + test
+expectations only; no input is newly rejected). Under-block — none (no
+detector logic changed). Abstraction fit — the tags are the ratchet's
+designed exemption mechanism for reviewed fail-safes. Signal-vs-authority —
+no authority added; the tagged catches remain signal-preserving fail-safes
+(refusals/warns/counters are the loud surfaces). Interactions — none; the
+tags are inert at runtime. External surfaces — none. Multi-machine — n/a
+(no behavior change; feature posture unchanged, machine-local by design §8).
+Rollback — revert the commit; nothing durable depends on it. Second-pass —
+not required: although the touched files include gate/monitor modules, the
+source diff is comment-only (verified: `git diff` shows no executable-line
+changes in src/ beyond comment insertion) and the test diff asserts the
+already-reviewed §4.5 behavior.
