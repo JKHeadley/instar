@@ -3208,6 +3208,47 @@ export interface InstarConfig {
      */
     swapAttemptTimeoutMs?: number;
     /**
+     * Per-TARGET-framework swap-attempt caps in ms for the failure-swap loop
+     * (docs/specs/per-target-swap-timeout-spec.md). Resolution per swap target:
+     * `byFramework[target]` (if a valid finite number > 0) → the global
+     * `swapAttemptTimeoutMs` → no cap. An INVALID per-framework value (0, negative,
+     * NaN, non-number) FALLS THROUGH to the global — it never means "no cap" and
+     * never produces an immediate-0ms kill (FD5: per-framework config cannot
+     * express "unbounded"; only the global's ≤0/unset does). DEFAULT UNSET ⇒ the
+     * global cap applies to every target, byte-identical to today (dark ship;
+     * deliberately kept out of ConfigDefaults/migrateConfig like
+     * swapAttemptTimeoutMs, so absence is the default state).
+     * Recommended opt-in package (set TOGETHER with swapTotalBudgetMs — FD8, so
+     * the caps and their reachability ceiling arrive as one package):
+     * `{ "claude-code": 8000, "pi-cli": 9000, "gemini-cli": 18000, "codex-cli": 45000 }`
+     * with `swapTotalBudgetMs: 40000` (each cap ≥ the framework's measured p95 with
+     * margin — llm-pathway-bench N=30). NOTE: the swap loop is sequential, so
+     * `failureSwap` target ORDER is latency-load-bearing — order fastest-first
+     * (cap ≠ priority), and keep caps ≤ the circuit breaker's failure sensitivity
+     * so a chronically-slow target still trips the breaker.
+     */
+    swapAttemptTimeoutMsByFramework?: Partial<
+      Record<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli', number>
+    >;
+    /**
+     * Clamp (ms) on any single resolved swap-attempt cap, so a huge/typo'd
+     * per-framework value cannot create an effectively unbounded subprocess that
+     * pins a host spawn-cap slot (per-target-swap-timeout-spec.md FD7). The value
+     * is itself validated (finite > 0); invalid/unset ⇒ 120000 (120s).
+     */
+    swapAttemptTimeoutMsMax?: number;
+    /**
+     * Wall-clock TOTAL budget (ms) over the WHOLE failure-swap tail
+     * (per-target-swap-timeout-spec.md FD6). UNSET ⇒ no total-budget enforcement —
+     * semantics unchanged from today (the dark default). When set, each swap
+     * attempt's effective cap is `min(resolvedCap, budgetRemaining)` on a MONOTONIC
+     * clock and the loop stops and falls closed once ≤ 250ms remains — so the
+     * worst-case swap-tail latency is literally ≤ this value. An invalid value
+     * (0, negative, NaN, non-number) is treated as unset (no enforcement).
+     * Recommended alongside the per-framework caps: 40000.
+     */
+    swapTotalBudgetMs?: number;
+    /**
      * Pinned-callsite model overrides (docs/LLM-ROUTING-REGISTRY.md "Risk items"
      * #3/#5/#6/#7 — the hardcoded-model callsites that bypass the router).
      * INLINE-DEFAULTED at each callsite (the codexExecJson/swapAttemptTimeoutMs
