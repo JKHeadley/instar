@@ -2,10 +2,23 @@
 
 **As of:** 2026-07-03 15:31 PDT (Session C — resumed the C₁b build) · branch `echo/machine-coherence-guard` · worktree `~/.instar/agents/echo/.worktrees/machine-coherence-guard`
 
-## Session C progress (this session)
-- **`a004f3307` — C₁b-ii** (the in-flight uncommitted work, now committed): §3.3 dimension comparison (`computeDivergentRows`) + the sentinel confirmation engine (R2-L3 consecutive rule, patch-only version grace clock, M6 update-wave flag suppression, fail-toward-silence state retention). Added 14 dedicated semantic tests the in-flight work lacked (the prior builder had only updated counter shapes). Signal-only — no episode/alarm.
-- **`16d34a385` — C₁b-iii-a**: the episode DURABLE state layer (`src/monitoring/machineCoherenceEpisode.ts`) — §4.1 types (EpisodeState / PendingFix three-state / RecurrenceBlock / close taxonomy) + episodeId mint + atomic tmp+rename write + absent/ok/corrupt read (§4.6 re-baseline gate). Pure module, +12 tests. NOT wired — the state machine consuming it is next.
-- **tsc clean; targeted coherence tests green (66 across evaluate/sentinel/episode). NOT pushed, no PR.** Next unit (C₁b-iii-b: episode state machine + §4.2 attention item + §4.2.1 pendingFix reply flow) deliberately NOT started — it is large/high-risk (needs the running server + §4.2 verbatim wording) and starting it half-built would break the commit-each-piece discipline.
+## Session C progress (this session) — THE FEATURE IS ALIVE
+- **`a004f3307` — C₁b-ii**: §3.3 dimension comparison (`computeDivergentRows`) + the sentinel confirmation engine (R2-L3 consecutive rule, patch-only version grace clock, M6 update-wave flag suppression). +14 semantic tests the in-flight work lacked.
+- **`16d34a385` — C₁b-iii-a**: the episode DURABLE state layer (`machineCoherenceEpisode.ts`) — types (EpisodeState/PendingFix/RecurrenceBlock/close taxonomy) + episodeId mint + atomic write + absent/ok/corrupt read (§4.6). +12 tests.
+- **`a8564be27` — C₁b-iii-b1**: the episode STATE MACHINE core (`machineCoherenceEpisodeManager.ts`) — open/join/suspend/resume/close taxonomy (§4.3), §4.4 escalation, operator "leave it" ack, §4.6 corrupt re-baseline, and the §4.2 VERBATIM item body render. Effects gated on raiser && live. +16 tests.
+- **`5b7fc00ce` — C₁b-iii-b2**: §4.5 recurrence damper + per-day cap + the R3-M5 SHARED append budget (burst invariant) + latched-flapping. +4 tests.
+- **`8f307eeea` — C₁b-iii-b4 (WIRING — ALIVE)**: sentinel owns the EpisodeManager (stateDir + nicknameOf deps), reconciles each tick, queues effects the `peerPresenceTick` drains + executes async against telegram (createAttentionItem/sendToTopic/updateAttentionStatus). `GET /pool/machine-coherence` threaded through AgentServer→routes (503 dark / 200 §6 snapshot). +2 wiring-integrity unit + 2 feature-alive integration tests.
+- **tsc clean; 295 across the coherence+wiring+route sweep green. NOT pushed, no PR.**
+
+## Remaining for a spec-complete PR (in order)
+1. **b3 — §4.2.1 pendingFix flow** ("the ONLY action in this build"): proposal → approved-holding → executing-verifying, ratifier-style reply recognition in the CONVERSATIONAL path (operator-uid-gated via TopicOperatorStore), single-flight, invalidation triggers, executing-verifying suspend-pause clocks. The EpisodeManager `setOperatorAck` passthrough exists; the "fix it" recognition + config-write funnel + self-restart primitive do not.
+2. **§3.2 alarm-MARKER attach** into refreshPool's `buildCoherenceAdvert` call (currently omitted) + **§3.4 cross-machine takeover/fallback/reconciliation** (owner-loss takeover, duplicate reconciliation from marker data).
+3. **D₂b** — awakeMachineCount counting rule (`MultiMachineCoordinator.getSyncStatus`) + the D5 shape sweep (the FULL consumer/test/template/docstring list in the artifact's D₂b section).
+4. **E** — CLAUDE.md template mention of the route + "why did I get a machine-coherence alarm?" trigger (generateClaudeMd + migrateClaudeMd — the **Agent Awareness + Migration Parity** obligation for the new route, still owed), the 30-day jsonl time-prune, a Tier-3 e2e over the real AgentServer, the release fragment.
+5. **Rebase against upstream/main** BEFORE the PR: **only `src/commands/server.ts` conflicts** (verified via a throwaway test-merge — everything else auto-merges); a 28-commit rebase hits that hot file at the ~4 commits that touched it (D₁/B/C₁b-i/b4), so resolve carefully or prefer a single merge-in. Canonical remote is `upstream` (JKHeadley).
+
+## Session C stop rationale (clean boundary)
+The feature is ALIVE and fully green. b3 (the operator-fix — spec-central) + D₂b (awakeMachineCount — a named §5 deliverable) are each large, and the rebase needs care. Stopped here rather than rush a partial-PR / risky 28-commit rebase at the tail of a long session (per "don't rush a half-wired unit").
 
 ---
 
