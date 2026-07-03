@@ -91,8 +91,20 @@
 
 **Blast radius:** dev-agent only (the sentinel is only constructed on a live-gate dev agent from C₁b-i). Adds per-tick divergence classification + confirmation accounting to the 30s rider — still SIGNAL-ONLY (no episode, no attention item, no alarm marker; those are C₁b-iii onward). Fleet + single-machine unchanged (never constructed).
 
-### Increment C₁b (remainder) — episode/alarm machinery — PENDING
-Remaining, in order: (iii) the §4 episode state machine (N7 state file, N3/N4 corrupt-state) + the ONE attention item (§4.2 verbatim body) + §3.4 takeover/fallback/reconciliation + alarm-marker attach into refreshPool's advert; (iv) §4.2.1 pendingFix flow; (v) `GET /pool/machine-coherence` status route (503-when-dark) + `logs/machine-coherence.jsonl` + the `clampRejections`/marker-drop counters.
+### Increment C₁b-iii-a — episode DURABLE state layer (§4.1 + §4.6) — LANDED
+
+**What changed:**
+1. **`src/monitoring/machineCoherenceEpisode.ts` (NEW, pure types + fs primitives)** — the durable state layer the §4 state machine consumes (the established pure-module-first rhythm; nothing raises/transitions here):
+   - Types faithful to §4.1–§4.6: `EpisodeState` (episodeId, openedAtMs, skewRowIdentities N1 set, itemRaisedAt R4-M1, attentionItemId, predecessorEpisodeId R2-M2, durable `suspended`/`suspendReason`, durable `operatorAck` R4-N2, `pendingFix`, `escalationAppended`, `reopenCount`), `PendingFix` (the three-state `proposed`/`approved-holding`/`executing-verifying` lifecycle R3-M6, proposal hash+message-id AUTHORITY, verify-clock anchors + `accumulatedSuspendedMs` R5-L1), `RecurrenceBlock` (the R2-N2 sibling that OUTLIVES episode close — newItemTimestamps per-day cap, recentlyClosed reopen-window memory, reopenLatch, shared appendBudget), `EpisodeCloseReason` (the §4.3 taxonomy — only `restored` claims restoration), `EpisodeFile` on-disk shape.
+   - `mintEpisodeId(openedAtMs)` → `mc-<ms>` (N4); `episodeStatePath(stateDir)` → `<stateDir>/state/machine-coherence-episode.json` (N7 per-agent, never global); `emptyRecurrence()`.
+   - `readEpisodeFile(stateDir)` → `{ status: 'absent' | 'ok' | 'corrupt' }` — distinguishes missing (fresh) from structurally-invalid (§4.6 re-baseline gate, the GuardPostureProbe pattern): bad JSON / wrong version / missing-or-malformed shape returns a NAMED corrupt reason, never a throw and never a silent `{}`.
+   - `writeEpisodeFile(stateDir, file)` — atomic tmp+rename mirroring `writeConfigAtomic` (`BootSelfKnowledge.ts:112`); creates the `state/` subdir; callers write on TRANSITIONS only (R2-N3).
+2. **Tests (green):** `tests/unit/machine-coherence-episode.test.ts` (NEW, 12) — episodeId + path shape, absent/ok/corrupt matrix (invalid-json, bad-version, missing-recurrence, episode-shape, recurrence-shape), between-episodes round-trip (episode:null + persisted recurrence), atomic write (subdir creation, no tmp leftover, last-writer-wins). 12 green; `tsc --noEmit` clean.
+
+**Blast radius:** pure module + its test; NOTHING wires it in production yet (the state machine that reads/writes it is the next sub-unit). Fleet + single-machine unchanged.
+
+### Increment C₁b (remainder) — episode STATE MACHINE + alarm — PENDING
+Remaining, in order: (iii-b) the §4 episode state machine consuming the C₁b-iii-a layer (open/join/suspend/resume/reopen/close taxonomy §4.3, §4.4 escalation, §4.5 recurrence damper + append budget) + the ONE attention item (§4.2 verbatim body) + §3.4 takeover/fallback/reconciliation + alarm-marker attach into refreshPool's advert; (iv) §4.2.1 pendingFix flow (proposal → approved-holding → executing-verifying, the ratifier-style reply recognition); (v) `GET /pool/machine-coherence` status route (503-when-dark) + `logs/machine-coherence.jsonl` + the `clampRejections`/marker-drop counters.
 ### Increment D₂a — per-peer lease-observation map (§5b's NEW retained state) — LANDED
 
 **What changed:**
