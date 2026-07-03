@@ -1740,6 +1740,11 @@ export function createRoutes(ctx: RouteContext): Router {
   const deliveryIdLruHelpers = { has: deliveryLruHas, record: deliveryLruRecord };
   void deliveryIdLruHelpers; // referenced via the helpers; alias kept for grep
 
+  // One-time-per-boot breadcrumb latch for the /internal/slack-forward typed
+  // refusal (spec §2.7). Deduped so a caller loop can't flood the attention
+  // queue — the first hit per boot raises one item; subsequent hits just 409.
+  let slackForwardBreadcrumbRaised = false;
+
   // ── /telegram/reply content-dedup (2026-06-06 duplicate-message fix) ──
   // The delivery-id LRU above only catches a re-POST of the SAME id. It does
   // NOT catch the agent re-sending the SAME TEXT under a fresh id (an agent
@@ -12603,23 +12608,39 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.post('/internal/slack-forward', async (req, res) => {
-    if (!ctx.slack) {
-      res.status(503).json({ error: 'Slack not configured' });
-      return;
+    // ── Typed refusal (spec slack-outbound-robustness §2.7, round-1 M6) ──
+    // As deployed this route took {channelId, text} and POSTED that text OUT to
+    // the channel — but its only caller (SlackLifeline.forwardToServer) forwards
+    // INBOUND user messages, so the route's sole live semantic is an ECHO BUG
+    // (posting the user's own message back at them). SlackLifeline is written
+    // but never instantiated, so it has never run live. Gating an echo defect
+    // still ships an echo defect the day SlackLifeline is wired. Instead the
+    // route refuses with a typed 409: the real inbound path (session injection,
+    // mirroring /internal/telegram-forward) is owned by Phase 2.2. Bearer auth
+    // is preserved (the route is inside the authed router); zero outbound
+    // exposure — strictly less than the deployed behavior. Fail-toward-delivery
+    // does NOT apply: there is no legitimate delivery through an echo bug.
+    if (!slackForwardBreadcrumbRaised) {
+      slackForwardBreadcrumbRaised = true;
+      void ctx.telegram?.createAttentionItem?.({
+        id: 'slack-forward-misdirected-route',
+        title: 'Slack: /internal/slack-forward hit — misdirected route',
+        summary:
+          'POST /internal/slack-forward received traffic. This route is an inbound-shaped ' +
+          'payload on an outbound path (an echo defect); it now refuses with 409. The ' +
+          'session-injection re-point is owned by Phase 2.2 (SlackLifeline parity with ' +
+          '/internal/telegram-forward).',
+        category: 'general',
+        priority: 'NORMAL',
+        sourceContext: 'slack-outbound-robustness',
+      });
     }
-
-    const { channelId, text } = req.body;
-    if (!channelId || !text) {
-      res.status(400).json({ error: '"channelId" and "text" fields required' });
-      return;
-    }
-
-    try {
-      await ctx.slack.sendToChannel(channelId, text);
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
+    res.status(409).json({
+      error: 'misdirected-route',
+      detail:
+        'inbound-shaped payload on an outbound route — re-point owned by Phase 2.2 ' +
+        '(SlackLifeline / session injection parity with /internal/telegram-forward)',
+    });
   });
 
   router.get('/slack/channels', async (req, res) => {
