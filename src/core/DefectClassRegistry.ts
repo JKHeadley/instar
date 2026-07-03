@@ -171,6 +171,10 @@ export function readDecisionDeclarations(repoRoot: string): DecisionDeclaration[
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
   } catch {
+    // @silent-fallback-ok: an absent/unreadable decisions dir means there are simply no
+    // declarations to count yet (a fresh repo, or a checkout with no instar-dev history) —
+    // the empty list is the correct answer, not a degraded result. This is a pure library
+    // over a repo checkout with no runtime/DegradationReporter surface (spec §"Pure library").
     return [];
   }
   const out: DecisionDeclaration[] = [];

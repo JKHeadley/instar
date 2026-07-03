@@ -143,7 +143,10 @@ export function gradeGuardCitation(
     try {
       resolved = fs.existsSync(path.join(projectDir, filePart));
     } catch {
-      resolved = false; // unresolvable path = a real dangling-ref finding, fail-closed to downgrade
+      // @silent-fallback-ok: an unresolvable path is a real dangling-ref finding, not a
+      // degraded result — fail-closed to `resolved:false` so the closure declaration
+      // downgrades guard->gap (the intended, surfaced outcome). Mirrors line 236 above.
+      resolved = false;
     }
     return { resolved, kind: resolved ? classifyFileGuard(filePart) : null, citation: raw };
   }

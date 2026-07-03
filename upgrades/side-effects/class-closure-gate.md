@@ -99,3 +99,13 @@ Yes — a **CI PR-gate lint** in the same family as `decision-audit-gate`, `eli1
 **If this turns out wrong in production, what's the back-out?**
 
 Trivial and safe. The lint is **report-only + config-gated (`prGate.classClosure` defaults off/dry-run) + repo-gated** — a buggy lint cannot block a merge (it exits 0 in dryRun) and is a no-op on any non-maintainer install. Back-out options, cheapest first: (a) leave defaults (already inert); (b) revert `.github/workflows/class-closure-gate.yml`; (c) revert the whole PR — no data migration, no agent-state repair, no runtime behavior to unwind (no runtime routes added in increment 1). The added `src/core` code is pure libraries with no callers in the runtime path yet.
+
+## Follow-up note — no-silent-fallbacks ratchet
+
+`DefectClassRegistry.ts` (`readDecisionDeclarations` absent-dir catch) and
+`StandardsEnforcementAuditor.gradeGuardCitation` (unresolvable-path catch) are pure
+libraries over a repo checkout with **no runtime / DegradationReporter surface** — their
+fail-closed catches return the correct answer (empty list / `resolved:false`, which the
+caller surfaces as a `gap` downgrade), not a degraded result. Both are tagged
+`@silent-fallback-ok` so the `no-silent-fallbacks` ratchet holds at baseline 491 rather than
+demanding a runtime degradation-report the library layer cannot emit.
