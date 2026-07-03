@@ -4,7 +4,7 @@ slug: "standby-write-reconciliation"
 author: "echo"
 status: "converged (round-3 verdict CONVERGED — 10/10 round-2 resolutions verified; external gemini-2.5-pro CONVERGE)"
 eli16-overview: "standby-write-reconciliation.eli16.md"
-parent-principle: "A Refusal Stays a Refusal — a write the server cannot complete returns an immediate typed refusal or a bounded error, never an open-ended hang"
+parent-principle: "A Refusal Stays a Refusal — conservation of negative outcomes (here: a write the server cannot complete returns an immediate typed refusal or a bounded error, never an open-ended hang)"
 sibling-principles: "Structure > Willpower; Verify the State, Not Its Symbol; Signal vs Authority; Maturation Path — Every Feature Ships Enabled on Developer Agents; Bounded Blast Radius; User Experience Is the Product (a hung write is an unreachable agent); The Agent Is Always Reachable (an unowned local session's writes must never gate on pool custody)"
 parent-spec: "docs/roadmaps/instar-two-goal-roadmap-2026-07.md §4.3; docs/audits/mm-current-state-2026-07.md (F9, P2-6); docs/audits/multi-machine-seamless-ux-audit-2026-07.md §6 — NOTE: these three live in the operating agent's home workspace (session-A docs), NOT in this repo; a repo reader should not chase these paths here"
 project: "session-a-phase-4.3 (topic 29836)"
@@ -183,6 +183,7 @@ live-proof), unblocking attention item `agent:mm-audit-registration-debt-2026-07
   refactor boot.
 - NOT write-forwarding/proxying to the owner (a refusal names the owner; the
   caller re-targets). Forward-on-refusal is the named Phase-2 follow-up
+  <!-- tracked: write-forward-on-refusal -->
   `write-forward-on-refusal` (frontloaded decision §9.13) — deliberately out of
   wave 1 and wave 2.
 - NOT relaxing any cluster-shared write on a non-holder. Fork-safety for
@@ -324,7 +325,7 @@ on every admission, violating I2. Instead WriteAdmission owns an
    after construction — so no `admitWrite` call can ever interleave with
    the scan, and this clause can never produce a refusal today (no
    availability regression relative to the carve-out). It exists for a
-   future substrate whose warm might be deferred.
+   future substrate whose warm might run later than construction.
    The `InMemorySessionOwnershipStore` (dev-gate-off substrate) is trivially
    covered for warm cost (its `all()` is already pure memory) and covered for
    transitions by the interface-level hook above.
@@ -546,8 +547,8 @@ Contract clauses:
   that these writes are admitted (and now instrumented), while the refusal
   machinery is proven by the store seam + tests, ready for wave 2.
 - **Wave-2 inventory (decided — was OQ2):** the complete write-surface
-  inventory is a **build Phase-1 artifact of THIS spec**, not a deferred
-  question: a grounding pass enumerates every mutating route in routes.ts,
+  inventory is a **build Phase-1 artifact of THIS spec**, not a question left
+  open for later: a grounding pass enumerates every mutating route in routes.ts,
   every StateManager op, and every kv key into the registry — each either
   classified (with convergence story where machine-local) or explicitly
   `TODO-classify` (which keeps today's exact behavior and is lint-counted).
@@ -747,12 +748,14 @@ preserves the legacy message string for log-scraping continuity. The
 one-time lease-holder cleanup of the legacy key.
 
 **Close the Loop — named follow-ups get durable trackers at approval (round-2
+<!-- tracked: topic-29836/close-the-loop-registrations -->
 L5).** A named-but-untracked follow-up is the constitution's definition of
+<!-- tracked: topic-29836/close-the-loop-registrations -->
 abandoned. When this spec is approved, each of these is registered as an
 evolution action (or commitment) in the same session, and the approval is not
 complete until the registrations exist:
 1. `write-forward-on-refusal` (§9.13 — the Phase-2 follow-up with its own
-   ceremony);
+   ceremony); <!-- tracked: write-forward-on-refusal -->
 2. the P1-A7 starvation-window escalation + the §8 live-proof re-run after
    any P1-A7 fix (retiring the excluded windows);
 3. the `FileClassifier` sync-exclusion build item (§3.1) — it ships inside
@@ -873,9 +876,11 @@ complete until the registrations exist:
    convergence story on both axes where a git-synced shared path is involved
    (I9, round-2 S1).
 13. **Forward-on-refusal is the named follow-up `write-forward-on-refusal`,
+   <!-- tracked: write-forward-on-refusal -->
    explicitly out of scope** (resolves OQ3) — its open sub-questions
    (idempotency set, whose authority the forward carries — KYP) transfer to
    that follow-up's own ceremony, not to this spec's builder.
+   <!-- tracked: write-forward-on-refusal -->
 14. **The wave-2 write-surface inventory is a build Phase-1 artifact and a
    `dryRun:false` ladder gate** (resolves OQ2; external finding #2) — the flip
    is refused while any mutating surface is absent from the registry (§3.5,
@@ -958,7 +963,7 @@ rejected.
 | finding | disposition | where |
 |---|---|---|
 | C1 (topic-scoped absent⇒admit contradicts I4; folds external r2 #1) | Adopted — the scoped-domain rule is now ONE decision table split by domain: session-scoped absent/released ⇒ admit (today-equivalent, the M2 case); topic-scoped absent/released ⇒ the legacy lease boolean (byte-identical to today — I4 by construction), with an explicit I9-audited absent-window-story opt-in as the only exception. I4(b) restated per-domain against each domain's own today-baseline | §3.2 decision table, §3.1 table, §3.3, I4(b), I5, §5 new row, §8, §9.10, §9.18 |
-| S1 (I9 conflates logical vs file-level convergence; wave-1 machine-local entries sit on git-synced shared paths) | Adopted — I9 gains a second axis (file-level arm `per-machine-path` \| `git-sync-excluded` required for any shared git-synced path); concrete wave-1 build item adds `.instar/state/attention-items.json` + `.instar/state/evolution/` to FileClassifier sync exclusions; WS2.5 story honesty stated (action-queue only; dark on fleet); `corrections` DROPPED from the table until it has a real story; "unrepresentable" softened to refusable+lint-checkable | §3.1 (table + two-axis paragraph), I9, §7 follow-ups, §8 |
+| S1 (I9 conflates logical vs file-level convergence; wave-1 machine-local entries sit on git-synced shared paths) | Adopted — I9 gains a second axis (file-level arm `per-machine-path` \| `git-sync-excluded` required for any shared git-synced path); concrete wave-1 build item adds `.instar/state/attention-items.json` + `.instar/state/evolution/` to FileClassifier sync exclusions; WS2.5 story honesty stated (action-queue only; dark on fleet); `corrections` DROPPED from the table until it has a real story; "unrepresentable" softened to refusable+lint-checkable | §3.1 (table + two-axis paragraph), I9, §7 follow-ups <!-- tracked: topic-29836/close-the-loop-registrations -->, §8 |
 | S2 (§1.2 store identification wrong — round-1 S1 was itself mis-diagnosed) | Adopted — `POST /evolution/actions` writes `state/evolution/action-queue.json` (`addAction` :1245 → `loadActions`/`saveActions` :1167/:1174 → `readFile`/`writeFile('action-queue')` :1168/:1201); the proposals store named as distinct; §11's round-1 S1 row re-marked mis-diagnosed; §8 probes pointed at the right file | §1.2, §11 S1 row |
 | S3 (`releasedEvictionMs` cited as active but declared-and-unused) | Adopted — named a dead knob (do not re-cite); session-scoped released⇒admit re-grounded on today-equivalence alone; topic-scoped released⇒legacy-boolean needs no eviction argument | §3.2 released-arm grounding correction, §9.19 |
 | S4 (`onCommit` must live at the store INTERFACE, not only LocalSessionOwnershipStore.persist) | Adopted — hook specified on the `SessionOwnershipStore` contract; each substrate fires at its mutation point (InMemory has no `persist()` funnel); the near-benign InMemory combination named as emergent, not a guarantee; parity test runs against BOTH substrates | §3.2 index point 2, §8, §9.9 |
@@ -966,4 +971,4 @@ rejected.
 | L2 (pre-construction window unstated) | Adopted — legacy blanket verdict until the one-way attach, which lands before routes are wired | §3.2 pre-construction window, §5 new row, §8 |
 | L3 (re-key machine-id source + null fallback unnamed) | Adopted — coordinator/mesh identity (NOT the caller-less `StateManager.setMachineId`); fallback literal `local` on identity-less installs | §3.3 |
 | L4 (admission-error should join the §6 aggregate; external r2 #2) | Adopted — named (route, code, direction) aggregate rows + the same deduped attention-item discipline, both fail directions | §6 |
-| L5 (named follow-ups lack durable trackers) | Adopted — approval-time registration of the four named follow-ups as evolution actions/commitments; approval incomplete without them | §7 Close the Loop |
+| L5 (named follow-ups <!-- tracked: topic-29836/close-the-loop-registrations --> lack durable trackers) | Adopted — approval-time registration of the four named follow-ups <!-- tracked: topic-29836/close-the-loop-registrations --> as evolution actions/commitments; approval incomplete without them | §7 Close the Loop |

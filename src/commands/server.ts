@@ -5318,6 +5318,12 @@ export async function startServer(options: StartOptions): Promise<void> {
       // idle-monitor's rateLimitedAtIdle hand-off. `enabled` OMITTED from defaults ⇒
       // dev-agent live / dark-fleet.
       idleThrottleSettleGate: resolveDevAgentGate(config.monitoring?.idleThrottleSettleGate?.enabled, config),
+      // Standby-write reconciliation §3.3 (round-2 L3): per-machine
+      // SessionBuildContextStore re-key. The id comes from the coordinator/
+      // mesh identity via this LATE-RESOLVING getter (the mesh id is assigned
+      // further down the boot, after SessionManager exists); identity-less
+      // installs resolve null → the literal 'local' inside the store.
+      buildContextMachineId: () => _meshSelfId,
     });
     // Wire the SAME TTL-cached SDK-credit reader PR1's routing policy uses, so
     // the reroute 'auto' decision and the intelligence-funnel routing share one
@@ -17313,6 +17319,12 @@ export async function startServer(options: StartOptions): Promise<void> {
      * no-op (the spawn still runs; the reconciler/applier converge — FD11).
      */
     let _claimOwnershipForAutonomousSpawn: ((topicId: number) => void) | null = null;
+    // Standby-write reconciliation (§3.2): the pool block's ownership store is
+    // captured here so the WriteAdmission constructed just before AgentServer
+    // can boot-warm its ownership index from it + register the interface-level
+    // onCommit hook. Stays null on pool-dark installs (the index warms empty;
+    // scoped domains collapse to the legacy lease boolean anyway).
+    let _writeAdmissionOwnershipStore: import('../core/SessionOwnershipRegistry.js').SessionOwnershipStore | null = null;
     try {
       const meshMod = await import('../core/MeshRpc.js');
       const idMod = await import('../core/MachineIdentity.js');
@@ -17519,6 +17531,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           epochFloorOf: (sk) => ownershipEpochFloor?.(sk) ?? 0,
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
+        _writeAdmissionOwnershipStore = ownershipStore;
         const ownReg = sessionOwnershipRegistry;
         // WS1.1: expose a read-only ownership lookup to the drain's
         // spawn-boundary re-check (module-scope; the drain closure is defined
@@ -20649,7 +20662,76 @@ export async function startServer(options: StartOptions): Promise<void> {
       ropeHealthMonitor = null;
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    // ── Standby-Write Reconciliation + Typed Refusal (docs/specs/standby-write-reconciliation.md) ──
+    // Ownership-scoped write admission replacing the blanket lease-boolean
+    // standby guard. Dev-gated dark (`enabled` OMITTED from defaults →
+    // resolveDevAgentGate) + dryRun-FIRST: while dry the LEGACY blanket guard
+    // keeps enforcing and this layer only logs would-verdicts (§9.6). The
+    // attach below is ONE-WAY and lands BEFORE routes are wired (AgentServer
+    // is constructed just after), so no HTTP mutating route can ever observe a
+    // half-attached state (§3.2 pre-construction window).
+    let writeAdmission: import('../core/WriteAdmission.js').WriteAdmission | null = null;
+    if (resolveDevAgentGate(config.multiMachine?.writeAdmission?.enabled, config)) {
+      try {
+        const waMod = await import('../core/WriteAdmission.js');
+        const regMod = await import('../core/WriteDomainRegistry.js');
+        const waMachineId = _meshSelfId ?? coordinator.identity?.machineId ?? null;
+        const waCfg = config.multiMachine?.writeAdmission;
+        writeAdmission = new waMod.WriteAdmission({
+          thisMachineId: waMachineId,
+          isReadOnly: () => state.readOnly,
+          isPoolActive: () => state.sessionPoolActive,
+          registry: regMod.buildWriteDomainRegistry({ machineId: waMachineId }),
+          dryRun: waCfg?.dryRun ?? true,
+          refusalAggregateThreshold: waCfg?.refusalAggregateThreshold ?? 5,
+          // In-memory session→topic binding ONLY (I2 — the disk fallback is
+          // forbidden on the admission path).
+          resolveTopicForSession: (sessionId) => telegram?.getTopicForSession(sessionId) ?? null,
+          // I7 — local knowledge only: we positively know the holder only when
+          // it is us; a refusal body's leaseHolder is otherwise null.
+          leaseHolder: () => (coordinator.holdsLease() ? waMachineId : null),
+          raiseAttention: telegram
+            ? (item) => {
+                void telegram!.createAttentionItem({
+                  id: item.id,
+                  title: item.title,
+                  summary: item.body,
+                  category: 'write-admission',
+                  priority: 'NORMAL',
+                  sourceContext: 'write-admission',
+                }).catch(() => { /* @silent-fallback-ok — the aggregate alert is observability; a Telegram failure must never break admission (the refusal rows remain in logs/write-admission.jsonl) */ });
+              }
+            : undefined,
+          logDir: path.join(config.stateDir, 'logs'),
+        }, _writeAdmissionOwnershipStore);
+        state.attachWriteAdmission(writeAdmission);
+        // One-time legacy-key cleanup (§3.3): the pre-re-key shared
+        // `session-build-context` kv entry is removed on the LEASE HOLDER only
+        // (a standby's delete would be refused by the cluster-shared guard —
+        // correctly). Entries self-drain via the 6h max age regardless, so a
+        // machine that never holds the lease loses nothing.
+        try {
+          if (coordinator.holdsLease() && state.get('session-build-context') !== null) {
+            state.delete('session-build-context');
+            console.log(pc.dim('  [write-admission] legacy session-build-context kv entry cleaned up (lease holder, one-time)'));
+          }
+        } catch {
+          /* @silent-fallback-ok — the legacy key is inert and self-draining (6h max age);
+             a failed cleanup only delays its disappearance and retries at the next boot. */
+        }
+        console.log(pc.dim(`  Write-admission: live (${writeAdmission.mode()}) — machine ${waMachineId ?? 'local'}, legacy guard ${writeAdmission.isLive ? 'subsumed' : 'still enforcing'}`));
+      } catch (err) {
+        // @silent-fallback-ok — reported via console.warn; init failure leaves the
+        // layer null → route 503s + the legacy blanket guard keeps enforcing
+        // (§5 fail-toward-today), never blocks boot.
+        console.warn(pc.yellow(`  Write-admission init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`));
+        writeAdmission = null;
+      }
+    } else {
+      console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

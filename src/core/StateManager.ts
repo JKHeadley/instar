@@ -11,6 +11,7 @@ import path from 'node:path';
 import type { Session, JobState, ActivityEvent } from './types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { WriteRefusedError, type WriteAdmission, type WriteScope } from './WriteAdmission.js';
 
 /**
  * Discriminate filesystem read errors into operator-actionable categories.
@@ -67,6 +68,9 @@ export class StateManager {
    *  write so spawns/terminations remain instantly visible. */
   private _sessionsCache: Session[] | null = null;
   private _sessionsCacheAt = 0;
+  /** Standby-write reconciliation (§3.3): when attached, guardWrite delegates
+   *  to the ownership-scoped admission layer. One-way — never detached. */
+  private _writeAdmission: WriteAdmission | null = null;
 
   constructor(stateDir: string, opts?: { now?: () => number }) {
     this.stateDir = stateDir;
@@ -124,6 +128,34 @@ export class StateManager {
     this._sessionPoolActive = active;
   }
 
+  /** Whether the active-active session pool is live on this machine (read by
+   *  the WriteAdmission decision table's pool-inactive clause, §3.2). */
+  get sessionPoolActive(): boolean {
+    return this._sessionPoolActive;
+  }
+
+  /**
+   * ONE-WAY attach of the standby-write-reconciliation admission layer
+   * (docs/specs/standby-write-reconciliation.md §3.2 pre-construction window):
+   * StateManager exists and takes writes long before the pool block that
+   * constructs WriteAdmission runs; during that window guardWrite runs the
+   * LEGACY blanket verdict — exactly today's behavior. Attachment happens
+   * BEFORE routes are wired and is never detached at runtime, so no HTTP
+   * mutating route can ever observe a half-attached state. A second attach is
+   * a wiring bug and fails loudly.
+   */
+  attachWriteAdmission(admission: WriteAdmission): void {
+    if (this._writeAdmission) {
+      throw new Error('attachWriteAdmission: WriteAdmission is already attached (one-way attach — never re-attach at runtime)');
+    }
+    this._writeAdmission = admission;
+  }
+
+  /** The attached admission layer (wiring-integrity tests; null pre-attach). */
+  get writeAdmission(): WriteAdmission | null {
+    return this._writeAdmission;
+  }
+
   /**
    * Guard that throws in read-only mode. `sessionScoped` marks a write that targets a
    * single owned session's own file (state/sessions/<id>.json) — permitted on a
@@ -132,7 +164,37 @@ export class StateManager {
    * triggers it only fires for CAS-confirmed owned sessions). Shared-state writes pass
    * no opts and stay blocked.
    */
-  private guardWrite(operation: string, opts?: { sessionScoped?: boolean }): void {
+  private guardWrite(operation: string, opts?: { sessionScoped?: boolean; key?: string; scope?: WriteScope }): void {
+    // Standby-write reconciliation (§3.3): when the admission layer is
+    // attached, it resolves the op's write DOMAIN (registry, exact-key for kv)
+    // and runs the §3.2 decision table. Authority ladder: in dry-run it
+    // returns 'legacy' (evaluate + log only) and the blanket verdict below
+    // keeps enforcing; at live it admits/refuses. An admission-layer throw
+    // falls back to the LEGACY verdict (§5 store-seam fail direction).
+    const wa = this._writeAdmission;
+    if (wa) {
+      try {
+        const v = wa.guardStoreWrite(operation, {
+          key: opts?.key,
+          scope: opts?.scope,
+          legacySessionScoped: opts?.sessionScoped,
+        });
+        if (v.enforce === 'admit') return;
+        if (v.enforce === 'refuse') throw new WriteRefusedError(v.refusal, operation);
+        // 'legacy' → fall through to the blanket verdict below.
+      } catch (err) {
+        if (err instanceof WriteRefusedError) throw err;
+        // Fail toward TODAY (§5): the legacy blanket guard verdict below —
+        // exactly the current behavior — and the broken guard is recorded
+        // (never log-only-invisible, §6).
+        try {
+          wa.noteStoreSeamError(operation, err);
+        } catch {
+          /* @silent-fallback-ok — recording a broken-guard occurrence is observability;
+             it must never mask the legacy verdict this seam is falling back to. */
+        }
+      }
+    }
     if (!this._readOnly) return;
     if (opts?.sessionScoped && this._sessionPoolActive) return;
     throw new Error(`StateManager is read-only (this machine is on standby). Blocked: ${operation}`);
@@ -200,7 +262,9 @@ export class StateManager {
   }
 
   saveSession(session: Session): void {
-    this.guardWrite('saveSession', { sessionScoped: true });
+    // Scope resolution is the CALLER's job with data already in hand (§3.1
+    // keying note): the tmux session name keys the in-memory topic binding.
+    this.guardWrite('saveSession', { sessionScoped: true, scope: { sessionId: session.tmuxSession || session.id } });
     this.validateKey(session.id, 'sessionId');
     // One-running-record-per-tmux invariant (ghost-record fix): registering a
     // record as live for a tmux name supersedes any OTHER record still marked
@@ -366,7 +430,9 @@ export class StateManager {
   }
 
   removeSession(sessionId: string): boolean {
-    this.guardWrite('removeSession', { sessionScoped: true });
+    // Only the record id is in hand here; a binding miss on it resolves to the
+    // UNBOUND arm (admit — today-equivalent to the sessionScoped carve-out).
+    this.guardWrite('removeSession', { sessionScoped: true, scope: { sessionId } });
     this.validateKey(sessionId, 'sessionId');
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${sessionId}.json`);
     if (!fs.existsSync(filePath)) return false;
@@ -496,7 +562,7 @@ export class StateManager {
   }
 
   set<T>(key: string, value: T): void {
-    this.guardWrite('set');
+    this.guardWrite('set', { key });
     this.validateKey(key, 'state key');
     const filePath = path.join(this.stateDir, 'state', `${key}.json`);
     const dir = path.dirname(filePath);
@@ -505,7 +571,7 @@ export class StateManager {
   }
 
   delete(key: string): boolean {
-    this.guardWrite('delete');
+    this.guardWrite('delete', { key });
     this.validateKey(key, 'state key');
     const filePath = path.join(this.stateDir, 'state', `${key}.json`);
     if (!fs.existsSync(filePath)) return false;

@@ -89,6 +89,24 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     declaredLoadBearingAt: '2026-07-01',
   },
   // ── U4.1 — WS1.3 pin persistence (docs/specs/u4-1-pin-persistence.md §2A) ──
+  // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §3.5) ──
+  {
+    key: 'writeAdmission',
+    kind: 'config',
+    configPath: 'multiMachine.writeAdmission.enabled',
+    // Dev-gated: `enabled` OMITTED from ConfigDefaults (resolveDevAgentGate) —
+    // dark-default on the fleet, live on a development agent, dry-run FIRST.
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.writeAdmission.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'WriteAdmission',
+    description: 'Ownership-scoped write admission + typed refusal (standby-write reconciliation): classifies every write into a domain and admits or typed-refuses in <2s instead of the blanket standby boolean. Dry-run first — the LEGACY blanket guard keeps enforcing until dryRun:false AND the wave-2 inventory ladder gate.',
+    // §3.5: loadBearing stays FALSE while the legacy blanket guard remains the
+    // enforcing layer — re-reviewed (and expected flipped) at fleet
+    // graduation, when the legacy guard's authority is subsumed.
+    loadBearing: false,
+  },
   {
     key: 'multiMachine.seamlessness.ws13Reconcile',
     kind: 'config',

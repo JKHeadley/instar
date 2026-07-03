@@ -845,6 +845,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §7).
+    // `enabled` is deliberately OMITTED — the dev-agent dark-feature gate
+    // (resolveDevAgentGate) resolves it: LIVE on a development agent, DARK on
+    // the fleet. Dry-run FIRST even on dev (FD-7 telemetry pattern): the
+    // legacy blanket standby guard keeps enforcing while the new layer logs
+    // would-verdicts; refusal authority additionally requires the wave-2
+    // inventory latch (WRITE_SURFACE_INVENTORY_COMPLETE).
+    writeAdmission: {
+      dryRun: true,
+      refusalAggregateThreshold: 5,
+    },
     // multi-machine-lease-self-heal (docs/specs/multi-machine-lease-self-heal.md).
     // F1 tick self-heal ships ENABLED (safe-by-construction: bounded await + a
     // monotonic watchdog that only re-arms/recovers, never changes authority);

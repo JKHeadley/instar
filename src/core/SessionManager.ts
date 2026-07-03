@@ -288,6 +288,11 @@ export interface SessionManagerOptions {
    *  resolveDevAgentGate(monitoring.idleThrottleSettleGate.enabled). Absent ⇒ legacy
    *  immediate emit, unchanged. */
   idleThrottleSettleGate?: boolean;
+  /** Coordinator/mesh identity machine id for the per-machine
+   *  SessionBuildContextStore re-key (standby-write-reconciliation §3.3).
+   *  A GETTER because the mesh identity resolves after SessionManager
+   *  construction at server boot. Absent/null ⇒ the literal 'local'. */
+  buildContextMachineId?: () => string | null;
 }
 
 export class SessionManager extends EventEmitter {
@@ -528,6 +533,9 @@ export class SessionManager extends EventEmitter {
     if (config.respawnBuildContext?.enabled) {
       this.buildContextStore = new SessionBuildContextStore(state, {
         maxAgeMs: config.respawnBuildContext.maxAgeMs,
+        // Per-machine re-key (standby-write-reconciliation §3.3): the id comes
+        // from the coordinator/mesh identity via a late-resolving getter.
+        machineId: opts.buildContextMachineId ?? null,
       });
     }
   }

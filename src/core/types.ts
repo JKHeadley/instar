@@ -2351,6 +2351,17 @@ export interface MultiMachineConfig {
    */
   sessionPool?: SessionPoolConfig;
   /**
+   * Standby-Write Reconciliation + Typed Refusal
+   * (docs/specs/standby-write-reconciliation.md §7): ownership-scoped write
+   * admission replacing the blanket lease-boolean standby guard. Dev-gated
+   * dark (`enabled` OMITTED from defaults → resolveDevAgentGate) and dry-run
+   * FIRST: while `dryRun` is true the layer only evaluates + logs
+   * would-verdicts and the LEGACY blanket guard keeps enforcing (§9.6).
+   * Refusal authority additionally requires the wave-2 write-surface
+   * inventory latch (WRITE_SURFACE_INVENTORY_COMPLETE, §9.14).
+   */
+  writeAdmission?: WriteAdmissionConfig;
+  /**
    * Cross-machine secret-sync (spec Phase 4): a secret given to the agent on one
    * machine becomes usable on its other machines automatically (encrypted to the
    * recipient machine's X25519 key, never on disk in plaintext, only ever pushed
@@ -2668,6 +2679,22 @@ export interface CoherenceJournalUserConfig {
  * later layers (placement, transfer, registry, clock-skew) are added to this
  * interface by their tracks as they land.
  */
+/**
+ * Standby-Write Reconciliation config (docs/specs/standby-write-reconciliation.md §7).
+ */
+export interface WriteAdmissionConfig {
+  /** OMITTED by default → resolveDevAgentGate: LIVE on a development agent,
+   *  DARK on the fleet (house Maturation Path). */
+  enabled?: boolean;
+  /** Dry-run FIRST even on dev (FD-7 telemetry pattern). Default true. While
+   *  true, the legacy blanket guard keeps enforcing; the new layer only logs
+   *  would-verdicts (§9.6). */
+  dryRun?: boolean;
+  /** ≥N refusals of one (route/op, code) within the window ⇒ ONE deduped
+   *  aggregate attention item (§6 — never per-event). Default 5. */
+  refusalAggregateThreshold?: number;
+}
+
 export interface SessionPoolConfig {
   /** Master switch. Default false — the entire session-pool layer is inert when false. */
   enabled?: boolean;

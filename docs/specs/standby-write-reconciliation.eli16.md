@@ -95,3 +95,13 @@ excluded from sync as part of wave 1); and pins down several smaller details
 (where the machine ID in filenames comes from, what happens to saves during
 the brief boot window, alerting when the checker itself breaks). Awaiting
 round-3 review.
+
+## Build status (wave 1, 2026-07-02)
+
+Round-3 review converged and the spec was approved. Wave 1 is now built: the
+checker (WriteAdmission) and its rulebook (WriteDomainRegistry) exist, the
+save-guard delegates to them, the build-context store got its per-machine
+filename, and the two problem endpoints run the admission check first. It
+ships dark on the fleet and in observe-only (dry-run) mode on the development
+machines — the old blanket guard keeps enforcing until the wave-2 inventory
+review deliberately flips it live.

@@ -131,6 +131,14 @@ Two reconcilers keep a multi-machine mesh from drifting into the wrong shape. Bo
 `;
 }
 
+export function WRITE_ADMISSION_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Write Admission (⚗️ experimental, dry-run — why did my write get a 409 naming another machine?)
+
+On a multi-machine setup, writes are classified by DOMAIN (machine-local / session-scoped / topic-scoped / cluster-shared) and admitted by ownership instead of the old blanket "standby is read-only" boolean. A write this machine genuinely must not perform gets a TYPED 409 refusal in <2s — \`{ error: "write-refused", code, owner, leaseHolder, retryable }\` with a \`Retry-After\` header — never a hang. Ships dev-gated + dry-run FIRST: while dry, the legacy standby guard keeps enforcing and the layer only logs would-verdicts.
+- Status + per-domain counters + recent refusals + the event-loop-lag gauge: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/write-admission\` (503 when dark). Refusal audit: \`logs/write-admission.jsonl\`.
+- **When to use** (PROACTIVE): a write of mine (or a route like \`POST /evolution/actions\` / \`POST /attention\`) answers 409 \`write-refused\` naming another machine → that state belongs to the named owner; re-send it there — do NOT auto-move the topic (moving is a consent-gated operator decision, the refusal hint is advisory prose). "Are writes hanging or being refused?" → read \`GET /write-admission\` (the eventLoop block attributes hang windows to loop starvation) instead of guessing. A refusal storm surfaces as ONE deduped attention item, never a flood.\n`;
+}
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -4344,6 +4352,17 @@ setTimeout(() => process.exit(0), 2000);
       content += MESH_SELF_HEALING_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mesh Self-Healing (U4.2/U4.4) section');
+    }
+
+    // Write Admission (standby-write-reconciliation §7 migration parity) —
+    // Agent Awareness: existing agents learn the GET /write-admission surface
+    // + the "why did my write get a 409 naming another machine?" proactive
+    // trigger. Honestly tagged experimental/dry-run (Maturity Honesty).
+    // Content-sniffed on the heading.
+    if (!content.includes('Write Admission')) {
+      content += WRITE_ADMISSION_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Write Admission section');
     }
 
     // Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — Agent Awareness +

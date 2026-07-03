@@ -1204,6 +1204,12 @@ export interface RouteContext {
   /** U4.5 rope-health alerts monitor (u4-5-rope-health-alerts) — backs
    *  GET /mesh/rope-health. Null/absent when the dev gate resolves dark (503). */
   ropeHealthMonitor?: import('../monitoring/RopeHealthMonitor.js').RopeHealthMonitor | null;
+  /** Standby-write reconciliation (docs/specs/standby-write-reconciliation.md)
+   *  — ownership-scoped write admission + typed refusal. Backs
+   *  GET /write-admission and the wave-1 route-seam checks on the P2-6
+   *  families (POST/PATCH /evolution/*, POST/PATCH /attention*). Null/absent
+   *  when the dev gate resolves dark → routes 503 / seam checks no-op. */
+  writeAdmission?: import('../core/WriteAdmission.js').WriteAdmission | null;
   /** This machine's mesh id (machineId). Used by placement/transfer routes to tell
    *  whether the answering machine owns the topic. Null/absent (single-machine/dark). */
   meshSelfId?: string | null;
@@ -1550,6 +1556,28 @@ function resolveAgentFingerprint(ctx: RouteContext): string {
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+
+  /**
+   * Standby-write reconciliation route seam (spec §3.4): the admission check
+   * is the FIRST await-free statement AFTER body validation on a wave-1
+   * mutating route — bounded-before-expensive (I1), refuse-before-touch (I3).
+   * Returns true when the response has been written (a typed 409 refusal +
+   * Retry-After); the handler must return immediately. No writeAdmission on
+   * the ctx (feature dark) or an unwired route ⇒ false, today's exact flow.
+   * Fail directions on an admission-layer throw are handled INSIDE
+   * guardRouteWrite (§9.16: machine-local proceeds, scoped/shared refuse
+   * typed `admission-error`).
+   */
+  const refuseInadmissibleWrite = (req: { method: string; path: string }, res: ExpressResponse, scope?: { topicId?: number | string; sessionId?: string }): boolean => {
+    const wa = ctx.writeAdmission;
+    if (!wa) return false;
+    const v = wa.guardRouteWrite(req.method, req.path, scope);
+    if (v.action === 'refuse') {
+      res.status(v.status).set('Retry-After', String(v.retryAfterSeconds)).json(v.refusal);
+      return true;
+    }
+    return false;
+  };
 
   // Content-hash dedup for the agent-to-agent relay-agent ingress path. Guards
   // the duplicate-reply bug where a sender that times out on the receiver's
@@ -2579,6 +2607,12 @@ export function createRoutes(ctx: RouteContext): Router {
       base.multiMachine = ctx.coordinator
         ? { enabled: true, syncStatus: ctx.coordinator.getSyncStatus() }
         : { enabled: ctx.config.multiMachine?.enabled ?? false, syncStatus: null };
+      // Standby-write reconciliation §6: the event-loop-lag gauge rides the
+      // AUTHED extension of /health ONLY (same posture as ropeHealth) — a
+      // live load oracle must never be handed to an unauthenticated caller.
+      if (ctx.writeAdmission) {
+        base.eventLoop = ctx.writeAdmission.eventLoopStats();
+      }
       base.project = ctx.config.projectName;
       base.node = process.version;
       base.memory = {
@@ -4854,6 +4888,19 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousLivenessReconciler.status());
+  });
+
+  // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──
+  // The observability surface: mode, per-domain admitted/refused/would-verdict
+  // counters, recent typed refusals (minus hints), the ownership-index stats,
+  // and the event-loop-lag gauge (the P2-6 attribution instrument). 503 when
+  // the dev gate resolves dark (house rule).
+  router.get('/write-admission', (_req, res) => {
+    if (!ctx.writeAdmission) {
+      res.status(503).json({ error: 'write-admission not available on this agent' });
+      return;
+    }
+    res.json(ctx.writeAdmission.status());
   });
 
   // F2 Enforced Termination — external hard-stop status (spec: enforced-termination-watchdog.md).
@@ -12359,6 +12406,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // Standby-write reconciliation §3.4 (I1/I3): the P2-6 route — admission is
+    // the FIRST await-free statement after body validation, BEFORE the tone
+    // gate below (a refused POST /attention has created no topic, persisted no
+    // item, spent no LLM tokens). Runs first in EVERY mode (§9.15); while dry
+    // the verdict is log-only and the route proceeds into today's exact flow,
+    // tone gate included.
+    if (refuseInadmissibleWrite(req, res)) return;
+
     // Attention items reach the user as a new Telegram topic with the title,
     // summary, and (optional) description as the body. Run that user-facing
     // candidate through the outbound-message authority before creating the
@@ -12674,6 +12729,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: `"status" must be one of: ${ATTENTION_STATUSES.join(', ')} (aliases: resolved, done, ack, in_progress, wontdo, reopen)` });
       return;
     }
+
+    // Standby-write reconciliation §3.4 (I1): admission first after validation.
+    if (refuseInadmissibleWrite(req, res)) return;
 
     // WS4.1 follow-up (CMT-1416) receiver-side precedence guard. When a PATCH
     // arrives carrying X-Instar-Remote-Ack (a relayed operator ack from a peer,
@@ -17814,6 +17872,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: `"type" must be one of: ${validTypes.join(', ')}` });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1): admission first after validation.
+    if (refuseInadmissibleWrite(req, res)) return;
     const proposal = ctx.evolution.addProposal({
       title, source: source || 'api', description,
       type: type || 'capability', impact, effort, proposedBy, tags,
@@ -17832,6 +17892,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1): admission first after validation.
+    if (refuseInadmissibleWrite(req, res)) return;
     const success = ctx.evolution.updateProposalStatus(req.params.id, status, resolution);
     if (!success) {
       res.status(404).json({ error: 'Proposal not found' });
@@ -17863,6 +17925,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"description" is required' });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1): admission first after validation
+    // — BEFORE the evidence-derivation await below (bounded-before-expensive).
+    if (refuseInadmissibleWrite(req, res)) return;
 
     // WikiClaim Phase 3 (spec § Producers line 268, § Migration Plan line 341):
     // /learn must cite at least one evidence row. Either:
@@ -17942,6 +18007,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"appliedTo" is required' });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1): admission first after validation.
+    if (refuseInadmissibleWrite(req, res)) return;
     const success = ctx.evolution.markLearningApplied(req.params.id, appliedTo);
     if (!success) {
       res.status(404).json({ error: 'Learning not found' });
@@ -17978,6 +18045,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: `"severity" must be one of: ${validSeverities.join(', ')}` });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1): admission first after validation.
+    if (refuseInadmissibleWrite(req, res)) return;
     const gap = ctx.evolution.addGap({
       title, category: category || 'custom', severity: severity || 'medium',
       description, context: context || '', platform, session,
@@ -17996,6 +18065,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"resolution" is required' });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1): admission first after validation.
+    if (refuseInadmissibleWrite(req, res)) return;
     const success = ctx.evolution.addressGap(req.params.id, resolution);
     if (!success) {
       res.status(404).json({ error: 'Gap not found' });
@@ -18031,6 +18102,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"description" is required' });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1/I3): the P2-6 route — admission is
+    // the first await-free statement after body validation; a refused write
+    // has touched no store. (Wave 1 classifies this family machine-local ⇒
+    // admit everywhere; the check still runs first in every mode, §9.15.)
+    if (refuseInadmissibleWrite(req, res)) return;
     const action = ctx.evolution.addAction({
       title, description, priority, commitTo, dueBy, source, tags,
     });
@@ -18048,6 +18124,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
       return;
     }
+    // Standby-write reconciliation §3.4 (I1): admission first after validation.
+    if (refuseInadmissibleWrite(req, res)) return;
     const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
