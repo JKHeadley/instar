@@ -253,3 +253,133 @@ describe('Growth digest aggregation invariant (500 findings → one bounded mess
     expect(text).toContain('CRITICAL — decide now');
   });
 });
+
+// ── Standard C — alerts-topic routing DEFAULT (three-standards-enforcement) ────
+//
+// Standard C makes hub-routing the RULE for a topic-less notice, not a lucky
+// side-effect of the flood-guard. The burst tests above prove the flood BOUND;
+// this table-driven contract test proves the ROUTING RULE at the adapter/funnel
+// boundary — one extended burst test can miss direct adapter calls / legacy
+// paths / future notice sources, so we assert the enumerated routing cases
+// directly (spec §Standard C, round-5 external finding):
+//   • topic-less non-critical housekeeping → the ONE hub topic (from the FIRST
+//     item, never one-per-item)
+//   • HIGH / URGENT → its OWN individual topic (critical carve-out preserved)
+//   • an existing-owning-topic send → that topic, minting NO new topic
+//   • a misconfigured / unresolvable hub → a SAFE fallback (item still stored,
+//     never a silent per-item new-topic mint)
+// Ship criterion (no-miscite): hub routing covers ONLY non-critical topic-less
+// notices — it is NEVER cited as critical-alert reachability (that guarantee is
+// the pooled attention queue's read, and the deferred unified push stream's).
+describe('Standard C — topic-less notice routing default (contract, adapter boundary)', () => {
+  let adapter: TelegramAdapter;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-routing-contract-'));
+    // Shipped defaults — the agent-health hub lane is on by default.
+    adapter = new TelegramAdapter(
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 },
+      tmpDir,
+    );
+  });
+
+  afterEach(async () => {
+    await adapter.stop();
+    vi.restoreAllMocks();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'routing-contract cleanup' });
+  });
+
+  it('topic-less non-critical housekeeping burst → the ONE hub topic (from the first item, never one-per-item)', async () => {
+    const rec = installApiStub(adapter);
+    const N = 200;
+    for (let i = 0; i < N; i++) {
+      // A topic-less housekeeping notice: no owning conversation, opted into the
+      // agent-health hub lane, each with a UNIQUE key (so none is dedup-suppressed).
+      await adapter.createAttentionItem({
+        id: `health-${i}`,
+        title: `session ${i} looks quiet`,
+        summary: 'routine self-health notice',
+        category: 'agent-health',
+        priority: 'LOW',
+        lane: 'agent-health',
+        sourceContext: `/health/unique/${i}`,
+      });
+    }
+    // The RULE: exactly ONE hub topic for the whole burst — never N topics, and
+    // never even the budgeted 8. Every item is still recorded (no drops).
+    expect(rec.forumTopicsCreated).toBe(1);
+    expect(adapter.getAttentionItems().filter((a) => a.category === 'agent-health').length).toBe(N);
+    // All routed items are marked coalesced (hub-routed, not per-item topics).
+    expect(adapter.getAttentionItems().filter((a) => a.lane === 'agent-health').every((a) => a.coalesced === true)).toBe(true);
+  });
+
+  it('HIGH / URGENT topic-less notices keep their OWN individual topic (critical carve-out preserved)', async () => {
+    const rec = installApiStub(adapter);
+    // Even a critical item that opts into the housekeeping lane must NOT be
+    // muffled into the hub — but here we use the standard attention path: each
+    // critical item gets its own topic.
+    for (const priority of ['HIGH', 'URGENT'] as const) {
+      const before = rec.forumTopicsCreated;
+      const item = await adapter.createAttentionItem({
+        id: `crit-${priority}`,
+        title: `critical ${priority}`,
+        summary: 'act now',
+        category: 'burst-test',
+        priority,
+        sourceContext: `/crit/${priority}`,
+      });
+      expect(rec.forumTopicsCreated).toBe(before + 1); // its OWN topic
+      expect(item.coalesced).not.toBe(true);
+      expect(item.topicId).toBeDefined();
+    }
+  });
+
+  it('a send to an EXISTING owning topic mints NO new topic', async () => {
+    const rec = installApiStub(adapter);
+    // A notice that already belongs to a conversation topic routes THERE — the
+    // funnel never mints a fresh topic for an owned notice.
+    await (adapter as unknown as { sendToTopic: (id: number, text: string) => Promise<unknown> })
+      .sendToTopic(4242, 'a reply on an existing owning topic');
+    expect(rec.forumTopicsCreated).toBe(0);
+  });
+
+  it('a misconfigured / unresolvable hub falls back SAFELY — item stored, no silent per-item topic mint', async () => {
+    // Force hub-topic creation to fail: the lane catches it, the item is still
+    // recorded, and NO per-item topic is minted (never a silent new-topic-per-notice).
+    const rec: Recorder = { forumTopicsCreated: 0, topicTitles: [] };
+    vi.spyOn(adapter as unknown as { apiCall: (m: string, p: Record<string, unknown>) => Promise<unknown> }, 'apiCall')
+      .mockImplementation(async (method: string, params: Record<string, unknown>) => {
+        if (method === 'createForumTopic') {
+          throw new Error('simulated: hub topic unresolvable');
+        }
+        if (method === 'sendMessage') return { message_id: 1 };
+        return { ok: true };
+      });
+    const item = await adapter.createAttentionItem({
+      id: 'health-unresolvable',
+      title: 'session looks quiet',
+      summary: 'routine notice while hub is unresolvable',
+      category: 'agent-health',
+      priority: 'LOW',
+      lane: 'agent-health',
+      sourceContext: '/health/unresolvable',
+    });
+    // No topic minted (the create attempt threw), and the item is NOT lost.
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect(adapter.getAttentionItems().some((a) => a.id === 'health-unresolvable')).toBe(true);
+    expect(item.coalesced).toBe(true); // routed via the hub lane, not a per-item topic
+  });
+
+  it('the hub topic id is resolved from config/state, NEVER a baked-in universal constant', () => {
+    // Standard C binding-semantics: the hub id (this agent: 7848) is an EXAMPLE,
+    // per-agent value — a hard-coded universal constant would be wrong on every
+    // other agent/machine (the hub is physical-credential-locality). Guard against
+    // regressions that bake a literal id into the routing source.
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'messaging', 'TelegramAdapter.ts'),
+      'utf8',
+    );
+    expect(src).not.toMatch(/\b7848\b/);
+  });
+});

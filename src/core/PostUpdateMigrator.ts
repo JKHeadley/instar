@@ -742,6 +742,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
+    this.migrateThreeStandardsReviewChecks(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
@@ -1131,6 +1132,63 @@ export class PostUpdateMigrator {
         rel: ['skills', 'spec-converge', 'SKILL.md'],
         fingerprint: '# /spec-converge',
         label: 'spec-converge SKILL (integration reviewer posture check)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Three-standards review-checks (Standards A + B enforcement,
+  // three-standards-enforcement spec, 2026-07-03) ──
+  //
+  // The ratified standards "Always Multi-Machine" (A) and "Self-Heal Before
+  // Notify" (B) get their teeth as /spec-converge review-checks: the integration
+  // reviewer instruction in spec-converge SKILL.md AND the integration-reviewer
+  // template gain (A) the "undefended machine-local is a MATERIAL FINDING; the
+  // default is `unified`; justify only from a closed taxonomy via a
+  // `machine-local-justification:` marker" upgrade, and (B) the
+  // self-heal-before-notify escalation-gate review-check. New agents get these
+  // via installBuiltinSkills/install (non-destructive, install-if-missing);
+  // EXISTING agents only get updated CONTENT here (Migration Parity → "updating
+  // existing skill content", case 5b).
+  //
+  // Same shape as migrateMultiMachinePostureReviewDimension: per file, re-copy
+  // the bundled version only when the installed copy lacks the capability MARKER
+  // and still looks stock (fingerprint guard); a customized file is left
+  // untouched and reported. Idempotent: the marker check short-circuits on every
+  // later run. The MARKER (`machine-local-justification`) is present in BOTH
+  // upgraded files, so one marker covers the A+B content that ships together.
+  private migrateThreeStandardsReviewChecks(result: MigrationResult): void {
+    const MARKER = 'machine-local-justification';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (Standards A+B review-checks)',
+      },
+      {
+        rel: ['skills', 'spec-converge', 'templates', 'reviewer-integration.md'],
+        fingerprint: '# Reviewer Prompt — Integration',
+        label: 'spec-converge integration-reviewer template (Standards A+B review-checks)',
       },
     ];
     for (const f of files) {
