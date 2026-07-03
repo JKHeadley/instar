@@ -367,8 +367,16 @@ describe('lint-dev-agent-dark-gate', () => {
       // two new `enabled: false` stateSync blocks (userRegistry+topicOperator) after evolutionActions,
       // pushing cartographer to 1066/1111/1136. credentialRepointing + authorizationRequests OMIT
       // enabled (dev-gated). Every line RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      '356': 'monitoring.mcpProcessReaper.enabled',
-      '370': 'monitoring.agentSleep.enabled',
+      // reaper-initial-pass (2026-07-02, this PR): ONE line —
+      // monitoring.agentWorktreeReaper.initialPassDelayMs (a tunable, NOT an
+      // `enabled:` literal, so it adds NO new attributed path) — was inserted inside
+      // the agentWorktreeReaper block (after line 294), shifting EVERY `enabled:`
+      // line from mcpProcessReaper down by +1. sessionReaper (236) and
+      // agentWorktreeReaper.enabled (294) sit ABOVE the insertion and are unchanged.
+      // Each key below RE-VERIFIED by hand via the attributor on the edited
+      // ConfigDefaults (CI expected-vs-received diff matched 1:1 on all 22 shifts).
+      '357': 'monitoring.mcpProcessReaper.enabled',
+      '371': 'monitoring.agentSleep.enabled',
       // self-unblock-before-escalating (CMT-1519): the blockerLedger ConfigDefaults block
       // gained two nested OMITTED-`enabled` dev-gate sub-blocks (selfUnblockChecklist +
       // durableVaultSession) + a 6-line explanatory comment. Neither sub-block carries an
@@ -384,19 +392,19 @@ describe('lint-dev-agent-dark-gate', () => {
       // comment (NOT an `enabled:` path, so the attributor ignores it) ABOVE every
       // block below — shifting each subsequent `enabled: false` line DOWN by +5.
       // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      '441': 'monitoring.correctionLearning.enabled',
-      '544': 'monitoring.apprenticeshipCycleSla.enabled',
-      '552': 'monitoring.geminiCapacityEscalation.enabled',
-      '576': 'monitoring.greenPrAutoMerge.enabled',
-      '626': 'threadline.a2aCheckIn.enabled',
+      '442': 'monitoring.correctionLearning.enabled',
+      '545': 'monitoring.apprenticeshipCycleSla.enabled',
+      '553': 'monitoring.geminiCapacityEscalation.enabled',
+      '577': 'monitoring.greenPrAutoMerge.enabled',
+      '627': 'threadline.a2aCheckIn.enabled',
       // secure-a2a-verified-pairing §3.10 (Increment 6): the new
       // threadline.verifiedPairing block (~21 lines, NO `enabled:` literal — see the
       // note below the sessionPool keys) was inserted inside the `threadline` block
       // ABOVE mentor, shifting every subsequent `enabled: false` line DOWN by +19.
       // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      '737': 'mentor.enabled',
-      '748': 'mentor.autonomousFix.enabled',
-      '763': 'mentee.enabled',
+      '738': 'mentor.enabled',
+      '749': 'mentor.autonomousFix.enabled',
+      '764': 'mentee.enabled',
       // multi-machine-lease-self-heal: a NEW multiMachine.leaseSelfHeal block was
       // inserted at the TOP of the `multiMachine` block (ABOVE accountFollowMe). It
       // adds TWO `enabled: false` literals — F2 staleHolderTakeover + F3
@@ -405,14 +413,14 @@ describe('lint-dev-agent-dark-gate', () => {
       // neither is attributed). The block (~30 lines incl. its comment) shifts every
       // subsequent `enabled: false` line DOWN by +28. RE-VERIFIED by hand via the
       // attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      '866': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '870': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '867': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '871': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
       // multi-transport-mesh-comms (2026-06-20): soloCaptainHold.enabled:false (Layer 3,
       // action-bearing) added to the leaseSelfHeal block + a ~15-line meshTransport FLAT
       // block (enabled: TRUE, NOT an `enabled: false` path so the attributor ignores it)
       // inserted ABOVE sessionPool — together shifting every sessionPool-onward
       // `enabled: false` line by +24 (956→980, 981→1005). RE-VERIFIED via the attributor.
-      '877': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '878': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
       // U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md §5, R-r2-4): a NEW
       // multiMachine.leaseSelfHeal.preferredCaptainHandback block with an EXPLICIT
       // `enabled: false` (+ dryRun:true + 5 tunables, ~16 lines incl. comment) was
@@ -424,7 +432,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // (dev-gated — DEV_GATED_FEATURES) so it adds NO attributed path, only a +19
       // shift below the sessionPool block. RE-VERIFIED via the attributor on the
       // edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      '887': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '888': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -478,10 +486,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // `enabled` (dev-gated via resolveDevAgentGate), so NO new attributed path; it
       // only shifts every sessionPool-onward `enabled: false` line DOWN by +7.
       // RE-VERIFIED via the attributor on the edited ConfigDefaults (uniform +7).
-      '1124': 'multiMachine.sessionPool.enabled',
-      '1150': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1160': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1189': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1125': 'multiMachine.sessionPool.enabled',
+      '1151': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1161': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1190': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -530,7 +538,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // this branch's U4.2/U4.4 blocks shift stateSync/cartographer further.
       // Every key RE-VERIFIED via the attributor on the rebase-MERGED
       // ConfigDefaults (each maps to a real `enabled: false,` line).
-      '1377': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1378': 'multiMachine.stateSync.threadlinePairing.enabled',
       // autonomous-scope-accretion-completion §4: a NEW
       // autonomousSessions.completionDiscipline.scopeAccretion block (`enabled: true`
       // + breakerK — default ON, the documented maturation-path exception) plus the
@@ -542,9 +550,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // line-map (1464→1483, 1509→1528, 1534→1553). RE-VERIFIED via the attributor
       // on the rebase-MERGED ConfigDefaults (each still maps to a real
       // `enabled: false,` line).
-      '1518': 'cartographer.freshnessSweep.enabled',
-      '1563': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1588': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1519': 'cartographer.freshnessSweep.enabled',
+      '1564': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1589': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
