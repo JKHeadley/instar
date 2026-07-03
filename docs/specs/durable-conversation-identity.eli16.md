@@ -136,6 +136,40 @@ bounded, self-healing, and real conversations are unaffected); and a crash at th
 exact wrong moment can leave one harmless permanently-parked delivery pin (a
 cleanup sweep is the named follow-up).
 
+## Round-8 hardening (the duplicate-guard's own fine print)
+
+Round 7's blockers all sat in one place: the guard that stops a reminder from
+posting twice when a delivery receipt gets lost. Three seams, each now closed:
+
+- **A lost receipt can no longer mute a promise's reminders.** By the old letter of
+  the rules, one lost delivery receipt made the guard swallow not just the repeat of
+  THAT reminder but every future reminder for that promise — silently — for up to a
+  week. Now a swallowed repeat counts as "handled": the reminder counter moves
+  forward, and the next reminder goes out on schedule. Worst case really is one
+  skipped beat, never a muted week (the round-7 section's claim above is now
+  mechanically guaranteed, not just intended).
+- **Notices identified only by their text get a short repeat-window, not a week.**
+  Reminders carry a "promise number," but plain notices (attention alerts, "your
+  session was restarted") are identified by their text alone. One successful send
+  used to suppress the same text to that conversation for 7 days — so a legitimate
+  identical notice a day later was silently swallowed. Text-identified notices now
+  use a 15-minute repeat window (the same window Telegram already uses), so honest
+  repeats always deliver.
+- **The restart bookkeeping now files "I was about to send this" notes under
+  conversation + text, not text alone.** Two different conversations receiving the
+  same text could otherwise cancel each other's notes across a restart — one
+  direction risks a double-post, the other a wrongly-skipped send. The note-keying
+  now matches the guard's own keying exactly.
+
+Plus honesty fixes elsewhere: an over-strong sentence about two machines never
+picking different workspaces at first boot is retracted (the real containment —
+divergence is loud, and nothing is shared until a workspace is pinned in config —
+was already in place); the "old ungated sessions age out in one generation" claim
+now names its real bound and adds a visible alert for stragglers instead of
+assuming; and a corrupted line in the middle of the recovery journal now stops
+recovery loudly (preserving everything for inspection) instead of silently
+skipping a committed record.
+
 ## Open questions
 
 None. Earlier drafts had two, and both turned out to be items already tracked on
