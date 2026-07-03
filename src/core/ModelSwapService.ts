@@ -88,6 +88,19 @@ export interface ModelSwapServiceDeps {
   topicProfileConsult?: (
     session: Session,
   ) => { suppressEscalation: boolean; baselineModel: string | null } | null;
+  /**
+   * swap-continuity-antithrash §4.2/Q5 — the SUBAGENT leg of the idle check.
+   * A session at an idle prompt CAN carry live background subagents; the
+   * pane-only check would swap under them (the F3 footer blind spot). Only
+   * consulted when `getConfig().subagentIdleLeg === true` (concrete default
+   * false — dark; spec §10 rung 3a). Returns the leg state:
+   *  - 'active'        → live subagents ⇒ refuse (retryable, like not-idle)
+   *  - 'idle'          → affirmatively no live subagents ⇒ proceed
+   *  - 'absent'        → no claudeSessionId to probe (R5-M1: behaves like a
+   *                      failed probe — refuse, never a blind swap)
+   *  - 'indeterminate' → probe failed ⇒ refuse (fail-closed, Security-F6 shape)
+   */
+  subagentLegProbe?: (session: Session) => 'active' | 'idle' | 'absent' | 'indeterminate';
   /** Canary attempts/cadence — injectable for tests. */
   canaryAttempts?: number;
   canaryIntervalMs?: number;
@@ -285,6 +298,18 @@ export class ModelSwapService {
     const tail = this.deps.sessions.captureMeaningfulTail(session.tmuxSession, 8);
     if (!paneIdleWithEmptyInput(tail)) {
       return this.refuse(session.name, tier, 'not-idle');
+    }
+
+    // SUBAGENT idle leg (swap-continuity-antithrash §4.2/Q5 — dark behind
+    // `subagentIdleLeg`, concrete default false): a pane-idle session with
+    // live background subagents is NOT idle; refusal is retryable exactly
+    // like `not-idle`. 'absent'/'indeterminate' refuse per R5-M1 (an
+    // unreadable leg is never a license to swap under live work).
+    if (cfg.subagentIdleLeg && this.deps.subagentLegProbe) {
+      const leg = this.deps.subagentLegProbe(session);
+      if (leg !== 'idle') {
+        return this.refuse(session.name, tier, `not-idle-subagents:${leg}`);
+      }
     }
 
     // §7/§8 cost gates — only escalations consume budget/lease; a swap back

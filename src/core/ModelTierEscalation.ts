@@ -89,6 +89,16 @@ export interface TierEscalationConfig {
    * is a strict no-op. Default false ⇒ ships dark independently of the rest
    * of the escalation feature. */
   ridesTopic: boolean;
+  /**
+   * swap-continuity-antithrash §4.2/Q5 — the model-swap SUBAGENT idle leg.
+   * A session at an idle prompt CAN have live background subagents; the
+   * pane-only check would swap under them (the F3 footer blind spot). Ships
+   * behind its OWN micro-flag with a CONCRETE default `false` (dark)
+   * everywhere — never stage-following (model-swap is already live, so
+   * stage-following would silently change a live refusal surface on deploy).
+   * Graduates on its own rollout rung (spec §10 rung 3a).
+   */
+  subagentIdleLeg: boolean;
   triggers: TierEscalationTriggers;
   frameworks: Partial<Record<EscalationFramework, TierEscalationFrameworkEntry>>;
   costGuards: TierEscalationCostGuards;
@@ -101,6 +111,9 @@ export const DEFAULT_TIER_ESCALATION_CONFIG: TierEscalationConfig = {
   // WS5.3 escalation-rides-topic sub-flag — ships dark (default false). Rides
   // under `enabled`: a no-op while escalation itself is off.
   ridesTopic: false,
+  // swap-continuity-antithrash Q5 — concrete default FALSE (dark) everywhere;
+  // flips only on its own rollout rung (§10 rung 3a), never on deploy.
+  subagentIdleLeg: false,
   triggers: {
     skills: ['build', 'autonomous', 'instar-dev', 'spec-converge'],
     projectDesign: true,
@@ -321,6 +334,7 @@ export function normalizeTierEscalationConfig(
     enabled: typeof r.enabled === 'boolean' ? r.enabled : d.enabled,
     dryRun: typeof r.dryRun === 'boolean' ? r.dryRun : d.dryRun,
     ridesTopic: typeof r.ridesTopic === 'boolean' ? r.ridesTopic : d.ridesTopic,
+    subagentIdleLeg: typeof r.subagentIdleLeg === 'boolean' ? r.subagentIdleLeg : d.subagentIdleLeg,
     triggers: {
       skills: Array.isArray(r.triggers?.skills)
         ? r.triggers.skills.filter((s): s is string => typeof s === 'string')

@@ -67,3 +67,15 @@ Machine-local by design (§8): per-machine ledger, per-machine breaker, no
 cross-machine state. No egress, no spend, no credential surface. The only
 processes touched are the agent's own tmux sessions, and only through the
 pre-existing SessionRefresh funnel with strictly ADDED protection.
+
+## Wiring completion (second commit of this build)
+
+The core modules landed first (2866f1073); the wiring commit binds them:
+server.ts spine (unconditional ledger+engine hydration, live-knob getters,
+scheduler/monitor/SessionRefresh hooks), the SessionManager tri-state work
+probe (shared ps snapshot), the /sessions/refresh pre-202 409 + force,
+the AgentServer ModelSwapService subagent-leg probe (Q5 dark micro-flag),
+DEV_GATED_FEATURES + guard-manifest registration, CLAUDE.md template +
+PostUpdateMigrator awareness, and the release-note fragment. No new runtime
+side effects beyond those reviewed above — this section records that the
+dark/dry-run posture described above is now actually reachable end-to-end.

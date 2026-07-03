@@ -28,6 +28,7 @@ import { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
 import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifier.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.js';
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
@@ -844,6 +845,12 @@ let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareSch
 // Subscription & Auth Standard P1.3 — pre-limit proactive swap monitor. Null
 // until wired (requires the scheduler; gated behind subscriptionPool.proactiveSwap).
 let _proactiveSwapMonitor: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor | null = null;
+// swap-continuity-antithrash §3/§4 — the anti-thrash spine. The ledger + engine
+// load and hydrate UNCONDITIONALLY at boot (R4-L3: reactive rows append
+// regardless of antiThrash.enabled, so the index is warm at a mid-run flag
+// flip). Null only when construction itself failed (non-fatal).
+let _swapAntiThrashEngine: import('../core/SwapAntiThrash.js').SwapAntiThrashEngine | null = null;
+let _swapWorkGate: import('../core/SwapWorkGate.js').SwapWorkGate | null = null;
 
 async function spawnSessionForTopic(
   sessionManager: SessionManager,
@@ -15921,6 +15928,99 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // ── Swap-continuity anti-thrash spine (swap-continuity-antithrash §3/§4) ──
+    // SwapLedger + SwapAntiThrashEngine + SwapWorkGate. Constructed and
+    // hydrated UNCONDITIONALLY (R4-L3): the ledger loads at every boot
+    // regardless of antiThrash.enabled so the in-memory index (dwell /
+    // reversal / breaker / frequency) is warm the moment the flag flips on
+    // mid-run — the §7.1 half-enable trap closed for this key. All antiThrash
+    // knobs are read LIVE per tick via the getter (the config object is
+    // shared + mutated in place by config PATCHes).
+    const antiThrashKnobsGetter = () =>
+      resolveAntiThrashKnobs(config.subscriptionPool?.proactiveSwap?.antiThrash, {
+        thresholdPct: config.subscriptionPool?.proactiveSwap?.thresholdPct,
+        tickMs: config.subscriptionPool?.proactiveSwap?.tickMs,
+      });
+    // swapContinuity (Piece 2, the work gate): the `enabled` KEY IS OMITTED
+    // from shipped config on purpose — omission routes it through the
+    // dev-agent gate (live on a dev agent, dark on the fleet; the #1001
+    // anti-mechanism). `enabled` is RESTART-REQUIRED (§7.1 — the gate wiring
+    // into SessionRefresh is constructor-injected); dryRun + numeric knobs
+    // are read live per evaluation via the getters below.
+    const swapContinuityEnabled = resolveDevAgentGate(
+      config.subscriptionPool?.swapContinuity?.enabled,
+      config as { developmentAgent?: boolean },
+    );
+    const swapContinuityKnobs = () => {
+      const c = config.subscriptionPool?.swapContinuity;
+      return {
+        enabled: swapContinuityEnabled,
+        dryRun: c?.dryRun ?? true,
+        deferralCeilingMs: c?.deferralCeilingMs ?? 1_800_000,
+        reactiveGraceMs: c?.reactiveGraceMs ?? 120_000,
+        recheckMs: c?.recheckMs ?? 10_000,
+      };
+    };
+    try {
+      const { SwapLedger } = await import('../core/SwapLedger.js');
+      const { SwapAntiThrashEngine, retentionBoundMs, crossKnobWarnings } = await import('../core/SwapAntiThrash.js');
+      const { SwapWorkGate } = await import('../core/SwapWorkGate.js');
+      const swapLedger = new SwapLedger({
+        filePath: path.join(config.stateDir, 'state', 'swap-ledger.jsonl'),
+        windowMs: () => retentionBoundMs(antiThrashKnobsGetter()),
+        // Counts supplied at outage-resume time (the ledger-lost refusals the
+        // writer itself could not record — §3.5/I5).
+        outageRefusalCount: () => _swapAntiThrashEngine?.ledgerLostRefusalCount() ?? 0,
+        machineId: _meshSelfId ?? 'local',
+        logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      });
+      _swapAntiThrashEngine = new SwapAntiThrashEngine({
+        ledger: swapLedger,
+        getKnobs: antiThrashKnobsGetter,
+        machineId: _meshSelfId ?? 'local',
+        // P17: episode-deduped attention (the engine dedupes on episodeId;
+        // the id passed here is the stable per-episode dedupe key).
+        raiseAttention: (id, title, body) => {
+          void telegram
+            ?.createAttentionItem({
+              id,
+              title,
+              summary: body,
+              category: 'subscription-pool',
+              priority: 'HIGH',
+              sourceContext: 'subscription-pool:swap-antithrash',
+            })
+            .catch(() => {
+              /* @silent-fallback-ok: attention is best-effort; the ledger row is the durable trace */
+            });
+        },
+        logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      });
+      _swapAntiThrashEngine.hydrate();
+      // Cross-knob coherence warnings (§7, R4-L2 — warn-only, once at boot).
+      // 15 min = the QuotaPoller's default cadence (pollIntervalMs ?? 15*60_000).
+      for (const w of crossKnobWarnings(antiThrashKnobsGetter(), 15 * 60_000)) console.warn(w);
+      _swapWorkGate = new SwapWorkGate({
+        checkSessionWorkState: (tmux) => sessionManager.checkSessionWorkState(tmux),
+        getClaudeSessionId: (tmux) =>
+          state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === tmux)?.claudeSessionId ?? null,
+        hasActiveSubagents: (id) => subagentTracker.hasActiveSubagents(id),
+        getActiveSubagents: (id) =>
+          subagentTracker.getActiveSubagents(id).map((r) => ({
+            agentType: r.agentType,
+            startedAt: r.startedAt,
+            ...(r.transcriptPath ? { transcriptPath: r.transcriptPath } : {}),
+          })),
+      });
+    } catch (err) {
+      // @silent-fallback-ok: cascade-isolation — a spine construction failure
+      // must never 503 the server; behavior degrades to pre-brake semantics
+      // (the legacy path) and re-attempts next boot.
+      console.warn('[instar] swap-continuity anti-thrash spine init failed (non-fatal):', err);
+      _swapAntiThrashEngine = null;
+      _swapWorkGate = null;
+    }
+
     // SessionRefresh — agent-initiated session respawn. Requires a Telegram
     // adapter (v1 scope: Telegram-bound sessions only). The respawner closure
     // captures `topicMemory` by reference, so even if topicMemory is wired up
@@ -15938,6 +16038,42 @@ export async function startServer(options: StartOptions): Promise<void> {
         state,
         telegram: telegramRef,
         topicResumeMap: _topicResumeMap,
+        // swap-continuity-antithrash §4.2 — the in-flight work gate, bound at
+        // THIS primitive (the funnel every session-killing mutation flows
+        // through). Constructor-injected on purpose: `swapContinuity.enabled`
+        // is restart-required (§7.1); dryRun + numeric knobs read live via
+        // getKnobs. Null when the feature is dark on this install ⇒
+        // byte-for-byte today's behavior (unconditional kill).
+        workGateCtx:
+          swapContinuityEnabled && _swapWorkGate
+            ? {
+                probe: (tmux) => _swapWorkGate!.probe(tmux),
+                getKnobs: () => {
+                  const k = swapContinuityKnobs();
+                  return { enabled: k.enabled, dryRun: k.dryRun, reactiveGraceMs: k.reactiveGraceMs, recheckMs: k.recheckMs };
+                },
+                recordProceeded: (args) => _swapAntiThrashEngine?.recordProceeded(args),
+                recordInteractiveRefusal: (args) => _swapAntiThrashEngine?.recordInteractiveRefusal(args),
+                // §4.3(2) — Q4: v1 reads the in-memory exactly-once map (set on
+                // inbound, cleared on reply); 'unknown' = the map/ledger is
+                // unavailable (post-restart, or exactly-once ingress dark).
+                // `messageLedger`/`currentInboundByTopic` are declared later in
+                // this boot function and captured by reference — every call
+                // happens post-boot, so the binding is initialized by then.
+                resolveUnansweredInbound: (topicId) => {
+                  if (!messageLedger || !currentInboundByTopic) return 'unknown';
+                  const dedupeKey = currentInboundByTopic.get(String(topicId));
+                  if (!dedupeKey) return 'none';
+                  const entry = messageLedger.get(dedupeKey);
+                  if (!entry || entry.inputSnapshot === null) return 'unknown';
+                  const from =
+                    entry.senderEnvelope?.username ??
+                    entry.senderEnvelope?.firstName ??
+                    (entry.senderEnvelope?.userId !== undefined ? String(entry.senderEnvelope.userId) : 'unknown sender');
+                  return { body: entry.inputSnapshot, from, at: entry.receivedAt };
+                },
+              }
+            : null,
         // §10.5 Slack binding — SlackAdapter satisfies SlackRefreshBinding
         // structurally (getChannelForSession / removeChannelResume /
         // resolveChannelForSessionFromDisk). Null ⇒ Telegram-only, unchanged.
@@ -16010,6 +16146,32 @@ export async function startServer(options: StartOptions): Promise<void> {
       _quotaAwareScheduler = new QuotaAwareScheduler({
         listAccounts: () => subscriptionPool.list(),
         softThresholdPct: config.subscriptionPool?.swapSoftThresholdPct,
+        // swap-continuity-antithrash — the anti-thrash observation + execute-time
+        // revalidation hooks. Reactive decision behavior is untouched (I6):
+        // these only OBSERVE reactive swaps (dwell clock-start, hop alerts,
+        // failed rows) and revalidate PROACTIVE explicit-target calls (§3.3).
+        antiThrash: _swapAntiThrashEngine
+          ? {
+              readingValid: (acct, nowMs) => readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs).valid,
+              getKnobs: () => {
+                const k = antiThrashKnobsGetter();
+                return { thresholdPct: k.thresholdPct, targetHeadroomPct: k.targetHeadroomPct, minImprovementPct: k.minImprovementPct };
+              },
+              resolveCurrentAccountId: (sessionName) =>
+                state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === sessionName)?.subscriptionAccountId ?? null,
+              onReactiveExecuted: (a) => _swapAntiThrashEngine?.recordReactiveExecuted(a),
+              onReactiveFailed: (a) =>
+                _swapAntiThrashEngine?.recordExecFailure({
+                  session: a.session,
+                  from: a.from,
+                  ...(a.to ? { to: a.to } : {}),
+                  kind: 'reactive',
+                  errorClass: a.errorClass,
+                  nowMs: a.nowMs,
+                }),
+              onReactiveRateCapRefusal: (s, n) => _swapAntiThrashEngine?.noteReactiveRateCapRefusal(s, n),
+            }
+          : undefined,
         refreshFn: async (o) => {
           if (!_sessionRefresh) return false;
           const r = await _sessionRefresh.refreshSession({
@@ -16017,8 +16179,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             reason: o.reason,
             configHome: o.configHome,
             accountId: o.accountId,
+            // I11: callerClass set ONLY server-internally — the scheduler is
+            // the one caller that knows its lane (proactive funnel vs reactive).
+            callerClass: o.callerClass,
           });
-          return r.ok;
+          // Object form: surfaces the structured refusal code so the
+          // anti-thrash observation layer can classify failures (§3.1/§3.6).
+          return r.ok ? { ok: true } : { ok: false, code: r.code };
         },
         onNoAlternate: (sessionName, exhaustedAccountId) => {
           void telegramRef.createAttentionItem({
@@ -16104,6 +16271,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           maxSwapsPerCycle: proactiveCfg.maxSwapsPerCycle,
           cooldownMs: proactiveCfg.cooldownMs,
           tickMs: proactiveCfg.tickMs,
+          // swap-continuity-antithrash §3 — the brake engine at the proactive
+          // DECISION chokepoint. Knobs read LIVE per tick (§7.1). dryRun keeps
+          // the legacy decision path byte-identical while the engine logs
+          // would-refuse shadow rows (the rung-2 soak).
+          antiThrash: _swapAntiThrashEngine
+            ? { engine: _swapAntiThrashEngine, getKnobs: antiThrashKnobsGetter }
+            : undefined,
+          // §4 — the in-flight work gate (proactive arm: defer, ceiling-drop).
+          // The monitor owns the deferral lifecycle; the gate is stateless.
+          workGate: _swapWorkGate
+            ? { probe: (s) => _swapWorkGate!.probe(s), getContinuity: swapContinuityKnobs }
+            : undefined,
           logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
         });
         _proactiveSwapMonitor.start();

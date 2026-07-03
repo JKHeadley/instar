@@ -2112,6 +2112,22 @@ export class AgentServer {
             baselineModel: pinned ? resolved.model ?? null : null,
           };
         },
+        // swap-continuity-antithrash §4.2/Q5 — the model-swap SUBAGENT idle
+        // leg. Only consulted when `subagentIdleLeg` is true (concrete default
+        // false — dark; graduates on its own rung, spec §10 rung 3a). A
+        // missing claudeSessionId is 'absent' (R5-M1: behaves like a failed
+        // probe — refuse, never a blind swap under live background subagents).
+        subagentLegProbe: (session) => {
+          const tracker = options.subagentTracker;
+          if (!tracker) return 'indeterminate';
+          const id = session.claudeSessionId ?? null;
+          if (!id) return 'absent';
+          try {
+            return tracker.hasActiveSubagents(id) ? 'active' : 'idle';
+          } catch {
+            return 'indeterminate';
+          }
+        },
       });
       // §8 mid-run cap monitor — rides BurnDetector's tick (constructed in
       // setupTokenLedgerObservability; the field is read there).

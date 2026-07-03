@@ -1,0 +1,111 @@
+# Swap continuity under pressure — anti-thrash brakes + in-flight work deferral (Roadmap 4.4, F3/P1-A6)
+
+<!-- bump: minor -->
+
+## What Changed
+
+The proactive subscription-account swap could thrash: on 2026-07-02 one dev
+agent executed 36 proactive swaps in 8 waves, round-tripping the same sessions
+between the same hot accounts and repeatedly killing six parallel build
+subagents mid-task — the continuity mechanism became the primary source of
+work destruction. Per `docs/specs/swap-continuity-antithrash.md` (converged
+round 6, approved), two composable pieces now bind at the swap chokepoints:
+
+**Piece 1 — anti-thrash brakes** at the proactive DECISION chokepoint
+(`ProactiveSwapMonitor`), engine `SwapAntiThrashEngine`:
+
+- **All-hot brake**: a proactive swap is REFUSED unless at least one eligible
+  target measures under the target ceiling (threshold − headroom, default
+  65%). When every account is hot, staying put wins — one reactive rescue
+  strictly dominates N pointless kills.
+- **Per-session dwell** (default 45 min): a just-swapped session is not moved
+  again, restart-safe via the new durable decision ledger
+  (`state/swap-ledger.jsonl`, single writer `SwapLedger`, O(1) segment
+  rotation).
+- **Target-materially-better**: a validity gate (quota reading PRESENT and
+  FRESH — an unmeasured account is never "0% cool", it counts toward all-hot)
+  plus absolute ceiling plus a 15-point improvement floor, in a normative
+  filter→score→verify order; the checked target IS the executed target
+  (`onQuotaPressure` gains an explicit-target funnel contract that
+  revalidates, never re-selects — closing the double-threshold seam).
+- **Two-tier thrash breaker** (T1 inversion / T2 rotation frequency) with
+  episode continuation, restart-proof derivation from the ledger, and ONE
+  deduped attention item per episode; execution failures write `failed` rows
+  with per-session backoff + streak escalation (the previously-silent
+  discarded reactive result promise is now observed).
+- Untagged sessions leave the proactive candidate set entirely (a background
+  optimizer must never mutate the default-slot binding). The REACTIVE
+  continuity guarantee is untouched (I6) — a genuinely walled session still
+  swaps, breaker/dwell notwithstanding.
+
+**Piece 2 — the in-flight work gate** (`SwapWorkGate`) at the
+`SessionRefresh.refreshSession` funnel, the primitive every session-killing
+mutation flows through:
+
+- A tri-state work probe (`SessionManager.checkSessionWorkState` — pane
+  footer + child-process legs, async + coalesced, one shared `ps` snapshot
+  per ~2s TTL) plus the subagent leg (`SubagentTracker`); uncertainty
+  resolves BUSY for optimization callers (I7; an id-less session is exiled,
+  never blindly killed).
+- Caller classes: `proactive-swap` DEFERS (retried each tick through the full
+  brake pipeline, dropped at a 30-min ceiling — the wall wins);
+  `reactive-swap` gets a bounded grace (default 120 s, proceeds at the first
+  not-busy observation) then proceeds WITH the F3 mitigations (enumerated
+  killed subagents + the last unanswered inbound re-injected as a quoted-data
+  envelope); `interactive-refresh` (the default for every unlisted caller)
+  gets a structured refusal; `recovery` is exempt.
+- `POST /sessions/refresh` answers busy PRE-202 with HTTP 409
+  `session-busy` (counts and ages only) and gains optional `force: true` —
+  force overrides ONLY the work gate, never the rate guard, and is recorded
+  bearer-level in the ledger.
+- The model-swap idle check gains a SUBAGENT leg behind its own micro-flag
+  (`models.tierEscalation.subagentIdleLeg`, concrete default false — dark;
+  graduates on its own rung).
+
+Observability: `GET /subscription-pool/proactive-swap` grows additive
+`brakes`/`deferrals` blocks (refusal counters, breaker state, ledger
+writability, hydration honesty); both pieces register in the guard manifest.
+
+Rollout: antiThrash resolves `enabled:true, dryRun:true` when absent (dry-run
+ledger rows only — decision behavior stays byte-identical to v1.3.722 until a
+deliberate `dryRun:false`); `swapContinuity` ships with the enabled key
+OMITTED (dev-agent gate: live-in-dry-run on a development agent, dark on the
+fleet) and is registered in `DEV_GATED_FEATURES`. Rollback:
+`antiThrash.dryRun:true` restores legacy decisions; removing the dev agent's
+swapContinuity enablement un-wires the gate entirely.
+
+## What to Tell Your User
+
+<!-- audience: agent-only, maturity: experimental -->
+- **My account-switching can no longer destroy my own work (experimental,
+  dark)**: when I juggle several subscription accounts, I used to sometimes
+  bounce conversations back and forth between two nearly-full accounts —
+  every bounce restarted the session and killed helpers working in the
+  background. Now the switcher has brakes: if every account is nearly full I
+  stay put, a just-moved conversation rests before it can move again, and a
+  move only happens when the destination is genuinely much cooler. Separately,
+  a switch will wait for in-flight work to finish instead of cutting it down
+  mid-task — and on the rare forced switch, the resumed conversation is told
+  exactly which helpers were interrupted and which message still needs an
+  answer. Nothing changes on your setup yet — the brakes observe first, and
+  the work protection ships dark until it has soaked.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Anti-thrash brakes on the proactive account swap (dry-run soak by default) | `subscriptionPool.proactiveSwap.antiThrash` in `.instar/config.json` (absent block = enabled + dry-run); live only at a deliberate `dryRun: false` |
+| Durable swap-decision ledger | `state/swap-ledger.jsonl` (single writer; restart-safe dwell/breaker state) |
+| Brake/deferral observability | `GET /subscription-pool/proactive-swap` → additive `brakes` / `deferrals` blocks |
+| In-flight work gate on session-killing mutations (dev-gated dark, dry-run first) | `subscriptionPool.swapContinuity` (enabled omitted → live on dev agents, dark on fleet); restart-required |
+| Pre-202 busy refusal + force on refresh | `POST /sessions/refresh` → 409 `session-busy` when busy; re-issue with `force: true` to override the gate (never the rate guard) |
+| Model-swap subagent idle leg (dark micro-flag) | `models.tierEscalation.subagentIdleLeg: true` (default false; own rollout rung) |
+
+## Evidence
+
+- Spec: `docs/specs/swap-continuity-antithrash.md` (converged round 6 — 0
+  CRITICAL / 0 MAJOR; approved under standing Session-A preapproval, topic
+  29836). Plain-English companion: `docs/specs/swap-continuity-antithrash.eli16.md`.
+- Incident data: `logs/server.log` (echo dev agent, v1.3.722, 2026-07-02 —
+  36 executed proactive swaps / 72 account-swap lines / 8 waves).
+- Side-effects review: `upgrades/side-effects/swap-continuity-antithrash.md`.

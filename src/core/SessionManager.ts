@@ -3138,6 +3138,106 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
   }
 
+  // ── swap-continuity-antithrash §4.1: the tri-state work-state probe ──────
+
+  /** Shared short-TTL `ps -eo pid,ppid,command` snapshot. The work-gate probe
+   *  frequency (deferred intents re-checked per tick + per-10 s reactive grace
+   *  loops across a wave) must never fan out one `ps` fork per probe — every
+   *  concurrent caller within the TTL reuses ONE process-table read (the §4.1
+   *  one-ps-per-TTL mandate; the wiring test pins it). */
+  private psSnapshotShared: { atMs: number; promise: Promise<string | null> } | null = null;
+  private psSnapshotForkCount = 0;
+  private readonly psSnapshotTtlMs = 2_000;
+
+  /** Observability for the §12 wiring test: how many real `ps` forks the
+   *  shared snapshot has issued. */
+  get psSnapshotForks(): number {
+    return this.psSnapshotForkCount;
+  }
+
+  private getPsSnapshotShared(): Promise<string | null> {
+    const now = Date.now();
+    if (this.psSnapshotShared && now - this.psSnapshotShared.atMs < this.psSnapshotTtlMs) {
+      return this.psSnapshotShared.promise;
+    }
+    this.psSnapshotForkCount += 1;
+    const promise = execFileAsync('ps', ['-eo', 'pid,ppid,command'], {
+      timeout: 5000,
+      killSignal: 'SIGKILL' as const,
+    })
+      .then((r) => r.stdout)
+      .catch(() => null);
+    this.psSnapshotShared = { atMs: now, promise };
+    return promise;
+  }
+
+  /**
+   * Tri-state in-flight work probe (swap-continuity-antithrash §4.1) — the
+   * public async surface the SwapWorkGate composes. Unlike
+   * `isSessionActivelyWorking` (which swallows its own failures to `false` —
+   * the OPPOSITE resolution I7 requires for optimization callers), each leg
+   * that cannot be read reports its own `indeterminate` instead of a silent
+   * boolean, and the whole probe is event-loop-safe: coalesced tmux calls +
+   * the shared ps snapshot, NEVER the synchronous execFileSync path.
+   *
+   *  - 'working'       — the pane shows Claude's mid-turn footer OR a live
+   *                      non-baseline child process exists.
+   *  - 'idle'          — every leg affirmatively reports no work (a
+   *                      definitely-absent tmux session is affirmatively idle).
+   *  - 'indeterminate' — a leg was attempted and could not be read.
+   */
+  async checkSessionWorkState(tmuxSession: string): Promise<'working' | 'idle' | 'indeterminate'> {
+    // Footer leg (the extended-think discriminator: a long think shows the
+    // footer but spawns no child process and writes nothing to JSONL).
+    let footer: 'working' | 'idle' | 'indeterminate';
+    const cap = await this.tmuxExecCoalesced('capture-pane', tmuxSession, [
+      'capture-pane',
+      '-t',
+      `=${tmuxSession}:`,
+      '-p',
+      '-S',
+      '-30',
+    ]);
+    if (cap.state === 'success') {
+      footer = paneShowsClaudeWorking(cap.stdout) ? 'working' : 'idle';
+    } else if (cap.state === 'definitely-absent') {
+      // The tmux session does not exist — affirmatively no in-flight work.
+      return 'idle';
+    } else {
+      footer = 'indeterminate';
+    }
+    if (footer === 'working') return 'working';
+
+    // Child-process leg — the batched path around the pure
+    // computeHasActiveProcesses (deliberately NOT hasActiveProcessesAsync,
+    // which forks its own full `ps -eo` per call and folds failure to `true`
+    // — the wrong shape twice over for this probe, §4.1).
+    let proc: 'working' | 'idle' | 'indeterminate';
+    const panes = await this.tmuxExecCoalesced('list-panes', tmuxSession, [
+      'list-panes',
+      '-t',
+      `=${tmuxSession}:`,
+      '-F',
+      '#{pane_pid}',
+    ]);
+    if (panes.state === 'definitely-absent') {
+      proc = 'idle';
+    } else if (panes.state !== 'success') {
+      proc = 'indeterminate';
+    } else {
+      const panePid = panes.stdout.trim();
+      if (!panePid || !/^\d+$/.test(panePid)) {
+        proc = 'idle';
+      } else {
+        const ps = await this.getPsSnapshotShared();
+        proc = ps === null ? 'indeterminate' : this.computeHasActiveProcesses(panePid, ps) ? 'working' : 'idle';
+      }
+    }
+    if (proc === 'working') return 'working';
+    if (footer === 'indeterminate' || proc === 'indeterminate') return 'indeterminate';
+    return 'idle';
+  }
+
   /**
    * Capture the current output of a tmux session.
    */

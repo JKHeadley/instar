@@ -258,6 +258,46 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     soakWindowDays: 60,
     declaredLoadBearingAt: '2026-07-02',
   },
+  // ── Swap-continuity anti-thrash guards (swap-continuity-antithrash §6.4) ──
+  {
+    // Piece 1 — the anti-thrash brakes on the proactive account swap. Nested
+    // under the already-opt-in subscriptionPool.proactiveSwap lever (fleet-dark
+    // today); the block resolves `enabled:true, dryRun:true` when ABSENT, so an
+    // opted-in install grades on-dry-run (the rung-2 soak) rather than off.
+    key: 'subscriptionPool.proactiveSwap.antiThrash.enabled',
+    kind: 'config',
+    configPath: 'subscriptionPool.proactiveSwap.antiThrash.enabled',
+    // Runtime-fallback default (`?? true`) — ConfigDefaults deliberately omits
+    // the block per spec §9 (absence = defaults).
+    defaultEnabled: true,
+    dryRunConfigPath: 'subscriptionPool.proactiveSwap.antiThrash.dryRun',
+    // §7.1: every antiThrash knob is re-read via the config getter each tick,
+    // so a config change is already live — diverged-pending-restart would lie.
+    liveConfig: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'SwapAntiThrashEngine',
+    description:
+      'Anti-thrash brakes on the proactive account swap (all-hot brake, 45-min dwell, target-materially-better, two-tier thrash breaker) — the fix for the 2026-07-02 36-swap thrash day. Dry-run soaks by default; live only at a deliberate dryRun:false.',
+  },
+  {
+    // Piece 2 — the in-flight work gate on every session-killing mutation.
+    // The `enabled` key is OMITTED from shipped config (dev-agent gate: live on
+    // a dev agent, dark on the fleet — the #1001 anti-mechanism); the posture
+    // row exists independently of proactiveSwap (§6.4) and grades dark-default
+    // on the fleet — ships-dark quiet, never a load-bearing gap (no critical
+    // path depends on it until the fleet flip).
+    key: 'subscriptionPool.swapContinuity.enabled',
+    kind: 'config',
+    configPath: 'subscriptionPool.swapContinuity.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'subscriptionPool.swapContinuity.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'SwapWorkGate',
+    description:
+      'In-flight work gate for session-killing mutations (proactive swap defers; reactive gets a bounded grace then proceeds WITH F3 mitigations; interactive refresh gets a structured session-busy refusal + force) — a swap never silently kills builders mid-task.',
+  },
   // ── Session lifecycle guards ──
   {
     key: 'monitoring.sessionReaper.enabled',
@@ -875,7 +915,8 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'OverlapGuard', reason: 'Work-overlap detection wrapper around WorkLedger for the intelligent-sync feature; sync mechanics, not a boot-constructed posture guard.' },
   { component: 'PeerVisibilityGuard', reason: 'Pure hygiene-signal helpers over the machine registry (improper-revocation detection); stateless functions, no lifecycle or switch.' },
   { component: 'PrincipalGuard', reason: 'Pure-logic cross-principal crediting detector consumed by the principal-coherence pipeline; library code, the observe-only wiring rides monitoring.principalCoherence.' },
-  { component: 'ProactiveSwapMonitor', reason: 'Pre-limit subscription-account swap engine (subscriptionPool.proactiveSwap); quota-continuity feature lever, not a failure-protecting guard.' },
+  { component: 'ProactiveSwapMonitor', reason: 'Pre-limit subscription-account swap engine (subscriptionPool.proactiveSwap); quota-continuity feature lever, not a failure-protecting guard. RECLASSIFIED (swap-continuity-antithrash §6.4): its anti-thrash BRAKES and the work gate ARE guards and register in the manifest as SwapAntiThrashEngine / SwapWorkGate — this entry now scopes only the swap-optimization lever itself.' },
+  { component: 'SwapLedger', reason: 'Durable JSONL decision ledger for account-swap continuity (single append chokepoint, file IO + outage accounting only); observability substrate consumed by SwapAntiThrashEngine (the manifest-declared guard), no own posture.' },
   { component: 'PromptGuard', reason: 'Prompt-injection defense helpers (filtering/output validation) for LLM conflict resolution; pure library, no boot lifecycle.' },
   { component: 'QuotaExhaustionDetector', reason: 'Post-mortem classifier of why a dead session died (pattern-matching over tmux output); pure library, no lifecycle or switch.' },
   { component: 'ReapGuard', reason: 'Stateless KEEP-check helper consulted by the single ReapAuthority before any terminate; precondition logic inside the reap path, not a posture guard itself.' },

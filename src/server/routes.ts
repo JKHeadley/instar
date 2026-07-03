@@ -7526,13 +7526,13 @@ export function createRoutes(ctx: RouteContext): Router {
   //
   // Rate limit and lifecycle live in SessionRefresh (the orchestrator);
   // this route is a thin entry point.
-  router.post('/sessions/refresh', spawnLimiter, (req, res) => {
+  router.post('/sessions/refresh', spawnLimiter, async (req, res) => {
     if (!ctx.sessionRefresh) {
       res.status(503).json({ error: 'Session refresh not enabled (no Telegram adapter wired)' });
       return;
     }
 
-    const { sessionName, followUpPrompt, reason, fresh } = req.body || {};
+    const { sessionName, followUpPrompt, reason, fresh, force } = req.body || {};
 
     if (!sessionName || typeof sessionName !== 'string' || !SESSION_NAME_RE.test(sessionName)) {
       res.status(400).json({ error: '"sessionName" is required and must contain only letters, numbers, hyphens, underscores (max 200)' });
@@ -7550,6 +7550,36 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"fresh" must be a boolean' });
       return;
     }
+    if (force !== undefined && typeof force !== 'boolean') {
+      res.status(400).json({ error: '"force" must be a boolean' });
+      return;
+    }
+
+    // ── swap-continuity-antithrash §4.5: the work gate runs PRE-202 ──
+    // Busy → synchronous 409 `session-busy` with the live work summary
+    // (counts and ages only — no titles, no transcript paths, no message
+    // content on the wire), so the caller decides: wait, or re-issue with
+    // force:true. `force` overrides ONLY the work gate, never the rate guard.
+    // I11: no callerClass is ever read from the request — this route pins
+    // 'interactive-refresh' by construction (the refreshSession default).
+    if (force !== true) {
+      let busy: Awaited<ReturnType<NonNullable<typeof ctx.sessionRefresh>['precheckInteractiveBusy']>> = null;
+      try {
+        busy = await ctx.sessionRefresh.precheckInteractiveBusy(sessionName);
+      } catch {
+        busy = null; // the gate is additive — a precheck error never blocks the route
+      }
+      if (busy) {
+        res.status(409).json({
+          code: 'session-busy',
+          error: busy.message,
+          turnInFlight: busy.turnInFlight,
+          ...(busy.subagents !== undefined ? { subagents: busy.subagents } : {}),
+          ...(busy.subagentLeg !== undefined ? { subagentLeg: busy.subagentLeg } : {}),
+        });
+        return;
+      }
+    }
 
     // Acknowledge BEFORE killing — the requester is the session being killed,
     // so it needs to receive the 202 before its process disappears.
@@ -7560,7 +7590,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // on a local loopback without being a noticeable user-facing delay.
     const sessionRefresh = ctx.sessionRefresh;
     setTimeout(() => {
-      sessionRefresh.refreshSession({ sessionName, followUpPrompt, reason, fresh }).then(result => {
+      sessionRefresh.refreshSession({ sessionName, followUpPrompt, reason, fresh, force: force === true }).then(result => {
         if (!result.ok) {
           // Structured logging so over-blocks (rate guard) are detectable
           // in operations per signal-vs-authority logging rule. The agent's

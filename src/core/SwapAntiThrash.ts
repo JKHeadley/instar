@@ -1049,6 +1049,13 @@ export class SwapAntiThrashEngine {
     return this.breaker ? 'open' : 'closed';
   }
 
+  /** In-memory count of `ledger-lost` refusals (the one refusal class that can
+   *  never write its own row — the writer is what died, §3.5/I5). Supplied to
+   *  the SwapLedger's outage-resume `outage-summary` row. */
+  ledgerLostRefusalCount(): number {
+    return this.ledgerLostRefusals;
+  }
+
   isBreakerOpen(): boolean {
     return this.breaker !== null;
   }
