@@ -2,6 +2,8 @@
 
 **Purpose.** Be *extremely intentional* about which provider + model every LLM task in Instar defaults to. Every codepath that hands a decision or generation to an LLM is enumerated here with its **task nature** and its **intended default**. If a callsite isn't here, it isn't governed — add it.
 
+**Freshness guard (2026-07-03):** the per-provider "capable/latest/frontier" model pins are now protected against silent rot by `scripts/lint-model-registry-freshness.mjs` + `scripts/model-registry-freshness.manifest.json` (the human-edit frontier allowlist + `lastReviewedAt`). Two teeth — a staleness window and a per-door allowlist-membership drift check. Ships in `enforcement: "report"` (non-gating, VISIBLE in the CI lint log) while the current list is known-stale; flip to `"strict"` once the flagged door swaps are operator-confirmed. When you swap a model id, update the manifest allowlist + `lastReviewedAt` in the same change. See the `flaggedStale` block for the current known-stale pins (gemini `capable` = `gemini-2.5-pro`; codex `capable` = `gpt-5.5`).
+
 **Status:** v2, 2026-07-02 (Echo) — now maintained IN-REPO (first canonical shipment); benchmark-derived defaults below supersede the v1 taxonomy recommendations. **Runtime source of truth:** `GET /intelligence/routing` (registered components) + `.instar/config.json → sessions.componentFrameworks` / `frameworkDefaultModels` / `topicFrameworks` / `models.tierEscalation`. This doc is the *human-readable intentional-defaults layer*. Callsite inventory verified against `src/` (branch `echo/serve-main`) AND the deployed dist for the load-bearing claims. **Keep it current:** add a row when you add an LLM callsite; update the row + note why when you change a default.
 
 ---

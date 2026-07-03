@@ -1,0 +1,104 @@
+{
+  "$comment": "Frontier-model allowlist + staleness gate for Instar's per-provider 'capable/latest' model pins. This file is the SINGLE human-edit surface that keeps the model registry from silently rotting. See docs/LLM-ROUTING-REGISTRY.md and scripts/lint-model-registry-freshness.mjs. Two teeth: (1) STALENESS — lastReviewedAt must be within stalenessWindowDays; (2) DRIFT — every pinned capable model id must be a member of frontierAllowlist[door]. To pass the check a human must confirm each capable pin is genuinely current frontier AND bump lastReviewedAt. An un-reviewed list fails loudly.",
+  "lastReviewedAt": "2026-07-03",
+  "stalenessWindowDays": 45,
+  "enforcement": "report",
+  "$enforcementNote": "'report' = non-gating (prints findings, always exits 0) — the dark/reversible default while the current list is known-stale. Flip to 'strict' (exits 1 on any finding) ONLY after the flaggedStale door swaps below are operator-confirmed and applied. Env INSTAR_MODEL_FRESHNESS_STRICT=1 forces strict for a one-off run.",
+  "doors": {
+    "claude-code": {
+      "accessMethod": "Claude Code CLI (subscription/OAuth)",
+      "status": "alive",
+      "note": "Primary door. Tier aliases opus/sonnet/haiku auto-resolve to latest and do NOT rot; only concrete claude-*-N ids below are pinned."
+    },
+    "anthropic-headless": {
+      "accessMethod": "claude -p one-shot (Agent SDK credit pot)",
+      "status": "alive",
+      "note": "Background/internal calls. Billing shifts to interactive pool after 2026-06-15 per subscriptionPath."
+    },
+    "codex-cli": {
+      "accessMethod": "codex exec (ChatGPT account)",
+      "status": "referenced-not-installed",
+      "note": "codex CLI is NOT installed on this machine (which codex -> not found), yet componentFrameworks routes job/Usher/TopicIntentExtractor to it -> those fall back at runtime. Door-liveness gap flagged to operator."
+    },
+    "gemini-cli": {
+      "accessMethod": "gemini -m <model> (Homebrew formula, OAuth)",
+      "status": "alive-but-deprecated-formula",
+      "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. Default model still gemini-2.5-pro; CLI already knows gemini-3-pro-preview / gemini-3-flash-preview. Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door)."
+    },
+    "pi-cli": {
+      "accessMethod": "pi --model <provider>/<id> (multi-provider: openai-codex, openrouter, ...)",
+      "status": "alive",
+      "note": "Multi-provider consolidation door. Can reach OpenRouter (one door to many frontier models; vault key metered_openrouter_bench present). pi policy DENIES anthropic/claude via openrouter passthrough by default to protect subscription billing."
+    }
+  },
+  "frontierAllowlist": {
+    "$comment": "CURRENT_FRONTIER_MODELS — the set of model ids considered acceptable-current for each door. A pinned capable model NOT in its door's list fails the DRIFT tooth. Add a new frontier id here (operator-confirmed) at the same time you update the pin.",
+    "claude-code": [
+      "claude-opus-4-8",
+      "claude-fable-5"
+    ],
+    "anthropic-headless": [
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-5"
+    ],
+    "codex-cli": [
+      "gpt-5.5"
+    ],
+    "gemini-cli": [
+      "gemini-2.5-pro"
+    ]
+  },
+  "pins": [
+    {
+      "id": "gemini-capable-tier",
+      "door": "gemini-cli",
+      "tier": "capable",
+      "file": "src/providers/adapters/gemini-cli/models.ts",
+      "regex": "capable:\\s*'((?:claude|gpt|gemini)-[^']+)'",
+      "note": "TIER_TO_MODEL.capable in the gemini adapter."
+    },
+    {
+      "id": "codex-capable-tier",
+      "door": "codex-cli",
+      "tier": "capable",
+      "file": "src/providers/adapters/openai-codex/models.ts",
+      "regex": "capable:\\s*'((?:claude|gpt|gemini)-[^']+)'",
+      "note": "TIER_TO_MODEL.capable in the codex adapter."
+    },
+    {
+      "id": "anthropic-headless-capable-tier",
+      "door": "anthropic-headless",
+      "tier": "capable",
+      "file": "src/providers/adapters/anthropic-headless/models.ts",
+      "regex": "capable:\\s*'((?:claude|gpt|gemini)-[^']+)'",
+      "note": "TIER_TO_MODEL.capable in the anthropic-headless adapter."
+    },
+    {
+      "id": "claude-tier-escalation-default-escalated",
+      "door": "claude-code",
+      "tier": "capable",
+      "file": "src/core/ModelTierEscalation.ts",
+      "regex": "'claude-code':\\s*\\{\\s*default:\\s*'([^']+)',\\s*escalated:\\s*'([^']+)'",
+      "note": "DEFAULT_TIER_ESCALATION.frameworks['claude-code'] default + escalated ids."
+    }
+  ],
+  "flaggedStale": [
+    {
+      "door": "gemini-cli",
+      "pin": "gemini-capable-tier",
+      "currentId": "gemini-2.5-pro",
+      "suspectedFrontier": "gemini-3-pro-preview",
+      "evidence": "gemini CLI v0.25.2 accepts gemini-3-pro-preview / gemini-3-flash-preview (in gemini-cli-core known-models); operator referenced 'Gemini 3-class'. Homebrew formula also deprecated (disabled 2026-12-18).",
+      "note": "OPERATOR TO CONFIRM exact frontier id before the pin+allowlist are updated. Also present at src/core/frameworkSessionLaunch.ts, src/commands/route.ts (KNOWN_MODELS), src/server/routes.ts."
+    },
+    {
+      "door": "codex-cli",
+      "pin": "codex-capable-tier",
+      "currentId": "gpt-5.5",
+      "suspectedFrontier": "gpt-5.6 (Sol) — UNVERIFIED",
+      "evidence": "codex CLI NOT installed on this machine, so newer accepted ids could NOT be probed. Operator referenced 'GPT-5.6 Sol'.",
+      "note": "OPERATOR TO CONFIRM. Cannot verify from a live probe (codex door not installed)."
+    }
+  ]
+}
