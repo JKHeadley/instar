@@ -115,3 +115,114 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   'a2a-checkin': { pending: 'wave-3' },
   'mentor-stage-b': { pending: 'wave-3' },
 };
+
+// ───────────────────────────────────────────────────────────────────────────
+// Authority-clause standard (defect class 2 — docs/specs/authority-clause-standard.md §3)
+//
+// The `untrustedInput` axis of the program's shared per-callsite metadata record
+// (class-closure-gate.md §"Program-shared machinery" #1). It co-locates in THIS
+// file with the bench-coverage record it extends; the sibling axes (judgesClaims,
+// durableOutput) are added by their own standards and the consolidated axis
+// ratchet derives from all of them together.
+//
+// THE FIELD IS REQUIRED AND EXPLICIT FOR EVERY COMPONENT_CATEGORY KEY — there is
+// NO DEFAULT. `true` means the callsite judges/summarizes content from messages,
+// transcripts, tool output, peer data, or files. `false` MUST be written as
+// `{ false: '<argued reason>' }` and is pinned shrink-only in
+// tests/unit/untrusted-input-classification-ratchet.test.ts exactly like the
+// coverage exemptions — a silent omission is red CI, so the flag can NEVER
+// default toward the unguarded state (design §3: undeclared defaults to
+// untrusted, never to unchecked).
+//
+// The argued-false set is exactly the components with NO live LLM callsite that
+// judges external content — either no prompt of their own, or a fixed-constant
+// canary probe. Its membership mirrors the "no live untrusted-judging callsite"
+// reasoning of the bench-coverage exemptions above (grep-verified same set).
+// A cross-check lint flags any sentinel/gate-category callsite marked `false`
+// for review (design §3) — see the ratchet's REVIEWED_FALSE_SENTINEL_GATE pin.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type UntrustedInputFlag = true | { false: string };
+
+export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> = {
+  // ── Sentinels judging messages / session output / transcripts → true ──
+  InputGuard: true,
+  SessionActivitySentinel: true,
+  StallTriageNurse: true,
+  CommitmentSentinel: true,
+  PresenceProxy: true,
+  MessageSentinel: true,
+  ProjectDriftChecker: true,
+  TemporalCoherenceChecker: true,
+  CompletionEvaluator: true,
+  SessionWatchdog: true,
+  ResumeQueueDrainer: true,
+  TopicIntentArcCheck: true,
+  SlackAdapter: true,
+  InputClassifier: true,
+  SessionSummarySentinel: true,
+  TelegramAdapter: true,
+
+  // ── Gates judging user/session/operation content → true ──
+  PromptGate: true,
+  ExternalOperationGate: true, // the motivating callsite: credited in-content "user already approved"
+  WarrantsReplyGate: true,
+  UnjustifiedStopGate: true,
+  MessagingToneGate: true, // reviews a draft that routinely quotes untrusted user/tool content
+  CoherenceReviewer: true,
+  LLMSanitizer: true, // definitionally judges untrusted inbound content
+  OverrideDetector: true,
+  TaskClassifier: true,
+  ResumeValidator: true, // matches a resume UUID against the topic — judges session/resume state
+
+  // ── Reflectors extracting/summarizing over transcripts, peer data, files → true ──
+  JobReflector: true,
+  crossModelReviewer: true,
+  SelfKnowledgeTree: true,
+  TreeTriage: true,
+  TopicSummarizer: true,
+  ContextualEvaluator: true,
+  RelationshipManager: true,
+  StandardsConformanceReviewer: true,
+  DiscoveryEvaluator: true,
+  Usher: true,
+  TopicIntentExtractor: true,
+  PreCompactionFlush: true,
+  TreeSynthesis: true,
+  LLMConflictResolver: true, // divergent multi-machine state = untrusted peer data
+  openConversationBrief: true,
+  'a2a-checkin': true, // A2A peer-authored threads
+  'correction-learning': true,
+  'mentor-stage-b': true,
+
+  // ── Jobs authoring over untrusted file/code content → true ──
+  PipeSessionSpawner: true, // spawns from task descriptions that may be user-authored
+  CartographerSweep: true, // authors summaries over untrusted CODE (the cartographer-summary precedent quotes+neutralizes)
+  StandardsCoverageEnrichment: true,
+
+  // ── Argued false (pinned shrink-only) — no live LLM callsite judging external content ──
+  PromiseBeacon: {
+    false:
+      'no live LLM prompt — generateStatusLine/classifyProgress hooks are unwired at the construction site; nothing judges untrusted content (matches its bench-coverage exemption)',
+  },
+  InteractivePoolCanaryJudge: {
+    false:
+      'judges a FIXED known-answer canary probe — the input is a constant, not external content; a planted instruction cannot reach it',
+  },
+  AutoApprover: {
+    false:
+      'mechanical key injection + audit logging, no LLM prompt of its own; the upstream untrusted-judging callsite is InputClassifier.classify()',
+  },
+  IntegrationGate: {
+    false:
+      'no LLM prompt of its own — delegates to JobReflector.reflect(); zero LLM-provider callsites of its own that see untrusted content',
+  },
+  CoherenceGate: {
+    false:
+      'no callsite carries attribution CoherenceGate — all LLM calls flow through CoherenceReviewer.callApi(), classified true there',
+  },
+  InputDetector: {
+    false:
+      'attribution-manifest alias only (a legacy prompt-pattern matcher); the live matcher calls with attribution PromptGate, classified true there',
+  },
+};
