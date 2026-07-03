@@ -1,0 +1,84 @@
+# Prompt↔Parser Contract Standard — contract classification + ratchet (defect class 1, ships dark)
+
+<!-- bump: minor -->
+
+## What Changed
+
+The mechanical arm of the **"The Prompt and the Parser Are One Contract"** standard
+(`docs/specs/prompt-parser-contract-standard.md`, defect class 1 / `prompt-parser-contract`
+closure), shipped as a self-contained DARK increment — no runtime wiring, no operator-gated
+registry text, no config key, and **no change to any live prompt or parser**. It is the
+structural answer to the 2026-07-02 INSTAR-Bench v2 finding: the tone gate's PROMPT taught
+models the short rule id (`B15`) while its production PARSER accepts only the full identifier
+(`B15_CONTEXT_DEATH_STOP`) and fails closed on the short form — so every model through every
+door obeyed the prompt and "failed." A single CI test comparing what the prompt promises
+against what the parser accepts would have made that defect unrepresentable.
+
+This increment ships **the shared contract library + the per-callsite classification + its CI
+ratchet only**:
+
+- A **shared contract library** (`src/core/promptContract.ts`): the `PromptContract` manifest
+  type (the co-located machine-readable promise a prose-shaped callsite carries next to its
+  prompt) and `deriveRejectedForms` — a pure generator for the counter-examples a contract
+  test feeds the REAL parser to prove its fail-closed behavior (case-mutation,
+  prefix-truncation at each separator — the exact `B15` shape — and separator-stripping, plus
+  hand-picked extras, minus any form that collides with a promised token). Machine-derived by
+  design: a hand-only reject list invites trivial rejects that prove nothing.
+- The **`contract` classification** (`LLM_PARSER_CONTRACT` in `src/data/llmBenchCoverage.ts`):
+  the `contract` axis of the program's ONE shared per-callsite metadata record (sibling of the
+  authority-clause `untrustedInput` and evidence-bar `judgesClaims` axes), required-explicit
+  for every LLM component — no default, so a silent omission is red CI and the flag can never
+  default toward the un-contracted state. The four spec-named highest-stakes parsed callsites
+  (tone gate, external-op gate, stop judge, input classifier) seed `contract-wave-1`; every
+  other enumerated-verdict callsite is `contract-wave-2`; a callsite with no closed-vocabulary
+  parse (no live prompt, a fixed canary, or free-text/open-set content) is an argued `false`.
+- A **classification ratchet** (`tests/unit/parser-contract-classification-ratchet.test.ts`):
+  required-explicit + no-dangling + valid-wave + the wave-1 seed pinned as a floor (a
+  highest-stakes callsite can never silently slip scope) + the pending set pinned shrink-only
+  + the argued-false set pinned shrink-only with a real-reason floor + a gate/sentinel
+  cross-check. Same pinned-baseline family as `llm-bench-coverage-ratchet` and the sibling
+  `untrusted-input-classification-ratchet`.
+
+Deliberately OUT of scope (not orphan deferrals — see `upgrades/side-effects/`):
+
+- The **per-callsite contract tests** and the **live-builder render refactor** (spec rollout
+  §0/§1). A contract test renders the REAL production prompt through an exported pure render
+  function; several production builders are private instance methods with live deps and need
+  that refactor, which TOUCHES live parsing code. It is deferred to its own A/B-gated
+  increments, one callsite at a time — never inside this dark inventory increment.
+- The **runtime contract-drift warning** (spec Frontloaded Decision #3) — a prompt-build-time
+  signal that also touches the live builders; it lands with the single-sourcing migrations.
+- The **registry / constitution text** (spec §1) — operator-gated; ships ONLY with Justin's
+  explicit sign-off. It is DRAFTED in the spec; this run does not edit the standards registry.
+
+## Evidence
+
+- `npx vitest run tests/unit/parser-contract-classification-ratchet.test.ts tests/unit/promptContract.test.ts tests/unit/llm-bench-coverage-ratchet.test.ts`
+  → **3 files, 26 tests, 0 failures** (required-explicit + no-dangling + wave-1 seed floor +
+  shrink-only pending + shrink-only argued-false + real-reason floor + gate/sentinel
+  cross-check + the derive-rejected-forms mutation logic incl. the B15 prefix shape; the
+  pre-existing coverage ratchet still green against the additive record).
+- `npx tsc --noEmit` → exit 0. `npm run lint` → exit 0.
+- Dark-by-construction: `LLM_PARSER_CONTRACT` is build-time metadata read only by the new
+  pinned ratchet; `promptContract.ts` has no runtime caller. It changes NO prompt text and
+  wires NO runtime parser — verified by the absence of any src import of the new module
+  outside tests.
+
+## What to Tell Your User
+
+Nothing changes for you right now — this ships dark, and it is maintainer-only machinery (a
+no-op on your install unless you develop instar itself). What it does is give my own AI checks
+a safety net: the words a check's prompt tells a model to answer with, and the words the code
+behind that check will actually accept, are now recorded together and held in sync by an
+automatic test. That closes a class of bug where a check would quietly reject every correct
+answer because the two halves had drifted apart — a mistake that was entirely mine, never the
+model's. The real per-check tests and any wording changes come later, one at a time, and only
+after careful review.
+
+## Summary of New Capabilities
+
+None active for end users in this increment — everything ships dark and additive. (For instar
+maintainers: a shared prompt↔parser contract library plus a required per-callsite `contract`
+classification with a shrink-only ratchet and a pinned highest-stakes seed floor, so a
+machine-parsed callsite can never silently ship a taught output vocabulary its own parser
+rejects.)

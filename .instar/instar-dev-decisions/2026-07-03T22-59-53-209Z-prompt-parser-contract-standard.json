@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-03T22:59:53.209Z",
+  "slug": "prompt-parser-contract-standard",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 385,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "INSTAR-Bench v2 defect-class review (2026-07-02, Class 1) surfaced a latent prompt-parser drift (tone gate taught B15, parser accepts only B15_CONTEXT_DEATH_STOP). This ships the report-only inventory + shared contract library; the per-callsite contract tests + render refactor are deferred behind the A/B gate."
+  },
+  "verdict": "pass"
+}

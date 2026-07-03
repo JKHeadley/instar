@@ -360,3 +360,203 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   CartographerSweep: false, // authors doc-tree summaries over code
   StandardsCoverageEnrichment: false, // enriches standards-coverage rows
 };
+
+// ───────────────────────────────────────────────────────────────────────────
+// Prompt↔parser contract standard (defect class 1 — docs/specs/prompt-parser-
+// contract-standard.md §4)
+//
+// The `contract` axis of the program's shared per-callsite metadata record
+// (class-closure-gate.md §"Program-shared machinery"). It co-locates in THIS
+// file with the bench-coverage record it extends, exactly like the sibling
+// `untrustedInput` (authority-clause) and `judgesClaims` (evidence-bar) axes.
+//
+// THE FIELD IS REQUIRED AND EXPLICIT FOR EVERY COMPONENT_CATEGORY KEY — there is
+// NO DEFAULT. A callsite whose output is machine-parsed into a CLOSED, taught
+// verdict/decision vocabulary (the B15 failure surface: prompt teaches "B15",
+// parser accepts only "B15_CONTEXT_DEATH_STOP") either NAMES its contract-test
+// file (`{ contractTest: '<path>' }`, covered) or is queued in the shrink-only
+// pending set (`{ pending: 'contract-wave-1' | 'contract-wave-2' }`). A callsite
+// with NO such closed-vocabulary parse — no live LLM prompt, a fixed canary, or
+// free-text / open-set CONTENT consumed as data (summaries, extractions,
+// syntheses, briefs, reviews, open-set id routing) — is `{ false: '<reason>' }`
+// and pinned shrink-only in
+// tests/unit/parser-contract-classification-ratchet.test.ts. A silent omission
+// is red CI, so the flag can NEVER default toward the un-contracted state.
+//
+// POLARITY (spec §3: "Undeclared content is hazard-scanned by default"): the
+// default pulls TOWARD "needs a contract" — a callsite is `false` only with an
+// argued reason, exactly like the sibling `untrustedInput` axis defaults toward
+// `true`.
+//
+// WAVE-1 is the spec-named SHIPPED-FIX set (rollout §0/§1): the four
+// highest-stakes parsed callsites — MessagingToneGate (the motivating B15
+// defect), ExternalOperationGate, CompletionEvaluator (stop-judge), and
+// InputClassifier. It is pinned as a seed floor in the ratchet so a
+// highest-stakes callsite can never silently slip out of scope. WAVE-2 is every
+// other enumerated-verdict/decision callsite, graduating on the shrink-only
+// schedule (rollout §2).
+//
+// DARK / REPORT-ONLY: this record is build-time metadata read ONLY by the new
+// pinned ratchet. Nothing here is a contract test yet (those render the REAL
+// production prompt and need the live-builder render refactor, deferred to its
+// own A/B-gated increments — spec rollout §0/§1). The pending set IS the report
+// (spec §4: "report-only inventory happens by construction").
+//
+// A cross-check lint flags any GATE/SENTINEL-category callsite marked `false`
+// for review (these categories most often parse a verdict) — see the ratchet's
+// REVIEWED_FALSE_PARSER_GATE pin.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type ParserContractFlag =
+  | { contractTest: string }
+  | { pending: 'contract-wave-1' | 'contract-wave-2' }
+  | { false: string };
+
+export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> = {
+  // ── WAVE-1: the four spec-named highest-stakes parsed callsites (rollout §0) ──
+  MessagingToneGate: { pending: 'contract-wave-1' }, // THE motivating defect: prompt taught "B15", parser accepts only "B15_CONTEXT_DEATH_STOP"
+  ExternalOperationGate: { pending: 'contract-wave-1' }, // parses a closed mutability/reversibility classification
+  CompletionEvaluator: { pending: 'contract-wave-1' }, // the stop-judge surface parses a closed done/blocked/continue verdict
+  InputClassifier: { pending: 'contract-wave-1' }, // parses a closed auto-approve vs relay decision
+
+  // ── WAVE-2: every other enumerated-verdict / decision callsite (rollout §2) ──
+  MessageSentinel: { pending: 'contract-wave-2' }, // closed intent set (pause / emergency / normal)
+  LLMSanitizer: { pending: 'contract-wave-2' }, // parses a closed sanitize verdict/decision
+  WarrantsReplyGate: { pending: 'contract-wave-2' }, // closed should-reply yes/no verdict
+  InputGuard: { pending: 'contract-wave-2' }, // closed input-coherence verdict
+  StallTriageNurse: { pending: 'contract-wave-2' }, // closed stall-triage diagnosis label
+  CommitmentSentinel: { pending: 'contract-wave-2' }, // closed commitment-detected verdict + structured envelope
+  PresenceProxy: { pending: 'contract-wave-2' }, // closed tier-3 stall verdict
+  ProjectDriftChecker: { pending: 'contract-wave-2' }, // closed on-project verdict
+  TemporalCoherenceChecker: { pending: 'contract-wave-2' }, // closed temporal-coherence verdict
+  SessionWatchdog: { pending: 'contract-wave-2' }, // closed stuck verdict
+  ResumeQueueDrainer: { pending: 'contract-wave-2' }, // closed resume-sanity verdict
+  TopicIntentArcCheck: { pending: 'contract-wave-2' }, // closed arc-check classification label
+  TelegramAdapter: { pending: 'contract-wave-2' }, // stall-confirm — closed genuinely-stalled verdict
+  SlackAdapter: { pending: 'contract-wave-2' }, // stall-confirm (byte-identical prompt to Telegram's; parity)
+  PromptGate: { pending: 'contract-wave-2' }, // closed injection-detected verdict
+  UnjustifiedStopGate: { pending: 'contract-wave-2' }, // closed stop-justified verdict
+  OverrideDetector: { pending: 'contract-wave-2' }, // closed override-intent verdict
+  TaskClassifier: { pending: 'contract-wave-2' }, // closed task-type label set
+  ResumeValidator: { pending: 'contract-wave-2' }, // closed resume-UUID match yes/no verdict
+  CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
+
+  // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
+  // No live LLM callsite, a fixed canary, or free-text / open-set content.
+  InputDetector: {
+    false:
+      'attribution-manifest alias only (a legacy prompt-pattern matcher); the live matcher calls with attribution PromptGate, contracted there',
+  },
+  SessionActivitySentinel: {
+    false:
+      'authors a free-text activity DIGEST — the product is prose, not a closed verdict vocabulary a prompt teaches and a parser gates on',
+  },
+  PromiseBeacon: {
+    false:
+      'no live LLM prompt — generateStatusLine/classifyProgress hooks are unwired at the construction site; nothing parses a taught vocabulary (matches its bench-coverage exemption)',
+  },
+  InteractivePoolCanaryJudge: {
+    false:
+      'judges a FIXED known-answer canary probe — the expected output is a constant, so the canary is its own contract; a prompt↔parser contract test would re-test the same constant',
+  },
+  SessionSummarySentinel: {
+    false:
+      'extracts task/phase/files as open-set free-text FIELDS — there is no closed taught verdict vocabulary, so the B15 prompt↔parser drift cannot arise here',
+  },
+  AutoApprover: {
+    false:
+      'mechanical key injection + audit logging, no LLM prompt of its own; the upstream parsed decision is InputClassifier.classify(), contracted there',
+  },
+  IntegrationGate: {
+    false:
+      'no LLM prompt of its own — delegates to JobReflector.reflect(); zero LLM-provider callsites of its own that parse a taught vocabulary',
+  },
+  CoherenceGate: {
+    false:
+      'no callsite carries attribution CoherenceGate — all LLM calls flow through CoherenceReviewer.callApi(), contracted there',
+  },
+  JobReflector: {
+    false:
+      'reflection produces free-text content over a job — no closed taught verdict vocabulary a parser gates on (its own bench coverage is wave-3)',
+  },
+  crossModelReviewer: {
+    false:
+      'produces a free-text review of a SPEC document — no closed output vocabulary the prompt teaches and a parser must accept',
+  },
+  SelfKnowledgeTree: {
+    false:
+      'extracts self-knowledge tree fragments as content that is stored/merged — no closed verdict token gates a branch on a taught vocabulary',
+  },
+  TreeTriage: {
+    false:
+      'triages knowledge-tree fragments into content — no closed taught output vocabulary a parser must accept or reject',
+  },
+  TopicSummarizer: {
+    false:
+      'produces a free-text topic summary — the prose is the product; there is no closed vocabulary the prompt teaches and a parser gates on',
+  },
+  ContextualEvaluator: {
+    false:
+      'evaluates context relevance into content — no closed taught verdict vocabulary that a parser accepts a promised form of',
+  },
+  RelationshipManager: {
+    false:
+      'extracts relationship facts as open-set structured content — no closed taught vocabulary a prompt promises and a parser gates on',
+  },
+  StandardsConformanceReviewer: {
+    false:
+      'reviews artifact-vs-standard conformance as content — no closed output vocabulary the prompt teaches and a parser must accept',
+  },
+  DiscoveryEvaluator: {
+    false:
+      'evaluates serendipity discoveries into content — no closed taught verdict vocabulary a parser accepts a promised form of',
+  },
+  Usher: {
+    false:
+      'routes a turn to candidate TOPIC IDS — an OPEN, machine-supplied set, not a closed taught vocabulary the prompt fixes and a parser gates on',
+  },
+  TopicIntentExtractor: {
+    false:
+      'extracts a topic-intent description from a turn — free-text content, not a closed taught verdict vocabulary a parser accepts',
+  },
+  PreCompactionFlush: {
+    false:
+      'extracts durable facts before compaction as free-text content — no closed taught output vocabulary a parser gates on',
+  },
+  TreeSynthesis: {
+    false:
+      'synthesizes knowledge fragments into a free-text answer — the prose is the product, no closed taught verdict vocabulary a parser accepts',
+  },
+  LLMConflictResolver: {
+    false:
+      'resolves divergent multi-machine state into a merged value/content — no closed taught verdict vocabulary a prompt promises and a parser gates on',
+  },
+  openConversationBrief: {
+    false:
+      'generates a free-text A2A conversation brief — the prose is the product, no closed output vocabulary the prompt teaches and a parser must accept',
+  },
+  'a2a-checkin': {
+    false:
+      'summarizes A2A check-in threads into free-text content — no closed taught verdict vocabulary a parser accepts a promised form of',
+  },
+  'correction-learning': {
+    false:
+      'distills recurring corrections into a preference (content) — no closed taught output vocabulary a parser gates on',
+  },
+  'mentor-stage-b': {
+    false:
+      'classifies mentor signals over mentee output into differential content — no closed taught verdict vocabulary a parser gates on (its own bench coverage is wave-3)',
+  },
+  PipeSessionSpawner: {
+    false:
+      'spawns sessions from task descriptions — no LLM output parsed into a closed taught verdict vocabulary',
+  },
+  CartographerSweep: {
+    false:
+      'authors doc-tree summaries over code as free text — the prose is the product, no closed taught output vocabulary a parser gates on',
+  },
+  StandardsCoverageEnrichment: {
+    false:
+      'enriches standards-coverage rows with content — no closed taught verdict vocabulary a prompt promises and a parser accepts',
+  },
+};
