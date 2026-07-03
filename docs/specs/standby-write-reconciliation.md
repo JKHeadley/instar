@@ -2,7 +2,7 @@
 title: "Standby-Write Reconciliation + Typed Refusal — ownership-scoped write admission for the active-active pool (P2-6 / F9)"
 slug: "standby-write-reconciliation"
 author: "echo"
-status: "draft (round-2 revision — all round-1 findings folded; see §11 disposition)"
+status: "draft (round-3 revision — all round-2 findings folded; see §12 disposition)"
 eli16-overview: "standby-write-reconciliation.eli16.md"
 parent-principle: "A Refusal Stays a Refusal — a write the server cannot complete returns an immediate typed refusal or a bounded error, never an open-ended hang"
 sibling-principles: "Structure > Willpower; Verify the State, Not Its Symbol; Signal vs Authority; Maturation Path — Every Feature Ships Enabled on Developer Agents; Bounded Blast Radius; User Experience Is the Product (a hung write is an unreachable agent); The Agent Is Always Reachable (an unowned local session's writes must never gate on pool custody)"
@@ -10,7 +10,7 @@ parent-spec: "docs/roadmaps/instar-two-goal-roadmap-2026-07.md §4.3; docs/audit
 project: "session-a-phase-4.3 (topic 29836)"
 depends-on: "StateManager read-only guard (src/core/StateManager.ts:102-139) + sessionScoped carve-out (standby-pool-session-writes.md); MultiMachineCoordinator role/lease reconciliation (src/core/MultiMachineCoordinator.ts:1181-1200); session-pool CAS custody (MULTI-MACHINE-SESSION-POOL-SPEC.md); SessionOwnership FSM + SessionOwnershipRegistry/LocalSessionOwnershipStore (src/core/SessionOwnership.ts, src/core/SessionOwnershipRegistry.ts, src/core/LocalSessionOwnershipStore.ts); U4.3 typed-refusal contract (u4-3-breaker-recovery-probe.md — a TYPED refusal is distinguishable from success AND from garbage); WS2.5 evolution-actions replication (ws25-evolution-actions-replication.md); WS4.1 durable remote-ack (prior art for owner-routed attention mutation)"
 upstream-feedback: "fb-99ab6347 (POST /evolution/actions hangs; hypothesis revised by this spec's grounding — see §1.4)"
-review-convergence: null   # round 2 in flight — has not converged
+review-convergence: null   # round 3 in flight — has not converged
 approved: false
 ---
 
@@ -75,10 +75,14 @@ Neither route in the P2-6 family touches the read-only guard at all:
 
 - `POST /evolution/actions` (`src/server/routes.ts:18012`) →
   `EvolutionManager.addAction` (`src/core/EvolutionManager.ts:1245`) →
-  `writeFile` — **plain synchronous fs to
-  `state/evolution/evolution-queue.json`** (`EvolutionManager.filePath` `:747`;
-  `loadEvolution`/`saveEvolution` name `'evolution-queue'`, `:782/:813`),
-  bypassing StateManager entirely.
+  `loadActions`/`saveActions` (`:1167/:1174`) → `readFile`/`writeFile` on the
+  `'action-queue'` name (`:1168/:1201`) — **plain synchronous fs to
+  `state/evolution/action-queue.json`**, bypassing StateManager entirely.
+  (Distinct store, do not conflate: `state/evolution/evolution-queue.json` is
+  the PROPOSALS store — `loadEvolution`/`saveEvolution`, `:781/:788`, write at
+  `:813` — and is not in this route's path at all. Round-1 finding S1 asserted
+  the opposite and was mis-diagnosed; §8's I3/store-snapshot probes must
+  assert against `action-queue.json`.)
 - `POST /attention` (`src/server/routes.ts:12323`) →
   `TelegramAdapter.createAttentionItem` (`src/messaging/TelegramAdapter.ts:3798`)
   → `saveAttentionItems` (`:4244`) — **plain synchronous fs to the adapter's
@@ -189,9 +193,9 @@ Every mutating surface is classified into exactly one domain:
 
 | Domain | Definition | Admission rule | Examples (initial classification) |
 |---|---|---|---|
-| `machine-local` | This machine's own single-writer store; cross-machine convergence is handled by the entry's **named convergence story** (see below) | **Admit on every machine, always** — lease-irrelevant, pool-state-irrelevant | evolution stores (`state/evolution/*` — convergence: WS2.5 replication), attention items (`state/attention-items.json` — convergence: pool-scope GET merge + WS4.1 ack), learnings (WS2.2), knowledge (WS2.4), corrections, coherence-journal own streams (the existing `guardJournalWrite` allowlist folds in unchanged, **including its path jail** — the prefix check at `StateManager.ts:162-171` that throws on any path escaping the journal root even when NOT read-only survives the refactor verbatim), **`SessionBuildContextStore` under its per-machine re-key (§3.3 — convergence: per-machine key, single-writer per file)** |
-| `session-scoped` | State keyed to ONE session, whose owning machine is determined by pool custody (via the session's topic binding — see keying note below) | Admit per the §3.2 scoped-domain rule: unbound or no custody record ⇒ machine-local-by-construction ⇒ admit; custody record present ⇒ admit iff FSM owner = this machine | `saveSession`/`removeSession` (`StateManager.ts:203/:369` — today's `sessionScoped` carve-out generalizes into this rule) |
-| `topic-scoped` | State keyed to ONE topic; owner = the pool custody record for `String(topicId)` | Same §3.2 rule, scope key = the topic id directly | topic profiles, topic intent, per-topic resume UUIDs (full inventory is the wave-2 grounding artifact — §3.5, ladder gate §7) |
+| `machine-local` | This machine's own single-writer store; cross-machine convergence is handled by the entry's **named convergence story** (see below — for a git-synced shared path the story must carry BOTH axes) | **Admit on every machine, always** — lease-irrelevant, pool-state-irrelevant | evolution stores (`state/evolution/*` — logical story: WS2.5 replication for `action-queue.json` ONLY, and only where `multiMachine.stateSync.evolutionActions` is enabled (the emitter is injected in `saveActions`, `EvolutionManager.ts:1212`; dark on the fleet, so the fleet's logical story today is honestly "none yet"); file-level arm: `git-sync-excluded` — a wave-1 build item, see below), attention items (`state/attention-items.json` — resolves to `<stateDir>/state/attention-items.json` on the primary bot (`botStateDir === stateDir`, `TelegramAdapter.ts:809/:816`); logical story: pool-scope GET merge + WS4.1 ack; file-level arm: `git-sync-excluded` — same wave-1 build item), learnings (WS2.2), knowledge (WS2.4), coherence-journal own streams (the existing `guardJournalWrite` allowlist folds in unchanged, **including its path jail** — the prefix check at `StateManager.ts:162-171` that throws on any path escaping the journal root even when NOT read-only survives the refactor verbatim), **`SessionBuildContextStore` under its per-machine re-key (§3.3 — convergence: per-machine key, single-writer per file)**. (`corrections` was listed in earlier drafts with NO story — a direct I9 violation; it is DROPPED from the initial classification and re-enters only via the wave-2 inventory with a real story.) |
+| `session-scoped` | State keyed to ONE session, whose owning machine is determined by pool custody (via the session's topic binding — see keying note below) | The §3.2 decision table, `session-scoped` row: unbound / binding-miss / no-record / released ⇒ admit (today-equivalent); owned record ⇒ admit iff FSM owner = this machine | `saveSession`/`removeSession` (`StateManager.ts:203/:369` — today's `sessionScoped` carve-out generalizes into this rule) |
+| `topic-scoped` | State keyed to ONE topic; owner = the pool custody record for `String(topicId)` | The §3.2 decision table, `topic-scoped` row: no-record / released ⇒ **legacy lease boolean** (byte-identical to today — I4 by construction) unless the registry entry declares an explicit absent-window convergence story; owned record ⇒ admit iff FSM owner = this machine | topic profiles, topic intent, per-topic resume UUIDs (full inventory is the wave-2 grounding artifact — §3.5, ladder gate §7) |
 | `cluster-shared` | Genuinely shared cluster state; single-writer = lease holder | Admit iff this machine holds the serving lease — **byte-identical to today** | lease records, job schedule state (`saveJobState`), kv `set`/`delete` (default for unclassified keys), `appendEvent` |
 
 **Keying honesty (one index, two key derivations).** Pool custody is keyed by
@@ -208,16 +212,30 @@ using data already in hand (e.g. `saveSession` holds the Session record with
 its `tmuxSession`); `admitWrite` receives a resolved scope and never looks
 anything up outside its in-memory index.
 
-**Convergence-story requirement (structural, not advisory).** Every
+**Convergence-story requirement (structural, not advisory — TWO axes).** Every
 `machine-local` registry entry MUST carry a named convergence story, one of:
 `ws2x-replicated` | `pool-scope-read-merge` | `per-machine-path` (the file
 path or kv key embeds the machine id — single writer per file by construction)
 | `git-sync-excluded` (listed in `FileClassifier` sync exclusions,
-`src/core/FileClassifier.ts:121-151`) | `ephemeral-rebuildable`. A
-shared-path store with NO story is **refused classification** and stays
-`cluster-shared` (I8/I9) — this is the generalized M3-b lesson: admitting a
-shared git-synced file on every machine manufactures recurring merge
-conflicts; the registry schema makes that unrepresentable.
+`src/core/FileClassifier.ts:122-151`) | `ephemeral-rebuildable`. **Second
+axis (the round-2 S1 lesson):** a LOGICAL story (`ws2x-replicated`,
+`pool-scope-read-merge`) says nothing about the FILE — two machines rewriting
+the same git-synced file still manufacture recurring merge conflicts no matter
+how the logical state converges. So any machine-local entry whose store sits
+on a git-synced shared path MUST ALSO name its file-level arm:
+`per-machine-path` or `git-sync-excluded`. A shared-path store missing either
+axis is **refused classification** and stays `cluster-shared` (I8/I9) — this
+is the generalized M3-b lesson. (Honesty: the registry schema does not make
+the fork *unrepresentable* — it makes a story-less classification refusable
+and the two-axis requirement lint-checkable; the enforcement is the I9 schema
+validation + Tier-1 test, §8.) **Concrete wave-1 build item:** add
+`.instar/state/attention-items.json` and `.instar/state/evolution/` (plus any
+other path classified machine-local on a shared git-synced location by the
+wave-2 inventory) to `FileClassifier`'s sync exclusions — today
+`.instar/state/` is NOT excluded (`FileClassifier.ts:122-151`), so both
+wave-1 route families' stores ride git-sync. This exposure is PRE-EXISTING
+(both routes already bypass StateManager and write locally on every machine
+today, §1.2) — the build item closes it rather than merely not-regressing it.
 
 Default posture is fail-closed toward today's behavior: a StateManager op or kv
 key with NO classification is `cluster-shared` (exactly the current guard). A
@@ -254,59 +272,114 @@ on every admission, violating I2. Instead WriteAdmission owns an
    `src/commands/server.ts:17434-17437`), deliberately off the request path.
    After the warm the index holds the COMPLETE local record set, so a negative
    answer ("no record for this scope") comes from memory — no per-miss fs.
-2. **Transition hook at the single mutation funnel:** the store gains an
-   `onCommit(record)` callback fired inside `persist()` (after `cache.set`,
-   `:81-95`). BOTH mutation paths funnel through it — `registry.cas()` →
-   `store.casWrite` → `persist` (`SessionOwnershipRegistry.ts:159-180`), AND
-   `OwnershipApplier` materializing replicated journal placements via the SAME
-   `store.casWrite` (`src/core/OwnershipApplier.ts` header contract). There is
-   no third writer; the index can never miss a transition the local store saw.
+2. **Transition hook at the `SessionOwnershipStore` INTERFACE (round-2 S4):**
+   `onCommit(record)` is ADDED to the **store contract** (the
+   `SessionOwnershipStore` interface, `SessionOwnershipRegistry.ts:65-81`),
+   NOT as a private detail of one substrate — each shipped substrate fires it
+   at its own mutation point:
+   `LocalSessionOwnershipStore` inside `persist()` (after `cache.set`,
+   `LocalSessionOwnershipStore.ts:81-95`), and
+   `InMemorySessionOwnershipStore` inside `casWrite()` at its `recs.set`
+   (`SessionOwnershipRegistry.ts:53-57` — that substrate has NO `persist()`
+   funnel, so a Local-only hook would leave the index
+   warm-once-then-permanently-stale whenever the pool runs on InMemory).
+   Today that combination is near-benign only emergently —
+   `shouldActivateDurableOwnership` forces the durable store on any machine
+   consuming replicated placements (`src/commands/server.ts:17426-17441`) —
+   but that is another feature's activation logic, not a guarantee this spec
+   may lean on. BOTH mutation paths funnel through the store's own commit
+   point — `registry.cas()` → `store.casWrite`
+   (`SessionOwnershipRegistry.ts:172`), AND `OwnershipApplier` materializing
+   replicated journal placements via the SAME `store.casWrite`
+   (`src/core/OwnershipApplier.ts:211`). There is no third writer; the index
+   can never miss a transition the local store saw.
 3. **Parity by construction:** the index mirrors the store's in-memory cache
    exactly (asserted by a Tier-1 parity test over arbitrary cas/applier
-   sequences). Cross-machine staleness — the local store lagging true mesh
-   custody until the next `OwnershipApplier` tick — is the accepted §5 TOCTOU
-   residual, identical to the window message-routing already lives with.
-4. Until the boot warm completes, scoped-domain verdicts are
+   sequences, run against **BOTH shipped substrates** — §8). Cross-machine
+   staleness — the local store lagging true mesh custody until the next
+   `OwnershipApplier` tick — is the accepted §5 TOCTOU residual, identical to
+   the window message-routing already lives with.
+4. **Ingest validation (round-2 L1):** the index validates every record AT
+   INGEST — `ownerMachineId` must be a string and `status` one of the known
+   FSM statuses — regardless of which store path surfaced it. This is
+   necessary because the store's own validation is asymmetric: `loadOne`
+   requires `ownerMachineId` to be a string
+   (`LocalSessionOwnershipStore.ts:67`) but the warm-scan `all()` validates
+   only `ownershipEpoch` + `sessionKey` (`:127`) and caches the weaker
+   record. A record failing ingest validation is classified **malformed ⇒
+   fail-closed** — the §3.2 decision table's malformed/unwarmed arm
+   (`ownership-unresolved`), never a `not-owner` refusal with `owner: null`.
+5. Until the boot warm completes, scoped-domain verdicts are
    `ownership-unresolved` (fail closed, `retryable:true`); the warm is
-   synchronous at construction so the window is one boot instant.
+   synchronous at construction so the window is one boot instant. In
+   practice this clause is DEFENSIVE-ONLY and unreachable for any caller:
+   the warm runs synchronously INSIDE the constructor on a single-threaded
+   runtime, and the one-way attach (§3.2 pre-construction window) happens
+   after construction — so no `admitWrite` call can ever interleave with
+   the scan, and this clause can never produce a refusal today (no
+   availability regression relative to the carve-out). It exists for a
+   future substrate whose warm might be deferred.
    The `InMemorySessionOwnershipStore` (dev-gate-off substrate) is trivially
-   covered (its `all()` is already pure memory).
+   covered for warm cost (its `all()` is already pure memory) and covered for
+   transitions by the interface-level hook above.
 
-**The scoped-domain admission rule (decided — was M2 + M5).** For
-`session-scoped` / `topic-scoped` writes, **when the session pool is active**
-(`_sessionPoolActive`, set at `src/commands/server.ts:19525`):
+**The scoped-domain admission decision table (decided — was M2 + M5; split by
+domain in round 3 — was C1).** For `session-scoped` / `topic-scoped` writes,
+**when the session pool is active** (`_sessionPoolActive`, set at
+`src/commands/server.ts:19525`), resolve scope → topic key (§3.1 keying note),
+look up the ownership index, and admit per ONE coherent table — the two
+domains share the owner check but deliberately DIVERGE on the absent/released
+arm, because their today-baselines diverge (that divergence is what keeps I4
+true in both columns):
 
-1. Resolve scope → topic key (§3.1 keying note). A session with NO topic
-   binding (locally-spawned job / headless / lifeline sessions — never pooled)
-   is **UNBOUND** ⇒ no pool custody scope can exist for it ⇒ the write is
-   **machine-local-by-construction ⇒ ADMIT**. A binding-resolution miss (the
-   in-memory map lacks an entry that might exist on disk) is treated as
-   UNBOUND ⇒ ADMIT: per-session files are keyed by per-spawn session ids (no
-   cross-machine fork surface), and refusing here would gate serving an
-   inbound message on a standby — the exact "Agent Is Always Reachable"
-   regression this rule exists to prevent.
-2. Topic key resolved ⇒ index lookup. **No record, or record
-   `status:'released'`** ⇒ ADMIT (machine-local-by-construction). Released ≡
-   absent by eviction-consistency: `releasedEvictionMs` deletes released
-   records after 24h (`SessionOwnershipRegistry.ts:91`), so refusing on
-   `released` would silently change behavior at eviction time.
-3. **Record in `placing` / `active` / `transferring`** ⇒ ADMIT iff
-   `record.ownerMachineId === thisMachineId`, else refuse `not-owner` naming
-   the owner. This is grounded on the FSM's own single-owner guarantee: the
-   FSM names exactly ONE machine in every non-released state —
-   `ownerOf` returns `ownerMachineId` for all three
-   (`SessionOwnershipRegistry.ts:133-138`); `placing` names the placed owner,
-   `transferring` names the draining source until the target's claim lands
-   (`placementTargetOf`, `:144-150`, distinguishes the target; the
-   output-exclusion contract in `SessionOwnership.ts` already governs who acts
-   during a transfer). Consequence for the known F1 `placing`-wedge topics:
-   the placed owner KEEPS its writes (ownerOf names it) — this spec has **no
-   dependency on the F1 fix** and never turns a wedged placement into a
-   permanent owner-write refusal. There is no `contested` state in the FSM
-   (custody is a committed CAS record); the round-1 draft's
-   "placing/contested → refuse" is retired.
-4. `ownership-unresolved` (fail closed, retryable) is reserved for genuine
-   ambiguity ONLY: index not yet warm, or a structurally malformed record.
+| Index state for the scope | `session-scoped` | `topic-scoped` |
+|---|---|---|
+| UNBOUND — session has no topic binding (locally-spawned job / headless / lifeline sessions — never pooled), or the in-memory binding map misses | **ADMIT** (machine-local-by-construction) | n/a — a topic-scoped write carries its topic id; there is no binding step to miss |
+| No record, or record `status:'released'` | **ADMIT** — today-equivalent: the current `sessionScoped && _sessionPoolActive` carve-out (`StateManager.ts:135-139`) already admits EVERY session write on a pool-active standby, so admit-on-absent/released only ever *tightens* relative to today | **LEGACY LEASE BOOLEAN** — admit iff NOT `_readOnly`, else refuse `read-only-standby`. Byte-identical to today (every topic-keyed kv write routes through `guardWrite` and is refused on every non-lease-holder), so I4 holds **by construction**. EXCEPTION: a registry entry may opt into admit-on-absent ONLY by declaring an explicit absent-window convergence story (I9-audited, both axes) — the default is the legacy boolean |
+| Record in `placing` / `active` / `transferring` | **ADMIT iff `record.ownerMachineId === thisMachineId`**, else refuse `not-owner` naming the owner — identical rule, both domains | same |
+| Index not yet warm, or record malformed (failed §3.2 ingest validation) | `ownership-unresolved` (fail closed, `retryable:true`) — reserved for genuine ambiguity ONLY | same |
+
+Why the absent/released arms differ (the I4 reconciliation, stated once):
+`session-scoped`'s admit-on-absent arm is the round-1 M2 reachability case —
+its today-baseline ADMITS (the carve-out), so admitting cannot create a fork
+that today's behavior doesn't already permit. `topic-scoped`'s today-baseline
+REFUSES on every non-holder (the blanket boolean) — an admit-on-absent arm
+there would put two writers on one shared per-topic path during pool
+cold-start or background sweeps over stale bindings on two machines: exactly
+the dual-writer fork I4(a)/(b) and §2 Non-goals promise cannot happen. The
+round-2 draft applied one uniform arm to both domains and contradicted I4;
+this table is the resolution, not a patch-over.
+
+Unbound-arm rationale (unchanged from round 2): per-session files are keyed
+by per-spawn session ids (no cross-machine fork surface), and refusing on a
+binding miss would gate serving an inbound message on a standby — the exact
+"Agent Is Always Reachable" regression this rule exists to prevent.
+
+Released-arm grounding correction (round-2 S3): the round-2 draft justified
+released⇒admit via "eviction-consistency: `releasedEvictionMs` deletes
+released records after 24h" — **that mechanism does not run.**
+`releasedEvictionMs` appears exactly once in src/ — the deps declaration
+(`SessionOwnershipRegistry.ts:91`); no sweep consumes it,
+`LocalSessionOwnershipStore` has no delete/unlink path at all, and released
+records currently persist indefinitely. It is a **known dead knob — do not
+re-cite it as an active mechanism.** Neither arm needs it: `session-scoped`
+released⇒admit stands on today-equivalence alone (the carve-out admits it
+today), and `topic-scoped` released⇒legacy-boolean needs no eviction argument
+at all (released and absent produce the same verdict by the table, so a
+future eviction implementation changes nothing).
+
+Owner-check grounding (unchanged): the FSM names exactly ONE machine in every
+non-released state — `ownerOf` returns `ownerMachineId` for all three
+(`SessionOwnershipRegistry.ts:133-138`); `placing` names the placed owner,
+`transferring` names the draining source until the target's claim lands
+(`placementTargetOf`, `:144-150`, distinguishes the target; the
+output-exclusion contract in `SessionOwnership.ts` already governs who acts
+during a transfer). Consequence for the known F1 `placing`-wedge topics: the
+placed owner KEEPS its writes (ownerOf names it) — this spec has **no
+dependency on the F1 fix** and never turns a wedged placement into a
+permanent owner-write refusal. There is no `contested` state in the FSM
+(custody is a committed CAS record); the round-1 draft's
+"placing/contested → refuse" is retired.
 
 **When the session pool is INACTIVE** (pool dark, or
 `multiMachine.writeAdmission` live on a pool-dark install — was S5): scoped
@@ -325,6 +398,15 @@ route reality of §1.2, where those stores already write locally on standbys).
   1. **Route seam:** mutating routes call it FIRST (§3.4).
   2. **Store seam:** `StateManager.guardWrite` delegates to it (§3.3) so
      non-HTTP writers (SessionManager, schedulers) get the same verdicts.
+- **Pre-construction window (round-2 L2, explicit):** StateManager exists and
+  takes writes long before the pool block that constructs WriteAdmission runs
+  (`src/commands/server.ts:17415+`). During that window `guardWrite` runs the
+  **legacy blanket verdict** — exactly today's behavior, I8's fail-toward-
+  today direction. Attachment (`StateManager.attachWriteAdmission(...)` or
+  equivalent) is **one-way** (never detached at runtime) and happens **before
+  routes are wired**, so no HTTP mutating route can ever observe a
+  half-attached state; only boot-time internal writers ride the legacy
+  verdict, which is what they get today anyway.
 
 ### 3.3 D3 — StateManager re-scope: the boolean becomes one domain's input
 
@@ -332,9 +414,11 @@ route reality of §1.2, where those stores already write locally on standbys).
 name + optional key) and delegates:
 
 - `machine-local` → pass (even when `_readOnly`).
-- `session-scoped` / `topic-scoped` → the §3.2 scoped-domain rule (the
-  existing `sessionScoped && _sessionPoolActive` carve-out generalizes into
-  it; see I4-b for the exact tightening/loosening honesty).
+- `session-scoped` / `topic-scoped` → the §3.2 decision table (the existing
+  `sessionScoped && _sessionPoolActive` carve-out generalizes into the
+  session-scoped column; the topic-scoped column's absent/released arm stays
+  the legacy boolean; see I4-b for the exact tightening/loosening honesty,
+  per domain).
 - `cluster-shared` → pass iff NOT `_readOnly` (byte-identical to today).
 
 `setReadOnly` keeps its name and callers (`MultiMachineCoordinator` unchanged at
@@ -353,7 +437,7 @@ was M3/M3-b).** The store today is ONE shared kv entry `session-build-context`
 `state/session-build-context.json` (`state.set` writes
 `state/<key>.json`, `StateManager.ts:498-506`) holding a map keyed by tmux
 session name. That path is git-synced: `.instar/state/` is NOT in
-`FileClassifier`'s sync exclusions (`src/core/FileClassifier.ts:121-151`) and
+`FileClassifier`'s sync exclusions (`src/core/FileClassifier.ts:122-151`) and
 `GitSyncManager` auto-commit+push is constructed for both roles on git-backed
 mesh machines (`src/commands/server.ts:4548`). Admitting that write on every
 pool machine would have two machines rewriting the SAME file continuously —
@@ -361,7 +445,16 @@ recurring merge conflicts routed to the LLM conflict resolver. So wave 1
 **re-keys the store per machine**: `session-build-context-<machineId>` (the
 machine id charset-jailed to `[A-Za-z0-9_-]` before embedding, mirroring the
 `sessionFileName` jail in `LocalSessionOwnershipStore.ts:35-39`, so
-`validateKey` always passes). Each machine reads and writes ONLY its own key —
+`validateKey` always passes). **Machine-id source + null fallback (round-2
+L3):** the id comes from the **coordinator/mesh identity**
+(`MultiMachineCoordinator.identity.machineId` — the same identity the
+scheduler is handed, `src/commands/server.ts:6228`), NOT from
+`StateManager._machineId` (`setMachineId`, `StateManager.ts:93`, has no
+production caller in src/ — a dead seam a builder must not improvise
+against). When no mesh identity exists (single-machine installs may have
+none), the embedded id is the literal **`local`** — safe: no peers ⇒ no
+second writer ⇒ no fork; the builder does not invent
+`session-build-context-null`. Each machine reads and writes ONLY its own key —
 single writer per file, git-sync carries peers' copies inertly. Domain:
 `machine-local`, convergence story `per-machine-path`. Build-context restore is
 inherently machine-local (the recorded worktree path is on this disk), so
@@ -501,20 +594,31 @@ Contract clauses:
   (a) `cluster-shared` on a non-holder refuses in EVERY mode — including
   dryRun, where the LEGACY blanket guard keeps enforcing while the new layer
   only logs would-verdicts;
-  (b) the session-scoped carve-out is tightened EXACTLY where a fork is
-  possible and nowhere else: today's pool-active blanket admits every
-  session write on a standby; the new rule keeps admitting unbound /
-  no-record / released scopes (machine-local-by-construction — the M2
-  reachability guarantee) and refuses ONLY a scope whose custody record
-  positively names ANOTHER machine (the double-run/fork case). A machine
-  serving an inbound message for a topic passes by construction — the router
-  only routes to the custody owner;
-  (c) relaxations (machine-local, owned-scope) activate only at `dryRun:false`.
+  (b) each scoped domain is compared against ITS OWN today-baseline (the
+  round-3 C1 reconciliation): **session-scoped** — today's pool-active
+  blanket admits every session write on a standby; the new rule keeps
+  admitting unbound / no-record / released scopes
+  (machine-local-by-construction — the M2 reachability guarantee) and refuses
+  ONLY a scope whose custody record positively names ANOTHER machine (the
+  double-run/fork case) — a strict tightening. **topic-scoped** — today's
+  baseline refuses every topic-keyed kv write on every non-holder (the
+  blanket boolean); the new rule's absent/released arm IS that legacy
+  boolean (byte-identical by the §3.2 table), and an owned record admits
+  only the FSM's single named owner — never looser than today, in any arm.
+  A machine serving an inbound message for a topic passes by construction —
+  the router only routes to the custody owner;
+  (c) relaxations (machine-local, owned-scope, and any I9-audited
+  absent-window opt-in on a topic-scoped entry) activate only at
+  `dryRun:false`.
 - **I5 Fail-closed on genuine ambiguity ONLY:** `ownership-unresolved` is
-  reserved for an unwarmed index or a malformed record. A missing custody
-  record or missing session→topic binding is NOT ambiguity — it is the
+  reserved for an unwarmed index or a malformed record (one failing the §3.2
+  ingest validation). A missing custody record or missing session→topic
+  binding is NOT ambiguity: for `session-scoped` it is the
   machine-local-by-construction case and ADMITS (§3.2; fail toward delivery,
-  "The Agent Is Always Reachable"). There is no `contested` FSM state.
+  "The Agent Is Always Reachable"); for `topic-scoped` it resolves
+  deterministically to the legacy lease boolean (§3.2 table — a definite
+  admit-or-refuse, not an unresolved state). There is no `contested` FSM
+  state.
 - **I6 Single-machine no-op:** no peers ⇒ admit everything; behavior
   byte-identical except observability.
 - **I7 Refusals are local-knowledge:** naming the owner/lease-holder uses only
@@ -523,18 +627,24 @@ Contract clauses:
   defaults to `cluster-shared` (today's exact guard); an unwired route keeps
   today's exact behavior and is lint-visible. No surface silently loses its
   guard by omission.
-- **I9 No machine-local without a convergence story:** every `machine-local`
-  registry entry names its convergence story (§3.1); a shared-path store
-  without one is refused the classification and stays `cluster-shared`.
-  Enforced by the registry schema + a Tier-1 test, not by review vigilance.
+- **I9 No machine-local without a convergence story — on BOTH axes:** every
+  `machine-local` registry entry names its logical convergence story, AND any
+  entry whose store sits on a git-synced shared path also names its
+  file-level arm (`per-machine-path` | `git-sync-excluded`) (§3.1); a
+  shared-path store missing either axis is refused the classification and
+  stays `cluster-shared`. A topic-scoped entry's absent-window opt-in (§3.2
+  table exception) is audited under the same schema. Enforced by the registry
+  schema + a Tier-1 test, not by review vigilance.
 
 ## 5. Failure modes & fail directions
 
 | Failure | Direction | Mechanism |
 |---|---|---|
-| Ownership index diverges from the local store | Impossible by construction for local state: the index is warmed by the store's own scan and updated at the store's single mutation funnel (`persist` onCommit — both `registry.cas()` and `OwnershipApplier` pass through it); a Tier-1 parity test guards the invariant | §3.2 |
+| Ownership index diverges from the local store | Impossible by construction for local state: the index is warmed by the store's own scan and updated at each substrate's own commit point (the interface-level `onCommit`, §3.2 — both `registry.cas()` and `OwnershipApplier` funnel through `store.casWrite`); a Tier-1 parity test (both substrates) guards the invariant | §3.2 |
 | Local custody lags TRUE mesh custody (cross-machine propagation delay) | Accepted, bounded residual: same TOCTOU window message-routing already lives with; custody can move between admit and the store write (ms-to-tick window). Convergence: per-machine single-writer files + journal replication (`OwnershipApplier` tick) reconcile; a write admitted under just-moved custody lands in a per-machine store whose merge semantics already handle it | §3.2 clause 3; L2 disposition §11 |
-| Session→topic binding unresolved (in-memory map miss) | Fail toward DELIVERY: treated as unbound ⇒ admit (per-spawn session ids give no cross-machine fork surface; refusing would gate serving an inbound — the M2 regression) | §3.2 rule 1 |
+| Session→topic binding unresolved (in-memory map miss) | Fail toward DELIVERY: treated as unbound ⇒ admit (per-spawn session ids give no cross-machine fork surface; refusing would gate serving an inbound — the M2 regression) | §3.2 table, session-scoped unbound arm |
+| Topic-scoped write with NO custody record (pool cold-start; background sweeps over stale bindings on two machines) | Fail toward TODAY: the legacy lease boolean — admit on the holder, typed-refuse `read-only-standby` on a standby. Never two writers on one shared per-topic path (the C1 fork) | §3.2 table, topic-scoped absent arm |
+| Write arrives BEFORE WriteAdmission is constructed (boot window) | Fail toward TODAY: `guardWrite` runs the legacy blanket verdict until the one-way attach, which lands before routes are wired — no HTTP route can observe the window | §3.2 pre-construction window |
 | Admission layer itself throws — store seam | Fail toward TODAY: legacy blanket guard verdict (exactly the current behavior) | try/catch around `admitWrite` at the seam |
 | Admission layer itself throws — route seam | Per-domain split (external finding #6): `machine-local` routes PROCEED (fail toward delivery — refusing would create a NEW outage for writes that are safe everywhere); `session-/topic-scoped` and `cluster-shared` routes refuse typed `admission-error` (fail closed — a broken guard must not enable a fork). Both directions log | §3.4 code union |
 | Event loop starved (P1-A7 window) | Honest: nothing in-process can answer; the §6 loop-lag gauge records the window so a hang is ATTRIBUTABLE (starvation) instead of misfiled as an admission failure | `monitorEventLoopDelay` gauge + probe co-measurement (§8) |
@@ -570,6 +680,13 @@ Contract clauses:
   disable is visible, never silent.
 - **Aggregate alert only:** ≥N refusals of the same (route, code) within a
   window raises ONE deduped attention item; never per-event (flood lesson).
+- **Admission-layer-throw occurrences join the SAME aggregate (round-2 L4,
+  external r2 #2):** BOTH the fail-open machine-local proceeds AND the
+  fail-closed `admission-error` refusals (§5 route-seam split) are evidence
+  of a broken guard — each gets a named (route, code=`admission-error`,
+  direction) aggregate row on `GET /write-admission` and rides the same
+  ≥N-in-window ONE-deduped-attention-item discipline. A broken guard is never
+  a log-only event, and never a flood.
 
 ## 7. Config, rollout ladder, migration
 
@@ -623,6 +740,20 @@ preserves the legacy message string for log-scraping continuity. The
 `session-build-context` per-machine re-key ships inside wave 1 (§3.3) with its
 one-time lease-holder cleanup of the legacy key.
 
+**Close the Loop — named follow-ups get durable trackers at approval (round-2
+L5).** A named-but-untracked follow-up is the constitution's definition of
+abandoned. When this spec is approved, each of these is registered as an
+evolution action (or commitment) in the same session, and the approval is not
+complete until the registrations exist:
+1. `write-forward-on-refusal` (§9.13 — the Phase-2 follow-up with its own
+   ceremony);
+2. the P1-A7 starvation-window escalation + the §8 live-proof re-run after
+   any P1-A7 fix (retiring the excluded windows);
+3. the `FileClassifier` sync-exclusion build item (§3.1) — it ships inside
+   wave 1, but the tracker guards the case where wave 1 lands piecemeal;
+4. re-classification of `corrections` (dropped from the initial table, §3.1)
+   via the wave-2 inventory, with a real two-axis story.
+
 ## 8. Tests (tiers declared) + live-proof clause
 
 - **Tier 1 (unit):** WriteAdmission verdict table (every domain × role ×
@@ -630,14 +761,24 @@ one-time lease-holder cleanup of the legacy key.
   specifically including: unbound session on a pool-active standby → admit;
   bound session whose topic is owned by ANOTHER machine → `not-owner` refusal
   naming it; `placing`/`transferring` records → the FSM owner admits, others
-  refuse; absent/`released` records → admit; pool-dark → legacy verdicts
-  byte-identical (scoped refuse `read-only-standby` on standby). Ownership
-  index: parity with the store across arbitrary `cas()`/`OwnershipApplier`
-  commit sequences; ZERO fs on the admission path (fs spied) including
-  negative lookups; boot-warm completeness. Registry: exact-key kv matching
+  refuse; **absent/`released` records split by domain (the C1 table):
+  `session-scoped` → admit; `topic-scoped` → legacy verdict (holder admits,
+  standby refuses `read-only-standby`), and admit ONLY on an entry declaring
+  an I9-audited absent-window story**; pool-dark → legacy verdicts
+  byte-identical (scoped refuse `read-only-standby` on standby); pre-attach
+  boot window → legacy blanket verdict. Ownership index: parity with the
+  store across arbitrary `cas()`/`OwnershipApplier` commit sequences, **run
+  against BOTH shipped substrates (`LocalSessionOwnershipStore` AND
+  `InMemorySessionOwnershipStore` — the interface-level `onCommit`
+  contract)**; ingest validation (a record missing a string `ownerMachineId`
+  or carrying an unknown status — e.g. one surfaced by the weakly-validated
+  `all()` scan — classifies malformed ⇒ `ownership-unresolved`, never
+  `not-owner` with `owner: null`); ZERO fs on the admission path (fs spied)
+  including negative lookups; boot-warm completeness. Registry: exact-key kv matching
   (`session-build-context-<machineId>` → machine-local; the LEGACY
   `session-build-context` key stays cluster-shared); I9 refusal of a
-  machine-local entry with no convergence story. StateManager guardWrite
+  machine-local entry with no convergence story AND of a shared-git-synced-
+  path entry with a logical story but no file-level arm (the two-axis rule). StateManager guardWrite
   delegation incl. legacy fallback on admission throw; journal path jail
   survives the fold-in (escape still throws when not read-only); refusal body
   schema incl. `Retry-After` on every `retryable:true`; route-seam throw
@@ -700,16 +841,21 @@ one-time lease-holder cleanup of the legacy key.
    repair is P1-A7's own root-cause track. The gauge is authed-only (§6).
 8. **Both dev machines flip `dryRun:false` in one window** — the F4 mixed-pair
    lesson applied prospectively.
-9. **Ownership index = boot-warm + store-funnel hook, never `registry.read()`
-   on the admission path** (resolves OQ1/M1) — one synchronous `all()` scan at
-   construction, then `onCommit` at the `LocalSessionOwnershipStore.persist`
-   chokepoint that BOTH mutation paths (`registry.cas()`, `OwnershipApplier`)
-   funnel through; negative answers from memory; parity-tested (§3.2).
-10. **Unowned ⇒ machine-local-by-construction ⇒ admit** (resolves M2) — no
-   topic binding, no custody record, or a `released` record all ADMIT; only a
-   record positively naming another machine refuses. Session→topic comes from
-   the in-memory topic-session binding (`TelegramAdapter.getTopicForSession`);
-   a binding miss fails toward delivery (§3.2).
+9. **Ownership index = boot-warm + interface-level commit hook, never
+   `registry.read()` on the admission path** (resolves OQ1/M1; refined by
+   round-2 S4) — one synchronous `all()` scan at construction, then
+   `onCommit` on the `SessionOwnershipStore` CONTRACT, fired by each shipped
+   substrate at its own mutation point (Local: `persist()`; InMemory:
+   `casWrite()`), covering BOTH mutation paths (`registry.cas()`,
+   `OwnershipApplier`); records validated at ingest (round-2 L1); negative
+   answers from memory; parity-tested against both substrates (§3.2).
+10. **Unowned ⇒ machine-local-by-construction ⇒ admit — for `session-scoped`
+   ONLY** (resolves M2; narrowed by round-3 C1) — no topic binding, no
+   custody record, or a `released` record ADMIT for session-scoped writes;
+   only a record positively naming another machine refuses. Session→topic
+   comes from the in-memory topic-session binding
+   (`TelegramAdapter.getTopicForSession`); a binding miss fails toward
+   delivery (§3.2). The topic-scoped absent/released arm is decision 18.
 11. **Admission is grounded on the FSM's single-owner guarantee** (resolves
    M5) — admit iff `ownerOf(scope) === thisMachine`, well-defined in
    `placing` and `transferring`; no F1 dependency; "contested" retired
@@ -718,7 +864,8 @@ one-time lease-holder cleanup of the legacy key.
    classification until split/re-keyed** (resolves OQ4) —
    `session-build-context` is re-keyed per machine as the first instance
    (resolves M3/M3-b), and every machine-local entry carries a named
-   convergence story (I9).
+   convergence story on both axes where a git-synced shared path is involved
+   (I9, round-2 S1).
 13. **Forward-on-refusal is the named follow-up `write-forward-on-refusal`,
    explicitly out of scope** (resolves OQ3) — its open sub-questions
    (idempotency set, whose authority the forward carries — KYP) transfer to
@@ -736,13 +883,27 @@ one-time lease-holder cleanup of the legacy key.
 17. **Pool-dark collapses scoped domains to the legacy lease boolean**
    (resolves S5) — byte-identical to today's standby behavior; machine-local
    admits everywhere regardless.
+18. **Topic-scoped absent/released ⇒ the legacy lease boolean, NOT admit**
+   (resolves round-2 C1; folds external r2 #1) — the two scoped domains'
+   absent arms diverge because their today-baselines diverge: session-scoped
+   admit-on-absent is today-equivalent (the carve-out), topic-scoped
+   admit-on-absent would be a LOOSENING (today every topic-keyed kv write
+   refuses on every non-holder) and a dual-writer fork surface. Default:
+   legacy boolean (I4 by construction). A registry entry may opt into
+   admit-on-absent only by declaring an explicit absent-window convergence
+   story, I9-audited on both axes (§3.2 decision table).
+19. **The `releasedEvictionMs` eviction is a declared-but-unimplemented dead
+   knob** (resolves round-2 S3) — no spec argument may cite it as an active
+   mechanism; neither admission arm needs it (§3.2 released-arm grounding
+   correction).
 
 ## 10. Open questions
 
 **None.** Every round-1 open question (OQ1-OQ6) is resolved into the spec body
-(§3.2, §3.3, §3.4, §3.5, §7) and summarized in §9; the disposition trail is
-§11 and the round-1 findings report
-(`docs/specs/reports/standby-write-reconciliation-round1-findings.md`).
+(§3.2, §3.3, §3.4, §3.5, §7) and summarized in §9; every round-2 finding is
+resolved likewise (C1 → §3.2 decision table + §9.18; S1-S4, L1-L5 → §12). The
+disposition trails are §11/§12 and the round reports
+(`docs/specs/reports/standby-write-reconciliation-round{1,2}-findings.md`).
 
 ## 11. Round-1 findings disposition (revision history, round 2)
 
@@ -760,7 +921,7 @@ proposed, with the rationale recorded in §9.1.
 | M3 + M3-b (wrong kv key; shared git-synced file forks) | Adopted — exact key `session-build-context` corrected everywhere; store re-keyed `session-build-context-<machineId>` (machine-local, per-machine-path story); legacy key inert + lease-holder cleanup; generalized to I9 (no machine-local without a convergence story) | §1.1, §3.3, §3.1, I9, §9.12 |
 | M4 (six open questions left to the builder) | Adopted — OQ2-OQ6 each resolved to a frontloaded decision; §10 emptied | §9.13-9.15, §9.1, §9.14, §10 |
 | M5 (blanket fail-closed on `placing` + F1 dependency) | Adopted — admission grounded on the FSM single-owner guarantee (`ownerOf` well-defined in placing/transferring); no F1 dependency; "contested" retired | §3.2 rule 3, I5, §9.11 |
-| S1 (evolution filename) | Adopted — `state/evolution/evolution-queue.json` | §1.2 |
+| S1 (evolution filename) | **Mis-diagnosed in round 1** — the round-1 finding itself was wrong (`addAction` writes `state/evolution/action-queue.json`; `evolution-queue.json` is the distinct proposals store). The round-2 fold faithfully applied the error; round 3 reverts it with the real call chain cited (round-2 S2) | §1.2, §12 |
 | S2 (loop gauge = load oracle on unauth /health) | Adopted — gauge rides the AUTHED /health extension only (ropeHealth posture) | §6 |
 | S3 (parent-doc paths don't resolve in-repo) | Adopted — qualified as agent-home session-A workspace docs | frontmatter `parent-spec` |
 | S4 (guard-manifest entry implied, not deliverable) | Adopted — GUARD_MANIFEST entry named with key/kind/configPath/dryRunConfigPath/process/loadBearing | §3.5, §6 |
@@ -779,3 +940,24 @@ proposed, with the rationale recorded in §9.1.
 | ext #5 (P1-A7 can block acceptance) | Adopted — starvation-window probes attributed + escalated + excluded; no-spike slow probe = real failure | §8 live-proof |
 | ext #6 (route-seam throw fallback fail-open) | Adopted with per-domain split — machine-local proceeds; scoped/shared refuse `admission-error` | §3.4, §5, §9.16 |
 | ext #7 (dryRun cost semantics) | Adopted — dryRun changes nothing in execution or spend; log-only | §7 |
+
+## 12. Round-2 findings disposition (revision history, round 3)
+
+Round 2 reviewed the 6beb99302 revision (report:
+`docs/specs/reports/standby-write-reconciliation-round2-findings.md`; verdict
+NOT CONVERGED — 1 MUST-FIX, 4 SHOULD-FIX, 5 LOW, incl. 2 dispositioned
+external gemini findings). This round-3 revision folds ALL of them; zero
+rejected.
+
+| finding | disposition | where |
+|---|---|---|
+| C1 (topic-scoped absent⇒admit contradicts I4; folds external r2 #1) | Adopted — the scoped-domain rule is now ONE decision table split by domain: session-scoped absent/released ⇒ admit (today-equivalent, the M2 case); topic-scoped absent/released ⇒ the legacy lease boolean (byte-identical to today — I4 by construction), with an explicit I9-audited absent-window-story opt-in as the only exception. I4(b) restated per-domain against each domain's own today-baseline | §3.2 decision table, §3.1 table, §3.3, I4(b), I5, §5 new row, §8, §9.10, §9.18 |
+| S1 (I9 conflates logical vs file-level convergence; wave-1 machine-local entries sit on git-synced shared paths) | Adopted — I9 gains a second axis (file-level arm `per-machine-path` \| `git-sync-excluded` required for any shared git-synced path); concrete wave-1 build item adds `.instar/state/attention-items.json` + `.instar/state/evolution/` to FileClassifier sync exclusions; WS2.5 story honesty stated (action-queue only; dark on fleet); `corrections` DROPPED from the table until it has a real story; "unrepresentable" softened to refusable+lint-checkable | §3.1 (table + two-axis paragraph), I9, §7 follow-ups, §8 |
+| S2 (§1.2 store identification wrong — round-1 S1 was itself mis-diagnosed) | Adopted — `POST /evolution/actions` writes `state/evolution/action-queue.json` (`addAction` :1245 → `loadActions`/`saveActions` :1167/:1174 → `readFile`/`writeFile('action-queue')` :1168/:1201); the proposals store named as distinct; §11's round-1 S1 row re-marked mis-diagnosed; §8 probes pointed at the right file | §1.2, §11 S1 row |
+| S3 (`releasedEvictionMs` cited as active but declared-and-unused) | Adopted — named a dead knob (do not re-cite); session-scoped released⇒admit re-grounded on today-equivalence alone; topic-scoped released⇒legacy-boolean needs no eviction argument | §3.2 released-arm grounding correction, §9.19 |
+| S4 (`onCommit` must live at the store INTERFACE, not only LocalSessionOwnershipStore.persist) | Adopted — hook specified on the `SessionOwnershipStore` contract; each substrate fires at its mutation point (InMemory has no `persist()` funnel); the near-benign InMemory combination named as emergent, not a guarantee; parity test runs against BOTH substrates | §3.2 index point 2, §8, §9.9 |
+| L1 (`all()` vs `loadOne()` validation asymmetry poisons the warm scan) | Adopted — index validates at ingest (string `ownerMachineId` + known status); malformed ⇒ fail-closed `ownership-unresolved` regardless of store path | §3.2 index point 4, I5, §8 |
+| L2 (pre-construction window unstated) | Adopted — legacy blanket verdict until the one-way attach, which lands before routes are wired | §3.2 pre-construction window, §5 new row, §8 |
+| L3 (re-key machine-id source + null fallback unnamed) | Adopted — coordinator/mesh identity (NOT the caller-less `StateManager.setMachineId`); fallback literal `local` on identity-less installs | §3.3 |
+| L4 (admission-error should join the §6 aggregate; external r2 #2) | Adopted — named (route, code, direction) aggregate rows + the same deduped attention-item discipline, both fail directions | §6 |
+| L5 (named follow-ups lack durable trackers) | Adopted — approval-time registration of the four named follow-ups as evolution actions/commitments; approval incomplete without them | §7 Close the Loop |

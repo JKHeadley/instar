@@ -1,6 +1,6 @@
 # Fix the "standby machine can't save its own work" problem (plain-English overview)
 
-Companion to `standby-write-reconciliation.md` (round-2 revision).
+Companion to `standby-write-reconciliation.md` (round-3 revision).
 
 ## The problem
 
@@ -40,10 +40,16 @@ Instead of one on/off switch for all saving, every kind of save gets a bucket:
    allowed in this bucket — no story, no bucket.
 2. **Session-scoped / topic-scoped** — state about one conversation. Allowed
    only on the machine that actually OWNS that conversation (the pool already
-   tracks exactly one owner per conversation). If nobody owns it — a purely
-   local helper session, or a conversation that was never pooled — it counts
-   as machine-local and is allowed. You're never blocked from serving your own
-   user because of a missing bookkeeping record.
+   tracks exactly one owner per conversation). When there's no ownership
+   record, the two flavors deliberately differ — matching what each does
+   TODAY, so neither gets riskier: for **session** notes (a purely local
+   helper session, one that was never pooled), no record means it's really
+   this machine's own business, so it's allowed — you're never blocked from
+   serving your own user because of a missing bookkeeping record. For
+   **conversation-topic** notes, no record means "fall back to the old rule"
+   (only the lease-holding machine saves) — because letting EVERY machine
+   save an unclaimed topic's notes would put two writers on the same file,
+   the exact clash this whole design promises never to create.
 3. **Cluster-shared** — genuinely shared stuff (the lease itself, job
    schedules). Rule unchanged: lease holder only. This never gets looser.
 
@@ -75,9 +81,17 @@ refused save touches nothing (no half-created items, no wasted AI calls).
 
 ## Where this stands
 
-Round-1 review found 20 issues (5 must-fix). All 20 are folded into this
-revision — the biggest changes: the ownership check now runs off a properly
-designed in-memory index instead of a disk-reading shortcut; unowned sessions
-are explicitly always allowed to save (no reachability regression); the
-shared-file git conflict got fixed by per-machine files; and all six "open
-questions" are now closed decisions. Awaiting round-2 review.
+Round-1 review found 20 issues (5 must-fix); all were folded. Round-2 review
+then found 10 more (1 must-fix). The must-fix was real: the round-2 draft
+accidentally let every machine save an unclaimed conversation-topic's notes —
+contradicting its own "never two writers" promise. This round-3 revision
+fixes that by splitting the "nobody owns it" rule per flavor (see bucket 2
+above), and also: corrects a wrong filename the round-1 review itself had
+introduced (the improvement-queue endpoint writes `action-queue.json`, not
+`evolution-queue.json`); stops citing a cleanup timer that turns out to be
+declared in the code but never actually running; requires the "stays in
+sync" story to cover the FILE level too (git-synced shared files get
+excluded from sync as part of wave 1); and pins down several smaller details
+(where the machine ID in filenames comes from, what happens to saves during
+the brief boot window, alerting when the checker itself breaks). Awaiting
+round-3 review.
