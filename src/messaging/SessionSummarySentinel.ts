@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Session, IntelligenceProvider } from '../core/types.js';
+import type { DurableOutputScrubber } from '../monitoring/DurableOutputScrubber.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -38,6 +39,14 @@ export interface SessionSummary {
   updatedAt: string;
   stale: boolean;
   outputHash: string;
+  /**
+   * Durable-Output Hygiene (spec Frontloaded Decision #2 — mandatory provenance):
+   * the one-line human-visible marker set when the Layer-B scrubber redacted a
+   * span from this persisted summary. Absent when nothing was redacted. An
+   * unmarked alteration is a swallowed finding — so an altered summary always
+   * carries this note.
+   */
+  redactionNote?: string;
 }
 
 export interface SentinelConfig {
@@ -56,6 +65,15 @@ export interface SentinelConfig {
   stalenessMinutes?: number;
   /** Misroute threshold before fallback (default: 3 in 10 min) */
   misrouteThreshold?: number;
+  /**
+   * Durable-Output Hygiene Standard §2 (Layer B) — the config-gated scrubber that
+   * redacts credential SPANS from the LLM/output-derived summary fields BEFORE
+   * they persist to disk. Optional + dark-first: when absent (or not engaged) the
+   * summary is stored byte-for-byte as today. When engaged in dryRun it computes +
+   * records would-redact metrics but stores the original text; only a deliberate
+   * dryRun:false flip actually alters stored content (operator decision).
+   */
+  scrubber?: DurableOutputScrubber;
 }
 
 export interface RoutingScore {
@@ -154,7 +172,12 @@ export class SessionSummarySentinel {
         // Generate summary
         const summary = await this.generateSummary(session, output, hash);
         if (summary) {
-          await this.saveSummary(summary);
+          // Durable-Output Hygiene §2: scrub the freshly-generated LLM/output-
+          // derived summary at the persistence chokepoint BEFORE the write. The
+          // staleness re-save path (updateStaleness → saveSummary) is deliberately
+          // NOT re-scrubbed — it re-persists an already-scrubbed summary, so
+          // re-scrubbing would recompute an empty provenance and drop redactionNote.
+          await this.saveSummary(this.scrubForStore(summary));
           this.outputHashes.set(session.id, hash);
           updated++;
         } else {
@@ -305,6 +328,28 @@ export class SessionSummarySentinel {
       stale: false,
       outputHash: hash,
     };
+  }
+
+  /**
+   * Durable-Output Hygiene Standard §2 (Layer B) — run the config-gated scrubber
+   * over the LLM/output-derived string fields (task, blockers) + string arrays
+   * (files, topics) BEFORE the summary persists. When the scrubber is absent or
+   * not engaged this is a strict no-op (returns the input summary). When engaged
+   * in dryRun it records would-redact metrics but returns the original content;
+   * only a live (dryRun:false) scrubber alters the stored text — and every altered
+   * summary carries the mandatory `redactionNote` provenance marker.
+   */
+  private scrubForStore(summary: SessionSummary): SessionSummary {
+    const scrubber = this.config.scrubber;
+    if (!scrubber || !scrubber.isEngaged()) return summary;
+    const outcome = scrubber.scrubRecord(
+      summary as unknown as Record<string, unknown>,
+      ['task', 'blockers', 'files', 'topics'],
+      { store: 'session-summary', callsite: 'SessionSummarySentinel.saveSummary' },
+    );
+    const next = outcome.record as unknown as SessionSummary;
+    if (outcome.provenance) next.redactionNote = outcome.provenance;
+    return next;
   }
 
   /** Save a summary to disk */

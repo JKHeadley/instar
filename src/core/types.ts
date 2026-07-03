@@ -4726,6 +4726,22 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be Clean").
+   * The config-gated DurableOutputScrubber that redacts credential SPANS from LLM
+   * output at durable-output persistence chokepoints BEFORE the write. `enabled` is
+   * OMITTED from ConfigDefaults → resolved via the developmentAgent dark-feature
+   * gate (LIVE on a dev agent, DARK on the fleet). `dryRun` (default true, the
+   * canary) COMPUTES + records would-redact metrics but stores the ORIGINAL text —
+   * a real (dryRun:false) redaction flip is the OPERATOR'S endpoint decision
+   * (Frontloaded Decision #4). `perStore` is the per-store opt-out map. When
+   * absent/disabled, durable writes are byte-identical to today.
+   */
+  durableOutputScrub?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    perStore?: Record<string, { enabled?: boolean }>;
+  };
+  /**
    * CollaborationRedriveEngine — proactively re-engage a counterpart that
    * has gone silent on an open threadline-reply commitment. Ships OFF.
    * Spec: docs/specs/collaboration-redrive-on-counterpart-silence.md.

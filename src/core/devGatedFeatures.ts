@@ -62,6 +62,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: "Signal-only — only changes the standby MESSAGE TEXT; never gates, blocks, initiates recovery, spends, or egresses. Reuses the existing tail-gated classifyStuckSignature and defers to the same one-voice recovery-ownership checks Tier 3 already honors. Flag-OFF = Tier1/2 byte-identical to today.",
   },
   {
+    name: 'durableOutputScrub',
+    configPath: 'monitoring.durableOutputScrub.enabled',
+    description: 'Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be Clean") — the DurableOutputScrubber: a deterministic credential-SPAN scrub over LLM output at durable-output persistence chokepoints (session summaries wired first), config-gated + dark-first.',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the scrubber COMPUTES the redaction and records would-redact metrics (feature key durable-output-scrub — COUNTS/kind/offset only, NEVER the matched bytes, so the soak telemetry can never itself be the leak), but returns the ORIGINAL text so NO durable content is mutated while dryRun holds (verified at DurableOutputScrubber.scrub/scrubRecord dryRun branches — applied:false, input returned unchanged). A real redaction (which destroys the matched span by design) needs a deliberate dryRun:false — the OPERATOR\'s endpoint decision on the dev-soak packet (Frontloaded Decision #4), never a fleet default. Pure deterministic regex floor (no LLM, no spawn-cap slot, no egress, no third-party spend); every failure path fails SAFE-toward-redaction (a scrub throw / oversize withholds the field under a typed marker, never persists raw bytes). Same dogfooding posture as topicProfiles / credentialRepointing.',
+  },
+  {
     name: 'growthAnalyst',
     configPath: 'monitoring.growthAnalyst.enabled',
     description: 'Proactive growth & milestone analyst (/growth/*).',

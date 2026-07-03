@@ -325,6 +325,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       preserveWork: false,
       maxFlagsPerPass: 10,
     },
+    // Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be
+    // Clean", docs/specs/durable-output-hygiene-standard.md): the config-gated
+    // DurableOutputScrubber redacts credential SPANS from LLM output at durable-
+    // output persistence chokepoints BEFORE the write. `enabled` is OMITTED so the
+    // runtime resolves it through the developmentAgent dark-feature gate
+    // (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet. `dryRun: true`
+    // is the canary — live-on-dev COMPUTES + records would-redact metrics but
+    // stores the ORIGINAL text (no durable mutation) until a deliberate
+    // dryRun:false flip, which is the OPERATOR'S endpoint decision (a false-positive
+    // redaction destroys data — Frontloaded Decision #4; the dev agent self-flips
+    // only on the §Frontloaded-Decision-#4 soak criterion). DO NOT hardcode
+    // `enabled` here — a baked-in false would dark dev agents too (the #1001 shape
+    // the dark-gate lint forbids for a dev-gated block). perStore is the per-store
+    // opt-out map (the bypass-carries-its-own-cap per-store control).
+    durableOutputScrub: {
+      dryRun: true,
+      perStore: {},
+    },
     // StrandedTopicSentinel (stranded-inbound-self-heal): a PURE-SIGNAL detector
     // that surfaces a topic whose owner machine is online-by-heartbeat but unable
     // to serve (quota-walled or adapter-disconnected) while a healthy machine

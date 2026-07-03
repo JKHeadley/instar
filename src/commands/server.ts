@@ -14361,10 +14361,49 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     retryManager.start();
 
+    // Durable-Output Hygiene Standard §2 (Layer B) — the config-gated scrubber
+    // that redacts credential SPANS from LLM-derived summary fields BEFORE they
+    // persist. Dark-first: `enabled` resolves via the developmentAgent gate (LIVE
+    // on a dev agent, DARK on the fleet) and `dryRun` defaults true (the canary —
+    // computes + records would-redact metrics but stores the ORIGINAL text). A
+    // real redaction flip (dryRun:false) is the operator's endpoint decision.
+    const { DurableOutputScrubber } = await import('../monitoring/DurableOutputScrubber.js');
+    const durableScrubCfg = config.monitoring?.durableOutputScrub;
+    const durableOutputScrubber = new DurableOutputScrubber({
+      enabled: resolveDevAgentGate(durableScrubCfg?.enabled, config),
+      dryRun: durableScrubCfg?.dryRun, // undefined → fail-safe default true inside the scrubber
+      metrics: {
+        // Feature key `durable-output-scrub` — COUNTS/kind only (the ledger row
+        // never carries the matched bytes; the floor's metadata is offset/kind).
+        recordEvent: (feature, outcome) => {
+          try { getFeatureMetricsRecorder()?.record({ feature, kind: 'event', outcome }); } catch { /* observability must never throw into the persist path */ }
+        },
+      },
+      onPoisoningSuspected: (signal) => {
+        // One deduped attention item per store (spec §2 poisoning visibility);
+        // the AttentionTopicGuard flood ceiling backstops further.
+        try {
+          void telegram?.createAttentionItem({
+            id: `durable-output-poisoning:${signal.store}`,
+            title: 'Possible durable-memory poisoning (credential-shaped plant burst)',
+            summary: `${signal.count} credential-shaped redactions on "${signal.store}" within ${Math.round(signal.windowMs / 60_000)} min`,
+            description:
+              `The durable-output scrub redacted ${signal.count} credential-shaped spans (kinds: ${signal.kinds.join(', ')}) ` +
+              `on the "${signal.store}" store in a short window — a possible deliberate memory-degradation attempt. ` +
+              `No records were dropped; each altered entry carries its provenance marker.`,
+            category: 'security',
+            priority: 'NORMAL',
+            sourceContext: 'durable-output-scrub-poisoning',
+          });
+        } catch { /* escalation is best-effort — never break the persist path */ }
+      },
+    });
+
     // Session summary sentinel for intelligent routing (Phase 2)
     const { SessionSummarySentinel } = await import('../messaging/SessionSummarySentinel.js');
     const summarySentinel = new SessionSummarySentinel({
       stateDir: config.stateDir,
+      scrubber: durableOutputScrubber,
       getActiveSessions: () => sessionManager.listRunningSessions(),
       captureOutput: (tmuxSession: string) => {
         // RULE 3: EXEMPT — this is raw byte capture (the whole pane), not state parsing.
