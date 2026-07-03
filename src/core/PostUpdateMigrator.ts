@@ -4703,6 +4703,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
 - **Quota across ALL my machines** (pool-scope read) — \`GET /subscription-pool?scope=pool\` fans out to every ONLINE peer's plain pool, tags each account with the machine holding it (\`machineId\`/\`machineNickname\`/\`remote:true\`), and merges into ONE dark-peer-tolerant object \`{ enabled, accounts:[...], pool:{ selfMachineId, peersQueried, peersOk, failed }, scope:'pool' }\`. A down/slow/unauth peer is a classified \`pool.failed\` row (normalized reason — never a peer URL or token), never a silent omission and never a 500. Per-machine seat is meaningful, so the SAME account on two machines stays individually visible (never coalesced). Single-machine → the plain self-only view tagged \`scope:'pool'\`. Use this when the operator asks "how much quota is left across ALL my machines?".
 - **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. Auto-swap on rate-limit ships OFF (opt-in via \`subscriptionPool.autoSwapOnRateLimit\` — it moves a live session, real authority).
 - **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn't wedge at the wall. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
+- **Anti-thrash brakes + in-flight work protection on swaps** — the proactive swap carries brakes so it can never ping-pong sessions between hot accounts: when EVERY account is hot it STAYS PUT (\`all-hot\` refusal), a just-swapped session dwells ~45 min before it can be moved again (restart-safe via \`state/swap-ledger.jsonl\`), and a swap only executes onto a target that is MATERIALLY cooler on a fresh quota reading. A session mid-turn or carrying live subagents is never killed by an optimization — the swap DEFERS until the work lands (a forced/reactive kill carries a mitigation note enumerating interrupted subagents + re-injecting the last unanswered message). Brakes ship dry-run first (\`subscriptionPool.proactiveSwap.antiThrash.dryRun\`); the work gate's \`subscriptionPool.swapContinuity.enabled\` is restart-required. "Why didn't my session swap?" → \`GET /subscription-pool/proactive-swap\` \`brakes\`/\`deferrals\` blocks name the refusal; "why did my refresh get a session-busy error?" → the work gate refused to kill in-flight work — wait, or re-issue with \`force:true\`.
 - **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`.
 - **Dashboard**: the **Subscriptions tab** shows live quota bars (5h + weekly + reset countdown), status, and the Pending Logins panel — share the dashboard URL + PIN.
 - **When to use** (PROACTIVE): "how much quota is left across my accounts?" / "am I about to hit a limit?" → \`GET /subscription-pool\`; the user wants to add another subscription → drive the enrollment wizard (never ask them to paste a token); a long job is at risk of a quota wall → the continuity guarantee + \`/swap\` keep it alive. Single-account pools are a no-op.
@@ -4729,6 +4730,28 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(continuityAnchor, continuityAnchor + proactiveBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Subscription Pool pre-limit (proactive) swap bullet');
+      }
+    }
+
+    // Swap-continuity anti-thrash awareness (swap-continuity-antithrash §9).
+    // Existing agents that ALREADY carry the Subscription Pool section won't get
+    // the new bullet from the section-install guard above. Patch it in
+    // idempotently: insert the anti-thrash bullet right after the pre-limit
+    // (proactive) swap bullet when the section exists but the bullet is missing.
+    // Content-sniffed on the distinctive bullet title.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      content.includes('Pre-limit (proactive) swap') &&
+      !content.includes('Anti-thrash brakes + in-flight work protection')
+    ) {
+      const preLimitAnchor =
+        '`GET /subscription-pool/proactive-swap`; run a pass now: `POST /subscription-pool/proactive-swap/check`.';
+      const antiThrashBullet =
+        '\n- **Anti-thrash brakes + in-flight work protection on swaps** — the proactive swap carries brakes so it can never ping-pong sessions between hot accounts: when EVERY account is hot it STAYS PUT (`all-hot` refusal), a just-swapped session dwells ~45 min before it can be moved again (restart-safe via `state/swap-ledger.jsonl`), and a swap only executes onto a target that is MATERIALLY cooler on a fresh quota reading. A session mid-turn or carrying live subagents is never killed by an optimization — the swap DEFERS until the work lands (a forced/reactive kill carries a mitigation note enumerating interrupted subagents + re-injecting the last unanswered message). Brakes ship dry-run first (`subscriptionPool.proactiveSwap.antiThrash.dryRun`); the work gate\'s `subscriptionPool.swapContinuity.enabled` is restart-required. "Why didn\'t my session swap?" → `GET /subscription-pool/proactive-swap` `brakes`/`deferrals` blocks name the refusal; "why did my refresh get a session-busy error?" → the work gate refused to kill in-flight work — wait, or re-issue with `force:true`.';
+      if (content.includes(preLimitAnchor)) {
+        content = content.replace(preLimitAnchor, preLimitAnchor + antiThrashBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Subscription Pool anti-thrash brakes + work-gate bullet');
       }
     }
 

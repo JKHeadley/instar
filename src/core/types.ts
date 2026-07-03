@@ -3545,10 +3545,72 @@ export interface InstarConfig {
       watchMarginPct?: number;
       /** Max sessions swapped per evaluation cycle (storm guard). Default 3. */
       maxSwapsPerCycle?: number;
-      /** Per-session cooldown (ms) after a successful swap. Default 600000 (10m). */
+      /** Per-session cooldown (ms) after a successful swap. Default 600000 (10m).
+       *  SUBSUMED by antiThrash.dwellMs when the brakes are live (kept working
+       *  for back-compat while antiThrash is dark/dry-run — spec §9). */
       cooldownMs?: number;
       /** Monitor tick cadence (ms). Default 180000 (3m). */
       tickMs?: number;
+      /**
+       * swap-continuity-antithrash §3/§7 — anti-thrash brakes on the proactive
+       * swap. An ABSENT block resolves `enabled:true, dryRun:true` (dry-run
+       * ledger rows, zero decision change) on any install that opted into
+       * proactiveSwap — the soak is the default, never a silent skip. All
+       * knobs read LIVE per tick (§7.1). All numeric reads use `??` (zero is
+       * a legal disable for several).
+       */
+      antiThrash?: {
+        /** Brakes bind decisions when true AND dryRun false. Default true. */
+        enabled?: boolean;
+        /** Log would-refuse/would-defer rows, change nothing. Default true. */
+        dryRun?: boolean;
+        /** Target ceiling = thresholdPct − this (default 15 → ceiling 65%). */
+        targetHeadroomPct?: number;
+        /** source − target must be ≥ this many points (default 15). */
+        minImprovementPct?: number;
+        /** Per-session dwell after ANY account swap (default 2700000 = 45m). */
+        dwellMs?: number;
+        /** Reversal-detection window (default 1800000 = 30m). */
+        reversalWindowMs?: number;
+        /** T1: inversion-class increments within reversalWindowMs (default 2). */
+        thrashBreakerThreshold?: number;
+        /** Breaker suppression backoff (default 3600000 = 1h). */
+        thrashBreakerBackoffMs?: number;
+        /** T2 rotation detector: N proactive executions of one session… (default 3) */
+        swapFrequencyThreshold?: number;
+        /** …within this window (default 10800000 = 3h) opens the breaker. */
+        swapFrequencyWindowMs?: number;
+        /** all-hot / breaker heartbeat-row cadence (default 1800000 = 30m). */
+        allHotHeartbeatMs?: number;
+        /** Reactive hops per session per reversalWindowMs → ONE alert (default 2). */
+        reactiveHopAlertThreshold?: number;
+        /** §3.3 bound 0: a reading older than this is not a measurement
+         *  (default 1800000 = 30m — 2× the quota poller's 15-min cadence). */
+        quotaFreshnessMs?: number;
+      };
+    };
+    /**
+     * swap-continuity-antithrash §4/§7 — Piece 2 (the in-flight work gate for
+     * every session-killing mutation). The `enabled` KEY IS OMITTED from the
+     * shipped config ON PURPOSE — omission routes it through the dev-agent
+     * gate (live on a development agent, dark on the fleet); an explicit
+     * `enabled: false` would pin it dark EVERYWHERE including dev (the #1001
+     * anti-mechanism). `enabled` is restart-required (§7.1 — the gate wiring
+     * into SessionRefresh is constructor-injected); dryRun + numeric knobs
+     * are read live per evaluation.
+     */
+    swapContinuity?: {
+      enabled?: boolean;
+      /** Log would-defer/would-mitigate, change nothing. Default true. */
+      dryRun?: boolean;
+      /** Proactive deferral ceiling (default 1800000 = 30m) — at the ceiling
+       *  the intent is DROPPED (the wall wins; the reactive floor exists). */
+      deferralCeilingMs?: number;
+      /** Reactive grace bound (default 120000 = 2m) — the swap proceeds at
+       *  the FIRST not-busy observation, and always at the deadline. */
+      reactiveGraceMs?: number;
+      /** Busy re-check cadence inside a grace window (default 10000). */
+      recheckMs?: number;
     };
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {

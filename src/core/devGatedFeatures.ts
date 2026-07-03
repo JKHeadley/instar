@@ -494,6 +494,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'tmux Event-Loop Resilience (C) — the DegradedTmuxGuard: a signal-only watcher that raises ONE deduped agent-health Attention item when the shared tmux server is degraded (slow sync calls / event-loop stalls). NEVER kills the shared socket.',
     justification: 'Observe-and-escalate only. Bounded by construction — a fixed-capacity O(1) modulo-write ring (never an unbounded array), load-gated (suppressed above a 1-min-load-per-core threshold so a busy multi-agent box does not false-fire) and N-cycle corroborated before any escalation. Signal vs Authority: the ONLY automated action is ONE deduped, NORMAL-priority agent-health Attention item; any actual tmux refresh is an explicit operator Y/N, never auto-performed. Registered in GUARD_MANIFEST with a pure in-memory getter (no I/O on the guard-status read). No spend, no egress beyond the operator-facing dedup line, no destructive action.',
   },
+  {
+    name: 'swapContinuity',
+    configPath: 'subscriptionPool.swapContinuity.enabled',
+    description: 'Swap-continuity in-flight work gate (swap-continuity-antithrash §4) — every session-killing mutation (proactive/reactive account swap, agent/API refresh) consults the SwapWorkGate at the SessionRefresh funnel: a proactive swap DEFERS over in-flight work (ceiling-dropped, never forced), a reactive swap gets a bounded ≤120s grace then proceeds WITH the F3 mitigations (enumerated killed subagents + re-injected unanswered inbound), an interactive refresh gets a structured session-busy refusal + force.',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the gate probes and LOGS every would-defer/would-refuse/would-mitigate verdict but changes NOTHING — every refresh kills exactly as today until a deliberate dryRun:false. The gate itself is deterministic structural-state math (pane footer / child process / subagent registry — Tier 0, no LLM), bounded on every edge (30-min deferral ceiling, 120-s reactive grace, force override, recovery-class exemption), and its uncertainty direction only ever DELAYS an optimization — it can never kill work, spend, or egress. Same dogfooding posture as topicProfiles / agentOwnedFollowthrough.',
+  },
 ];
 
 /**
