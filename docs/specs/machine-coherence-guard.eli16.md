@@ -1,7 +1,7 @@
 # Machine-Coherence Guard — plain-English overview
 
 **Companion to:** `docs/specs/machine-coherence-guard.md` (roadmap item 4.1,
-round-3 revision)
+round-4 revision)
 
 ## The problem, in one story
 
@@ -32,8 +32,15 @@ from every online machine and, if they disagree, raises **one single alert**
 that leads with what it means for you ("my machines have drifted apart —
 conversation-moves between them will silently fail"), names which machine
 differs, and proposes a fix **that I perform if you approve it** — you reply
-"fix it" and I equalize the setting and restart that machine myself. You're
-never handed a config command to run.
+"fix it" and I equalize the setting. You're never handed a config command to
+run. Honest detail on WHO does the writing: when the machine that needs the
+change is the one talking to you, it fixes itself and restarts on the spot
+(and if it's the machine currently in charge, the proposal says plainly that
+the restart hands charge to the other machine for half a minute). When it's
+the OTHER machine, there's deliberately no remote-rewrite channel — I apply
+it by my own hand on that machine and confirm here when it lands, inside a
+~10-minute window; if it hasn't landed by then, you get one honest "the fix
+didn't take" note instead of silence.
 
 **The fix has guardrails of its own.** Only YOU can approve it — the approval
 only counts from the verified owner of that conversation, and it's tied to
@@ -63,7 +70,12 @@ next machine in line steps up and raises it instead. And if a weird moment
 ever produces TWO alerts for the same problem (a network split, a laggy
 view), the machines spot each other's markers and one of them politely
 withdraws its copy, labeled honestly as superseded — never two alarms dueling
-for days.
+for days. When a machine can't READ its partner's cards at all (a half-broken
+network where only one direction works), its copy of the alert goes quiet and
+waits rather than shouting into the void, and the two merge back to one the
+moment the cards flow again. And every tie-break errs toward one extra alarm
+over silence: a rare duplicate gets cleaned up automatically; a missing alarm
+is the one failure this whole build exists to prevent.
 
 **The alert never lies about being fixed.** If the differing machine simply
 goes to sleep (a laptop overnight), the alert doesn't declare victory — it
@@ -71,11 +83,14 @@ notes "the divergent machine went offline, holding this open" and waits. It
 only says "restored" when both machines are actually back and actually agree.
 If the same problem flaps on and off, it re-opens the SAME alert instead of
 minting new ones; after three flaps it says "this is flapping — recording
-quietly until it stabilizes" and stops narrating each bounce. And there's a
-hard cap of three new alert topics per day — past that it records quietly
-and tells you once that it's capped. The flap/cap bookkeeping is saved to
-disk, so a restart (which is exactly when settings flap) can't wipe the
-brakes.
+quietly until it stabilizes" and stops narrating each bounce — and the same
+budget covers EVERY kind of repeated note inside one alert (a machine
+bouncing between online and offline, a setting bouncing in and out of
+disagreement): at most a handful of updates per stretch, then quiet
+recording. There's also a hard cap of three new alert topics per day — past
+that it records quietly and tells you once that it's capped. The flap/cap
+bookkeeping is saved to disk, so a restart (which is exactly when settings
+flap) can't wipe the brakes.
 
 **Trust rules for the heartbeat cards.** A card from another machine is
 untrusted data: it's size- and type-checked on receipt, a malformed card makes
