@@ -53,8 +53,21 @@
 
 **Blast radius:** pure module; the tests are the only consumer until the sentinel (C₁) composes it.
 
-### Increment C₁ — the sentinel: tick loop + dimensions/confirmation + §3.4 election + §4 episode/alarm/fix — PENDING
-(Includes the `clampRejections`/marker-drop counters on the status route — the clamp itself landed in B; the counters belong to the sentinel's counter block. Also wires the `alarm` marker into refreshPool's B-landed `buildCoherenceAdvert` call, currently omitted.)
+### Increment C₁a — sentinel evaluator core: config + gates + classification tick + election — LANDED
+
+**What changed:**
+1. **`src/monitoring/MachineCoherenceSentinel.ts` (NEW)** — the evaluator core composing the C₀ pure helpers:
+   - `resolveMachineCoherenceConfig` — the full §7 config surface with code-side `??` defaults; `enabled` resolves through `resolveDevAgentGate` (OMITTED from ConfigDefaults — the #1001 anti-mechanism; explicit value wins); `dryRun` defaults TRUE (dry-run FIRST even on dev). `selfPostureOf` → live/dry-run/dark.
+   - `tick()` — rides the caller's cadence (the 30s peerPresenceTick, wiring pending): single-machine STRICT no-op (short-circuits below 2 online members BEFORE touching state), per-machine classification via `classifyPeer` (M11 universe honesty — every online machine accounted), §3.4 election via `electRaiser` (self candidacy from LOCAL resolved config — authoritative over its own advert echo; peers from their adverts' `guard`), fail-toward-silence (any error → counter, no emit). `inWarmup()` exposes the N8 window for the Session-B confirmation counters.
+   - `status()` — the §6 snapshot core (enabled/dryRun/lastTickAt/universe counts/classification counts/raiser/openEpisode:null/counters).
+2. **`src/core/devGatedFeatures.ts`** — `machineCoherence` registered (`monitoring.machineCoherence.enabled`), auto-covered by the both-sides wiring test (145 green). Justification: signal-only, Tier 0, no spend/egress, dry-run-first, single-machine no-op.
+3. **`src/monitoring/guardManifest.ts`** — GUARD_MANIFEST entry (`monitoring.machineCoherence.enabled`, `component: 'MachineCoherenceSentinel'`, NOT loadBearing per D6, `expectRuntime: false` FOR NOW — C₁b adds the server-boot construction + `guardRegistry.register` callsite and flips it to true; the lint-guard-manifest classification standard required the entry the moment the guard-shaped component existed).
+4. **Tests:** `tests/unit/MachineCoherenceSentinel.test.ts` (NEW, 13) — gate ladder both sides + explicit-wins, §7 defaults + overrides, single-machine no-op, offline exclusion, M11 classification counts, holder-vs-standby SAME-raiser property, dry-run self/peer non-candidacy, fail-toward-silence, warm-up window, openEpisode-never-fabricated.
+
+**Blast radius:** pure module + one registry data entry; NOTHING constructs the sentinel in production yet (server wiring is C₁b). Fleet behavior unchanged.
+
+### Increment C₁b — server wiring + episode/alarm machinery — PENDING
+Remaining, in order: (i) server-boot construction + `guardRegistry.register` + the peerPresenceTick rider (dark guard → never constructed) + flip the landed GUARD_MANIFEST entry to `expectRuntime: true`; (ii) dimension comparison + confirmation counters (R2-L3 consecutive rule, M6 update-wave suppression, N8 consumers) using `classifyVersionSkew` + manifest-intersection flag compare; (iii) the §4 episode state machine (N7 state file, N3/N4 corrupt-state) + the ONE attention item + §3.4 takeover/fallback/reconciliation + alarm-marker attach into refreshPool's advert; (iv) §4.2.1 pendingFix flow; (v) `GET /pool/machine-coherence` status route (503-when-dark) + `logs/machine-coherence.jsonl` + the `clampRejections`/marker-drop counters; (vi) boot line.
 ### Increment D₂a — per-peer lease-observation map (§5b's NEW retained state) — LANDED
 
 **What changed:**

@@ -340,6 +340,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'PURE SIGNAL — its sole output is an advisory attention item; it MUTATES NOTHING (no ownership CAS, no pin write, no session kill, no direct user message). Lease-holder is the sole actor and a single-machine agent is a strict no-op, so across machines exactly one raises the item (no duplicate-voice). Synchronous + LLM-free + acquires NO spawn-cap slot (asserted by test); reads only the in-memory ownership cache + the replicated heartbeat pool view, with an explicit fail-closed staleness bound (every uncertainty — missing field, stale beat, underivable scope, pool view unavailable — routes to SKIP, never manufactures a strand). It can only ever ADD an attention item, already bounded by the existing AttentionTopicGuard flood ceiling. No egress beyond the operator-facing item, no spend, no destructive action. Runs live (no destructive write warrants a dry-run) on dev / dark on fleet. Auto-failover is a tracked v2 with named prerequisites.',
   },
   {
+    name: 'machineCoherence',
+    configPath: 'monitoring.machineCoherence.enabled',
+    description:
+      'Machine-coherence guard (machine-coherence-guard, roadmap 4.1 F4/P0-1) \u2014 the pool-wide version/flag/protocol/manifest skew EVALUATOR + episode/alarm machinery. Detects the F4 class (a dev-gated mesh feature resolving LIVE on one of the agent\u2019s machines and DARK on another silently halves a cross-machine guarantee) and raises ONE deduped episode-scoped attention item from exactly ONE elected machine. NOTE: only the evaluator/alarm ride this gate \u2014 the \u00a73.2 advert EMISSION ships live unconditionally (M3).',
+    justification:
+      'SIGNAL-ONLY \u2014 it never blocks, equalizes, or restarts anything; its sole output is one episode-scoped attention item (and the \u00a74.2.1 fix is operator-approval-gated per episode, never autonomous). Fully deterministic (Tier 0, no LLM call, no spend), no egress beyond the existing signed mesh reads, fails toward silence on evaluator error. Ships dryRun:true even on dev (dry-run FIRST: counters record would-raise, NO item) with the D7 soak criterion gating each rollout rung; single-machine agents are a strict no-op at every layer.',
+  },
+  {
     name: 'yieldSafety',
     configPath: 'monitoring.yieldSafety.enabled',
     description:
