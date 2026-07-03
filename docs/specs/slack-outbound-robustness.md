@@ -3,7 +3,7 @@ title: "Slack Outbound Delivery Robustness — channel-typed relay queue, funnel
 slug: "slack-outbound-robustness"
 author: "echo"
 status: "review-closed: architecture-converged-with-build-residual (round 8, 2026-07-03) — see review-disposition; the build stays gated on the keystone registry + deliverToConversation increments MERGING"
-parent-principle: "Guards Degrade, Not Outage — a safety/delivery layer on the user-facing path may never convert its own infra failure into the user's silence (the constitution's named OUTBOUND extension of The Operator Channel Is Sacred; re-anchored round 2 per the conformance gate — the Operator-Channel-Sacred rule text governs the INBOUND consume gate)"
+parent-principle: "The Operator Channel Is Sacred — Critical-Path Gates Fail Toward Delivery — via its named OUTBOUND extension *Guards Degrade, Not Outage*: a safety/delivery layer on the user-facing path may never convert its own infra failure into the user's silence. (The Operator-Channel-Sacred rule text governs the INBOUND consume gate; this spec governs the OUTBOUND delivery/queue path — the same principle, outbound side. Re-anchored round 2 per the conformance gate.)"
 sibling-principles: "The Operator Channel Is Sacred (sibling context — the inbound twin of this spec's fail-toward-delivery posture); Structure > Willpower (a durable queue, not a session remembering to retry); A Refusal Stays a Refusal / P18 (every drop is a counter + ledger row, never silent); Bounded Notification Surface (P17 — one deduped escalation per failure episode); Bounded Blast Radius (P19 — breaker on every loop, PER-CHANNEL suspension state §2.3); Migration Parity (additive SQLite columns, never destructive); Verify the State, Not Its Symbol (delivery state machine over 'the curl said ok'); Signal vs Authority (the sentinel never overrides the tone gate); Near-Silent Notifications (§2.3 — recovery chatter decision stated, unreachable-conversation escalations out-of-band)"
 constitution: "The Operator Channel Is Sacred — Critical-Path Gates Fail Toward Delivery (docs/STANDARDS-REGISTRY.md); Guards Degrade, Not Outage; Bounded Notification Surface (P17); A Refusal Stays a Refusal (P18); Bounded Blast Radius (P19); Migration Parity Standard; Testing Integrity Standard"
 lessons-engaged: "2026-06-05 restore-purge silent deletion (five queued outbound messages eaten at boot — delivery-failure-sentinel.ts:83-90; every purge here is LOUD, channel-tagged, AND scoped to live lanes + unheld rows — round-1 C2 caught the lesson recurring one level up; round-2 C1/C2 caught it a THIRD time inside the folds (stampede consumption + hold-arithmetic purge), driving the §2.2a durable HOLD disposition) · 2026-06-06 duplicate-message fix (byte-identical status 13.5 min apart — OutboundContentDedup.ts:5-12; the same dedup now covers Slack) · 2026-06-05 restart-cascade never-drains (immediate first drain on start — delivery-failure-sentinel.ts:258-271; inherited by the Slack lane unchanged) · outbound-gate-tiered-fail-direction (fail direction argued per failure point, §3) · Maturation Path — Every Feature Ships Enabled on Developer Agents (§6 rollout ladder)"
@@ -12,7 +12,7 @@ roadmap: "docs/roadmaps/instar-two-goal-roadmap-2026-07.md Phase 2.1 — live pr
 parent-spec: "docs/specs/telegram-delivery-robustness.md (Layers 1-3 — this spec generalizes them); docs/roadmaps/instar-two-goal-roadmap-2026-07.md (Phase 2, depends on Phase 1)"
 depends-on: "docs/specs/durable-conversation-identity.md — the Phase-1 KEYSTONE, CONVERGED round 11 (worktree .worktrees/conversation-identity, commit aa5086eb8, review-convergence 2026-07-03, approved: true). THIS SPEC'S BUILD remains gated on the keystone's BUILD LANDING (its registry + `deliverToConversation` funnel increments merged — review convergence is now met): every conversation address in this spec is a Phase-1 minted id (`topic_id < 0` ⇄ tuple (slack, channelId, threadTs?) ⇄ canonical key slack:<teamId>:<channelId>[:<threadTs>]), resolved through the ConversationRegistry; §11.1 of the keystone explicitly defers this exact lane here and its §5 tail pins that this lane 'slots in UNDER the funnel without changing its callers' — §2.3 honors that literally (the Slack redrive IS a funnel caller). Also: pending-relay-store (src/messaging/pending-relay-store.ts — Layer 2, extended additively); DeliveryFailureSentinel (src/monitoring/delivery-failure-sentinel.ts — Layer 3, channel-typed); recovery-policy pure module (src/monitoring/delivery-failure-sentinel/recovery-policy.ts — reused byte-unchanged; Slack rows feed it through the §2.3 typed-result mapping); MessagingToneGate + checkOutboundMessage (src/core/MessagingToneGate.ts; src/server/routes.ts:2103); OutboundContentDedup (src/messaging/OutboundContentDedup.ts); slack-reply.sh template refresh machinery (src/core/PostUpdateMigrator.ts:7792-7799)"
 supervision: "tier0 — a DELIBERATE, standard-aware exception declared per the keystone §6.2 pattern (P7): the queue drain + recovery state machine is a byte-deterministic pipeline with no judgment call to wrap (policy is the pure recovery-policy module, exhaustively table-testable; the §2.3 typed-result mapping is a static table); the LLM judgment call in the path is the EXISTING MessagingToneGate, which keeps its own supervision posture. NAMED supervisor-equivalent: the §7 three-tier suite + the live-proof scenario — they verify the exact property an LLM validator would eyeball (did the state machine converge each row to the one correct terminal?), mechanically."
-eli16-overview: "docs/specs/slack-outbound-robustness.eli16.md"
+eli16-overview: "slack-outbound-robustness.eli16.md"
 project: "two-goal-roadmap Phase 2.1 (topic 29836)"
 review-convergence: "2026-07-03 — architecture-converged-with-build-residual (round 8); review ceremony CLOSED under standing Session-A operator preapproval (topic 29836). Not the 0C/0M form — the single accepted residual (R8-M1) is carried into the build as its first test-backed increment (see review-disposition + accepted-build-residual)."
 approved: true  # build-authorization approval: the operator ratified closing the review at architecture-converged-with-build-residual and authorized the build (Session-A preapproval, topic 29836, 2026-07-03 — recorded verbatim in review-disposition below). Not a claim of 0C/0M convergence; it authorizes the build increments carrying R8-M1 as their first tested task.
@@ -628,8 +628,9 @@ future multi-machine posture, a row that WOULD have classified as a
 stand-down HOLD (ownership moved while the server was down) is purged as
 stale instead — loud, never misdelivered, and unreachable in today's
 single-Slack-machine reality. In today's single-Slack-machine reality the
-holding case never occurs; active-active reconciliation stays the keystone's
-tracked §11.2 follow-up.
+holding case never occurs; active-active reconciliation is out of scope here —
+it is owned by the keystone spec §11.2 (durable-conversation-identity.md),
+already tracked there.
 
 ### 2.4 `/slack/reply` — delivery-id idempotency (DURABLE) + system-template bypass
 
@@ -1176,7 +1177,7 @@ LLM-visible surface.
   times out strictly before the reservation TTL — the
   handler-outlives-TTL shape asserts exactly ONE post (the late handler
   records nothing); a definitive send failure deletes its reservation
-  in-line (the follow-up retry is NOT answered 409 and burns no spurious
+  in-line (the subsequent retry is NOT answered 409 and burns no spurious
   attempt).
 - Sweep failure classes (round-7 m1/m3): a transient raise failure backs
   off per `min(attempts, 8)` then the 4h floor; a permanent-shaped
