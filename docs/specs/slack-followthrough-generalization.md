@@ -1,6 +1,7 @@
 ---
 title: Slack Follow-Through Generalization (Phase 2.3)
-status: draft
+status: review-converging
+review-state: internal-converged; gemini-external-clean; codex-external-OWED (codex CLI unavailable on the review machine)
 parent-principle: Structure > Willpower
 related-principles:
   - The Agent Carries the Loop
@@ -17,6 +18,23 @@ tags: [draft]
 # Slack Follow-Through Generalization (Phase 2.3)
 
 > **One line:** A promise the agent makes in a **Slack** conversation must register as a durable commitment — the way a Telegram-born promise already does — so it survives a restart and is delivered by the machinery that already ships. The delivery side is DONE (durable-conversation-identity increment 2, merged + live-on-dev). The **registration TRIGGER on the Slack path is the only missing piece**, and this spec specifies exactly that, reusing the deployed machinery end to end.
+
+---
+
+## §0. Review log (convergence trajectory)
+
+Grounded against the worktree's **v1.3.737** tree; every cited line/route was code-verified.
+
+| Round | Lens | Findings (C / M / m) | Outcome |
+|---|---|---|---|
+| 0 | (draft) | — | Committed DRAFT |
+| 1 | internal: adversarial, security, integration, decision-completeness | **1C + 4M + 4m** | All folded + re-walked (C1 1:1-session/DM mis-delivery; M lane-precedence, beacon-arming, shared cap, dev-gate+master coupling; m resolution parity, floor, dryRun sink, test-shape) |
+| 2 | internal: fresh adversarial/security + **keystone-drift** | **0C + 3M** | Folded (bind-verify write-gating order; positive-id token-bearing honesty; keystone `action-claim observer` mislabel reconciled) |
+| 2 (ext) | **gemini-2.5-pro** | 1C | Folded — my R1-C1 guard was *incomplete*: the hook's `INSTAR_TELEGRAM_TOPIC` fallback re-opened the DM mis-delivery. Grounded fix: hook keys ONLY on `INSTAR_CONVERSATION_ID`, no fallback. |
+| 3 (ext) | **gemini-2.5-pro** | 2M | Folded — drop the ≥20-char floor (masked core targets); clamp POST payload to 16 KB. |
+| 4 (ext) | **gemini-2.5-pro** | **0C + 0M → CLEAN** | Clean round on the external lens. |
+
+**Convergence status:** internal multi-lens **converged**; **gemini** external **clean**; **codex** (GPT-tier) external pass is **OWED** (the codex CLI is not installed on the review machine). Per the spec-converge charter (one pass per available family + the roadmap's "re-execute the failure walks" rule), the **review-convergence tag is deliberately NOT applied** until the codex pass runs — so the `/instar-dev` build gate correctly still refuses. Open design questions for the operator remain in §10 (Q1–Q6).
 
 ---
 
