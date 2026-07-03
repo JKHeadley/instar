@@ -1,7 +1,7 @@
 ---
 slug: swap-continuity-antithrash
 title: Swap Continuity Under Pressure — Anti-Thrash Brakes + In-Flight Work Deferral (Roadmap 4.4, F3/P1-A6)
-status: draft (round-4 revision — all round-1 + round-2 + round-3 findings folded; see §15/§16/§17 dispositions)
+status: draft (round-5 revision — all round-1 + round-2 + round-3 + round-4 findings folded; see §15/§16/§17/§18 dispositions)
 author: echo
 eli16-overview: swap-continuity-antithrash.eli16.md
 parent-principle: "No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes"
@@ -9,7 +9,7 @@ constitution: Bounded Blast Radius (a quota optimization must not silently expan
 lessons-engaged: "P19 (three brakes + a bounded, loud breaker on a repeating loop — §3, §3.5; the monitor's pre-existing silent-retry gap is ALSO fixed, §3.6); P17 (ONE deduped attention item per thrash episode / per failure streak / per ledger loss — §3.5, §3.6, §6.4); P18 (every refusal, deferral, drop, and failure is a counter + a ledger row — sole named exception: ledger-lost refusals are counter-only because the writer itself is down, I5/§3.5; dry-run counters soak before authority — §6, §10); P14-family flap accounting (dwell + reversal state persisted, restart-safe — §3.2, §3.5); F3 finding family (killed-subagent enumeration + unanswered-inbound re-injection at the swap chokepoint — §4.3); Bounded-Notification-Surface lesson shape (bind the PRIMITIVE with a default class, never a per-caller table — §4.2); #1001 anti-mechanism (dev-gated key OMITTED from shipped config, never an explicit false — §7, §10); dynamic-MCP half-enable precedent (per-key config-liveness table — §7.1); CMT-1118 durable inbound queue named as the future inbound-mitigation source (§4.3); Signal vs. Authority (the gate's blocking authority argued, bounded, and classed — §4.4); P20 Verify the State, Not Its Symbol (the work gate verifies live pane/process/subagent STATE before any kill and treats an unreadable symbol as indeterminate, never as idle — §4.1, I7); P7 supervision: Tier 0, declared (§4.4 — deterministic quota/state math at every decision point, no LLM policy judgment anywhere in either piece)."
 earned-from: 2026-07-02 proactive-swap thrash day (echo dev agent, v1.3.722 — 36 executed proactive swaps / 72 [SessionRefresh] account-swap log lines across 8 waves; repeated kills of six parallel build subagents during the U4 and Session-A autonomous runs); F3 finding family (inbound eaten by respawn) and P1-A6
 roadmap: Session A item 4.4 — "Continuity under pressure: proactive/reactive swap + model-swap + refresh defer while a turn or live subagents are in flight, or re-inject the last unanswered inbound + enumerate killed subagents"
-review-convergence: null   # round 4 in flight — has not converged
+review-convergence: null   # round 5 in flight — has not converged
 approved: false
 ---
 
@@ -238,6 +238,23 @@ good as moving — the move buys no material margin and costs a kill+respawn.
 Only a hard rate-limit wall justifies a move then, and that is the reactive
 path's job.
 
+**"Measures" is load-bearing (R4-M1):** an account with NO quota reading, or a
+reading older than the §3.3 freshness bound, does not *measure* anything — it
+cannot satisfy this rule, and it counts toward all-hot exactly like a hot
+account. Without this pin the brake is defeated by its own measurement layer:
+the real primitive returns **0 when there is no reading** ("unknown = treated
+as empty / still selectable", `bindingUtilization`,
+`src/core/QuotaAwareScheduler.ts:44-57`), so a quota-blind account reads as the
+coolest target in the pool and the brake stands down precisely when it knows
+least. The validity gate lives in §3.3 (it is part of target eligibility, one
+rule for both brakes); when the filtered set is empty and at least one
+alternate was excluded by the validity gate ALONE, the refusal reason is
+`target-unmeasured` rather than `all-hot` — a measurement outage must be
+distinguishable from genuine heat, never dressed as it. `target-unmeasured`
+refusals get the same enter/leave/heartbeat state-transition treatment as
+all-hot rows (a sustained poller outage must not relocate the per-tick write
+pattern this scheme exists to prevent).
+
 Refusal is per-candidate-session and logged with reason `all-hot` (§6). To
 keep the ledger write rate sane during a sustained all-hot afternoon, all-hot
 refusals are recorded as **state-transition rows**, not per-tick rows: one row
@@ -356,8 +373,62 @@ the last `dwellMs` is not proactively swapped again. Refusal reason: `dwell`.
 
 ### 3.3 Brake (c) — target-materially-better
 
-**Rule:** the executed target must satisfy BOTH bounds, evaluated on the same
-snapshot that the decision logs (§6):
+**Bound 0 — the quota-reading validity gate (R4-M1; evaluated BEFORE both
+bounds below):** a proactive target is eligible ONLY when its quota reading is
+**present and fresh** — `lastQuota != null` AND `now − measuredAt ≤
+quotaFreshnessMs` (default **1 800 000, 30 min** = 2× the quota poller's
+default 15-min cadence, `QuotaPoller.ts` `pollIntervalMs ?? 15 * 60_000`). An
+absent or stale reading is NOT "under the ceiling"; the account is excluded
+from the FILTER set and counts toward all-hot (§3.1). Why this gate must
+exist, grounded in the real primitives: `bindingUtilization` returns **0 when
+there is no reading** (`src/core/QuotaAwareScheduler.ts:44-57` — deliberate
+for reactive selectability, catastrophic as a proactive optimization input);
+enrollment starts every account at `lastQuota: null`
+(`SubscriptionPool.add()`, `src/core/SubscriptionPool.ts:323`); and a FAILED
+poll leaves the
+last-good snapshot in place indefinitely (`QuotaPoller.pollAll` skips the
+update on a null read — `failed++; continue`), while `measuredAt` exists on
+the snapshot (`AccountQuotaSnapshot.measuredAt`) and NOTHING in
+`selectAccount`/`accountAtPressure` reads it. Without bound 0, a
+freshly-enrolled or poll-broken account measures 0 → passes both bounds by
+maximum margin → attracts EVERY hot session, the all-hot brake stands down,
+and no detector fires (each session hops once — no inversion edge, no
+frequency crossing): unbounded kills paced only by the per-target-per-tick
+cap.
+
+**The SOURCE leg carries the same validity requirement:** a source with an
+ABSENT reading measures 0 and is never ≥ `thresholdPct` — already the code's
+behavior, now stated as normative rather than accidental. A source whose
+reading is STALE beyond the freshness bound is NOT acted on proactively even
+if the frozen value reads ≥ threshold: a kill must never ride an unverifiable
+pressure claim. Proactive optimization therefore requires a fresh reading on
+BOTH legs — when the whole measurement layer goes dark (poller broken), the
+optimizer effectively pauses, the measurement-layer analog of I12 (invariant
+I13: the optimizer never outlives its measurements). The REACTIVE path is
+deliberately untouched (I6): the primitive's unknown-is-selectable behavior
+exists FOR rescue — a walled session's rescue onto an unmeasured account still
+beats death — and reactive selection keeps it byte-for-byte.
+
+**The enrollment-day case (no permanent exile of a healthy new account):** a
+freshly-enrolled account is proactive-ineligible only until its FIRST reading
+lands. The poller covers every non-disabled claude-code account each
+`pollIntervalMs` (15 min default), and the monitor's existing `triggerPoll`
+hook (`ProactiveSwapMonitor.ts:191-198` — fires a fresh `pollAll` whenever any
+account is in the watch zone, i.e. exactly the moments proactive swap wants
+targets) accelerates that to within one tick under pressure. Only an account
+whose polls keep FAILING stays unmeasured — the honest state (a seat whose
+usage cannot be read is usually a seat whose auth is broken, which could not
+serve a landed session either), visible via `target-unmeasured` counters, the
+`quotaValidity` status block (§6.3), and the account's own `needs-reauth`
+status. **Sustained measurement blindness surfaces once (P17/P19):** when the
+ENTIRE alternate set has been validity-excluded continuously for longer than
+`allHotHeartbeatMs`, ONE deduped attention item is raised ("proactive
+optimization is measurement-blind — no fresh quota readings for 30+ min"),
+`episodeKind: 'measurement-blind'` — a paused-by-blindness optimizer must
+never be silent about why.
+
+**Rule:** the executed target must additionally satisfy BOTH bounds, evaluated
+on the same snapshot that the decision logs (§6):
 
 1. **Absolute ceiling:** `bindingUtilization(target) < thresholdPct −
    targetHeadroomPct` — default ceiling **80 − 15 = 65%**. A target in the
@@ -384,9 +455,12 @@ floor.
 
 **Normative selection order (order of operations is load-bearing):**
 
-1. **FILTER** the alternate set to accounts whose `bindingUtilization` is
+1. **FILTER** the alternate set to accounts that pass the validity gate
+   (bound 0 — reading present + fresh) AND whose `bindingUtilization` is
    under the absolute ceiling (bound 1). If the filtered set is empty → the
-   all-hot brake refuses (§3.1).
+   refusal is `all-hot` when every alternate carried a valid reading at/above
+   the ceiling, `target-unmeasured` when at least one alternate was excluded
+   by the validity gate alone (§3.1).
 2. **SCORE** with `selectAccount`'s existing use-before-reset scoring — over
    the FILTERED cool set ONLY (drain the soonest-resetting COOL account
    first). The scoring was never the bug; applying it over the hot band was.
@@ -409,16 +483,40 @@ other target survives).
 performs ONE authoritative target selection under these bounds and passes the
 chosen target THROUGH the swap call — `cfg.swap` gains an optional
 `targetAccountId`. `QuotaAwareScheduler.onQuotaPressure` honors an explicit
-target instead of re-selecting, after re-validating it against a fresh
-snapshot at execute time (target gone / no longer under the ceiling →
-structured refusal `target-revalidation-failed`, retried next tick — never a
-silent fallback to the 90-threshold re-selection). Execute-time revalidation
-covers the SOURCE too (R3-m3): the execute call re-reads the session's
-CURRENT account and requires it to equal `intent.from` — a reactive swap that
-COMPLETED in the sub-tick window between the pipeline pass and the execute
-call (I9's retry-tick invalidation cannot see inside a tick) invalidates the
-intent (`invalidated`, reason `intent-stale`) instead of landing a second
-kill on a just-rescued session. Reactive callers pass no
+target instead of re-selecting, after re-validating the WHOLE decision's
+materiality against a fresh snapshot at execute time (R4-m4 — the checks are
+enumerated; refuse, never re-select, on any failure):
+
+1. **Target validity + ceiling:** the target still passes bound 0 (reading
+   present + fresh) and bound 1 (under the ceiling) → else structured refusal
+   `target-revalidation-failed`, retried next tick — never a silent fallback
+   to the 90-threshold re-selection.
+2. **Source identity (R3-m3):** the execute call re-reads the session's
+   CURRENT account and requires it to equal `intent.from` — a reactive swap
+   that COMPLETED in the sub-tick window between the pipeline pass and the
+   execute call (I9's retry-tick invalidation cannot see inside a tick)
+   invalidates the intent (`invalidated`, reason `intent-stale`) instead of
+   landing a second kill on a just-rescued session.
+3. **Source pressure, fresh:** the source still measures ≥ `thresholdPct` (on
+   a valid reading) → else `invalidated`/`intent-stale` — a wave that
+   subsided inside the sub-tick window must not produce a pointless kill.
+4. **Improvement delta, fresh:** `source − target ≥ minImprovementPct` →
+   else `target-revalidation-failed`.
+
+Checks 3–4 close the residual sub-tick seam the deferred path never had
+(§4.2's retry ticks re-run the whole pipeline; the direct-execute window did
+not) — property (c) is verified at the actual kill point, not one sub-tick
+before, at the cost of two comparisons on a snapshot the revalidation already
+holds. **Row-volume bound for `target-revalidation-failed`, stated (R4-L4 —
+accepted rather than heartbeat-schemed):** these are per-tick rows without
+the enter/leave/heartbeat treatment; the accepted worst case is a snapshot
+flip-flopping around the ceiling each poll, producing at most one refused row
+per candidate session per tick (~20 rows/h/session at the 3-min tick) —
+self-limiting because the next tick's own FILTER re-runs against the fresh
+snapshot and usually resolves to a different target or an all-hot refusal
+(which HAS volume treatment). Visible in `refusals.byReason`; if a soak shows
+sustained volume, extending the state-transition scheme to this reason is a
+purely-additive later change. Reactive callers pass no
 target and get today's behavior byte-for-byte, including the drain-first
 scoring, which remains correct there. The checked target IS the executed
 target (invariant I1), and the proactive and reactive paths stop sharing a
@@ -478,14 +576,35 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   carve-outs, stated: (1) `ledger-lost` refusals cannot write ledger rows —
   the writer is what died — so they are counted in-memory on the status
   route (§6.3 `ledger` block) and covered by the episode's ONE attention
-  item (§6.4), the durable trace; this is I5's single named exception.
+  item (§6.4), the durable trace. (1b — the outage's OTHER row-loss class,
+  R4-m1:) while the ledger is unwritable, REACTIVE swaps still execute (I6)
+  and forced interactive refreshes still `proceed` — and neither can write
+  its row either. These non-refusal decisions **update the in-memory
+  write-through index REGARDLESS of append failure** (dwell's clock-start
+  for a reactively-rescued session, the frequency count, and reversal state
+  stay primed through the outage — otherwise the post-resume first tick
+  could prematurely re-swap a just-rescued session, the exact dwell case)
+  and are counted in the §6.3 `ledger` block (`rowsLostWhileDown`). The
+  I5 exception is therefore an outage CLASS, not a single reason: refusals
+  during the outage are counter-only; executed/proceeded decisions are
+  index-primed + counted; the durable trace for all of them is the
+  episode's one attention item. Index priming survives only until the next
+  restart (the rows that would have re-primed it were never written) —
+  bounded honestly: proactive is paused for the whole outage, so the
+  restart-lost state is reactive dwell/frequency bookkeeping only, and the
+  boot flags UNDER-PRIMED as usual.
   (2) The pause is scoped to UNWRITABLE. A corrupt-but-writable or absent
   ledger hydrates cold/under-primed and KEEPS optimizing — bounded: new rows
   land immediately and every brake re-primes within its own window (§9's
   cold-start acceptance). The unbounded-cold case R3-M3 names is the one
   where no new state can ever accumulate; that is the case that pauses.
-- **Read path (never a per-decision scan):** hydrate ONCE at boot. The
-  hydration window is `hydrationWindowMs = retentionBoundMs` (§3.2 — ONE
+- **Read path (never a per-decision scan):** hydrate ONCE at boot — and
+  UNCONDITIONALLY (R4-L3): the ledger module loads and hydrates at every
+  boot regardless of `antiThrash.enabled`, and reactive rows are appended
+  regardless, so the index is warm the moment the flag flips on mid-run
+  (§7.1 marks the flag live-per-tick; a flag whose enable had to wait for a
+  restart-to-hydrate would be the half-enable trap §7.1 exists to prevent).
+  The hydration window is `hydrationWindowMs = retentionBoundMs` (§3.2 — ONE
   formula for both bounds: `max(dwellMs, reversalWindowMs,
   thrashBreakerBackoffMs, swapFrequencyWindowMs)`, = 3 h at defaults). The
   breaker backoff (60 min) is deliberately inside the bound — a window that
@@ -533,6 +652,13 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   breaker directly (T2 below, R3-M2). Detection-only in refusal terms — it
   never refuses the triggering execution (dwell already paces the session);
   what it does is trip the breaker that stops the systemic rotation.
+  **The evasion band, named (R4-L1):** hops spaced wider than
+  `swapFrequencyWindowMs / (swapFrequencyThreshold − 1)` (~90 min at
+  defaults) never trip T2 — the inherent evasion band of any threshold
+  detector. Each such hop must still independently pass (a)+(c)+dwell, so
+  it is individually-justified churn at ≤⅔ the incident pace, bounded by
+  dwell alone. Named so a soak reading "green detectors + steady ~90-min
+  churn" is interpreted as the band, not as proof of no rotation.
 - **Thrash episode / breaker (two trigger tiers — the arithmetic is
   load-bearing, R3-M2):** the breaker opens on EITHER trigger:
   - **T1 (inversion tier):** ≥ `thrashBreakerThreshold` (default **2**)
@@ -567,14 +693,28 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   shape) are caught the same way — each rotating session's own crossing
   opens or joins the episode — and usually earlier via T1's pair-level arm.
 
-  **Episode continuation (P17 — a sustained rotation is one episode, not an
-  hourly alert drip):** after the backoff half-opens, a further execution
-  that re-crosses the still-rolling 3 h window re-opens the breaker; when
-  the re-crossing session is the SAME session as the previous frequency
-  episode's trigger and lands within `swapFrequencyWindowMs` of that
-  episode's close, it is a CONTINUATION — same `episodeId`, deadline
-  extended, NO second attention item. A different session's crossing is a
-  genuinely new episode (new information, new item).
+  **Episode continuation (P17 — a sustained pathology is ONE episode, not an
+  hourly alert drip; generalized over BOTH trigger tiers, R4-m2):** a
+  re-open within the trigger's own detection window of the previous
+  episode's close, on the SAME trigger signature, is a CONTINUATION — same
+  `episodeId`, deadline extended (the continuation row stamps the same
+  `episodeId` with the NEW `breakerDeadline`, so the boot derivation still
+  anchors correctly on the most-recent deadline-carrying row), NO second
+  attention item. Trigger signatures and windows, per tier: **T2** — same
+  SESSION as the previous frequency episode's trigger, within
+  `swapFrequencyWindowMs` of that episode's close; **T1** — same unordered
+  ACCOUNT PAIR as the previous inversion episode's open-marker increment
+  row, within `reversalWindowMs` of that episode's close. Without the T1
+  arm, a sustained inversion-tier thrash re-accumulates 2 increments within
+  ~2 ticks of each half-open and re-opens hourly — a literal builder minting
+  a new `episodeId` each time produces exactly the alert drip this
+  paragraph's own P17 line forbids. A crossing with a DIFFERENT signature
+  (another session for T2, another pair for T1) is a genuinely new episode
+  (new information, new item). **Half-open, pinned (one sentence):**
+  half-open IS closed-with-continuation-memory — no third persisted state
+  exists; the only thing distinguishing half-open from closed is that a
+  re-open matching the continuation rule joins the previous episode instead
+  of minting a new one.
 
   Opening (either tier) suppresses ALL proactive swaps for
   `thrashBreakerBackoffMs` (default **3 600 000, 1 h**), raises ONE deduped
@@ -720,12 +860,22 @@ but are distinct in the ledger (`subagentLeg: 'ok'|'absent'|'indeterminate'`,
 are separately measurable, and the pseudocode above now matches I7/§6.1's
 vocabulary instead of overloading `indeterminate` for both.
 
-**Uncertainty direction (I7, restated with the reactive-arm fix):**
+**Uncertainty direction (I7, restated with the reactive-arm fix; the `||`
+above is defined over the tri-state, R4-m3):**
 
-- **Proactive/optimization callers:** any `indeterminate` on BOTH legs →
-  resolve **busy** (fail toward not killing work). If only the subagent leg is
-  unavailable (`claudeSessionId` missing), the footer leg still decides; the
-  ledger row flags `subagentLeg: 'absent'` so the blind spot is measurable.
+- **Proactive/optimization callers:** a session is idle ONLY when **every
+  READABLE leg affirmatively reports idle**; `'working'` OR `'indeterminate'`
+  on ANY leg resolves **busy** (fail toward not killing work). The mixed case
+  is decided explicitly: footer `indeterminate` + subagent confidently-false
+  → BUSY — a possibly-mid-turn session is not killed just because tmux was
+  flaky while the subagent registry was readable (the previous "both legs"
+  wording permitted the inverse reading, which inverts I7's purpose exactly
+  when tmux is flaky). `'absent'` is the one excluded state (per the R3-L1
+  pin: the leg is STRUCTURALLY unreadable, not failed) — the remaining
+  readable leg decides alone; the ledger row flags `subagentLeg: 'absent'`
+  so the blind spot is measurable. The pseudocode's `||` is therefore:
+  resolve busy iff any leg ∈ {`'working'`, `'indeterminate'`, active-true};
+  resolve idle iff every non-`'absent'` leg ∈ {`'idle'`, active-false}.
   Deferrals caused purely by indeterminacy carry reason `busy-indeterminate` —
   a broken detector is visible in the ledger rather than masquerading as real
   work.
@@ -1018,7 +1168,9 @@ instead of accepting-then-failing:
 - **I2 (all-hot ⇒ zero proactive):** when no eligible target is under the
   target ceiling, zero proactive swaps execute; the ledger carries
   enter/leave/heartbeat rows per candidate (§3.1) sufficient to prove the
-  episode externally.
+  episode externally. Eligibility INCLUDES the §3.3 validity gate (R4-M1):
+  an unmeasured or stale-read alternate is not under the ceiling, so a
+  quota-blind account can never stand the brake down.
 - **I3 (dwell):** a session account-swapped at T is not proactively swapped
   again before T+`dwellMs`, across server restarts (ledger-backed).
 - **I4 (no optimization kill of live work):** a proactive swap, model-swap, or
@@ -1028,19 +1180,27 @@ instead of accepting-then-failing:
 - **I5 (nothing silent):** every refused, deferred, dropped, invalidated,
   failed, suppressed, or proceeded-over-work decision writes one structured
   ledger row with its reason (per the §6.1 schema), and the counters are
-  readable on the status route. Single named exception (R3-M3):
-  `ledger-lost` refusals cannot write rows — the writer is what died — so
-  they are status-counted and covered by the episode's one attention item
-  (§3.5); every other decision class writes its row.
+  readable on the status route. Single named exception CLASS (R3-M3 as
+  amended by R4-m1): decisions taken WHILE the ledger is unwritable cannot
+  write rows — the writer is what died. Within the outage class: refusals
+  (`ledger-lost`) are status-counted only; executed/proceeded decisions
+  (reactive swaps, forced refreshes) additionally UPDATE the in-memory
+  index (brakes stay primed) and are counted (`rowsLostWhileDown`); the
+  durable trace for the whole class is the episode's one attention item
+  (§3.5). Every decision outside an unwritable-ledger episode writes its
+  row.
 - **I6 (the guarantee is untouched):** the reactive swap path never waits more
   than `reactiveGraceMs` (+ one tick of scheduling), ignores dwell, reversal,
   the all-hot brake, and the thrash breaker, and with Piece 1 dry-run + Piece
   2 dark its decision behavior is byte-identical to v1.3.722.
-- **I7 (uncertainty direction, per caller class):** detector uncertainty
-  resolves BUSY for proactive/optimization callers (protect work) and
-  BUSY-FOR-GRACE for reactive callers (protect the mid-write without ever
-  stranding — the grace deadline always proceeds); indeterminate-detector
-  deferrals are distinguishable in the ledger (`busy-indeterminate`).
+- **I7 (uncertainty direction, per caller class):** for
+  proactive/optimization callers a session is idle ONLY when every readable
+  leg affirmatively reports idle — `'working'` or `'indeterminate'` on ANY
+  leg resolves BUSY (protect work; `'absent'` legs excluded per the R3-L1
+  pin — the remaining readable leg decides); reactive callers resolve
+  uncertainty BUSY-FOR-GRACE (protect the mid-write without ever stranding —
+  the grace deadline always proceeds); indeterminate-detector deferrals are
+  distinguishable in the ledger (`busy-indeterminate`).
 - **I8 (breaker is bounded, loud, and restart-proof):** the thrash breaker
   always half-opens after its backoff, opening it raises exactly one deduped
   attention item per `episodeId` (surviving restarts — the hydration window
@@ -1068,6 +1228,15 @@ instead of accepting-then-failing:
   append (§3.5, R3-M3); the reactive guarantee is untouched (I6). Proactive
   optimization and its anti-thrash state are one unit: losing the second
   pauses the first, never the reverse.
+- **I13 (the optimizer never outlives its measurements):** a proactive swap
+  executes only between accounts with PRESENT, FRESH quota readings (§3.3
+  bound 0, both legs, re-verified at execute time) — an absent or
+  stale-beyond-bound reading can neither nominate a source nor qualify a
+  target, and it counts toward all-hot. When the measurement layer is fully
+  dark, proactive optimization is effectively paused and says so
+  (`target-unmeasured` state rows + ONE `measurement-blind` attention item);
+  the reactive guarantee never depends on a reading (I6 — unknown stays
+  selectable for rescue, byte-for-byte today's primitive).
 
 ## 6. Observability
 
@@ -1090,6 +1259,7 @@ matrix (● = always, ○ = when applicable, — = never):
 | `fromUtilPct` / `toUtilPct` | number / number? | ● | ○ | ○ | ○ | ○ | ○ | ● |
 | `reason` | enum §6.2 | — | ● | ● | ● | ● | ● | ● |
 | `dwellRemainingMs` | number | — | ○ (dwell) | — | — | — | — | — |
+| `unmeasuredAlternates` | number | — | ○ (target-unmeasured) | — | — | — | — | — |
 | `deferralAgeMs` | number | ○ (post-defer) | — | ● | ● | ○ | — | ○ |
 | `deferCount` | number | ○ | — | ● (final row) | ● | ○ | — | ○ |
 | `inFlight` | `{turn: boolean, subagents: number}` | ○ | ○ | ● | ● | ○ | — | ● |
@@ -1099,10 +1269,10 @@ matrix (● = always, ○ = when applicable, — = never):
 | `inbound` | `'reinjected'\|'none'\|'unknown'` | — | — | — | — | — | — | ● |
 | `force` / `authLevel` | boolean / `'bearer'` | — | — | — | — | — | — | ○ |
 | `defaultAccountChanged` | boolean | ○ (reactive untagged) | — | — | — | — | — | ○ |
-| `episodeId` | string | ○ (breaker) | ○ (breaker/all-hot) | ○ | ○ | ○ | ○ (failure streak) | ○ |
-| `episodeKind` | `'thrash-breaker'\|'all-hot'\|'failure-streak'` | ○ (with episodeId) | ○ (with episodeId) | ○ | ○ | ○ | ○ (failure streak) | ○ |
+| `episodeId` | string | ○ (breaker) | ○ (breaker/all-hot/measurement-blind) | ○ | ○ | ○ | ○ (failure streak) | ○ |
+| `episodeKind` | `'thrash-breaker'\|'all-hot'\|'failure-streak'\|'measurement-blind'` | ○ (with episodeId) | ○ (with episodeId) | ○ | ○ | ○ | ○ (failure streak) | ○ |
 | `breakerOpenedAt` / `breakerDeadline` | ISO-8601 / ISO-8601 | ○ (thrash-breaker only) | ○ (thrash-breaker only) | ○ (thrash-breaker only) | ○ (thrash-breaker only) | ○ (thrash-breaker only) | — | ○ (thrash-breaker only) |
-| `transition` | `'enter'\|'leave'\|'heartbeat'` | — | ○ (all-hot / thrash-breaker) | — | — | — | — | — |
+| `transition` | `'enter'\|'leave'\|'heartbeat'` | — | ○ (all-hot / thrash-breaker / target-unmeasured) | — | — | — | — | — |
 | `errorClass` | string (constructor-name/enum ONLY — §3.6) | — | — | — | — | — | ● | — |
 
 **Episode-field pairing rule (R3-m1):** `episodeId` and `episodeKind` travel
@@ -1130,15 +1300,15 @@ privilege is created by this file).
   after grace, or force; its `reason` carries the busy-state observed at kill
   time: the `busy-*` member that was live when the grace deadline or force
   fired).
-- `reason`: `all-hot | dwell | no-material-target | reversal | thrash-breaker
-  | target-revalidation-failed | busy-turn | busy-subagents |
-  busy-indeterminate | deferral-ceiling-dropped | intent-stale |
-  session-busy | swap-exec-failed | ledger-lost` (one spelling —
-  `session-busy` is also the §4.5 wire code; `ledger-lost` is the one reason
-  that appears ONLY in status counters and log lines, never in a ledger row
-  — §3.5/I5).
-- `episodeKind`: `thrash-breaker | all-hot | failure-streak` (paired with
-  `episodeId` on every stamped row — §6.1).
+- `reason`: `all-hot | dwell | no-material-target | target-unmeasured |
+  reversal | thrash-breaker | target-revalidation-failed | busy-turn |
+  busy-subagents | busy-indeterminate | deferral-ceiling-dropped |
+  intent-stale | session-busy | swap-exec-failed | ledger-lost` (one
+  spelling — `session-busy` is also the §4.5 wire code; `ledger-lost` is the
+  one reason that appears ONLY in status counters and log lines, never in a
+  ledger row — §3.5/I5).
+- `episodeKind`: `thrash-breaker | all-hot | failure-streak |
+  measurement-blind` (paired with `episodeId` on every stamped row — §6.1).
 - `breakerState`: `closed | open | half-open`.
 - `callerClass`: §4.2 (defined once as the gate's input type; server-internal
   only per I11).
@@ -1161,7 +1331,8 @@ privilege is created by this file).
   execFailures: {bySession, streaks}, deferrals: {active, byReason, dropped,
   invalidated, proceededWithMitigations}, hydration:
   'complete'|'under-primed', corruptLinesSkipped, ledger: {writable,
-  lostSince?, ledgerLostRefusals}}` — the **thrash-detected
+  lostSince?, ledgerLostRefusals, rowsLostWhileDown}, quotaValidity:
+  {freshnessMs, unmeasuredAccounts, staleAccounts}}` — the **thrash-detected
   counter** the operator asks for lives here, and the `ledger` block is the
   in-memory home of the `ledger-lost` accounting the ledger itself cannot
   hold (§3.5, R3-M3). All fields are LOCAL-SCOPE
@@ -1185,9 +1356,12 @@ privilege is created by this file).
   never a load-bearing gap, because no critical path depends on it until the
   fleet flip).
 - Attention items: ONE per thrash episode (deduped on `episodeId`, §3.5,
-  frequency-episode continuations included — a sustained rotation is one
-  item, not an hourly drip); ONE per execution-failure streak (§3.6, kinds
-  separated); ONE if the ledger is unwritable — and that item now reports
+  episode continuations included across BOTH trigger tiers, R4-m2 — a
+  sustained rotation or inversion pathology is one item, not an hourly
+  drip); ONE per execution-failure streak (§3.6, kinds separated); ONE per
+  measurement-blind episode (§3.3 bound 0 — the whole alternate set
+  validity-excluded past `allHotHeartbeatMs`); ONE if the ledger is
+  unwritable — and that item now reports
   BOTH the observability loss AND that proactive optimization is paused
   until writes recover (§3.5, R3-M3), because ledger loss is no longer a
   continue-cold condition.
@@ -1217,7 +1391,11 @@ privilege is created by this file).
         // thrashBreakerBackoffMs, swapFrequencyWindowMs) — §3.2 (R3-M1);
         // not a knob: derived, so no window can outrun its own state
         "allHotHeartbeatMs": 1800000,     // all-hot/breaker heartbeat row cadence
-        "reactiveHopAlertThreshold": 2    // reactive hops per session per reversalWindowMs → ONE alert
+        "reactiveHopAlertThreshold": 2,   // reactive hops per session per reversalWindowMs → ONE alert
+        "quotaFreshnessMs": 1800000       // §3.3 bound 0: a reading older than this is
+                                          // not a measurement (default 2× the poller's
+                                          // 15-min cadence); absent/stale ⇒ not a
+                                          // proactive source OR target (R4-M1)
       }
     }
     // Piece 2 (the work gate). The "swapContinuity" KEY IS OMITTED from the
@@ -1243,6 +1421,18 @@ stage-following), not here — §4.2.
 
 All numeric reads use nullish coalescing (`?? default`, never `||` — zero is a
 legal disable for several of these).
+
+**Cross-knob coherence warnings (R4-L2 — config-load, warn-only, never a
+startup error):** two knob combinations silently defang a detector and get
+one boot-log warning each: (1) `dwellMs > swapFrequencyWindowMs /
+(swapFrequencyThreshold − 1)` (> 90 min at defaults) disarms T2 — three
+dwell-paced hops can no longer fit the frequency window (higher dwell also
+means less churn, so the residual is small; the warning keeps a
+conservative-looking retune from killing a detector unnoticed); (2)
+`quotaFreshnessMs < ` the quota poller's `pollIntervalMs` makes every reading
+stale between polls — proactive optimization degrades toward permanent
+refusal (the SAFE direction, but almost certainly a misconfiguration worth a
+line).
 
 ### 7.1 Per-key config liveness (the half-enable trap, named per key)
 
@@ -1448,7 +1638,42 @@ Run on the dev agent, real pool, real sessions:
   newest-rotated-segment case; schema round-trip for every decision kind
   (episodeKind/breakerDeadline pairing rule included); mitigation payload
   clamps + delimiter neutralization covering EVERY non-fixed field —
-  including a hostile `agentType` string (R3-m4).
+  including a hostile `agentType` string (R3-m4);
+  **quota-validity gate (R4-M1) — both sides of every boundary:** a target
+  with `lastQuota: null` is NOT eligible (excluded from the filter, counts
+  toward all-hot) even though `bindingUtilization` returns 0 for it — the
+  quota-blind pile-on attack pinned; a reading at `quotaFreshnessMs − ε` is
+  eligible, at `+ε` is not; a STALE-hot source (frozen ≥ threshold) is never
+  a proactive candidate; the refusal reason resolves `target-unmeasured`
+  (with `unmeasuredAlternates ≥ 1`) when the validity gate alone emptied the
+  filter, `all-hot` when every alternate carried a valid hot reading;
+  enrollment-day flip: an account enrolled mid-run is refused as a target
+  until its first poll lands, then becomes eligible on the next tick (no
+  permanent exile); REACTIVE selection with an unmeasured account stays
+  byte-identical (unknown still selectable — I6); sustained
+  measurement-blindness raises exactly ONE `measurement-blind` attention
+  item (episode-deduped); **execute-time full-materiality revalidation
+  (R4-m4):** source pressure subsiding in the sub-tick window ⇒
+  `intent-stale`, improvement delta collapsing ⇒
+  `target-revalidation-failed`, target reading going stale ⇒
+  `target-revalidation-failed` — each pinned at the execute call, not the
+  pipeline pass; **mixed-leg I7 matrix (R4-m3):** footer `indeterminate` +
+  subagent confidently-false resolves BUSY for proactive callers (the
+  unsafe both-legs reading pinned out), footer idle + subagent
+  `indeterminate` resolves BUSY, footer idle + subagent `'absent'` resolves
+  by the footer leg alone; **T1 episode continuation (R4-m2):** a sustained
+  inversion thrash re-opening within `reversalWindowMs` of the previous
+  episode's close on the SAME account pair joins that episode (same
+  episodeId, extended deadline, NO second item — the hourly-drip regression
+  pinned); a different pair mints a new episode; the continuation row's new
+  `breakerDeadline` anchors the boot derivation; **ledger-outage index
+  priming (R4-m1):** a reactive swap executed while the ledger is
+  unwritable primes dwell in the in-memory index (the post-resume first
+  tick refuses `dwell` for that session) and increments `rowsLostWhileDown`;
+  **cross-knob warnings (R4-L2):** each of the two §7 combinations logs
+  exactly one boot warning; **unconditional hydration (R4-L3):** the ledger
+  hydrates with `antiThrash` disabled and the index is warm at a mid-run
+  flag flip.
 - **Integration (`tests/integration/`):** `/subscription-pool/proactive-swap`
   additive `brakes`/`deferrals`/`hydration`/`ledger` fields; `/sessions/refresh` 409
   `session-busy` shape + `force:true` semantics (force overrides the gate,
@@ -1489,7 +1714,7 @@ Run on the dev agent, real pool, real sessions:
 | Pane capture fails / tmux busy (proactive check) | `busy-indeterminate` → defer (I7); persistent indeterminate rows in the ledger are the detector-broken signal |
 | Pane capture fails (reactive grace) | busy-for-grace (S2/I7) — worst case the swap waits the full 120 s, then proceeds; never stranded, never mid-write |
 | `claudeSessionId` missing on the state record | subagent leg unavailable → footer leg decides; ledger rows flag `subagentLeg:'absent'` so the blind spot is measurable |
-| Swap ledger UNWRITABLE at runtime | proactive optimization PAUSES — every proactive intent refused `ledger-lost` (status-counted; rows unwritable by definition), ONE attention item naming both the loss and the pause; level-triggered resume on the first successful append; reactive untouched (I6) — the optimizer is never live while its brakes are cold (§3.5, I12, R3-M3) |
+| Swap ledger UNWRITABLE at runtime | proactive optimization PAUSES — every proactive intent refused `ledger-lost` (status-counted; rows unwritable by definition), ONE attention item naming both the loss and the pause; level-triggered resume on the first successful append; reactive untouched (I6) — the optimizer is never live while its brakes are cold (§3.5, I12, R3-M3). Non-refusal decisions during the outage (reactive swaps, forced proceeds) prime the in-memory index despite the failed append and count as `rowsLostWhileDown` (R4-m1) — dwell/frequency stay warm until the next restart |
 | Swap ledger corrupt/absent at boot (writable) | hydrates cold/under-primed (flagged), ONE log flag; optimization continues — new rows land immediately and every brake re-primes within its own window (bounded self-heal, §9) — the pause is scoped to the unbounded-cold UNWRITABLE case only |
 | Swap execution throws | `failed` row + per-session exponential backoff (cap dwellMs); 3 consecutive → ONE deduped attention item (§3.6) — never a silent every-tick retry |
 | Thrash breaker wedges open | impossible by construction (time-based half-open, no external latch); state re-derived identically across restarts; posture visible on `/guards` |
@@ -1499,7 +1724,9 @@ Run on the dev agent, real pool, real sessions:
 | Reactive hop-chain in an all-hot pool | never refused (I6); capped by the refresh rate counter; ONE deduped escalation per episode at the hop threshold or on a rate-cap refusal (§3.1) |
 | Restart inside the second half of a breaker backoff | hydration window covers the FULL backoff; deadline carried in-row; breaker boots OPEN with the original deadline (§3.5, R2-M2) |
 | Ledger segment rotated inside the window | segment-walk reads newest-first across retained segments; if retention cannot cover the window the boot flags `under-primed` — never a silent cold index (§3.5) |
-| QuotaPoller stale during grace window | execute-time revalidation (§3.3) uses the freshest snapshot and refuses on ceiling breach — stale data fails toward NOT swapping (proactive) |
+| QuotaPoller lag within one poll interval | execute-time revalidation (§3.3) uses the freshest snapshot and refuses on ceiling breach; bound 1's 15-point headroom budgets exactly this lag — **bounded** poll-lag fails toward NOT swapping (proactive). This row's claim is deliberately scoped to bounded lag (R4-M1 corrected the old row, which overclaimed the safe direction for ALL staleness) |
+| Quota reading ABSENT (fresh enrollment; never polled) | proactive-ineligible on BOTH legs (§3.3 bound 0): never a source (measures 0 < threshold — code behavior, now normative), never a target (fails the validity gate; counts toward all-hot; refusal `target-unmeasured`). Self-heals within ≤1 poll interval — `pollAll` covers every non-disabled account and the monitor's `triggerPoll` accelerates it under pressure; reactive may still select it (I6, rescue-selectability preserved) |
+| Quota reading STALE beyond `quotaFreshnessMs` (poller broken, seat auth dead, parse failure) | excluded from proactive source AND target roles even when the frozen value looks cool/hot; sustained whole-pool blindness = proactive effectively paused with `target-unmeasured` enter/leave/heartbeat rows + ONE `measurement-blind` attention item (I13) — never a silent optimizer running on fiction; reactive untouched |
 | Server restart mid-deferral | pending deferrals dropped; intent regenerates from live quota state next tick (deferral state is derived) |
 | Server restart mid-breaker-backoff | breaker re-derives OPEN from the ledger with the original deadline; no re-alert (episodeId dedupe) |
 | Both detector legs broken for a genuinely idle session | proactive swaps defer until the 30 min ceiling then drop (with re-intent backoff); cost is a missed optimization, never a stuck session; reactive unaffected (busy-for-grace bounds it at 120 s) |
@@ -1676,6 +1903,31 @@ untouched on every changed path.
 | R3-L3 (re-intent backoff "(default)" implies an unnamed knob) | Adopted — FIXED to `dwellMs` in v1, stated; `reIntentBackoffMs` named as the purely-additive later knob if the soak shows dwell is the wrong scale | §4.2 |
 | R3-L4 ("answer it first" framing priority) | Adopted — normative framing rule: the quoted inbound is user CONTENT answered as a user message, never operational-instruction priority; the fixed template states it | §4.3(3) |
 
+## 18. Round-4 findings disposition
+
+Every round-4 finding (report: `docs/specs/reports/
+swap-continuity-antithrash-round4-findings.md`, reviewed commit e4c5f4a48) and
+what this revision did with it. Zero rejected. The single MAJOR is the
+measurement-trust correction the round-4 report predicted: every brake was
+defined on `bindingUtilization`, whose real primitive treats "no reading" as
+0 — the fix (bound 0, a presence+freshness validity gate on the proactive
+filter, both legs) is shape-preserving and reactive-untouched (I6), with the
+enrollment-day self-heal argued from the poller's real cadence + the
+monitor's existing `triggerPoll` hook. No §0 property was weakened; (a) and
+(c) now hold on MEASUREMENTS, not on the absence of one.
+
+| finding | disposition | where |
+|---|---|---|
+| R4-M1 (absent/unboundedly-stale quota reading fails toward MORE swapping — properties (a)/(c) vacuous when the measurement layer is blind; corroborated by the GPT-tier external) | Adopted — bound 0: proactive target eligibility requires a reading PRESENT and fresher than `quotaFreshnessMs` (default 30 min = 2× the poller's 15-min cadence); absent/stale is NOT under the ceiling and counts toward all-hot; refusal `target-unmeasured` (state-transition rows) distinguishes measurement outage from genuine heat; the SOURCE leg carries the same validity (stale-hot never nominates a kill; absent-0 stated as normative); execute-time revalidation re-checks bound 0; REACTIVE deliberately untouched (I6 — unknown-selectable is rescue's feature); enrollment-day self-heal ≤1 poll interval (pollAll covers all accounts; `triggerPoll` accelerates under pressure) — no permanent exile of a healthy new account; sustained whole-pool blindness raises ONE `measurement-blind` item (I13); §13's stale-data row corrected to scope its claim to bounded poll-lag | §3.1, §3.3, I2, I13, §6.1–§6.4, §7, §12, §13 |
+| R4-m1 (I5's "single named exception" inaccurate during an unwritable-ledger episode; in-memory index behavior on failed append unspecified) | Adopted — non-refusal decisions during the outage UPDATE the in-memory index regardless of append failure (dwell/frequency/reversal stay primed; the post-resume premature-re-swap case closed) and are counted (`rowsLostWhileDown`, §6.3 ledger block); I5's exception re-worded as the outage CLASS (refusals counter-only; executed/proceeded index-primed + counted; durable trace = the episode's one item) | §3.5, I5, §6.3, §12, §13 |
+| R4-m2 (episode continuation defined only for T2/same-session; sustained T1 thrash re-alerts hourly; half-open only implicit) | Adopted — continuation generalized over both tiers by trigger signature (T2: same session within `swapFrequencyWindowMs` of close; T1: same unordered account pair within `reversalWindowMs` of close): same episodeId, extended deadline (the continuation row's new `breakerDeadline` keeps the boot anchor correct), no second item; half-open pinned = closed-with-continuation-memory (no third persisted state) | §3.5, §6.4, §12 |
+| R4-m3 (I7 "indeterminate on BOTH legs" ambiguous for the mixed case; `\|\|` undefined over tri-states) | Adopted — normative any-leg rule for proactive callers: idle ONLY when every READABLE leg affirmatively reports idle; `'working'`/`'indeterminate'` on ANY leg ⇒ busy; `'absent'` excluded per the R3-L1 pin (remaining leg decides); the mixed case (footer indeterminate + subagent false ⇒ BUSY) decided in-text; the pseudocode's `\|\|` defined over the tri-state; I7 restated to match | §4.1, I7, §12 |
+| R4-m4 (execute-time revalidation re-checks target ceiling + source identity but not fresh source-pressure or the improvement delta) | Adopted — the revalidation checklist is enumerated (target validity+ceiling / source identity / source pressure fresh / improvement delta fresh) with refusal reasons per arm (`target-revalidation-failed` / `intent-stale`); property (c) verified at the actual kill point on the snapshot the revalidation already holds | §3.3, §12 |
+| R4-L1 (sub-threshold rotation pacing band unnamed) | Adopted — the ~90-min evasion band named in §3.5 with the soak-interpretation note (each such hop still passes (a)+(c)+dwell individually) | §3.5 |
+| R4-L2 (no cross-knob coherence constraint; raising dwellMs can silently disarm T2) | Adopted — two warn-only config-load checks: dwell-vs-frequency-window disarms T2; `quotaFreshnessMs` below the poll cadence degrades toward permanent refusal (safe, but flagged) | §7, §12 |
+| R4-L3 (hydration behavior when antiThrash boots disabled unstated) | Adopted — the ledger module loads + hydrates unconditionally at boot; reactive rows append regardless; the index is warm at a mid-run flag flip (the §7.1 half-enable trap closed for this key) | §3.5, §12 |
+| R4-L4 (`target-revalidation-failed` refusals lack volume treatment) | Adopted (accepted-bound arm of the finding's either/or) — the worst case is stated (~20 rows/h/session, ceiling-flip-flop, self-limiting via the next tick's own filter); extending the state-transition scheme named as the purely-additive later change if a soak shows sustained volume | §3.3 |
+
 ## Open questions
 
 *(none — all resolved into §14 Frontloaded Decisions)*
@@ -1690,5 +1942,11 @@ retention/hydration ⊇ every detection window via one `retentionBoundMs`
 formula, and the breaker gains a frequency tier whose threshold crossing
 opens it directly, so the dwell-paced A→B→C→A rotation is provably caught —
 and the ledger-loss fail direction decided: unwritable ⇒ proactive pauses,
-I12). Evidence: `logs/server.log` (echo, v1.3.722). Convergence round 4 in
-flight; nothing here is approved for build.*
+I12). Round-5 revision same day (round-4 findings folded — §18: the
+measurement-trust hole closed — bound 0 requires a present, fresh quota
+reading on both legs of every proactive swap, so a quota-blind account can no
+longer read as the coolest target in the pool and defeat brakes (a)+(c); plus
+the outage row-loss class, tier-general episode continuation, the any-leg I7
+rule, and full-materiality execute-time revalidation). Evidence:
+`logs/server.log` (echo, v1.3.722). Convergence round 5 in flight; nothing
+here is approved for build.*

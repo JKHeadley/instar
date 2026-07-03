@@ -20,10 +20,19 @@ alive became the main thing destroying work.
    hard limit.
 2. **No quick re-moves.** Once a session has been moved, it stays where it is
    for at least 45 minutes. That ends the back-and-forth ping-pong.
-3. **Only move somewhere clearly better.** A move now needs a destination
-   account with real breathing room (under 65% used, and at least 15 points
-   less used than where the session is now). "Barely less full" is no longer a
-   reason to restart your work.
+3. **Only move somewhere clearly better — and only with a real, recent meter
+   reading.** A move now needs a destination account with real breathing room
+   (under 65% used, and at least 15 points less used than where the session
+   is now). "Barely less full" is no longer a reason to restart your work.
+   And crucially: the agent must have an actual, fresh usage reading for that
+   destination. A brand-new account, or one whose usage check has been
+   failing, used to look like a completely empty account (no reading was
+   treated as 0%) — every hot session would pile onto it blindly. Now "no
+   reading" or "old reading" simply means "not a valid destination" until a
+   fresh reading arrives — which for a healthy new account takes minutes (its
+   usage is checked every 15 minutes, sooner when accounts are running hot).
+   Emergency moves are exempt: if a session hits a hard limit, rescuing it
+   onto an unmeasured account still beats letting it die.
 4. **Never interrupt work in progress.** Before any planned move, the agent
    checks whether the session is in the middle of something — answering you,
    or running helper tasks. If it is, the move waits (up to 30 minutes) for
@@ -75,9 +84,15 @@ nothing.
   were having trouble — a reboot can't reset any of the brakes.
 - If the agent ever CAN'T write its move-history file (the memory all these
   brakes run on), planned moves pause entirely until it can write again, and
-  you get one alert saying so. Emergency moves still work as always. The
-  logic: better to skip an optimization than to run it with the brakes
-  disconnected.
+  you get one alert saying so. Emergency moves still work as always (and the
+  brakes still remember them in working memory, so the pause ending can't
+  trigger an instant re-move of a just-rescued session). The logic: better to
+  skip an optimization than to run it with the brakes disconnected.
+- The same logic applies to the usage meters themselves: if the agent can't
+  get fresh usage readings for ANY account (the checker is broken), planned
+  moves effectively pause and you get one alert saying the agent is flying
+  blind — it never keeps optimizing on stale or missing numbers. Emergency
+  rescues still work.
 - One narrow piece stays off at first: the extra check that stops a *model*
   change (not an account move) from interrupting quiet background helpers. It
   gets its own on-switch later, so nothing about today's model-changing
