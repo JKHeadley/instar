@@ -2,7 +2,7 @@
 title: "Slack Outbound Delivery Robustness — channel-typed relay queue, funnel-routed sentinel lane, durable delivery-id idempotency, refused slack-forward (roadmap Phase 2.1)"
 slug: "slack-outbound-robustness"
 author: "echo"
-status: "draft"
+status: "review-closed: architecture-converged-with-build-residual (round 8, 2026-07-03) — see review-disposition; the build stays gated on the keystone registry + deliverToConversation increments MERGING"
 parent-principle: "Guards Degrade, Not Outage — a safety/delivery layer on the user-facing path may never convert its own infra failure into the user's silence (the constitution's named OUTBOUND extension of The Operator Channel Is Sacred; re-anchored round 2 per the conformance gate — the Operator-Channel-Sacred rule text governs the INBOUND consume gate)"
 sibling-principles: "The Operator Channel Is Sacred (sibling context — the inbound twin of this spec's fail-toward-delivery posture); Structure > Willpower (a durable queue, not a session remembering to retry); A Refusal Stays a Refusal / P18 (every drop is a counter + ledger row, never silent); Bounded Notification Surface (P17 — one deduped escalation per failure episode); Bounded Blast Radius (P19 — breaker on every loop, PER-CHANNEL suspension state §2.3); Migration Parity (additive SQLite columns, never destructive); Verify the State, Not Its Symbol (delivery state machine over 'the curl said ok'); Signal vs Authority (the sentinel never overrides the tone gate); Near-Silent Notifications (§2.3 — recovery chatter decision stated, unreachable-conversation escalations out-of-band)"
 constitution: "The Operator Channel Is Sacred — Critical-Path Gates Fail Toward Delivery (docs/STANDARDS-REGISTRY.md); Guards Degrade, Not Outage; Bounded Notification Surface (P17); A Refusal Stays a Refusal (P18); Bounded Blast Radius (P19); Migration Parity Standard; Testing Integrity Standard"
@@ -16,10 +16,28 @@ eli16-overview: "docs/specs/slack-outbound-robustness.eli16.md"
 project: "two-goal-roadmap Phase 2.1 (topic 29836)"
 review-convergence: null
 approved: false
+review-disposition: "architecture-converged-with-build-residual — 8-round /spec-converge ceremony (internal six-lens panel + two external cross-model doors per round: pi→openai-codex/gpt-5.5, gemini-cli/gemini-2.5-pro; codex-cli honestly absent). Trajectory of blocking findings: 3C+6M → 2C+3M → 2C+2M → 0C+1M → 1C+1M → 1C+1M → 0C+2M → 0C+1M. Round 8 verdict NOT 0C/0M, so NOT `approved: true` — instead CLOSED at architecture-converged under the standing Session-A operator preapproval (topic 29836, 2026-07-03). All load-bearing structural decisions (funnel-hop delivery authority, HOLD-as-durable-disposition + partition order, pre-POST delivery-id mint, notice_pending durability, per-channel breaker, fail directions) survived 4-8 adversarial re-walk rounds unchanged (cores finding-free rounds 4-8). The remaining risk is a single accepted build-phase pin-class RESIDUAL — see `accepted-build-residual` below."
+accepted-build-residual: "R8-M1 (round-8 findings §The blocking finding; docs/specs/reports/slack-outbound-robustness-round8-findings.md): the reservation's new `409 delivery-in-flight` status + the in-reservation adapter-timeout outcome do not compose with the DEPLOYED recovery-policy / script classifiers on every lane. The build increment MUST: (a) classify structured `409 delivery-in-flight` → RETRY on BOTH lanes — recovery-policy.ts gains ONE named 409 branch (reconciling the 'recovery-policy byte-untouched' claim as a single tested exception, NOT a silent one), OR the Telegram redrive lane routes 409 through a translation shim before `evaluatePolicy` (recovery-policy.ts:189 currently escalates all unlisted 4xx incl. 409); (b) the adapter-timeout handler RESPONDS 408 (→ finalize-ambiguous, never re-posted), NOT the deployed 500 catch-all (routes.ts:12250 → retry → double-post); (c) both reply-script classifiers treat 409 as NON-LOSING. Each arm is a deterministic truth-table entry with its §7 test already specified in shape — resolved and TESTED in code under the Testing Integrity Standard (Tier-1 recovery-policy table tests + Tier-2 real-middleware route tests + full-pipeline redrive tests), which is strictly stronger enforcement than a further prose round. Accepted per operator decision 2026-07-03 (standing Session-A preapproval) as the first build-increment task carrying its own test."
+review-disposition-date: "2026-07-03"
 single-run-completable: false
 ---
 
 # Slack Outbound Delivery Robustness (roadmap Phase 2.1)
+
+> **Review disposition (2026-07-03) — CEREMONY CLOSED, `architecture-converged-with-build-residual`.**
+> An 8-round `/spec-converge` ceremony (internal six-lens panel + pi gpt-5.5
+> and gemini-2.5-pro external doors each round) drove blocking findings
+> 3C+6M → … → 0C+1M. The architecture is converged (all structural
+> decisions finding-free rounds 4-8). Round 8 did not reach 0C/0M, so this
+> spec is **NOT `approved: true`** — it is CLOSED at architecture-converged
+> under the standing Session-A operator preapproval (topic 29836), carrying
+> exactly ONE accepted build-phase residual (**R8-M1**, the reservation
+> `409`/adapter-timeout status composition — see the `accepted-build-residual`
+> frontmatter key and `docs/specs/reports/slack-outbound-robustness-round8-findings.md`).
+> The residual is resolved and TESTED in code under §7 Testing Integrity
+> gates (stronger than a further prose round). **The BUILD stays gated on the
+> keystone (durable-conversation-identity) registry + `deliverToConversation`
+> increments MERGING** — a Session-B item, not authorized by this closure.
 
 ## 0. Operator-visible properties (what the review ceremony defends)
 
@@ -508,8 +526,10 @@ own notices. Per row:
    ONLY (a terminal row is invisible to it — `pending-relay-store.ts:
    375-390`), the re-raise runs on its OWN dedicated bounded selector —
    `state = 'escalated' AND notice_pending = 1 AND (next_attempt_at IS NULL
-   OR next_attempt_at <= now)`, LIMIT-bounded, oldest-due-first, fully
-   served by the existing `(state, next_attempt_at)` index — executed once
+   OR next_attempt_at <= now)`, LIMIT-bounded, oldest-due-first, served by
+   the new partial `idx_notice_pending` index (§2.2, round-7 m2 — the
+   `notice_pending` predicate is not covered by the `(state,
+   next_attempt_at)` prefix alone) — executed once
    per tick beside the claimable drain. **The sweep carries its own retry
    discipline (round-6 M1 — found independently by both externals; the
    path bypasses the per-channel breaker, so it must bring its own P19
@@ -1318,8 +1338,10 @@ now a decided, test-pinned position. `## Open questions` below is empty.
 14. **Single-flight per delivery-id; the notice sweep brings its own P19
    discipline (round-6 C1/M1).** The route reserves an id in-flight before
    sending (typed 409 to a concurrent same-id POST; TTL-bounded so a crash
-   never wedges); a client-side curl timeout is classified AMBIGUOUS
-   (408 parity — the outcome is unknown, never a recoverable enqueue); and
+   never wedges); a client-side curl timeout is classified PHASE-AWARE
+   (round-7 M1 — exit-28 with an empty/zero `time_connect` never connected,
+   so it is a RECOVERABLE enqueue; a nonzero `time_connect` may have posted,
+   so it is AMBIGUOUS, exit 0, no enqueue — the 408 parity); and
    the terminal notice sweep backs off per-row via the reused
    `next_attempt_at` (schedule-bounded retries, oldest-due-first fairness,
    nothing silently abandoned).
