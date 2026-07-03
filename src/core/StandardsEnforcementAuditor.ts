@@ -82,7 +82,7 @@ const KIND_RANK: Record<Exclude<EnforcementKind, 'documented-only'>, number> = {
 };
 
 /** Classify a VERIFIED file ref into its guard weight. */
-function classifyFileGuard(ref: string): Exclude<EnforcementKind, 'documented-only'> {
+export function classifyFileGuard(ref: string): Exclude<EnforcementKind, 'documented-only'> {
   const base = ref.split('/').pop() ?? ref;
   // Ratchet: a CI test that fails on regression — `*.test.ts`, a `no-*` guard, a
   // `*-coverage` script.
@@ -101,6 +101,60 @@ function classifyFileGuard(ref: string): Exclude<EnforcementKind, 'documented-on
   // A src/** guard file (a gate/marker module) → gate-strength.
   if (ref.startsWith('src/')) return 'gate';
   return 'spec-only';
+}
+
+/**
+ * Grade a SINGLE guard citation (a path, a `METHOD /route`, or a symbol/marker)
+ * against a repo checkout — the library form the class-closure gate's lint invokes
+ * (docs/specs/class-closure-gate.md → Piece 1 `guardEvidence`). Returns the
+ * enforcement strength AS GRADED by the same deterministic rules the standards
+ * coverage audit uses (`classifyFileGuard`), plus whether the citation actually
+ * RESOLVES on disk / in the route table / in src.
+ *
+ * The caller's rule (stated normatively in the spec): a citation that does not
+ * resolve to a live enforcing guard — `resolved: false`, or a resolved kind of
+ * `spec-only` (a dark/spec-only artifact guards nothing, G3) — downgrades the
+ * closure declaration to `gap`. Only `ratchet` / `gate` / `lint` count as a live
+ * enforcing guard.
+ *
+ * Pure over the repo checkout (fs reads only) — NEVER the agent-runtime
+ * conformance route (which ships dark and 503s).
+ */
+export function gradeGuardCitation(
+  projectDir: string,
+  citation: string,
+): { resolved: boolean; kind: EnforcementKind | null; citation: string } {
+  const raw = (citation ?? '').trim();
+  if (!raw) return { resolved: false, kind: null, citation: raw };
+
+  // Route citation, e.g. "GET /class-closure".
+  const routeMatch = /^(GET|POST|PUT|DELETE|PATCH)\s+(\/\S+)$/i.exec(raw);
+  if (routeMatch) {
+    const token = `${routeMatch[1].toUpperCase()} ${routeMatch[2]}`;
+    const resolved = loadRouteTable(projectDir).has(token);
+    return { resolved, kind: resolved ? 'gate' : null, citation: raw };
+  }
+
+  // File-path citation (contains a slash). Strip a `#symbol` or `:line` suffix
+  // before existence-checking the path.
+  if (raw.includes('/')) {
+    const filePart = raw.split('#')[0].split(':')[0];
+    let resolved = false;
+    try {
+      resolved = fs.existsSync(path.join(projectDir, filePart));
+    } catch {
+      // @silent-fallback-ok: an unresolvable path is a real dangling-ref finding, not a
+      // degraded result — fail-closed to `resolved:false` so the closure declaration
+      // downgrades guard->gap (the intended, surfaced outcome). Mirrors line 236 above.
+      resolved = false;
+    }
+    return { resolved, kind: resolved ? classifyFileGuard(filePart) : null, citation: raw };
+  }
+
+  // Bare symbol / marker citation.
+  const found = buildSymbolIndex(projectDir, new Set([raw]));
+  const resolved = found.has(raw);
+  return { resolved, kind: resolved ? 'gate' : null, citation: raw };
 }
 
 /**

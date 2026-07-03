@@ -176,3 +176,42 @@ pool-wide question is answered by a proxied-on-read merged view." Not abstractio
 ## Evidence pointers
 
 [Optional. Links or file paths to the live verification artifacts produced during `/build` — reproduction steps, before/after logs, test output. These feed the "Evidence" section in the upgrade notes if the change is shipping as a release.]
+
+---
+
+## Class-Closure Declaration (display-only mirror)
+
+**REQUIRED whenever this change FIXES a defect in an agent-authored artifact** (an
+LLM prompt, hook, config, skill, or standards text — see
+`docs/specs/class-closure-gate.md`). This section is the human-readable MIRROR of
+the machine-readable `classClosure` block in the commit's decision-audit entry
+(the host the CI lint validates). **Display-only:** the lint counts the
+decision-audit host ONLY and NEVER sums this mirror — the two are asserted to
+AGREE, never added (C1). If this change fixes no agent-authored-artifact defect,
+state: "No agent-authored-artifact defect — not applicable."
+
+- **`defectClass`** — a class id from `docs/defect-classes.json`, or `novel`. A
+  `novel` class is not a free pass: it REQUIRES a full new registry entry in the
+  same change carrying `nearestExistingClass` + ≥1 `includes` + ≥1 `excludes` +
+  `severity`, and it enters `status: "unconfirmed"` (an unconfirmed class CANNOT
+  satisfy `closure: guard` — its fix carries `closure: gap` until the operator
+  confirms it).
+- **`closure`** — either `guard` (the standard/test/lint that makes the class's
+  recurrence structurally refused or detected, cited by path/symbol) or `gap` (a
+  tracked standards-gap evolution-action id when the class-level guard is out of
+  this fix's scope).
+- **`guardEvidence`** (required with `closure: guard`) — the guard's enforcement
+  type as graded by the coverage audit's grader (`ratchet` / `gate` / `lint`),
+  the citation, and one line on *how this guard would have caught THIS defect*. A
+  citation that does not resolve to a LIVE enforcing guard on disk automatically
+  downgrades the declaration to `closure: gap` (G3 — a dark/spec-only artifact
+  guards nothing).
+- **`gap`** (with `closure: gap`) — the evolution-action id tracking the missing
+  guard. A gap is not fire-and-forget: it counts as escalation evidence and
+  re-surfaces on the evolution-action cadence.
+
+[Fill in the four fields (or "not applicable"). Example: "`defectClass:
+injection-credulity`, `closure: guard`, `guardEvidence: {enforcementType: gate,
+citation: src/core/promptClauses.ts#authorityClause, howCaught: the authority
+clause separates the trusted instruction surface from the quoted untrusted
+transcript excerpt, so the injected instruction is data not command}`."]

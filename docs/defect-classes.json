@@ -1,0 +1,106 @@
+{
+  "note": "The defect-class registry (docs/specs/class-closure-gate.md → 'The class registry'). Seeded with the four measured classes from the INSTAR-Bench v2 defect-class review (docs/audits/ib2-defect-class-review-2026-07-02.md). PROTECTED PATH: class SEMANTICS live here; routine fixes never edit this file (instanceCount is DERIVED by the gate lint from committed decision-audit declarations, deduped by PR — the stored field below is a CACHE). A seed enters escalatedAt='seeded-closed' with evidenceCountAtLastAck === instanceCount so ONLY historical backfill is suppressed; a post-seed declaration that grows a seeded class past that baseline fires the deterministic re-raise at lint time.",
+  "version": 1,
+  "classes": [
+    {
+      "id": "prompt-parser-contract-drift",
+      "description": "An agent-authored prompt's rendered output drifts from the contract its parser/validator enforces: the prompt teaches or relies on a token, section, or structure the parser does not guarantee, so a downstream consumer silently mis-parses the result.",
+      "includes": [
+        "a prompt whose output structure is not pinned by a render/parse contract",
+        "a verdict token, section header, or field the consuming parser does not recognize",
+        "a bench template that has diverged from the real rendered production prompt"
+      ],
+      "excludes": [
+        "a genuine parser bug in non-prompt code (ordinary product defect, out of initial scope)",
+        "a hard-invariant structural validator failing at an API edge (typing/shape rejection is not drift)"
+      ],
+      "canonicalExamples": [
+        "IB2 review: a sentinel prompt emitting a verdict shape the classifier parser did not accept",
+        "IB2 review: a bench task template diverged from the production-rendered prompt for the same component"
+      ],
+      "status": "confirmed",
+      "severity": "normal",
+      "closureStandard": "prompt-parser-contract-standard",
+      "closureStandardEnforcement": null,
+      "instanceCount": 2,
+      "escalatedAt": "seeded-closed",
+      "evidenceCountAtLastAck": 2,
+      "proposalId": null
+    },
+    {
+      "id": "injection-credulity",
+      "description": "An agent-authored prompt treats untrusted input (transcript excerpts, tool output, document or message bodies) as authoritative instruction — it lacks an authority clause separating the trusted instruction surface from quoted untrusted data, so injected content can steer the decision.",
+      "includes": [
+        "a prompt interpolating untrusted content without a sentinel/delimiter/authority clause",
+        "an untrusted interpolation slot that is not enumerated in the callsite's manifest",
+        "a data-block delimiter that embedded content can break out of"
+      ],
+      "excludes": [
+        "a trusted, first-party configuration value the operator controls",
+        "a hard-invariant structural validator at the system boundary (not a judgment surface)"
+      ],
+      "canonicalExamples": [
+        "IB2 review: a gate prompt that followed an instruction embedded in a quoted message body",
+        "IB2 review: a reviewer prompt whose untrusted evidence excerpt was not neutralized/delimited"
+      ],
+      "status": "confirmed",
+      "severity": "critical",
+      "closureStandard": "authority-clause-standard",
+      "closureStandardEnforcement": null,
+      "instanceCount": 3,
+      "escalatedAt": "seeded-closed",
+      "evidenceCountAtLastAck": 3,
+      "proposalId": null
+    },
+    {
+      "id": "claim-vs-evidence",
+      "description": "An agent-authored judge or gate credits a bare assertion as if it were evidence — the prompt accepts 'I did X' / 'this is done' without requiring a verifiable artifact, so an unproven claim passes the same bar as proof.",
+      "includes": [
+        "a judge prompt with no evidence bar for a claim of completion",
+        "a scoring rubric where a bare claim still lands at or above the acceptance floor",
+        "a gate that treats self-report as sufficient for a terminal transition"
+      ],
+      "excludes": [
+        "a decision that legitimately runs on stated intent rather than a claim-of-completion",
+        "a deterministic structural check that already verifies the artifact"
+      ],
+      "canonicalExamples": [
+        "IB2 review: a completion judge that accepted 'done' narration without an artifact",
+        "IB2 review: a scored judge whose bare-claim case still scored above the acceptance floor"
+      ],
+      "status": "confirmed",
+      "severity": "normal",
+      "closureStandard": "evidence-bar-judge-extension",
+      "closureStandardEnforcement": null,
+      "instanceCount": 2,
+      "escalatedAt": "seeded-closed",
+      "evidenceCountAtLastAck": 2,
+      "proposalId": null
+    },
+    {
+      "id": "durable-output-secrets",
+      "description": "An agent-authored component writes secrets, credentials, PII, or raw sensitive content into a durable output (a committed file, a log line, a persisted record, a shared transcript) without scrubbing — the sensitive material survives on disk or crosses a boundary.",
+      "includes": [
+        "a callsite whose output is durable and derives from untrusted/sensitive inputs without a scrub",
+        "a path, token, or credential leaking into a committed artifact or a persisted log",
+        "sensitive content crossing a machine/agent boundary without the shared redaction"
+      ],
+      "excludes": [
+        "an ephemeral in-memory value that is never persisted or transmitted",
+        "a value already redacted at the single shared scrub chokepoint"
+      ],
+      "canonicalExamples": [
+        "IB2 review: a durable output embedding a raw secret drawn from tool output",
+        "IB2 review: a persisted record carrying an unscrubbed file path / credential fragment"
+      ],
+      "status": "confirmed",
+      "severity": "critical",
+      "closureStandard": "durable-output-hygiene-standard",
+      "closureStandardEnforcement": null,
+      "instanceCount": 2,
+      "escalatedAt": "seeded-closed",
+      "evidenceCountAtLastAck": 2,
+      "proposalId": null
+    }
+  ]
+}
