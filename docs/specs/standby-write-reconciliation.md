@@ -2,7 +2,7 @@
 title: "Standby-Write Reconciliation + Typed Refusal — ownership-scoped write admission for the active-active pool (P2-6 / F9)"
 slug: "standby-write-reconciliation"
 author: "echo"
-status: "draft (round-3 revision — all round-2 findings folded; see §12 disposition)"
+status: "converged (round-3 verdict CONVERGED — 10/10 round-2 resolutions verified; external gemini-2.5-pro CONVERGE)"
 eli16-overview: "standby-write-reconciliation.eli16.md"
 parent-principle: "A Refusal Stays a Refusal — a write the server cannot complete returns an immediate typed refusal or a bounded error, never an open-ended hang"
 sibling-principles: "Structure > Willpower; Verify the State, Not Its Symbol; Signal vs Authority; Maturation Path — Every Feature Ships Enabled on Developer Agents; Bounded Blast Radius; User Experience Is the Product (a hung write is an unreachable agent); The Agent Is Always Reachable (an unowned local session's writes must never gate on pool custody)"
@@ -10,8 +10,14 @@ parent-spec: "docs/roadmaps/instar-two-goal-roadmap-2026-07.md §4.3; docs/audit
 project: "session-a-phase-4.3 (topic 29836)"
 depends-on: "StateManager read-only guard (src/core/StateManager.ts:102-139) + sessionScoped carve-out (standby-pool-session-writes.md); MultiMachineCoordinator role/lease reconciliation (src/core/MultiMachineCoordinator.ts:1181-1200); session-pool CAS custody (MULTI-MACHINE-SESSION-POOL-SPEC.md); SessionOwnership FSM + SessionOwnershipRegistry/LocalSessionOwnershipStore (src/core/SessionOwnership.ts, src/core/SessionOwnershipRegistry.ts, src/core/LocalSessionOwnershipStore.ts); U4.3 typed-refusal contract (u4-3-breaker-recovery-probe.md — a TYPED refusal is distinguishable from success AND from garbage); WS2.5 evolution-actions replication (ws25-evolution-actions-replication.md); WS4.1 durable remote-ack (prior art for owner-routed attention mutation)"
 upstream-feedback: "fb-99ab6347 (POST /evolution/actions hangs; hypothesis revised by this spec's grounding — see §1.4)"
-review-convergence: null   # round 3 in flight — has not converged
-approved: false
+review-convergence: "2026-07-03T03:17:01.983Z"
+approved: true
+approved-basis: "Operator standing preapproval, topic 29836, 2026-07-02 (recorded in the registered Session-A run goal: spec approvals + all in-scope reversible decisions). Approval recorded transparently under that authorization; the converged verdict is round-3 CONVERGED with zero outstanding MUST/SHOULD-FIX."
+review-iterations: 3
+review-completed-at: "2026-07-03T03:17:01.983Z"
+review-report: "docs/specs/reports/standby-write-reconciliation-round3-findings.md"
+cross-model-review: "gemini-cli:gemini-2.5-pro (degraded: codex CLI not installed on this machine — GPT-tier pass unavailable all rounds; gemini-2.5-pro ran rounds 1-3)"
+cross-model-review-reason: "External posture: gemini-2.5-pro reviewed every round (round-3 verdict CONVERGE); codex/GPT-tier honestly unavailable on this machine"
 ---
 
 # Standby-Write Reconciliation + Typed Refusal
