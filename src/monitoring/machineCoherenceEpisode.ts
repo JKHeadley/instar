@@ -66,12 +66,17 @@ export interface PendingFix {
 export interface RecurrenceBlock {
   /** Rolling new-item open timestamps for the per-day cap (maxEpisodeItemsPerDay). */
   newItemTimestamps: number[];
-  /** Recently-closed row-identity sets — the reopenWindowMs memory. */
-  recentlyClosed: Array<{ rowIdentities: string[]; closedAtMs: number }>;
+  /** Recently-closed row-identity sets (+ the item id, so a reopen reuses the
+   *  SAME item/topic) — the reopenWindowMs memory. */
+  recentlyClosed: Array<{ rowIdentities: string[]; closedAtMs: number; itemId?: string }>;
   /** Episode-reopen flapping latch (flappingLatchReopens within the window). */
   reopenLatch?: { latched: boolean; reopenCount: number; windowStartMs: number };
-  /** Shared per-episode append budget (episodeAppendBudget within the window). */
-  appendBudget?: { appendTimestamps: number[]; latched: boolean };
+  /** Shared per-episode append budget (episodeAppendBudget within the window);
+   *  reservedSuspendResumeAtMs guarantees ONE slot per window for the first
+   *  suspend/resume transition (R4-L6). */
+  appendBudget?: { appendTimestamps: number[]; latched: boolean; reservedSuspendResumeAtMs?: number };
+  /** When the per-day-cap give-up note last fired (once per rolling 24 h). */
+  capGiveupAtMs?: number;
 }
 
 /** A §4.3 close reason — only `restored` may ever claim restoration. */

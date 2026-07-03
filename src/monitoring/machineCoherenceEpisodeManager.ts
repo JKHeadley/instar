@@ -134,10 +134,14 @@ export class MachineCoherenceEpisodeManager {
     const rowById = new Map(input.confirmedRows.map((r) => [r.identity, r]));
     const confirmedIds = new Set(rowById.keys());
 
-    // ── No open episode: OPEN on the first confirmed row ──
+    // ── No open episode: REOPEN a recently-closed one whose row set intersects
+    //    (§4.5 recurrence damper), else OPEN a fresh episode. ──
     if (!this.file.episode) {
       if (confirmedIds.size === 0) return effects; // nothing to do
-      this.openEpisode(input, [...confirmedIds], effects);
+      this.pruneRecurrence(now);
+      const reopen = this.findReopenTarget([...confirmedIds], now);
+      if (reopen) this.reopenEpisode(input, [...confirmedIds], reopen, effects);
+      else this.openEpisode(input, [...confirmedIds], effects);
       return effects;
     }
 
@@ -226,25 +230,74 @@ export class MachineCoherenceEpisodeManager {
       recurrence: emptyRecurrence(),
     };
     this.counters.episodesOpened += 1;
-    if (this.speaks(input)) {
+    // §4.5 per-day cap: at most maxEpisodeItemsPerDay NEW items per rolling 24 h.
+    this.pruneRecurrence(input.now);
+    const itemsToday = this.file.recurrence.newItemTimestamps.length;
+    const overCap = itemsToday >= this.cfg.maxEpisodeItemsPerDay;
+    if (this.speaks(input) && !overCap) {
       const body = this.renderBody(input, ep);
       ep.itemRaisedAt = input.now;
       ep.attentionItemId = this.itemId(episodeId);
       this.counters.itemsRaised += 1;
+      this.file.recurrence.newItemTimestamps.push(input.now);
       effects.push({ kind: 'raise', itemId: ep.attentionItemId, title: body.title, summary: body.summary, description: body.description });
+    } else if (this.speaks(input) && overCap) {
+      // Give up LOUDLY, once per window (P19): jsonl-only item, one final note.
+      this.maybeCapGiveup(input, effects);
+      this.counters.wouldRaise += 1;
     } else {
       this.counters.wouldRaise += 1;
     }
     this.file.episode = ep;
     this.persist();
-    this.log({ t: 'open', episodeId, rows: rowIds, spoke: this.speaks(input) });
+    this.log({ t: 'open', episodeId, rows: rowIds, spoke: this.speaks(input), overCap });
+  }
+
+  /** §4.5 reopen: a newly-confirmed skew intersecting a recently-closed episode
+   *  re-opens it — SAME item un-resolved + one short append, no new item (reopens
+   *  don't count toward the per-day cap). Latched-flapping bounds the appends. */
+  private reopenEpisode(input: EpisodeReconcileInput, rowIds: string[], target: { itemId?: string }, effects: EpisodeEffect[]): void {
+    const openedAtMs = input.now;
+    const episodeId = mintEpisodeId(openedAtMs);
+    const latch = (this.file.recurrence.reopenLatch ??= { latched: false, reopenCount: 0, windowStartMs: input.now });
+    if (input.now - latch.windowStartMs > this.cfg.reopenWindowMs) { latch.reopenCount = 0; latch.windowStartMs = input.now; latch.latched = false; }
+    latch.reopenCount += 1;
+    const ep: EpisodeState = {
+      episodeId,
+      openedAtMs,
+      skewRowIdentities: rowIds,
+      attentionItemId: target.itemId,
+      itemRaisedAt: target.itemId ? input.now : undefined,
+      reopenCount: latch.reopenCount,
+      recurrence: emptyRecurrence(),
+    };
+    this.file.episode = ep;
+    this.counters.episodesOpened += 1;
+    // Enter latched-flapping after flappingLatchReopens re-opens in the window.
+    if (!latch.latched && latch.reopenCount > this.cfg.flappingLatchReopens) {
+      latch.latched = true;
+      if (this.speaks(input) && ep.attentionItemId) effects.push({ kind: 'append', itemId: ep.attentionItemId, text: 'this divergence is flapping — recording silently until it stabilizes' });
+    } else if (!latch.latched && this.speaks(input) && ep.attentionItemId) {
+      // A reopened item is un-resolved (re-raised OPEN) with one short append.
+      effects.push({ kind: 'raise', itemId: ep.attentionItemId, title: 'Machine coherence: divergence is back', summary: 'this divergence is back — re-opening', description: 'this divergence is back — re-opening' });
+    }
+    // else: latched → jsonl-only (no append).
+    this.persist();
+    this.log({ t: 'reopen', episodeId, reusedItem: target.itemId, reopenCount: latch.reopenCount, latched: latch.latched });
+  }
+
+  private maybeCapGiveup(input: EpisodeReconcileInput, effects: EpisodeEffect[]): void {
+    const rec = this.file.recurrence;
+    if (rec.capGiveupAtMs && input.now - rec.capGiveupAtMs < 86_400_000) return; // once per 24 h
+    rec.capGiveupAtMs = input.now;
+    const mostRecent = [...rec.recentlyClosed].reverse().find((c) => c.itemId)?.itemId ?? this.file.episode?.attentionItemId;
+    if (mostRecent) effects.push({ kind: 'append', itemId: mostRecent, text: 'coherence is flapping faster than I\'ll alarm — further episodes today are recorded silently; see /pool/machine-coherence' });
+    this.log({ t: 'cap-giveup' });
   }
 
   private joinRows(input: EpisodeReconcileInput, ep: EpisodeState, newRowIds: string[], effects: EpisodeEffect[]): void {
     ep.skewRowIdentities = [...ep.skewRowIdentities, ...newRowIds];
-    if (this.speaks(input) && ep.attentionItemId) {
-      effects.push({ kind: 'append', itemId: ep.attentionItemId, text: `Another divergence joined this episode: ${newRowIds.map((id) => keyOf(id)).join(', ')}.` });
-    }
+    this.pushFlapAppend(input, ep, `Another divergence joined this episode: ${newRowIds.map((id) => keyOf(id)).join(', ')}.`, false, effects);
     this.persist();
     this.log({ t: 'row-join', episodeId: ep.episodeId, rows: newRowIds });
   }
@@ -255,15 +308,65 @@ export class MachineCoherenceEpisodeManager {
     ep.suspendReason = offline.length > 0 ? 'peer-offline' : 'peer-unverifiable';
     this.resolveCleanTicks = 0;
     this.counters.suspends += 1;
-    if (this.speaks(input) && ep.attentionItemId) {
-      const who = input.nicknameOf(offline[0] ?? unverifiable[0]);
-      const text = offline.length > 0
-        ? `the divergent machine (${who}) went offline — holding this open; I'll re-check when it returns`
-        : `${who} is online but I can't read its coherence card — holding`;
-      effects.push({ kind: 'append', itemId: ep.attentionItemId, text });
-    }
+    const who = input.nicknameOf(offline[0] ?? unverifiable[0]);
+    const text = offline.length > 0
+      ? `the divergent machine (${who}) went offline — holding this open; I'll re-check when it returns`
+      : `${who} is online but I can't read its coherence card — holding`;
+    this.pushFlapAppend(input, ep, text, true, effects);
     this.persist();
     this.log({ t: 'suspend', episodeId: ep.episodeId, reason: ep.suspendReason });
+  }
+
+  /**
+   * §4.5 SHARED per-episode append budget (R3-M5): all intra-episode FLAP-class
+   * appends (row-join, suspend/resume, takeover re-arm) share one rolling budget
+   * (`episodeAppendBudget` per `episodeAppendWindowMs`). ONE slot is RESERVED per
+   * window for the first suspend/resume transition (R4-L6 — the clock-changing
+   * note is never crowded out). Past the budget the episode enters latched
+   * flapping: ONE "flapping — recording silently" note, then jsonl-only until the
+   * rolling count falls back below budget (R4-N3/L7). Structural appends
+   * (escalation, cap give-up) do NOT ride this budget.
+   */
+  private pushFlapAppend(input: EpisodeReconcileInput, ep: EpisodeState, text: string, isSuspendResume: boolean, effects: EpisodeEffect[]): void {
+    if (!this.speaks(input) || !ep.attentionItemId) return;
+    this.pruneRecurrence(input.now);
+    const b = (this.file.recurrence.appendBudget ??= { appendTimestamps: [], latched: false });
+    // Reserved slot: the first suspend/resume per window always speaks.
+    if (isSuspendResume && (b.reservedSuspendResumeAtMs === undefined || input.now - b.reservedSuspendResumeAtMs > this.cfg.episodeAppendWindowMs)) {
+      b.reservedSuspendResumeAtMs = input.now;
+      b.appendTimestamps.push(input.now);
+      effects.push({ kind: 'append', itemId: ep.attentionItemId, text });
+      return;
+    }
+    if (b.latched) {
+      if (b.appendTimestamps.length < this.cfg.episodeAppendBudget) b.latched = false; // exit
+      else return; // jsonl-only while latched
+    }
+    if (b.appendTimestamps.length >= this.cfg.episodeAppendBudget) {
+      b.latched = true;
+      b.appendTimestamps.push(input.now);
+      effects.push({ kind: 'append', itemId: ep.attentionItemId, text: 'this divergence is flapping — recording silently until it stabilizes' });
+      return;
+    }
+    b.appendTimestamps.push(input.now);
+    effects.push({ kind: 'append', itemId: ep.attentionItemId, text });
+  }
+
+  /** Lazy rolling-window eviction (R3-L2 — never triggers a write on its own). */
+  private pruneRecurrence(now: number): void {
+    const rec = this.file.recurrence;
+    rec.newItemTimestamps = rec.newItemTimestamps.filter((t) => now - t < 86_400_000);
+    rec.recentlyClosed = rec.recentlyClosed.filter((c) => now - c.closedAtMs < this.cfg.reopenWindowMs);
+    if (rec.appendBudget) rec.appendBudget.appendTimestamps = rec.appendBudget.appendTimestamps.filter((t) => now - t < this.cfg.episodeAppendWindowMs);
+  }
+
+  private findReopenTarget(rowIds: string[], now: number): { itemId?: string } | null {
+    const want = new Set(rowIds);
+    for (const c of this.file.recurrence.recentlyClosed) {
+      if (now - c.closedAtMs >= this.cfg.reopenWindowMs) continue;
+      if (c.rowIdentities.some((id) => want.has(id))) return c;
+    }
+    return null;
   }
 
   private applyResume(input: EpisodeReconcileInput, ep: EpisodeState, effects: EpisodeEffect[]): void {
@@ -288,8 +391,9 @@ export class MachineCoherenceEpisodeManager {
   }
 
   private closeEpisode(input: EpisodeReconcileInput, ep: EpisodeState, reason: EpisodeCloseReason, effects: EpisodeEffect[]): void {
-    // Record the close in the recurrence memory (R2-N2 — outlives close).
-    this.file.recurrence.recentlyClosed.push({ rowIdentities: [...ep.skewRowIdentities], closedAtMs: input.now });
+    // Record the close in the recurrence memory (R2-N2 — outlives close; the
+    // item id rides along so a §4.5 reopen reuses the SAME item/topic).
+    this.file.recurrence.recentlyClosed.push({ rowIdentities: [...ep.skewRowIdentities], closedAtMs: input.now, itemId: ep.attentionItemId });
     if (this.speaks(input) && ep.attentionItemId && reason === 'restored') {
       const keys = ep.skewRowIdentities.map((id) => keyOf(id)).join(', ');
       const nicks = [...this.episodeParticipants(ep)].map((m) => input.nicknameOf(m)).join(', ');

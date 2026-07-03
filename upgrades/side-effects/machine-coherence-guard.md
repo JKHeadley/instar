@@ -124,8 +124,24 @@
 - `expireIfStale` uses `openedAtMs` as the suspended-since anchor (no explicit suspend-start timestamp in this slice); the precise suspend-start anchor + suspended-time accumulator land with the §4.5 recurrence slice (b2).
 - §4.6 corrupt-path **adopt-or-resolve** of a locally-held stale item is handled minimally (fresh episode opens a new item id; a stale different-id item is left for operator ack — a bounded duplicate inside §0(b)'s envelope); the full adopt-or-resolve rides the wiring slice where the live attention store is in scope.
 
-### Increment C₁b (remainder) — recurrence + pendingFix + wiring — PENDING
-Remaining, in order: (iii-b2) §4.5 recurrence damper + per-day cap + the R3-M5 SHARED per-episode append budget + latched-flapping + the precise suspend-start anchor; (iii-b3) §4.2.1 pendingFix flow (proposal → approved-holding → executing-verifying, ratifier-style reply recognition in the conversational path); (iii-b4) WIRING — construct the manager in the sentinel, call `reconcile`/`expireIfStale` on the tick, execute effects via `telegramAdapter`, attach the alarm marker into refreshPool's advert, §3.4 takeover/fallback/reconciliation, the 30-day jsonl prune; (v) `GET /pool/machine-coherence` status route (503-when-dark) + counters + boot line.
+### Increment C₁b-iii-b2 — §4.5 recurrence damper + per-day cap + shared append budget — LANDED
+
+**What changed:**
+1. **`src/monitoring/machineCoherenceEpisode.ts`** — widened `RecurrenceBlock` with the damper's durable bookkeeping: `recentlyClosed[].itemId?` (so a reopen reuses the SAME item/topic), `appendBudget.reservedSuspendResumeAtMs?` (R4-L6 reserved slot), `capGiveupAtMs?` (once-per-24h give-up). All ride the same atomic file + §4.6 corrupt handling.
+2. **`src/monitoring/machineCoherenceEpisodeManager.ts`** — the §4.5 brakes on the budget-exempt HIGH path (M2):
+   - **Reopen damper**: a newly-confirmed skew whose N1 set intersects a `recentlyClosed` entry within `reopenWindowMs` RE-OPENS it — same item un-resolved + one "this divergence is back — re-opening" append, NO new item, and it does NOT count toward the per-day cap. `reopenCount` carried.
+   - **Per-day cap**: at most `maxEpisodeItemsPerDay` NEW items per rolling 24h (`newItemTimestamps`); past the cap, further episodes are jsonl-only + counted, and ONE give-up note fires (once per window) — "coherence is flapping faster than I'll alarm … see /pool/machine-coherence" (P19 give-up-loudly).
+   - **Shared per-episode append budget (R3-M5)**: ALL intra-episode FLAP-class appends (row-join, suspend/resume) share ONE rolling `episodeAppendBudget` per `episodeAppendWindowMs` — `pushFlapAppend` bounds them to `budget + 1` (the one "flapping — recording silently" note), then jsonl-only until the rolling count falls back below budget (latch exit, R4-N3/L7). ONE slot is RESERVED per window for the first suspend/resume (R4-L6 — the clock-changing note never crowded out). Structural appends (escalation, cap give-up) do NOT ride this budget.
+   - **Latched-flapping reopen mode**: after `flappingLatchReopens` re-opens in the window → latched (one note, then jsonl-only); the window resets after `reopenWindowMs`.
+   - Rolling-window eviction is LAZY (`pruneRecurrence`, R3-L2 — never triggers a write on its own).
+3. **Tests (green):** `tests/unit/machine-coherence-episode-manager.test.ts` +4 (now 20) — per-day cap + once-loud give-up, reopen reuses the SAME item id (no new item, cap-exempt), the burst invariant (10 flap transitions → exactly `budget + 1` appends), the reserved suspend/resume slot surviving a spent budget. 20 green; `tsc --noEmit` clean.
+
+**Blast radius:** additive to the (still-unwired) EpisodeManager + its durable shape; NOTHING constructs it in production yet. Fleet + single-machine unchanged.
+
+**Documented partial:** the precise suspend-since anchor + suspended-time accumulator (§4.2.1-v executing-verifying clock pause) land with the pendingFix slice (b3), which introduces the executing-verifying state those clocks belong to; this slice's `expireIfStale` still uses `openedAtMs` as the suspend anchor (noted in b1).
+
+### Increment C₁b (remainder) — pendingFix + wiring — PENDING
+Remaining, in order: (iii-b3) §4.2.1 pendingFix flow (proposal → approved-holding → executing-verifying, ratifier-style reply recognition in the conversational path, single-flight, invalidation triggers, the executing-verifying suspend-pause clocks); (iii-b4) WIRING — construct the manager in the sentinel, call `reconcile`/`expireIfStale` on the tick, execute effects via `telegramAdapter.createAttentionItem`/topic-append/resolve, attach the alarm marker into refreshPool's advert, §3.4 takeover/fallback/reconciliation, the 30-day jsonl prune; (v) `GET /pool/machine-coherence` status route (503-when-dark) + counters + boot line.
 ### Increment D₂a — per-peer lease-observation map (§5b's NEW retained state) — LANDED
 
 **What changed:**

@@ -181,6 +181,71 @@ describe('§4.6 corrupt re-baseline', () => {
   });
 });
 
+// A distinct flag row (unique key) so successive opens/joins don't collapse.
+function distinctRow(n: number) {
+  const vc = { m_laptop: 'live', m_mini: 'dark' };
+  const key = `seamlessness.k${n}`;
+  return { identity: skewRowIdentity('flag', key, vc), dimension: 'flag' as const, key, participants: ['m_laptop', 'm_mini'], valueClasses: vc };
+}
+
+describe('§4.5 per-day cap (maxEpisodeItemsPerDay)', () => {
+  it('caps NEW items per rolling 24h and gives up loudly ONCE, further episodes jsonl-only', () => {
+    const m = mgr({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, maxEpisodeItemsPerDay: 2, resolveTicks: 1 } } });
+    let raises = 0; let capNotes = 0;
+    const openThenClose = (n: number) => {
+      const eff = m.reconcile(input({ confirmedRows: [distinctRow(n)] }));
+      raises += eff.filter((e) => e.kind === 'raise').length;
+      capNotes += eff.filter((e) => e.kind === 'append' && e.text.includes('flapping faster')).length;
+      // close it (skew gone) so the next distinct skew opens a NEW episode.
+      m.reconcile(input({ confirmedRows: [] }));
+    };
+    openThenClose(1); openThenClose(2); openThenClose(3); openThenClose(4);
+    expect(raises).toBe(2); // cap
+    expect(capNotes).toBe(1); // give up loudly once
+  });
+});
+
+describe('§4.5 recurrence reopen (same item, no new item)', () => {
+  it('a skew returning within reopenWindowMs REOPENS the same item — no new item, does not count toward the cap', () => {
+    const m = mgr({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, resolveTicks: 1, maxEpisodeItemsPerDay: 1 } } });
+    const first = m.reconcile(input()); // open item #1
+    const itemId = first.find((e) => e.kind === 'raise')?.kind === 'raise' ? (first.find((e) => e.kind === 'raise') as { itemId: string }).itemId : '';
+    m.reconcile(input({ confirmedRows: [] })); // close restored
+    const reopen = m.reconcile(input()); // same skew back → reopen
+    const raise = reopen.find((e) => e.kind === 'raise');
+    expect(raise?.kind === 'raise' && raise.itemId).toBe(itemId); // SAME item id
+    expect(raise?.kind === 'raise' && raise.summary).toContain('re-opening');
+    expect(m.status().openEpisode?.rows).toBe(1);
+  });
+});
+
+describe('§4.5 shared append budget (R3-M5 burst invariant)', () => {
+  it('intra-episode flap appends are bounded to episodeAppendBudget + 1 (the flapping note), then jsonl-only', () => {
+    const m = mgr({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, episodeAppendBudget: 3 } } });
+    // Open, then join a NEW distinct row each tick (all rows stay present).
+    const rows = [flagRow()];
+    m.reconcile(input({ confirmedRows: [...rows] }));
+    let appends = 0;
+    for (let n = 0; n < 10; n++) {
+      rows.push(distinctRow(n));
+      const eff = m.reconcile(input({ confirmedRows: [...rows] }));
+      appends += eff.filter((e) => e.kind === 'append').length;
+    }
+    expect(appends).toBe(4); // budget (3) + 1 flapping note; the rest jsonl-only
+  });
+
+  it('a suspend/resume append always gets its RESERVED slot even when the budget is spent', () => {
+    const m = mgr({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, episodeAppendBudget: 1 } } });
+    const rows = [flagRow()];
+    m.reconcile(input({ confirmedRows: [...rows] }));
+    // Spend the budget with row joins.
+    for (let n = 0; n < 4; n++) { rows.push(distinctRow(n)); m.reconcile(input({ confirmedRows: [...rows] })); }
+    // Now a suspend transition must still speak (reserved slot).
+    const susp = m.reconcile(input({ confirmedRows: [...rows], onlineMachineIds: new Set(['m_laptop']) }));
+    expect(susp.find((e) => e.kind === 'append' && e.text.includes('went offline'))).toBeDefined();
+  });
+});
+
 describe('§4.2 verbatim body render', () => {
   it('divergent == raiser (self): impact-first, fix-it/leave-it, failover named when holding the lease', () => {
     const m = mgr();
