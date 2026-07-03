@@ -179,6 +179,7 @@ import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { LiveConfig } from '../config/LiveConfig.js';
 import { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
+import { buildCoherenceAdvert } from '../core/machineCoherenceAdvert.js';
 import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
@@ -17549,6 +17550,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               return undefined;
             }
           };
+          // Machine-coherence advert beat counter (machine-coherence-guard §3.2
+          // M5): sender-side monotonic advert generation. FORENSIC-ONLY —
+          // resets on restart; receivers NEVER use it as a freshness check
+          // (freshness is the receiver-stamped advert receipt time; R2-L1).
+          let _coherenceBeatSeq = 0;
           const refreshPool = (): void => {
             try {
               machinePoolRegistry!.recordHeartbeat({
@@ -17573,6 +17579,27 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
                 seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive() },
+                // Machine-coherence advert (machine-coherence-guard §3.2).
+                // Emission is UNCONDITIONAL (M3, normative): it ships live with
+                // the code, regardless of the sentinel's dev-gate/enabled/dryRun
+                // — only the evaluator + alarm are dev-gated (§7). A gated
+                // advert would make the guard misdiagnose the exact F4 topology
+                // (dark side advert-less → false "peer predates the guard").
+                // Recomputed each beat: boot-read entries re-advertise within
+                // one beat of a restart; live-read entries (readSource:'live',
+                // M8) within one beat of the PATCH /config. Alarm marker is the
+                // episode machinery's to attach (increment C) — absent until an
+                // open, successfully-raised local item exists.
+                ...(() => {
+                  try {
+                    return {
+                      coherenceAdvert: buildCoherenceAdvert(
+                        { boot: config as unknown as Record<string, unknown>, liveGet: (path, fallback) => liveConfig.get(path, fallback) },
+                        { instarVersion: ProcessIntegrity.getInstance()?.runningVersion ?? 'unknown', beatSeq: _coherenceBeatSeq++ },
+                      ),
+                    };
+                  } catch { return {}; } // a builder fault must never kill the liveness beat; self degrades to advert-less (loud via version-class after grace), never a dead heartbeat
+                })(),
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.

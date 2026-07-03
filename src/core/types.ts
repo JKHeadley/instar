@@ -2083,6 +2083,24 @@ export interface MachineCapacity {
    *  restarts via the durable last-known store, so a dark peer renders with
    *  its honest age. */
   guardPostureReceivedAt?: string;
+  /** Machine-coherence advert (machine-coherence-guard §3.2): running version,
+   *  protocol version, manifest hash, the guard's own posture, and the
+   *  manifest-resolved effective flag values. Emission is UNCONDITIONAL (M3 —
+   *  ships live with the code; only the evaluator/alarm are dev-gated); absent
+   *  = the peer predates the guard (classified `unknown` → version-class after
+   *  grace). Receive side is CLAMPED (M4) — a rejected advert is replaced by
+   *  `coherenceAdvertRejected`, never carried forward as current posture. */
+  coherenceAdvert?: import('./machineCoherenceAdvert.js').CoherenceAdvert;
+  /** RECEIVER-side receipt time (ISO) of the LAST beat that actually CARRIED a
+   *  coherenceAdvert (M5): carry-forward must never impersonate freshness — the
+   *  evaluator degrades an advert older than `advertStaleMs` to `advert-stale`
+   *  even while liveness (`routerReceivedAt`) stays fresh via git beats. */
+  coherenceAdvertReceivedAt?: string;
+  /** Clamp-rejection marker (M4): set when the peer's LAST advert failed the
+   *  receive clamp. REPLACES the stored advert for evaluation purposes
+   *  (rejected ≠ absent — surfaced as `advert-rejected`, a LOUD named
+   *  condition, never silence); cleared by the next clean advert. */
+  coherenceAdvertRejected?: { atMs: number; reason: string };
 }
 
 /** The compact posture block that rides the capacity heartbeat

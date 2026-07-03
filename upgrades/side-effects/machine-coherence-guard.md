@@ -32,8 +32,23 @@
 
 **Blast radius:** ships LIVE (a bug-fix — correcting a field that was structurally always `undefined`, not a new behavior). Retroactively activates the already-written consumer at `src/server/routes.ts:6645/6671` (the peer-version annotation on `/guards?scope=pool` failure rows). Additive: `hardware.instarVersion` was optional and always undefined before; now populated on machines running this version. No shape change (that is §5b's D5, still pending).
 
-### Increment B — advert transport (§3.2) — PENDING
+### Increment B — advert transport (§3.2) — LANDED
+
+**What changed:**
+1. **`src/core/machineCoherenceAdvert.ts` (NEW)** — the §3.2 advert block:
+   - `CoherenceAdvert` / `CoherenceAlarmMarker` / `CoherenceAdvertRejection` types (instarVersion, protocolVersion, manifestHash, guard posture N2, FORENSIC-ONLY beatSeq R2-L1, manifest-resolved flags, optional alarm marker R2-M1/M2).
+   - `buildCoherenceAdvert` — pure builder over the increment-A manifest (`buildCoherenceFlags` + `selfManifestHash` + `selfProtocolVersion`); `resolveSelfGuardPosture` maps the manifest's own-posture row to `live | dry-run | dark`.
+   - `clampCoherenceAdvert` — the **M4 receive clamp (NEW BUILD WORK per spec)** with the R5-N3 format clamps: version alphabet, 64-lowercase-hex manifestHash, guard enum, numeric protocol/beatSeq, flag key/value alphabets + entry cap, the §3.1 byte budgets measured on the REBUILT serialization (R4-L4). Failure directions per spec: malformed ADVERT → named rejection (rejected ≠ absent); malformed alarm MARKER (episodeId format R3-N9 / row-hash format) → marker dropped with named reason, advert STANDS; >72-row marker → truncated + `rowsTruncated` (honesty only — truncation never grants coverage, R3-M4).
+2. **`src/core/types.ts`** — `MachineCapacity` gains `coherenceAdvert` + `coherenceAdvertReceivedAt` (receiver-stamped, M5) + `coherenceAdvertRejected` (M4), siblings to `seamlessnessFlags`/`guardPosture`.
+3. **`src/core/MachinePoolRegistry.ts`** — `HeartbeatObservation` gains both fields; `recordHeartbeat` tracks advert receipt SEPARATELY (the posture pattern): an advert-carrying beat stamps a fresh receipt + clears any standing rejection; a rejection-carrying beat REPLACES the advert for evaluation (last-good retained internally for forensics only); a sparse beat carries BOTH forward unchanged — carry-forward can never impersonate freshness (M5). `assemble` exposes rejection-over-advert.
+4. **`src/core/PeerPresencePuller.ts`** — `PeerCapacity` gains both fields; `coherenceAdvert` added to `SESSION_STATUS_ADVERT_FIELDS` (the ratchet covers the narrowing from day one); `narrowSessionStatusToPeerCapacity` applies the clamp AT the narrowing step (the spec's designated clamp point); the **R2-N1 second enumeration** closed — `pullOnce`'s hand-maintained `recordHeartbeat` spread + its deps type carry both fields (the #930-class 5th-instance guard).
+5. **`src/commands/server.ts`** — `refreshPool` emits the advert on EVERY self beat, **UNCONDITIONALLY (M3, normative)** — no dev-gate on emission; `beatSeq` closure counter; `instarVersion` from `ProcessIntegrity.runningVersion`; `liveGet` wired to `liveConfig.get` so `readSource:'live'` entries (sessionPool.stage, exactlyOnceIngress) re-advertise within one beat of a PATCH /config with no restart (M8). Builder faults degrade to an advert-less beat (never a dead heartbeat). Alarm marker is increment C's to attach (no episode machinery exists yet).
+6. **Tests (green):** `tests/unit/machine-coherence-advert.test.ts` (NEW, 22 tests — M3 fleet-config emission, guard-posture ladder, clamp accept/reject matrix incl. marker-drop + truncation, registry receipt/carry-forward/rejection-replace semantics) + `tests/unit/peer-presence-puller.test.ts` extended (ratchet fixture carries a clean advert; R2-N1 spread tests both directions; M4 narrowing clamp pass/reject).
+
+**Blast radius:** the advert is an ADDITIVE optional heartbeat field (the same additive-advert path every prior field took — peers without the code ignore it). Ships LIVE by design (M3): every machine on this version emits ~1–2 KB more per 30s self-beat and stores peers' clamped adverts in the in-memory registry. No route, no alarm, no evaluator yet — nothing CONSUMES the advert until increment C, so fleet behavior is unchanged beyond the heartbeat payload. Rejection markers are data-at-rest only until C classifies them.
+
 ### Increment C — the evaluator + episode/election/fix (§3.3/§3.4/§4) — PENDING
+(Includes the `clampRejections`/marker-drop counters on the status route — the clamp itself landed in B; the counters belong to the sentinel's counter block.)
 ### Increment D₂ — the awakeMachineCount shape rework (§5b, D5) — PENDING
 ### Increment E — integration + e2e + CLAUDE.md template + release fragment — PENDING
 
