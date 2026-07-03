@@ -58,8 +58,12 @@ Telegram pipeline to carry more than one channel.
    the circuit breaker now pauses ONE channel's retries at a time, so a
    Slack outage can never freeze Telegram recovery (a review catch).
 4. **No double-posting — even across restarts.** Every send carries a unique
-   delivery ID; the server remembers recent IDs and answers "already
-   delivered" instead of posting again — and that memory is now saved to
+   delivery ID **from the very first attempt** — the third review round
+   caught that the ID used to be created only when a send failed, which
+   meant the server had never seen the ID of a first attempt that actually
+   landed (so a much-later retry could double-post; the fix also closes the
+   same long-standing gap on the Telegram side). The server remembers recent
+   IDs and answers "already delivered" instead of posting again — and that memory is now saved to
    disk, because the review found a real (if narrow) sequence where a
    restart wiped the in-memory list and a late retry could double-post.
    When the outcome of a send is genuinely unknowable (the network died
@@ -118,9 +122,13 @@ skip both lanes that aren't live and rows carrying the hold marker, so a
 message that never got a chance to deliver can never be deleted (round one
 caught the June-5th silent-deletion accident recurring one level up; round
 two caught it AGAIN inside the fix, because the protection relied on timing
-instead of a durable marker — hence the marker). A message can't sit parked
-forever either: after a week on hold it's surfaced loudly to your attention
-queue instead of being quietly dropped. Config keys:
+instead of a durable marker — hence the marker). A parked message also re-checks its
+reason on a short cadence and is released the moment the reason clears (the
+lane turns on, the right machine takes over, a rate window passes) — the
+third review round caught that without an explicit release rule, "parked"
+could quietly have meant "parked forever". And a message can't sit parked
+forever either way: after a week on hold it's surfaced loudly to your
+attention queue instead of being quietly dropped. Config keys:
 `monitoring.deliveryFailureSentinel.channels` and `.slackDryRun`. Existing
 agents get the changes through the normal update path — the database upgrades
 itself additively on boot, and the Slack reply script refreshes via the
