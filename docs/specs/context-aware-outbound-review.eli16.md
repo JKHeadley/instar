@@ -1,8 +1,8 @@
 # Teach the message reviewer what you actually asked for (plain-English overview)
 
-Companion to `context-aware-outbound-review.md` (draft r3 — round-1 and
-round-2 findings folded; see `reports/context-aware-outbound-review-round1-findings.md`
-and `…-round2-findings.md`).
+Companion to `context-aware-outbound-review.md` (draft r4 — round-1, round-2
+and round-3 findings folded; see `reports/context-aware-outbound-review-round1-findings.md`,
+`…-round2-findings.md` and `…-round3-findings.md`).
 
 ## The problem
 
@@ -50,10 +50,20 @@ carefully bounded rule:
   each relevant would-block gets one extra check with the conversation hidden
   (if hiding it would have let the message pass, that's a rule violation and
   the trial restarts); AND every day a fixed set of booby-trapped test
-  messages (like a password paste with a matching "send me the key" ask) is
-  run through the live reviewer — if the "you asked for it" rule ever lets
-  one of those through, the trial fails and restarts. A small daily sample of
-  passed messages also gets a human once-over.
+  messages (like a secret paste with a matching "send me the key" ask) is
+  run through the live reviewer. Round 3 caught that the first design of
+  that daily test couldn't actually be built or trusted, so it was redone
+  properly: each trap's fake conversation is planted in a walled-off
+  reserved slot (real conversations can never collide with it, and it's
+  wiped seconds later), the traps are deliberately shaped to slip PAST the
+  dumb pattern-matching layer so they truly test the AI reviewer itself,
+  and each trap runs twice — once with the conversation hidden and once
+  shown — so a failure cleanly blames the conversation and nothing else. If
+  the "you asked for it" rule ever lets a trap through, the trial fails and
+  restarts; if a trap itself turns out to be broken, that day simply
+  doesn't count until it's fixed. A small daily sample of passed messages
+  (five by default — a checklist number you can change, not a hidden
+  setting) also gets a human once-over.
 - **Never for secrets.** Even if you ask for a password or API key in chat, the
   reviewer still flags pasting it — secrets have their own safe delivery path.
   The separate hard-block layer for policy violations is untouched.
@@ -96,9 +106,10 @@ that change is now a named, tested build item).
   that one already sees the conversation. (Decided: separate follow-up.)
 - It doesn't give the conversation to the third-party-leak reviewer, ever,
   without a fresh design review. (Decided in round 1.)
-- It doesn't add AI calls beyond ONE tiny, bounded exception: the trial-period
-  double-check of would-blocks described above (a handful of calls per day,
-  only during the trial, never after go-live).
+- It doesn't add AI calls beyond TWO tiny, bounded exceptions: the
+  trial-period double-check of would-blocks AND the daily booby-trap battery,
+  both described above (each a handful of calls per day, only during the
+  trial, never after go-live).
 - It doesn't send your conversation anywhere new — the snippet rides inside
   the review call that already carries the message itself, and conversation
   bodies are never written to disk or shown on any status page.
@@ -116,7 +127,11 @@ that change is now a named, tested build item).
    technical content in a shared room). Round 2 added the missing plumbing:
    the system now computes which of those three situations applies and STAMPS
    it on the conversation snippet as a one-line mode marker, so the reviewer
-   is told the rule instead of having to guess it. Say the word to go
+   is told the rule instead of having to guess it. Round 3 added one more
+   fail-safe: if any recent message in an unbound topic comes from someone
+   the system can't positively identify (old messages and some channels
+   don't record who sent them), EVERYONE in that window drops to weak hints
+   — an unidentifiable voice can never unlock anything. Say the word to go
    stricter or looser.
 2. **How fresh must the ask be?** Decided: last ~6 messages, same as the
    sibling gate. If an ask scrolls out mid-thread and causes a wrong block,
@@ -135,8 +150,10 @@ that change is now a named, tested build item).
    real reviewed messages (the extra test-checks don't count toward that),
    zero wrong would-blocks, zero one-way violations, zero booby-trap
    failures, zero wrongly-waved-through passes in the daily sample — any
-   mistake restarts the clock. You can demand more at flip time; you can't
-   be given less.
+   mistake restarts the clock. A day whose booby-trap battery couldn't run
+   properly (a broken trap, the test door switched off) doesn't fail
+   anything, but it can't count as the clean day either (round 3). You can
+   demand more at flip time; you can't be given less.
 6. **Fix the sibling gate's wording too?** Decided: not in this change —
    separate follow-up.
 7. **What about non-Telegram sessions?** Decided: deferred unless a real miss
