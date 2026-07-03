@@ -777,6 +777,32 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Model-tier escalation policy (COST-INCREASING enable).',
   },
   {
+    // Test-Runner Concurrency Bound (test-runner-concurrency-bound §2.9/§4).
+    // kind 'code-default': the chokepoint (vitest globalSetup) has NO config
+    // enable — its authority is env + the host tuning file, so this row's
+    // runtime getter serves the SERVER-PROCESS view of the resolved posture
+    // (enabled = posture !== 'off'; dryRun = posture !== 'enforcing'), cached
+    // OUTSIDE the getter (the registry contract forbids file I/O in getters).
+    // A host-wide `INSTAR_HOST_TEST_SEMAPHORE=off` therefore grades
+    // off-runtime-divergent — the spec's "sustained off grades diverged".
+    // loadBearing + 14-day soak (§4): while the ratified dry-run soak runs,
+    // the row grades loadBearingSoaking; if the window lapses with no flip
+    // decision it becomes a LOUD load-bearing gap — the soak structurally
+    // cannot drift into dry-run-forever (Close the Loop).
+    key: 'intelligence.testRunnerCap',
+    kind: 'code-default',
+    defaultEnabled: true,
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'HostTestRunnerSemaphore',
+    description: 'Host-wide test-runner concurrency bound (vitest suite/targeted lanes; watch-only soak, then enforce).',
+    loadBearing: true,
+    criticalPath: 'host CPU protection — the multi-actor test-suite storm (2026-07-02 load-stall kill cascade)',
+    soakWindowDays: 14,
+    declaredLoadBearingAt: '2026-07-03',
+  },
+  {
     // Out-of-process guard (spec §2.1): config-derived states ONLY
     // (`on-unverified` at best) — the sync in-memory getter contract cannot
     // cross processes, so this entry must never carry expectRuntime.

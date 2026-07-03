@@ -12,6 +12,14 @@ import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { classifyActionClaim } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
 import { getHostSpawnSemaphore, configuredSpawnAcquireMs, configuredSpawnWaitersMax } from '../core/hostSpawnSemaphore.js';
+import {
+  getHostTestRunnerSemaphore,
+  classifyRow as classifyTestRunnerRow,
+  coerceTtlMs as coerceTestRunnerTtlMs,
+  HOST_TEST_SUITE_CAP_DEFAULT,
+  HOST_TEST_TARGETED_CAP_DEFAULT,
+} from '../core/hostTestRunnerSemaphore.js';
+import type { TestRunnerHolderRow } from '../core/hostTestRunnerSemaphore.js';
 import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
 import { writeServeProgress } from '../core/serveProgress.js';
@@ -8467,6 +8475,153 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       // Observability must never throw — report an honest error rather than 500.
       res.status(500).json({ error: 'spawn-limiter status unavailable', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Test-Runner Concurrency Bound: host-wide vitest-root cap (test-runner-concurrency-bound §2.7) ──
+  // Read-only observability over the host-wide test-runner semaphore (the
+  // spawn cap's sibling for vitest roots — suite lane cap 1, targeted lane
+  // cap 6). PURE read: lock-free, write-free, signal-free — dead/TTL-expired
+  // holders are excluded from the live counts as a VIRTUAL prune (in-memory
+  // only; the file is never written and nothing is ever signaled from a GET).
+  // No-lie constraint (§2.7): cap + posture resolve through the IDENTICAL
+  // resolvers the vitest-globalSetup chokepoint uses (env → tuning file →
+  // code default), NEVER from intelligence.testRunnerCap — reporting a config
+  // cap the enforcing process doesn't read would make "why is my run
+  // waiting?" a lie. Always available — the chokepoint ships on (dry-run).
+
+  /** Route-projection clamp for UNTRUSTED holder/ledger string fields (§2.7 —
+   *  a poisoned holders file can carry markup): sane charset + length. */
+  const clampTestRunnerField = (s: unknown): string =>
+    String(s ?? '')
+      .replace(/[^a-zA-Z0-9._:\-/ ]/g, '')
+      .slice(0, 128);
+
+  /** Clamp every string field of a ledger-tail event at the route projection
+   *  (the ledger is a same-user-writable file — quoted data, never trusted). */
+  const clampTestRunnerEvent = (e: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(e)) {
+      const key = clampTestRunnerField(k).slice(0, 64);
+      if (!key) continue;
+      if (typeof v === 'string') out[key] = v.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 300);
+      else if (typeof v === 'number' || typeof v === 'boolean' || v === null) out[key] = v;
+      // nested objects/arrays are dropped at the projection — the durable
+      // ledger keeps the full row; the route serves a flat, bounded view.
+    }
+    return out;
+  };
+
+  router.get('/test-runner-limiter', (_req, res) => {
+    try {
+      const status = getHostTestRunnerSemaphore().status();
+      const projectHolder = (h: { pid: number; hostname: string; acquiredAt: number; ttlMs: number; state: string }) => ({
+        pid: Number(h.pid),
+        hostname: clampTestRunnerField(h.hostname),
+        acquiredAt: Number(h.acquiredAt),
+        ttlMs: Number(h.ttlMs),
+        state: clampTestRunnerField(h.state),
+      });
+      res.json({
+        cap: status.cap,
+        targetedCap: status.targetedCap,
+        posture: status.posture,
+        clampActive: status.clampActive,
+        ttlSignalArmed: status.ttlSignalArmed,
+        liveHolders: status.liveHolders.map(projectHolder),
+        targetedHolders: status.targetedHolders.map(projectHolder),
+        // Derived from live (pid-alive) witness records — a lock-wedge
+        // over-admission is VISIBLE here, not merely ledgered (§2.7).
+        admittedOpen: status.admittedOpen.map((w) => ({ pid: Number(w.pid), acquiredAt: Number(w.acquiredAt) })),
+        suite: status.suite,
+        targeted: status.targeted,
+        // Additive DETAIL field (§4 freeze scope): a resolved cap above the
+        // code default, surfaced as change-detection alongside ttlSignalArmed.
+        capAboveDefault: {
+          suite: status.cap > HOST_TEST_SUITE_CAP_DEFAULT,
+          targeted: status.targetedCap > HOST_TEST_TARGETED_CAP_DEFAULT,
+        },
+        recentEvents: status.recentEvents.map((e) => clampTestRunnerEvent(e as unknown as Record<string, unknown>)),
+        skipHistogram: status.skipHistogram,
+      });
+    } catch (err) {
+      // Observability must never throw — report an honest error rather than 500.
+      res.status(500).json({ error: 'test-runner-limiter status unavailable', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /** Virtual (pure, write-free, signal-free) enumeration of holders a reclaim
+   *  pass WOULD remove — served when a prune could not run (rate-limited /
+   *  coalesced) or could not reclaim (df-unknown keeps rows, §2.4 fail-open),
+   *  so the "reclaimed vs would-be-reclaimed" answer is never empty-and-mute. */
+  const testRunnerWouldBeReclaimed = (): Array<{ pid: number; lane?: string; reason: string }> => {
+    const out: Array<{ pid: number; lane?: string; reason: string }> = [];
+    try {
+      const sem = getHostTestRunnerSemaphore();
+      const raw = fs.readFileSync(sem.paths.holders, 'utf-8');
+      const parsed: unknown = JSON.parse(raw);
+      const rows = (parsed as { holders?: unknown[] })?.holders;
+      if (!Array.isArray(rows)) return out;
+      const nowMs = Date.now();
+      for (const r of rows) {
+        if (classifyTestRunnerRow(r) !== 'held') continue;
+        const row = r as TestRunnerHolderRow;
+        let alive = true;
+        try {
+          process.kill(row.pid, 0);
+        } catch {
+          alive = false;
+        }
+        if (!alive) {
+          out.push({ pid: row.pid, lane: row.lane, reason: 'pid-dead' });
+          continue;
+        }
+        const ttl = coerceTestRunnerTtlMs(row.ttlMs);
+        const windowStart = Math.max(row.acquiredAt, typeof row.reArmedAt === 'number' ? row.reArmedAt : 0);
+        if (nowMs - windowStart >= ttl.ttlMs) {
+          out.push({ pid: row.pid, lane: row.lane, reason: 'ttl-expired' });
+        }
+      }
+    } catch {
+      // Holders file missing/corrupt — nothing enumerable; the prune path owns
+      // quarantine (this helper stays strictly read-only).
+    }
+    return out;
+  };
+
+  // Recovery lever (§2.6, the 2026-07-01 stale-holder lesson): force a full
+  // reclaim pass — the surfaced action replacing hand-edits of the holders
+  // JSON. This route and the globalSetup acquire path are the ONLY two places
+  // persistent reclaim happens. Single-flight + rate-limited (one forced pass
+  // per 5s) inside the semaphore itself; a pending terminating-tombstone
+  // SIGKILL completes ONLY under the armed signal arm (the core's reclaim
+  // pass gates this — the route never re-implements policy).
+  router.post('/test-runner-limiter/prune', (_req, res) => {
+    try {
+      const report = getHostTestRunnerSemaphore().prune({ source: 'route' });
+      if (report.rateLimited) {
+        // Coalesced with an in-flight/recent pass — enumerate what a pass
+        // WOULD reclaim (virtually) so the caller still gets an honest answer.
+        res.status(429).json({
+          error: 'rate-limited — one forced pass per 5s (concurrent calls coalesce)',
+          rateLimited: true,
+          reclaimed: [],
+          wouldBeReclaimed: testRunnerWouldBeReclaimed(),
+        });
+        return;
+      }
+      res.json({
+        reclaimed: report.reclaimed,
+        // Non-empty only when the pass could not reclaim (df-unknown keeps
+        // rows in the fail-open direction) — otherwise everything reclaimable
+        // was just reclaimed and this is [].
+        wouldBeReclaimed: testRunnerWouldBeReclaimed(),
+        tombstonesCompleted: report.tombstonesCompleted,
+        liveSuite: report.liveSuite,
+        liveTargeted: report.liveTargeted,
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'test-runner-limiter prune failed', detail: err instanceof Error ? err.message : String(err) });
     }
   });
 

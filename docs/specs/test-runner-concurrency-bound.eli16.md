@@ -28,3 +28,7 @@ Full suites serialize: on a busy multi-agent machine, someone's push waits for s
 ## Escape hatches
 
 One environment variable turns the whole thing off instantly (and even that is logged, so a silently-disabled guard can't quietly explain the next meltdown). Deleting one file drops enforcement back to watch-only. Reverting the change removes everything; the leftover state files are inert.
+
+---
+
+_Status: converged (10 review rounds, 6 internal reviewers + codex/gemini externals each round) and operator-approved 2026-07-03; shipping watch-only (dry-run) for the soak. This overview accompanies the implementation build._

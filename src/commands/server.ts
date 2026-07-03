@@ -6204,6 +6204,35 @@ export async function startServer(options: StartOptions): Promise<void> {
     // against the declared manifest (missing = a state, never an omission).
     const guardRegistry = new GuardRegistry();
 
+    // ── Test-Runner Concurrency Bound guard row (test-runner-concurrency-bound §2.9) ──
+    // The chokepoint lives in vitest globalSetup (out-of-process); this getter
+    // serves the SERVER-PROCESS view of the resolved posture so /guards can
+    // grade the limiter (off / dry-run / enforcing). The GuardRegistry contract
+    // forbids file I/O inside getters and the posture authority is the host
+    // tuning file, so a snapshot is refreshed on an unref'd interval OUTSIDE
+    // the getter — the getter itself is a pure in-memory read. A refresh
+    // failure keeps the last snapshot (the guards row must never throw); a
+    // dead refresher surfaces honestly as on-stale via lastTickAt.
+    {
+      try {
+        const { getHostTestRunnerSemaphore } = await import('../core/hostTestRunnerSemaphore.js');
+        let testRunnerGuardSnapshot = { enabled: true, dryRun: true, lastTickAt: Date.now() };
+        const refreshTestRunnerGuard = (): void => {
+          try {
+            const posture = getHostTestRunnerSemaphore().resolveContext().posture.posture;
+            testRunnerGuardSnapshot = {
+              enabled: posture !== 'off',
+              dryRun: posture !== 'enforcing',
+              lastTickAt: Date.now(),
+            };
+          } catch { /* keep the last snapshot — the guards row must never throw */ }
+        };
+        refreshTestRunnerGuard();
+        setInterval(refreshTestRunnerGuard, 60_000).unref();
+        guardRegistry.register('intelligence.testRunnerCap', () => testRunnerGuardSnapshot);
+      } catch { /* guard registration is observability — never gates boot */ }
+    }
+
     // ── Permission-Prompt Auto-Resolver (always-on safety floor) ──────────────
     // Auto-answers a framework approval prompt Instar cannot otherwise clear (the
     // Claude Code 2.1.176-177 cd-redirection wedge). UNCONDITIONAL — there is NO

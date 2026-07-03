@@ -3,7 +3,7 @@ title: "Test-Runner Concurrency Bound"
 slug: "test-runner-concurrency-bound"
 author: "echo"
 status: draft
-parent-standard: "Bounded Blast Radius"
+parent-principle: "Bounded Blast Radius"
 eli16-overview: "test-runner-concurrency-bound.eli16.md"
 lessons-engaged:
   - "P19 No Unbounded Loops — the acquisition poll carries all three brakes (bounded ingress via hard wait ceiling, breaker via typed-error exit, cost cap via write-skip + bounded logging); backoff is substituted by jitter with the substitution reasoned in §2.2"
@@ -15,6 +15,7 @@ lessons-engaged:
   - "Close the Loop — the enforce flip is a tracked, bounded soak (§4), never an untracked intention"
   - "2026-06-20 fork-bomb + 2026-07-01 stale-holder postmortems — §1, §1.2"
 review-convergence: "2026-07-03T09:32:51.085Z"
+approved: true
 review-iterations: 10
 review-completed-at: "2026-07-03T09:32:51.085Z"
 review-report: "docs/specs/reports/test-runner-concurrency-bound-convergence.md"
@@ -259,7 +260,7 @@ Resolved here so the /instar-dev build never stops to ask. The run-class design 
   - *Tracking:* a commitment is opened at ship time whose deliverable is the flip decision (flip, or a documented refusal with reasons) — the soak structurally cannot drift into dry-run-forever. Additionally the limiter registers in the guard-posture inventory as load-bearing with a `soaking` classification bound to the same window: if the window lapses with no decision, it grades as a loud load-bearing gap on `/guards`, not a quiet forever-dark feature.
   - *Maturation Path compliance:* dry-run-on-the-dev-host IS the "ships enabled on developer agents" stage — the chokepoint is live and observing on exactly the incident population from day one; only its blocking/signaling arms wait for the soak verdict.
 
-**Back-port decision (was "considered"):** the prune lever + ledger back-port to `/spawn-limiter`, a spawn-lane max-hold TTL evaluation, **the spawn-lane stale-LOCK reclaim hardening (atomic rename + one-step atomic lock write + hostname stamp + df-gate — the round-8 lessons-aware foundation defect, §2.1), and the spawn-lane cap sanity-clamp + loudness (the §2.9 pattern applied to `resolveSpawnCap`, whose unclamped `INSTAR_HOST_SPAWN_MAX` is the quiet twin of the kill switch for the OOM floor — round-8 lessons-aware)** are OUT of scope for this PR (keeps the extraction reviewable) and are registered as a tracked commitment opened at build start, informed by the §1.2 root-cause finding. The test lane does NOT inherit any of these defects (it uses age-reclaim-only and its own pinned cap ceilings); the back-port closes them for the spawn lane. Not a loose deferral.
+**Back-port decision (was "considered"):** the prune lever + ledger back-port to `/spawn-limiter`, a spawn-lane max-hold TTL evaluation, **the spawn-lane stale-LOCK reclaim hardening (atomic rename + one-step atomic lock write + hostname stamp + df-gate — the round-8 lessons-aware foundation defect, §2.1), and the spawn-lane cap sanity-clamp + loudness (the §2.9 pattern applied to `resolveSpawnCap`, whose unclamped `INSTAR_HOST_SPAWN_MAX` is the quiet twin of the kill switch for the OOM floor — round-8 lessons-aware)** are OUT of scope for this PR (keeps the extraction reviewable) and are registered as a tracked commitment opened at build start, informed by the §1.2 root-cause finding. The test lane does NOT inherit any of these defects (it uses age-reclaim-only and its own pinned cap ceilings); the back-port closes them for the spawn lane. Not a loose deferral. <!-- tracked: CMT-1898 -->
 
 **Build order within the PR (round-6 codex — de-risks the coupled mechanisms):** the build proceeds core-out — (1) `hostSemaphoreCore` extraction + golden tests; (2) the suite lane + ledger + dry-run semantics (the minimum that starts collecting soak evidence); (3) the targeted/nested lanes + classification; (4) the route/guards/preflight surfaces; (5) the TTL signal arm LAST (it ships dark and disarmed regardless). Each stage lands with its own §5 tier so a review can bisect; this is sequencing within the one reviewed PR, not scope reduction.
 

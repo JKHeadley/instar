@@ -7519,6 +7519,19 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('CLAUDE.md: added Fork-Bomb Spawn Cap section');
     }
 
+    // Test-Runner Concurrency Bound (test-runner-concurrency-bound §2.9) — Agent
+    // Awareness + Migration Parity: existing agents learn the host-wide vitest cap
+    // (watch-only 14-day soak), the /test-runner-limiter read surface + /prune
+    // recovery lever, the "a rejected push may be CONTENTION not red tests"
+    // trigger, the outer-timeout ≥ acquire-budget guidance, and the env-only kill
+    // switch via this appended section. Body mirrors generateClaudeMd()
+    // byte-for-byte. Content-sniffed on the stable heading → idempotent.
+    if (!content.includes('Test-Runner Concurrency Bound')) {
+      content += `\n**Test-Runner Concurrency Bound (host-wide vitest cap — the spawn cap's sibling)** — A per-machine ticket counter bounds how many test suites run AT ONCE across every actor on this machine: full suites run one-at-a-time (default cap 1), while small targeted runs (≤5 named test files) get a roomier lane (default 6 slots, each clamped to ≤4 workers). It is the structural answer to the 2026-07-02 test-storm meltdown (29 concurrent vitest roots ≈ 300+ workers starving co-resident servers' event loops until their supervisors killed healthy processes). Ships WATCH-ONLY (dry-run) for a 14-day soak — it records what it WOULD have blocked but admits every run; blocking arrives only after the soak review flips the host tuning file.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter\` → \`{ cap, targetedCap, posture, ttlSignalArmed, liveHolders, targetedHolders, admittedOpen, suite: {available, saturated}, targeted: {...}, recentEvents, skipHistogram }\` (Registry First — read it, never guess).\n- **"Why is my test run waiting?" / a rejected \`git push\`** (PROACTIVE — this is the trigger): a push or suite that stalls or is refused may be CONTENTION (another suite holds the slot), NOT red tests — read \`GET /test-runner-limiter\` BEFORE assuming failure. The limiter's capacity-timeout error says "this is NOT a test failure" and names the holders.\n- Recovery lever: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter/prune\` — forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of ever hand-editing \`~/.instar/host-test-runner-holders.json\` (the 2026-07-01 stale-holder lesson).\n- A \`git push\` run under an OUTER command timeout needs that timeout ≥ the pre-push acquire budget (default 10 min interactive) — a correctly-WAITING push must not be killed by its own caller.\n- Kill switch: env \`INSTAR_HOST_TEST_SEMAPHORE=off\` (the SOLE chokepoint lever — \`intelligence.testRunnerCap\` in config only tunes the route report/server tooling, never the bound). (Spec: \`docs/specs/test-runner-concurrency-bound.md\`; constitution: "Bounded Blast Radius".)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Test-Runner Concurrency Bound section');
+    }
+
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
     // Awareness + Migration Parity: an agent that doesn't know a "sender not
     // recognized" notice comes from the mesh sender re-validation will be confused

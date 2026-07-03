@@ -12,11 +12,13 @@
  */
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig({
+import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
+
+export default defineConfig(withTestRunnerBound('contract', {
   test: {
     include: ['tests/contract/**/*.test.ts'],
     environment: 'node',
     testTimeout: 30000, // External API calls can be slow
     fileParallelism: false,
   },
-});
+}));

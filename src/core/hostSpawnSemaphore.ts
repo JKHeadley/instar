@@ -40,10 +40,22 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 
-import { SafeFsExecutor } from './SafeFsExecutor.js';
+import {
+  atomicWriteFileSync,
+  classifyDfSourceLocal,
+  legacyPidDeathLockReclaim,
+  probeDfHostLocal,
+  pruneHolders,
+  releaseLock,
+  tryTakeLockOnce,
+  type ReclaimContext,
+} from './hostSemaphoreCore.js';
 import { isAlive } from './ProjectRoundLock.js';
+
+// Re-export: classifyDfSourceLocal moved to hostSemaphoreCore (the §2.1
+// extraction) but remains part of this module's public export surface.
+export { classifyDfSourceLocal };
 
 /** One live holder of a spawn slot. */
 /**
@@ -108,11 +120,12 @@ interface HoldersFile {
   holders: SpawnHolder[];
 }
 
-/** Heartbeat staleness window — a holder is reclaim-eligible (pid dead OR, on a
- * provably host-local disk, heartbeat older than this) only past it. Kept long
- * (a slow `claude -p` cold-start + run can legitimately exceed a minute), and
- * pid-liveness is the PRIMARY signal — heartbeat staleness is secondary and
- * only consulted when the pid is also gone. */
+/** Heartbeat staleness window. A holder is reclaimed only when its pid is dead
+ * (PRIMARY signal) AND its heartbeat is older than this (SECONDARY signal) AND
+ * the holders file is df-confirmed host-local — an AND conjunction (see the
+ * authoritative ReclaimPolicy contract in hostSemaphoreCore.ts). Kept long
+ * (a slow `claude -p` cold-start + run can legitimately exceed a minute); a
+ * live-pid holder is NEVER reclaimed regardless of heartbeat. */
 export const HOLDER_STALE_MS = 5 * 60_000;
 
 /**
@@ -124,32 +137,15 @@ export const HOLDER_STALE_MS = 5 * 60_000;
  * core/ never depends on monitoring/.
  */
 export function isPathHostLocalDefault(p: string): boolean {
-  let out: string;
-  try {
-    // lint-allow-sync-spawn: a bounded (3s) one-shot host-FS classification, run
-    // ONCE per process and then MEMOIZED (HostSpawnSemaphore._fsLocalCache) — it
-    // never runs on the hot acquire() fan-out path. Mirrors ResumeQueue's
-    // isStateDirHostLocalDefault host-lock contract; a path's FS type can't
-    // change at runtime, so there is nothing to re-probe.
-    out = execFileSync('df', ['-P', p], { timeout: 3000, encoding: 'utf-8' });
-  } catch {
-    // @silent-fallback-ok: df unavailable/failed ⇒ cannot confirm local ⇒
-    // fail-closed to NOT-local (the safe direction: never reclaim on doubt).
-    return false;
-  }
-  const lines = out.trim().split('\n');
-  if (lines.length < 2) return false; // unparseable → fail-closed
-  const source = lines[1]?.trim().split(/\s+/)[0] ?? '';
-  return classifyDfSourceLocal(source);
-}
-
-/** Pure FD1 classifier over the `df -P` device-source column. FAIL-CLOSED. */
-export function classifyDfSourceLocal(source: string): boolean {
-  if (!source) return false;
-  if (source.startsWith('//')) return false; // SMB/CIFS //host/share → network
-  if (/^[^/][^:]*:/.test(source)) return false; // NFS host:/path → network
-  if (source.startsWith('/dev/')) return true; // a real block device → local
-  return false; // map/tmpfs/anything unrecognized → fail-closed
+  // Delegates to the extracted core probe (lint-allow-sync-spawn there: a
+  // bounded 3s one-shot, run ONCE per process and then MEMOIZED by
+  // HostSpawnSemaphore._fsLocalCache — never on the hot acquire() fan-out
+  // path). FAIL-CLOSED: a failed probe reads as not-local (never reclaim on
+  // doubt). NOTE: the memoize-a-failed-probe behavior is a §1.2-identified
+  // defect (a df timeout under load disables reclaim for the process
+  // lifetime); fixing it is part of the tracked spawn-lane back-port — the
+  // extraction preserves behavior byte-for-byte.
+  return probeDfHostLocal(p);
 }
 
 export interface HostSpawnSemaphoreDeps {
@@ -410,22 +406,27 @@ export class HostSpawnSemaphore {
     if (this._fsLocalCache === undefined) {
       this._fsLocalCache = this.isPathHostLocal(path.dirname(this.holdersPath));
     }
-    const fsLocal = this._fsLocalCache;
-    if (!fsLocal) {
-      // Cannot confirm host-local → reclaim NOTHING (fail-closed). Still return
-      // the well-formed set so the file stays clean.
-      return holders.filter((h) => isWellFormedHolder(h));
-    }
-    const nowMs = this.now();
-    return holders.filter((h) => {
-      if (!isWellFormedHolder(h)) return false; // drop garbage rows
-      if (h.hostname !== this.host) return true; // foreign — NEVER reclaimed (keep)
-      const pidDead = !this.pidAlive(h.pid);
-      const heartbeatStale = nowMs - h.heartbeat >= HOLDER_STALE_MS;
-      // Reclaim only when BOTH dead AND stale (pid primary, heartbeat secondary).
-      const reclaim = pidDead && heartbeatStale;
-      return !reclaim;
-    });
+    const ctx: ReclaimContext = {
+      nowMs: this.now(),
+      hostname: this.host,
+      pidAlive: this.pidAlive,
+      dfLocal: this._fsLocalCache,
+    };
+    // The SPAWN-lane ReclaimPolicy (see the contract in hostSemaphoreCore.ts):
+    // reclaim only when df-confirmed local AND this host AND pid dead AND
+    // heartbeat stale — the AND conjunction; a foreign-hostname holder is
+    // NEVER reclaimed, and when df can't confirm local, NOTHING is reclaimed
+    // (fail-closed; over-counting is the safe direction for the OOM floor).
+    return pruneHolders<SpawnHolder>(
+      holders,
+      isWellFormedHolder,
+      (h, c) =>
+        c.dfLocal &&
+        h.hostname === c.hostname &&
+        !c.pidAlive(h.pid) &&
+        c.nowMs - h.heartbeat >= HOLDER_STALE_MS,
+      ctx,
+    );
   }
 
   private readHolders(): HoldersFile {
@@ -445,21 +446,12 @@ export class HostSpawnSemaphore {
 
   private writeHolders(file: HoldersFile): void {
     this.ensureDir();
-    const body = JSON.stringify(file);
-    const tmp = `${this.holdersPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
-    try {
-      const fd = fs.openSync(tmp, 'wx', 0o600);
-      fs.writeSync(fd, body);
-      fs.closeSync(fd);
-      fs.renameSync(tmp, this.holdersPath); // atomic on the same filesystem
-    } catch (err) {
-      try {
-        SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'HostSpawnSemaphore.writeHolders:cleanup-tmp' });
-      } catch {
-        /* ignore */
-      }
-      throw err;
-    }
+    // Extracted atomic temp+rename write (byte-identical body — the golden
+    // test pins the on-disk format).
+    atomicWriteFileSync(this.holdersPath, JSON.stringify(file), {
+      mode: 0o600,
+      operation: 'HostSpawnSemaphore.writeHolders',
+    });
   }
 
   /**
@@ -476,59 +468,24 @@ export class HostSpawnSemaphore {
     const deadline = this.now() + 2000; // bounded spin — never block the event loop forever
     // Spin-acquire the lock with a tiny busy-wait; the critical section is sub-ms.
     for (;;) {
-      let fd: number | null = null;
-      try {
-        fd = fs.openSync(lockPath, 'wx', 0o600); // O_CREAT|O_EXCL
-        fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: this.now() }));
-      } catch (err) {
-        const e = err as NodeJS.ErrnoException;
-        if (e.code === 'EEXIST') {
-          // Lock held. Reclaim it if its holder's pid is dead (crash-safe).
-          if (this.reclaimStaleLock(lockPath)) continue;
+      const res = tryTakeLockOnce(lockPath, JSON.stringify({ pid: process.pid, at: this.now() }));
+      if (!res.ok) {
+        if (res.reason === 'held') {
+          // Lock held. SPAWN-lane lock-reclaim policy: reclaim when the
+          // recorded holder pid is dead (legacy behavior, preserved verbatim —
+          // the test lane deliberately does NOT ride this, §2.1).
+          if (legacyPidDeathLockReclaim(lockPath, this.pidAlive)) continue;
           if (this.now() >= deadline) return fallbackOnLockFail; // give up safely
           busyWaitTiny();
           continue;
         }
         // Any other open error — fail to the safe fallback rather than throw.
-        if (fd !== null) {
-          try { fs.closeSync(fd); } catch { /* ignore */ }
-        }
         return fallbackOnLockFail;
       }
       try {
         return fn();
       } finally {
-        try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing an already-closed/invalid fd on lock-release is benign */ }
-        try {
-          SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'HostSpawnSemaphore.withLock:release' });
-        } catch {
-          /* @silent-fallback-ok: a missing lock on release is fine — release is idempotent */
-        }
-      }
-    }
-  }
-
-  /** Remove the lock file if its recorded holder pid is dead (crash recovery). */
-  private reclaimStaleLock(lockPath: string): boolean {
-    try {
-      const raw = fs.readFileSync(lockPath, 'utf-8');
-      const obj = JSON.parse(raw);
-      const pid = typeof obj?.pid === 'number' ? obj.pid : null;
-      if (pid !== null && this.pidAlive(pid)) return false; // live holder — wait
-      // Dead (or unparseable) lock holder — reclaim.
-      SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'HostSpawnSemaphore.reclaimStaleLock' });
-      return true;
-    } catch {
-      // @silent-fallback-ok: a read/parse failure on the lock means we couldn't
-      // confirm a live holder; treat as reclaimable so a corrupt lock can't wedge
-      // the cap permanently. The O_EXCL re-create still races safely.
-      try {
-        SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'HostSpawnSemaphore.reclaimStaleLock:corrupt' });
-        return true;
-      } catch {
-        // @silent-fallback-ok: couldn't remove the corrupt lock (a race with
-        // another reclaimer) — report not-reclaimed; the caller waits + retries.
-        return false;
+        releaseLock(lockPath, res.fd, 'HostSpawnSemaphore.withLock:release');
       }
     }
   }

@@ -1,6 +1,8 @@
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig({
+import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
+
+export default defineConfig(withTestRunnerBound('unit', {
   test: {
     include: [
       'tests/unit/**/*.test.ts',
@@ -20,4 +22,4 @@ export default defineConfig({
     // file still run sequentially (vitest default for same-file tests).
     fileParallelism: false,
   },
-});
+}));

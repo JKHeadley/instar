@@ -142,6 +142,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'testRunnerLimiter',
+    prefixes: ['/test-runner-limiter'],
+    description: 'Test-Runner Concurrency Bound — the spawn cap\'s sibling for vitest roots (docs/specs/test-runner-concurrency-bound.md). A per-machine ticket counter bounds how many test SUITES run at once across every actor on the host (full suites one-at-a-time by default; small targeted runs get a roomier ≤6-slot lane, each clamped to ≤4 workers) — the structural answer to the 2026-07-02 test-storm load-stall kill cascade. Ships WATCH-ONLY (dry-run posture, 14-day soak): it logs would-blocks but admits every run until the enforce flip. GET /test-runner-limiter reports cap/targetedCap/posture/ttlSignalArmed, live holders per lane, per-lane saturation, admitted-open (lock-wedge) runs, the recent event tail, and a skip-reason histogram — cap + posture resolve through the SAME resolvers the chokepoint uses (env → host tuning file → code default), never from config (no-lie constraint). POST /test-runner-limiter/prune is the recovery lever: forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of hand-editing the holders JSON. When asked "why is my test run waiting?" / "did the limiter block something?" / a git push rejected that might be CONTENTION not red tests → read the GET route first. Kill switch: env INSTAR_HOST_TEST_SEMAPHORE=off (config intelligence.testRunnerCap is NOT the chokepoint lever).',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /test-runner-limiter', 'POST /test-runner-limiter/prune'],
+    }),
+  },
+  {
     key: 'multiMachinePool',
     prefixes: ['/pool'],
     description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',

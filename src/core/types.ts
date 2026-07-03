@@ -3476,6 +3476,27 @@ export interface InstarConfig {
         rb?: number;
       };
     };
+    /**
+     * Test-Runner Concurrency Bound — host-wide vitest-root cap (the spawn
+     * cap's sibling; docs/specs/test-runner-concurrency-bound.md §2.9).
+     * CAVEAT (§2.6/§2.7 no-lie constraint): this block tunes the ROUTE's
+     * report + server-launched tooling ONLY — NOT the chokepoint. The vitest
+     * globalSetup runs in a bare test process that cannot know which agent's
+     * config to read, so setting `enabled:false` here does NOT disable the
+     * bound: the sole chokepoint kill switch is env
+     * `INSTAR_HOST_TEST_SEMAPHORE=off`, and the host-uniform authority for
+     * caps/posture is the tuning file `~/.instar/host-test-runner-tuning.json`
+     * (env `INSTAR_HOST_TEST_MAX` etc. are per-process overrides). The
+     * GET /test-runner-limiter route likewise resolves cap/posture through
+     * the chokepoint's resolvers, never from these values.
+     */
+    testRunnerCap?: {
+      enabled?: boolean;
+      /** Suite-lane concurrency (mirrors the code default 1). */
+      maxConcurrent?: number;
+      /** Background-class suite-lane acquire budget in ms (mirrors the code default 120000). */
+      acquireWaitMs?: number;
+    };
   };
   /**
    * Agent-level set of frameworks this install actively uses. Drives

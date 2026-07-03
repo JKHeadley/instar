@@ -2304,6 +2304,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_MESSAGE_KIND=automated',
               '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
               '-e', 'INSTAR_SENDER_CLASS=llm-session',
+              // Test-runner bound (test-runner-concurrency-bound §2.6): a
+              // server-launched job session is BACKGROUND class — test suites
+              // it runs get the short fail-loud acquire budget, never the long
+              // interactive one. Derived from the launch site, never from
+              // user input. Interactive (jobSlug-less) spawns get NONE.
+              '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
         ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
@@ -2589,6 +2595,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_MESSAGE_KIND=automated',
               '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
               '-e', 'INSTAR_SENDER_CLASS=llm-session',
+              // Test-runner bound (test-runner-concurrency-bound §2.6): a
+              // server-launched job session is BACKGROUND class — test suites
+              // it runs get the short fail-loud acquire budget, never the long
+              // interactive one. Derived from the launch site, never from
+              // user input. Interactive (jobSlug-less) spawns get NONE.
+              '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
         ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)

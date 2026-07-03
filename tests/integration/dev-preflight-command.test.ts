@@ -47,6 +47,9 @@ describe('dev preflight command integration', () => {
         'tests/unit/capabilities-discoverability.test.ts',
         'tests/unit/CapabilityIndex.test.ts',
       ],
+      // Test-runner bound self-disable ledger check (spec §2.6(b)) — runs the
+      // same detector the pre-push hook uses, in --preflight mode.
+      ['node', 'scripts/pre-push-test-runner-selfdisable.mjs', '--preflight'],
     ]);
     expect(plainStdout).toContain('lint: PASS');
     expect(plainStdout).toContain('capabilities-discoverability/CapabilityIndex: PASS');

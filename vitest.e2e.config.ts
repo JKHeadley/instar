@@ -1,6 +1,8 @@
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig({
+import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
+
+export default defineConfig(withTestRunnerBound('e2e', {
   test: {
     include: ['tests/e2e/**/*.test.ts'],
     environment: 'node',
@@ -11,4 +13,4 @@ export default defineConfig({
     // tests (e.g. dev-preflight-cli, which spawns `pnpm` — absent on the CI e2e
     // runner) that skip-by-design when dist is missing.
   },
-});
+}));
