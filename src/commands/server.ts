@@ -7126,15 +7126,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       onAttention: (dedupeKey, title, body) => {
         try {
           _meshAttentionRaise?.({ id: dedupeKey, title, body, priority: 'medium', sourceContext: 'conversation-identity' });
-        } catch { /* attention is observability — never gates identity */ }
+        } catch { /* @silent-fallback-ok — attention is observability; a failed raise never gates identity or delivery */ }
       },
       log: (line) => console.log(pc.dim(`  ${line}`)),
     });
     try {
       conversationRegistry.load();
     } catch (err) {
-      // Fail toward delivery (§3.6): a broken registry boot must never take the
-      // server down — mints degrade to in-memory candidates until healed.
+      // @silent-fallback-ok — fail toward delivery (§3.6): a broken registry boot
+      // must never take the server down; mints degrade to in-memory candidates
+      // (behavior-identical to legacy hashing) until healed, and the failure is
+      // logged loudly here.
       console.warn(`  [conversation-registry] boot load failed (degraded to in-memory candidates): ${err instanceof Error ? err.message : String(err)}`);
     }
 
@@ -7458,7 +7460,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (conversationId !== null && message.metadata) {
               (message.metadata as Record<string, unknown>).conversationId = conversationId;
             }
-          } catch { /* identity never costs a message (§3.6) */ }
+          } catch { /* @silent-fallback-ok — identity never costs a message (§3.6 fail-toward-delivery): the inbound proceeds without a durable id and re-mints later */ }
 
           // Build injection tag with sender info (matches Telegram's buildInjectionTag pattern)
           const slackUserId = message.metadata?.slackUserId as string;
@@ -7668,6 +7670,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             () => true, // membership in the session registry is the authorized-traffic record
           );
         } catch (err) {
+          // @silent-fallback-ok — the adoption pass is a pre-population CONVENIENCE,
+          // not a recovery requirement (§6.2): every channel mints lazily on its
+          // next authorized inbound; the failure is logged loudly here.
           console.warn(`  [conversation-registry] adoption pass failed (channels mint lazily on next inbound): ${err instanceof Error ? err.message : String(err)}`);
         }
 

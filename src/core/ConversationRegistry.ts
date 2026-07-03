@@ -662,7 +662,7 @@ export class ConversationRegistry {
         fs.closeSync(dirFd);
       }
     } catch {
-      /* best-effort — platform-dependent */
+      /* @silent-fallback-ok — directory fsync is best-effort, platform-dependent (§3.4 macOS footnote); the record append itself is the durability authority */
     }
   }
 
@@ -675,7 +675,7 @@ export class ConversationRegistry {
       try {
         fs.fsyncSync(this.journalFd);
       } catch {
-        /* best-effort */
+        /* @silent-fallback-ok — pre-rotation fsync is best-effort; every durable record already fsynced at append time (§3.3 WAL rule) */
       }
       fs.closeSync(this.journalFd);
       this.journalFd = null;
@@ -718,14 +718,14 @@ export class ConversationRegistry {
             if (typeof rec.seq === 'number' && rec.seq > maxSeq) maxSeq = rec.seq;
             if (!(JOURNAL_OPS as readonly string[]).includes(rec.op) || unknownSeqs.has(rec.seq)) hasUnknown = true;
           } catch {
-            hasUnknown = true; // conservatively retain a file we cannot fully read
+            hasUnknown = true; // @silent-fallback-ok — fails toward RETENTION: a file we cannot fully read is never pruned (§3.4)
           }
         }
         if (!hasUnknown && maxSeq > 0 && maxSeq <= persistedHighWater) {
           SafeFsExecutor.safeUnlinkSync(file, { operation: 'conversation-registry journal rotation prune (fully-superseded rotated file — §3.4)' });
         }
       } catch {
-        /* prune is hygiene — never gates */
+        /* @silent-fallback-ok — prune is hygiene; a failed prune retains the file (the safe direction), never gates identity */
       }
     }
   }
@@ -735,6 +735,8 @@ export class ConversationRegistry {
       const raw = JSON.parse(fs.readFileSync(this.snapshotPath, 'utf-8')) as SnapshotShape;
       return typeof raw?.snapshotHighWaterSeq === 'number' ? raw.snapshotHighWaterSeq : 0;
     } catch {
+      // @silent-fallback-ok — an unreadable snapshot reads as high-water 0, so the
+      // prune rule supersedes NOTHING (fails toward retaining every journal file).
       return 0;
     }
   }
@@ -848,6 +850,8 @@ export class ConversationRegistry {
     try {
       observed = this.d.getLocalWorkspaceId?.();
     } catch {
+      // @silent-fallback-ok — a throwing workspace source degrades to the `_`
+      // placeholder (upgrades in place later, §3.1) — never a blocked mint.
       observed = undefined;
     }
     if (!observed || !SLACK_WORKSPACE_ID_RE.test(observed)) return WORKSPACE_PLACEHOLDER;
@@ -1302,7 +1306,7 @@ export class ConversationRegistry {
         fs.fsyncSync(this.journalFd);
         fs.closeSync(this.journalFd);
       } catch {
-        /* shutdown */
+        /* @silent-fallback-ok — shutdown teardown; durable records were fsynced at append time */
       }
       this.journalFd = null;
     }

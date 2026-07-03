@@ -78,3 +78,12 @@ predictable behavior-change-breaks-old-tests category, swept before push).
 
 The release fragment's "What to Tell Your User" line drops inline code
 formatting (the pre-push gate's plain-conversational rule).
+
+## Part-5 landing note (fail-safe tagging)
+
+Every intentional fail-safe catch this increment introduced carries an
+explicit `@silent-fallback-ok` tag with its safe-direction justification
+(registry: fsync best-effort / prune-retains / workspace-degrades-to-
+placeholder / shutdown teardown; wiring: fail-toward-delivery on boot-load,
+eager mint, adoption pass, attention raise) — the no-silent-fallbacks ratchet
+stays at its 491 baseline with zero untagged swallows from this PR.
