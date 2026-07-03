@@ -1,6 +1,6 @@
 # BUILD-STATUS — machine-coherence-guard (Session B handoff)
 
-**As of:** 2026-07-03 12:35 PDT · branch `echo/machine-coherence-guard` · worktree `~/.instar/agents/echo/.worktrees/machine-coherence-guard`
+**As of:** 2026-07-03 12:52 PDT (final for this session) · branch `echo/machine-coherence-guard` · worktree `~/.instar/agents/echo/.worktrees/machine-coherence-guard`
 **Spec:** `docs/specs/machine-coherence-guard.md` (CONVERGED r6, approved) + `.eli16.md`. **Side-effects artifact:** `upgrades/side-effects/machine-coherence-guard.md` (kept current per increment — read its Increment sections first; they are the authoritative landed/pending ledger).
 
 ## Commits on this branch (build increments, in order)
@@ -12,7 +12,7 @@
 | `6e413bfbf` | B | §3.2 advert transport: `src/core/machineCoherenceAdvert.ts` (builder + M4 receive clamp), `types.ts` MachineCapacity fields, `MachinePoolRegistry` receipt/carry-forward/rejection semantics (M5), `PeerPresencePuller` ratchet + R2-N1 spread + clamp-at-narrowing, `server.ts` UNCONDITIONAL emission (M3) with liveGet wiring (M8). 22 new + extended tests |
 | `dc0efd0c3` | D₂a | §5b NEW retained state: `HttpLeaseTransport.lastPulledByPeer` (dialed-id keyed, hearsay-proof, prune-on-depair) + `observedByPeer()` + `LeaseCoordinator.peerLeaseObservations()`. +5 tests |
 | `446e2016c` + `f7e4279f5` | C₀ | `src/monitoring/machineCoherenceEvaluate.ts` — pure §3.3/§3.4 helpers: `classifyPeer` (4 classes, pinned handling), `skewRowIdentity` (N1), `rowIdentityHash` (§3.2 marker format), `classifyVersionSkew` (major-minor vs patch-only-grace), `electRaiser` (holder-if-candidate else lowest id). 24 tests. Zero wiring — C₁ composes these |
-| (HEAD) | C₁a | `src/monitoring/MachineCoherenceSentinel.ts` — evaluator core: `resolveMachineCoherenceConfig` (§7 full surface, gate-resolved enabled, dryRun-first), `tick()` (single-machine strict no-op gate, classification pass, §3.4 election, fail-toward-silence), `inWarmup()` (N8), `status()` (§6 snapshot core). + `machineCoherence` in DEV_GATED_FEATURES + GUARD_MANIFEST entry (`expectRuntime:false` until C₁b registers it at boot; NOT loadBearing per D6). 13 tests. NOT constructed in production yet — server wiring is C₁b |
+| `035a6afbd` | C₁a | `src/monitoring/MachineCoherenceSentinel.ts` — evaluator core: `resolveMachineCoherenceConfig` (§7 full surface, gate-resolved enabled, dryRun-first), `tick()` (single-machine strict no-op gate, classification pass, §3.4 election, fail-toward-silence), `inWarmup()` (N8), `status()` (§6 snapshot core). + `machineCoherence` in DEV_GATED_FEATURES + GUARD_MANIFEST entry (`expectRuntime:false` until C₁b registers it at boot; NOT loadBearing per D6). 13 tests. NOT constructed in production yet — server wiring is C₁b |
 
 ## Test / tsc state
 
