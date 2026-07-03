@@ -1,0 +1,494 @@
+/**
+ * MachineCoherenceEpisodeManager — the §4 episode STATE MACHINE
+ * (machine-coherence-guard §4.1–§4.4, §4.6). Consumes the durable state layer
+ * (`machineCoherenceEpisode.ts`) and the confirmed skew rows from the sentinel's
+ * §3.3 confirmation engine, and drives the ONE-item, honest-lifecycle,
+ * bounded-recurrence episode contract.
+ *
+ * SLICE STATUS (C₁b-iii-b lands in sub-units — see the side-effects artifact):
+ *   - THIS FILE (b1): open / join / suspend / resume / close taxonomy (§4.3:
+ *     restored / suspended-peer-offline|unverifiable / expired-peer-gone /
+ *     manifest-changed) + §4.4 single escalation + the operator "leave it" ack +
+ *     the §4.2 VERBATIM attention-item body render. Durable file owned here
+ *     (§4.6 corrupt → re-baseline). Emits EFFECTS the sentinel executes; the
+ *     raise/append/resolve effects are gated on selfIsRaiser && live posture
+ *     (dry-run + non-raiser run the machine + jsonl, never speak).
+ *   - NOT YET (b2): §4.5 recurrence damper + per-day cap + the R3-M5 SHARED
+ *     per-episode append budget (this slice's appends are unbudgeted).
+ *   - NOT YET (b3): the §4.2.1 pendingFix reply-recognition flow.
+ *
+ * Supervision tier (N6): Tier 0 — deterministic; no LLM anywhere in this path
+ * (reply recognition, when it lands in b3, lives in the CONVERSATIONAL agent,
+ * never here — D17 intact).
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { COHERENCE_CRITICAL_FLAGS, type CoherenceCriticalFlag } from '../core/machineCoherenceManifest.js';
+import type { SkewRow } from './machineCoherenceEvaluate.js';
+
+/** Local manifest lookup (avoids widening the increment-A module + its ratchet). */
+function getFlagByKey(key: string): CoherenceCriticalFlag | undefined {
+  return COHERENCE_CRITICAL_FLAGS.find((f) => f.key === key);
+}
+import type { MachineCoherenceResolvedConfig } from './MachineCoherenceSentinel.js';
+import {
+  emptyRecurrence,
+  episodeStatePath,
+  mintEpisodeId,
+  readEpisodeFile,
+  writeEpisodeFile,
+  type EpisodeCloseReason,
+  type EpisodeFile,
+  type EpisodeState,
+} from './machineCoherenceEpisode.js';
+
+/** One effect the sentinel/server executes (the manager never does I/O beyond
+ *  its own durable file + jsonl — telegram effects are the caller's). */
+export type EpisodeEffect =
+  | { kind: 'raise'; itemId: string; title: string; summary: string; description: string }
+  | { kind: 'append'; itemId: string; text: string }
+  | { kind: 'resolve'; itemId: string; note: string };
+
+/** Per-reconcile inputs the sentinel assembles from its classification pass. */
+export interface EpisodeReconcileInput {
+  /** The currently-CONFIRMED skew rows (§3.3 confirmation engine output). */
+  confirmedRows: SkewRow[];
+  /** Machine ids currently in the `compared` (fresh + clamp-passed) set. */
+  comparedMachineIds: Set<string>;
+  /** Machine ids currently registered ONLINE (compared ∪ unknown ∪ stale ∪ rejected). */
+  onlineMachineIds: Set<string>;
+  /** This machine's id. */
+  selfMachineId: string;
+  /** The §3.4 elected raiser (may be self, a peer, or null). */
+  raiserMachineId: string | null;
+  /** The serving-lease holder (direction tiebreak; restart-honesty clause). */
+  leaseHolderMachineId: string | null;
+  /** machineId → operator-facing nickname (registry display label; escaped at render). */
+  nicknameOf: (machineId: string) => string;
+  now: number;
+}
+
+/** Observability counters (surfaced on the sentinel status snapshot / route). */
+export interface EpisodeManagerCounters {
+  episodesOpened: number;
+  wouldRaise: number; // dry-run / non-raiser would-have-raised transitions
+  itemsRaised: number;
+  suspends: number;
+  resumes: number;
+  closes: Record<EpisodeCloseReason, number> | Record<string, number>;
+  escalations: number;
+}
+
+const EMPTY_CLOSES = (): Record<string, number> => ({});
+
+export class MachineCoherenceEpisodeManager {
+  private file: EpisodeFile;
+  /** In-memory tick counters (R2-N3 — never persisted; warm-up-absorbed on restart). */
+  private resolveCleanTicks = 0;
+  private counters: EpisodeManagerCounters = {
+    episodesOpened: 0, wouldRaise: 0, itemsRaised: 0, suspends: 0, resumes: 0, closes: EMPTY_CLOSES(), escalations: 0,
+  };
+  private readonly logPath: string;
+
+  constructor(
+    private readonly stateDir: string,
+    private readonly cfg: MachineCoherenceResolvedConfig,
+  ) {
+    this.logPath = path.join(stateDir, 'logs', 'machine-coherence.jsonl');
+    const read = readEpisodeFile(stateDir);
+    if (read.status === 'ok') {
+      this.file = read.file;
+    } else {
+      // Absent → fresh; corrupt → re-baseline WITHOUT crashing (§4.6, the
+      // GuardPostureProbe pattern). A corrupt re-baseline drops any in-flight
+      // pendingFix (R3-L3). The adopt-or-resolve of a locally-held open item is
+      // driven on the next reconcile by the normal open/resolve path (the item
+      // id is derived from the fresh episodeId; a stale item with a different
+      // id is left for the operator ack — a duplicate inside §0(b)'s envelope).
+      this.file = { version: 1, episode: null, recurrence: emptyRecurrence() };
+      if (read.status === 'corrupt') {
+        this.log({ t: 'rebaseline', reason: read.reason });
+      }
+    }
+  }
+
+  /** The item id for an episode (§4.2 — idempotent on the createAttentionItem chokepoint). */
+  private itemId(episodeId: string): string {
+    return `machine-coherence:${episodeId}`;
+  }
+
+  /** Only the elected raiser on a LIVE (enabled && !dryRun) guard actually speaks. */
+  private speaks(input: EpisodeReconcileInput): boolean {
+    return this.cfg.enabled && !this.cfg.dryRun && input.raiserMachineId === input.selfMachineId;
+  }
+
+  /**
+   * One reconcile pass (rides the sentinel tick, AFTER confirmation). Returns
+   * the effects the caller executes; the durable file + jsonl are written here.
+   */
+  reconcile(input: EpisodeReconcileInput): EpisodeEffect[] {
+    const effects: EpisodeEffect[] = [];
+    const { now } = input;
+    const rowById = new Map(input.confirmedRows.map((r) => [r.identity, r]));
+    const confirmedIds = new Set(rowById.keys());
+
+    // ── No open episode: OPEN on the first confirmed row ──
+    if (!this.file.episode) {
+      if (confirmedIds.size === 0) return effects; // nothing to do
+      this.openEpisode(input, [...confirmedIds], effects);
+      return effects;
+    }
+
+    const ep = this.file.episode;
+
+    // ── Manifest-membership removal (§4.3 manifest-changed): an episode row's
+    //    key is no longer a compared manifest key → the row vanishes for a
+    //    NON-skew reason. If EVERY episode row is gone AND at least one vanished
+    //    because its manifest key retired, close manifest-changed. ──
+    const survivingIds = ep.skewRowIdentities.filter((id) => confirmedIds.has(id));
+
+    // ── Suspension: a skew participant left the VERIFIABLE (compared) set ──
+    const participants = this.episodeParticipants(ep);
+    const offline = [...participants].filter((m) => !input.onlineMachineIds.has(m));
+    const unverifiable = [...participants].filter((m) => input.onlineMachineIds.has(m) && !input.comparedMachineIds.has(m));
+    const shouldSuspend = offline.length > 0 || unverifiable.length > 0;
+
+    if (shouldSuspend) {
+      this.applySuspend(input, ep, offline, unverifiable, effects);
+      return effects;
+    }
+    // A previously-suspended episode whose participants are all verifiable again → resume.
+    if (ep.suspended) {
+      this.applyResume(input, ep, effects);
+      // fall through to resolve/join evaluation this same tick
+    }
+
+    // ── All rows cleared (skew gone) → resolve-ticks toward `restored` ──
+    if (survivingIds.length === 0) {
+      // Distinguish manifest-changed (a key retired) from restored (skew healed).
+      const anyKeyRetired = ep.skewRowIdentities.some((id) => this.rowKeyRetired(id, input));
+      if (anyKeyRetired && !this.anyEpisodeKeyStillCompared(ep, input)) {
+        this.closeEpisode(input, ep, 'manifest-changed', effects);
+        return effects;
+      }
+      this.resolveCleanTicks += 1;
+      if (this.resolveCleanTicks >= this.cfg.resolveTicks) {
+        this.closeEpisode(input, ep, 'restored', effects);
+      }
+      return effects;
+    }
+
+    // Skew still present → reset the resolve clock; JOIN any newly-confirmed rows.
+    this.resolveCleanTicks = 0;
+    const newRows = [...confirmedIds].filter((id) => !ep.skewRowIdentities.includes(id));
+    if (newRows.length > 0) {
+      this.joinRows(input, ep, newRows, effects);
+    }
+
+    // ── §4.4 escalation: open past escalateAfterMs (unsuspended clock), once,
+    //    suppressed by the operator "leave it" ack. ──
+    this.maybeEscalate(input, ep, effects);
+    return effects;
+  }
+
+  private episodeParticipants(ep: EpisodeState): Set<string> {
+    const s = new Set<string>();
+    for (const id of ep.skewRowIdentities) for (const m of participantsOf(id)) s.add(m);
+    return s;
+  }
+
+  /** A row's manifest key retired from the intersection (only meaningful for flag rows). */
+  private rowKeyRetired(rowIdentity: string, input: EpisodeReconcileInput): boolean {
+    const key = keyOf(rowIdentity);
+    if (dimensionOf(rowIdentity) !== 'flag') return false;
+    // Retired ⇔ the key is no longer a manifest flag AND is not present as a live
+    // divergence — i.e. the intersection dropped it. We approximate with the
+    // manifest catalog: a key absent from the manifest is retired.
+    return !getFlagByKey(key);
+  }
+
+  private anyEpisodeKeyStillCompared(ep: EpisodeState, input: EpisodeReconcileInput): boolean {
+    return ep.skewRowIdentities.some((id) => {
+      if (dimensionOf(id) !== 'flag') return true; // version/manifest/protocol always compared
+      return !!getFlagByKey(keyOf(id));
+    });
+  }
+
+  private openEpisode(input: EpisodeReconcileInput, rowIds: string[], effects: EpisodeEffect[]): void {
+    const openedAtMs = input.now;
+    const episodeId = mintEpisodeId(openedAtMs);
+    const ep: EpisodeState = {
+      episodeId,
+      openedAtMs,
+      skewRowIdentities: rowIds,
+      recurrence: emptyRecurrence(),
+    };
+    this.counters.episodesOpened += 1;
+    if (this.speaks(input)) {
+      const body = this.renderBody(input, ep);
+      ep.itemRaisedAt = input.now;
+      ep.attentionItemId = this.itemId(episodeId);
+      this.counters.itemsRaised += 1;
+      effects.push({ kind: 'raise', itemId: ep.attentionItemId, title: body.title, summary: body.summary, description: body.description });
+    } else {
+      this.counters.wouldRaise += 1;
+    }
+    this.file.episode = ep;
+    this.persist();
+    this.log({ t: 'open', episodeId, rows: rowIds, spoke: this.speaks(input) });
+  }
+
+  private joinRows(input: EpisodeReconcileInput, ep: EpisodeState, newRowIds: string[], effects: EpisodeEffect[]): void {
+    ep.skewRowIdentities = [...ep.skewRowIdentities, ...newRowIds];
+    if (this.speaks(input) && ep.attentionItemId) {
+      effects.push({ kind: 'append', itemId: ep.attentionItemId, text: `Another divergence joined this episode: ${newRowIds.map((id) => keyOf(id)).join(', ')}.` });
+    }
+    this.persist();
+    this.log({ t: 'row-join', episodeId: ep.episodeId, rows: newRowIds });
+  }
+
+  private applySuspend(input: EpisodeReconcileInput, ep: EpisodeState, offline: string[], unverifiable: string[], effects: EpisodeEffect[]): void {
+    if (ep.suspended) return; // already suspended — idempotent (append only on transition)
+    ep.suspended = true;
+    ep.suspendReason = offline.length > 0 ? 'peer-offline' : 'peer-unverifiable';
+    this.resolveCleanTicks = 0;
+    this.counters.suspends += 1;
+    if (this.speaks(input) && ep.attentionItemId) {
+      const who = input.nicknameOf(offline[0] ?? unverifiable[0]);
+      const text = offline.length > 0
+        ? `the divergent machine (${who}) went offline — holding this open; I'll re-check when it returns`
+        : `${who} is online but I can't read its coherence card — holding`;
+      effects.push({ kind: 'append', itemId: ep.attentionItemId, text });
+    }
+    this.persist();
+    this.log({ t: 'suspend', episodeId: ep.episodeId, reason: ep.suspendReason });
+  }
+
+  private applyResume(input: EpisodeReconcileInput, ep: EpisodeState, effects: EpisodeEffect[]): void {
+    ep.suspended = false;
+    ep.suspendReason = undefined;
+    this.counters.resumes += 1;
+    // Resume is silent per §4.3 (same item, no new topic); jsonl records it.
+    this.persist();
+    this.log({ t: 'resume', episodeId: ep.episodeId });
+  }
+
+  private maybeEscalate(input: EpisodeReconcileInput, ep: EpisodeState, effects: EpisodeEffect[]): void {
+    if (ep.escalationAppended || ep.operatorAck || ep.suspended) return;
+    if (input.now - ep.openedAtMs < this.cfg.escalateAfterMs) return;
+    ep.escalationAppended = true;
+    this.counters.escalations += 1;
+    if (this.speaks(input) && ep.attentionItemId) {
+      effects.push({ kind: 'append', itemId: ep.attentionItemId, text: 'still divergent after 24h' });
+    }
+    this.persist();
+    this.log({ t: 'escalate', episodeId: ep.episodeId });
+  }
+
+  private closeEpisode(input: EpisodeReconcileInput, ep: EpisodeState, reason: EpisodeCloseReason, effects: EpisodeEffect[]): void {
+    // Record the close in the recurrence memory (R2-N2 — outlives close).
+    this.file.recurrence.recentlyClosed.push({ rowIdentities: [...ep.skewRowIdentities], closedAtMs: input.now });
+    if (this.speaks(input) && ep.attentionItemId && reason === 'restored') {
+      const keys = ep.skewRowIdentities.map((id) => keyOf(id)).join(', ');
+      const nicks = [...this.episodeParticipants(ep)].map((m) => input.nicknameOf(m)).join(', ');
+      effects.push({ kind: 'resolve', itemId: ep.attentionItemId, note: `machine-coherence restored — ${keys} now agree across ${nicks}, held for ${this.cfg.resolveTicks} ticks` });
+    } else if (this.speaks(input) && ep.attentionItemId) {
+      effects.push({ kind: 'resolve', itemId: ep.attentionItemId, note: this.closeNote(reason, ep, input) });
+    }
+    this.counters.closes[reason] = (this.counters.closes[reason] ?? 0) + 1;
+    this.resolveCleanTicks = 0;
+    this.file.episode = null;
+    this.persist();
+    this.log({ t: 'close', episodeId: ep.episodeId, reason });
+  }
+
+  private closeNote(reason: EpisodeCloseReason, ep: EpisodeState, input: EpisodeReconcileInput): string {
+    switch (reason) {
+      case 'expired-peer-gone':
+        return 'the divergent machine never came back — closing; a fresh divergence will open a new episode';
+      case 'manifest-changed': {
+        const keys = ep.skewRowIdentities.map((id) => keyOf(id)).join(', ');
+        return `${keys} are no longer compared under the new manifest — closing; not a restoration claim`;
+      }
+      default:
+        return `episode closed — ${reason}`;
+    }
+  }
+
+  /**
+   * Set (or clear) the durable operator "leave it" ack (§4.2 / R4-N2). Called by
+   * the conversational reply path. Suppresses the §4.4 escalation for this
+   * episode; cleared on a genuine §4.5 recurrence re-open (b2).
+   */
+  setOperatorAck(ack: boolean): void {
+    if (!this.file.episode) return;
+    this.file.episode.operatorAck = ack;
+    this.persist();
+    this.log({ t: ack ? 'operator-ack' : 'operator-ack-clear', episodeId: this.file.episode.episodeId });
+  }
+
+  /** A suspended episode past the expiry closes `expired-peer-gone` (§4.3). Called each tick by the sentinel. */
+  expireIfStale(now: number, nicknameOf: (m: string) => string): EpisodeEffect[] {
+    const effects: EpisodeEffect[] = [];
+    const ep = this.file.episode;
+    if (!ep || !ep.suspended) return effects;
+    // Suspended-since is approximated by openedAt when no explicit suspend-start
+    // is tracked in this slice; the b2 recurrence work adds the precise anchor.
+    if (now - ep.openedAtMs < this.cfg.suspendedEpisodeExpiryMs) return effects;
+    this.closeEpisode(
+      { now, nicknameOf } as EpisodeReconcileInput,
+      ep,
+      'expired-peer-gone',
+      effects,
+    );
+    return effects;
+  }
+
+  status(): { openEpisode: { episodeId: string; rows: number; suspended: boolean; itemRaisedAt: string | null } | null; counters: EpisodeManagerCounters } {
+    const ep = this.file.episode;
+    return {
+      openEpisode: ep ? { episodeId: ep.episodeId, rows: ep.skewRowIdentities.length, suspended: !!ep.suspended, itemRaisedAt: ep.itemRaisedAt ? new Date(ep.itemRaisedAt).toISOString() : null } : null,
+      counters: this.counters,
+    };
+  }
+
+  private persist(): void {
+    writeEpisodeFile(this.stateDir, this.file);
+  }
+
+  private log(row: Record<string, unknown>): void {
+    try {
+      fs.mkdirSync(path.dirname(this.logPath), { recursive: true });
+      // Byte-cap safety rotation on append (O(1) size check). The precise 30-day
+      // time-based prune (SessionWatchdog `rotateLog` shape) rides the wiring
+      // slice as a periodic call on the sentinel cadence — noted in the artifact.
+      maybeRotateJsonl(this.logPath);
+      fs.appendFileSync(this.logPath, JSON.stringify({ ts: new Date().toISOString(), ...row }) + '\n');
+    } catch {
+      /* jsonl is observability — never fail a transition on a log write */
+    }
+  }
+
+  /**
+   * Render the §4.2 attention-item body VERBATIM (M9 — impact first, plain
+   * language; a fix the agent performs on approval; technical detail last). The
+   * peer-influenced strings (nicknames, effective values) are clamp-bounded
+   * upstream (§4.2 exposure invariant) — rendered as data, never instructions.
+   */
+  renderBody(input: EpisodeReconcileInput, ep: EpisodeState): { title: string; summary: string; description: string } {
+    const rows = ep.skewRowIdentities;
+    const nicks = [...this.episodeParticipants(ep)].map((m) => input.nicknameOf(m));
+    const nickList = joinNicknames(nicks);
+    // 1. Impact first (the manifest guarantee, per row, by nickname).
+    const guarantees = uniq(rows.map((id) => guaranteeFor(id))).join('; ');
+    const summary = `My machines have drifted apart — ${nickList} aren't running as the same me: ${guarantees}.`;
+
+    // 2. A complete proposed fix (direction is canonical + always named, §4.2.1-ii).
+    const first = rows[0];
+    const divergent = divergentMachineFor(first, input); // the machine to change
+    const targetValue = plainValue(targetValueClassFor(first, input));
+    const feature = plainFeatureName(first);
+    const divergentNick = input.nicknameOf(divergent);
+    const restOfPool = joinNicknames([...this.episodeParticipants(ep)].filter((m) => m !== divergent).map((m) => input.nicknameOf(m)));
+    let fixLine: string;
+    if (divergent === input.selfMachineId) {
+      const holdsLease = input.leaseHolderMachineId === input.selfMachineId;
+      const peerNick = input.nicknameOf([...this.episodeParticipants(ep)].find((m) => m !== divergent) ?? divergent);
+      const leaseClause = holdsLease
+        ? `; I currently hold the serving lease, so the restart hands serving to ${peerNick} for that blip (a failover, named, not a surprise)`
+        : '';
+      fixLine = `Reply **fix it** and I'll switch ${feature} to ${targetValue} here on ${divergentNick} to match ${restOfPool}, then restart my own server — a ~30-second blip${leaseClause}.`;
+    } else {
+      fixLine = `Reply **fix it** and I'll switch ${feature} to ${targetValue} on ${divergentNick} from my own hands there — no remote config-write exists, so I'll confirm here when it lands (and tell you loudly if it doesn't within a few minutes).`;
+    }
+    const leaveLine = `Or reply **leave it** and I'll keep this episode open without further nagging.`;
+
+    // 3. Technical detail last (secondary block).
+    const tech = rows.map((id) => `${dimensionOf(id)} · ${keyOf(id)} · ${renderValueClasses(id, input.nicknameOf)}`).join('\n');
+
+    const title = 'Machine coherence: my machines have drifted apart';
+    const description = `${summary}\n\n${fixLine}\n\n${leaveLine}\n\nTechnical detail:\n${tech}`;
+    return { title, summary, description };
+  }
+}
+
+// ── Pure row-identity helpers (the N1 identity is `dimension|key|sorted(id=vc)`) ──
+function dimensionOf(rowIdentity: string): string {
+  return rowIdentity.split('|', 1)[0] ?? '';
+}
+function keyOf(rowIdentity: string): string {
+  return rowIdentity.split('|')[1] ?? '';
+}
+function participantsOf(rowIdentity: string): string[] {
+  const tail = rowIdentity.split('|').slice(2).join('|');
+  if (!tail) return [];
+  return tail.split(',').map((p) => p.split('=')[0]).filter(Boolean);
+}
+function valueClassesOf(rowIdentity: string): Record<string, string> {
+  const tail = rowIdentity.split('|').slice(2).join('|');
+  const out: Record<string, string> = {};
+  if (!tail) return out;
+  for (const p of tail.split(',')) {
+    const [m, v] = p.split('=');
+    if (m) out[m] = v ?? '';
+  }
+  return out;
+}
+function renderValueClasses(rowIdentity: string, nicknameOf: (m: string) => string): string {
+  const vc = valueClassesOf(rowIdentity);
+  return Object.entries(vc).map(([m, v]) => `${nicknameOf(m)}=${v}`).join(', ');
+}
+function guaranteeFor(rowIdentity: string): string {
+  const dim = dimensionOf(rowIdentity);
+  if (dim === 'flag') {
+    const f = getFlagByKey(keyOf(rowIdentity));
+    if (f) return f.guarantee;
+  }
+  if (dim === 'version') return 'the two machines are running different versions of me';
+  if (dim === 'manifest') return 'the two machines built the same version differently (a dirty or locally-built dist)';
+  if (dim === 'protocol') return 'the two machines speak different mesh protocol versions';
+  return 'a cross-machine guarantee is halved';
+}
+function plainFeatureName(rowIdentity: string): string {
+  const dim = dimensionOf(rowIdentity);
+  if (dim === 'flag') {
+    const f = getFlagByKey(keyOf(rowIdentity));
+    if (f) return f.guarantee; // the plain-language framing (§4.2 point 2)
+  }
+  return keyOf(rowIdentity);
+}
+/** §4.2.1-ii direction: equalize toward the pool-majority value class; with no
+ *  majority (the 2-machine case) toward the serving-lease-holder's value. */
+function targetValueClassFor(rowIdentity: string, input: EpisodeReconcileInput): string {
+  const vc = valueClassesOf(rowIdentity);
+  const counts = new Map<string, number>();
+  for (const v of Object.values(vc)) counts.set(v, (counts.get(v) ?? 0) + 1);
+  let best: string | null = null; let bestN = 0; let tie = false;
+  for (const [v, n] of counts) { if (n > bestN) { best = v; bestN = n; tie = false; } else if (n === bestN) tie = true; }
+  if (best !== null && !tie) return best;
+  // No majority → the lease holder's value (if it is a participant).
+  if (input.leaseHolderMachineId && vc[input.leaseHolderMachineId] !== undefined) return vc[input.leaseHolderMachineId];
+  return best ?? 'the pool value';
+}
+/** The machine to change = a participant whose value class ≠ the target. */
+function divergentMachineFor(rowIdentity: string, input: EpisodeReconcileInput): string {
+  const vc = valueClassesOf(rowIdentity);
+  const target = targetValueClassFor(rowIdentity, input);
+  const off = Object.entries(vc).find(([, v]) => v !== target);
+  return off ? off[0] : (Object.keys(vc)[0] ?? input.selfMachineId);
+}
+function plainValue(valueClass: string): string {
+  const map: Record<string, string> = { live: 'on', dark: 'off', 'dry-run': 'dry-run', true: 'on', false: 'off' };
+  return map[valueClass] ?? valueClass;
+}
+function joinNicknames(nicks: string[]): string {
+  const u = uniq(nicks);
+  if (u.length <= 1) return u[0] ?? '';
+  if (u.length === 2) return `${u[0]} and ${u[1]}`;
+  return `${u.slice(0, -1).join(', ')}, and ${u[u.length - 1]}`;
+}
+function uniq(a: string[]): string[] {
+  return [...new Set(a)];
+}

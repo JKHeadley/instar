@@ -103,8 +103,29 @@
 
 **Blast radius:** pure module + its test; NOTHING wires it in production yet (the state machine that reads/writes it is the next sub-unit). Fleet + single-machine unchanged.
 
-### Increment C₁b (remainder) — episode STATE MACHINE + alarm — PENDING
-Remaining, in order: (iii-b) the §4 episode state machine consuming the C₁b-iii-a layer (open/join/suspend/resume/reopen/close taxonomy §4.3, §4.4 escalation, §4.5 recurrence damper + append budget) + the ONE attention item (§4.2 verbatim body) + §3.4 takeover/fallback/reconciliation + alarm-marker attach into refreshPool's advert; (iv) §4.2.1 pendingFix flow (proposal → approved-holding → executing-verifying, the ratifier-style reply recognition); (v) `GET /pool/machine-coherence` status route (503-when-dark) + `logs/machine-coherence.jsonl` + the `clampRejections`/marker-drop counters.
+### Increment C₁b-iii-b1 — episode STATE MACHINE core + §4.2 verbatim item render — LANDED
+
+**What changed:**
+1. **`src/monitoring/machineCoherenceEpisodeManager.ts` (NEW)** — `MachineCoherenceEpisodeManager`, the §4 state machine consuming the C₁b-iii-a durable layer + the confirmation engine's confirmed rows. `reconcile(input)` drives the lifecycle and returns EFFECTS the caller executes (the manager does no telegram I/O — only its own durable file + jsonl):
+   - **Open** (§4.1) on the first confirmed row; **join** newly-confirmed rows into the OPEN episode with one append (never a 2nd item — the named anti-pattern).
+   - **Suspend/resume** (§4.3): a skew participant leaving the VERIFIABLE set suspends (`peer-offline` when it drops offline, `peer-unverifiable` when online-but-not-compared) with an honest append; resume is silent (same item), then re-evaluates.
+   - **Close taxonomy** (§4.3): `restored` (skew clear for `resolveTicks`; ONLY this claims restoration, note names the held ticks), `expired-peer-gone` (`expireIfStale`, suspended past `suspendedEpisodeExpiryMs`), `manifest-changed` (a flag key retired from the manifest intersection). Every close recorded in the recurrence memory (R2-N2, outlives close).
+   - **§4.4 escalation**: one append past `escalateAfterMs` (unsuspended), suppressed by the durable operator **"leave it"** ack (`setOperatorAck`, R4-N2).
+   - **Effect gating**: raise/append/resolve emit ONLY when `enabled && !dryRun && raiser === self` (`speaks()`); dry-run + non-raiser run the full machine + jsonl + `wouldRaise` counter, never speak.
+   - **§4.6 corrupt re-baseline** on construction (the GuardPostureProbe pattern — bad file → fresh baseline + a `rebaseline` jsonl row, never a crash; drops any pendingFix R3-L3).
+   - **§4.2 VERBATIM body render** (`renderBody`, pure): impact-first (manifest `guarantee` per row, by nickname), the approve-to-execute fix with the direction ALWAYS named (§4.2.1-ii — pool-majority else lease-holder), the two divergent-machine cases word-for-word (self+lease-holder → the named-failover clause; any-other-machine → "from my own hands there"), the "leave it" line, and the technical block last. Peer strings (nicknames, value classes) rendered as data.
+   - `logs/machine-coherence.jsonl` transition-only, byte-cap safety rotation on append.
+2. **Tests (green):** `tests/unit/machine-coherence-episode-manager.test.ts` (NEW, 16) — open + raiser/live/dry-run/non-raiser gating, join, suspend both reasons, resume→restored, restored-only-claims-restoration, escalation once + ack suppression, expired-peer-gone, corrupt re-baseline, both verbatim body branches. 16 green; `tsc --noEmit` clean.
+
+**Blast radius:** NEW module + its test; NOT wired into the sentinel/server yet (the sentinel-tick wiring + refreshPool alarm-marker attach + the status route are the wiring slice). Fleet + single-machine unchanged.
+
+**Documented partials (honest, not silent):**
+- The precise **30-day time-based** jsonl prune (SessionWatchdog `rotateLog` shape) is deferred to the wiring slice as a periodic call on the sentinel cadence; this slice uses the byte-cap `maybeRotateJsonl` safety rotation (bounded growth — the real hazard) on append.
+- `expireIfStale` uses `openedAtMs` as the suspended-since anchor (no explicit suspend-start timestamp in this slice); the precise suspend-start anchor + suspended-time accumulator land with the §4.5 recurrence slice (b2).
+- §4.6 corrupt-path **adopt-or-resolve** of a locally-held stale item is handled minimally (fresh episode opens a new item id; a stale different-id item is left for operator ack — a bounded duplicate inside §0(b)'s envelope); the full adopt-or-resolve rides the wiring slice where the live attention store is in scope.
+
+### Increment C₁b (remainder) — recurrence + pendingFix + wiring — PENDING
+Remaining, in order: (iii-b2) §4.5 recurrence damper + per-day cap + the R3-M5 SHARED per-episode append budget + latched-flapping + the precise suspend-start anchor; (iii-b3) §4.2.1 pendingFix flow (proposal → approved-holding → executing-verifying, ratifier-style reply recognition in the conversational path); (iii-b4) WIRING — construct the manager in the sentinel, call `reconcile`/`expireIfStale` on the tick, execute effects via `telegramAdapter`, attach the alarm marker into refreshPool's advert, §3.4 takeover/fallback/reconciliation, the 30-day jsonl prune; (v) `GET /pool/machine-coherence` status route (503-when-dark) + counters + boot line.
 ### Increment D₂a — per-peer lease-observation map (§5b's NEW retained state) — LANDED
 
 **What changed:**
