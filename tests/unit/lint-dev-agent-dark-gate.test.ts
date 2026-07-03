@@ -426,14 +426,19 @@ describe('lint-dev-agent-dark-gate', () => {
       // 1519→1530, 1564→1575, 1589→1600).
       // RE-VERIFIED by hand via the attributor on the rebase-merged ConfigDefaults
       // (each still maps to a real `enabled: false,` line inside its named block).
-      '878': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '882': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      // Class-Closure Gate keystone (PR #1347): a new prGate.classClosure block
+      // (9 lines, dark + report-only) was inserted at ConfigDefaults.ts:824, adding this
+      // new dark-gate literal AND shifting every key below it DOWN by +9 (hand-verified via
+      // the attributor: no path changed, only the one intended new gate).
+      '824': 'prGate.classClosure.enabled',
+      '887': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '891': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
       // multi-transport-mesh-comms (2026-06-20): soloCaptainHold.enabled:false (Layer 3,
       // action-bearing) added to the leaseSelfHeal block + a ~15-line meshTransport FLAT
       // block (enabled: TRUE, NOT an `enabled: false` path so the attributor ignores it)
       // inserted ABOVE sessionPool — together shifting every sessionPool-onward
       // `enabled: false` line by +24 (956→980, 981→1005). RE-VERIFIED via the attributor.
-      '889': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '898': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
       // U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md §5, R-r2-4): a NEW
       // multiMachine.leaseSelfHeal.preferredCaptainHandback block with an EXPLICIT
       // `enabled: false` (+ dryRun:true + 5 tunables, ~16 lines incl. comment) was
@@ -445,7 +450,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // (dev-gated — DEV_GATED_FEATURES) so it adds NO attributed path, only a +19
       // shift below the sessionPool block. RE-VERIFIED via the attributor on the
       // edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      '899': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '908': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -499,10 +504,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // `enabled` (dev-gated via resolveDevAgentGate), so NO new attributed path; it
       // only shifts every sessionPool-onward `enabled: false` line DOWN by +7.
       // RE-VERIFIED via the attributor on the edited ConfigDefaults (uniform +7).
-      '1136': 'multiMachine.sessionPool.enabled',
-      '1162': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1172': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1201': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1145': 'multiMachine.sessionPool.enabled',
+      '1171': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1181': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1210': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -551,7 +556,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // this branch's U4.2/U4.4 blocks shift stateSync/cartographer further.
       // Every key RE-VERIFIED via the attributor on the rebase-MERGED
       // ConfigDefaults (each maps to a real `enabled: false,` line).
-      '1389': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1398': 'multiMachine.stateSync.threadlinePairing.enabled',
       // autonomous-scope-accretion-completion §4: a NEW
       // autonomousSessions.completionDiscipline.scopeAccretion block (`enabled: true`
       // + breakerK — default ON, the documented maturation-path exception) plus the
@@ -563,9 +568,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // line-map (1464→1483, 1509→1528, 1534→1553). RE-VERIFIED via the attributor
       // on the rebase-MERGED ConfigDefaults (each still maps to a real
       // `enabled: false,` line).
-      '1530': 'cartographer.freshnessSweep.enabled',
-      '1575': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1600': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1539': 'cartographer.freshnessSweep.enabled',
+      '1584': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1609': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
