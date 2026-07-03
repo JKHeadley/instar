@@ -91,7 +91,7 @@ import { DurableVaultSession } from '../monitoring/DurableVaultSession.js';
 import { buildProductionProbeProviders, deriveBitwardenSession } from '../monitoring/SelfUnblockProbeProviders.js';
 import { BitwardenProvider } from '../core/BitwardenProvider.js';
 import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
-import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
+import { GrowthDigestPublisher, createGrowthDigestAuditSink, createGrowthDigestDeferralStore } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
@@ -1868,6 +1868,11 @@ export class AgentServer {
         const analyst = this.growthMilestoneAnalyst;
         const stateRoot = options.config.stateDir;
         const auditSink = createGrowthDigestAuditSink(stateRoot);
+        // C1 (maturation-followthrough-fix Standard C): the durable delivery-attempt
+        // ledger for the un-droppable-delivery contract. Machine-local BY DESIGN
+        // (only the awake machine emits the digest, so its retry state is a fact
+        // about this machine — never merged from a peer).
+        const deferralStore = createGrowthDigestDeferralStore(stateRoot);
         const supersededJobPath = path.join(stateRoot, 'jobs', 'schedule', 'initiative-digest-review.json');
         this.growthDigestPublisher = new GrowthDigestPublisher({
           buildDigest: (now) => analyst.buildDigest(now),
@@ -1881,6 +1886,18 @@ export class AgentServer {
           isAwake: () => (options.coordinator?.enabled ? options.coordinator.isAwake : true),
           audit: auditSink.write,
           recordedWindows: auditSink.recordedWindows,
+          // C1: un-droppable delivery. Dev-gated dark — `enabled` OMITTED resolves
+          // live-on-dev / dark-fleet (read live per cycle so a rollback needs no
+          // restart). OFF ⇒ legacy consume-and-drop. The attention raiser is
+          // attached at route registration (it needs ctx.telegram).
+          deferrals: deferralStore,
+          blockedDigestEscalationEnabled: () =>
+            resolveDevAgentGate(
+              options.config.monitoring?.growthAnalyst?.blockedDigestEscalation?.enabled,
+              options.config,
+            ),
+          machineId: () =>
+            options.coordinator?.enabled ? options.coordinator.identity!.machineId : 'single',
           // §3.5 belt: a SIGNAL (never a mutation) on a live send while the
           // superseded initiative-digest-review job is still enabled. The durable
           // supersede flips the SOURCE template at the live-flip (a later change);

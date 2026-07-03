@@ -2234,6 +2234,30 @@ export function createRoutes(ctx: RouteContext): Router {
   // reach sendToTopic without passing through the identical evaluateOutbound.
   ctx.growthDigestPublisher?.attachSender((text: string) => postToUpdatesTopic(text));
 
+  // C1 (maturation-followthrough-fix Standard C): the operator-facing attention
+  // raiser for an un-droppable digest delivery. A retryable blocked/failed weekly
+  // send re-queues AND surfaces ONE deduped attention item here — NOT the silent
+  // Updates topic (C3 routing for the delivery-failure notice). The `reason` is a
+  // GENERIC plain-English string built by the publisher; the raw rejected body /
+  // offending pattern never leaves the local audit (C1 security). Best-effort:
+  // createAttentionItem failures never throw back into the publisher.
+  ctx.growthDigestPublisher?.attachAttention((item) => {
+    void ctx.telegram
+      ?.createAttentionItem({
+        id: item.id,
+        title: item.title,
+        summary: `${item.summary} (${item.reason})`,
+        category: 'growth-digest',
+        priority: item.priority,
+        sourceContext: 'growth-digest-delivery',
+        healthKey: item.id,
+      })
+      .catch(() => {
+        /* @silent-fallback-ok — delivery-failure attention is best-effort; the
+         *  durable audit (growth-digest.jsonl) already recorded the defer/exhaust */
+      });
+  });
+
   // ── Outbound advisory (inform-only preflight for automated senders) ──
   // Spec: docs/specs/outbound-jargon-filepath-gap.md §2.4. The SERVER is the
   // single audit writer; escalation informs the OPERATOR via one deduped

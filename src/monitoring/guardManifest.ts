@@ -745,6 +745,21 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Proactive growth & milestone analyst (dev-gated).',
   },
   {
+    // C1 (maturation-followthrough-fix Standard C): un-droppable digest delivery.
+    // Dev-gated (enabled omitted ⇒ gate-resolved). Registered so /guards grades it
+    // AND the Guard-Posture Tripwire catches an enabled→disabled rollback (the
+    // spec's "louder legacy" — turning off the un-droppable guarantee is a
+    // surfaced, acknowledged act, never a silent re-introduction of the drop).
+    key: 'monitoring.growthAnalyst.blockedDigestEscalation.enabled',
+    kind: 'config',
+    configPath: 'monitoring.growthAnalyst.blockedDigestEscalation.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'GrowthDigestPublisher',
+    description: 'Un-droppable growth-digest delivery: a retryable blocked send re-queues + escalates instead of consuming its weekly window (dev-gated).',
+  },
+  {
     key: 'monitoring.blockerLedger.enabled',
     kind: 'config',
     configPath: 'monitoring.blockerLedger.enabled',

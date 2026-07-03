@@ -295,11 +295,14 @@ describe('formatDigest — deterministic render', () => {
     expect(text).not.toContain('🔸');
   });
 
-  it('single-rule digest renders the rule section + footer', () => {
+  it('single-rule digest renders the rule section + tone-safe footer (C2)', () => {
     const text = formatDigest(activeDigest([finding('R3', 'normal', 1)]));
     expect(text).toContain('🔸 Stalling');
     expect(text).toContain('R3 item 1');
-    expect(text).toContain('GET /growth/digest');
+    // C2 (maturation-followthrough-fix Standard C): the footer is plain English,
+    // never the raw route path that tripped the tone gate on 2026-06-29.
+    expect(text).toContain('Full digest in your dashboard');
+    expect(text).not.toContain('GET /growth/digest');
   });
 
   it('renders all six rules', () => {
