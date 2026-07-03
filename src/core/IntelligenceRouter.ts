@@ -264,6 +264,39 @@ function isRateLimitError(e: unknown): boolean {
   return e.name === 'RateLimitError' || /rate.?limit|usage.?limit|too many requests|\b429\b/i.test(e.message);
 }
 
+/**
+ * SAFETY GUARDRAIL — INSTAR-Bench v3, Task-4 S2 (bench rules R1/R2).
+ *
+ * The `capable` tier resolves to Opus on `claude-code`, and Opus-via-Claude-Code-CLI
+ * is the one MEASURED-BANNED route for bounded/gating verdicts: identical Opus 4.8
+ * scores 99.1% via clean API but 81.7% via the Claude Code CLI (a 17.4-pt door
+ * penalty), and on the emergency-stop classifier it missed canonical STOP commands
+ * (73%). The Claude Code harness wraps every prompt in ~20k tokens of "helpful
+ * coding agent" framing, turning a skeptical judge into a credulous assistant.
+ *
+ * A failure-swap only ever fires on a GATING or DEFERRABLE call (the swap loop is
+ * unreachable otherwise), and those are exactly the bounded-verdict calls R1
+ * forbids on that door. So when a swap lands on `claude-code` requesting the
+ * `capable` tier, we CLAMP the tier down to `balanced` (Sonnet 4.6 CLI — 99.5%,
+ * 28/28 adversarial, the sanctioned injection-safe Claude-CLI reserve). This only
+ * ever NARROWS a dangerous fallback (Opus→Sonnet on one specific door) — it is
+ * strictly the safe direction and never upgrades or blocks a call. It does NOT
+ * touch the CHAIN WRITE quality lane, where `claude-code`+Opus is the resolved
+ * PRIMARY framework (open-ended writing) rather than a bounded-verdict swap target.
+ *
+ * Returns the model tier the swap attempt should actually request, and whether a
+ * clamp occurred (so the caller can emit an audit/degrade note).
+ */
+export function clampClaudeCliSwapModel(
+  target: IntelligenceFramework,
+  requested: IntelligenceOptions['model'] | undefined,
+): { model: IntelligenceOptions['model'] | undefined; clamped: boolean } {
+  if (target === 'claude-code' && requested === 'capable') {
+    return { model: 'balanced', clamped: true };
+  }
+  return { model: requested, clamped: false };
+}
+
 export class IntelligenceRouter implements IntelligenceProvider {
   private readonly cache = new Map<IntelligenceFramework, CachedFramework>();
 
@@ -479,10 +512,35 @@ export class IntelligenceRouter implements IntelligenceProvider {
           // otherwise-UNcapped attempt (no per-target cap, global ≤0/unset).
           cap = cap === undefined ? remaining : Math.min(cap, remaining);
         }
+        // SAFETY (S2, R1/R2): a bounded/gating swap onto claude-code that requests
+        // the `capable` tier would resolve to Opus-via-Claude-CLI — the measured-banned
+        // door (81.7% vs 99.1% API). Clamp it down to `balanced` (Sonnet CLI reserve).
+        // Only ever narrows a dangerous fallback; never upgrades/blocks a call.
+        const { model: clampedModel, clamped: modelClamped } = clampClaudeCliSwapModel(
+          target,
+          options?.model,
+        );
+        if (modelClamped) {
+          this.opts.onDegrade?.({
+            component: component ?? '(none)',
+            category,
+            from: framework,
+            to: target,
+            reason:
+              `failure-swap-model-clamp: '${target}' capable→balanced ` +
+              `(Opus-via-Claude-CLI is banned for bounded/gating verdicts — R1/R2)`,
+          });
+        }
         // Pass the cap through as the provider's per-call timeout so the subprocess
         // self-terminates at the bound (no AbortSignal exists on IntelligenceOptions).
         const attemptOptions: IntelligenceOptions | undefined =
-          cap !== undefined ? { ...(options ?? {}), timeoutMs: cap } : options;
+          cap !== undefined || modelClamped
+            ? {
+                ...(options ?? {}),
+                ...(cap !== undefined ? { timeoutMs: cap } : {}),
+                ...(modelClamped ? { model: clampedModel } : {}),
+              }
+            : options;
         try {
           // withSwapTimeout keeps the shipped, crash-safe Promise.race pattern
           // (InputGuard precedent): it attaches a settlement handler to EACH input,

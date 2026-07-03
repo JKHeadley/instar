@@ -192,6 +192,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | **LLMConflictResolver** ⚠ | src/core/LLMConflictResolver.ts:204 | resolve divergent multi-machine state | B | **AD → Claude** | ❌ not in map |
 | **MentorStageBForensics** ⚠ | src/scheduler/MentorStageBForensics.ts:141 | classify mentor signals → findings | B | **AD(capable) → Claude** | ❌ not in map |
 | **server:correction-learning** ⚠ | src/commands/server.ts:11380 | distill corrections → preference | D | **AD(fast) → Claude** | ❌ strips to unmapped name |
+| **SelfKnowledgeTree** ⚠ | src/knowledge/SelfKnowledgeTree.ts | synthesize self-knowledge tree nodes | D | **AD → Claude** | ❌ not in map (bench pending wave-3) |
 
 ### Jobs (router-backed, cost-bearing)
 | Component | file:line | Decision | Route | Note |

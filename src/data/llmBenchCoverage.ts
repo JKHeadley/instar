@@ -560,3 +560,86 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
       'enriches standards-coverage rows with content — no closed taught verdict vocabulary a prompt promises and a parser accepts',
   },
 };
+
+/**
+ * Routing nature/chain map — INSTAR-Bench v3 (2026-07-03) JOIN between bench
+ * COVERAGE (does a component have a benchmark?) and bench-cited ROUTING (which
+ * task-nature did the bench establish it is, and which production chain should
+ * it ride?). This is the G1 join of Task-4 Piece 3: `LLM_BENCH_COVERAGE` says
+ * "benched"; THIS map says "benched, and here is the winner-nature the v3 bench
+ * established for it" — so routing (not just existence) is benchmark-cited.
+ *
+ * NATURE (task-nature taxonomy — docs/LLM-ROUTING-REGISTRY.md §taxonomy):
+ *   A = simple bounded verdict   (classify / boolean gate / strict-JSON extract —
+ *       one right answer, terse; speed + format-obedience; reasoning models CLIP)
+ *   B = nuanced / critical judgment (safety gate, irreversible-action class,
+ *       completion-stop judge — being RIGHT beats fast/cheap)
+ *   D = high-volume background   (digests, batch classify, summaries, doc-tree)
+ *   E = deep unbounded reasoning (rare; no output-budget pressure)
+ * CHAIN (the four production default→fallback ladders — ELI16 §11):
+ *   FAST  = latency-sensitive quick-sort (Flash-Lite → GPT-5.4 API → … )
+ *   SORT  = background quick-sort         (GPT-5.4-mini codex → GPT-5.5 pi → …)
+ *   JUDGE = careful judgment              (GPT-5.5 pi → … → Opus-4.8 API, NEVER CLI)
+ *   WRITE = open-ended writing            (GPT-5.4-mini codex → … → Opus-4.8 CLI)
+ *
+ * SCOPE — deliberately advisory + NOT (yet) exhaustive over COMPONENT_CATEGORY.
+ * This map covers the components whose task-nature the v3 bench established
+ * UNAMBIGUOUSLY (a single nature letter in the registry's callsite inventory).
+ * Genuinely multi-nature callsites (A/B, B/D) and the router-bypass callsites
+ * are left for S4 (the nature-axis router), which ACTUATES this data into
+ * IntelligenceRouter model selection and therefore touches critical-gate
+ * routing — spec-converge + operator-review gated. Adding an entry HERE changes
+ * NO routing today; it is read-only, bench-cited metadata those pieces consume.
+ *
+ * Ratchet — tests/unit/llm-routing-nature-ratchet.test.ts — enforces:
+ *   - every key exists in COMPONENT_CATEGORY (no dangling routing claim),
+ *   - every key present here is bench-COVERED in LLM_BENCH_COVERAGE (you may not
+ *     cite a routing nature for an unbenched component — cite-the-bench),
+ *   - nature ∈ {A,B,D,E}, chain ∈ {FAST,SORT,JUDGE,WRITE},
+ *   - nature→chain coherence: A→FAST|SORT, B→JUDGE, D→SORT|WRITE, E→JUDGE.
+ */
+export type TaskNature = 'A' | 'B' | 'D' | 'E';
+export type RoutingChain = 'FAST' | 'SORT' | 'JUDGE' | 'WRITE';
+export interface RoutingNature {
+  readonly nature: TaskNature;
+  readonly chain: RoutingChain;
+}
+
+export const LLM_ROUTING_NATURE: Readonly<Record<string, RoutingNature>> = {
+  // ── Nature A — bounded verdicts (background → SORT; latency-critical → FAST) ──
+  // MessageSentinel = the emergency-stop classifier: latency-critical AND rule
+  // R2 (never rides Opus-via-Claude-CLI — missed canonical STOPs at 73%).
+  MessageSentinel: { nature: 'A', chain: 'FAST' },
+  // Usher = per-turn topic routing: latency-sensitive quick-sort.
+  Usher: { nature: 'A', chain: 'FAST' },
+  CommitmentSentinel: { nature: 'A', chain: 'SORT' },
+  TemporalCoherenceChecker: { nature: 'A', chain: 'SORT' },
+  PresenceProxy: { nature: 'A', chain: 'SORT' },
+  ResumeQueueDrainer: { nature: 'A', chain: 'SORT' },
+  PromptGate: { nature: 'A', chain: 'SORT' },
+  WarrantsReplyGate: { nature: 'A', chain: 'SORT' },
+  InputClassifier: { nature: 'A', chain: 'SORT' },
+  TelegramAdapter: { nature: 'A', chain: 'SORT' },
+  SlackAdapter: { nature: 'A', chain: 'SORT' },
+  OverrideDetector: { nature: 'A', chain: 'SORT' },
+  TaskClassifier: { nature: 'A', chain: 'SORT' },
+  ResumeValidator: { nature: 'A', chain: 'SORT' },
+  TopicIntentExtractor: { nature: 'A', chain: 'SORT' },
+
+  // ── Nature B — critical judgment gates (→ JUDGE; Opus only via API, never CLI) ──
+  MessagingToneGate: { nature: 'B', chain: 'JUDGE' },
+  CompletionEvaluator: { nature: 'B', chain: 'JUDGE' },
+  ExternalOperationGate: { nature: 'B', chain: 'JUDGE' },
+  LLMSanitizer: { nature: 'B', chain: 'JUDGE' },
+  CoherenceReviewer: { nature: 'B', chain: 'JUDGE' },
+  InputGuard: { nature: 'B', chain: 'JUDGE' },
+  StallTriageNurse: { nature: 'B', chain: 'JUDGE' },
+  ProjectDriftChecker: { nature: 'B', chain: 'JUDGE' },
+  SessionWatchdog: { nature: 'B', chain: 'JUDGE' },
+  UnjustifiedStopGate: { nature: 'B', chain: 'JUDGE' },
+
+  // ── Nature D — background digests/summaries (→ SORT; R7 redaction on secret-bearing) ──
+  SessionActivitySentinel: { nature: 'D', chain: 'SORT' },
+  SessionSummarySentinel: { nature: 'D', chain: 'SORT' },
+  'correction-learning': { nature: 'D', chain: 'SORT' },
+};
