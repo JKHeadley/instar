@@ -102,6 +102,69 @@ describe('OutboundContentDedup — ring bounds + pruning', () => {
   });
 });
 
+describe('OutboundContentDedup — in-flight reservation (the send-race close)', () => {
+  it('claims on first tryReserve and suppresses a concurrent identical send BEFORE record', () => {
+    let t = 1_000_000;
+    const d = new OutboundContentDedup({}, () => t);
+    // Request A reserves and begins its (slow, stalled) send — no record yet.
+    expect(d.tryReserve(55, STATUS)).toBe(true);
+    // Request B arrives during A's in-flight send: suppressed by the reservation.
+    expect(d.tryReserve(55, STATUS)).toBe(false);
+    expect(d.tryReserve(55, STATUS)).toBe(false);
+  });
+
+  it('after A records success, a later identical send is caught by the window (not the reservation)', () => {
+    let t = 1_000_000;
+    const d = new OutboundContentDedup({ windowMs: 15 * 60 * 1000 }, () => t);
+    expect(d.tryReserve(55, STATUS)).toBe(true);
+    d.record(55, STATUS); // A succeeded → reservation cleared, sent recorded
+    t += 60_000;
+    expect(d.tryReserve(55, STATUS)).toBe(false); // still a duplicate within window
+    expect(d.isDuplicate(55, STATUS)).toBe(true);
+  });
+
+  it('releaseReservation lets the legitimate retry of a FAILED send through', () => {
+    let t = 1_000_000;
+    const d = new OutboundContentDedup({}, () => t);
+    expect(d.tryReserve(55, STATUS)).toBe(true);
+    d.releaseReservation(55, STATUS); // A's send threw → release
+    // The retry (same text) is NOT suppressed.
+    expect(d.tryReserve(55, STATUS)).toBe(true);
+  });
+
+  it('a leaked reservation auto-expires after reserveTtlMs', () => {
+    let t = 1_000_000;
+    const d = new OutboundContentDedup({ reserveTtlMs: 3 * 60 * 1000 }, () => t);
+    expect(d.tryReserve(55, STATUS)).toBe(true); // reserved, never resolved (crash)
+    expect(d.tryReserve(55, STATUS)).toBe(false); // still in flight
+    t += 3 * 60 * 1000 + 1; // past the TTL
+    expect(d.tryReserve(55, STATUS)).toBe(true); // reservation expired → allowed again
+  });
+
+  it('never reserves or suppresses a brief ack (below the length floor)', () => {
+    let t = 0;
+    const d = new OutboundContentDedup({}, () => t);
+    const ack = 'Got it, on it.'; // < 40 chars
+    expect(d.tryReserve(55, ack)).toBe(true);
+    expect(d.tryReserve(55, ack)).toBe(true); // two identical acks both send
+  });
+
+  it('reservations are independent per topic', () => {
+    let t = 0;
+    const d = new OutboundContentDedup({}, () => t);
+    expect(d.tryReserve(1, STATUS)).toBe(true);
+    expect(d.tryReserve(2, STATUS)).toBe(true); // different topic — not blocked
+    expect(d.tryReserve(1, STATUS)).toBe(false); // same topic — in flight
+  });
+
+  it('disabled → no reservation, no suppression', () => {
+    let t = 0;
+    const d = new OutboundContentDedup({ enabled: false }, () => t);
+    expect(d.tryReserve(55, STATUS)).toBe(true);
+    expect(d.tryReserve(55, STATUS)).toBe(true); // disabled → no dedup at all
+  });
+});
+
 describe('helpers', () => {
   it('normalizeForDedup collapses whitespace + trims', () => {
     expect(normalizeForDedup('  a\n\n b   c  ')).toBe('a b c');

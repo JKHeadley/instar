@@ -109,4 +109,38 @@ describe('content-dedup — /telegram/reply chokepoint', () => {
     expect(res.status).toBe(200);
     expect(sendToTopic).toHaveBeenCalledTimes(2);
   });
+
+  // ── In-flight reservation (2026-07-03 double-send race close) ──
+  // The record-after-success dedup left a window: while send A is IN FLIGHT
+  // (slow under a server stall), an identical request B passes the pre-check
+  // (nothing recorded yet) and sends a duplicate. The reservation closes it.
+  it('suppresses an identical send that arrives while the first is still IN FLIGHT', async () => {
+    // Make the FIRST send hang until we release it; the second arrives meanwhile.
+    let releaseA: (v: { messageId: number; topicId: number }) => void = () => {};
+    const inFlight = new Promise<{ messageId: number; topicId: number }>((r) => (releaseA = r));
+    sendToTopic.mockReturnValueOnce(inFlight); // A hangs
+    // (subsequent calls fall back to the default mockResolvedValue)
+
+    const pA = reply(LONG); // A: reserves, then blocks in the in-flight send
+    // Give A's handler time to take the reservation before B arrives.
+    await new Promise((r) => setTimeout(r, 20));
+    const rB = await reply(LONG); // B: identical, arrives during A's in-flight send
+
+    expect(rB.body.suppressedDuplicate).toBe(true); // B suppressed by the reservation
+    releaseA({ messageId: 1, topicId: 12476 }); // let A finish
+    const rA = await pA;
+    expect(rA.status).toBe(200);
+    expect(sendToTopic).toHaveBeenCalledTimes(1); // only A ever reached Telegram
+  });
+
+  it('releases the reservation when the send FAILS, so the legitimate retry goes through', async () => {
+    sendToTopic.mockRejectedValueOnce(new Error('telegram 500')); // A fails
+    const rA = await reply(LONG);
+    expect(rA.status).toBe(500); // A surfaced the failure
+
+    const rB = await reply(LONG); // retry of the exact text
+    expect(rB.status).toBe(200);
+    expect(rB.body.suppressedDuplicate).toBeUndefined(); // NOT suppressed
+    expect(sendToTopic).toHaveBeenCalledTimes(2); // the retry reached Telegram
+  });
 });

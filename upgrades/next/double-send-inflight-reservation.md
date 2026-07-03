@@ -1,0 +1,63 @@
+# Double-send fix — in-flight reservation closes the exact-duplicate send race
+
+<!-- bump: patch -->
+
+## What Changed
+
+Closes a check-then-send race in the existing exact-match outbound duplicate guard
+(`OutboundContentDedup`) at the `/telegram/reply` chokepoint — one mechanism behind the
+user-reported double-sends (RCA topics 30823/30837).
+
+The guard recorded a sent fingerprint only AFTER a successful send. Under a server stall a send
+can be in flight for tens of seconds, and a second identical request arriving in that window
+passed the pre-check (nothing recorded yet) and sent a duplicate. The fix adds an atomic
+**reserve → confirm/release** lifecycle to the SAME exact-match guard:
+
+- `tryReserve(topicId, text)` — synchronously re-checks the sent-window AND claims an in-flight
+  reservation in one step; returns suppress when the text was already sent within the window OR
+  is currently in flight. Auto-expires after `reserveTtlMs` (default 3min) so a leaked claim can
+  never permanently suppress.
+- `releaseReservation(topicId, text)` — clears the claim when the send FAILS, so the legitimate
+  retry is not suppressed.
+- `record()` clears the claim on success (the longer sent-window takes over).
+
+Route wiring: the reservation is taken AFTER the tone gate (a held/blocked message never
+reserves — no leak) and immediately before the send; `releaseReservation` runs in the
+send-failure catch. `allowDuplicate` bypasses it; brief acks (below the length floor) are never
+reserved.
+
+Deliberately scoped: this is the **exact-duplicate** half. The **reworded** near-duplicate is
+NOT hard-blocked here — that requires a similarity threshold, and a brittle similarity detector
+must not hold blocking authority (`docs/signal-vs-authority.md`). The reworded/systemic case is
+routed to the RCA shared-primitives spec (topic 30837), not botched into a brittle blocker here.
+
+## Evidence
+
+- `npx vitest run tests/unit/OutboundContentDedup.test.ts` → **18 tests** (reserve claims;
+  concurrent identical suppressed before record; window catch after record; release-on-failure
+  retry; TTL auto-expiry; brief-ack exemption; per-topic isolation; disabled no-op).
+- `npx vitest run tests/unit/outbound-content-dedup-route.test.ts` → **8 tests** incl. a route
+  test that literally holds one send IN FLIGHT and proves the identical second is suppressed, and
+  that a FAILED send releases the reservation so its retry reaches Telegram.
+- `npx vitest run tests/unit/OutboundContentDedup.test.ts tests/unit/outbound-content-dedup-route.test.ts tests/unit/outbound-dedup-durable.test.ts tests/unit/relayContentDedup.test.ts`
+  → **41 tests, 0 failures**.
+- `npx tsc --noEmit -p tsconfig.json` → **0 errors**.
+- Independent second-pass reviewer (delivery-path audit): **Concur** — no over-block path drops a
+  legitimate message; reservation taken strictly after the tone-gate early-return; failure
+  release + TTL expiry + allowDuplicate bypass all verified line-by-line.
+- Side-effects review: `upgrades/side-effects/double-send-inflight-reservation.md`.
+
+## What to Tell Your User
+
+If you ever saw the agent send you the same message twice, this fixes one cause of it. When the
+server was briefly slow, a message could start sending, and a second identical copy could slip
+out before the first was marked "done." Now the agent claims a message the instant it starts
+sending, so an identical copy can't sneak through that gap — while a failed send still lets its
+retry go through, and short replies like "got it" are never affected. Note this covers *exact*
+duplicates; the case where the same point comes back slightly *reworded* is a harder problem
+being handled separately.
+
+## Summary of New Capabilities
+
+None — this is a reliability fix to existing duplicate-suppression behavior. The reply endpoint
+keeps the same shape; an in-flight duplicate is suppressed the same way an already-sent one is.
