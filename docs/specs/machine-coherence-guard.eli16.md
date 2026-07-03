@@ -1,7 +1,7 @@
 # Machine-Coherence Guard — plain-English overview
 
 **Companion to:** `docs/specs/machine-coherence-guard.md` (roadmap item 4.1,
-round-5 revision)
+round-6 revision)
 
 ## The problem, in one story
 
@@ -86,8 +86,10 @@ only says "restored" when both machines are actually back and actually agree.
 The same patience applies to a fix in flight: if the other machine goes dark
 while I'm verifying a fix you approved, the verification simply pauses and
 resumes when it returns — you never get a false "the fix didn't take" just
-because a laptop lid closed, and an approved-but-not-yet-applied fix that
-gets paused is named to you, never silently dropped.
+because a laptop lid closed. And if a fix you approved hadn't been APPLIED
+yet when its machine went dark, I tell you it's paused and — when the
+machine comes back — I ask you again before applying it, rather than firing
+a stale yes at a pool that may have changed while it was away.
 If the same problem flaps on and off, it re-opens the SAME alert instead of
 minting new ones; after three flaps it says "this is flapping — recording
 quietly until it stabilizes" and stops narrating each bounce — and the same

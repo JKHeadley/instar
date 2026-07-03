@@ -1,7 +1,7 @@
 ---
 slug: machine-coherence-guard
 title: Agent Machine-Coherence Guard — pool-wide version + flag-skew detection, one alarm (Roadmap 4.1, F4/P0-1)
-status: draft — round-5 revision (round-1..4 findings folded; awaiting round-5 convergence review)
+status: draft — round-6 revision (round-1..5 findings folded; awaiting round-6 convergence review)
 author: echo
 eli16-overview: machine-coherence-guard.eli16.md
 parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
@@ -11,7 +11,7 @@ earned-from: "2026-07-02 live test-as-self matrix, finding F4 (docs/audits/test-
 roadmap: "instar-two-goal-roadmap-2026-07 §5 Phase 4 item 4.1 — 'Agent machine-coherence guard: pool-wide version + seamlessness-flag skew detection → ONE attention item; fix awakeMachineCount telemetry; then updater coordination (fleet version owner)'. Live proof: 'Deliberately skew a flag on one machine → alarm within one heartbeat cycle; matrix transfer scenario passes with zero manual config surgery.' Honesty note (Frontloaded Decision D2): at the shipped default flagConfirmTicks:2 the acceptance clause is restated as '≤ 2 presence-pull cycles (≤ 90s)'."
 ---
 
-# Agent Machine-Coherence Guard (roadmap 4.1) — round-5 revision
+# Agent Machine-Coherence Guard (roadmap 4.1) — round-6 revision
 
 One new sentinel, one telemetry bug-fix, one honestly-scoped later phase:
 
@@ -336,7 +336,16 @@ coherenceAdvert?: {
   exact dead-adapter fault the §3.4 fallback exists to close. A machine
   whose raise FAILED (or has not happened yet) advertises no covering
   marker; its rows read as uncovered, the fallback fires, and a standby
-  raises through its own live adapter. **Emission rides the UNCONDITIONAL
+  raises through its own live adapter. **The stamp is idempotent-re-written
+  (R5-N1):** while a machine owns a confirmed-skew episode whose
+  `itemRaisedAt` is UNSET, it re-attempts `createAttentionItem` each tick —
+  the chokepoint is idempotent (a no-op SUCCESS when the item already
+  exists) — and the stamp is (re)written on ANY success return, INCLUDING an
+  idempotent re-raise. A crash between raise-success and the stamp write, or
+  a transiently failed raise, therefore self-heals on the next tick (never a
+  permanently marker-less item whose fallback duplicate can't reconcile);
+  the §3.4 fallback owns the never-succeeds terminal case, the idempotent
+  re-attempt owns transient self-heal. **Emission rides the UNCONDITIONAL
   advert path and reads the retained episode file directly (R3-N3):** a
   machine whose guard was disabled mid-episode (§4.6) keeps advertising the
   marker for its retained open item — its `itemRaisedAt` stamp was set
@@ -407,7 +416,12 @@ coherenceAdvert?: {
   store peer objects verbatim; the cited posture-ingestion doc comment
   (`src/core/types.ts:2075-2078`) documents identity-binding + receipt-age
   only. This spec DELIVERS the clamp, in the puller's narrowing step:
-  type-clamp on receive (string lengths per §3.1 bounds, entry count ≤ 64,
+  type-clamp on receive (string lengths per §3.1 bounds PLUS format clamps
+  on every rendered peer string — `instarVersion` to a version alphabet
+  `/^[0-9A-Za-z.+-]{1,32}$/`, `manifestHash` to 64 lowercase hex, flag
+  values to the §3.1 clamped-scalar alphabet (lowercase alphanumerics +
+  hyphen, ≤ 32) — R5-N3: length-only clamps left these renderable siblings
+  outside the L2 alphabet; entry count ≤ 64,
   numeric `protocolVersion`/`beatSeq`, `alarm.episodeId` matching
   `/^mc-\d{1,29}$/` — the N4 format, NOT length-only: the id is rendered into
   operator-facing appends and the L2 exposure invariant forbids peer free
@@ -431,7 +445,9 @@ coherenceAdvert?: {
   confirmation path as version-class skew, so persistent malformation is a
   LOUD named condition ("machine X's coherence advert is malformed — cannot
   verify coherence"), never permanent silence. Rejected ≠ absent, by
-  construction. An error counter on the status route increments per rejection.
+  construction. The `clampRejections` counter on the status route increments
+  per rejection (R5-L5 — the same counter the episodeId marker-drop uses,
+  each with its jsonl reason row).
 - **Why not widen `seamlessnessFlags`** (Frontloaded Decision D3): it has
   load-bearing capability-gating consumers (sender-side emission gates) — the
   decisive half of the argument. (Its documented "fixed-size booleans only —
@@ -789,13 +805,14 @@ item — per-flag items are the named anti-pattern this spec exists to avoid.
      config key stays in point 3's secondary technical block (R4-L2 — M9's
      plain-language-first intent applies to the approve-line too). When the
      divergent machine IS the raiser (the machine speaking): "Reply **fix
-     it** and I'll set `<flag>` to `<target value>` here on <nickname> to
-     match <the rest of the pool>,
+     it** and I'll switch <the feature, in plain words> to <the plain value>
+     here on <nickname> to match <the rest of the pool>,
      then restart my own server — a ~30-second blip; I currently hold the
      serving lease, so the restart hands serving to <peer nickname> for that
      blip (a failover, named, not a surprise)" — the lease clause rendered
-     only when true. When the divergent machine is ANY OTHER machine: "Reply
-     **fix it** and I'll apply `<flag>` = `<target value>` on <nickname>
+     only when true; prose form, never a `key = value` join (R5-L4). When
+     the divergent machine is ANY OTHER machine: "Reply **fix it** and I'll
+     switch <the feature, in plain words> to <the plain value> on <nickname>
      from my own hands there — no remote config-write exists, so I'll
      confirm here when it lands (and tell you loudly if it doesn't within a
      few minutes)." Either way: "or reply **leave it** and I'll keep this
@@ -825,14 +842,19 @@ item — per-flag items are the named anti-pattern this spec exists to avoid.
   a peer's free text, never paths, never anything outside the §3.1 clamp
   alphabet. (The body does reveal which safety flags are dark/dry-run on which
   machine, to the operator-only attention surface — the same information
-  `GET /guards` already serves that operator.) **The one free-text field the
-  body renders is the machine NICKNAME (R4-L1):** nicknames are
-  registry-sourced display labels the mesh already renders on `/pool`,
-  `/guards`, and `machine list` — they inherit that pre-existing,
-  registry-wide identity-field trust (display-only, own-machine-set), are
-  ESCAPED at the operator-surface rendering boundary, and are never used as
-  identity (N1 keys on machineId). The invariant is honest about this one
-  inherited exception rather than silently carrying it.
+  `GET /guards` already serves that operator.) **The peer-influenced strings
+  the body renders, enumerated honestly (R4-L1, completed R5-N3 — the
+  round-5 wording overclaimed "one free-text field"):** the machine NICKNAME
+  (genuinely free text: a registry-sourced display label the mesh already
+  renders on `/pool`, `/guards`, and `machine list` — it inherits that
+  pre-existing, registry-wide identity-field trust, display-only,
+  own-machine-set, ESCAPED at the operator-surface rendering boundary, never
+  used as identity — N1 keys on machineId); plus `instarVersion`,
+  `manifestHash`, and flag effective values, which as of R5-N3 are
+  FORMAT-CLAMPED to their restricted alphabets at the M4 receive clamp
+  (§3.2) and therefore render inside the L2 alphabet, not as free text. The
+  invariant is honest about its inherited exceptions rather than silently
+  carrying them.
 
 ### 4.2.1 The approved fix — principal, direction, mechanism, failure (R2-M3)
 
@@ -862,12 +884,24 @@ The fix is the ONLY action anywhere in this build. Five decisions, each pinned:
   **Lifecycle completeness (R3-M6, state-scoped per R4-M2):** a pendingFix
   is in one of three states — `proposed`, `approved-holding` (approved, write
   not yet performed), or `executing-verifying` (write + restart done, verify
-  window open). The INVALIDATION rule applies to the two NOT-YET-EXECUTED
-  states only: a `proposed` or `approved-holding` pendingFix is INVALIDATED
-  by any skew-set change (a row joins, clears, or changes value class), by
-  ANY §4.3 close (including `superseded-by-takeover` — reconciliation
-  invalidates the non-survivor's pendingFix), by suspension, and by a §4.6
-  corrupt-file re-baseline (a fresh episode carries no pendingFix — R3-L3).
+  window open; reachable ONLY in the mechanized divergent==raiser case —
+  the held path lives entirely in `approved-holding`, its out-of-band write
+  verified by advert observation, never by a raiser-tracked
+  executing-verifying state — R5-N2). Invalidation triggers for the two
+  NOT-YET-EXECUTED states: a `proposed` or `approved-holding` pendingFix is
+  INVALIDATED by any skew-set change (a row joins, clears, or changes value
+  class), by ANY §4.3 close (including `superseded-by-takeover` —
+  reconciliation invalidates the non-survivor's pendingFix), by suspension,
+  and by a §4.6 corrupt-file re-baseline (a fresh episode carries no
+  pendingFix — R3-L3). **Suspension is the ONLY event an
+  executing-verifying fix is exempt from (R5-N2 — the round-5 "the two
+  NOT-YET-EXECUTED states only" wording over-read):** an
+  `executing-verifying` pendingFix IS DISPOSED with its episode on ANY §4.3
+  close (including `superseded-by-takeover`) and on a §4.6 re-baseline —
+  the durable config write persists, and the survivor / fresh baseline
+  re-evaluates from observed adverts (never a failure append or re-propose
+  against a closed episode). The suspension exemption exists precisely
+  because suspension keeps the episode OPEN.
   **When suspension invalidates an `approved-holding` fix, the suspension
   note NAMES it** ("the fix you approved is paused — <nickname> is
   unverifiable/offline; I'll re-propose when it returns") — never a silent
@@ -980,11 +1014,25 @@ The fix is the ONLY action anywhere in this build. Five decisions, each pinned:
     agent's own hand on the Mini inside a bounded, loudly-verified window.
     A structural cross-machine execution channel is Phase 2's authority
     work (§8), same class as the updater.
-  When the divergent machine is offline/asleep the same HOLD applies with
-  the reach-honest append ("I can't reach <nickname> — holding; it applies
-  when that machine returns"), still bounded by the same verify window from
-  approval. In every case the fix never travels as a new mesh write and is
-  never silently dropped.
+  **An OFFLINE/asleep divergent machine is NOT a hold — it is a suspension,
+  and (i) governs (R5-M1; this REPLACES the round-5 draft's "holding; it
+  applies when that machine returns", which contradicted (i) by promising an
+  auto-apply without re-approval).** The divergent machine is a skew
+  participant, so its going offline/unverifiable SUSPENDS the episode
+  (§4.3), and per (i) an `approved-holding` pendingFix is INVALIDATED with
+  the named note ("the fix you approved is paused — <nickname> is
+  offline/unverifiable; I'll re-propose when it returns"). On the machine's
+  return, if the skew persists, the fix is RE-PROPOSED fresh (in-place, per
+  R4-N1) and requires a FRESH approval — never an auto-apply of a stale one
+  (the pool state may have changed while the machine was away; that is
+  exactly why (i) refuses stale approvals). Consequently the held-case
+  `2 × fixVerifyTicks` window needs NO pause semantics: an
+  `approved-holding` fix CANNOT span a suspension by construction (it is
+  invalidated at suspension onset), so the held window only ever runs
+  against a reachable, verifiable divergent machine and is governed by (i)'s
+  invalidate-and-re-propose — never by (v)'s pause, which is scoped to
+  `executing-verifying` alone. In every case the fix never travels as a new
+  mesh write and is never silently dropped.
 - **(v) Failure is loud, and the episode outlives the fix.** The fix flow can
   NEVER close an episode — closure belongs exclusively to §4.3 (`restored` =
   the evaluator OBSERVES convergence for `resolveTicks`). After an approved
@@ -996,10 +1044,22 @@ The fix is the ONLY action anywhere in this build. Five decisions, each pinned:
   forever), ONE honest append
   lands ("the fix didn't take — <write failed / restart failed / skew still
   present>"), the `pendingFix` clears (a retry requires fresh approval), and
-  the episode stays open. **Suspension pauses the verify clocks (R4-M2):**
-  BOTH the `fixVerifyTicks` tick count and the `2 × fixVerifyTicks`
-  wall-clock outer bound EXCLUDE suspended time — exactly as suspension
-  pauses resolve-ticks and the escalation clock (§4.3). A skew participant
+  the episode stays open. **Suspension pauses the verify clocks — for the
+  EXECUTING-VERIFYING state ONLY (R4-M2, scope pinned per R5-M1):** for an
+  `executing-verifying` fix, BOTH the `fixVerifyTicks` tick count and the
+  `2 × fixVerifyTicks` wall-clock outer bound EXCLUDE suspended time —
+  exactly as suspension pauses resolve-ticks and the escalation clock
+  (§4.3). This pause NEVER applies to an `approved-holding` fix: that state
+  is invalidated at suspension onset per (i)/(iv), so its identically-named
+  `2 × fixVerifyTicks` bound can never overlap a suspension — the shared
+  label is two different clocks, and only the executing one pauses (a
+  builder attributing the pause to the held bound would auto-execute a
+  stale approval after an arbitrary sleep — forbidden). **The excluded time
+  is restart-safe (R5-L1):** the approval/post-restart-beat anchors and the
+  accumulated-suspended intervals ride the DURABLE pendingFix record
+  (transition-written), so a raiser restart mid-suspension re-derives the
+  exclusion from the durable record + the re-derived live suspension state
+  — never a falsely-fired failure append after a reboot. A skew participant
   sleeping or degrading mid-verify therefore never fires a FALSE "the fix
   didn't take" (the write took; the peer merely left) and never silently
   lapses an executed fix: the verify resumes when the participant returns
@@ -1137,7 +1197,13 @@ own brake (a flapping skew would otherwise cycle open→close→NEW-episode ever
   than scaling with flap frequency (the durable `suspended` field is
   intentionally stale-until-latch-exit; safe — confirm/resolve/verify
   counters are in-memory + warm-up-absorbed, and jsonl carries the full
-  transition history). The §9 burst-invariant test drives the flap classes
+  transition history). **The latch-exit write RECONCILES (R5-L2):** it
+  writes the CURRENT live-derived state (`suspended`, recurrence +
+  append-budget bookkeeping), never a flush of a possibly-frozen in-memory
+  snapshot; and the §6 status route's `openEpisode.suspended` always serves
+  the LIVE evaluator view (re-derived each tick from the comparison set) —
+  the durable field's staleness is confined to restart-survival, which the
+  next tick re-derives. The §9 burst-invariant test drives the flap classes
   BOTH individually and concurrently and asserts the shared bound.
   (Structural appends outside the flap classes — the §4.4 single
   escalation, the (v) fix-failure append, the cap give-up — are each
@@ -1176,10 +1242,19 @@ own brake (a flapping skew would otherwise cycle open→close→NEW-episode ever
   resolves. The retained open item KEEPS being advertised in the machine's
   `alarm` marker (R3-N3 — marker emission rides the unconditional advert
   path and reads the retained episode file, §3.2), so the item stays
-  pool-visible and reconcilable while the guard is dark. On a later ENABLED
+  pool-visible and reconcilable while the guard is dark. **Dark-guard ×
+  owner-loss takeover — a bounded, NAMED duplicate (R5-L3):** the dark
+  machine leaves the §3.4 candidate set, so owner-loss takeover fires after
+  `raiserTakeoverTicks` and a live standby raises its own item even though
+  the dark machine's retained item still advertises its marker; the dark
+  side cannot run reconciliation (its evaluator is off), so BOTH items
+  coexist for the disable's duration — a bounded duplicate inside §0(b)'s
+  honesty envelope, the takeover item cross-referencing the retained
+  marker's episodeId so the operator sees the linkage. On a later ENABLED
   boot: if the pool evaluates coherent, the stale item is resolved with
   marker `resolved-after-reenable`; if the skew persists, the retained
-  episode resumes.
+  episode resumes and any takeover duplicate reconciles via the normal
+  rule.
 
 ## 5. The `awakeMachineCount` telemetry fix (named sub-item)
 
@@ -1469,10 +1544,12 @@ Sketch (to be spec-converged separately when picked up
 - Advert emission unconditional (M3): an advert is built from a FLEET config
   (no `developmentAgent`, no `machineCoherence` block); `beatSeq` increments
   per beat.
-- Receive clamp (M4): oversize/malformed adverts rejected with the rejection
-  marker REPLACING the stored advert (last-good not carried forward as
-  current); rejected peer classified `advert-rejected` and surfaced (not
-  silent); clean adverts pass byte-identical.
+- Receive clamp (M4, format clamps per R5-N3): oversize/malformed adverts
+  rejected with the rejection marker REPLACING the stored advert (last-good
+  not carried forward as current); rejected peer classified `advert-rejected`
+  and surfaced (not silent); an `instarVersion`/`manifestHash`/flag-value
+  outside its restricted alphabet is rejected (never rendered as free text);
+  clean adverts pass byte-identical.
 - Staleness (M5): an advert older than `advertStaleMs` degrades to
   `advert-stale` even while `routerReceivedAtMs` stays fresh (the
   git-beat-refreshes-liveness case).
@@ -1503,7 +1580,14 @@ Sketch (to be spec-converged separately when picked up
   confirms and opens an episode but whose `createAttentionItem` FAILS
   advertises NO covering marker (`itemRaisedAt` unset) → the fallback fires
   and a standby raises, while a raiser whose raise SUCCEEDED advertises the
-  marker from the stamp (including through a §4.6 guard-disable); the latch re-arms after owner-return reconciliation (R3-N4); a
+  marker from the stamp (including through a §4.6 guard-disable); the
+  IDEMPOTENT RE-STAMP walk (R5-N1): a crash between raise-success and the
+  stamp write → the item exists but the marker is absent for ≤ one tick —
+  the next tick's idempotent `createAttentionItem` re-attempt returns
+  no-op-success and (re)writes the stamp, the marker returns, and any
+  fallback duplicate raised in the window reconciles (never a permanently
+  marker-less item); a one-shot-raise implementation fails this test; the
+  latch re-arms after owner-return reconciliation (R3-N4); a
   marker whose LISTED `rowIdentityHashes` do NOT intersect the confirmed
   rows does not satisfy coverage, and a `rowsTruncated` marker NEVER
   satisfies coverage for an unlisted row (R3-M4 — fails toward raising); a
@@ -1523,12 +1607,21 @@ Sketch (to be spec-converged separately when picked up
   reconciles on heal (R3-M3); different row sets → no reconciliation fires;
   a peer's marker with a non-N4-format episodeId → marker dropped + counted,
   never rendered (R3-N9).
-- Fix flow (R2-M3, R3-M1/M6/N5/N6/N7/N8): a "fix it" reply from a
+- Fix flow (R2-M3, R3-M1/M6/N5/N6/N7/N8, R5-M1/N2): a "fix it" reply from a
   NON-operator sender is ignored (uid mismatch); a skew-set change after the
   proposal invalidates `pendingFix` (a stale approval executes nothing); ANY
-  §4.3 close, suspension, supersession, or §4.6 re-baseline invalidates it,
-  and a reply bound to an invalidated proposal is REFUSED with one honest
-  note (R3-M6); one pendingFix at a time per episode (R3-N8); execution is
+  §4.3 close, suspension, supersession, or §4.6 re-baseline invalidates a
+  proposed/approved-holding pendingFix, and a reply bound to an invalidated
+  proposal is REFUSED with one honest note (R3-M6); an executing-verifying
+  pendingFix is DISPOSED (no failure append, no re-propose) on episode
+  close/supersession/re-baseline — suspension is its only exemption
+  (R5-N2); the HELD-OFFLINE walk (R5-M1): an approved-holding fix for a
+  divergent machine that goes OFFLINE → the episode suspends → the
+  pendingFix is INVALIDATED with the named "the fix you approved is
+  paused" note → the machine RETURNS with the skew persisting → the fix is
+  RE-PROPOSED in-place and executes ONLY on a FRESH approval — an
+  implementation that auto-applies the stale approval on return fails this
+  test; one pendingFix at a time per episode (R3-N8); execution is
   single-flight per (divergent machineId, key) — the dueling-items fixture
   (owner + taker both holding pendingFixes, post-reconciliation) produces
   exactly ONE write + ONE restart (R3-M6), and the blind-side concurrent
@@ -1750,15 +1843,17 @@ decisions the round-1 findings forced. None remain parked.
   no LLM calls (§3.3).
 - **D18 (N7/N8) — State rooting + warm-up.** Agent-scoped `stateDir` rooting;
   `warmupTicks: 4` post-boot with unknown/stale counting toward nothing.
-- **D19 (R2-M1, refined R3-M2/M4/N4/L1, completed R4-M1) — Raise-liveness
-  fallback.** The advert gains an `alarm` marker (N4-format episodeId +
-  per-row identity hashes of the CURRENTLY-confirmed rows,
+- **D19 (R2-M1, refined R3-M2/M4/N4/L1, completed R4-M1 + R5-N1) —
+  Raise-liveness fallback.** The advert gains an `alarm` marker (N4-format
+  episodeId + per-row identity hashes of the CURRENTLY-confirmed rows,
   intersection-tested, clamped ≤ 72 — ≥ any ratchet-passing manifest — with
   a truncation flag that NEVER grants coverage: an unlisted row is NOT
   covered, failing toward raising). The marker keys on item-RAISED
   (`itemRaisedAt`, written on `createAttentionItem` SUCCESS), never on
   episode-open — a dead-adapter raiser advertises no phantom coverage
-  (R4-M1).
+  (R4-M1); the stamp is (re)written on ANY success return including an
+  idempotent re-raise, re-attempted each tick while unset, so a
+  crash-before-stamp or transient raise failure self-heals (R5-N1).
   Raise-silent is defined precisely: only the ELECTED raiser (live-guard,
   no covering marker past its deadline) is ever classified raise-silent;
   subtraction is iterative with per-raiser deadlines; a standby steps up IFF
@@ -1779,35 +1874,42 @@ decisions the round-1 findings forced. None remain parked.
   honestly-marked, converging (or suspended-quiet) duplicates under degraded
   views (§0/§3.4).
 - **D21 (R2-M3, completed R3-M1/M6/N5/N6/N7/N8/N12, state-scoped R4-M2 +
-  R4-N1/N2/N4/N6/L8) — The approved fix, fully pinned.** Approval = verified
-  operator uid + exact recorded proposal (ScopeAccretionRatifier shape,
-  message-id-chained; the conversational agent recognizes the reply, the
-  hash+chain is the authority; the reply match invokes the server's internal
-  fix-execution action in-process); ONE pendingFix per episode with THREE
-  states (proposed / approved-holding / executing-verifying): the two
-  UNEXECUTED states are invalidated by skew-set change / any close /
-  suspension (NAMED note when it hits an approved-holding fix) /
-  supersession / re-baseline, with a refused-with-note stale approval; an
-  EXECUTING fix is never invalidated by suspension — its verify clocks
-  pause and resume (R4-M2). Re-proposals render in-place, operator-gated,
-  never an autonomous stream (R4-N1); "leave it" is a durable episode-state
-  ack, cleared on recurrence re-open (R4-N2). Execution is idempotent;
-  single-flight = the surviving holder's pendingFix substate + the divergent
-  machine's atomic funnel with a no-diff-no-restart gate (never two
-  conflicting writes; a redundant no-op write in the blind-side window is
-  bounded and stated — R4-N4). Direction = pool-majority else lease-holder
-  value, always named; the write is the explicit override yielding the
-  target effective value, via the atomic config funnel;
-  `developmentAgent` + the guard's own posture row are never auto-proposed.
-  V1 MECHANIZES execution only for divergent == raiser (write-ahead
-  outcome, then process-exit under the keepalive supervisor — never the
-  self-bootout `restartServer()`; unsupervised hosts degrade to the held
-  path — R4-N6/L8; a lease-holder restart is named a failover); any other
-  divergent machine → a bounded, honest HOLD (2 × fixVerifyTicks from
-  approval, suspension-aware) — no mesh config-write exists or is added,
-  and the §4.2 body promises exactly this. Failure is one loud append +
-  episode stays open — the fix path can never close an episode; "leave it"
-  suppresses the §4.4 escalation (§4.2/§4.2.1).
+  R4-N1/N2/N4/N6/L8, reconciled R5-M1/N2/L1) — The approved fix, fully
+  pinned.** Approval = verified operator uid + exact recorded proposal
+  (ScopeAccretionRatifier shape, message-id-chained; the conversational
+  agent recognizes the reply, the hash+chain is the authority; the reply
+  match invokes the server's internal fix-execution action in-process); ONE
+  pendingFix per episode with THREE states (proposed / approved-holding /
+  executing-verifying — the executing state reachable ONLY in the
+  mechanized divergent==raiser case, R5-N2): the two UNEXECUTED states are
+  invalidated by skew-set change / any close / suspension (NAMED note when
+  it hits an approved-holding fix — an OFFLINE divergent machine IS a
+  suspension, so a held approval is invalidated and RE-PROPOSED on return,
+  never auto-applied — R5-M1) / supersession / re-baseline, with a
+  refused-with-note stale approval; an EXECUTING fix is never invalidated
+  by suspension — its verify clocks pause (restart-safe via the durable
+  pendingFix record, R5-L1) and resume (R4-M2) — but it IS disposed with
+  its episode on any close or re-baseline (R5-N2). Re-proposals render
+  in-place, operator-gated, never an autonomous stream (R4-N1); "leave it"
+  is a durable episode-state ack, cleared on recurrence re-open (R4-N2).
+  Execution is idempotent; single-flight = the surviving holder's
+  pendingFix substate + the divergent machine's atomic funnel with a
+  no-diff-no-restart gate (never two conflicting writes; a redundant no-op
+  write in the blind-side window is bounded and stated — R4-N4). Direction
+  = pool-majority else lease-holder value, always named in prose (R5-L4);
+  the write is the explicit override yielding the target effective value,
+  via the atomic config funnel; `developmentAgent` + the guard's own
+  posture row are never auto-proposed. V1 MECHANIZES execution only for
+  divergent == raiser (write-ahead outcome, then process-exit under the
+  keepalive supervisor — never the self-bootout `restartServer()`;
+  unsupervised hosts degrade to the held path — R4-N6/L8; a lease-holder
+  restart is named a failover); any other REACHABLE divergent machine → a
+  bounded, honest HOLD (2 × fixVerifyTicks from approval — which never
+  overlaps a suspension: the hold is invalidated at suspension onset,
+  R5-M1) — no mesh config-write exists or is added, and the §4.2 body
+  promises exactly this. Failure is one loud append + episode stays open —
+  the fix path can never close an episode; "leave it" suppresses the §4.4
+  escalation (§4.2/§4.2.1).
 - **D22 (R2-N4, extended R3-M5 + R4-N3/N5/L6/L7) — Flap bounding.**
   `flappingLatchReopens: 3` → latched flapping for episode re-opens; PLUS a
   per-episode rolling append budget (`episodeAppendBudget: 6` /
