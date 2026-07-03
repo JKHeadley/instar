@@ -36,9 +36,24 @@ import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { getByPath } from '../core/machineCoherenceManifest.js';
 import {
   classifyPeer,
+  computeDivergentRows,
   electRaiser,
   type ClassifiedPeer,
+  type SkewRow,
+  type SkewDimension,
 } from './machineCoherenceEvaluate.js';
+
+/** Per-row confirmation state (machine-coherence-guard §3.3, R2-L3). */
+interface RowConfirmState {
+  dimension: SkewDimension;
+  row: SkewRow;
+  /** Consecutive ticks the row's identity has been present (R2-L3 — a
+   *  participant dropping out changes/vanishes the identity → resets to 1). */
+  consecutiveTicks: number;
+  /** Wall-clock ms of first (re)appearance — the patch-only version grace clock. */
+  firstSeenAtMs: number;
+  confirmed: boolean;
+}
 
 /** Resolved config (spec §7 — every knob carries its shipped default in code). */
 export interface MachineCoherenceResolvedConfig {
@@ -123,7 +138,13 @@ export interface MachineCoherenceStatus {
   raiser: { machineId: string | null; isSelf: boolean; candidates: string[] };
   /** Episode machinery is a Session-B sub-unit — always null until it lands. */
   openEpisode: null;
-  counters: { ticks: number; errors: number };
+  /**
+   * `skewsConfirmed` is CUMULATIVE (a counter of confirmation transitions, not a
+   * live gauge). `confirmedRows`/`pendingRows` are the live gauges — how many
+   * distinct skew rows are currently confirmed vs still accruing consecutive
+   * ticks. `errors` is fail-toward-silence tick errors.
+   */
+  counters: { ticks: number; skewsConfirmed: number; confirmedRows: number; pendingRows: number; errors: number };
 }
 
 export class MachineCoherenceSentinel {
@@ -136,6 +157,12 @@ export class MachineCoherenceSentinel {
   private lastRegisteredOnline = 0;
   private lastRaiser: string | null = null;
   private lastCandidates: string[] = [];
+  /** §3.3 confirmation engine: per-row consecutive-tick + grace-clock state. */
+  private rowState = new Map<string, RowConfirmState>();
+  /** The row identities present LAST tick (R2-L3 consecutive detection). */
+  private lastTickRowIds = new Set<string>();
+  /** Cumulative count of confirmation transitions (never decremented). */
+  private skewsConfirmed = 0;
 
   constructor(
     private readonly deps: MachineCoherenceSentinelDeps,
@@ -176,6 +203,10 @@ export class MachineCoherenceSentinel {
         this.lastClassified = [];
         this.lastRaiser = null;
         this.lastCandidates = [];
+        // Below 2 comparable members → no divergence is possible; the whole
+        // confirmation engine resets (R2-L3: every row's participants dropped).
+        this.rowState.clear();
+        this.lastTickRowIds = new Set();
         return;
       }
       // Per-machine classification (M11 universe honesty: every ONLINE machine
@@ -191,10 +222,94 @@ export class MachineCoherenceSentinel {
         .map((p) => p.machineId);
       this.lastCandidates = candidates;
       this.lastRaiser = electRaiser(candidates, this.deps.leaseHolderMachineId());
+      // ── §3.3 dimension comparison + confirmation counters (R2-L3, M6) ──
+      this.updateConfirmation(nowMs);
     } catch {
-      // Fail toward silence (§3.3): no emit, a visible error counter.
+      // Fail toward silence (§3.3): no emit, a visible error counter. The
+      // confirmation state is LEFT INTACT on an error tick (a transient pool-read
+      // fault must not fabricate a participant-drop reset); the next clean tick
+      // recomputes over fresh data.
       this.errors += 1;
     }
+  }
+
+  /**
+   * §3.3 confirmation engine (R2-L3 consecutive rule + M6 update-wave
+   * suppression). Runs over the CURRENTLY-`compared` machines (self included —
+   * self records its own advert every beat), turns the raw per-tick divergences
+   * into confirmed rows, and never raises anything (the episode/alarm machinery
+   * is Session B). Pure state transitions; the caller owns fail-toward-silence.
+   *
+   * The consecutive rule (R2-L3): a row's confirmation counts ONLY ticks in which
+   * the row's identity (which encodes every participant's clamped value) is
+   * present. Because a participant dropping out (offline / unknown / advert-stale)
+   * either vanishes the identity or changes it, the old identity leaves
+   * `currentIds`, its counter is dropped, and a re-appearance starts fresh at 1 —
+   * one flapping reading can never accumulate toward confirmation.
+   *
+   * M6 update-wave suppression: FLAG rows are suppressed while ANY version skew
+   * exists among the compared machines (a differing version OR an open patch-only
+   * grace window — an update that changes a flag's resolved default would else
+   * alarm HIGH mid-wave and auto-resolve). Once every version agrees, residual
+   * flag skew confirms normally.
+   */
+  private updateConfirmation(nowMs: number): void {
+    const compared = this.lastClassified
+      .filter((p): p is ClassifiedPeer & { advert: NonNullable<ClassifiedPeer['advert']> } => p.cls === 'compared' && !!p.advert)
+      .map((p) => ({ machineId: p.machineId, advert: p.advert }));
+
+    let rows = computeDivergentRows(compared);
+    // M6: suppress FLAG rows while a version skew (differing version or open
+    // grace) is present among the compared machines.
+    const hasVersionSkew = new Set(compared.map((c) => c.advert.instarVersion)).size > 1;
+    if (hasVersionSkew) rows = rows.filter((r) => r.dimension !== 'flag');
+
+    const currentIds = new Set(rows.map((r) => r.identity));
+
+    // Increment consecutive counters for rows present this tick; a row whose
+    // identity was NOT present last tick (re)starts at 1 with a fresh grace clock.
+    for (const r of rows) {
+      const existing = this.rowState.get(r.identity);
+      if (existing && this.lastTickRowIds.has(r.identity)) {
+        existing.consecutiveTicks += 1;
+        existing.row = r; // refresh the row snapshot (nicknames etc. are not in the identity)
+      } else {
+        this.rowState.set(r.identity, { dimension: r.dimension, row: r, consecutiveTicks: 1, firstSeenAtMs: nowMs, confirmed: false });
+      }
+    }
+    // Drop rows that vanished this tick (R2-L3 reset — a participant left the set,
+    // the pair equalized, or M6 suppressed a flag row): their counter is gone.
+    for (const id of [...this.rowState.keys()]) {
+      if (!currentIds.has(id)) this.rowState.delete(id);
+    }
+
+    // Confirmation predicate per dimension.
+    for (const st of this.rowState.values()) {
+      if (st.confirmed) continue;
+      const doConfirm = st.dimension === 'version' && st.row.versionSeverity === 'patch-only'
+        // Patch-only version skew: confirmed after versionSkewGraceMs of
+        // CONTINUOUS skew (a normal rolling update would else cry wolf).
+        ? nowMs - st.firstSeenAtMs >= this.cfg.versionSkewGraceMs
+        // flag / major-minor version / manifest-class / protocol: N consecutive ticks.
+        : st.consecutiveTicks >= this.cfg.flagConfirmTicks;
+      if (doConfirm) {
+        st.confirmed = true;
+        this.skewsConfirmed += 1;
+      }
+    }
+
+    this.lastTickRowIds = currentIds;
+  }
+
+  /** The currently-confirmed skew rows (C₁b-ii — Session B's episode machinery
+   *  consumes these; the status route exposes their count). Pure read. */
+  confirmedSkewRows(): SkewRow[] {
+    return [...this.rowState.values()].filter((s) => s.confirmed).map((s) => s.row);
+  }
+
+  /** The rows still accruing consecutive ticks (divergent, not yet confirmed). */
+  pendingSkewRows(): SkewRow[] {
+    return [...this.rowState.values()].filter((s) => !s.confirmed).map((s) => s.row);
   }
 
   /**
@@ -234,7 +349,13 @@ export class MachineCoherenceSentinel {
         candidates: [...this.lastCandidates],
       },
       openEpisode: null,
-      counters: { ticks: this.ticks, errors: this.errors },
+      counters: {
+        ticks: this.ticks,
+        skewsConfirmed: this.skewsConfirmed,
+        confirmedRows: this.confirmedSkewRows().length,
+        pendingRows: this.pendingSkewRows().length,
+        errors: this.errors,
+      },
     };
   }
 }

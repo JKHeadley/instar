@@ -9,8 +9,10 @@ import {
   skewRowIdentity,
   rowIdentityHash,
   classifyVersionSkew,
+  computeDivergentRows,
   electRaiser,
 } from '../../src/monitoring/machineCoherenceEvaluate.js';
+import type { MachineCapacity } from '../../src/core/types.js';
 import { MC_ROW_HASH_LEN } from '../../src/core/machineCoherenceManifest.js';
 
 const NOW = 1_751_500_000_000;
@@ -151,6 +153,82 @@ describe('classifyVersionSkew (§3.3 version dimension — update-wave honesty)'
   });
   it('a prerelease/build suffix on the same major.minor stays patch-only', () => {
     expect(classifyVersionSkew('1.3.729', '1.3.729-rc.1')).toBe('patch-only');
+  });
+});
+
+describe('computeDivergentRows (§3.3 — per-tick dimension comparison, PURE)', () => {
+  type Adv = NonNullable<MachineCapacity['coherenceAdvert']>;
+  const base = (over: Partial<Adv> = {}): Adv => ({
+    instarVersion: '1.3.729',
+    protocolVersion: 1,
+    manifestHash: 'a'.repeat(64),
+    guard: 'live',
+    beatSeq: 1,
+    flags: { developmentAgent: 'true', ws13Reconcile: 'live' },
+    ...over,
+  });
+  const m = (machineId: string, over: Partial<Adv> = {}) => ({ machineId, advert: base(over) });
+
+  it('fewer than 2 compared machines → no rows', () => {
+    expect(computeDivergentRows([])).toEqual([]);
+    expect(computeDivergentRows([m('m_a')])).toEqual([]);
+  });
+
+  it('all machines agree on every dimension → no rows', () => {
+    expect(computeDivergentRows([m('m_a'), m('m_b')])).toEqual([]);
+  });
+
+  it('flag divergence produces a stable flag row identical to skewRowIdentity', () => {
+    const rows = computeDivergentRows([
+      m('m_a', { flags: { developmentAgent: 'true', ws13Reconcile: 'live' } }),
+      m('m_b', { flags: { developmentAgent: 'true', ws13Reconcile: 'dark' } }),
+    ]);
+    const flag = rows.find((r) => r.dimension === 'flag' && r.key === 'ws13Reconcile');
+    expect(flag).toBeDefined();
+    expect(flag!.identity).toBe(skewRowIdentity('flag', 'ws13Reconcile', { m_a: 'live', m_b: 'dark' }));
+    expect(flag!.participants).toEqual(['m_a', 'm_b']);
+  });
+
+  it('flag keys present on ONLY one side are NOT flag skew (that is version skew) — intersection only', () => {
+    const rows = computeDivergentRows([
+      m('m_a', { flags: { developmentAgent: 'true', onlyOnA: 'x' } }),
+      m('m_b', { flags: { developmentAgent: 'true' } }),
+    ]);
+    expect(rows.find((r) => r.key === 'onlyOnA')).toBeUndefined();
+  });
+
+  it('version divergence: differing major.minor → major-minor severity', () => {
+    const rows = computeDivergentRows([m('m_a', { instarVersion: '1.3.729' }), m('m_b', { instarVersion: '1.4.0' })]);
+    const v = rows.find((r) => r.dimension === 'version');
+    expect(v?.versionSeverity).toBe('major-minor');
+  });
+
+  it('version divergence: same major.minor differing patch → patch-only severity', () => {
+    const rows = computeDivergentRows([m('m_a', { instarVersion: '1.3.729' }), m('m_b', { instarVersion: '1.3.730' })]);
+    expect(rows.find((r) => r.dimension === 'version')?.versionSeverity).toBe('patch-only');
+  });
+
+  it('manifest-class row fires only when versions are IDENTICAL but the hash differs (M7)', () => {
+    const same = computeDivergentRows([m('m_a', { manifestHash: 'a'.repeat(64) }), m('m_b', { manifestHash: 'b'.repeat(64) })]);
+    expect(same.find((r) => r.dimension === 'manifest')).toBeDefined();
+    // Differing version → the version row owns the skew, no separate manifest row.
+    const diffVer = computeDivergentRows([
+      m('m_a', { instarVersion: '1.3.729', manifestHash: 'a'.repeat(64) }),
+      m('m_b', { instarVersion: '1.4.0', manifestHash: 'b'.repeat(64) }),
+    ]);
+    expect(diffVer.find((r) => r.dimension === 'manifest')).toBeUndefined();
+  });
+
+  it('protocol divergence produces a protocol row', () => {
+    const rows = computeDivergentRows([m('m_a', { protocolVersion: 1 }), m('m_b', { protocolVersion: 2 })]);
+    expect(rows.find((r) => r.dimension === 'protocol')?.key).toBe('protocolVersion');
+  });
+
+  it('is deterministic — two evaluators over the same adverts compute the SAME identities (N1 convergence)', () => {
+    const inputs = [m('m_a', { flags: { developmentAgent: 'true', ws13Reconcile: 'dark' } }), m('m_b')];
+    const a = computeDivergentRows(inputs).map((r) => r.identity).sort();
+    const b = computeDivergentRows([...inputs].reverse()).map((r) => r.identity).sort();
+    expect(a).toEqual(b);
   });
 });
 

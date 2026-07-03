@@ -125,6 +125,102 @@ export function classifyVersionSkew(a: string, b: string): 'none' | 'patch-only'
 }
 
 /**
+ * One divergent skew row for a single tick (machine-coherence-guard §3.3). A row
+ * exists when the COMPARED machines do NOT all agree on a dimension's value. The
+ * `identity` is the N1 canonical key (stable across machines on the same shared
+ * adverts — so two evaluators compute the SAME identity for the same skew, the
+ * property §3.4 duplicate-reconciliation and the advert marker key on).
+ */
+export interface SkewRow {
+  identity: string;
+  dimension: SkewDimension;
+  /** Manifest flag key / 'instarVersion' / 'manifestHash' / 'protocolVersion'. */
+  key: string;
+  /** Sorted machine ids named in the row (the R2-L3 "participants"). */
+  participants: string[];
+  /** Per-machine clamped value class (content-free — ids + clamped scalars). */
+  valueClasses: Record<string, string>;
+  /** Version dimension only: patch-only (grace-gated) vs major-minor (2 ticks). */
+  versionSeverity?: 'patch-only' | 'major-minor';
+}
+
+/** Clamp a raw scalar to the content-free value-class alphabet used in row identity. */
+function clampValueClass(v: string): string {
+  const s = String(v).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 32);
+  return s.length ? s : 'unknown';
+}
+
+/**
+ * Compute the divergent skew rows across the COMPARED machines for one tick
+ * (spec §3.3 dimensions). PURE + deterministic — identical output for identical
+ * shared adverts, which is what makes the N1 identity converge across machines.
+ *
+ * Dimensions:
+ *  - **flag** — every manifest-INTERSECTION key (present in EVERY compared
+ *    machine's flags — a key on one side only is version skew, not flag skew)
+ *    whose clamped effective values are not all equal.
+ *  - **version** — `instarVersion` not all equal; severity = major-minor if ANY
+ *    pair differs in major.minor, else patch-only (grace-gated).
+ *  - **manifest** — `manifestHash` not all equal WHILE every `instarVersion` is
+ *    IDENTICAL (M7: same version, dirty/locally-built dist). A hash mismatch with
+ *    differing versions is version skew only (kept quiet here — the version row
+ *    owns it).
+ *  - **protocol** — `protocolVersion` not all equal.
+ *
+ * Fewer than 2 compared machines → no rows (single-machine strict no-op upstream).
+ */
+export function computeDivergentRows(
+  compared: Array<{ machineId: string; advert: NonNullable<MachineCapacity['coherenceAdvert']> }>,
+): SkewRow[] {
+  if (compared.length < 2) return [];
+  const ids = compared.map((c) => c.machineId).sort();
+  const rows: SkewRow[] = [];
+
+  // ── flag dimension (manifest-INTERSECTION keys only) ──
+  const keySets = compared.map((c) => new Set(Object.keys(c.advert.flags ?? {})));
+  const intersection = [...keySets[0]].filter((k) => keySets.every((s) => s.has(k))).sort();
+  for (const key of intersection) {
+    const vc: Record<string, string> = {};
+    for (const c of compared) vc[c.machineId] = clampValueClass(c.advert.flags[key]);
+    if (new Set(Object.values(vc)).size > 1) {
+      rows.push({ identity: skewRowIdentity('flag', key, vc), dimension: 'flag', key, participants: ids, valueClasses: vc });
+    }
+  }
+
+  // ── version dimension ──
+  const vv: Record<string, string> = {};
+  for (const c of compared) vv[c.machineId] = clampValueClass(c.advert.instarVersion);
+  if (new Set(Object.values(vv)).size > 1) {
+    let severity: 'patch-only' | 'major-minor' = 'patch-only';
+    const raw = compared.map((c) => c.advert.instarVersion);
+    for (let i = 0; i < raw.length && severity === 'patch-only'; i++) {
+      for (let j = i + 1; j < raw.length; j++) {
+        if (classifyVersionSkew(raw[i], raw[j]) === 'major-minor') { severity = 'major-minor'; break; }
+      }
+    }
+    rows.push({ identity: skewRowIdentity('version', 'instarVersion', vv), dimension: 'version', key: 'instarVersion', participants: ids, valueClasses: vv, versionSeverity: severity });
+  }
+
+  // ── manifest-class dimension (same version, differing hash — M7) ──
+  if (new Set(compared.map((c) => c.advert.instarVersion)).size === 1) {
+    const vh: Record<string, string> = {};
+    for (const c of compared) vh[c.machineId] = clampValueClass(String(c.advert.manifestHash).slice(0, 12));
+    if (new Set(Object.values(vh)).size > 1) {
+      rows.push({ identity: skewRowIdentity('manifest', 'manifestHash', vh), dimension: 'manifest', key: 'manifestHash', participants: ids, valueClasses: vh });
+    }
+  }
+
+  // ── protocol dimension ──
+  const vp: Record<string, string> = {};
+  for (const c of compared) vp[c.machineId] = clampValueClass(String(c.advert.protocolVersion));
+  if (new Set(Object.values(vp)).size > 1) {
+    rows.push({ identity: skewRowIdentity('protocol', 'protocolVersion', vp), dimension: 'protocol', key: 'protocolVersion', participants: ids, valueClasses: vp });
+  }
+
+  return rows;
+}
+
+/**
  * Raiser election (spec §3.4 — deterministic, recomputed each tick, no
  * coordination): the raiser is the serving-lease holder if it is a candidate;
  * otherwise the lexicographically SMALLEST machineId among candidates. Every

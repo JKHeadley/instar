@@ -101,7 +101,7 @@ describe('MachineCoherenceSentinel.tick — gates + classification + election', 
     expect(st.machinesRegisteredOnline).toBe(1);
     expect(st.machinesCompared).toBe(1);
     expect(st.raiser.machineId).toBeNull();
-    expect(st.counters).toEqual({ ticks: 1, errors: 0 });
+    expect(st.counters).toEqual({ ticks: 1, skewsConfirmed: 0, confirmedRows: 0, pendingRows: 0, errors: 0 });
   });
 
   it('offline machines never enter the comparison (§3.3 scope: offline is a liveness problem with existing owners)', () => {
@@ -179,7 +179,7 @@ describe('MachineCoherenceSentinel.tick — gates + classification + election', 
     });
     s.tick();
     const st = s.status();
-    expect(st.counters).toEqual({ ticks: 1, errors: 1 });
+    expect(st.counters).toEqual({ ticks: 1, skewsConfirmed: 0, confirmedRows: 0, pendingRows: 0, errors: 1 });
     expect(st.raiser.machineId).toBeNull();
   });
 
@@ -194,6 +194,96 @@ describe('MachineCoherenceSentinel.tick — gates + classification + election', 
     const s = makeSentinel({ capacities: [cap('m_self', freshAdvert('live')), cap('m_peer', freshAdvert('live'))] });
     s.tick();
     expect(s.status().openEpisode).toBeNull();
+  });
+});
+
+describe('MachineCoherenceSentinel — §3.3 confirmation engine (R2-L3 consecutive rule + M6 suppression)', () => {
+  // A sentinel whose clock we advance tick-by-tick. `capacities(clock)` receives
+  // the CURRENT clock so fixtures can stamp fresh advert receipts (a frozen
+  // receipt would age past advertStaleMs when the clock advances minutes).
+  function mkAdvancing(capacities: (clock: number) => MachineCapacity[], config?: Record<string, unknown>) {
+    let clock = NOW;
+    const cfg = resolveMachineCoherenceConfig(config ?? { developmentAgent: true, monitoring: { machineCoherence: { dryRun: false } } });
+    const s = new MachineCoherenceSentinel(
+      { listCapacities: () => capacities(clock), selfMachineId: () => 'm_self', leaseHolderMachineId: () => null, now: () => clock },
+      cfg,
+    );
+    return { s, tickAt: (ms: number) => { clock += ms; s.tick(); } };
+  }
+
+  // Build a fresh (receipt = clock-1s) advert-carrying capacity.
+  function fresh(machineId: string, clock: number, over: { version?: string; protocol?: number; hash?: string; flags?: Record<string, string> } = {}): MachineCapacity {
+    return cap(machineId, {
+      coherenceAdvert: {
+        instarVersion: over.version ?? '1.3.729',
+        protocolVersion: over.protocol ?? 1,
+        manifestHash: over.hash ?? 'e'.repeat(64),
+        guard: 'live',
+        beatSeq: 1,
+        flags: over.flags ?? { developmentAgent: 'true' },
+      },
+      coherenceAdvertReceivedAt: new Date(clock - 1_000).toISOString(),
+    });
+  }
+
+  it('a flag skew confirms only after flagConfirmTicks CONSECUTIVE ticks (default 2)', () => {
+    const { s, tickAt } = mkAdvancing((c) => [fresh('m_self', c), fresh('m_peer', c, { flags: { developmentAgent: 'false' } })]);
+    tickAt(0);
+    expect(s.status().counters.pendingRows).toBe(1);
+    expect(s.status().counters.confirmedRows).toBe(0);
+    tickAt(30_000);
+    expect(s.status().counters.confirmedRows).toBe(1);
+    expect(s.status().counters.skewsConfirmed).toBe(1);
+  });
+
+  it('R2-L3: a row that vanishes for a tick resets — one flapping reading never accumulates to confirmation', () => {
+    let peerFlag = 'false';
+    const { s, tickAt } = mkAdvancing((c) => [fresh('m_self', c), fresh('m_peer', c, { flags: { developmentAgent: peerFlag } })]);
+    tickAt(0);            // skew present (tick 1)
+    peerFlag = 'true';   // pair equalizes → row vanishes
+    tickAt(30_000);
+    expect(s.status().counters.confirmedRows).toBe(0);
+    expect(s.status().counters.pendingRows).toBe(0);
+    peerFlag = 'false';  // skew reappears — starts fresh at 1, not confirmed yet
+    tickAt(30_000);
+    expect(s.status().counters.confirmedRows).toBe(0);
+    expect(s.status().counters.pendingRows).toBe(1);
+  });
+
+  it('M6: a flag row is suppressed while a version skew is present, then confirms once versions agree', () => {
+    let peerVersion = '1.4.0';
+    const { s, tickAt } = mkAdvancing((c) => [fresh('m_self', c), fresh('m_peer', c, { version: peerVersion, flags: { developmentAgent: 'false' } })]);
+    tickAt(0);
+    tickAt(30_000);
+    // No FLAG row confirms while a version skew stands (M6 suppression); the
+    // major-minor version row itself confirms normally in 2 ticks.
+    expect(s.confirmedSkewRows().find((r) => r.dimension === 'flag')).toBeUndefined();
+    expect(s.confirmedSkewRows().some((r) => r.dimension === 'version')).toBe(true);
+    // Versions agree → the residual flag skew confirms normally over 2 ticks.
+    peerVersion = '1.3.729';
+    tickAt(30_000);
+    tickAt(30_000);
+    expect(s.confirmedSkewRows().some((r) => r.dimension === 'flag' && r.key === 'developmentAgent')).toBe(true);
+  });
+
+  it('patch-only version skew confirms on the grace CLOCK, not tick count (default 45 min)', () => {
+    const { s, tickAt } = mkAdvancing((c) => [fresh('m_self', c), fresh('m_peer', c, { version: '1.3.730' })]);
+    tickAt(0);
+    tickAt(30_000); // 2 ticks — but patch-only does NOT confirm on tick count
+    expect(s.confirmedSkewRows().find((r) => r.dimension === 'version')).toBeUndefined();
+    tickAt(2_700_000); // cross the 45-min grace window (advert receipts stay fresh via the clock)
+    expect(s.confirmedSkewRows().some((r) => r.dimension === 'version')).toBe(true);
+  });
+
+  it('dropping below 2 online members clears the confirmation engine', () => {
+    let peerOnline = true;
+    const { s, tickAt } = mkAdvancing((c) => peerOnline ? [fresh('m_self', c), fresh('m_peer', c, { flags: { developmentAgent: 'false' } })] : [fresh('m_self', c)]);
+    tickAt(0);
+    expect(s.status().counters.pendingRows).toBe(1);
+    peerOnline = false; // peer goes offline
+    tickAt(30_000);
+    expect(s.status().counters.pendingRows).toBe(0);
+    expect(s.status().counters.confirmedRows).toBe(0);
   });
 });
 
