@@ -25,6 +25,8 @@ export interface MessagingProbeDeps {
   messageLogPath: string;
   /** Whether the Telegram adapter is configured */
   isConfigured: () => boolean;
+  /** True when another supervised component owns Telegram polling and the adapter is send-only. */
+  externalPollerActive?: () => boolean;
 }
 
 export function createMessagingProbes(deps: MessagingProbeDeps): Probe[] {
@@ -46,8 +48,17 @@ export function createMessagingProbes(deps: MessagingProbeDeps): Probe[] {
         const base = { probeId: this.id, name: this.name, tier, durationMs: 0 };
         try {
           const status = deps.getStatus();
+          const externalPollerActive = deps.externalPollerActive?.() ?? false;
 
           if (!status.started) {
+            if (externalPollerActive) {
+              return {
+                ...base,
+                passed: true,
+                description: 'Telegram connected via lifeline-owned polling; adapter is send-only',
+                diagnostics: { status, externalPollerActive: true },
+              };
+            }
             const fatal = status.fatalReason ?? null;
             const lastErr = status.lastError ?? null;
             const stoppedAt = status.stoppedAt ?? null;
@@ -108,8 +119,22 @@ export function createMessagingProbes(deps: MessagingProbeDeps): Probe[] {
         const base = { probeId: this.id, name: this.name, tier, durationMs: 0 };
         try {
           const status = deps.getStatus();
+          const externalPollerActive = deps.externalPollerActive?.() ?? false;
 
           if (!status.started) {
+            if (externalPollerActive) {
+              return {
+                ...base,
+                passed: true,
+                description: 'Polling active via lifeline-owned Telegram poller',
+                diagnostics: {
+                  uptime: status.uptime,
+                  pendingStalls: status.pendingStalls,
+                  pendingPromises: status.pendingPromises,
+                  externalPollerActive: true,
+                },
+              };
+            }
             return {
               ...base,
               passed: false,

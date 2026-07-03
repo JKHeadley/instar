@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
-import { createTempProject, createMockSessionManager, createSampleJobsFile } from '../helpers/setup.js';
+import { createTempProject, createMockSessionManager, createSampleJobsFile, waitFor } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 import type { JobSchedulerConfig, JobDefinition } from '../../src/core/types.js';
 
@@ -131,6 +131,39 @@ describe('JobScheduler', () => {
       const result = await scheduler.triggerJob('health-check', 'test');
       expect(result).toBe('skipped');
       expect(mockSM._spawnCount).toBe(0);
+    });
+
+    it('runs script jobs directly without spawning a model session', async () => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const outputPath = path.join(project.stateDir, 'script-output.txt');
+      const jobs: JobDefinition[] = [{
+        slug: 'script-direct',
+        name: 'Script Direct',
+        description: 'Runs without an agent session',
+        schedule: '0 0 * * *',
+        priority: 'medium',
+        expectedDurationMinutes: 1,
+        model: 'haiku',
+        enabled: true,
+        execute: { type: 'script', value: `echo ok > ${outputPath}` },
+      }];
+      const customJobsFile = createSampleJobsFile(project.stateDir, jobs);
+      scheduler = new JobScheduler(
+        { ...makeConfig(), jobsFile: customJobsFile },
+        mockSM as any,
+        project.state,
+        project.stateDir,
+      );
+      scheduler.start();
+
+      const result = await scheduler.triggerJob('script-direct', 'test');
+
+      expect(result).toBe('triggered');
+      expect(mockSM._spawnCount).toBe(0);
+      await waitFor(() => fs.existsSync(outputPath));
+      expect(fs.readFileSync(outputPath, 'utf-8').trim()).toBe('ok');
+      await waitFor(() => project.state.getJobState('script-direct')?.lastResult === 'success');
     });
   });
 

@@ -185,6 +185,7 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
       unrestrictedTools: coerceBool(frontmatter.unrestrictedTools),
       gate: frontmatter.gate != null ? String(frontmatter.gate) : undefined,
+      retryOnGateSkip: coerceBool(frontmatter.retryOnGateSkip),
       telegramNotify:
         typeof frontmatter.telegramNotify === 'boolean'
           ? frontmatter.telegramNotify

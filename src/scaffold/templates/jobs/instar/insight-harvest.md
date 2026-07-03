@@ -10,6 +10,7 @@ tags:
   - cat:learning
   - evolution
 gate: "curl -sf -H \"Authorization: Bearer $INSTAR_AUTH_TOKEN\" http://localhost:${INSTAR_PORT:-4042}/evolution/learnings?applied=false 2>/dev/null | python3 -c \"import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)\""
+retryOnGateSkip: false
 toolAllowlist: "*"
 unrestrictedTools: true
 ---

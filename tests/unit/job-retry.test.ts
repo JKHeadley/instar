@@ -86,6 +86,33 @@ describe('JobScheduler retry on skip', () => {
     expect(mockSM._spawnCount).toBe(0);
   });
 
+  it('does not retry a gate skip when the job marks gate skips as no-work', async () => {
+    const jobs: JobDefinition[] = [{
+      slug: 'no-work-gate',
+      name: 'No Work Gate',
+      description: 'Gate failure means there is nothing to do',
+      schedule: '0 */4 * * *',
+      priority: 'low',
+      model: 'haiku',
+      enabled: true,
+      execute: { type: 'skill', value: 'test' },
+      gate: 'exit 1',
+      retryOnGateSkip: false,
+    }];
+
+    const s = makeScheduler(jobs);
+    s.start();
+    (s as any).runGateAsync = vi.fn().mockResolvedValue(false);
+
+    const result = await s.triggerJob('no-work-gate', 'test');
+
+    expect(result).toBe('skipped');
+    expect(mockSM._spawnCount).toBe(0);
+    expect((s as any).retryState.has('no-work-gate')).toBe(false);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect((s as any).runGateAsync).toHaveBeenCalledTimes(1);
+  });
+
   it('succeeds on retry after transient gate failure', async () => {
     let gateCallCount = 0;
     const jobs: JobDefinition[] = [{

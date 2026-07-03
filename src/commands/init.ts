@@ -3040,6 +3040,7 @@ echo "If nothing significant, do nothing. Silence means continuity is working as
       model: 'opus',
       enabled: true,
       gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
+      retryOnGateSkip: false,
       execute: {
         type: 'prompt',
         value: `Harvest and synthesize learnings: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
@@ -3071,6 +3072,7 @@ If no actionable patterns found, exit silently.`,
       model: 'haiku',
       enabled: true,
       gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
+      retryOnGateSkip: false,
       execute: {
         type: 'prompt',
         value: `Check for overdue commitments: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue

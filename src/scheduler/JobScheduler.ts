@@ -382,7 +382,9 @@ export class JobScheduler {
     // Run gate command if configured — zero-token pre-screening (async, non-blocking)
     if (job.gate) {
       if (!await this.runGateAsync(job)) {
-        this.scheduleRetry(slug, 'gate');
+        if (job.retryOnGateSkip !== false) {
+          this.scheduleRetry(slug, 'gate');
+        }
         return 'skipped';
       }
     }
@@ -406,7 +408,11 @@ export class JobScheduler {
     // Clear retry state on successful trigger
     this.clearRetryState(slug);
 
-    this.spawnJobSession(job, reason);
+    if (job.execute.type === 'script') {
+      this.runScriptJob(job, reason);
+    } else {
+      this.spawnJobSession(job, reason);
+    }
     return 'triggered';
   }
 
@@ -673,6 +679,91 @@ export class JobScheduler {
       const jobA = this.jobs.find(j => j.slug === a.slug);
       const jobB = this.jobs.find(j => j.slug === b.slug);
       return (PRIORITY_ORDER[jobA?.priority ?? 'low']) - (PRIORITY_ORDER[jobB?.priority ?? 'low']);
+    });
+  }
+
+  private runScriptJob(job: JobDefinition, reason: string): void {
+    const script = `${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
+    const sessionName = `script-${job.slug}-${Date.now().toString(36)}`;
+    const observability = JobScheduler.computeRunObservability(job, JobScheduler.resolveAllowlist(job));
+    const runId = this.runHistory.recordStart({
+      slug: job.slug,
+      sessionId: sessionName,
+      trigger: reason,
+      model: job.model,
+      origin: observability.origin,
+      resolvedPath: observability.resolvedPath,
+      bodyHash: observability.bodyHash,
+      frontmatterHash: observability.frontmatterHash,
+      manifestVersion: observability.manifestVersion,
+      toolAllowlist: observability.toolAllowlist,
+      unrestrictedTools: observability.unrestrictedTools,
+      clampedAllowlist: observability.clampedAllowlist,
+    });
+
+    this.state.saveJobState({
+      slug: job.slug,
+      lastRun: new Date().toISOString(),
+      lastResult: 'pending',
+      lastError: undefined,
+      consecutiveFailures: 0,
+      nextScheduled: this.getNextRun(job.slug),
+    });
+
+    this.state.appendEvent({
+      type: 'job_triggered',
+      summary: `Job "${job.slug}" triggered (${reason})`,
+      sessionId: sessionName,
+      timestamp: new Date().toISOString(),
+      metadata: { slug: job.slug, reason, mode: 'script' },
+    });
+
+    const timeout = Math.max(1, job.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES) * 2 * 60_000;
+    const env = this.config.authToken
+      ? { ...process.env, INSTAR_AUTH_TOKEN: this.config.authToken }
+      : process.env;
+
+    execFileAsync('/bin/sh', ['-c', script], {
+      cwd: path.dirname(this.stateDir),
+      encoding: 'utf-8',
+      timeout,
+      env,
+      maxBuffer: 1024 * 1024,
+    }).then(({ stdout, stderr }) => {
+      const output = [stdout, stderr].filter(Boolean).join('\n').slice(-1000);
+      this.runHistory.recordCompletion({ runId, result: 'success', outputSummary: output || undefined });
+      this.state.saveJobState({
+        slug: job.slug,
+        lastRun: new Date().toISOString(),
+        lastResult: 'success',
+        lastError: undefined,
+        consecutiveFailures: 0,
+        nextScheduled: this.getNextRun(job.slug),
+      });
+      this.claimManager?.completeClaim(job.slug, 'success');
+    }).catch((err: unknown) => {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const output = [
+        (err as { stdout?: string })?.stdout,
+        (err as { stderr?: string })?.stderr,
+      ].filter(Boolean).join('\n').slice(-1000);
+      this.runHistory.recordCompletion({
+        runId,
+        result: errorMsg.includes('timed out') || errorMsg.includes('ETIMEDOUT') ? 'timeout' : 'failure',
+        error: errorMsg,
+        outputSummary: output || undefined,
+      });
+      const previous = this.state.getJobState(job.slug);
+      this.state.saveJobState({
+        slug: job.slug,
+        lastRun: new Date().toISOString(),
+        lastResult: errorMsg.includes('timed out') || errorMsg.includes('ETIMEDOUT') ? 'timeout' : 'failure',
+        lastError: errorMsg,
+        consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+        nextScheduled: this.getNextRun(job.slug),
+      });
+      this.claimManager?.completeClaim(job.slug, 'failure');
+      this.scheduleRetry(job.slug, 'error');
     });
   }
 

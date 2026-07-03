@@ -334,6 +334,11 @@ export function validateJob(job: unknown, index?: number): void {
     throw new Error(`${prefix}: "gate" must be a string (shell command) if provided, got ${typeof j.gate}`);
   }
 
+  // retryOnGateSkip — boolean if present
+  if (j.retryOnGateSkip !== undefined && typeof j.retryOnGateSkip !== 'boolean') {
+    throw new Error(`${prefix}: "retryOnGateSkip" must be a boolean if provided, got ${typeof j.retryOnGateSkip}`);
+  }
+
   // telegramNotify — boolean or 'on-alert'
   if (j.telegramNotify !== undefined) {
     if (typeof j.telegramNotify !== 'boolean' && j.telegramNotify !== 'on-alert') {

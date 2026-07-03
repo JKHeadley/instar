@@ -663,6 +663,7 @@ export class CommitmentTracker extends EventEmitter {
    */
   private static isUnverifiableOneTime(c: Commitment): boolean {
     if (c.type !== 'one-time-action') return false;
+    if (c.beaconEnabled) return false;
     const m = c.verificationMethod;
     return m === undefined || m === null || m === 'manual';
   }
@@ -816,6 +817,19 @@ export class CommitmentTracker extends EventEmitter {
       commitment.verificationMethod === 'threadline-reply'
     ) {
       return { passed: false, detail: 'Awaiting threadline reply' };
+    }
+
+    // PromiseBeacon owns follow-through for future promises. If such a
+    // one-time action has no machine-checkable verifier, keep it pending until
+    // the agent explicitly delivers the promised update via deliver().
+    if (
+      commitment.type === 'one-time-action' &&
+      commitment.beaconEnabled &&
+      (commitment.verificationMethod === undefined ||
+        commitment.verificationMethod === null ||
+        commitment.verificationMethod === 'manual')
+    ) {
+      return null;
     }
 
     // One-time-actions with no automated verification path cannot keep

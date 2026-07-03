@@ -89,6 +89,7 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'tags',
   'unrestrictedTools',
   'gate',
+  'retryOnGateSkip',
   'telegramNotify',
   'topicId',
   'machines',
@@ -139,6 +140,7 @@ export interface PerSlugManifest {
   telegramNotify?: boolean | 'on-alert';
   machines?: string[];
   gate?: string;
+  retryOnGateSkip?: boolean;
   unrestrictedTools?: boolean;
   manifestVersion?: number;
   /** SHA of the body at the time an operator disabled the default — preserved
@@ -297,6 +299,11 @@ export function loadAgentMdJobs(
   // Issues card.
   const jobs: JobDefinition[] = [];
   for (const { manifest } of survivors) {
+    if (!manifest.enabled) {
+      jobs.push(manifestToJobDefinition(manifest));
+      continue;
+    }
+
     if (manifest.execute.type === 'agentmd') {
       const loaded = loadAgentMdBody(manifest, jobsRootDir);
       if (loaded.problem) {
@@ -560,6 +567,11 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Optional gate (shell command)
   if (j.gate !== undefined && typeof j.gate !== 'string') {
     throw new Error(`${prefix}: "gate" must be a string if provided`);
+  }
+
+  // Optional retryOnGateSkip
+  if (j.retryOnGateSkip !== undefined && typeof j.retryOnGateSkip !== 'boolean') {
+    throw new Error(`${prefix}: "retryOnGateSkip" must be a boolean if provided`);
   }
 
   return j as unknown as PerSlugManifest;
@@ -1065,6 +1077,7 @@ function manifestToJobDefinition(
     telegramNotify: manifest.telegramNotify,
     machines: manifest.machines,
     gate: manifest.gate,
+    retryOnGateSkip: manifest.retryOnGateSkip,
     unrestrictedTools: manifest.unrestrictedTools,
     manifestVersion: manifest.manifestVersion,
   };

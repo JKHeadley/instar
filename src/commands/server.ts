@@ -7480,6 +7480,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           getStatus: () => telegram!.getStatus(),
           messageLogPath: path.join(config.stateDir, 'telegram-messages.jsonl'),
           isConfigured: () => true,
+          externalPollerActive: () => Boolean(lifelineOwnsPolling && fs.existsSync(path.join(config.stateDir, 'lifeline.lock'))),
         }) : []),
         ...createLifelineProbes({
           // Supervisor status intentionally omitted: the supervisor only exists

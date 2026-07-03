@@ -32,6 +32,7 @@ export interface BuildPerSlugManifestInput {
   tags?: string[];
   unrestrictedTools?: boolean;
   gate?: string;
+  retryOnGateSkip?: boolean;
   telegramNotify?: boolean | 'on-alert';
   topicId?: number;
   machines?: string[];
@@ -54,6 +55,7 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.tags !== undefined) m.tags = input.tags;
   if (input.unrestrictedTools !== undefined) m.unrestrictedTools = input.unrestrictedTools;
   if (input.gate !== undefined) m.gate = input.gate;
+  if (input.retryOnGateSkip !== undefined) m.retryOnGateSkip = input.retryOnGateSkip;
   if (input.telegramNotify !== undefined) m.telegramNotify = input.telegramNotify;
   if (input.topicId !== undefined) m.topicId = input.topicId;
   if (input.machines !== undefined) m.machines = input.machines;

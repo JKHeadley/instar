@@ -695,6 +695,31 @@ describe('CommitmentTracker', () => {
       expect(active).toBeUndefined();
     });
 
+    it('beacon-enabled future promises without a verifier stay pending until explicitly delivered', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'Report back when the run finishes',
+        agentResponse: 'I will report back when the run finishes.',
+        topicId: 1052,
+        beaconEnabled: true,
+        nextUpdateDueAt: '2099-01-01T00:00:00Z',
+      });
+
+      for (let i = 0; i < 3; i++) {
+        expect(tracker.verifyOne(c.id)).toBeNull();
+      }
+
+      const pending = tracker.get(c.id)!;
+      expect(pending.status).toBe('pending');
+      expect(pending.resolvedAt).toBeUndefined();
+      expect(pending.violationCount).toBe(0);
+
+      const delivered = tracker.deliver(c.id, 'msg-final')!;
+      expect(delivered.status).toBe('delivered');
+      expect(delivered.deliveryMessageId).toBe('msg-final');
+    });
+
     it('verifyOne returns null for already-delivered commitments', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({

@@ -211,6 +211,10 @@ export interface JobDefinition {
    *  Example: `curl -sf http://localhost:3000/updates | python3 -c "import sys,json; exit(0 if json.load(sys.stdin).get('updateAvailable') else 1)"`
    */
   gate?: string;
+  /** Whether a non-zero gate result should retry within the current cron window.
+   *  Defaults to true for transient startup/auth gates. Set false when the gate's
+   *  non-zero exit means a healthy no-work condition. */
+  retryOnGateSkip?: boolean;
   /** Tags for filtering/grouping */
   tags?: string[];
   /** Telegram topic ID this job reports to (auto-created if not set) */

@@ -1787,6 +1787,19 @@ describe('MessagingProbes', () => {
     expect(result.description).toContain('not started');
   });
 
+  it('messaging.connected passes in lifeline-owned send-only mode', async () => {
+    const probes = createMessagingProbes({
+      getStatus: () => ({ started: false, uptime: null, pendingStalls: 0, pendingPromises: 0, topicMappings: 2 }),
+      messageLogPath: '/nonexistent/messages.jsonl',
+      isConfigured: () => true,
+      externalPollerActive: () => true,
+    });
+    const probe = probes.find(p => p.id === 'instar.messaging.connected')!;
+    const result = await probe.run();
+    expect(result.passed).toBe(true);
+    expect(result.description).toContain('lifeline-owned polling');
+  });
+
   it('messaging.polling passes when active', async () => {
     const probes = createMessagingProbes({
       getStatus: () => ({ started: true, uptime: 60000, pendingStalls: 0, pendingPromises: 0, topicMappings: 1 }),
@@ -1808,6 +1821,19 @@ describe('MessagingProbes', () => {
     const probe = probes.find(p => p.id === 'instar.messaging.polling')!;
     const result = await probe.run();
     expect(result.passed).toBe(false);
+  });
+
+  it('messaging.polling passes in lifeline-owned send-only mode', async () => {
+    const probes = createMessagingProbes({
+      getStatus: () => ({ started: false, uptime: null, pendingStalls: 0, pendingPromises: 0, topicMappings: 2 }),
+      messageLogPath: '/nonexistent/messages.jsonl',
+      isConfigured: () => true,
+      externalPollerActive: () => true,
+    });
+    const probe = probes.find(p => p.id === 'instar.messaging.polling')!;
+    const result = await probe.run();
+    expect(result.passed).toBe(true);
+    expect(result.description).toContain('lifeline-owned');
   });
 
   it('messaging.polling fails with negative uptime (clock skew)', async () => {

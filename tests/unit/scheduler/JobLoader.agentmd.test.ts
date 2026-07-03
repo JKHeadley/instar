@@ -492,6 +492,36 @@ describe('JobLoader · agentmd (Phase 1a)', () => {
       expect(jobs[0].execute.type).toBe('agentmd');
     });
 
+    it('disabled per-slug manifest shadows legacy jobs.json without requiring a markdown body', () => {
+      const a = setup({
+        jobsJson: [{
+          slug: 'retired-default',
+          name: 'Legacy Retired Default',
+          description: 'stale legacy job',
+          schedule: '0 * * * *',
+          priority: 'high',
+          expectedDurationMinutes: 1,
+          model: 'haiku',
+          enabled: true,
+          execute: { type: 'prompt', value: 'do stale legacy thing' },
+        }],
+        manifests: {
+          'retired-default': mkManifest({
+            slug: 'retired-default',
+            enabled: false,
+            execute: { type: 'agentmd' },
+          }),
+        },
+      });
+
+      const jobs = loadJobs(a.jobsFile);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].slug).toBe('retired-default');
+      expect(jobs[0].enabled).toBe(false);
+      expect(jobs[0].execute.type).toBe('agentmd');
+      expect(jobs[0].body).toBeUndefined();
+    });
+
     it('keeps legacy entries that have no shadow', () => {
       const a = setup({
         jobsJson: [{
