@@ -53,7 +53,7 @@ import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
-import { TOKENLESS_BIND_GRACE_DAYS } from '../core/conversationBindToken.js';
+import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
@@ -273,7 +273,7 @@ import { ScopeAccretionRatifier } from '../core/ScopeAccretionRatifier.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
-import type { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
@@ -22147,80 +22147,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // ── durable-conversation-identity §7 bind-time authority (B7/R3-M5/R4-M3) ──
     // A durable-state open on a conversation id is scoped to the session's OWN
     // authenticated bootstrap context, enforced through the per-session bind
-    // token (delivered ONLY via the spawn env — never over a route). The
-    // server verifies the MAC and reads the bootstrap set FROM the token; it
-    // NEVER trusts a caller-supplied session name. In-process server callers
-    // do not traverse this route (the discriminator is the code path).
+    // token (delivered ONLY via the spawn env — never over a route). In-process
+    // server callers do not traverse this route (the discriminator is the code
+    // path). The verification is the SHARED verifyConversationBind helper
+    // (slack-followthrough-generalization §4.3 factored it out so
+    // /action-claim/observe runs the SAME check — a second copy would be the
+    // drift the §7 golden test forbids).
     let boundBy: string | undefined;
-    const bindAuth = ctx.conversationBindAuth;
     const numericTopicId = typeof topicId === 'number' && Number.isSafeInteger(topicId) ? topicId : undefined;
-    if (bindAuth && numericTopicId !== undefined) {
+    {
       const rawTokenHeader = req.headers['x-instar-bind-token'];
       const rawToken =
         (Array.isArray(rawTokenHeader) ? rawTokenHeader[0] : rawTokenHeader) ??
         (typeof req.body?.bindToken === 'string' ? (req.body.bindToken as string) : undefined);
-      const refuse = (detail: string): void => {
-        try {
-          void ctx.telegram?.createAttentionItem({
-            id: `conversation-bind-refused:${numericTopicId}`,
-            title: 'A durable bind on a conversation id was refused',
-            summary: `POST /commitments targeting topicId ${numericTopicId} was refused: ${detail} (durable-conversation-identity §7 — never silently delivered into a foreign conversation).`,
-            category: 'conversation-identity',
-            priority: 'NORMAL',
-            sourceContext: 'conversation-identity',
-          });
-        } catch { /* attention is observability */ }
-        res.status(403).json({ error: 'conversation-bind-not-authorized', detail });
-      };
-      if (numericTopicId < 0) {
-        // Minted-id bind: hard-gated, fail-closed from this increment on.
-        if (!rawToken) {
-          refuse('minted-id bind requires the session bind token (missing X-Instar-Bind-Token)');
-          return;
-        }
-        const payload = bindAuth.verify(rawToken);
-        if (!payload) {
-          refuse('bind token missing/invalid (MAC verification failed)');
-          return;
-        }
-        if (!payload.bootstrapConversationIds.includes(numericTopicId)) {
-          refuse(`conversation ${numericTopicId} is not in the session's authenticated bootstrap context`);
-          return;
-        }
-        boundBy = `session:${payload.sessionName}`;
-      } else if (rawToken) {
-        // R6-minor-4: a TOKEN-BEARING session's positive-id bind validates
-        // against the token's bootstrap set from this increment on.
-        const payload = bindAuth.verify(rawToken);
-        if (!payload) {
-          refuse('bind token invalid (MAC verification failed)');
-          return;
-        }
-        if (!payload.bootstrapConversationIds.includes(numericTopicId)) {
-          refuse(`topic ${numericTopicId} is not in the session's authenticated bootstrap context`);
-          return;
-        }
-        boundBy = `session:${payload.sessionName}`;
-      } else {
-        // Token-less LEGACY positive-id bind: keeps today's ungated behavior
-        // (deliberately fail-OPEN — minted-id binds are hard-gated regardless).
-        // Past the deploy-stamp grace window, the straggler backstop raises ONE
-        // deduped attention item so a long-lived ungated session is a visible
-        // operator decision, never a silent standing exception (R7-minor-2).
-        const ageDays = bindAuth.deployStampAgeDays();
-        if (ageDays !== null && ageDays >= TOKENLESS_BIND_GRACE_DAYS) {
-          try {
-            void ctx.telegram?.createAttentionItem({
-              id: 'conversation-bind-tokenless-straggler',
-              title: 'A token-less session is still opening commitments',
-              summary: `A POST /commitments (topicId ${numericTopicId}) arrived without a bind token ${ageDays} days after the bind-token increment deployed (grace ${TOKENLESS_BIND_GRACE_DAYS}d). The bind SUCCEEDED (legacy behavior); respawn long-lived sessions to close the window (durable-conversation-identity §7 R7-minor-2).`,
-              category: 'conversation-identity',
-              priority: 'LOW',
-              sourceContext: 'conversation-identity',
-            });
-          } catch { /* attention is observability */ }
-        }
+      const verdict = verifyConversationBind({
+        bindAuth: ctx.conversationBindAuth,
+        numericTopicId,
+        rawToken,
+        attention: ctx.telegram,
+      });
+      if (!verdict.ok) {
+        res.status(403).json({ error: 'conversation-bind-not-authorized', detail: verdict.detail });
+        return;
       }
+      boundBy = verdict.boundBy;
     }
 
     try {
@@ -22343,41 +22293,149 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'message (string) and topicId (number) are required' });
       return;
     }
-    const result = classifyActionClaim(message);
-    if (!result.isActionClaim || !result.claim) {
-      res.json({ observed: true, registered: false, reason: 'no-action-claim' });
-      return;
+    const numericTopicId = Number.isSafeInteger(topicId) ? topicId : undefined;
+    // The text record() will store + auto-arm the beacon from (slack-followthrough
+    // -generalization §4.2): Lane-B's predicate runs on the SAME slice so
+    // "predicate fired" ⟺ "record() auto-arms the beacon".
+    const agentResponse = message.slice(0, 500);
+
+    // ── slack-followthrough-generalization §8.1: NEGATIVE (minted Slack) ids ride
+    // the dev-gated `messaging.actionClaim.slack` lane (live-on-dev, dark-fleet).
+    // A negative id while the lane is dark is a strict no-op; POSITIVE (Telegram)
+    // ids are unaffected. ────────────────────────────────────────────────────
+    const isMinted = numericTopicId !== undefined && numericTopicId < 0;
+    let slackDryRun = false;
+    if (isMinted) {
+      const slackLaneLive = resolveDevAgentGate(
+        ctx.liveConfig?.get<boolean | undefined>('messaging.actionClaim.slack.enabled', undefined),
+        ctx.config,
+      );
+      if (!slackLaneLive) {
+        res.json({ observed: true, registered: false, reason: 'slack-lane-dark' });
+        return;
+      }
+      slackDryRun = ctx.liveConfig?.get<boolean>('messaging.actionClaim.slack.dryRun', true) ?? true;
     }
-    const verb = result.claim.normalizedClaimVerb;
-    // FD3 dedupe key: tagged so the per-topic cap can count action-claim commitments
-    // (the sha256 alone is opaque). record() returns-existing on an open same-key.
-    const externalKey =
-      'actionclaim:' + createHash('sha256').update(`${topicId}|${verb}`).digest('hex').slice(0, 16);
-    // FD3 per-topic cap (default 5): bound the durable surface (Bounded Notification).
+
+    // ── §4.2a Lane-A precedence: classify Lane A first; ONLY on a Lane-A miss run
+    // Lane B — so a dual-signal turn ("I'll deploy in 10 min") registers ONCE
+    // (verb-anchored, beacon-armed by record()) instead of one row per lane. ──
+    const laneA = classifyActionClaim(message);
+    let lane: 'action' | 'time';
+    let verb: string | undefined;
+    let externalKey: string;
+    if (laneA.isActionClaim && laneA.claim) {
+      lane = 'action';
+      verb = laneA.claim.normalizedClaimVerb;
+      externalKey =
+        'actionclaim:' + createHash('sha256').update(`${topicId}|${verb}`).digest('hex').slice(0, 16);
+    } else {
+      // Lane B — time-boxed conversational promise (the S7 family). Runs on the
+      // 500-char slice record() will auto-arm from (consistency, see above).
+      const timed = CommitmentTracker.detectTimePromise(agentResponse);
+      if (!timed) {
+        res.json({ observed: true, registered: false, reason: 'no-claim' });
+        return;
+      }
+      lane = 'time';
+      const normalizedPromiseText = agentResponse.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
+      externalKey =
+        'timepromise:' + createHash('sha256').update(`${topicId}|${normalizedPromiseText}`).digest('hex').slice(0, 16);
+    }
+
+    // ── §4.3 bind-time authority (shared helper) — WRITE-path gate. Runs only
+    // AFTER a lane fired, so a no-claim observe never trips the 403. Fail-closed
+    // for a minted (negative) id; positive ids ride the legacy/token-bearing arms.
+    let boundBy: string | undefined;
+    {
+      const rawTokenHeader = req.headers['x-instar-bind-token'];
+      const rawToken =
+        (Array.isArray(rawTokenHeader) ? rawTokenHeader[0] : rawTokenHeader) ??
+        (typeof req.body?.bindToken === 'string' ? (req.body.bindToken as string) : undefined);
+      const verdict = verifyConversationBind({
+        bindAuth: ctx.conversationBindAuth,
+        numericTopicId,
+        rawToken,
+        attention: ctx.telegram,
+      });
+      if (!verdict.ok) {
+        res.status(403).json({ error: 'conversation-bind-not-authorized', detail: verdict.detail });
+        return;
+      }
+      boundBy = verdict.boundBy;
+    }
+
+    // ── §5 per-topic cap — ONE shared budget across BOTH lanes (R1-C3): count
+    // open commitments whose externalKey starts with actionclaim: OR timepromise:.
     const cap = ctx.liveConfig?.get<number>('messaging.actionClaim.perTopicCap', 5) ?? 5;
     const openForTopic = ctx.commitmentTracker
       .getActive()
-      .filter((c) => c.topicId === topicId && typeof c.externalKey === 'string' && c.externalKey.startsWith('actionclaim:'));
-    // If this exact claim is already open, record() will return it (no new row) —
-    // so only refuse on the cap when it would be a genuinely NEW claim.
+      .filter(
+        (c) =>
+          c.topicId === topicId &&
+          typeof c.externalKey === 'string' &&
+          (c.externalKey.startsWith('actionclaim:') || c.externalKey.startsWith('timepromise:')),
+      );
     const alreadyOpen = openForTopic.some((c) => c.externalKey === externalKey);
     if (!alreadyOpen && openForTopic.length >= cap) {
-      res.json({ observed: true, registered: false, reason: 'per-topic-cap', verb, cap });
+      res.json({ observed: true, registered: false, reason: 'per-topic-cap', lane, ...(verb ? { verb } : {}), cap });
       return;
     }
     const expiresHrs = ctx.liveConfig?.get<number>('messaging.actionClaim.expiresHours', 6) ?? 6;
     const expiresAt = new Date(Date.now() + expiresHrs * 3600_000).toISOString();
+
+    // ── §8.1 dryRun (minted lane): would-register audit line + typed non-register,
+    // NO record(). Best-effort append ("audit is observability") so a log-write
+    // failure can never break the never-500 contract.
+    if (slackDryRun) {
+      try {
+        const logPath = path.join(ctx.config.stateDir, '..', 'logs', 'action-claim-observe.jsonl');
+        fs.appendFileSync(
+          logPath,
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            topicId,
+            lane,
+            ...(verb ? { verb } : {}),
+            externalKey,
+            bindVerdict: boundBy ?? 'legacy-open',
+            wouldRegister: true,
+            dryRun: true,
+          }) + '\n',
+          'utf8',
+        );
+      } catch {
+        /* audit is observability */
+      }
+      res.json({ observed: true, registered: false, dryRun: true, wouldRegister: true, lane, ...(verb ? { verb } : {}), externalKey });
+      return;
+    }
+
     try {
       const commitment = ctx.commitmentTracker.record({
         type: 'one-time-action',
-        userRequest: `(action-claim) follow through on: ${verb}`,
-        agentResponse: message.slice(0, 500),
+        userRequest:
+          lane === 'action'
+            ? `(action-claim) follow through on: ${verb}`
+            : `(time-promise) follow through on the promise made in this message`,
+        agentResponse,
         topicId,
         source: 'sentinel',
         externalKey,
         expiresAt,
+        ...(boundBy ? { boundBy } : {}),
+        // Lane B passes NO beacon fields — record()'s internal auto-arm sets
+        // beaconEnabled + cadence from the SAME detectTimePromise (§4.2 fold).
       });
-      res.json({ observed: true, registered: true, verb, commitmentId: commitment.id, externalKey });
+      res.json({
+        observed: true,
+        registered: true,
+        lane,
+        ...(verb ? { verb } : {}),
+        commitmentId: commitment.id,
+        externalKey,
+        beaconEnabled: commitment.beaconEnabled ?? false,
+      });
     } catch (err) {
       // Signal-only: never surface a failure as a block. Audit via the 500-free path.
       res.json({ observed: true, registered: false, reason: 'record-failed', detail: err instanceof Error ? err.message : String(err) });

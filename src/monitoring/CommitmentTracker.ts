@@ -1076,8 +1076,11 @@ export class CommitmentTracker extends EventEmitter {
     const t = text.toLowerCase();
 
     // Explicit N-unit phrases: "back in 20 minutes", "in an hour", "in 2h".
+    // Hedge-tolerant (slack-followthrough-generalization §4.2, R3 hedge fix):
+    // a leading "about/around/roughly/~" must not break the match — the exact
+    // S7 miss was "in about 5 minutes" (`about` broke `in\s+(an?|\d+)`).
     const numeric = t.match(
-      /\b(?:back\s+)?in\s+(an?|\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|h|m|s)\b/,
+      /\b(?:back\s+)?in\s+(?:about\s+|around\s+|roughly\s+|~\s*)?(an?|\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|h|m|s)\b/,
     );
     if (numeric) {
       const raw = numeric[1];

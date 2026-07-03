@@ -4280,6 +4280,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
         tmuxArgs.push('-e', `INSTAR_SLACK_THREAD_TS=${options.slackThreadTs}`);
       }
 
+      // ── slack-followthrough-generalization §4.4: channel-neutral conversation id
+      // for the Action-Claim Stop hook. Resolved IDENTICALLY to the bind token's
+      // bootstrap set above (bootstrapConversationIds[0] ?? telegramTopicId), so
+      // the id the hook posts is ALWAYS in the token's set (§4.3 gate never 403s
+      // its own session). 1:1 GUARD (R2-EXT-C1): injected ONLY for a session that
+      // is 1:1 with the conversation — NEVER on the shared `lifeline` session, which
+      // serves both the Telegram system topic AND Slack DMs. On the lifeline the
+      // hook (which keys ONLY on INSTAR_CONVERSATION_ID, no fallback) registers
+      // nothing — a genuine untracked miss, never a cross-channel mis-delivery.
+      if (name !== 'lifeline') {
+        const conversationEnvId =
+          options?.bootstrapConversationIds?.[0] ??
+          (typeof options?.telegramTopicId === 'number' ? options.telegramTopicId : undefined);
+        if (typeof conversationEnvId === 'number') {
+          tmuxArgs.push('-e', `INSTAR_CONVERSATION_ID=${conversationEnvId}`);
+        }
+      }
+
       tmuxArgs.push(...launchSpec.argv);
 
       if (options?.resumeSessionId) {
