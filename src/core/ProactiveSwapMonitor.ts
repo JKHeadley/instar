@@ -13,25 +13,32 @@
  * This monitor moves a session OFF an account BEFORE it walls, at a lag-aware
  * measured threshold below the real limit.
  *
- * ── Why a separate, lower threshold (lag-aware) ──
- * The QuotaPoller reads utilization periodically, so our reading TRAILS the real
- * usage (measured live: our ~90% == Anthropic's ~95% on the same account). A
- * pre-emptive swap therefore triggers at a LOWER measured threshold (default 80)
- * to leave margin for the lag — by the time we read 80%, real is higher, and the
- * swap completes before the wall.
+ * ── Anti-thrash brakes (swap-continuity-antithrash §3) ──
+ * The 2026-07-02 thrash day (36 executed proactive swaps in 8 waves, repeated
+ * kills of six parallel build subagents) proved the bare threshold loop
+ * oscillates. When an SwapAntiThrashEngine is wired (`cfg.antiThrash`), every
+ * proactive decision runs the brake pipeline at THIS chokepoint:
+ * ledger-lost pause → thrash breaker → dwell → validity gate + all-hot →
+ * filter→score→verify target selection → reversal refusal. In dryRun the
+ * legacy decision path stays byte-identical to v1.3.722 while the engine logs
+ * would-refuse rows (the rung-2 soak); live, the engine's verdict binds and
+ * UNTAGGED sessions leave the proactive candidate set entirely (Q3 — a
+ * background optimizer must never mutate the default-slot binding).
  *
- * ── Effective-account resolution (covers the session you actually use) ──
- * A session carries `subscriptionAccountId` only if it was pinned at spawn. The
- * primary interactive session usually runs on the DEFAULT config (untagged), so
- * the monitor resolves an untagged session's effective account from the default
- * config's live login (InUseAccountResolver). Without this, the session a user
- * is actively in would be invisible to the swap engine and wedge at the wall.
+ * ── In-flight work deferral (swap-continuity-antithrash §4) ──
+ * When a SwapWorkGate is wired (`cfg.workGate`) and swapContinuity is live, a
+ * braked proactive swap whose session is BUSY (mid-turn or carrying live
+ * subagents) is DEFERRED — the intent is retried each tick through the FULL
+ * brake pipeline (I9), bounded by `deferralCeilingMs`; at the ceiling the
+ * intent is DROPPED (the wall wins; the reactive floor exists) and the
+ * session enters re-intent backoff. The monitor owns the deferral lifecycle
+ * (the gate is a stateless predicate).
  *
  * ── Bounded, non-storming ──
- * Per evaluation: only accounts AT pressure that have a sub-threshold ALTERNATE
- * are sources; candidates are sorted newest-first (the just-(re)started
- * interactive session ranks first) and capped per cycle; each swapped session
- * enters a cooldown so a slow restart isn't double-swapped. Near the wall the
+ * Per evaluation: candidates are sorted newest-first and capped per cycle
+ * (executed swaps only — deferrals never consume the budget); at most one
+ * executed swap per target account per tick (pile-on cap); each swapped
+ * session enters dwell (ledger-backed, restart-safe). Near the wall the
  * monitor triggers a fresh poll so a fast burn isn't missed between the
  * low-frequency baseline polls.
  *
@@ -45,6 +52,8 @@ import {
   accountAtPressure,
 } from './QuotaAwareScheduler.js';
 import type { SubscriptionAccount } from './SubscriptionPool.js';
+import type { SwapAntiThrashEngine, AntiThrashKnobs } from './SwapAntiThrash.js';
+import type { WorkProbeResult } from './SwapWorkGate.js';
 
 /** A running, swap-eligible session as the monitor sees it. */
 export interface ProactiveSwapSession {
@@ -61,6 +70,16 @@ export interface ProactiveSwapSession {
 export interface ProactiveSwapOutcome {
   swapped: boolean;
   toAccountId: string | null;
+  reason?: string;
+}
+
+/** swapContinuity knobs as the monitor consumes them (resolved by the wiring). */
+export interface SwapContinuityKnobs {
+  enabled: boolean;
+  dryRun: boolean;
+  deferralCeilingMs: number;
+  reactiveGraceMs: number;
+  recheckMs: number;
 }
 
 export interface ProactiveSwapMonitorConfig {
@@ -71,11 +90,16 @@ export interface ProactiveSwapMonitorConfig {
   /** The pool account the DEFAULT config is logged into right now (or null).
    *  Untagged sessions run here; from InUseAccountResolver in production. */
   resolveDefaultAccountId: () => Promise<string | null>;
-  /** Performs the actual swap (wraps QuotaAwareScheduler.onQuotaPressure). */
+  /** Performs the actual swap (wraps QuotaAwareScheduler.onQuotaPressure).
+   *  When the brakes are LIVE the monitor passes the authoritative
+   *  `targetAccountId` through (§3.3 — the checked target IS the executed
+   *  target, I1) plus `callerClass: 'proactive-swap'`. */
   swap: (args: {
     sessionName: string;
     exhaustedAccountId: string;
     nowMs: number;
+    targetAccountId?: string;
+    callerClass?: 'proactive-swap';
   }) => Promise<ProactiveSwapOutcome>;
   /** Optional fresh-poll trigger, awaited when an account is in the watch zone. */
   triggerPoll?: () => Promise<unknown>;
@@ -88,10 +112,21 @@ export interface ProactiveSwapMonitorConfig {
   /** Max sessions swapped per evaluation cycle (storm guard). Default 3. */
   maxSwapsPerCycle?: number;
   /** Per-session cooldown after a successful swap before it's eligible again.
-   *  Default 600000 (10m) — must exceed the swap+restart time. */
+   *  Default 600000 (10m) — must exceed the swap+restart time. SUBSUMED by
+   *  antiThrash dwell when the brakes are live (§9). */
   cooldownMs?: number;
   /** Monitor tick cadence. Default 180000 (3m). */
   tickMs?: number;
+  /** Anti-thrash brakes (Piece 1). Knobs read LIVE per tick (§7.1). */
+  antiThrash?: {
+    engine: SwapAntiThrashEngine;
+    getKnobs: () => AntiThrashKnobs;
+  };
+  /** In-flight work deferral (Piece 2). Knobs read live per evaluation. */
+  workGate?: {
+    probe: (sessionName: string) => Promise<WorkProbeResult>;
+    getContinuity: () => SwapContinuityKnobs;
+  };
   /** Injected for tests. */
   now?: () => number;
   logger?: { log: (m: string) => void; warn: (m: string) => void };
@@ -112,6 +147,15 @@ interface Candidate {
   accountId: string;
   /** Start time in ms (0 when unknown) — recency ordering. */
   startedMs: number;
+  /** True when the session carries no tag (resolved via the default slot). */
+  untagged: boolean;
+}
+
+interface DeferralEntry {
+  firstAtMs: number;
+  count: number;
+  from: string;
+  to: string;
 }
 
 export class ProactiveSwapMonitor {
@@ -123,8 +167,10 @@ export class ProactiveSwapMonitor {
   private readonly tickMs: number;
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
-  /** Last successful-swap timestamp per session (cooldown bookkeeping). */
+  /** Last successful-swap timestamp per session (legacy cooldown bookkeeping). */
   private readonly lastSwapAt = new Map<string, number>();
+  /** Pending deferred proactive intents (Piece 2 — monitor-owned lifecycle). */
+  private readonly deferrals = new Map<string, DeferralEntry>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   private lastResult: ProactiveSwapTickResult | null = null;
@@ -156,7 +202,8 @@ export class ProactiveSwapMonitor {
     }
   }
 
-  /** Status for the read route (never throws). */
+  /** Status for the read route (never throws). Additive `brakes`/`deferrals`
+   *  blocks per swap-continuity-antithrash §6.3 (all fields LOCAL-SCOPE). */
   status(): {
     thresholdPct: number;
     watchPct: number;
@@ -165,8 +212,11 @@ export class ProactiveSwapMonitor {
     tickMs: number;
     running: boolean;
     lastResult: ProactiveSwapTickResult | null;
+    antiThrash?: { enabled: boolean; dryRun: boolean };
+    brakes?: Record<string, unknown>;
+    deferrals?: { active: number; sessions: string[] };
   } {
-    return {
+    const base = {
       thresholdPct: this.thresholdPct,
       watchPct: Math.max(0, this.thresholdPct - this.watchMarginPct),
       maxSwapsPerCycle: this.maxSwapsPerCycle,
@@ -174,6 +224,14 @@ export class ProactiveSwapMonitor {
       tickMs: this.tickMs,
       running: this.timer !== null,
       lastResult: this.lastResult,
+    };
+    if (!this.cfg.antiThrash) return base;
+    const knobs = this.safeKnobs();
+    return {
+      ...base,
+      ...(knobs ? { antiThrash: { enabled: knobs.enabled, dryRun: knobs.dryRun } } : {}),
+      brakes: this.cfg.antiThrash.engine.status(this.now()),
+      deferrals: { active: this.deferrals.size, sessions: [...this.deferrals.keys()] },
     };
   }
 
@@ -212,10 +270,260 @@ export class ProactiveSwapMonitor {
   /**
    * Pure-ish decision + swap on the CURRENT snapshots (no poll refresh). Exposed
    * for tests and the on-demand check route.
+   *
+   * With the anti-thrash brakes LIVE the braked pipeline binds; in dryRun (or
+   * with no engine wired) the legacy v1.3.722 decision path is byte-identical
+   * while the engine (when present) logs would-decisions for the soak.
    */
   async evaluate(): Promise<{ swapped: string[]; considered: number }> {
     const nowMs = this.now();
     const accounts = this.cfg.listAccounts();
+    const knobs = this.safeKnobs();
+    const engine = this.cfg.antiThrash?.engine ?? null;
+    const engineActive = !!(engine && knobs?.enabled);
+    const live = !!(engineActive && knobs && !knobs.dryRun);
+
+    if (engine && knobs?.enabled) engine.beginTick(accounts, nowMs, true);
+    try {
+      if (live && engine && knobs) {
+        return await this.evaluateBraked(engine, accounts, nowMs);
+      }
+      return await this.evaluateLegacy(accounts, nowMs, engineActive ? engine : null);
+    } finally {
+      if (engine && knobs?.enabled) engine.endTick(nowMs);
+    }
+  }
+
+  // ── The LIVE braked pipeline (§3 + §4 proactive arm) ─────────────────────
+  private async evaluateBraked(
+    engine: SwapAntiThrashEngine,
+    accounts: SubscriptionAccount[],
+    nowMs: number,
+  ): Promise<{ swapped: string[]; considered: number }> {
+    const byId = new Map(accounts.map((a) => [a.id, a]));
+    // Candidate set: TAGGED sessions only (Q3 — untagged sessions are outside
+    // the proactive candidate set by construction, I10), whose source account
+    // carries a VALID fresh reading at/over the threshold (§3.3 source leg).
+    const candidates: Candidate[] = [];
+    const currentAccountBySession = new Map<string, string | null>();
+    for (const s of this.cfg.listRunningSessions()) {
+      currentAccountBySession.set(s.sessionName, s.accountId);
+      if (!s.accountId) continue;
+      const acct = byId.get(s.accountId);
+      if (!acct) continue;
+      if (!engine.sourceEligible(acct, nowMs)) continue;
+      const startedMs = s.startedAt ? Date.parse(s.startedAt) : NaN;
+      candidates.push({
+        sessionName: s.sessionName,
+        accountId: s.accountId,
+        startedMs: Number.isFinite(startedMs) ? startedMs : 0,
+        untagged: false,
+      });
+    }
+    candidates.sort((a, b) => b.startedMs - a.startedMs);
+
+    // Deferral invalidation sweep (I9): an intent whose session's account
+    // changed underneath it (a reactive swap moved it), or whose session left
+    // candidacy (wave subsided / session gone), is INVALIDATED — never
+    // executed as a second kill inside the dwell window.
+    for (const [session, d] of [...this.deferrals]) {
+      const stillCandidate = candidates.some((c) => c.sessionName === session);
+      const currentAcct = currentAccountBySession.get(session);
+      if (!stillCandidate || currentAcct !== d.from) {
+        engine.recordInvalidated({
+          session,
+          from: d.from,
+          to: d.to,
+          nowMs,
+          deferralAgeMs: nowMs - d.firstAtMs,
+          deferCount: d.count,
+        });
+        this.deferrals.delete(session);
+      }
+    }
+
+    const targetsUsedThisTick = new Set<string>();
+    const swapped: string[] = [];
+    let considered = 0;
+    const continuity = this.safeContinuity();
+
+    for (const c of candidates) {
+      if (swapped.length >= this.maxSwapsPerCycle) break;
+      considered += 1;
+      const deferral = this.deferrals.get(c.sessionName);
+      const deferralAgeMs = deferral ? nowMs - deferral.firstAtMs : undefined;
+
+      // Full brake pipeline — re-run on every deferred retry too (I9: the
+      // intent that finally fires is one that would have been approved fresh).
+      const verdict = engine.evaluateIntent({
+        session: c.sessionName,
+        fromAccountId: c.accountId,
+        accounts,
+        nowMs,
+        targetsUsedThisTick,
+        ...(deferralAgeMs !== undefined ? { deferralAgeMs } : {}),
+        ...(deferral ? { deferCount: deferral.count } : {}),
+      });
+      if (verdict.action !== 'execute') continue; // refusal rows already written by the engine
+
+      // Piece 2: the work gate (proactive arm — defer, ceiling-drop).
+      if (this.cfg.workGate && continuity?.enabled) {
+        let probe: WorkProbeResult | null = null;
+        try {
+          probe = await this.cfg.workGate.probe(c.sessionName);
+        } catch {
+          probe = null; // probe machinery itself failed → treat as indeterminate
+        }
+        const busy = probe ? probe.busy : true;
+        if (busy) {
+          const reason = probe?.reason ?? 'busy-indeterminate';
+          const inFlight = { turn: probe?.turnInFlight ?? false, subagents: probe?.subagents?.length ?? 0 };
+          const subagentLeg = probe?.subagentLeg ?? 'indeterminate';
+          if (continuity.dryRun) {
+            // Would-defer (rung-2 soak): log the row, change nothing.
+            engine.recordDeferred({
+              session: c.sessionName,
+              from: c.accountId,
+              to: verdict.targetAccountId,
+              nowMs,
+              reason,
+              inFlight,
+              subagentLeg,
+              deferralAgeMs: 0,
+              deferCount: 1,
+              dryRun: true,
+              rowKind: 'first',
+            });
+            // fall through to execute (dryRun changes nothing)
+          } else {
+            const d: DeferralEntry = deferral ?? {
+              firstAtMs: nowMs,
+              count: 0,
+              from: c.accountId,
+              to: verdict.targetAccountId,
+            };
+            d.count += 1;
+            d.to = verdict.targetAccountId; // ceiling clock carries across target re-selection (§4.2)
+            this.deferrals.set(c.sessionName, d);
+            const age = nowMs - d.firstAtMs;
+            if (age >= continuity.deferralCeilingMs) {
+              // At the ceiling: the wall wins — DROP the intent; the session
+              // keeps working and the reactive floor absorbs a genuine wall.
+              engine.recordDropped({
+                session: c.sessionName,
+                from: d.from,
+                to: d.to,
+                nowMs,
+                deferralAgeMs: age,
+                deferCount: d.count,
+                inFlight,
+                subagentLeg,
+              });
+              this.deferrals.delete(c.sessionName);
+            } else if (d.count === 1) {
+              // Dedup (§4.2): FIRST row only; the final row is the eventual
+              // swapped/dropped/invalidated row carrying deferCount.
+              engine.recordDeferred({
+                session: c.sessionName,
+                from: d.from,
+                to: d.to,
+                nowMs,
+                reason,
+                inFlight,
+                subagentLeg,
+                deferralAgeMs: age,
+                deferCount: d.count,
+                rowKind: 'first',
+              });
+            }
+            continue;
+          }
+        }
+      }
+
+      // Execute — the checked target IS the executed target (I1); the
+      // scheduler revalidates the WHOLE decision at execute time (§3.3).
+      try {
+        const outcome = await this.cfg.swap({
+          sessionName: c.sessionName,
+          exhaustedAccountId: c.accountId,
+          nowMs,
+          targetAccountId: verdict.targetAccountId,
+          callerClass: 'proactive-swap',
+        });
+        if (outcome.swapped) {
+          engine.recordProactiveExecuted({
+            session: c.sessionName,
+            from: c.accountId,
+            to: outcome.toAccountId ?? verdict.targetAccountId,
+            nowMs,
+            fromUtilPct: verdict.fromUtilPct,
+            toUtilPct: verdict.toUtilPct,
+            ...(deferral ? { deferralAgeMs: nowMs - deferral.firstAtMs, deferCount: deferral.count } : {}),
+          });
+          this.lastSwapAt.set(c.sessionName, nowMs);
+          this.deferrals.delete(c.sessionName);
+          targetsUsedThisTick.add(verdict.targetAccountId);
+          swapped.push(c.sessionName);
+          this.logger.log(
+            `[ProactiveSwap] ${c.sessionName}: pre-emptively swapped off ${c.accountId} → ${outcome.toAccountId ?? verdict.targetAccountId} ` +
+              `(account ≥${this.thresholdPct}% measured — moved before the wall, conversation preserved)`,
+          );
+        } else if (outcome.reason === 'target-revalidation-failed') {
+          engine.recordRevalidationRefusal({
+            session: c.sessionName,
+            from: c.accountId,
+            to: verdict.targetAccountId,
+            nowMs,
+            reason: 'target-revalidation-failed',
+          });
+        } else if (outcome.reason === 'intent-stale') {
+          engine.recordRevalidationRefusal({
+            session: c.sessionName,
+            from: c.accountId,
+            to: verdict.targetAccountId,
+            nowMs,
+            reason: 'intent-stale',
+          });
+          this.deferrals.delete(c.sessionName);
+        } else if (outcome.reason === 'session-busy') {
+          // Funnel-gate race: the SessionRefresh work gate saw busy after our
+          // probe. Treat exactly like a busy probe (deferral bookkeeping).
+          const d: DeferralEntry = deferral ?? { firstAtMs: nowMs, count: 0, from: c.accountId, to: verdict.targetAccountId };
+          d.count += 1;
+          this.deferrals.set(c.sessionName, d);
+        } else {
+          engine.recordExecFailure({
+            session: c.sessionName,
+            from: c.accountId,
+            to: verdict.targetAccountId,
+            kind: 'proactive',
+            errorClass: outcome.reason ?? 'refresh-failed',
+            nowMs,
+          });
+        }
+      } catch (err) {
+        // §3.6: a swap execution that THROWS is a failed row + backoff — never
+        // a silent every-tick retry.
+        engine.recordExecFailure({
+          session: c.sessionName,
+          from: c.accountId,
+          to: verdict.targetAccountId,
+          kind: 'proactive',
+          errorClass: err instanceof Error ? err.constructor.name : 'Error',
+          nowMs,
+        });
+      }
+    }
+    return { swapped, considered };
+  }
+
+  // ── The legacy v1.3.722 decision path (dark / dryRun — byte-identical) ───
+  private async evaluateLegacy(
+    accounts: SubscriptionAccount[],
+    nowMs: number,
+    shadowEngine: SwapAntiThrashEngine | null,
+  ): Promise<{ swapped: string[]; considered: number }> {
     const atPressure = await this.mapCandidates(this.thresholdPct);
 
     const eligible = atPressure.filter((c) => {
@@ -236,13 +544,27 @@ export class ProactiveSwapMonitor {
     // sessions, so under the per-cycle cap it is rescued first.
     eligible.sort((a, b) => b.startedMs - a.startedMs);
 
-    // TODO(follow-up, 2026-06-09 incident): a proactive cycle moving MANY
-    // sessions at once is itself disruptive — every swap is a kill+respawn
-    // ("Session respawned" + interruption) even when it succeeds. Beyond the
-    // per-cycle cap + cooldown, consider gating on session ACTIVITY: only
-    // swap sessions that are actually burning quota (recent pane activity),
-    // and let idle sessions wall reactively instead of being preemptively
-    // interrupted in bulk.
+    // Rung-2 dry-run shadow (§10): the engine evaluates the LIVE rule's
+    // candidate set (tagged only) and writes would-refuse/would-defer rows —
+    // observability with ZERO decision change.
+    if (shadowEngine) {
+      const shadowTargets = new Set<string>();
+      for (const c of atPressure) {
+        if (c.untagged) continue; // Q3 — untagged is outside the live candidate set
+        try {
+          shadowEngine.evaluateIntent({
+            session: c.sessionName,
+            fromAccountId: c.accountId,
+            accounts,
+            nowMs,
+            targetsUsedThisTick: shadowTargets,
+          });
+        } catch {
+          // @silent-fallback-ok: the shadow must never affect the legacy path
+        }
+      }
+    }
+
     const toSwap = eligible.slice(0, this.maxSwapsPerCycle);
     const swapped: string[] = [];
     for (const c of toSwap) {
@@ -252,14 +574,31 @@ export class ProactiveSwapMonitor {
           sessionName: c.sessionName,
           exhaustedAccountId: c.accountId,
           nowMs,
+          callerClass: 'proactive-swap',
         });
-      } catch {
-        // @silent-fallback-ok: a swap failure is retried next cycle (no cooldown set)
+      } catch (err) {
+        // Legacy behavior: retried next cycle (no cooldown set). With the
+        // engine present the failure is at least RECORDED (§3.6 observability;
+        // decision behavior unchanged in dryRun — no backoff binds here).
+        shadowEngine?.recordExecFailure({
+          session: c.sessionName,
+          from: c.accountId,
+          kind: 'proactive',
+          errorClass: err instanceof Error ? err.constructor.name : 'Error',
+          nowMs,
+        });
         continue;
       }
       if (outcome.swapped) {
         this.lastSwapAt.set(c.sessionName, nowMs);
         swapped.push(c.sessionName);
+        shadowEngine?.recordProactiveExecuted({
+          session: c.sessionName,
+          from: c.accountId,
+          to: outcome.toAccountId ?? '',
+          nowMs,
+          ...(c.untagged ? { defaultAccountChanged: true } : {}),
+        });
         this.logger.log(
           `[ProactiveSwap] ${c.sessionName}: pre-emptively swapped off ${c.accountId} → ${outcome.toAccountId} ` +
             `(account ≥${this.thresholdPct}% measured — moved before the wall, conversation preserved)`,
@@ -267,6 +606,22 @@ export class ProactiveSwapMonitor {
       }
     }
     return { swapped, considered: eligible.length };
+  }
+
+  private safeKnobs(): AntiThrashKnobs | null {
+    try {
+      return this.cfg.antiThrash?.getKnobs() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private safeContinuity(): SwapContinuityKnobs | null {
+    try {
+      return this.cfg.workGate?.getContinuity() ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -295,6 +650,7 @@ export class ProactiveSwapMonitor {
         sessionName: s.sessionName,
         accountId: eff,
         startedMs: Number.isFinite(startedMs) ? startedMs : 0,
+        untagged: s.accountId === null,
       });
     }
     return out;
