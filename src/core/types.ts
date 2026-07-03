@@ -158,6 +158,15 @@ export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 export interface SessionManagerConfig {
   /** Project name used as the stable local agent id for auth-bound calls. */
   projectName: string;
+  /**
+   * durable-conversation-identity §7 (R4-M3): mint the per-session
+   * SELF-AUTHENTICATING bind token delivered through the spawn env
+   * (`INSTAR_BIND_TOKEN` in the tmux -e block — never over a route). The
+   * payload carries the session's authenticated bootstrap conversation ids;
+   * a durable-state open on a minted id is validated against that set.
+   * Absent → no token env is injected (legacy spawns).
+   */
+  mintBindToken?: (sessionName: string, bootstrapConversationIds: number[]) => string | null;
   /** Path to tmux binary */
   tmuxPath: string;
   /**
@@ -3485,6 +3494,27 @@ export interface InstarConfig {
         rb?: number;
       };
     };
+    /**
+     * Test-Runner Concurrency Bound — host-wide vitest-root cap (the spawn
+     * cap's sibling; docs/specs/test-runner-concurrency-bound.md §2.9).
+     * CAVEAT (§2.6/§2.7 no-lie constraint): this block tunes the ROUTE's
+     * report + server-launched tooling ONLY — NOT the chokepoint. The vitest
+     * globalSetup runs in a bare test process that cannot know which agent's
+     * config to read, so setting `enabled:false` here does NOT disable the
+     * bound: the sole chokepoint kill switch is env
+     * `INSTAR_HOST_TEST_SEMAPHORE=off`, and the host-uniform authority for
+     * caps/posture is the tuning file `~/.instar/host-test-runner-tuning.json`
+     * (env `INSTAR_HOST_TEST_MAX` etc. are per-process overrides). The
+     * GET /test-runner-limiter route likewise resolves cap/posture through
+     * the chokepoint's resolvers, never from these values.
+     */
+    testRunnerCap?: {
+      enabled?: boolean;
+      /** Suite-lane concurrency (mirrors the code default 1). */
+      maxConcurrent?: number;
+      /** Background-class suite-lane acquire budget in ms (mirrors the code default 120000). */
+      acquireWaitMs?: number;
+    };
   };
   /**
    * Agent-level set of frameworks this install actively uses. Drives
@@ -3982,6 +4012,19 @@ export interface PrGateConfig {
   primaryMachineId?: string;
   /** Machine IDs paired for replication / cross-tunnel failover. */
   pairedMachineIds?: string[];
+  /**
+   * Class-Closure Gate (docs/specs/class-closure-gate.md). Ships dark +
+   * report-only: `enabled:false, dryRun:true` means the CI lint logs findings
+   * and always exits 0. `enabled && !dryRun` lets the lint fail on a hard
+   * structural violation (malformed registry / a novel class with no
+   * semantics). `escalatorDrafting` is the dark-staged LLM drafting arm's own
+   * key (increment 3) — the deterministic trigger rides `enabled`.
+   */
+  classClosure?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    escalatorDrafting?: boolean;
+  };
 }
 
 // ── Integrated-Being Ledger (v1) ────────────────────────────────────

@@ -15,6 +15,8 @@
  */
 import { defineConfig } from 'vitest/config';
 
+import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
+
 const FLAKY_TESTS = [
   // ── Supertest timeouts / port collisions ──────────────────────────
   'tests/integration/scope-coherence-routes.test.ts',
@@ -207,7 +209,7 @@ const FLAKY_TESTS = [
   'tests/unit/slack-stall-active-gate.test.ts',
 ];
 
-export default defineConfig({
+export default defineConfig(withTestRunnerBound('push', {
   test: {
     include: ['tests/unit/**/*.test.ts', 'tests/integration/**/*.test.ts', 'tests/e2e/**/*.test.ts'],
     exclude: FLAKY_TESTS,
@@ -216,4 +218,4 @@ export default defineConfig({
     testTimeout: 10000,
     fileParallelism: false,
   },
-});
+}));

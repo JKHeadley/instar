@@ -126,6 +126,25 @@ export function parseCanonicalKey(key: string): { tuple: ConversationTuple; work
   return { tuple: { platform: 'slack', channelId, threadTs: threadTs ?? null }, workspaceId };
 }
 
+/**
+ * The SHARED id↔tuple coherence predicate (§3.5 ingest check ≡ §3.5.2 R5-M2
+ * delivery-time check — ONE implementation, never a second copy; a second
+ * implementation is a CI failure per §10). An id is coherent with a tuple iff
+ * it is the tuple's recomputed candidate or a within-`MAX_PROBE_DISTANCE`
+ * displacement offset of it (probe direction DOWN):
+ *
+ *   cand(routingKey(tuple)) − MAX_PROBE_DISTANCE ≤ id ≤ cand(routingKey(tuple))
+ *
+ * Used at delivery time to validate a binding's stored `topicId` against its
+ * record-carried `boundTuple` (increment 2); the §6.1-step-9 replication
+ * ingest check MUST reuse this export.
+ */
+export function idWithinCoherenceBound(id: number, tuple: ConversationTuple): boolean {
+  if (!Number.isSafeInteger(id) || id >= 0) return false;
+  const cand = candidateIdForRoutingKey(routingKeyForTuple(tuple));
+  return id <= cand && id >= cand - MAX_PROBE_DISTANCE;
+}
+
 /** Result of a displacement walk (§3.3 probe / §3.5.1 step 2). */
 export type DisplacementResult =
   | { ok: true; id: number; probes: number }

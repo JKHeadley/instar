@@ -65,6 +65,34 @@ export interface PromiseBeaconConfig {
     text: string,
     metadata?: { source: 'promise-beacon'; isProxy: true; tier?: number },
   ) => Promise<void>;
+  /**
+   * durable-conversation-identity §6.1 step 2 — the funnel swap. When wired,
+   * EVERY beacon user-send routes through `deliverToConversation` (typed §5.1
+   * outcomes, the §5.0(a) E1 guard keyed on `<commitmentId>:<sendSeq>`, the
+   * §3.5.2 boundTuple delivery rule). Absent → the legacy sendMessage path is
+   * preserved byte-for-byte.
+   */
+  deliverMessage?: (
+    topicId: number,
+    text: string,
+    opts: {
+      source: 'promise-beacon';
+      isProxy: true;
+      tier?: number;
+      logicalSendId: string;
+      boundTuple?: { platform: 'slack'; channelId: string; threadTs: string | null };
+    },
+  ) => Promise<import('../core/deliverToConversation.js').DeliveryOutcome>;
+  /** §5.0(a): journal `op:"send-retire"` for a delivered/delivered-equivalent
+   *  logical send — called AFTER the sendSeq persist (the R5-M3 pinned order). */
+  retireSend?: (conversationId: number, logicalSendId: string) => void;
+  /** §5.0 ownership predicate (`ownsConversation(id)`) — drives the R3-M16
+   *  stand-down recheck riding the external-block sweep. */
+  ownsConversation?: (conversationId: number) => boolean;
+  /** §5.1 R3-M15: consecutive `not-delivered` results before the dead-letter
+   *  attention item (distinct from deadLetterAttentionAfter=1 — the item
+   *  dedupes once the state is reached). Default 3. */
+  deadLetterAfterConsecutiveFailures?: number;
   /** Haiku-class LLM call returning a short status line. */
   generateStatusLine?: (
     promiseText: string,
@@ -218,6 +246,22 @@ export interface EscalationConfig {
   revalidationTtlMs?: number;           // §5 default 1_800_000
 }
 
+/**
+ * The beacon-side classification of one user-send attempt (durable-
+ * conversation-identity §5.1/§5.0(a)). `suppressed-delivered-equivalent` is
+ * the E1 `already-delivered-recently` outcome — treated as delivered for
+ * sequencing (R7-M1), never an escalation.
+ */
+export type BeaconSendResult =
+  | 'sent'
+  | 'suppressed-delivered-equivalent'
+  | 'failed-transient'
+  | 'failed-standdown'
+  | 'failed-permanent'
+  | 'suppressed-aoft'
+  | 'rerouted-terminal'
+  | 'skipped';
+
 /** Recoverability state → one approved Rung-2 message template (§3.2). */
 export type RecoverabilityState =
   | 'retryable'
@@ -250,6 +294,25 @@ interface HotState {
   sessionEpoch?: string;
   consecutiveUnchanged: number;
   templatedVariantCursor: number;
+  /**
+   * §5.0(a) R3-M2 — the DURABLE, MONOTONIC send sequence. `logicalSendId` =
+   * `<commitmentId>:<sendSeq>` (the §3.4 pinned encoding). Advanced on a
+   * DELIVERED outcome and on a DELIVERED-EQUIVALENT `already-delivered-
+   * recently` outcome (R7-M1); held constant across `not-delivered`/ambiguous
+   * outcomes ONLY — so the ambiguous re-fire matches the E1 guard and the
+   * next real heartbeat never does. Persisted via the atomic tmp→rename
+   * write (R4-minor-1).
+   */
+  sendSeq?: number;
+  /** §5.1: consecutive typed `not-delivered` results (owning-machine real
+   *  failures ONLY — never a stand-down refusal, I1 scoping). */
+  consecutiveDeliveryFailures?: number;
+  /** Dedupes the dead-letter attention item once the state is reached
+   *  (deadLetterAttentionAfter = 1). Cleared on the next delivered outcome. */
+  deliveryDeadLetteredAt?: string;
+  /** §5 R3-M16 non-owning STAND-DOWN marker (restart-safe): no re-fire
+   *  scheduling until the ownership recheck clears it. */
+  standDownAt?: string;
   /** B1b — wall-clock (ISO) of the last sparse-liveness line, so it fires at most
    *  once per beaconLivenessIntervalMs. */
   lastLivenessAt?: string;
@@ -413,6 +476,10 @@ export class PromiseBeacon extends EventEmitter {
   private doubleSpawnCount = 0;
   /** AttemptIds already counted as a double-spawn (dedupe per episode, §6). */
   private doubleSpawnCountedAttempts = new Set<string>();
+  /** §5 R3-M16 STAND-DOWN set: commitments whose delivery hit a by-design
+   *  non-owning refusal — no re-fire scheduling; re-evaluated on the bounded
+   *  ownership recheck riding the external-block sweep (no new timer). */
+  private stoodDown = new Set<string>();
 
   constructor(config: PromiseBeaconConfig) {
     super();
@@ -519,6 +586,15 @@ export class PromiseBeacon extends EventEmitter {
     // feature is off; cheap O(active) scan otherwise.
     const sweepMs = this.config.externalBlockSweepMs ?? 60 * 60_000;
     this.externalBlockSweepTimer = setInterval(() => {
+      // §5 R3-M16: the stand-down ownership recheck rides THIS sweep
+      // (R4-minor-4 — one O(active-stood-down) pass, no new timer). It is
+      // machine-LOCAL (ownership of a conversation, not pool state), so it
+      // runs before the lease gate.
+      try {
+        this.recheckStandDowns();
+      } catch (err) {
+        console.warn('[PromiseBeacon] stand-down recheck error:', (err as Error).message);
+      }
       // Lease-gated (§4.5): only the lease-holder runs the mutating sweep.
       if (this.config.holdsLease && !this.config.holdsLease()) return;
       this.sweepExternalBlocks()
@@ -557,12 +633,19 @@ export class PromiseBeacon extends EventEmitter {
     if (!this.started) return;
     if (!c.topicId) return;
     if (c.status !== 'pending' || c.beaconSuppressed || c.beaconPaused) return;
+    if (this.stoodDown.has(c.id)) return; // §5 R3-M16: no re-fire while stood down
 
     // atRisk doubles cadence (spec Round 3 #1) — softer-toned + less frequent.
     const baseCadence = c.cadenceMs ?? 20 * 60_000;
     const effective = c.atRisk ? baseCadence * 2 : baseCadence;
     const cadence = this.clampCadence(effective) * this.timerMult;
     const hot = this.loadHotState(c.id);
+    if (hot.standDownAt) {
+      // Restart-safe stand-down restoration: the marker persisted; the
+      // ownership recheck (riding the external-block sweep) is what clears it.
+      this.stoodDown.add(c.id);
+      return;
+    }
     const last = hot.lastHeartbeatAt ? new Date(hot.lastHeartbeatAt).getTime() : new Date(c.createdAt).getTime();
     const dueAt = last + cadence;
     const delay = Math.max(1_000, dueAt - this.now());
@@ -659,6 +742,7 @@ export class PromiseBeacon extends EventEmitter {
       return;
     }
 
+    let reArm = true;
     try {
       // ── Capture (raw frame for turn-state, sanitized for hashing) ──
       const rawFrame = sessionName ? (this.config.captureSessionOutput(sessionName, 200) ?? '') : '';
@@ -692,8 +776,9 @@ export class PromiseBeacon extends EventEmitter {
           if (hot.consecutiveTurnFinished >= closeoutAt) {
             hot.lastSnapshotHash = hash;
             this.saveHotState(c.id, hot);
+            reArm = false; // closed out + paused — do NOT re-arm
             await this.closeOutTurnFinished(c, excerpt);
-            return; // closed out + paused — do NOT re-arm
+            return;
           }
         } else {
           hot.consecutiveTurnFinished = 0;
@@ -783,24 +868,40 @@ export class PromiseBeacon extends EventEmitter {
 
       // ── Send (only if there is something true to say — B1) ──
       const sent = text != null;
+      let sendResult: BeaconSendResult = 'skipped';
       if (sent) {
-        await this.emitUserSend(c, text!, 'heartbeat');
+        sendResult = await this.emitUserSend(c, text!, 'heartbeat');
         if (livenessFired) hot.lastLivenessAt = nowIso;
-        hot.heartbeatCount += 1;
+        if (sendResult === 'sent') hot.heartbeatCount += 1;
+      }
+      // §5 stand-down / §5.1 permanent dead-letter already persisted their
+      // markers + stopped the timer inside applyDeliveryOutcome.
+      if (sendResult === 'failed-standdown' || sendResult === 'failed-permanent') {
+        reArm = false;
       }
 
       // ── Persist hot state (cadence advances every check, sent or not, so a
-      //    suppressed tick can't tight-loop on a stale lastHeartbeatAt). ──
-      hot.lastHeartbeatAt = nowIso;
-      hot.lastSnapshotHash = hash;
-      this.saveHotState(c.id, hot);
+      //    suppressed tick can't tight-loop on a stale lastHeartbeatAt).
+      //    MERGE via updateHotState — the delivery path may have advanced
+      //    sendSeq / failure counters on disk during emitUserSend, and this
+      //    write must never clobber them (R4-minor-1). ──
+      this.updateHotState(c.id, (h) => {
+        h.lastHeartbeatAt = nowIso;
+        h.lastSnapshotHash = hash;
+        h.consecutiveUnchanged = hot.consecutiveUnchanged;
+        h.templatedVariantCursor = hot.templatedVariantCursor;
+        h.consecutiveTurnFinished = hot.consecutiveTurnFinished;
+        h.heartbeatCount = hot.heartbeatCount;
+        if (livenessFired) h.lastLivenessAt = nowIso;
+      });
 
       await this.config.commitmentTracker.mutate(c.id, prev => ({
         ...prev,
         lastHeartbeatAt: nowIso,
         // heartbeatCount counts messages actually SENT (B1: a suppressed,
-        // unchanged-snapshot check is not a heartbeat the user saw).
-        heartbeatCount: (prev.heartbeatCount ?? 0) + (sent ? 1 : 0),
+        // unchanged-snapshot check is not a heartbeat the user saw; a typed
+        // funnel non-delivery is not one either).
+        heartbeatCount: (prev.heartbeatCount ?? 0) + (sendResult === 'sent' ? 1 : 0),
         lastSnapshotHash: hash,
         // atRisk is a signal-driven, non-terminal flag. Setting it does NOT
         // change status; it only nudges tone and doubles cadence below.
@@ -812,7 +913,7 @@ export class PromiseBeacon extends EventEmitter {
         topicId: c.topicId,
         templated: !snapshot || unchanged,
         atRisk: atRiskSignal,
-        sent,
+        sent: sendResult === 'sent',
       });
 
       // ── Auto-pause gate ───────────────────────────────────────────
@@ -823,16 +924,22 @@ export class PromiseBeacon extends EventEmitter {
       const threshold = c.beaconAutoPauseAfterUnchanged ?? this.defaultAutoPauseAfterUnchanged;
       const isUnchangedThisCycle = !snapshot || unchanged;
       if (threshold > 0 && isUnchangedThisCycle && hot.consecutiveUnchanged >= threshold) {
+        reArm = false; // do NOT re-arm
         await this.autoPause(c, excerpt);
-        return; // do NOT re-arm
+        return;
       }
     } finally {
       this.config.proxyCoordinator.release(c.topicId, 'promise-beacon');
+      // §5.1 (lessons-F4/adversarial-A1): fire() re-arms in FINALLY — a thrown
+      // send/LLM error can never silently kill the beacon timer (the
+      // flagship-consumer safety; the pre-increment fire() skipped re-arm on
+      // throw). Deliberate stops (auto-pause, close-out, stand-down,
+      // permanent dead-letter) opt out via reArm=false.
+      if (reArm && !this.stoodDown.has(c.id)) {
+        const next = this.config.commitmentTracker.getAll().find(x => x.id === id);
+        if (next) this.schedule(next);
+      }
     }
-
-    // Re-arm.
-    const next = this.config.commitmentTracker.getAll().find(x => x.id === id);
-    if (next) this.schedule(next);
   }
 
   /**
@@ -1234,9 +1341,9 @@ export class PromiseBeacon extends EventEmitter {
     c: Commitment,
     text: string,
     kind: 'heartbeat' | 'closeOut' | 'rung2' | 'terminal',
-  ): Promise<void> {
-    const sendNormally = async (): Promise<void> => {
-      if (c.topicId == null) return;
+  ): Promise<BeaconSendResult> {
+    const sendNormally = async (): Promise<BeaconSendResult> => {
+      if (c.topicId == null) return 'skipped';
       // Beacon-local B-IDLEAK pass (C1+C2 §4.3): beacon sends are isProxy:true and
       // bypass MessagingToneGate, so B20 can't run on them. Signal-only
       // observability — emit when beacon text leaks internal plumbing (never
@@ -1245,38 +1352,181 @@ export class PromiseBeacon extends EventEmitter {
         const leak = detectInternalIdLeak(text);
         if (leak.leaked) this.emit('aoft.beacon-id-leak', { id: c.id, terms: leak.terms });
       } catch { /* non-fatal */ }
+      // ── durable-conversation-identity §6.1 step 2: the funnel swap ──
+      // When deliverToConversation is wired, EVERY beacon send rides it (the
+      // id>0 arm is today's Telegram path unchanged; the id<0 arm delivers
+      // into the exact Slack thread with the E1 guard + §5.1 typed outcomes).
+      if (this.config.deliverMessage) {
+        const seq = this.loadHotState(c.id).sendSeq ?? 0;
+        const logicalSendId = `${c.id}:${seq}`; // the §3.4 pinned encoding
+        const outcome = await this.config.deliverMessage(c.topicId, text, {
+          source: 'promise-beacon',
+          isProxy: true,
+          tier: 1,
+          logicalSendId,
+          ...(c.boundTuple ? { boundTuple: c.boundTuple } : {}),
+        });
+        return await this.applyDeliveryOutcome(c, outcome, seq, logicalSendId);
+      }
       await this.config.sendMessage(c.topicId, text, {
         source: 'promise-beacon',
         isProxy: true,
         tier: 1,
       });
+      return 'sent';
     };
     const state = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
     // Feature off, or not an agent-owned commitment → unchanged behavior.
     if (!state.enabled || c.owner !== 'agent') {
-      await sendNormally();
-      return;
+      return await sendNormally();
     }
     if (kind === 'terminal') {
       // Terminal failure: reroute to the Attention dead-letter (never status,
       // never swallowed). In dryRun, log the intent but preserve current behavior.
       if (state.dryRun) {
         this.emit('aoft.would-reroute-terminal', { id: c.id, topicId: c.topicId, kind });
-        await sendNormally();
-        return;
+        return await sendNormally();
       }
       const detail = text.replace(/^⚠️\s*\[?promise-beacon\]?\s*/i, '').trim() || text;
       try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
       this.emit('aoft.terminal-rerouted', { id: c.id, topicId: c.topicId, kind });
-      return;
+      return 'rerouted-terminal';
     }
     // Status kind under owner:'agent'.
     if (state.dryRun) {
       this.emit('aoft.would-suppress', { id: c.id, topicId: c.topicId, kind });
-      await sendNormally();
-      return;
+      return await sendNormally();
     }
     this.emit('aoft.suppressed', { id: c.id, topicId: c.topicId, kind });
+    return 'suppressed-aoft';
+  }
+
+  /**
+   * Apply one typed funnel outcome (§5.1/§5.0(a)) to the beacon's durable
+   * sequencing + failure state:
+   *  - delivered OR delivered-equivalent (`already-delivered-recently`, R7-M1):
+   *    advance+persist `sendSeq` FIRST (atomic tmp→rename), THEN journal
+   *    `send-retire` — the R5-M3 pinned inter-store order. A crash between the
+   *    two leaves an unretired entry beside an advanced seq: a harmless
+   *    TTL-bounded leak, never a double-post, never a suppression.
+   *  - `not-delivered` + standDown: §5 non-owning STAND-DOWN — no re-fire
+   *    scheduling, NEVER the dead-letter counter (I1 scoping); re-evaluated on
+   *    the ownership recheck riding the external-block sweep (R3-M16).
+   *  - `not-delivered` + permanent (§5.1): TERMINAL — one raiseAttention
+   *    dead-letter (mass aggregation happens at the funnel emitter), the
+   *    beacon suppresses (non-terminal commitment state; a reachability
+   *    auto-clear + operator resume can revive it).
+   *  - `not-delivered` transient: `sendSeq` held constant (so the re-fire of
+   *    the SAME logical send matches the E1 guard), consecutive failures
+   *    counted; at `deadLetterAfterConsecutiveFailures` (=3, R3-M15) ONE
+   *    deduped raiseAttention — the beacon keeps re-arming (retry engages).
+   */
+  private async applyDeliveryOutcome(
+    c: Commitment,
+    outcome: import('../core/deliverToConversation.js').DeliveryOutcome,
+    seq: number,
+    logicalSendId: string,
+  ): Promise<BeaconSendResult> {
+    if (outcome.delivered || outcome.outcome === 'already-delivered-recently') {
+      // Seq persist BEFORE send-retire (R5-M3 — the reverse order re-opens the
+      // exact double-post E1 exists to prevent).
+      this.updateHotState(c.id, (h) => {
+        h.sendSeq = seq + 1;
+        h.consecutiveDeliveryFailures = 0;
+        delete h.deliveryDeadLetteredAt;
+      });
+      if (typeof c.topicId === 'number' && c.topicId < 0) {
+        try {
+          this.config.retireSend?.(c.topicId, logicalSendId);
+        } catch { /* retire is guard bookkeeping — never fails the send */ }
+      }
+      return outcome.delivered ? 'sent' : 'suppressed-delivered-equivalent';
+    }
+
+    if (outcome.standDown) {
+      this.updateHotState(c.id, (h) => {
+        h.standDownAt = new Date(this.now()).toISOString();
+      });
+      this.stoodDown.add(c.id);
+      this.stopFor(c.id);
+      this.emit('delivery.stand-down', { id: c.id, topicId: c.topicId, reason: outcome.reason });
+      return 'failed-standdown';
+    }
+
+    if (outcome.permanent) {
+      this.updateHotState(c.id, (h) => {
+        if (!h.deliveryDeadLetteredAt) h.deliveryDeadLetteredAt = new Date(this.now()).toISOString();
+      });
+      try {
+        this.config.raiseAttention?.(
+          c.id,
+          `Delivery for "${(c.agentResponse || c.userRequest).slice(0, 80)}" is permanently failing (${outcome.detail ?? outcome.reason}) — conversation unreachable; beacon dead-lettered. Reachability auto-clears on the next successful delivery or authenticated inbound.`,
+        );
+      } catch { /* non-fatal */ }
+      await this.config.commitmentTracker.mutate(c.id, prev => ({
+        ...prev,
+        beaconSuppressed: true,
+        beaconSuppressionReason: 'conversation-unreachable',
+      }));
+      this.stopFor(c.id);
+      this.emit('delivery.dead-letter', { id: c.id, topicId: c.topicId, permanent: true });
+      return 'failed-permanent';
+    }
+
+    // Transient (§5.1): hold the seq constant; count + (once) dead-letter.
+    const threshold = this.config.deadLetterAfterConsecutiveFailures ?? 3;
+    let deadLetterNow = false;
+    const hot = this.updateHotState(c.id, (h) => {
+      h.consecutiveDeliveryFailures = (h.consecutiveDeliveryFailures ?? 0) + 1;
+      if ((h.consecutiveDeliveryFailures ?? 0) >= threshold && !h.deliveryDeadLetteredAt) {
+        h.deliveryDeadLetteredAt = new Date(this.now()).toISOString();
+        deadLetterNow = true;
+      }
+    });
+    if (deadLetterNow) {
+      try {
+        this.config.raiseAttention?.(
+          c.id,
+          `${hot.consecutiveDeliveryFailures} consecutive delivery failures for "${(c.agentResponse || c.userRequest).slice(0, 80)}" (last: ${outcome.reason}${outcome.detail ? ` — ${outcome.detail}` : ''}). The beacon keeps retrying.`,
+        );
+      } catch { /* non-fatal */ }
+      this.emit('delivery.dead-letter', { id: c.id, topicId: c.topicId, permanent: false });
+    }
+    return 'failed-transient';
+  }
+
+  /**
+   * §5 R3-M16 stand-down recheck — one O(active-stood-down) pass riding the
+   * EXISTING external-block sweep (R4-minor-4: no new timer; default ≤ 1h). A
+   * machine that BECOMES a stood-down conversation's owner (adoption on first
+   * authenticated inbound) picks the beacon back up here. Public for tests.
+   */
+  recheckStandDowns(): void {
+    if (this.stoodDown.size === 0) return;
+    const owns = this.config.ownsConversation;
+    for (const id of [...this.stoodDown]) {
+      const c = this.config.commitmentTracker.get(id);
+      if (!c || c.status !== 'pending' || typeof c.topicId !== 'number') {
+        this.stoodDown.delete(id);
+        continue;
+      }
+      if (!owns) continue; // no ownership oracle wired — stay stood down
+      let owned = false;
+      try {
+        owned = owns(c.topicId);
+      } catch {
+        owned = false; // fail toward staying stood down (never a spurious re-fire)
+      }
+      if (owned) {
+        this.stoodDown.delete(id);
+        this.updateHotState(id, (h) => {
+          delete h.standDownAt;
+          h.consecutiveDeliveryFailures = 0;
+        });
+        this.schedule(c);
+        this.emit('delivery.stand-down-cleared', { id, topicId: c.topicId });
+      }
+    }
   }
 
   /**
@@ -1408,10 +1658,25 @@ export class PromiseBeacon extends EventEmitter {
   private saveHotState(id: string, hot: HotState): void {
     const p = path.join(this.stateDir, `${id}.json`);
     try {
-      fs.writeFileSync(p, JSON.stringify(hot, null, 2));
+      // R4-minor-1: ATOMIC tmp→rename (the house pattern) — the seq-bearing
+      // file must never tear: a crash mid-write that yielded a parseable file
+      // with a reset seq would re-collide against the now-DURABLE E1 entry and
+      // silently suppress a legitimate post-restart heartbeat.
+      const tmp = `${p}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(hot, null, 2));
+      fs.renameSync(tmp, p);
     } catch (err) {
       console.error(`[PromiseBeacon] persist failed for ${id}:`, (err as Error).message);
     }
+  }
+
+  /** Read-modify-write over the on-disk hot state — the delivery path and the
+   *  heartbeat path both write it, and neither may clobber the other's fields. */
+  private updateHotState(id: string, fn: (hot: HotState) => void): HotState {
+    const hot = this.loadHotState(id);
+    fn(hot);
+    this.saveHotState(id, hot);
+    return hot;
   }
 
   /** Test accessor. */

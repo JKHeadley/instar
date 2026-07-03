@@ -552,6 +552,24 @@ export class SessionManager extends EventEmitter {
     return token ? ['-e', `GH_TOKEN=${token}`] : [];
   }
 
+  /** durable-conversation-identity §7 (R4-M3): the per-session bind-token env
+   *  flags (`INSTAR_BIND_TOKEN`). The token scopes durable-state opens
+   *  (`POST /commitments` on a minted id) to the session's OWN authenticated
+   *  bootstrap conversation set. Empty when no minter is wired or the spawn
+   *  carries no bootstrap conversation — a token-less spawn rides the gate's
+   *  legacy lane; a failed mint NEVER blocks a spawn. */
+  private bindTokenEnvFlags(tmuxSession: string, bootstrapConversationIds: number[]): string[] {
+    if (!this.config.mintBindToken || bootstrapConversationIds.length === 0) return [];
+    try {
+      const token = this.config.mintBindToken(tmuxSession, bootstrapConversationIds);
+      return token ? ['-e', `INSTAR_BIND_TOKEN=${token}`] : [];
+    } catch {
+      // @silent-fallback-ok — a failed token mint degrades to a token-less
+      // spawn (the §7 legacy lane, loud at bind time); never a blocked spawn.
+      return [];
+    }
+  }
+
   /** Lazily-constructed tri-state liveness oracle (UNIFIED-SESSION-LIFECYCLE §P1).
    *  Backs the boot purge and isSessionAliveAsync so a slow/unreachable tmux is
    *  treated as `indeterminate`, never `dead`. */
@@ -1982,6 +2000,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     triggeredBy?: string;
     maxDurationMinutes?: number;
     topicId?: number | 'platform';
+    /** durable-conversation-identity §7: the authenticated bootstrap
+     *  conversation ids this session may open durable state on. Falls back to
+     *  [topicId] when topicId is numeric. */
+    bootstrapConversationIds?: number[];
     worktreeMode?: 'dev' | 'read-only' | 'doc-fix' | 'platform';
     worktreeSlug?: string;
     /** Per-call framework override; falls back to INSTAR_FRAMEWORK env, then claude-code. */
@@ -2266,6 +2288,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        // durable-conversation-identity §7: per-session bind token scoping
+        // durable-state opens to this spawn's bootstrap conversation set.
+        ...this.bindTokenEnvFlags(
+          tmuxSession,
+          options.bootstrapConversationIds ??
+            (typeof options.topicId === 'number' ? [options.topicId] : []),
+        ),
         // Structural message-kind stamping (outbound-jargon-filepath-gap §2.1):
         // a job-spawned session is marked 'automated' in its ENVIRONMENT, so
         // telegram-reply.sh forwards the kind regardless of what the model
@@ -2275,6 +2304,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_MESSAGE_KIND=automated',
               '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
               '-e', 'INSTAR_SENDER_CLASS=llm-session',
+              // Test-runner bound (test-runner-concurrency-bound §2.6): a
+              // server-launched job session is BACKGROUND class — test suites
+              // it runs get the short fail-loud acquire budget, never the long
+              // interactive one. Derived from the launch site, never from
+              // user input. Interactive (jobSlug-less) spawns get NONE.
+              '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
         ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
@@ -2560,6 +2595,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_MESSAGE_KIND=automated',
               '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
               '-e', 'INSTAR_SENDER_CLASS=llm-session',
+              // Test-runner bound (test-runner-concurrency-bound §2.6): a
+              // server-launched job session is BACKGROUND class — test suites
+              // it runs get the short fail-loud acquire budget, never the long
+              // interactive one. Derived from the launch site, never from
+              // user input. Interactive (jobSlug-less) spawns get NONE.
+              '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
         ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
@@ -3982,6 +4023,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Optionally sends an initial message after Claude is ready.
    */
   async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+    /** durable-conversation-identity §7: the authenticated bootstrap
+     *  conversation ids this session may open durable state on (a Slack spawn
+     *  passes its minted conversation id). Falls back to [telegramTopicId]. */
+    bootstrapConversationIds?: number[];
     /** Warm-session A2A (claude-code only): pin a deterministic --session-id so an
      *  eviction mid-thread can --resume losslessly (#746). Ignored when resuming. */
     sessionId?: string;
@@ -4192,6 +4237,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         '-e', `INSTAR_FRAMEWORK=${framework}`,
+        // durable-conversation-identity §7: per-session bind token scoping
+        // durable-state opens to this spawn's bootstrap conversation set
+        // (Telegram topic, or the Slack dispatch's minted conversation id).
+        ...this.bindTokenEnvFlags(
+          tmuxSession,
+          options?.bootstrapConversationIds ??
+            (typeof options?.telegramTopicId === 'number' ? [options.telegramTopicId] : []),
+        ),
         ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
         // Framework-specific env additions/clears (e.g., CLAUDECODE=)
         ...Object.entries(launchSpec.envOverrides).flatMap(([k, v]) => ['-e', `${k}=${v}`]),

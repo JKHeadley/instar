@@ -22,6 +22,9 @@ import type { RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { slackRoutingKeySyntheticId } from '../../src/core/slackRefreshBinding.js';
+import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
+import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
+import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const AUTH = 'conversation-routes-token';
@@ -153,5 +156,73 @@ describe('GET /conversations* routes (integration)', () => {
     expect(registry.entryCount()).toBe(1);
 
     expect((await request(app).get('/conversations/resolve').set(auth())).status).toBe(400);
+  });
+});
+
+// ── §5.2 / §7 funnel-increment route hardening (increment 2) ──
+describe('increment-2 route hardening (§5.2 + §7)', () => {
+  let tmpDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'conversation-inc2-'));
+    stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({}, null, 2));
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/conversation-registry-routes.test.ts:inc2 afterEach' });
+  });
+
+  it('POST /telegram/reply/:topicId → 400 on a NEGATIVE id (a minted conversation, §5.2)', async () => {
+    const ctx = makeCtx(stateDir, null);
+    (ctx as unknown as { telegram: unknown }).telegram = {}; // truthy → passes the 503 guard
+    const app = appWith(ctx);
+    const res = await request(app).post('/telegram/reply/-111').set(auth()).send({ text: 'x' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('minted conversation');
+    // A positive id still passes the negative guard (503 here = no real telegram, expected).
+    const positive = await request(app).post('/telegram/reply/12476').set(auth()).send({ text: 'x' });
+    expect(positive.status).not.toBe(400);
+  });
+
+  it('POST /commitments on a MINTED id is bind-gated (§7): missing token → 403, valid token → 201, wrong-set token → 403', async () => {
+    const registry = new ConversationRegistry({ stateDir, machineId: () => 'm-test' });
+    const bindAuth = createConversationBindAuth(stateDir);
+    const tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir) });
+    const ctx = makeCtx(stateDir, registry);
+    (ctx as unknown as { commitmentTracker: unknown }).commitmentTracker = tracker;
+    (ctx as unknown as { conversationBindAuth: unknown }).conversationBindAuth = bindAuth;
+    const app = appWith(ctx);
+
+    const body = { type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: -111 };
+
+    // Missing token → fail-closed.
+    const missing = await request(app).post('/commitments').set(auth()).send(body);
+    expect(missing.status).toBe(403);
+    expect(missing.body.error).toBe('conversation-bind-not-authorized');
+
+    // A valid token whose bootstrap set includes the minted id → allowed.
+    const goodToken = bindAuth.mint('agent-session', [-111]);
+    const ok = await request(app).post('/commitments').set(auth()).set('X-Instar-Bind-Token', goodToken).send(body);
+    expect(ok.status).toBe(201);
+    expect(ok.body.boundBy).toBe('session:agent-session');
+
+    // A token for a DIFFERENT conversation → refused.
+    const wrongToken = bindAuth.mint('other-session', [-999]);
+    const wrong = await request(app).post('/commitments').set(auth()).set('X-Instar-Bind-Token', wrongToken).send(body);
+    expect(wrong.status).toBe(403);
+  });
+
+  it('POST /commitments on a POSITIVE (Telegram) id needs no token — today’s behavior', async () => {
+    const registry = new ConversationRegistry({ stateDir, machineId: () => 'm-test' });
+    const tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir) });
+    const ctx = makeCtx(stateDir, registry);
+    (ctx as unknown as { commitmentTracker: unknown }).commitmentTracker = tracker;
+    (ctx as unknown as { conversationBindAuth: unknown }).conversationBindAuth = createConversationBindAuth(stateDir);
+    const app = appWith(ctx);
+    const res = await request(app).post('/commitments').set(auth())
+      .send({ type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: 12476 });
+    expect(res.status).toBe(201);
   });
 });

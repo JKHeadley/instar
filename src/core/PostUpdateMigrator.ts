@@ -742,6 +742,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
+    this.migrateThreeStandardsReviewChecks(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
@@ -1131,6 +1132,63 @@ export class PostUpdateMigrator {
         rel: ['skills', 'spec-converge', 'SKILL.md'],
         fingerprint: '# /spec-converge',
         label: 'spec-converge SKILL (integration reviewer posture check)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Three-standards review-checks (Standards A + B enforcement,
+  // three-standards-enforcement spec, 2026-07-03) ──
+  //
+  // The ratified standards "Always Multi-Machine" (A) and "Self-Heal Before
+  // Notify" (B) get their teeth as /spec-converge review-checks: the integration
+  // reviewer instruction in spec-converge SKILL.md AND the integration-reviewer
+  // template gain (A) the "undefended machine-local is a MATERIAL FINDING; the
+  // default is `unified`; justify only from a closed taxonomy via a
+  // `machine-local-justification:` marker" upgrade, and (B) the
+  // self-heal-before-notify escalation-gate review-check. New agents get these
+  // via installBuiltinSkills/install (non-destructive, install-if-missing);
+  // EXISTING agents only get updated CONTENT here (Migration Parity → "updating
+  // existing skill content", case 5b).
+  //
+  // Same shape as migrateMultiMachinePostureReviewDimension: per file, re-copy
+  // the bundled version only when the installed copy lacks the capability MARKER
+  // and still looks stock (fingerprint guard); a customized file is left
+  // untouched and reported. Idempotent: the marker check short-circuits on every
+  // later run. The MARKER (`machine-local-justification`) is present in BOTH
+  // upgraded files, so one marker covers the A+B content that ships together.
+  private migrateThreeStandardsReviewChecks(result: MigrationResult): void {
+    const MARKER = 'machine-local-justification';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (Standards A+B review-checks)',
+      },
+      {
+        rel: ['skills', 'spec-converge', 'templates', 'reviewer-integration.md'],
+        fingerprint: '# Reviewer Prompt — Integration',
+        label: 'spec-converge integration-reviewer template (Standards A+B review-checks)',
       },
     ];
     for (const f of files) {
@@ -7534,6 +7592,19 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       content += `\n**Fork-Bomb Spawn Cap (host-wide concurrent-LLM-subprocess ceiling)** — A SAFETY FLOOR that ships ON for every agent (never dark): a host-local counting semaphore bounds how many \`claude -p\`/\`codex exec\` subprocesses run AT ONCE across every compliant Instar process on the host (default 8). It is the structural answer to the 2026-06-20 OOM fork-bomb (~230-289 concurrent spawns ≈ 90-115GB). Every LLM provider rides the spawn-cap funnel (\`buildIntelligenceProvider\`); a saturated cap makes new spawns wait a bounded time, then shed — and a capacity shed of a SAFETY-GATING call fails CLOSED (held), never auto-passes. A per-agent single-instance lock removes the duplicate-server-instance multiplier.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/spawn-limiter\` → \`{ cap, liveHolders, available, saturated, waiters, acquireMs, waitersMax }\` (Registry First — read it, never guess).\n- Tune via \`.instar/config.json\` → \`intelligence.spawnCap\` (\`maxConcurrent\`, \`acquireMs\`, \`waitersMax\`) or env (\`INSTAR_HOST_SPAWN_MAX\`, \`INSTAR_SPAWN_ACQUIRE_MS\`, \`INSTAR_SPAWN_WAITERS_MAX\`). Restart sessions/server to apply.\n- **When to use** (PROACTIVE): "are we protected against a fork-bomb / OOM?" / "how many LLM spawns are running right now?" / "why did a gate hold under load?" → \`GET /spawn-limiter\`. (Spec: \`docs/specs/forkbomb-prevention-simple.md\`; constitution: "Bounded Blast Radius".)\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Fork-Bomb Spawn Cap section');
+    }
+
+    // Test-Runner Concurrency Bound (test-runner-concurrency-bound §2.9) — Agent
+    // Awareness + Migration Parity: existing agents learn the host-wide vitest cap
+    // (watch-only 14-day soak), the /test-runner-limiter read surface + /prune
+    // recovery lever, the "a rejected push may be CONTENTION not red tests"
+    // trigger, the outer-timeout ≥ acquire-budget guidance, and the env-only kill
+    // switch via this appended section. Body mirrors generateClaudeMd()
+    // byte-for-byte. Content-sniffed on the stable heading → idempotent.
+    if (!content.includes('Test-Runner Concurrency Bound')) {
+      content += `\n**Test-Runner Concurrency Bound (host-wide vitest cap — the spawn cap's sibling)** — A per-machine ticket counter bounds how many test suites run AT ONCE across every actor on this machine: full suites run one-at-a-time (default cap 1), while small targeted runs (≤5 named test files) get a roomier lane (default 6 slots, each clamped to ≤4 workers). It is the structural answer to the 2026-07-02 test-storm meltdown (29 concurrent vitest roots ≈ 300+ workers starving co-resident servers' event loops until their supervisors killed healthy processes). Ships WATCH-ONLY (dry-run) for a 14-day soak — it records what it WOULD have blocked but admits every run; blocking arrives only after the soak review flips the host tuning file.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter\` → \`{ cap, targetedCap, posture, ttlSignalArmed, liveHolders, targetedHolders, admittedOpen, suite: {available, saturated}, targeted: {...}, recentEvents, skipHistogram }\` (Registry First — read it, never guess).\n- **"Why is my test run waiting?" / a rejected \`git push\`** (PROACTIVE — this is the trigger): a push or suite that stalls or is refused may be CONTENTION (another suite holds the slot), NOT red tests — read \`GET /test-runner-limiter\` BEFORE assuming failure. The limiter's capacity-timeout error says "this is NOT a test failure" and names the holders.\n- Recovery lever: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter/prune\` — forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of ever hand-editing \`~/.instar/host-test-runner-holders.json\` (the 2026-07-01 stale-holder lesson).\n- A \`git push\` run under an OUTER command timeout needs that timeout ≥ the pre-push acquire budget (default 10 min interactive) — a correctly-WAITING push must not be killed by its own caller.\n- Kill switch: env \`INSTAR_HOST_TEST_SEMAPHORE=off\` (the SOLE chokepoint lever — \`intelligence.testRunnerCap\` in config only tunes the route report/server tooling, never the bound). (Spec: \`docs/specs/test-runner-concurrency-bound.md\`; constitution: "Bounded Blast Radius".)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Test-Runner Concurrency Bound section');
     }
 
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent

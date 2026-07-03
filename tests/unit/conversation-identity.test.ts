@@ -21,6 +21,7 @@ import {
   tupleForRoutingKey,
   tupleKeyFor,
   walkDisplacement,
+  idWithinCoherenceBound,
 } from '../../src/core/conversationIdentity.js';
 import { slackRoutingKeySyntheticId } from '../../src/core/slackRefreshBinding.js';
 
@@ -117,5 +118,32 @@ describe('conversationIdentity — the ONE shared displacement implementation (�
     let calls = 0;
     const r = walkDisplacement(-100, () => ++calls <= 64);
     expect(r).toEqual({ ok: true, id: -164, probes: 64 });
+  });
+});
+
+describe('idWithinCoherenceBound — the ONE shared §3.5 ingest ≡ §3.5.2 delivery predicate (§10)', () => {
+  const tuple = { platform: 'slack' as const, channelId: 'C0BA4F4E0FP', threadTs: null };
+  const cand = candidateIdForRoutingKey(routingKeyForTuple(tuple));
+
+  it('the tuple’s own candidate is coherent', () => {
+    expect(idWithinCoherenceBound(cand, tuple)).toBe(true);
+  });
+  it('a within-MAX_PROBE_DISTANCE displacement offset (DOWN) is coherent', () => {
+    expect(idWithinCoherenceBound(cand - 1, tuple)).toBe(true);
+    expect(idWithinCoherenceBound(cand - MAX_PROBE_DISTANCE, tuple)).toBe(true);
+  });
+  it('an id just beyond the bound (either direction) is INCOHERENT', () => {
+    expect(idWithinCoherenceBound(cand - MAX_PROBE_DISTANCE - 1, tuple)).toBe(false);
+    expect(idWithinCoherenceBound(cand + 1, tuple)).toBe(false); // probe direction is DOWN
+  });
+  it('a different tuple’s candidate is INCOHERENT (the misdelivery the check prevents)', () => {
+    const other = { platform: 'slack' as const, channelId: 'C0OTHER99999', threadTs: null };
+    const otherCand = candidateIdForRoutingKey(routingKeyForTuple(other));
+    // The two candidates differ by far more than MAX_PROBE_DISTANCE for these keys.
+    expect(idWithinCoherenceBound(otherCand, tuple)).toBe(false);
+  });
+  it('a positive or zero id is never coherent (a minted id is always negative)', () => {
+    expect(idWithinCoherenceBound(0, tuple)).toBe(false);
+    expect(idWithinCoherenceBound(12476, tuple)).toBe(false);
   });
 });

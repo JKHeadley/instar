@@ -1,0 +1,20 @@
+{
+  "note": "Fixture — a MALFORMED registry (the first class is MISSING `severity`) for the class-closure enforcing-mode integration test.",
+  "version": 1,
+  "classes": [
+    {
+      "id": "fixture-broken-class",
+      "description": "A fixture class missing its severity field — validateRegistry must reject it.",
+      "includes": ["a fixture inclusion criterion"],
+      "excludes": ["a fixture exclusion criterion"],
+      "canonicalExamples": ["a fixture canonical example"],
+      "status": "confirmed",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null
+    }
+  ]
+}

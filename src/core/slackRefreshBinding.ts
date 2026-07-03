@@ -81,22 +81,14 @@ export function parseSlackConversationKey(key: string): string | null {
 /**
  * Stable negative synthetic topic id for a Slack routing key.
  *
- * IDENTICAL hash to `server.ts:slackChannelToSyntheticId` and the inline copy
- * in `routes.ts` (build-event heartbeat) — sum-shift char hash, negated so it
- * can never collide with a (positive) Telegram topic id. RefreshResult keeps
- * a numeric `topicId` for back-compat consumers (e.g. the restart-all log
- * line reads result.topicId); Slack results carry this synthetic id so those
+ * §4 (durable-conversation-identity, increment 2): the hash copy this module
+ * carried is RETIRED — this is a re-export of `candidateIdForRoutingKey` from
+ * the ONE consolidated identity surface, value-identical by golden parity
+ * (§10). It is the mint CANDIDATE, no longer an identity authority (the
+ * ConversationRegistry is the collision authority). RefreshResult keeps a
+ * numeric `topicId` for back-compat consumers (e.g. the restart-all log line
+ * reads result.topicId); Slack results carry this candidate id so those
  * consumers stay type- and meaning-compatible with the rest of the system's
  * Slack↔numeric bridging (PresenceProxy, resume heartbeat).
- *
- * NOTE for the integrating session: this is now the THIRD copy of the hash —
- * consolidating server.ts + routes.ts onto this export is a wiring follow-up
- * (both files are owned by other builders in this round).
  */
-export function slackRoutingKeySyntheticId(routingKey: string): number {
-  let hash = 0;
-  for (let i = 0; i < routingKey.length; i++) {
-    hash = ((hash << 5) - hash + routingKey.charCodeAt(i)) | 0;
-  }
-  return -(Math.abs(hash) + 1); // always negative, never 0
-}
+export { candidateIdForRoutingKey as slackRoutingKeySyntheticId } from './conversationIdentity.js';

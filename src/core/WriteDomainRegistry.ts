@@ -279,5 +279,28 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // ── Test-runner concurrency-bound recovery lever (test-runner-concurrency-bound §2.6/§2.7) ──
+  // Machine-local by construction: the semaphore bounds THIS machine's CPU
+  // cores, so its holders file is an OS-level rendezvous at ~/.instar/
+  // host-test-runner-holders.json — outside any git repo (a lock-file peer),
+  // never git-synced. POST /prune only removes dead/TTL-expired holder rows to
+  // restore capacity — fully ephemeral and rebuildable (a re-run regenerates
+  // everything it touches). Machine-locality is doubly enforced in the design:
+  // df-local determination gates all reclaim, and a foreign-hostname holder on a
+  // (mis)synced ~/.instar is DROPPED, so the count never converges across
+  // machines even if the path is userspace-synced (Dropbox/iCloud). The GET
+  // status route is a pure read (non-mutating) and needs no classification.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/test-runner-limiter/prune',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: false,
+      note: 'holders file is a machine-local OS rendezvous at ~/.instar/host-test-runner-holders.json (outside any git tree); prune reclaims only dead/expired rows (capacity bookkeeping, fully rebuildable); df-local gate + foreign-hostname-holder drop prevent cross-machine convergence even on a userspace-synced home',
+    },
+  });
+
   return reg;
 }

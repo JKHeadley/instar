@@ -26,6 +26,7 @@ import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
+import { createConversationBindAuth } from '../core/conversationBindToken.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
 import { UserManager } from '../users/UserManager.js';
@@ -493,6 +494,12 @@ export class AgentServer {
     /** Durable conversation identity (durable-conversation-identity §8) — backs
      *  the read-only GET /conversations* surface. Always-on foundation. */
     conversationRegistry?: import('../core/ConversationRegistry.js').ConversationRegistry;
+    /** durable-conversation-identity §7 bind-time authority (increment 2) —
+     *  the stateless bind-token verifier. Default-constructed below so the bind
+     *  gate is alive on every init path. */
+    conversationBindAuth?: import('../core/conversationBindToken.js').ConversationBindAuth;
+    /** §6.1 dark-window honesty (increment 2) — the live followThrough gate. */
+    conversationFollowThrough?: () => { enabled: boolean; dryRun: boolean };
     /** U4.1 §2C — sticky skew-quarantine set (GET /pool/pin-quarantine + re-admit). */
     topicPinSkewQuarantine?: import('../core/TopicPinSkewQuarantine.js').TopicPinSkewQuarantine;
     /** U4.1 §2C — the answer-complete pin fold view (status + re-admit refold). */
@@ -2508,6 +2515,14 @@ export class AgentServer {
           stateDir: options.config.stateDir,
           machineId: () => 'agent-server',
         }),
+      // durable-conversation-identity §7: default-construct the bind-token
+      // verifier so the POST /commitments bind gate is alive on EVERY init
+      // path — a minted-id bind is fail-closed from day one (the read-only-
+      // fallback precedent above). The bootstrap-wired instance takes
+      // precedence when present.
+      conversationBindAuth:
+        options.conversationBindAuth ?? createConversationBindAuth(options.config.stateDir),
+      conversationFollowThrough: options.conversationFollowThrough,
       topicPinSkewQuarantine: options.topicPinSkewQuarantine ?? null,
       topicPinFoldView: options.topicPinFoldView ?? null,
       ownershipReconciler: options.ownershipReconciler ?? null,

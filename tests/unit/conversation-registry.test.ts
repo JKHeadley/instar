@@ -340,24 +340,33 @@ describe('ConversationRegistry', () => {
       expect(first).toBe(snapshotOf(reg));
     });
 
-    it('snapshot completeness (R4-M2/R6-M1): bind-pins, ambiguous-send entries, and unresolved send-intents survive snapshot → journal loss → reboot', async () => {
+    it('snapshot completeness (R4-M2/R6-M1) + R8-M1 boot conversion: bind-pins, ambiguous-send entries, and crash-orphaned send-intents survive snapshot → journal loss → reboot (a LOGICAL intent that is the last word converts to an ambiguous-send suppressor, never lost)', async () => {
       const journal = path.join(dir, 'conversation-registry.jsonl');
       const lines = [
         JSON.stringify({ seq: 1, op: 'mint', key: 'slack:_:C0AAAA11111', tuple: ['slack', 'C0AAAA11111', null], id: -111, origin: 'minted-probed', ts: '2026-07-01T00:00:00.000Z' }),
         JSON.stringify({ seq: 2, op: 'bind-pin', id: -111, tuple: ['slack', 'C0AAAA11111', null], refcount: 1, ts: '2026-07-01T00:00:01.000Z' }),
-        JSON.stringify({ seq: 3, op: 'ambiguous-send', conversationId: -111, logicalSendId: 'cmt-42:7', ts: '2026-07-01T00:00:02.000Z' }),
+        JSON.stringify({ seq: 3, op: 'ambiguous-send', conversationId: -111, logicalSendId: 'cmt-42:7', lane: 'logical', ts: '2026-07-01T00:00:02.000Z' }),
         JSON.stringify({ seq: 4, op: 'send-intent', conversationId: -111, logicalSendId: 'cmt-42:8', lane: 'logical', ts: '2026-07-01T00:00:03.000Z' }),
       ];
       fs.writeFileSync(journal, `${lines.join('\n')}\n`);
+      // First open: replay applies the intent, then convertOrphanedSendIntents
+      // (R8-M1) converts the crash-orphaned LOGICAL intent (last word for its
+      // pair) into an ambiguous-send suppressor. Flush captures the converted
+      // state, then the journal is pruned.
       const reg = makeRegistry();
-      reg.mintForInbound('C0AAAA11111'); // mark dirty so the flush writes
+      reg.resolve(-111); // trigger load() (replay + R8-M1 conversion + state-dir create)
       await reg.flushSnapshot();
       SafeFsExecutor.safeUnlinkSync(journal, { operation: 'tests/unit/conversation-registry.test.ts — simulate pruning every superseded journal file' });
       const reopened = makeRegistry();
       const snap = JSON.parse(fs.readFileSync(path.join(dir, 'state', 'conversation-registry.json'), 'utf-8'));
+      // Nothing lost across snapshot → journal loss → reboot.
       expect(snap.bindPins['-111']).toEqual({ tuple: ['slack', 'C0AAAA11111', null], refcount: 1 });
       expect(snap.ambiguousSends['-111|cmt-42:7']).toBeTruthy();
-      expect(snap.sendIntents['-111|cmt-42:8']).toEqual({ lane: 'logical', seq: 4 });
+      // R8-M1: the orphaned logical intent became a suppressor (converted, not
+      // dropped) — so a beacon re-fire of cmt-42:8 is suppressed after reboot.
+      expect(snap.ambiguousSends['-111|cmt-42:8']).toBeTruthy();
+      expect(snap.sendIntents['-111|cmt-42:8']).toBeUndefined();
+      expect(reopened.isSendSuppressed(-111, 'cmt-42:8', 'logical')).toBe(true);
       expect(reopened.resolve(-111)).not.toBeNull();
     });
   });
@@ -464,6 +473,123 @@ describe('ConversationRegistry', () => {
       expect(h.aliasCount).toBe(0);
       expect(h.ceiling.entryCeiling).toBe(50000);
       expect(typeof h.seq.counter).toBe('number');
+    });
+  });
+
+  // ── §3.5.2 bind-pin overlay WRITERS (increment 2) ──
+  describe('bind-pin overlay (§3.5.2)', () => {
+    it('bindPin records the bind-time tuple + refcount; two binds hold, last release frees (M8)', () => {
+      const reg = makeRegistry();
+      const res = reg.mintForDurableBinding('C0BA4F4E0FP:1751412345.123456');
+      expect(res.ok).toBe(true);
+      const id = (res as { ok: true; id: number }).id;
+      const t1 = reg.bindPin(id);
+      expect(t1).toEqual({ platform: 'slack', channelId: 'C0BA4F4E0FP', threadTs: '1751412345.123456' });
+      reg.bindPin(id); // second durable bind on the same id (refcount → 2)
+      expect(reg.getBindPinTuple(id)).not.toBeNull();
+      reg.bindRelease(id); // one close → pin holds
+      expect(reg.getBindPinTuple(id)).not.toBeNull();
+      reg.bindRelease(id); // last close → released
+      expect(reg.getBindPinTuple(id)).toBeNull();
+    });
+    it('live pins are restored from the journal in seq order across a re-open (restart replay)', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      reg.bindPin(id);
+      const reopened = makeRegistry();
+      expect(reopened.getBindPinTuple(id)).toEqual({ platform: 'slack', channelId: 'C0BA4F4E0FP', threadTs: null });
+    });
+  });
+
+  // ── §5.1 reachability WRITER (increment 2) ──
+  describe('reachability (§5.1)', () => {
+    it('setReachability flips, is idempotent, and journals durably', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      const first = reg.setReachability(id, 'unreachable');
+      expect(first.changed).toBe(true);
+      const again = reg.setReachability(id, 'unreachable');
+      expect(again.changed).toBe(false); // idempotent — no double write
+      const reopened = makeRegistry();
+      const desc = reopened.resolve(id);
+      expect(desc!.platform === 'slack' && desc!.reachability).toBe('unreachable');
+    });
+    it('flapping past the threshold within the window is reported as dampened', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      // 4 flips > REACHABILITY_FLAP_THRESHOLD (3) within 24h → dampened.
+      reg.setReachability(id, 'unreachable');
+      reg.setReachability(id, 'ok');
+      reg.setReachability(id, 'unreachable');
+      const fourth = reg.setReachability(id, 'ok');
+      expect(fourth.dampened).toBe(true);
+    });
+  });
+
+  // ── §5.0(a) E1 send-guard WRITERS (increment 2) ──
+  describe('E1 send-guard (§5.0(a))', () => {
+    it('a recorded likely-posted entry suppresses on the logical lane; retire clears it', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      reg.recordLikelyPosted(id, 'CMT-001:7', 'logical');
+      expect(reg.isSendSuppressed(id, 'CMT-001:7', 'logical')).toBe(true);
+      // A DIFFERENT logical send is not suppressed.
+      expect(reg.isSendSuppressed(id, 'CMT-001:8', 'logical')).toBe(false);
+      reg.retireSend(id, 'CMT-001:7');
+      expect(reg.isSendSuppressed(id, 'CMT-001:7', 'logical')).toBe(false);
+    });
+    it('a durable suppressor survives a re-open (restart-double-post protection — R4-M2)', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      reg.recordLikelyPosted(id, 'CMT-001:7', 'logical');
+      const reopened = makeRegistry();
+      expect(reopened.isSendSuppressed(id, 'CMT-001:7', 'logical')).toBe(true);
+    });
+    it('resolveSendIntent clears an intent WITHOUT a suppressor (clean-transient path)', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      reg.recordSendIntent(id, 'CMT-001:7', 'logical');
+      reg.resolveSendIntent(id, 'CMT-001:7');
+      // No suppressor was created — the retry is not suppressed.
+      expect(reg.isSendSuppressed(id, 'CMT-001:7', 'logical')).toBe(false);
+    });
+    it('R8-M1 boot conversion: an orphaned CONTENT-HASH intent resolves toward RETRY (no suppressor)', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      reg.recordSendIntent(id, 'sha256:abc', 'content-hash'); // crash before outcome
+      const reopened = makeRegistry();
+      // Content-hash orphan → resolved toward retry, never a suppressor.
+      expect(reopened.isSendSuppressed(id, 'sha256:abc', 'content-hash')).toBe(false);
+    });
+    it('R8-M1 boot conversion: an orphaned LOGICAL intent converts to a suppressor', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      reg.recordSendIntent(id, 'CMT-001:7', 'logical'); // crash before outcome
+      const reopened = makeRegistry();
+      expect(reopened.isSendSuppressed(id, 'CMT-001:7', 'logical')).toBe(true);
+    });
+    it('health exposes the send-guard counters', () => {
+      const reg = makeRegistry();
+      const id = (reg.mintForDurableBinding('C0BA4F4E0FP') as { ok: true; id: number }).id;
+      reg.recordLikelyPosted(id, 'CMT-001:7', 'logical');
+      const h = reg.health() as { sendGuard: { unretiredEntries: number; bindPins: number } };
+      expect(h.sendGuard.unretiredEntries).toBe(1);
+    });
+  });
+
+  // ── §4 read-only comparison path (integration-nit, increment 2) ──
+  describe('readIdForRoutingKey (§4 no-write)', () => {
+    it('returns an existing id and does NOT register a new one (a pure comparison never mints)', () => {
+      const reg = makeRegistry();
+      const before = reg.entryCount();
+      const id = reg.readIdForRoutingKey('C0BA4F4E0FP');
+      expect(id).toBe(candidateIdForRoutingKey('C0BA4F4E0FP'));
+      expect(reg.entryCount()).toBe(before); // NO write side-effect
+    });
+    it('an already-minted key resolves to its registered id', () => {
+      const reg = makeRegistry();
+      const minted = reg.mintForInbound('C0BA4F4E0FP').id;
+      expect(reg.readIdForRoutingKey('C0BA4F4E0FP')).toBe(minted);
     });
   });
 });

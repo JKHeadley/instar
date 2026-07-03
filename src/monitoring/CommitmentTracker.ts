@@ -57,6 +57,22 @@ export interface Commitment {
   violationCount: number;
   /** Telegram topic ID where the commitment was made */
   topicId?: number;
+  /**
+   * durable-conversation-identity §3.5.2 property 5 (R4-M1): for a commitment
+   * bound to a MINTED (negative) conversation id, the DENORMALIZED bind-time
+   * tuple — recorded at the same bind moment whose `op:"bind-pin"` journal
+   * line the §3.3 WAL rule fsyncs. Delivery targets `resolve(boundTuple)`
+   * (coherence-checked) on ANY machine that ever delivers the binding, so an
+   * ownership migration can never reopen the C3-class misdelivery. Absent on
+   * legacy/Telegram bindings (delivery falls back to `resolve(id)`).
+   */
+  boundTuple?: { platform: 'slack'; channelId: string; threadTs: string | null };
+  /**
+   * §7 bind-time authority: WHO opened this durable state — recorded from the
+   * VERIFIED bind-token payload (`session:<name>`) or the server-self
+   * principal (`server:<component>`), never from the request body.
+   */
+  boundBy?: string;
   /** Source: 'agent' (self-registered) or 'sentinel' (detected by LLM scanner) */
   source?: 'agent' | 'sentinel' | 'manual';
 
@@ -319,9 +335,29 @@ export interface CommitmentVerificationReport {
   }>;
 }
 
+/**
+ * durable-conversation-identity §6.1 step 2: the conversation-registry bind
+ * surface injected at bootstrap. `bind` performs the durable-binding-forced
+ * registration + the §3.5.2 bind-pin (journal line fsynced BEFORE the bind
+ * returns — the §3.3 WAL rule) and hands back the bind-time tuple; `release`
+ * decrements the pin's refcount when the binding closes.
+ */
+export interface ConversationBinder {
+  bind(
+    conversationId: number,
+  ):
+    | { ok: true; boundTuple: { platform: 'slack'; channelId: string; threadTs: string | null } }
+    | { ok: false; error: string };
+  release(conversationId: number): void;
+}
+
 export interface CommitmentTrackerConfig {
   stateDir: string;
   liveConfig: LiveConfig;
+  /** durable-conversation-identity binder (usually late-bound via
+   *  setConversationBinder at bootstrap — the registry constructs after the
+   *  tracker). Absent → minted-id binds carry no pin/boundTuple (legacy). */
+  conversationBinder?: ConversationBinder;
   /** This machine's mesh identity — stamped as originMachineId on every NEW
    *  commitment (P1.5 §3.1). Absent on single-machine agents pre-mesh; records
    *  created without it are legacy-local by definition. */
@@ -511,6 +547,10 @@ export class CommitmentTracker extends EventEmitter {
     blockedOn?: 'none' | 'external' | 'user-input' | 'user-authorization';
     actionClass?: string;
     supersededBy?: string;
+    /** §7: the verified bind principal (`session:<name>` from the verified
+     *  token payload, or `server:<component>` for in-process callers) —
+     *  recorded by the GATE, never trusted from a request body. */
+    boundBy?: string;
   }): Commitment {
     // FD3 (action-claim-followthrough): idempotent create keyed on externalKey.
     // If an OPEN (non-terminal) commitment already carries this externalKey,
@@ -528,6 +568,23 @@ export class CommitmentTracker extends EventEmitter {
     // hold NO side-effect authority (that stays with the tool-call gate).
     // Shared with transitionState() so a guarded transition re-runs the SAME gate.
     const { owner, blockedOn, actionClass } = CommitmentTracker.normalizeState(input);
+
+    // ── durable-conversation-identity §6.1 step 2: a durable bind on a MINTED
+    // (negative) conversation id registers the conversation durably + records
+    // the §3.5.2 bind-pin, and denormalizes the bind-time tuple onto THIS
+    // record (property 5 — so any machine that ever delivers the binding can
+    // reconstruct the pin). A typed binder refusal (recording disabled,
+    // registration capacity, unresolvable id) THROWS — a commitment on a
+    // minted id must never be created silently unpinned/undeliverable-after-
+    // restart; the route maps the typed error to a client status.
+    let boundTuple: Commitment['boundTuple'];
+    if (typeof input.topicId === 'number' && input.topicId < 0 && this.config.conversationBinder) {
+      const bindResult = this.config.conversationBinder.bind(input.topicId);
+      if (!bindResult.ok) {
+        throw new Error(bindResult.error);
+      }
+      boundTuple = bindResult.boundTuple;
+    }
 
     const id = `CMT-${String(this.nextId++).padStart(3, '0')}`;
 
@@ -562,6 +619,8 @@ export class CommitmentTracker extends EventEmitter {
       verificationCount: 0,
       violationCount: 0,
       topicId: input.topicId,
+      ...(boundTuple ? { boundTuple } : {}),
+      ...(input.boundBy ? { boundBy: input.boundBy } : {}),
       source: input.source ?? 'agent',
       // C1+C2 "The Agent Carries the Loop" state model (spec §4.1).
       owner,
@@ -1593,6 +1652,7 @@ export class CommitmentTracker extends EventEmitter {
       );
       this.store.commitments[latestIdx] = committed;
       this.saveStore();
+      this.maybeReleaseConversationBinding(current, committed);
       return committed;
     }
     throw new Error(
@@ -1622,7 +1682,44 @@ export class CommitmentTracker extends EventEmitter {
     );
     this.store.commitments[idx] = committed;
     this.saveStore();
+    this.maybeReleaseConversationBinding(current, committed);
     return committed;
+  }
+
+  /**
+   * durable-conversation-identity §3.5.2 property 4: release ONE refcount on
+   * the commitment's bind-pin when the binding permanently closes. `verified`/
+   * `violated` are NOT release moments — config-change/behavioral commitments
+   * oscillate verified↔violated and a violated one-time commitment can still
+   * recover; releasing there would strand a live binding's pin. Any residue a
+   * forever-violated commitment leaves is the documented harmless R6-low-4
+   * orphan class (the pin routes its id to the id's OWN tuple), reclaimed by
+   * the tracked pin↔binding-store GC sweep follow-up.
+   */
+  private static readonly BINDING_TERMINAL_STATUSES = new Set<CommitmentStatus>([
+    'delivered',
+    'withdrawn',
+    'expired',
+  ]);
+
+  private maybeReleaseConversationBinding(prev: Commitment, next: Commitment): void {
+    if (!this.config.conversationBinder) return;
+    if (typeof next.topicId !== 'number' || next.topicId >= 0 || !next.boundTuple) return;
+    if (CommitmentTracker.BINDING_TERMINAL_STATUSES.has(prev.status)) return;
+    if (!CommitmentTracker.BINDING_TERMINAL_STATUSES.has(next.status)) return;
+    try {
+      this.config.conversationBinder.release(next.topicId);
+    } catch {
+      /* @silent-fallback-ok — a failed release leaks one refcount toward the
+         documented harmless R6-low-4 orphan class; it must never fail the
+         commitment mutation itself. */
+    }
+  }
+
+  /** Late-bind the conversation binder (the registry constructs after the
+   *  tracker at bootstrap). */
+  setConversationBinder(binder: ConversationBinder): void {
+    this.config.conversationBinder = binder;
   }
 
   /**

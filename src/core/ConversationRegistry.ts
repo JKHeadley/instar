@@ -192,9 +192,20 @@ interface SnapshotShape {
    *  the prune rule depends on — live bind-pins, unretired ambiguous-send
    *  entries, unresolved send-intents. LOCAL state, never on any wire. */
   bindPins: Record<string, { tuple: [string, string, string | null]; refcount: number }>;
-  ambiguousSends: Record<string, { recordedAt: string }>;
+  ambiguousSends: Record<string, { recordedAt: string; lane?: 'logical' | 'content-hash' }>;
   sendIntents: Record<string, { lane: 'logical' | 'content-hash'; seq: number }>;
 }
+
+/** §5.0(a) pinned E1 constants (R3-M1/R7-M2). Exported for the §10 tests. */
+export const AMBIGUOUS_DEDUP_TTL_MS = 604800000; // 7 days — safety bound ONLY, never the suppression mechanism (logical lane)
+export const CONTENT_HASH_DEDUP_WINDOW_MS = 900000; // 15 min — the fallback lane's WINDOW (mirrors the Telegram exact-duplicate window)
+/** §5.0(a) pathological TRIPWIRE, not a correctness bound (R4-M2/R5-minor-1):
+ *  reached-with-all-live raises ONE aggregated attention item while the new
+ *  entry is STILL journaled + retained — nothing is ever dropped. */
+export const AMBIGUOUS_SENDS_HARD_CAP = 1000;
+/** §5.1 reachability flap dampening (R3-minor). */
+export const REACHABILITY_FLAP_THRESHOLD = 3;
+export const REACHABILITY_FLAP_WINDOW_MS = 86400000; // 24h
 
 const ENTRY_CEILING = 50000; // §3.4 JSON-store design ceiling
 const ENTRY_THRESHOLD = 40000; // 80% of ceiling — the pinned tripwire (R3-minor)
@@ -220,10 +231,15 @@ export class ConversationRegistry {
   private displacedAssignments = new Map<number, string>(); // offset → owning tupleKey (GLOBAL — R4-C1)
   private candClaimants = new Map<number, Set<string>>(); // cand → claimant tupleKeys
 
-  // ── §5.0(a)/§3.5.2 journal-applied state (writers land in later increments) ──
+  // ── §5.0(a)/§3.5.2 journal-applied state (writers: §6.1 increment 2) ──
   private bindPins = new Map<number, { tuple: [string, string, string | null]; refcount: number }>();
-  private ambiguousSends = new Map<string, { recordedAt: string }>();
+  private ambiguousSends = new Map<string, { recordedAt: string; lane?: 'logical' | 'content-hash' }>();
   private sendIntents = new Map<string, { lane: 'logical' | 'content-hash'; seq: number }>();
+  /** R9-minor-1: parseable send-intent lines with the lane field STRIPPED —
+   *  resolved toward RETRY at replay, surfaced once (never a suppressor). */
+  private missingLaneIntents = 0;
+  /** §5.1 reachability flap tracking (in-memory, advisory — R3-minor). */
+  private reachabilityFlips = new Map<number, number[]>();
 
   private workspacePin: { value: string; source: 'config' | 'local-observed'; confirmedLocally: boolean } | null = null;
 
@@ -309,6 +325,15 @@ export class ConversationRegistry {
     this.replayJournal();
     this.rebuildDerivedIndexes();
     this.applyAliasAssignmentFilter(); // R6-M3 pin 2: the disjointness invariant holds at every BOOT fixpoint
+    this.convertOrphanedSendIntents(); // R8-M1 lane-scoped boot conversion (staged post-compose, fsynced before serving — R9-low-3/R10-minor-1)
+    this.pruneSendGuardState();
+    if (this.missingLaneIntents > 0) {
+      this.attention(
+        'conversation-registry:missing-lane-intent',
+        'Conversation registry: send-intent record(s) with a stripped lane field',
+        `${this.missingLaneIntents} parseable send-intent journal record(s) carried no lane discriminator (R9-minor-1). Each was resolved toward RETRY (content-hash treatment — loss is never silent, never a suppressor). This indicates a serialization bug worth a look.`,
+      );
+    }
     if (this.unappliedUnknownOps.length > 0) {
       const first = this.unappliedUnknownOps[0];
       const kinds = [...new Set(this.unappliedUnknownOps.map((u) => u.op))].join(', ');
@@ -357,7 +382,12 @@ export class ConversationRegistry {
         }
       }
       for (const [k, v] of Object.entries(raw.ambiguousSends ?? {})) {
-        if (v && typeof v.recordedAt === 'string') this.ambiguousSends.set(k, v);
+        if (v && typeof v.recordedAt === 'string') {
+          this.ambiguousSends.set(k, {
+            recordedAt: v.recordedAt,
+            ...(v.lane === 'logical' || v.lane === 'content-hash' ? { lane: v.lane } : {}),
+          });
+        }
       }
       for (const [k, v] of Object.entries(raw.sendIntents ?? {})) {
         if (v && (v.lane === 'logical' || v.lane === 'content-hash') && typeof v.seq === 'number') this.sendIntents.set(k, v);
@@ -558,7 +588,10 @@ export class ConversationRegistry {
       }
       case 'ambiguous-send': {
         if (typeof rec.conversationId !== 'number' || !rec.logicalSendId) return;
-        this.ambiguousSends.set(`${rec.conversationId}|${rec.logicalSendId}`, { recordedAt: rec.ts });
+        this.ambiguousSends.set(`${rec.conversationId}|${rec.logicalSendId}`, {
+          recordedAt: rec.ts,
+          ...(rec.lane === 'logical' || rec.lane === 'content-hash' ? { lane: rec.lane } : {}),
+        });
         this.sendIntents.delete(`${rec.conversationId}|${rec.logicalSendId}`);
         return;
       }
@@ -571,7 +604,9 @@ export class ConversationRegistry {
       case 'send-intent': {
         if (typeof rec.conversationId !== 'number' || !rec.logicalSendId) return;
         // Malformed/unknown lane resolves toward RETRY (content-hash treatment)
-        // — R9-minor-1/R10-low-2 (loss-is-never-silent picks retry).
+        // — R9-minor-1/R10-low-2 (loss-is-never-silent picks retry). Counted so
+        // the post-replay boot pass can raise ONE deduped attention item.
+        if (rec.lane !== 'logical' && rec.lane !== 'content-hash') this.missingLaneIntents++;
         const lane = rec.lane === 'logical' ? 'logical' : 'content-hash';
         this.sendIntents.set(`${rec.conversationId}|${rec.logicalSendId}`, { lane, seq: rec.seq });
         return;
@@ -935,6 +970,22 @@ export class ConversationRegistry {
     const existing = this.byTuple.get(tupleKeyFor(tuple));
     if (existing) {
       this.maybeUpgradeWorkspace(existing);
+      // WAL rule at durable-bind time (§3.3): a pre-existing SPECULATIVE entry
+      // rode the batched snapshot only — its journal line may not exist yet. A
+      // durable binding is not re-derivable after a crash, so ensure the entry
+      // is durably journaled NOW (idempotent op:"mint" re-apply; fsynced)
+      // BEFORE the id is handed to the binding.
+      this.appendJournal(
+        {
+          op: 'mint',
+          key: canonicalKeyFor(tuple, existing.workspaceId),
+          tuple: [tuple.platform, tuple.channelId, tuple.threadTs],
+          id: existing.id,
+          origin: existing.origin,
+          hlc: existing.hlc,
+        },
+        { fsync: true },
+      );
       return { ok: true, id: existing.id, created: false };
     }
     const w = this.breakerWindow(tuple.channelId);
@@ -996,6 +1047,10 @@ export class ConversationRegistry {
         existing.label = opts.label; // write-on-change (§3.4 G4)
         this.scheduleSnapshot();
       }
+      // §5.1 reachability auto-clear: an authenticated inbound on the tuple is
+      // positive evidence the conversation is reachable again (re-invited /
+      // un-archived channel is never stuck).
+      if (existing.reachability === 'unreachable') this.setReachability(existing.id, 'ok');
       return { id: existing.id, created: false, registered: true };
     }
 
@@ -1161,6 +1216,21 @@ export class ConversationRegistry {
   }
 
   /**
+   * §4 READ-ONLY id for a routing key (integration-nit): the existing entry's
+   * id, else the B6 collision-checked candidate — NEVER a registration. A pure
+   * comparison callsite must not acquire a get-or-create WRITE side-effect.
+   */
+  readIdForRoutingKey(routingKey: string): number | null {
+    this.load();
+    const tuple = tupleForRoutingKey(routingKey);
+    if (!tuple) return null;
+    const tKey = tupleKeyFor(tuple);
+    const existing = this.byTuple.get(tKey);
+    if (existing) return existing.id;
+    return this.collisionCheckedRead(candidateIdForRoutingKey(routingKey), tKey);
+  }
+
+  /**
    * `idForSessionKey` — GET-OR-CREATE (§6.0 #12, a named mint chokepoint).
    * Positive numeric session keys pass through; Slack routing keys mint.
    */
@@ -1191,6 +1261,226 @@ export class ConversationRegistry {
   entryCount(): number {
     this.load();
     return this.conversations.size;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Bind-pin overlay (§3.5.2 — increment 2 writers)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Record a durable bind on a minted id (§3.5.2 property 2/4): the pin binds
+   * the id to the TUPLE it resolves to AT BIND TIME, refcounted per live
+   * binding, journaled (`op:"bind-pin"`, fsynced — the bind's own WAL line).
+   * Returns the bind-time tuple (the caller denormalizes it as `boundTuple`
+   * onto the binding record — property 5), or null when the id is unresolvable.
+   */
+  bindPin(id: number): ConversationTuple | null {
+    this.load();
+    const entry = this.byId.get(this.aliases.get(id) ?? id);
+    if (!entry) return null;
+    const tuple: [string, string, string | null] = ['slack', entry.channelId, entry.threadTs];
+    const pin = this.bindPins.get(id);
+    const refcount = pin ? pin.refcount + 1 : 1;
+    if (pin) pin.refcount = refcount;
+    else this.bindPins.set(id, { tuple, refcount });
+    this.appendJournal({ op: 'bind-pin', id, tuple, refcount }, { fsync: true });
+    this.scheduleSnapshot();
+    return { platform: 'slack', channelId: entry.channelId, threadTs: entry.threadTs };
+  }
+
+  /** Release one refcount on a bind-pin (`op:"bind-release"`, §3.5.2 property 4).
+   *  The pin is released only at ZERO — a commitment closing never strands a
+   *  still-live sibling binding on the same id. No-op on a missing pin. */
+  bindRelease(id: number): void {
+    this.load();
+    const pin = this.bindPins.get(id);
+    if (!pin) return;
+    const refcount = pin.refcount - 1;
+    this.appendJournal({ op: 'bind-release', id, refcount }, { fsync: true });
+    if (refcount <= 0) this.bindPins.delete(id);
+    else pin.refcount = refcount;
+    this.scheduleSnapshot();
+  }
+
+  /** The live bind-pin tuple for an id (delivery-time overlay read — §3.5.2 property 3). */
+  getBindPinTuple(id: number): ConversationTuple | null {
+    this.load();
+    const pin = this.bindPins.get(id);
+    if (!pin) return null;
+    return { platform: 'slack', channelId: pin.tuple[1], threadTs: pin.tuple[2] ?? null };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // E1 ambiguous-outcome idempotency guard state (§5.0(a) — increment 2 writers)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private sendGuardKey(conversationId: number, logicalSendId: string): string {
+    return `${conversationId}|${logicalSendId}`;
+  }
+
+  /**
+   * Durable SEND-INTENT (R6-M1): appended+fsynced BEFORE the transport send,
+   * stamped with the caller's lane (R8-M1 — the boot-conversion discriminator,
+   * never inferred from the id's shape at boot).
+   */
+  recordSendIntent(conversationId: number, logicalSendId: string, lane: 'logical' | 'content-hash'): void {
+    this.load();
+    const seq = this.appendJournal({ op: 'send-intent', conversationId, logicalSendId, lane }, { fsync: true });
+    this.sendIntents.set(this.sendGuardKey(conversationId, logicalSendId), { lane, seq });
+    this.scheduleSnapshot();
+  }
+
+  /**
+   * Record the E1 suppressor entry — ONLY on a likely-posted outcome (success
+   * or ambiguous/ack-lost; NEVER a clean transient failure — R2-security-NEW-3).
+   * Durable (`op:"ambiguous-send"`, fsynced — R4-M2); resolves the pair's
+   * send-intent. The in-memory map is the loaded image of this durable state.
+   */
+  recordLikelyPosted(conversationId: number, logicalSendId: string, lane: 'logical' | 'content-hash'): void {
+    this.load();
+    this.pruneSendGuardState();
+    const key = this.sendGuardKey(conversationId, logicalSendId);
+    this.appendJournal({ op: 'ambiguous-send', conversationId, logicalSendId, lane }, { fsync: true });
+    this.ambiguousSends.set(key, { recordedAt: this.now().toISOString(), lane });
+    this.sendIntents.delete(key);
+    if (this.ambiguousSends.size > AMBIGUOUS_SENDS_HARD_CAP) {
+      // Pathological tripwire (R4-M2 scoped per R5-minor-1): loud, aggregated,
+      // and the new entry is STILL journaled + retained — nothing dropped, so a
+      // silent eviction can never re-open the double-post.
+      this.attention(
+        'conversation-registry:send-guard-cap',
+        'E1 send-guard entry population exceeded its pathological tripwire',
+        `${this.ambiguousSends.size} unretired/unexpired ambiguous-send entries exceed the ${AMBIGUOUS_SENDS_HARD_CAP} cap (§5.0(a)). Live entries are bounded by open beacon commitments (~maxActiveBeacons) by construction — this population means an upstream cap was raised or a retirement path is broken. No entry was evicted or dropped.`,
+      );
+    }
+    this.scheduleSnapshot();
+  }
+
+  /** Retire a logical send (`op:"send-retire"` — delivered outcome advanced the
+   *  seq, or the commitment closed). Idempotent; also resolves the intent. */
+  retireSend(conversationId: number, logicalSendId: string): void {
+    this.load();
+    const key = this.sendGuardKey(conversationId, logicalSendId);
+    if (!this.ambiguousSends.has(key) && !this.sendIntents.has(key)) return;
+    this.appendJournal({ op: 'send-retire', conversationId, logicalSendId }, { fsync: true });
+    this.ambiguousSends.delete(key);
+    this.sendIntents.delete(key);
+    this.scheduleSnapshot();
+  }
+
+  /** Resolve a send-intent WITHOUT a suppressor (`op:"send-intent-resolved"`) —
+   *  the clean-transient-failure path (positive evidence the message never
+   *  posted), so the retry is NOT suppressed (R2-security-NEW-3/R6-M1). */
+  resolveSendIntent(conversationId: number, logicalSendId: string): void {
+    this.load();
+    const key = this.sendGuardKey(conversationId, logicalSendId);
+    if (!this.sendIntents.has(key)) return;
+    this.appendJournal({ op: 'send-intent-resolved', conversationId, logicalSendId }, { fsync: true });
+    this.sendIntents.delete(key);
+    this.scheduleSnapshot();
+  }
+
+  /**
+   * The E1 suppression read (§5.0(a) R3-M1/R7-M2): the LOGICAL lane is
+   * retirement-based (an unretired entry suppresses whenever the re-fire
+   * arrives, bounded only by the 7-day TTL backstop); the CONTENT-HASH lane is
+   * WINDOW-based (a windowless caller has nothing to retire — outside the
+   * 15-min window the same text delivers again).
+   */
+  isSendSuppressed(conversationId: number, logicalSendId: string, lane: 'logical' | 'content-hash'): boolean {
+    this.load();
+    const entry = this.ambiguousSends.get(this.sendGuardKey(conversationId, logicalSendId));
+    if (!entry) return false;
+    const age = this.now().getTime() - Date.parse(entry.recordedAt);
+    if (!Number.isFinite(age)) return false;
+    return lane === 'content-hash' ? age < CONTENT_HASH_DEDUP_WINDOW_MS : age < AMBIGUOUS_DEDUP_TTL_MS;
+  }
+
+  /** Prune RETIRED/EXPIRED stragglers only (never a live unretired logical
+   *  entry below its TTL — R4-M2 second arm). An expired content-hash entry
+   *  prunes exactly like a retired one (R7-M2). */
+  pruneSendGuardState(): void {
+    const nowMs = this.now().getTime();
+    let pruned = false;
+    for (const [key, entry] of this.ambiguousSends) {
+      const age = nowMs - Date.parse(entry.recordedAt);
+      if (!Number.isFinite(age)) continue;
+      const horizon = entry.lane === 'content-hash' ? CONTENT_HASH_DEDUP_WINDOW_MS : AMBIGUOUS_DEDUP_TTL_MS;
+      if (age > horizon) {
+        this.ambiguousSends.delete(key);
+        pruned = true;
+      }
+    }
+    if (pruned) this.scheduleSnapshot();
+  }
+
+  /**
+   * R8-M1 lane-scoped boot conversion of crash-orphaned send-intents: an intent
+   * that is the LAST word for its (conversationId, logicalSendId) PAIR (R7-M3
+   * composite keying — replay already resolved every superseded pair) resolves
+   * BY ITS RECORDED LANE: `logical` (beacon) converts into an ambiguous-send
+   * suppressor (the outcome is genuinely unknown and the beacon has a next
+   * tick); `content-hash` resolves toward RETRY (the suppressed send IS the
+   * message — replay appends the missing send-intent-resolved durably, so the
+   * verdict is decided once, not re-decided every boot). Staged appends land
+   * POST-compose, fsynced before the registry begins serving (R9-low-3 /
+   * R10-minor-1).
+   */
+  private convertOrphanedSendIntents(): void {
+    if (this.sendIntents.size === 0) return;
+    for (const [key, intent] of [...this.sendIntents]) {
+      const sep = key.indexOf('|'); // conversationId prefix is numeric — the FIRST '|' always delimits (§3.4)
+      if (sep <= 0) {
+        this.sendIntents.delete(key);
+        continue;
+      }
+      const conversationId = Number(key.slice(0, sep));
+      const logicalSendId = key.slice(sep + 1);
+      if (!Number.isSafeInteger(conversationId) || !logicalSendId) {
+        this.sendIntents.delete(key);
+        continue;
+      }
+      if (intent.lane === 'logical') {
+        this.appendJournal({ op: 'ambiguous-send', conversationId, logicalSendId, lane: 'logical' }, { fsync: true });
+        this.ambiguousSends.set(key, { recordedAt: this.now().toISOString(), lane: 'logical' });
+      } else {
+        this.appendJournal({ op: 'send-intent-resolved', conversationId, logicalSendId }, { fsync: true });
+      }
+      this.sendIntents.delete(key);
+    }
+    this.scheduleSnapshot();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Reachability (§5.1 — increment 2 writer)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Flip an entry's LOCAL-authoritative reachability (§5.1). IDEMPOTENT
+   * (already-in-state → no write) and journaled WITHOUT fsync — it rides the
+   * same batched flush, so a mass event coalesces into one write, never an
+   * O(N) write storm on the failure path (scalability-F2). Returns whether the
+   * state changed and whether the conversation is in the R3-minor FLAP-DAMPENED
+   * state (>3 flips in 24h — the caller coalesces its dead-letter attention
+   * into one per-window flap item instead of one per episode).
+   */
+  setReachability(id: number, state: 'ok' | 'unreachable'): { changed: boolean; dampened: boolean } {
+    this.load();
+    const entry = this.byId.get(this.aliases.get(id) ?? id);
+    if (!entry) return { changed: false, dampened: false };
+    const nowMs = this.now().getTime();
+    const cutoff = nowMs - REACHABILITY_FLAP_WINDOW_MS;
+    const flips = (this.reachabilityFlips.get(entry.id) ?? []).filter((t) => t > cutoff);
+    if (entry.reachability === state) {
+      this.reachabilityFlips.set(entry.id, flips);
+      return { changed: false, dampened: flips.length > REACHABILITY_FLAP_THRESHOLD };
+    }
+    flips.push(nowMs);
+    this.reachabilityFlips.set(entry.id, flips);
+    entry.reachability = state;
+    this.appendJournal({ op: 'reachability', id: entry.id, reachability: state }, { fsync: false });
+    this.scheduleSnapshot();
+    return { changed: true, dampened: flips.length > REACHABILITY_FLAP_THRESHOLD };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1280,6 +1570,12 @@ export class ConversationRegistry {
         snapshotQuarantinedAt: this.snapshotQuarantinedAt,
         journalQuarantinedAt: this.journalQuarantinedAt,
         durabilityIncidents: this.durabilityIncidents,
+      },
+      // §5.0(a)/§3.5.2 increment-2 observability.
+      sendGuard: {
+        unretiredEntries: this.ambiguousSends.size,
+        unresolvedIntents: this.sendIntents.size,
+        bindPins: this.bindPins.size,
       },
       // Snapshot-suspension observability (R11-low-1).
       snapshotSuspended: this.unappliedUnknownOps.length > 0,

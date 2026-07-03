@@ -48,6 +48,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         rb: 2,
       },
     },
+    // Test-Runner Concurrency Bound — the spawn cap's sibling for vitest roots
+    // (docs/specs/test-runner-concurrency-bound.md §2.9). These values mirror
+    // the CODE defaults and tune the route report + server-launched tooling
+    // ONLY — NOT the chokepoint (its kill switch is env
+    // INSTAR_HOST_TEST_SEMAPHORE=off; its host-uniform authority is the
+    // ~/.instar/host-test-runner-tuning.json tuning file). Seeded here purely
+    // to materialize the operator-visible knobs (add-missing-only, matching
+    // the spawnCap treatment — a hand-tuned value is never overwritten).
+    testRunnerCap: {
+      enabled: true,
+      maxConcurrent: 1,
+      acquireWaitMs: 120000,
+    },
   },
   monitoring: {
     memoryMonitoring: true,
@@ -816,6 +829,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // 404 until explicitly flipped by Phase B+. Runtime kill-switch.
   prGate: {
     phase: 'off' as const,
+    // Class-Closure Gate (docs/specs/class-closure-gate.md) — ships dark +
+    // report-only (the CI lint logs findings and always exits 0 until an
+    // operator flips enabled+!dryRun). backfilled to existing agents via the
+    // add-missing applyDefaults path, exactly like prGate.phase.
+    classClosure: {
+      enabled: false,
+      dryRun: true,
+      escalatorDrafting: false,
+    },
   },
   // Restart-cascade dampener — minimum ms between two update-driven restart
   // requests. AutoUpdater batches a new restart that lands within this window

@@ -26,9 +26,13 @@ const MINT_IDIOM = /-\s*\(\s*Math\.abs\((?:[^()]|\([^()]*\))*\)\s*\+\s*1\s*\)/;
  */
 const ALLOWED = new Set([
   'core/conversationIdentity.ts',
-  'core/slackRefreshBinding.ts',
+  // §4 consolidation (increment 2): slackRefreshBinding re-exports the
+  // candidate, and the routes.ts build-heartbeat inline copy now mints through
+  // the registry — both retired their local idiom, so they LEAVE the allowlist
+  // (a new copy in either is now a CI failure). The server.ts PresenceProxy
+  // synthetic-id closure is the last legacy copy — retiring it to
+  // registry.readIdForRoutingKey / idForSessionKey is the tracked §4 follow-up.
   'commands/server.ts',
-  'server/routes.ts',
 ]);
 
 function* walk(dir: string): Generator<string> {
