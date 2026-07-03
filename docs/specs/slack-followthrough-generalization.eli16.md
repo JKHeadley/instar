@@ -38,3 +38,7 @@ Ships dark on the fleet, live-in-"dry-run" on the dev machine first (it decides 
 3. **Should this also improve Telegram?** Because Slack and Telegram share the same endpoint, teaching it to catch time-boxed promises would also start catching them on Telegram (once the fleet flag is on). That's an upgrade, not a bug — but do you want it Slack-only until Telegram gets its own soak? **My recommendation: keep it shared (one detector for both), rely on the shared dark-gate + dev soak.**
 
 4. **Do we need a slower backup scanner?** The hook could theoretically be missing on a very old session or crash. Want a low-frequency background scan of Slack transcripts as insurance? **My recommendation: no for now — the hook auto-updates on every agent, and "catch more" is really question 1's territory. Keep this minimal.**
+
+---
+
+*Design-review status: the technical design is **converged** — it passed an internal multi-lens review plus two independent AI cross-model reviews (Gemini and GPT), both clean, with the biggest catch being a private-message mis-delivery seam that's now closed. It is **waiting on your approval** before I build it. Nothing ships until you say go.*

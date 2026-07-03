@@ -1,7 +1,9 @@
 ---
 title: Slack Follow-Through Generalization (Phase 2.3)
-status: review-converging
-review-state: internal-converged; gemini-external-clean; codex-external-OWED (codex CLI unavailable on the review machine)
+status: "converged (0C/0M) — internal multi-lens + gemini-2.5-pro + codex-cli/gpt all clean (2026-07-03); awaits operator approval before build"
+review-convergence: "2026-07-03"
+review-convergence-detail: "spec-converge ceremony over the DRAFT. Internal multi-lens (adversarial/security/integration-code-grounded/decision-completeness/keystone-drift) rounds 1-2 folded 2C+7M+4m; two external cross-model doors: gemini-2.5-pro (rounds 2-4: 1C → 2M → CLEAN) and codex-cli/gpt (0.137.0, one final pass: CLEAN — no critical or major). Load-bearing catch: the 1:1-session/DM cross-channel mis-delivery seam (gemini refined the internal fix — the hook now keys ONLY on INSTAR_CONVERSATION_ID, no Telegram fallback). Every fold re-walked against v1.3.737 code. approved: NOT set — build awaits the operator's go."
+eli16-overview: "slack-followthrough-generalization.eli16.md"
 parent-principle: Structure > Willpower
 related-principles:
   - The Agent Carries the Loop
@@ -12,7 +14,7 @@ reuses-specs:
   - durable-conversation-identity.md (§5 funnel, §6.1 increment 2, §6.3 eager mint, §7 bind-time authority)
   - action-claim-followthrough-sentinel.md (the Telegram registration model this spec generalizes)
 supersedes: none
-tags: [draft]
+tags: [review-convergence]
 ---
 
 # Slack Follow-Through Generalization (Phase 2.3)
@@ -32,9 +34,10 @@ Grounded against the worktree's **v1.3.737** tree; every cited line/route was co
 | 2 | internal: fresh adversarial/security + **keystone-drift** | **0C + 3M** | Folded (bind-verify write-gating order; positive-id token-bearing honesty; keystone `action-claim observer` mislabel reconciled) |
 | 2 (ext) | **gemini-2.5-pro** | 1C | Folded — my R1-C1 guard was *incomplete*: the hook's `INSTAR_TELEGRAM_TOPIC` fallback re-opened the DM mis-delivery. Grounded fix: hook keys ONLY on `INSTAR_CONVERSATION_ID`, no fallback. |
 | 3 (ext) | **gemini-2.5-pro** | 2M | Folded — drop the ≥20-char floor (masked core targets); clamp POST payload to 16 KB. |
-| 4 (ext) | **gemini-2.5-pro** | **0C + 0M → CLEAN** | Clean round on the external lens. |
+| 4 (ext) | **gemini-2.5-pro** | **0C + 0M → CLEAN** | Clean round on the gemini lens. |
+| 5 (ext) | **codex-cli / gpt (0.137.0)** | **0C + 0M → CLEAN** | Clean on the GPT-tier lens — "CLEAN — no critical or major". |
 
-**Convergence status:** internal multi-lens **converged**; **gemini** external **clean**; **codex** (GPT-tier) external pass is **OWED** (the codex CLI is not installed on the review machine). Per the spec-converge charter (one pass per available family + the roadmap's "re-execute the failure walks" rule), the **review-convergence tag is deliberately NOT applied** until the codex pass runs — so the `/instar-dev` build gate correctly still refuses. Open design questions for the operator remain in §10 (Q1–Q6).
+**Convergence status:** **CONVERGED.** Internal multi-lens **converged**; **both** external cross-model families clean — **gemini-2.5-pro** (clean round 4) and **codex-cli/gpt** (clean, one final pass; codex was reachable at `/Users/justin/.asdf/installs/nodejs/22.18.0/bin/codex`, off the default PATH). Every fold was re-walked against the real v1.3.737 code. The **`review-convergence` tag is applied**; **`approved` is deliberately NOT set** — the build still awaits the operator's explicit go (the `/instar-dev` gate needs both tags). Open design questions for the operator remain in §10 (Q1–Q6), all with recommendations, none blocking.
 
 ---
 
@@ -347,7 +350,7 @@ Per the **Live-User-Channel Proof Before Done** standard, a user-role session dr
 2. Factor the `POST /commitments` §7 bind-verify block (`routes.ts:22129-22206`) into a shared helper; prove `POST /commitments` unchanged (the §7 golden test).
 3. `/action-claim/observe`: add the negative-id bind gate (shared helper) + the negative-id `messaging.actionClaim.slack` dev-gate/dryRun read + the §4.2a Lane-A-precedence control flow + Lane-B predicate + Lane-B `externalKey` + the **cap filter widened to both prefixes** (R1-C3) + the `logs/action-claim-observe.jsonl` dryRun audit sink (R1-C6); integration tests incl. the lane-precedence single-row assertion (R1-C9).
 4. `INSTAR_CONVERSATION_ID` spawn env (`SessionManager.ts`) — the bind-token-identical resolution + the **1:1 guard** (not on `targetSession==='lifeline'`; R1-C1/C4).
-5. Generalize the Stop hook body (`getActionClaimFollowthroughHook`) — topic-source fallback + bind-token header; hook regression (no-bare-require, always exit 0).
+5. Generalize the Stop hook body (`getActionClaimFollowthroughHook`) — topic source = `INSTAR_CONVERSATION_ID` **only** (no `INSTAR_TELEGRAM_TOPIC` fallback; R2-EXT-C1) + bind-token header + drop the ≥20-char floor (R3-EXT-M1) + 16 KB payload clamp (R3-EXT-M2); hook regression (no-bare-require, always exit 0).
 6. `messaging.actionClaim.slack` dev-gate registration + `migrateConfig` existence-check + CLAUDE.md template paragraph.
 7. E2E aliveness test (incl. the negative-lifeline-session assertion: a lifeline session does NOT carry `INSTAR_CONVERSATION_ID`).
 8. Live-proof S7 round-trip on dev (§9.4; requires `messaging.actionClaim.enabled:true` on dev per §8.1); signed matrix.
