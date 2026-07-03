@@ -4396,6 +4396,46 @@ export interface ResponseReviewConfig {
   promptCaching?: boolean;
   /** Disable the test endpoint */
   testEndpointDisabled?: boolean;
+  /**
+   * Context-aware reviewers (context-aware-outbound-review spec §D10): feed a
+   * bounded, untrusted-data-enveloped slice of recent conversation to the
+   * OPTED-IN reviewers so the "user explicitly asked for this" carve-out has
+   * an input to judge. `enabled` is deliberately OMITTED from config defaults
+   * so the developmentAgent dark gate resolves it (LIVE on a dev agent, DARK
+   * on the fleet; explicit false force-darks, explicit true is the fleet
+   * flip). Resolution happens at the WIRING layer (server.ts liveConfig
+   * getter) — the gate receives a pre-resolved block and reads it LIVE per
+   * evaluate (kill-switch without restart).
+   */
+  conversationalContext?: ConversationalContextConfig;
+}
+
+/**
+ * Config block for the context-aware reviewer feature
+ * (`responseReview.conversationalContext`). All tunables have in-code
+ * defaults; no migrateConfig entry exists on purpose (the dev-gate convention
+ * REQUIRES `enabled` to be absent — a migration writing `enabled: false`
+ * would recreate the PR #1001 bug the devAgentGate funnel exists to prevent).
+ */
+export interface ConversationalContextConfig {
+  /** OMITTED by default ⇒ resolveDevAgentGate decides (dev LIVE / fleet DARK). */
+  enabled?: boolean;
+  /** Max conversation messages rendered per review (default 6). */
+  maxMessages?: number;
+  /** Per-message char clamp (default 500). */
+  maxCharsPerMessage?: number;
+  /** Total char hard clamp, oldest dropped first (default 4000). */
+  maxTotalChars?: number;
+  /**
+   * Built-in reviewers that receive the context section (default
+   * ['conversational-tone'] — spec §D3, round-1 M1: `information-leakage` is
+   * EXCLUDED by design; widening requires its own principal analysis and a
+   * spec revision, never a config-only addition). Named `injectReviewers`
+   * (not `reviewers`) because the sibling `responseReview.reviewers` key is
+   * an object map — a same-named array one nesting level down invites
+   * mis-merge (spec r2, round-1 m3).
+   */
+  injectReviewers?: string[];
 }
 
 export interface ReviewerConfig {

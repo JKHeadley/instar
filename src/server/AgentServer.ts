@@ -646,6 +646,10 @@ export class AgentServer {
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     responseReviewGate?: import('../core/CoherenceGate.js').CoherenceGate;
+    /** §D9.4b canary-battery driver (context-aware-outbound-review) — wired
+     *  by server.ts alongside the response-review gate; the trigger route
+     *  503s when absent or when the feature is dark. */
+    reviewCanaryBattery?: import('../monitoring/ReviewCanaryBattery.js').ReviewCanaryBattery;
     messagingToneGate?: import('../core/MessagingToneGate.js').MessagingToneGate;
     outboundDedupGate?: import('../core/OutboundDedupGate.js').OutboundDedupGate;
     telemetryHeartbeat?: import('../monitoring/TelemetryHeartbeat.js').TelemetryHeartbeat;
@@ -2360,6 +2364,7 @@ export class AgentServer {
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
       responseReviewGate: options.responseReviewGate ?? null,
+      reviewCanaryBattery: options.reviewCanaryBattery ?? null,
       messagingToneGate: options.messagingToneGate ?? null,
       // Live-config READ handle — routes that must honor config flips without
       // a restart (outbound-advisory rollback contract, spec

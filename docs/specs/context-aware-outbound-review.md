@@ -166,11 +166,11 @@ acquisition per D5.)
   mid-turn). This is expected and harmless — agent-role rows can never
   constitute an ask (D4) — and is NOT to be filtered out; tests must not treat
   it as a defect.
-- **Transcript fallback (no-topic `direct` sessions):** deferred — NOT in v1.
+- **Transcript fallback (no-topic `direct` sessions):** deferred <!-- tracked: spec-8.7 --> — NOT in v1.
   The two observed false positives were both topic-bound Telegram messages;
   `direct` channel review is internal-facing and lower-stakes. Extracting user
   turns from `transcriptPath` (machinery similar to `extractToolContext`) is
-  a DECIDED deferral (§8-7) rather than silently shipped. Rationale: every
+  a DECIDED deferral (§8-7) <!-- tracked: spec-8.7 --> rather than silently shipped. Rationale: every
   added context source is an added attacker-influenceable channel; earn each
   one separately.
 
@@ -201,8 +201,8 @@ New module `src/core/untrustedConversationContext.ts` exporting
   every reviewer prompt.
 - `MessagingToneGate.renderRecentMessages` is NOT refactored onto the shared
   helper in this change (non-goal §3): the tone gate is an always-on enforcing
-  authority and this spec refuses to touch its behavior. A follow-up
-  no-behavior-change refactor may unify them (adjacent to the §8-6 follow-up).
+  authority and this spec refuses to touch its behavior. A follow-up <!-- tracked: spec-8.6 -->
+  no-behavior-change refactor may unify them (adjacent to the §8-6 follow-up <!-- tracked: spec-8.6 -->).
 
 ### D3. "The operator asked for this" — a first-class, meaning-judged, one-way carve-out
 
@@ -775,9 +775,9 @@ It is NEVER automatic; the gate below defines when proposing it is legitimate:
   receives conversation (§1.5). Its B1–B7 header does NOT gain an ask
   carve-out in S2 (DECIDED r2, resolving OQ-6: never touch the live enforcing
   authority in the same change that tunes the watch-mode one); filed as a
-  named follow-up.
+  named follow-up <!-- tracked: spec-8.6 -->.
 - **No context to `information-leakage` or any reviewer serving non-primary
-  recipients** (r2, round-1 M1) — excluded by design, not deferred; a future
+  recipients** (r2, round-1 M1) — excluded by design, not deferred <!-- tracked: spec-3.nongoal-M1 -->; a future
   widening requires its own principal analysis and spec revision.
 - **No deterministic ask-classifier as authority** (D3 rationale).
 - **No PEL changes** — the deterministic layer stays absolute.
@@ -942,8 +942,8 @@ Each former OQ is resolved below; the eli16 companion restates them plainly.
    proposal must clear).
 6. **Tone-gate consistency — DECIDED: out of S2** (§3 non-goal; never touch
    the live enforcing authority in the same change that tunes the watch-mode
-   one). Filed as a named follow-up.
-7. **Transcript fallback for `direct`/no-topic sessions — DECIDED: deferred**
+   one). Filed as a named follow-up <!-- tracked: spec-8.6 -->.
+7. **Transcript fallback for `direct`/no-topic sessions — DECIDED: deferred** <!-- tracked: spec-8.7 -->
    (§3 non-goal; revisit only on an observed direct-channel false positive —
    internal channels are fail-open on ALL_ABSTAIN today, so the stakes are
    structurally lower there).

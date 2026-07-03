@@ -139,6 +139,15 @@ On a multi-machine setup, writes are classified by DOMAIN (machine-local / sessi
 - **When to use** (PROACTIVE): a write of mine (or a route like \`POST /evolution/actions\` / \`POST /attention\`) answers 409 \`write-refused\` naming another machine → that state belongs to the named owner; re-send it there — do NOT auto-move the topic (moving is a consent-gated operator decision, the refusal hint is advisory prose). "Are writes hanging or being refused?" → read \`GET /write-admission\` (the eventLoop block attributes hang windows to loop starvation) instead of guessing. A refusal storm surfaces as ONE deduped attention item, never a flood.\n`;
 }
 
+export function CONTEXT_AWARE_REVIEW_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)
+
+Beyond the tone gate, a response-review pipeline (nine specialist reviewers driven by a Stop hook) evaluates each finished conversational turn. On most installs it is OFF BY CONFIG — \`GET /review/history\` returns 501 there; say so honestly rather than guessing. Where it runs, it is usually in WATCH MODE (\`responseReview.observeOnly: true\`): verdicts are recorded, nothing is blocked. The context-aware layer (⚗️ experimental, dev-gated dark: \`responseReview.conversationalContext\`) feeds the opted-in reviewer a bounded, untrusted-data-enveloped slice of recent conversation so "the operator asked for this technical detail" is an input it can actually judge — a one-way carve-out (it can only move a would-block toward PASS, never license credentials/PII, never touch the deterministic policy layer).
+- Recent verdicts: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/review/history?limit=20"\` (501 when the pipeline is off). The durable would-block audit is \`logs/response-review-decisions.jsonl\` — one line per reviewed turn (\`llmVerdict: "BLOCK"\` + \`observeOnly: true\` = a would-block), plus counterfactual/canary soak rows.
+- **When to use** (PROACTIVE — this is the trigger): user asks "why was my technical reply flagged although I asked for it?" → check the decision row's \`contextMeta\` FIRST — whether conversation context was even available (and under which \`askLicenseMode\`) — before assuming the reviewer erred. No \`contextMeta\` on the row means the reviewer judged the message in isolation.
+- The enforcement flip (\`observeOnly: false\`) is the operator's action alone, gated on a measured clean soak day — never propose it as automatic. Spec: \`docs/specs/context-aware-outbound-review.md\`.\n`;
+}
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -4328,6 +4337,19 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Permission-Prompt Floor section');
     }
 
+    // Context-Aware Outbound Review (spec: context-aware-outbound-review.md §4.3)
+    // — Agent Awareness Standard + Migration Parity item 3: existing agents learn
+    // the /review/history surface + the durable would-block decision log, the
+    // "check contextMeta before assuming the reviewer erred" proactive trigger,
+    // and the house dark-feature honesty phrasing (round-1 m5: the pipeline is
+    // off by config on most installs and /review/history returns 501 there).
+    // Content-sniffed on the heading; idempotent.
+    if (!content.includes('Context-Aware Outbound Review')) {
+      content += CONTEXT_AWARE_REVIEW_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Context-Aware Outbound Review section');
+    }
+
     // Playwright Profile Registry (spec: playwright-profile-registry.md) — Agent
     // Awareness Standard + Migration Parity item 3: existing agents learn the
     // /playwright-profiles surface (list / session-context / create / assign /
@@ -7512,6 +7534,11 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      // Context-Aware Outbound Review (context-aware-outbound-review §4.3):
+      // framework-agnostic server behavior — a Codex/Gemini agent whose turn
+      // was would-blocked also needs the "check contextMeta before assuming
+      // the reviewer erred" trigger + the honest 501-when-off phrasing.
+      '### Context-Aware Outbound Review',
       '### Self-Discovery',
       '**Publishing**',
       '**Private Viewing**',

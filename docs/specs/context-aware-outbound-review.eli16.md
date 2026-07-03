@@ -159,3 +159,11 @@ that change is now a named, tested build item).
    separate follow-up.
 7. **What about non-Telegram sessions?** Decided: deferred unless a real miss
    shows up there (those internal channels are lower-stakes by construction).
+
+## Build status
+
+Built and shipped per this spec (all three test tiers; ships dark on the
+fleet, live on development agents). The two decided put-offs above (the
+sibling tone gate's wording, and non-Telegram sessions) are annotated with
+tracked markers in the technical spec (§8-6 / §8-7) so they cannot be
+silently forgotten.

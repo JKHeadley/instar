@@ -9,6 +9,10 @@
 import crypto from 'node:crypto';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
+import type {
+  ConversationContextMessage,
+  ConversationContextMeta,
+} from './untrustedConversationContext.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -102,6 +106,23 @@ export interface ReviewContext {
   relationshipContext?: { communicationStyle?: string; formality?: string; themes?: string[] };
   /** Canonical state context — known projects, URLs, facts from CanonicalState registry */
   canonicalStateContext?: string;
+  /**
+   * Recent conversation for the topic (context-aware-outbound-review §D3).
+   * STRUCTURAL availability: CoherenceGate places these two fields ONLY on the
+   * AUGMENTED shallow copy handed to reviewers in the resolved opt-in set —
+   * and only when `recipientType === 'primary-user'`. Every other reviewer
+   * receives the base ctx, which never carries conversation — a reviewer that
+   * was not handed the fields CANNOT render them, no matter what its
+   * buildPrompt does. Bodies are untrusted DATA; the shared renderer
+   * (untrustedConversationContext.ts) envelopes them.
+   */
+  recentConversation?: ConversationContextMessage[];
+  /**
+   * Non-body metadata about the injected context (counts + truncation +
+   * source + the structural askLicenseMode). This — never bodies — is what
+   * audit surfaces record (§D7).
+   */
+  conversationContextMeta?: ConversationContextMeta;
 }
 
 export interface ReviewerOptions {
@@ -266,6 +287,21 @@ export abstract class CoherenceReviewer {
    * Each reviewer overrides this to build its specific prompt.
    */
   protected abstract buildPrompt(context: ReviewContext): string;
+
+  /**
+   * Whether this reviewer OPTS IN to receiving recent conversation
+   * (context-aware-outbound-review §D3). Default false for every built-in —
+   * the built-in opt-in set is config-resolved
+   * (`responseReview.conversationalContext.injectReviewers`, v1 default
+   * `['conversational-tone']`). Custom DynamicReviewers override this via
+   * their `contextRequirements['recent-conversation']` key. Opt-in is only
+   * honored WITHIN the gate's structural scoping (primary-user recipient) —
+   * a config-only opt-in can never expand exposure beyond what the round-1
+   * M1 exclusion accepted.
+   */
+  wantsRecentConversation(): boolean {
+    return false;
+  }
 
   /**
    * Generate a randomized boundary token for prompt injection hardening.

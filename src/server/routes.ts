@@ -844,6 +844,11 @@ export interface RouteContext {
    *  Recording-only — never gates a send. Null only if SQLite open failed. */
   a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null;
   responseReviewGate: CoherenceGate | null;
+  /** The §D9.4b daily adversarial canary battery driver (context-aware-
+   *  outbound-review). Bearer-gated trigger route POST /review/canary-battery/run;
+   *  503 when the conversational-context feature is dark on this agent.
+   *  Null when the response-review pipeline itself is not wired. */
+  reviewCanaryBattery?: import('../monitoring/ReviewCanaryBattery.js').ReviewCanaryBattery | null;
   /** Scoped tone gate for outbound agent-to-user messaging routes.
    *  Uses the shared IntelligenceProvider (Claude CLI subscription or Anthropic API).
    *  Catches CLI commands, file paths, config syntax leaking to users. */
@@ -25904,7 +25909,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const { message, reviewer: reviewerName, context: testContext } = req.body;
+    const { message, reviewer: reviewerName, context: testContext, canary, fixtureId } = req.body;
 
     if (!message || typeof message !== 'string') {
       res.status(400).json({ error: 'Missing or invalid "message" field' });
@@ -25932,6 +25937,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           isExternalFacing: testContext?.isExternalFacing,
           transcriptPath: testContext?.transcriptPath,
         },
+        // Canary tag plumbing (context-aware-outbound-review §D9.4b): accepted
+        // ONLY here on the TEST route — POST /review/evaluate never reads or
+        // forwards these fields, so a real reviewed turn cannot self-tag out
+        // of the §D9.3 denominator or adjudication queue.
+        telemetry: canary === true
+          ? {
+              canary: true,
+              ...(typeof fixtureId === 'string' ? { fixtureId: fixtureId.slice(0, 120) } : {}),
+            }
+          : undefined,
       });
 
       // Test endpoint returns FULL details (including reviewer names and specific issues)
@@ -25943,9 +25958,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         outcome: result._outcome,
         warnings: result.warnings,
         feedback: result.feedback,
+        // Non-body context metadata (§D7) so the canary-battery driver can
+        // assert the pinned askLicenseMode in-band. Never context bodies.
+        contextMeta: result._contextMeta ?? null,
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Test failed' });
+    }
+  });
+
+  // Canary-battery trigger (context-aware-outbound-review §D9.4b(a), R4-m3):
+  // the Bearer-gated seam the `review-canary-battery` job drives. 503 when the
+  // conversational-context feature is dark on this agent (the house
+  // feedback-factory-process pattern — the off-by-default job then exits
+  // silently). The driver itself re-checks observeOnly/testEndpoint and
+  // REFUSES with a recorded `inconclusive` batterySummary — never a silent
+  // skip.
+  router.post('/review/canary-battery/run', async (_req, res) => {
+    if (!ctx.responseReviewGate || !ctx.reviewCanaryBattery || !ctx.reviewCanaryBattery.isLive()) {
+      res.status(503).json({
+        error: 'Review canary battery not available (conversational-context feature is dark on this agent)',
+      });
+      return;
+    }
+    try {
+      const summary = await ctx.reviewCanaryBattery.run();
+      res.json(summary);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Battery run failed' });
     }
   });
 

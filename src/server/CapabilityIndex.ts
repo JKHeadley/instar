@@ -1025,6 +1025,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'GET /coherence/health — coherence evolution dashboard',
             'GET /review/health — reviewer health and anomaly detection',
             'POST /review/canary — run canary tests with known-bad messages',
+            'POST /review/canary-battery/run — run the daily context-laundering canary battery (503 while the conversational-context feature is dark)',
           ]
         : [],
     }),

@@ -16,6 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { PolicyEnforcementLayer } from './PolicyEnforcementLayer.js';
 import type { PELResult, PELContext } from './PolicyEnforcementLayer.js';
 import { CoherenceReviewer, type ReviewResult, type ReviewContext, type OrgIntentReviewContext } from './CoherenceReviewer.js';
@@ -37,6 +38,15 @@ import { RecipientResolver, type RecipientContext } from './RecipientResolver.js
 import { CustomReviewerLoader } from './CustomReviewerLoader.js';
 import { CanonicalState } from './CanonicalState.js';
 import type { ResponseReviewConfig, ChannelReviewConfig } from './types.js';
+import {
+  clampConversation,
+  type AskLicenseMode,
+  type ConversationContextMessage,
+  type ConversationContextMeta,
+  renderUntrustedConversation,
+} from './untrustedConversationContext.js';
+import { ResponseReviewDecisionLog } from './ResponseReviewDecisionLog.js';
+import { scrubString } from './CredentialAuditEmit.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -56,6 +66,16 @@ export interface EvaluateRequest {
     autonomyLevel?: 'cautious' | 'supervised' | 'collaborative' | 'autonomous';
     isResearchSession?: boolean;
   };
+  /**
+   * Test-route-ONLY telemetry tags (context-aware-outbound-review §D9.4b tag
+   * plumbing): the canary-battery driver's `/review/test` replays carry
+   * `canary: true` + a `fixtureId`, stamped by the §D8 decision-log writer
+   * onto the row so battery rows are excluded from the §D9.3 denominator and
+   * adjudication queue. `POST /review/evaluate` NEVER reads or forwards these
+   * fields (pinned by test — boundary 13 side B), so the reviewed principal
+   * can never tag its own real turns out of the denominator.
+   */
+  telemetry?: { canary?: boolean; fixtureId?: string };
 }
 
 export interface EvaluateResponse {
@@ -74,6 +94,14 @@ export interface EvaluateResponse {
   _outcome?: string;
   /** Internal: whether a research agent was triggered */
   _researchTriggered?: boolean;
+  /**
+   * Internal: non-body metadata about the conversational context acquired for
+   * this evaluation (context-aware-outbound-review §D7 — counts + truncation
+   * + source + askLicenseMode, NEVER bodies). Returned in-band by
+   * `/review/test` so the canary-battery driver asserts the pinned
+   * ask-license mode; absent when no context was acquired.
+   */
+  _contextMeta?: ConversationContextMeta;
 }
 
 export interface AuditViolation {
@@ -119,9 +147,69 @@ export interface CoherenceGateOptions {
    * fail-closed behavior WITHOUT a restart. When omitted, the gate falls back to
    * the static `config.failClosedOnCriticalAbstain` snapshot, then to the safe
    * default (true = fail-closed ON). Additive + backward-compatible.
+   *
+   * WIDENED (context-aware-outbound-review §D10, round-1 M2): the getter also
+   * returns the RESOLVED `conversationalContext` block. Dev-gate resolution
+   * (`resolveDevAgentGate` against the live top-level `developmentAgent` flag)
+   * happens at the WIRING layer — the gate NEVER resolves the gate itself.
+   * Precedence (r3, round-2 L4): an ABSENT getter resolves the feature DARK —
+   * even against an `enabled: true` config snapshot — so a mis-wired build
+   * fails toward current behavior, never toward stale-config context
+   * injection.
    */
-  liveConfig?: () => { failClosedOnCriticalAbstain?: boolean };
+  liveConfig?: () => {
+    failClosedOnCriticalAbstain?: boolean;
+    conversationalContext?: {
+      enabled?: boolean;
+      maxMessages?: number;
+      maxCharsPerMessage?: number;
+      maxTotalChars?: number;
+      injectReviewers?: string[];
+    };
+  };
+  /**
+   * Injected conversation source (context-aware-outbound-review §D1).
+   * SYNCHRONOUS by decision (r2): the server wires it to
+   * `TopicMemory.getRecentMessages` (better-sqlite3, indexed LIMIT query)
+   * through `buildConversationContext` (conversationContextWiring.ts), which
+   * RETURNS the wiring-computed per-row `verifiedOperator` tags and the
+   * window's `askLicenseMode` (R4-m1). The gate stays decoupled from
+   * src/memory/ and src/users/ — it sees only this function. Any throw is
+   * caught at acquisition (§D5: no context section, review proceeds
+   * unchanged).
+   */
+  conversationContextProvider?: (
+    topicId: number,
+    limit: number,
+  ) => {
+    messages: ConversationContextMessage[];
+    askLicenseMode: AskLicenseMode;
+  };
+  /**
+   * Injectable §D8 decision log (tests). Defaults to
+   * `<stateDir>/../logs/response-review-decisions.jsonl`.
+   */
+  decisionLog?: ResponseReviewDecisionLog;
 }
+
+/**
+ * The wiring-resolved `responseReview.conversationalContext` block as the
+ * gate consumes it (context-aware-outbound-review §D10). `enabled` here is
+ * ALWAYS a concrete boolean — the devAgentGate funnel resolved it upstream.
+ */
+export interface ResolvedConversationalContextConfig {
+  enabled: boolean;
+  maxMessages: number;
+  maxCharsPerMessage: number;
+  maxTotalChars: number;
+  injectReviewers: string[];
+}
+
+const ASK_LICENSE_MODES: ReadonlySet<string> = new Set([
+  'verified-operator',
+  'single-sender',
+  'weak-corroboration-only',
+]);
 
 // ── Category Mapping (reviewer → generic category for agent feedback) ─
 
@@ -204,7 +292,9 @@ export class CoherenceGate {
   private researchRateLimiter: ResearchRateLimiter;
   private canonicalState: CanonicalState;
   private onResearchTriggered?: (context: ResearchTriggerContext) => void;
-  private liveConfig?: () => { failClosedOnCriticalAbstain?: boolean };
+  private liveConfig?: CoherenceGateOptions['liveConfig'];
+  private conversationContextProvider?: CoherenceGateOptions['conversationContextProvider'];
+  private decisionLog: ResponseReviewDecisionLog;
   private onLedgerEventSink: ((evt: CoherenceGateLedgerEvent) => void) | null = null;
   private static RETENTION_DAYS = 30;
 
@@ -212,6 +302,12 @@ export class CoherenceGate {
     this.config = options.config;
     this.stateDir = options.stateDir;
     this.liveConfig = options.liveConfig;
+    this.conversationContextProvider = options.conversationContextProvider;
+    this.decisionLog =
+      options.decisionLog ??
+      new ResponseReviewDecisionLog(
+        path.join(options.stateDir, '..', 'logs', 'response-review-decisions.jsonl'),
+      );
     this.onResearchTriggered = options.onResearchTriggered;
     this.researchRateLimiter = new ResearchRateLimiter({ stateDir: options.stateDir });
     this.canonicalState = new CanonicalState({ stateDir: path.join(options.stateDir, 'state') });
@@ -267,12 +363,12 @@ export class CoherenceGate {
    * Implements the 15-row normative decision matrix.
    */
   async evaluate(request: EvaluateRequest): Promise<EvaluateResponse> {
-    const { message, sessionId, stopHookActive, context } = request;
+    const { message, sessionId, stopHookActive, context, telemetry } = request;
 
     // Session mutex — prevent concurrent reviews for same session
     await this.acquireMutex(sessionId);
     try {
-      return await this._evaluate(message, sessionId, stopHookActive, context);
+      return await this._evaluate(message, sessionId, stopHookActive, context, telemetry);
     } finally {
       this.releaseMutex(sessionId);
     }
@@ -283,6 +379,7 @@ export class CoherenceGate {
     sessionId: string,
     stopHookActive: boolean,
     context: EvaluateRequest['context'],
+    telemetry?: EvaluateRequest['telemetry'],
   ): Promise<EvaluateResponse> {
     const isExternal = context.isExternalFacing ?? this.isExternalChannel(context.channel);
     const channelConfig = this.resolveChannelConfig(context.channel, isExternal);
@@ -306,7 +403,9 @@ export class CoherenceGate {
       if (currentVersion > retryState.transcriptVersion) {
         // User sent a new message — abandon stale revision
         this.retrySessions.delete(sessionId);
-        this.logAudit(sessionId, context, 'abandoned', [], 'Conversation advanced during revision');
+        this.logAudit(sessionId, context, 'abandoned', [], 'Conversation advanced during revision', {
+          outcome: 'abandoned-stale', message, retryCount: retryState.retryCount, telemetry,
+        });
         return { pass: true, _outcome: 'abandoned-stale' };
       }
     } else {
@@ -328,7 +427,9 @@ export class CoherenceGate {
     // Row 1: PEL HARD_BLOCK → always block, no exceptions
     if (pelResult.outcome === 'hard_block') {
       const feedback = this.composePELFeedback(pelResult);
-      this.logAudit(sessionId, context, 'pel-block', [], 'PEL hard block');
+      this.logAudit(sessionId, context, 'pel-block', [], 'PEL hard block', {
+        outcome: 'block', message, retryCount: retryState.retryCount, pelBlock: true, telemetry,
+      });
       // Integrated-Being: rule id only, no rule context. Spec §Write path §4.
       this.emitLedgerBlock('PEL_HARD_BLOCK', sessionId, context.channel);
       return {
@@ -363,6 +464,68 @@ export class CoherenceGate {
 
     // ── Step 5b: Load canonical state for fact-checking ───────────
     const canonicalStateContext = this.loadCanonicalStateContext();
+
+    // ── Step 5c: Conversational context acquisition ────────────────
+    // (context-aware-outbound-review §D1) Once per _evaluate, inside its own
+    // try/catch, BEFORE the reviewer fan-out — only when the feature resolves
+    // LIVE, a topicId is present, and the recipient is the primary user (§D3
+    // structural scoping: a review for any other recipient never sees
+    // conversation, so nothing is even fetched). Any throw, empty result, or
+    // absent provider ⇒ recentConversation stays undefined ⇒ NO context
+    // section ⇒ byte-identical current behavior (§D5). The HTTP seam above
+    // this pipeline fails OPEN on a crash, so EVERY new context code path is
+    // individually contained (total containment rule, round-1 M6).
+    const ccCfg = this.getConversationalContextConfig();
+    let recentConversation: ConversationContextMessage[] | undefined;
+    let conversationContextMeta: ConversationContextMeta | undefined;
+    if (
+      ccCfg &&
+      this.conversationContextProvider &&
+      typeof context.topicId === 'number' &&
+      recipientType === 'primary-user'
+    ) {
+      try {
+        // Fetch limit 10 (§D6: headroom over maxMessages for role filtering).
+        const fetched = this.conversationContextProvider(
+          context.topicId,
+          Math.max(ccCfg.maxMessages, 10),
+        );
+        const mode = fetched?.askLicenseMode;
+        if (
+          fetched &&
+          Array.isArray(fetched.messages) &&
+          fetched.messages.length > 0 &&
+          typeof mode === 'string' &&
+          ASK_LICENSE_MODES.has(mode)
+        ) {
+          const clamped = clampConversation(fetched.messages, ccCfg);
+          if (clamped.messages.length > 0) {
+            recentConversation = clamped.messages;
+            conversationContextMeta = {
+              messagesIncluded: clamped.messagesIncluded,
+              truncated: clamped.truncated,
+              source: 'topic-memory',
+              // Copied verbatim from the provider (R4-m1) — the gate NEVER
+              // computes or infers the mode.
+              askLicenseMode: mode,
+            };
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — §D5: a provider/tagging/meta throw is caught
+        // at acquisition; no context section, review proceeds byte-identical
+        // to current behavior (the STRICTER posture — the safe direction for
+        // an outbound gate). One debug-level breadcrumb, never a log flood.
+      }
+    }
+
+    // Resolved opt-in set (§D3): non-null ONLY when context was acquired for
+    // a primary-user review. Reviewers in this set — and ONLY these — receive
+    // the augmented ctx copy at the fan-out.
+    const injectSet: Set<string> | null =
+      ccCfg && recentConversation && conversationContextMeta
+        ? this.resolveInjectReviewers(ccCfg)
+        : null;
 
     // ── Step 6: Build review context ─────────────────────────────
     const reviewCtx: EscalationReviewContext = {
@@ -400,12 +563,16 @@ export class CoherenceGate {
         const warnings = pelResult.outcome === 'warn'
           ? pelResult.violations.map(v => v.detail)
           : [];
-        this.logAudit(sessionId, context, 'pass-gate', [], 'Gate skipped full review');
+        this.logAudit(sessionId, context, 'pass-gate', [], 'Gate skipped full review', {
+          outcome: 'pass', message, retryCount: retryState.retryCount, gateSkipped: true,
+          contextMeta: conversationContextMeta, telemetry,
+        });
         return {
           pass: true,
           warnings,
           _gateResult: gateResult,
           _outcome: 'pass',
+          _contextMeta: conversationContextMeta,
         };
       }
     }
@@ -413,7 +580,17 @@ export class CoherenceGate {
     // ── Step 8: Specialist reviewers (parallel fan-out) ──────────
     const enabledReviewers = this.getEnabledReviewers(context.channel, recipientType, channelConfig, isExternal);
     const results = await Promise.allSettled(
-      enabledReviewers.map(r => r.review(reviewCtx)),
+      enabledReviewers.map(r => {
+        // §D3 structural availability (r3, round-2 m2): reviewers in the
+        // resolved opt-in set receive an AUGMENTED shallow copy (base ctx +
+        // the two conversation fields); every other reviewer receives the
+        // base ctx, which never carries conversation — a reviewer not handed
+        // the fields CANNOT render them, no matter what its buildPrompt does.
+        if (injectSet && injectSet.has(r.name) && recentConversation && conversationContextMeta) {
+          return r.review({ ...reviewCtx, recentConversation, conversationContextMeta });
+        }
+        return r.review(reviewCtx);
+      }),
     );
 
     // Collect results
@@ -469,7 +646,10 @@ export class CoherenceGate {
       const capacityViolations: AuditViolation[] = settled
         .filter((r) => r.capacityUnavailable)
         .map((r) => ({ reviewer: r.reviewer, severity: 'block' as const, issue: r.issue, suggestion: r.suggestion, latencyMs: r.latencyMs }));
-      this.logAudit(sessionId, context, 'block-capacity', capacityViolations, 'Spawn capacity saturated — held (fail-closed)');
+      this.logAudit(sessionId, context, 'block-capacity', capacityViolations, 'Spawn capacity saturated — held (fail-closed)', {
+        outcome: 'block-capacity', message, retryCount: retryState.retryCount,
+        contextMeta: conversationContextMeta, telemetry,
+      });
       return {
         pass: false,
         feedback: '[unreviewed] Response held — review capacity temporarily saturated (host spawn cap). Retry shortly.',
@@ -477,6 +657,7 @@ export class CoherenceGate {
         retryCount: retryState.retryCount,
         _auditViolations: capacityViolations,
         _outcome: 'block-capacity',
+        _contextMeta: conversationContextMeta,
       };
     }
 
@@ -547,19 +728,59 @@ export class CoherenceGate {
 
     // Row 3: observeOnly → always pass
     if (observeOnly) {
-      this.logAudit(sessionId, context, 'observe-only', auditViolations, `LLM: ${llmVerdict}`);
+      // Counterfactual re-review qualification (§D9.4): watch-mode would-block
+      // whose violations include an opted-in reviewer AND whose context was
+      // actually present (a block driven solely by reviewers that never saw
+      // context is skipped — round-2 L2). A `canary: true` evaluation is
+      // likewise skipped (r4 — the battery carries its OWN context-absent
+      // baseline arm; a counterfactual of a canary would double-count it).
+      // Soak-only by construction: this branch IS the observeOnly branch, so
+      // the counterfactual path NEVER runs under enforcement.
+      let pairId: string | undefined;
+      let counterfactualReviewers: string[] = [];
+      if (
+        llmVerdict === 'BLOCK' &&
+        injectSet &&
+        conversationContextMeta &&
+        conversationContextMeta.messagesIncluded > 0 &&
+        telemetry?.canary !== true
+      ) {
+        counterfactualReviewers = [
+          ...new Set(
+            auditViolations.filter(v => injectSet.has(v.reviewer)).map(v => v.reviewer),
+          ),
+        ];
+        if (counterfactualReviewers.length > 0) {
+          pairId = `cf-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+        }
+      }
+      this.logAudit(sessionId, context, 'observe-only', auditViolations, `LLM: ${llmVerdict}`, {
+        outcome: 'pass-observe', message, llmVerdict, retryCount: retryState.retryCount,
+        contextMeta: conversationContextMeta, telemetry, pairId,
+      });
+      if (pairId) {
+        // Fire-and-forget: ONE context-stripped re-review per opted-in
+        // violating reviewer (v1 opt-in set is a single reviewer), logged
+        // beside the original with `counterfactual: true` + the shared
+        // pairId. Never delays the verdict; every failure is contained.
+        void this.runCounterfactualReReview(pairId, counterfactualReviewers, reviewCtx, context, sessionId);
+      }
       return {
         pass: true,
         warnings: [...pelWarnings, ...warnResults.map(r => r.issue)],
         _auditViolations: auditViolations,
         _gateResult: gateResult,
         _outcome: 'pass-observe',
+        _contextMeta: conversationContextMeta,
       };
     }
 
     // Row 4: LLM PASS → deliver
     if (llmVerdict === 'PASS') {
-      this.logAudit(sessionId, context, 'pass', auditViolations, 'All reviewers pass');
+      this.logAudit(sessionId, context, 'pass', auditViolations, 'All reviewers pass', {
+        outcome: 'pass', message, llmVerdict, retryCount: retryState.retryCount,
+        contextMeta: conversationContextMeta, telemetry,
+      });
       return {
         pass: true,
         warnings: pelWarnings,
@@ -567,12 +788,16 @@ export class CoherenceGate {
         _gateResult: gateResult,
         _outcome: 'pass',
         _researchTriggered: researchTriggered || undefined,
+        _contextMeta: conversationContextMeta,
       };
     }
 
     // Row 5: WARN_ONLY → deliver with warnings
     if (llmVerdict === 'WARN_ONLY') {
-      this.logAudit(sessionId, context, 'pass-warn', auditViolations, 'Warnings only');
+      this.logAudit(sessionId, context, 'pass-warn', auditViolations, 'Warnings only', {
+        outcome: 'pass-warn', message, llmVerdict, retryCount: retryState.retryCount,
+        contextMeta: conversationContextMeta, telemetry,
+      });
       return {
         pass: true,
         warnings: [...pelWarnings, ...warnResults.map(r => r.issue)],
@@ -580,6 +805,7 @@ export class CoherenceGate {
         _gateResult: gateResult,
         _outcome: 'pass-warn',
         _researchTriggered: researchTriggered || undefined,
+        _contextMeta: conversationContextMeta,
       };
     }
 
@@ -588,35 +814,47 @@ export class CoherenceGate {
       if (isExternal) {
         // Row 10, 12, 14: QUEUE for external
         if (channelConfig.queueOnFailure) {
-          this.logAudit(sessionId, context, 'queued', auditViolations, `${llmVerdict}: queued`);
+          this.logAudit(sessionId, context, 'queued', auditViolations, `${llmVerdict}: queued`, {
+            outcome: 'queue', message, llmVerdict, retryCount: retryState.retryCount,
+            contextMeta: conversationContextMeta, telemetry,
+          });
           return {
             pass: false,
             feedback: '[unreviewed] Review system temporarily unavailable. Message held for review.',
             issueCategories: ['INFRASTRUCTURE'],
             _auditViolations: auditViolations,
             _outcome: 'queue',
+            _contextMeta: conversationContextMeta,
           };
         }
         // Fail-closed for external channels even without queueOnFailure,
         // unless explicitly configured as failOpen
         if (channelConfig.failOpen === false || channelConfig.failOpen === undefined) {
-          this.logAudit(sessionId, context, 'block-failclosed', auditViolations, `${llmVerdict}: fail-closed (external)`);
+          this.logAudit(sessionId, context, 'block-failclosed', auditViolations, `${llmVerdict}: fail-closed (external)`, {
+            outcome: 'block-failclosed', message, llmVerdict, retryCount: retryState.retryCount,
+            contextMeta: conversationContextMeta, telemetry,
+          });
           return {
             pass: false,
             feedback: '[unreviewed] Review system unavailable. External message blocked for safety.',
             issueCategories: ['INFRASTRUCTURE'],
             _auditViolations: auditViolations,
             _outcome: 'block-failclosed',
+            _contextMeta: conversationContextMeta,
           };
         }
       }
       // Row 11, 13, 15: fail-open for internal (or explicitly failOpen external)
-      this.logAudit(sessionId, context, 'pass-failopen', auditViolations, `${llmVerdict}: fail-open`);
+      this.logAudit(sessionId, context, 'pass-failopen', auditViolations, `${llmVerdict}: fail-open`, {
+        outcome: 'pass-failopen', message, llmVerdict, retryCount: retryState.retryCount,
+        contextMeta: conversationContextMeta, telemetry,
+      });
       return {
         pass: true,
         warnings: ['[unreviewed] Some reviewers were unavailable'],
         _auditViolations: auditViolations,
         _outcome: 'pass-failopen',
+        _contextMeta: conversationContextMeta,
       };
     }
 
@@ -624,7 +862,10 @@ export class CoherenceGate {
     if (llmVerdict === 'BLOCK' && !retryExhausted) {
       const feedback = this.composeFeedback(blockResults, warnResults, retryState.retryCount, maxRetries);
       retryState.lastViolations = auditViolations;
-      this.logAudit(sessionId, context, 'block', auditViolations, `Block: retry ${retryState.retryCount}/${maxRetries}`);
+      this.logAudit(sessionId, context, 'block', auditViolations, `Block: retry ${retryState.retryCount}/${maxRetries}`, {
+        outcome: 'block', message, llmVerdict, retryCount: retryState.retryCount,
+        contextMeta: conversationContextMeta, telemetry,
+      });
       // Integrated-Being: emit rule id ONLY (no context). Use the first block
       // reviewer's name as the rule id, consistent with existing audit logs.
       const ruleId = blockResults[0]?.reviewer ?? 'COHERENCE_BLOCK';
@@ -637,6 +878,7 @@ export class CoherenceGate {
         _auditViolations: auditViolations,
         _gateResult: gateResult,
         _outcome: 'block',
+        _contextMeta: conversationContextMeta,
       };
     }
 
@@ -647,7 +889,10 @@ export class CoherenceGate {
 
       if (isExternal && hasHighStakes) {
         // Row 9: External + accuracy/alignment → HOLD for operator review
-        this.logAudit(sessionId, context, 'hold', auditViolations, 'Retry exhausted on high-stakes issue');
+        this.logAudit(sessionId, context, 'hold', auditViolations, 'Retry exhausted on high-stakes issue', {
+          outcome: 'hold', message, llmVerdict, retryCount: retryState.retryCount,
+          contextMeta: conversationContextMeta, telemetry,
+        });
         return {
           pass: false,
           feedback: 'Response held for operator review due to unresolved accuracy/alignment concerns.',
@@ -655,11 +900,15 @@ export class CoherenceGate {
           retryCount: retryState.retryCount,
           _auditViolations: auditViolations,
           _outcome: 'hold',
+          _contextMeta: conversationContextMeta,
         };
       }
 
       // Rows 7-8: Internal, or external + low-stakes → PASS + attention queue
-      this.logAudit(sessionId, context, 'pass-exhausted', auditViolations, 'Retry exhausted, delivering');
+      this.logAudit(sessionId, context, 'pass-exhausted', auditViolations, 'Retry exhausted, delivering', {
+        outcome: 'pass-exhausted', message, llmVerdict, retryCount: retryState.retryCount,
+        contextMeta: conversationContextMeta, telemetry,
+      });
       this.retrySessions.delete(sessionId);
       return {
         pass: true,
@@ -667,6 +916,7 @@ export class CoherenceGate {
         _auditViolations: auditViolations,
         _gateResult: gateResult,
         _outcome: 'pass-exhausted',
+        _contextMeta: conversationContextMeta,
       };
     }
 
@@ -822,6 +1072,121 @@ export class CoherenceGate {
       // fall back to the static config / safe default (fail-closed stays ON).
     }
     return this.config.failClosedOnCriticalAbstain !== false;
+  }
+
+  /**
+   * Resolve the LIVE conversational-context config (context-aware-outbound-
+   * review §D10). Returns null when the feature is DARK. Load-bearing
+   * precedence (r3, round-2 L4): an ABSENT liveConfig getter resolves DARK —
+   * even against an `enabled: true` static config snapshot — so a mis-wired
+   * build fails toward current behavior, never toward stale-config context
+   * injection. Dev-gate resolution happened at the WIRING layer; this method
+   * requires a concrete `enabled === true` and never resolves the gate itself.
+   */
+  private getConversationalContextConfig(): ResolvedConversationalContextConfig | null {
+    try {
+      if (!this.liveConfig) return null;
+      const cc = this.liveConfig().conversationalContext;
+      if (!cc || cc.enabled !== true) return null;
+      return {
+        enabled: true,
+        maxMessages:
+          typeof cc.maxMessages === 'number' && cc.maxMessages > 0 ? cc.maxMessages : 6,
+        maxCharsPerMessage:
+          typeof cc.maxCharsPerMessage === 'number' && cc.maxCharsPerMessage > 0
+            ? cc.maxCharsPerMessage
+            : 500,
+        maxTotalChars:
+          typeof cc.maxTotalChars === 'number' && cc.maxTotalChars > 0 ? cc.maxTotalChars : 4000,
+        injectReviewers: Array.isArray(cc.injectReviewers)
+          ? cc.injectReviewers.filter((n): n is string => typeof n === 'string')
+          : ['conversational-tone'],
+      };
+    } catch {
+      // @silent-fallback-ok — a throwing config getter resolves the feature
+      // DARK (current gate behavior, the stricter posture); it never crashes
+      // the review (§D5 total containment — the HTTP seam above fails open).
+      return null;
+    }
+  }
+
+  /**
+   * The resolved reviewer opt-in set (§D3): the config-resolved built-in list
+   * (v1 default `['conversational-tone']` ALONE — round-1 M1) plus any custom
+   * DynamicReviewer that opted in via its `contextRequirements`
+   * `'recent-conversation'` key. Honored ONLY within the structural scoping
+   * at the fan-out (primary-user recipient) — a config-only opt-in can never
+   * expand exposure beyond what the M1 exclusion accepted.
+   */
+  private resolveInjectReviewers(cfg: ResolvedConversationalContextConfig): Set<string> {
+    const set = new Set<string>(cfg.injectReviewers);
+    for (const [name, reviewer] of this.reviewers) {
+      if (reviewer.wantsRecentConversation()) set.add(name);
+    }
+    return set;
+  }
+
+  /**
+   * §D9.4 bounded counterfactual re-review: ONE context-stripped re-review of
+   * the SAME message through each opted-in reviewer that would-blocked WITH
+   * context, logged beside the original in the §D8 JSONL (`counterfactual:
+   * true`, shared pairId). A reviewer that would-blocks WITH context but
+   * PASSES without it is a CONTEXT-MINTED block — the one-way property (D3.2)
+   * read directly off the pair. Soak-only: callable ONLY from the observeOnly
+   * branch. Fire-and-forget; every failure is contained (telemetry never
+   * affects a verdict, and nothing here may throw into the pipeline).
+   */
+  private async runCounterfactualReReview(
+    pairId: string,
+    reviewerNames: string[],
+    baseCtx: EscalationReviewContext,
+    context: EvaluateRequest['context'],
+    sessionId: string,
+  ): Promise<void> {
+    for (const name of reviewerNames) {
+      try {
+        const reviewer = this.reviewers.get(name);
+        if (!reviewer) continue;
+        // Base ctx — never carries conversation (context-stripped by
+        // construction, not by deletion).
+        const result = await reviewer.review(baseCtx);
+        this.decisionLog.append({
+          t: new Date().toISOString(),
+          counterfactual: true,
+          pairId,
+          reviewer: name,
+          sessionId,
+          channel: context.channel,
+          ...(typeof context.topicId === 'number' ? { topicId: context.topicId } : {}),
+          abstained: result.abstained === true,
+          // flagged=null when the reviewer abstained (no opinion — the pair is
+          // inconclusive, never counted as a context-minted block).
+          flagged: result.abstained === true ? null : !result.pass,
+          ...(result.abstained !== true && !result.pass
+            ? { severity: result.severity, issue: (result.issue ?? '').slice(0, 300) }
+            : {}),
+        });
+      } catch {
+        // @silent-fallback-ok — the counterfactual is soak-only telemetry; a
+        // failure loses one measurement pair, never affects any verdict or
+        // delivery (§D5 total containment).
+      }
+    }
+  }
+
+  /**
+   * Append a row to the durable §D8 decision log through the gate's single
+   * writer. Used by the ReviewCanaryBattery for its per-run batterySummary
+   * row (R4-m5: the summary is a SECOND, additive row type on the SAME JSONL,
+   * written through the same writer). Never throws.
+   */
+  appendDecisionRow(row: Record<string, unknown>): void {
+    this.decisionLog.append(row);
+  }
+
+  /** Absolute path of the §D8 decision log (observability + tests). */
+  getDecisionLogPath(): string {
+    return this.decisionLog.getPath();
   }
 
   private resolveCriticality(
@@ -1149,6 +1514,20 @@ export class CoherenceGate {
     verdict: string,
     violations: AuditViolation[],
     note: string,
+    decision?: {
+      /** The _outcome value returned by this _evaluate path. */
+      outcome: string;
+      /** The reviewed message — persisted as 200 SCRUBBED chars only (§D8). */
+      message?: string;
+      llmVerdict?: string;
+      contextMeta?: ConversationContextMeta;
+      retryCount?: number;
+      gateSkipped?: boolean;
+      pelBlock?: boolean;
+      telemetry?: EvaluateRequest['telemetry'];
+      /** Links a qualifying would-block to its §D9.4 counterfactual row. */
+      pairId?: string;
+    },
   ): void {
     const entry: AuditLogEntry = {
       timestamp: new Date().toISOString(),
@@ -1159,12 +1538,55 @@ export class CoherenceGate {
       verdict,
       violations,
       note,
+      ...(decision?.contextMeta ? { contextMeta: decision.contextMeta } : {}),
     };
     this.reviewHistory.push(entry);
 
     // Prune old entries (keep last 1000)
     if (this.reviewHistory.length > 1000) {
       this.reviewHistory = this.reviewHistory.slice(-1000);
+    }
+
+    // §D8 durable decision log — one line per _evaluate verdict (ALL
+    // outcomes; the §D9.3 denominator matters), written at this same seam.
+    // Context BODIES are never persisted — only contextMeta (§D7). textHead
+    // is 200 credential-scrubbed chars (adjudication fidelity, decided §8-3).
+    // The writer swallows its own failures (telemetry never gates delivery).
+    if (decision) {
+      this.decisionLog.append({
+        t: entry.timestamp,
+        sessionId,
+        channel: context.channel,
+        ...(typeof context.topicId === 'number' ? { topicId: context.topicId } : {}),
+        recipientType: entry.recipientType,
+        outcome: decision.outcome,
+        ...(decision.llmVerdict ? { llmVerdict: decision.llmVerdict } : {}),
+        violations: violations.map(v => ({
+          reviewer: v.reviewer,
+          severity: v.severity,
+          issue: (v.issue ?? '').slice(0, 300),
+        })),
+        ...(decision.contextMeta ? { contextMeta: decision.contextMeta } : {}),
+        ...(typeof decision.message === 'string'
+          ? { textHead: scrubString(decision.message).slice(0, 200) }
+          : {}),
+        observeOnly: this.config.observeOnly ?? false,
+        gateSkipped: decision.gateSkipped === true,
+        retryCount: decision.retryCount ?? 0,
+        ...(decision.pelBlock === true ? { pelBlock: true } : {}),
+        // Test-route-only tags (§D9.4b): stamped by THIS writer, never a
+        // stringly sessionId-prefix convention. `/review/evaluate` never
+        // forwards telemetry, so a real turn cannot self-tag.
+        ...(decision.telemetry?.canary === true
+          ? {
+              canary: true,
+              ...(typeof decision.telemetry.fixtureId === 'string'
+                ? { fixtureId: decision.telemetry.fixtureId }
+                : {}),
+            }
+          : {}),
+        ...(decision.pairId ? { pairId: decision.pairId } : {}),
+      });
     }
   }
 
@@ -1444,6 +1866,13 @@ interface AuditLogEntry {
   verdict: string;
   violations: AuditViolation[];
   note: string;
+  /**
+   * Non-body metadata about the conversational context available for this
+   * verdict (context-aware-outbound-review §D7/§6): answers "was context even
+   * available?" — the first question of any future false-positive triage.
+   * NEVER context bodies. Absent when no context was acquired.
+   */
+  contextMeta?: ConversationContextMeta;
 }
 
 // ── Proposal Queue ──────────────────────────────────────────────────
@@ -1478,6 +1907,17 @@ class DynamicReviewer extends CoherenceReviewer {
     this.contextRequirements = contextRequirements;
   }
 
+  /**
+   * Custom reviewers opt in to recent conversation via their existing
+   * `contextRequirements` mechanism — the `'recent-conversation'` key
+   * (context-aware-outbound-review §D3). Honored ONLY within the gate's
+   * structural scoping: an opted-in custom reviewer receives the augmented
+   * ctx copy only for primary-user-recipient reviews.
+   */
+  override wantsRecentConversation(): boolean {
+    return this.contextRequirements?.['recent-conversation'] === true;
+  }
+
   protected buildPrompt(context: ReviewContext): string {
     const boundary = this.generateBoundary();
     const preamble = this.buildAntiInjectionPreamble();
@@ -1498,9 +1938,24 @@ class DynamicReviewer extends CoherenceReviewer {
       }
     }
 
+    // §D3 atomic context block — rendered only when the gate handed this
+    // reviewer the augmented ctx (opt-in + primary-user recipient). Absent
+    // fields ⇒ '' ⇒ prompt byte-identical to feature-dark.
+    let conversationSection = '';
+    if (
+      context.recentConversation &&
+      context.recentConversation.length > 0 &&
+      context.conversationContextMeta
+    ) {
+      conversationSection = renderUntrustedConversation(
+        context.recentConversation,
+        context.conversationContextMeta,
+      );
+    }
+
     return `${preamble}
 
-${prompt}
+${prompt}${conversationSection}
 
 Respond EXCLUSIVELY with valid JSON:
 { "pass": boolean, "severity": "block"|"warn", "issue": "...", "suggestion": "..." }

@@ -1,0 +1,96 @@
+# Context-aware outbound review — teach the reviewer "the operator asked for this" before it gets blocking power (S2)
+
+<!-- bump: minor -->
+
+## What Changed
+
+The response-review pipeline's watch-mode data vetoed the planned enforcement
+flip: of 12 reviewed real messages, 2 would have been WRONGLY blocked — both
+technical content the operator had EXPLICITLY asked for (one was the worktree
+keep/delete list the user requested). The reviewer judges each message in
+isolation by construction: its own prompt allows "code the user explicitly
+asked to see," but `ReviewContext` carries NO conversation — the carve-out was
+prose with no input.
+
+Per `docs/specs/context-aware-outbound-review.md` (review-converged round 4,
+approved), the opted-in reviewer now receives a bounded, untrusted-data-
+enveloped slice of recent conversation, and the flip evidence becomes durable
+and two-sided-measured:
+
+- **Context channel (§D1/§D2):** an injected synchronous provider
+  (TopicMemory rows + the topic's verified-operator binding →
+  `buildConversationContext`), rendered by ONE shared envelope
+  (`untrustedConversationContext.ts` — per-call random boundary, JSON-encoded
+  scrubbed bodies, the structural `ask-license mode` line, the four-clause
+  carve-out contract as ONE ATOMIC block). Budget-clamped (6 msgs / 500 chars /
+  4000 total).
+- **Principal binding (§D4, Know Your Principal):** role + `verifiedOperator`
+  tags + the window's ask-license mode are computed at the WIRING layer from
+  AUTHENTICATED uids only; any uid-less user row in an unbound window degrades
+  AWAY from licensing (fail-closed).
+- **Structural scoping (§D3):** only `conversational-tone` (v1), only for
+  primary-user recipients, receives an augmented ctx copy; every other
+  reviewer structurally cannot render conversation. The carve-out is ONE-WAY
+  (can only move a would-block toward PASS), content-class-bounded (never
+  credentials/PII), and never touches the deterministic PEL layer.
+- **Total containment (§D5):** the HTTP seam above the pipeline fails OPEN on
+  a crash, so every new context path is individually contained — any failure
+  degrades to today's exact (stricter) behavior.
+- **Durable flip evidence (§D8):** `logs/response-review-decisions.jsonl` —
+  one size-rotated row per evaluated turn (outcome, llmVerdict, violations,
+  contextMeta, 200 scrubbed chars; never conversation bodies), surviving the
+  restarts that erased the in-memory history.
+- **The one-way property is MEASURED (§D9.4/4b):** soak-only counterfactual
+  re-reviews of qualifying would-blocks (shared `pairId`), plus a daily
+  adversarial `ReviewCanaryBattery` (PEL-missable secret/PII fixtures with
+  covering asks, seeded into reserved NEGATIVE topic ids, baseline +
+  with-context arms, reviewer-level assertions, finally-cleanup) behind the
+  Bearer-gated `POST /review/canary-battery/run` + the off-by-default
+  `review-canary-battery` job. Every run outcome — including refusals —
+  writes a `batterySummary` row; a silent skip is impossible.
+- Ships dev-gated dark (`responseReview.conversationalContext` — `enabled`
+  OMITTED → resolveDevAgentGate; LIVE on dev agents, DARK on the fleet).
+  Kill-switch `enabled: false` applies at the NEXT evaluate via the new
+  liveConfig wiring — no restart. The enforcement flip
+  (`observeOnly: false`) remains the operator's manual action, gated on the
+  §D9 clean-day criteria.
+
+## What to Tell Your User
+
+<!-- audience: agent-only, maturity: experimental -->
+- **My message reviewer can now see what you asked for (experimental, dark):
+  ** the safety reviewer that checks my replies used to judge each message in
+  isolation — so when you explicitly asked me for a technical list, it wanted
+  to block my answer. On development agents it now reads the last few
+  messages of our conversation (wrapped as quoted data, never instructions),
+  so "you asked for this" finally counts. It can only ever RESCUE a message
+  from a wrong block — it can never become a new reason to block, and it never
+  licenses secrets. Blocking stays off until the operator flips it after a
+  measured clean day.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Context-aware reviewer carve-out (dev-gated dark) | `responseReview.conversationalContext` in `.instar/config.json` (enabled omitted → live on dev agents, dark on fleet; `enabled:false` = live kill-switch, no restart) |
+| Durable would-block decision log | `logs/response-review-decisions.jsonl` (one row per reviewed turn; `contextMeta` on `GET /review/history` entries too) |
+| Daily anti-laundering canary battery | `POST /review/canary-battery/run` (Bearer; 503 while dark) + the off-by-default `review-canary-battery` job |
+| Canary tag plumbing (test route only) | `POST /review/test` accepts `canary` + `fixtureId`; `/review/evaluate` ignores them (a real turn cannot self-tag) |
+
+## Evidence
+
+- Veto data grounded live (2026-07-02 watch mode): 2/12 real messages would
+  have been wrongly blocked — both operator-requested technical content; both
+  are now permanent §D9.2 regression fixtures AND the battery's pass-side
+  controls.
+- Spec converged round 4 (0 CRITICAL / 0 MAJOR; internal panel + both external
+  cross-model doors verified the fold table 5/5), approved under standing
+  Session-A preapproval (topic 29836), tag commit dfdb7b21a.
+- All three test tiers shipped and green: unit (57 new tests across 5 files —
+  every §5 boundary both sides, incl. the throw fixtures at fetch/tag/render
+  time, the uid-less fail-closed rule, the counterfactual + canary-tag
+  exclusion, the battery outcome table), integration (8 — real auth
+  middleware + real TopicMemory SQLite through the full HTTP pipeline), e2e
+  lifecycle (6 — production init path with the REAL LiveConfig + dev-gate
+  funnel + TopicOperatorStore: dev boot alive, on-disk kill-switch applies
+  without restart, fleet boot byte-identical + battery 503).
