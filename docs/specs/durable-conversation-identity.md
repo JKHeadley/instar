@@ -5,7 +5,7 @@ author: "echo"
 status: "draft"
 parent-principle: "Structure beats Willpower — durable identity must be a registry, not a convention three copies of a hash function remember"
 sibling-principles: "The Agent Is Always Reachable — A Guaranteed Reachability Floor; Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions; Know Your Principal — An Unverified Identity Is a Guess; A Refusal Stays a Refusal; Bounded Notification Surface (P17); Migration Parity; Close the Loop (Untracked = Abandoned); Bounded Blast Radius"
-lessons-engaged: "Structure beats Willpower (one registry, not three hashes) · Maturation Path — Every Feature Ships Enabled on Developer Agents (§9 dev-gated ladder) · The Agent Is Always Reachable, corollary 2 (§5 deterministic reachability arm) · A Refusal Stays a Refusal / P18 (§5 dryRun returns typed non-delivery, never success-shaped) · Bounded Notification Surface P17 (§5 funnel per-conversation + GLOBAL budgets + burst tests; §3.5 ingest-refusal aggregation) · Bounded Blast Radius (§3.3 mint-rate breaker) · Cross-Machine Coherence (§3.5 local-origin adoption; §5 owning-machine delivery) · Know Your Principal (§7 replicated entry is advisory, never delivery authority) · Migration Parity (§9 migrateConfig never materializes enabled:false; migrateClaudeMd) · Deferral = Deletion / Close the Loop (§11 Phase-2.1 tracked) · P7 LLM-Supervised Execution (§6.2 Tier 0 justified; declared in the `supervision` frontmatter key) · P14 Distrust Temporary Success (§3.3 birthday math honest; §6.2 journal-replay rebuild) · Convergent Merge Algebra [constitution standard] — the merge is a pure function of the record set (§3.5.1 collision-class canonical reservation; content-deterministic HLC compared value never clamped; atomic idempotent winner-flip; key-derived probe sequence; durable-binding protection is a LOCAL delivery-time overlay §3.5.2, NEVER a merge input — R3-C1/C2/C3) · Disaster-Recovery Completeness [spec-local shorthand] (§3.4/§6.2 both the JSON snapshot AND the journal enter the backup manifest, via a glob shape the DEPLOYED expandGlob actually resolves — R3-C4) · Ambiguous-Outcome Idempotency [spec-local shorthand] (§5 id<0 logical-send-identity dedup ships WITH the funnel; suppression is retirement-based, never a fixed window racing the real 6h beacon backoff — R3-M1/M2) · Reuse over Re-implementation [spec-local shorthand of the parent principle] (§3.5/§4 shared foundation hardening primitives — no third hand-rolled copy of clamp/HLC; §3.4 backup rides the deployed glob resolver rather than extending it) · Runtime Kill-Switch [spec-local shorthand of the CommitmentTracker-freeze lesson] (§9 recording.enabled off-switch honors the freeze precedent)"
+lessons-engaged: "Structure beats Willpower (one registry, not three hashes) · Maturation Path — Every Feature Ships Enabled on Developer Agents (§9 dev-gated ladder) · The Agent Is Always Reachable, corollary 2 (§5 deterministic reachability arm) · A Refusal Stays a Refusal / P18 (§5 dryRun returns typed non-delivery, never success-shaped) · Bounded Notification Surface P17 (§5 funnel per-conversation + GLOBAL budgets + burst tests; §3.5 ingest-refusal aggregation) · Bounded Blast Radius (§3.3 mint-rate breaker) · Cross-Machine Coherence (§3.5 local-origin adoption; §5 owning-machine delivery) · Know Your Principal (§7 replicated entry is advisory, never delivery authority) · Migration Parity (§9 migrateConfig never materializes enabled:false; migrateClaudeMd) · Deferral = Deletion / Close the Loop (§11 Phase-2.1 tracked) · P7 LLM-Supervised Execution (§6.2 Tier 0 justified; declared in the `supervision` frontmatter key) · P14 Distrust Temporary Success (§3.3 birthday math honest; §6.2 journal-replay rebuild) · Convergent Merge Algebra [constitution standard] — the merge is a pure function of the record set (§3.5.1 collision-class canonical reservation; content-deterministic HLC compared value never clamped; atomic idempotent winner-flip; key-derived probe sequence against ONE GLOBAL taken set spanning all collision classes — R4-C1; durable-binding protection is a LOCAL delivery-time overlay §3.5.2 that also rides the binding record as `boundTuple` (R4-M1), NEVER a merge input — R3-C1/C2/C3) · Disaster-Recovery Completeness [spec-local shorthand] (§3.4/§6.2 both the JSON snapshot AND the journal enter the backup manifest, via a glob shape the DEPLOYED expandGlob actually resolves — R3-C4) · Ambiguous-Outcome Idempotency [spec-local shorthand] (§5 id<0 logical-send-identity dedup ships WITH the funnel; suppression is retirement-based, never a fixed window racing the real 6h beacon backoff — R3-M1/M2) · Reuse over Re-implementation [spec-local shorthand of the parent principle] (§3.5/§4 shared foundation hardening primitives — no third hand-rolled copy of clamp/HLC; §3.4 backup rides the deployed glob resolver rather than extending it) · Runtime Kill-Switch [spec-local shorthand of the CommitmentTracker-freeze lesson] (§9 recording.enabled off-switch honors the freeze precedent)"
 supervision: "tier0 — the registry rebuild, journal replay, and §3.5.1 bespoke merge are byte-deterministic pipelines with no judgment call to wrap (rationale §6.2); the DECLARED supervisor-equivalent is the §10 golden-parity + deterministic-convergence + fuzz suite. All other pipelines this spec touches (beacon delivery, attention) keep their existing supervision tiers."
 parent-spec: "docs/roadmaps/instar-two-goal-roadmap-2026-07.md (Phase 1); docs/audits/slack-ai-employee-audit-2026-07.md (§2 root gap, P0-1); docs/audits/mm-current-state-2026-07.md (P1-1)"
 depends-on: "SlackAdapter routing keys (src/messaging/slack/SlackAdapter.ts:433-440 resolveRoutingKey — the thread⇄channel identity rules this spec adopts verbatim); the §10.5 conversation-key scheme (src/core/slackRefreshBinding.ts — SLACK_CONVERSATION_KEY_PREFIX + slackRoutingKeySyntheticId, the deployed precedent this spec extends rather than replaces); multi-machine replicated-store foundation (docs/specs/multi-machine-replicated-store-foundation.md — the replication vehicle; the conversations store is a BESPOKE store keyed on the minted id doing its own tuple-first merge, NOT a standard ReplicatedStoreReader consumer, so it needs ZERO foundation change — precedent TopicPinReplicatedStore.mergeUnionToPins §3.5); the session-pool string sessionKey space (src/core/SessionRouter.ts:55 — deliberately NOT changed); CommitmentTracker + PromiseBeacon (the first proof consumer)"
@@ -174,8 +174,9 @@ are non-normative traceability, never design input.
    local-lifecycle input of any kind. R governs registry SHAPE only.
 4. **Delivery.** Delivery authority is LOCAL: only local-origin entries deliver (§3.5 KYP),
    the owning machine delivers (§5.0), and a live durable binding's delivery is protected by
-   the LOCAL bind-pin overlay (§3.5.2) — which is journaled but NEVER replicated and NEVER a
-   merge input.
+   the LOCAL bind-pin overlay (§3.5.2) — journaled, NEVER replicated through the registry,
+   NEVER a merge input; on an ownership migration the pin is reconstructed from the binding
+   record's own `boundTuple` (§3.5.2 property 5 — R4-M1), never from the registry wire.
 5. **Recovery.** Backup restore (snapshot + journal glob, both in the manifest in a shape the
    deployed resolver expands — §3.4) → journal replay (`seq` global-monotonic past the
    snapshot high-water) → deterministic re-mint as last resort with the documented probe-order
@@ -264,7 +265,11 @@ telegram: (never stored — positive ids pass through)
   1. **Config-declared** `conversationIdentity.workspacePin` (a concrete teamId in
      `.instar/config.json`) is authoritative when present — the deterministic, coordination-
      free source.
-  2. **Absent config**, the pin is a **replicated single-writer fleet value** stored as
+  2. **Absent config**, the pin is a **replicated pin CANDIDATE, corroboration-gated (R4-minor-5
+     — the earlier "replicated single-writer fleet value" name over-promised: the fleet does
+     not necessarily USE one value; under conflict each machine keeps minting under its own
+     locally-authenticated teamId, per the rules below — an implementer must NOT build this as
+     an actual single-writer register)** stored as
      `workspacePin` in the registry file and emitted through the SAME dark/dev-gated
      replication channel (§3.5); the first machine to observe a concrete teamId writes it,
      and it replicates as a single-origin record (a later divergent concrete teamId from a
@@ -355,25 +360,32 @@ mint(key, { durableBinding }):
   ALONE);
   (b) `id` sits in the alias table (decision-completeness-D4 — a fresh mint never lands on an
   alias id, preserving the one-hop invariant); OR
-  (c) `id` is a displacement offset ALREADY TAKEN by a `≺`-earlier displaced tuple of the SAME
-  collision class — §3.5.1 step 2(b) applied locally. The registry maintains, per collision
-  class (per shared `cand` value), the live set of taken displacement offsets; two tuples
-  colliding at one candidate therefore probe to DISTINCT ids locally, in exactly the assignment
-  §3.5.1 would compute (without (c), both would probe to the SAME next id and the local
-  reverse index would be silently overwritten — cross-conversation mis-resolution on a SINGLE
-  machine, before any replication).
+  (c) `id` is a displacement offset ALREADY TAKEN by ANY `≺`-earlier displaced tuple — checked
+  against **ONE GLOBAL displaced-assignment set spanning ALL collision classes (R4-C1 — the
+  round-3 per-class wording was UNSOUND: adjacent collision classes whose probe walks overlap
+  would each see an empty per-class set and assign the SAME id to two different tuples — a
+  convergent-but-wrong state both machines compute identically, and adversarially
+  constructible with 3 crafted records inside the accepted M7 threat model)** — §3.5.1 step
+  2(b) applied locally. The registry maintains the live global set of taken displacement
+  offsets (plus per-class claimant sets as the LOCATOR only, §3.4); two tuples colliding at
+  one candidate — or at ADJACENT candidates within `MAX_PROBE_DISTANCE` — therefore probe to
+  DISTINCT ids locally, in exactly the assignment §3.5.1 would compute (without a global (c),
+  a same-class pair would probe to the SAME next id, and a cross-class pair whose walks
+  overlap would too — either way the local reverse index would be silently overwritten:
+  cross-conversation mis-resolution on a SINGLE machine, before any replication).
   It is **NOT** made true merely because a *probed* peer entry happens to occupy `id` via a raw
   occupancy check (that would re-introduce the Round-1 occupancy-dependent-probe HIGH): a
   probed entry never squats another tuple's canonical id (§3.5.1), so the walk-down sequence a
   machine follows is the frozen offset sequence `candidate, candidate-1, candidate-2, …`
-  filtered ONLY by the reserved canonicals + the alias table + the `≺`-ordered taken-offset set
-  of its own collision class — each a pure function of the tuple set that every machine
+  filtered ONLY by the reserved canonicals + the alias table + the GLOBAL `≺`-ordered
+  displaced-assignment set (R4-C1) — each a pure function of the tuple set that every machine
   computes identically. **§3.3 local mint and §3.5.1 merge step 2 MUST share ONE implementation
   of this displacement rule (a single exported function), pinned by a §10 equivalence test**
   (the same tuple set fed to the local prober and to the merge yields byte-identical
   assignments). **Each check in `candidateCollides` is O(1) — a reverse-index/reserved-canonical
-  lookup, an alias-table lookup, and a bounded per-class taken-offsets set (≤ MAX_PROBE_DISTANCE
-  entries) — NEVER a live-tuple scan (R2-scalability-1);** §10 extends the no-linear-scan
+  lookup, an alias-table lookup, and a membership probe of the GLOBAL displaced-assignment set
+  (a hash-set lookup; the set's SIZE is the total displaced-tuple count, but each CHECK is
+  O(1)) — NEVER a live-tuple scan (R2-scalability-1);** §10 extends the no-linear-scan
   assertion to the probe path. The local mint is thereby **provisional-but-convergent**: it is
   the value used for immediate local delivery, and under replication the deterministic §3.5.1
   merge is the authority — a local id that disagrees with the merge's canonical assignment
@@ -533,10 +545,16 @@ scalability-G1):
 Maintained as DERIVED indexes — **rebuilt at boot from snapshot+journal, NEVER persisted**
 (they are pure functions of the record/entry set):
 3. **reserved-canonical map** (`cand → owning tuple`) — §3.3 `candidateCollides` clause (a);
-4. **per-collision-class `≺`-ordered taken-offsets sets** — clause (c), bounded per class by
-   `MAX_PROBE_DISTANCE`;
-5. **cand→claimants multimap** — the §3.5.1 merge's incremental-recompute locator (R3-M3):
-   an ingested record touches exactly ONE collision class, found here in O(1).
+4. **the GLOBAL displaced-assignment set** (`offset → owning displaced tuple`, one ORDERED
+   structure spanning ALL collision classes — clause (c) as corrected by R4-C1; ordered so the
+   §3.5.1 cascade can range-query "which displaced assignments fall in `[o, o+64]`" in
+   O(log n + answers)). The round-3 per-class taken-offsets sets are RETIRED as an occupancy
+   structure — per-class state survives only as the locator (index 5);
+5. **cand→claimants multimap, ORDERED on `cand`** — the §3.5.1 merge's incremental-recompute
+   locator (R3-M3, as restated by the R4-C1 bounded cascade): an ingested record's own
+   collision class is found here in O(1); the classes a changed offset `o` can cascade to are
+   exactly those with `cand ∈ [o, o + MAX_PROBE_DISTANCE]`, found by an ordered range query
+   over this map's key space in O(log n + answers).
 
 A faithful implementer must NOT realize any of these as a scan of `conversations`. §10 pins a
 Tier-1 assertion that `byTuple`/same-tuple detection AND the probe/merge paths perform no
@@ -572,7 +590,13 @@ the heap axis with that multiplier documented, not the file size alone. Entry sh
       "label": "#engineering"            // display-only, refreshable, UNTRUSTED peer data — neutralized/escaped at EVERY sink (§3.5 B3), or excluded from that sink
     }
   },
-  "aliases": { "-83921478": -83921477 }  // divergence repairs — LOCALLY derived only (§3.5)
+  "aliases": { "-83921478": -83921477 },  // divergence repairs — LOCALLY derived only (§3.5)
+  // Snapshot-persisted journal-applied state (the §3.4 completeness corollary — R4-M2):
+  // live bind-pins (§3.5.2) and UNRETIRED ambiguous-send dedup entries (§5.0(a)) are part of
+  // the snapshot, so pruning fully-superseded journal files can never lose them. Both are
+  // LOCAL state — neither is ever emitted into a replication record.
+  "bindPins": { "-83921477": { "tuple": ["slack", "C0BA4F4E0FP", null], "refcount": 1 } },
+  "ambiguousSends": { "-83921477cmt-42:7": { "recordedAt": "2026-07-02T21:03:00.000Z" } }
 }
 ```
 
@@ -671,8 +695,10 @@ JSON snapshot is a rebuildable cache. The contract:
   was unfalsifiable as written). Every reference to the journal in this spec means this pinned
   path.
 - **Record framing:** each journal line is ONE self-contained JSON object
-  `{ seq, op: "mint"|"alias"|"reachability"|"bind-pin"|"bind-release", key, tuple, id, origin,
-  hlc, ts }` terminated by a newline. **`seq` is a SINGLE GLOBAL monotonically-increasing
+  `{ seq, op: "mint"|"alias"|"reachability"|"bind-pin"|"bind-release"|"ambiguous-send"|
+  "send-retire", key, tuple, id, origin, hlc, ts }` terminated by a newline (the last two ops
+  carry `{ conversationId, logicalSendId }` in place of the registry fields — the R4-M2
+  durable E1 dedup entries, §5.0(a)). **`seq` is a SINGLE GLOBAL monotonically-increasing
   counter — spanning rotated files AND process restarts (R3-M14; "per-file" is retracted: the
   recovery replay `seq > snapshotHighWaterSeq` and the pruning rule both require global
   comparability, and a per-file reset would skip or double-apply records).** At boot the
@@ -703,7 +729,13 @@ JSON snapshot is a rebuildable cache. The contract:
 - **Snapshot high-water mark:** the batched JSON snapshot persists the highest `seq` it
   incorporated (`snapshotHighWaterSeq`). Recovery loads the snapshot, then replays ONLY journal
   records with `seq > snapshotHighWaterSeq` — so replay is bounded (never the whole journal) and
-  the snapshot + tail compose to the exact pre-crash state.
+  the snapshot + tail compose to the exact pre-crash state. **Completeness corollary (made
+  explicit with the R4-M2 ops): the snapshot must therefore persist ALL journal-applied store
+  state — the conversations/aliases maps, LIVE bind-pins, and UNRETIRED `ambiguous-send`
+  entries — because the rotation rule below prunes journal files every record of which is
+  `≤` a persisted snapshot's high-water; a pin or dedup entry the snapshot omitted would be
+  silently lost at exactly that prune.** §10's replay tests assert the composition for all
+  three state kinds.
 - **Idempotent replay:** replay applies records in **`seq` order** (globally comparable —
   above); re-applying a record already present (from the snapshot or an earlier replay) is a
   no-op, and this holds explicitly for `op:"alias"` re-points and `op:"bind-pin"`/
@@ -1089,14 +1121,22 @@ its immutable tuple `t`, its locally-claimed `id`, and its raw emitter `hlc`, wi
    its post-merge assignment through the §3.5.2 bind-pin overlay (the consumer's stored
    `topicId` is NEVER mutated — the §2 decision-1 constraint), with ONE deduped attention
    item when a pin actually redirects — never a silent strand.
-2. **Displaced-tuple resolution (A1/A4 — key-derived, never occupancy-order).** A displaced
-   tuple walks the FROZEN down-sequence `cand(t), cand(t)-1, cand(t)-2, …` and takes the first
-   offset that is (a) not a reserved canonical of ANOTHER tuple in `R`, and (b) not already
-   taken by a `≺`-earlier displaced tuple. This is a pure function of the tuple set — no live
-   occupancy, no arrival order — so both machines assign the same offset. **The §3.3 local
-   mint applies this SAME rule — one shared implementation, §10-pinned (R2-adversarial-2).**
-   A walk exceeding `MAX_PROBE_DISTANCE` is the §3.6 pending-mint degradation, identical on
-   both machines.
+2. **Displaced-tuple resolution (A1/A4 — key-derived, never occupancy-order; GLOBAL per
+   R4-C1).** ALL displaced tuples in `R` — across ALL collision classes — are processed in
+   ONE GLOBAL `≺` order against ONE GLOBAL taken set, initialized to the step-1 reserved
+   canonicals. Each displaced tuple, in that order, walks its FROZEN down-sequence `cand(t),
+   cand(t)-1, cand(t)-2, …` and takes the first offset NOT in the taken set, then ADDS its
+   assignment to the set. This is a pure function of the tuple set — no live occupancy, no
+   arrival order — so both machines assign the same offset. **The occupancy check is
+   deliberately NOT per-collision-class (R4-C1 — the round-3 per-class reading let two
+   displaced tuples from ADJACENT classes take the SAME id: class A's T2 displaced from `C`
+   lands on `C−2`, class B's U2 displaced from `C−1` also lands on `C−2` because each class's
+   own set was empty — a convergent-but-wrong duplicate assignment violating step 3's
+   invariant, constructible with 3 crafted records under the M7 threat model. One global set
+   makes "no id resolves to more than one tuple" hold BY CONSTRUCTION across classes: an
+   offset enters the taken set exactly once.)** **The §3.3 local mint applies this SAME rule —
+   one shared implementation, §10-pinned (R2-adversarial-2).** A walk exceeding
+   `MAX_PROBE_DISTANCE` is the §3.6 pending-mint degradation, identical on both machines.
 3. **Winner id per tuple** = the id from step 1 or 2. Any OTHER id present in `R` for that same
    tuple (a machine's provisional local mint that disagreed — §3.3) becomes a **one-hop alias →
    winner id** (the atomic winner-flip, §3.5 — unconditional; a demoted id that carries a live
@@ -1107,11 +1147,12 @@ its immutable tuple `t`, its locally-claimed `id`, and its raw emitter `hlc`, wi
 **Sub-step composition order is PINNED and the fixpoint is UNIQUE (R3-C1 — the round-3 text
 left the composition of same-tuple resolution vs sticky reservation unordered, so two
 machines could apply the rules in different orders and settle on different owners).** The
-three steps above are evaluated in that FIXED order per collision class — canonical
-reservation, then displacement, then same-tuple alias derivation — and every predicate they
-read (`cand`, `≺`, the class's claimant set) is a pure function of `R`. With the sticky rule
+three steps above are evaluated in that FIXED order — canonical reservation (per class), then
+ONE GLOBAL displacement pass in global `≺` order (R4-C1 — never per-class), then same-tuple
+alias derivation — and every predicate they read (`cand`, `≺`, the claimant sets, the global
+taken set) is a pure function of `R`. With the sticky rule
 removed there is no second rule system left to compose against: for a given `R` the
-assignment has exactly ONE fixpoint, reached in one ordered pass over the class. **The
+assignment has exactly ONE fixpoint, reached in one ordered pass. **The
 restored invariant, stated plainly: `assign : R → (tuple → id)` is a total deterministic
 function of the ingest-accepted record set alone — no local binding state, no arrival order,
 no wall clock, no machine identity beyond what records themselves carry — so two machines
@@ -1139,16 +1180,39 @@ by the raw-HLC compare** with the `≺` tiebreak — again a pure function of `R
   occupied offsets near a random point in a 2³¹ space), but stated rather than implied.
 
 **Complexity bound — the pure function specifies the RESULT, never the execution strategy
-(R3-M3).** "Pure function of `R`" does NOT license a naive full recompute per ingested record
-— that is O(N²) across an initial replication sync or an offline machine's bulk catch-up, on
-the SHARED event loop: the CommitmentTracker 2026-06-21 freeze shape relocated to the ingest
-path, biting exactly when increment 9 soaks. Application MUST be incremental: an ingested
-record touches exactly ONE collision class, located O(1) via the §3.4 cand→claimants
-multimap, and ONLY that class is re-resolved (bounded by the class size — itself bounded by
-`uncorroboratedClassCap` + genuine collisions ≪ `MAX_PROBE_DISTANCE`). Bulk arrival batches:
-the classes touched in a batch are collected and each is resolved ONCE at the batch end,
-never once per record. §10 extends the bounded-ops assertion to the ingest/merge path against
-a large seeded `R` (per-record ingest cost independent of `|R|`).
+(R3-M3, restated as a BOUNDED CASCADE per R4-C1).** "Pure function of `R`" does NOT license a
+naive full recompute per ingested record — that is O(N²) across an initial replication sync
+or an offline machine's bulk catch-up, on the SHARED event loop: the CommitmentTracker
+2026-06-21 freeze shape relocated to the ingest path, biting exactly when increment 9 soaks.
+Application MUST be incremental — but the round-3 premise "an ingested record touches exactly
+ONE collision class" is RETRACTED (R4-C1: it assumed class independence, which fails exactly
+when displacement walks overlap — a re-resolved class can change the occupancy of offsets
+that a NEIGHBOR class's displaced tuples, within `MAX_PROBE_DISTANCE`, depend on). The
+incremental strategy is a **deterministic bounded cascade**: seed a worklist with the
+ingested record's own collision class (O(1) via the §3.4 cand→claimants multimap); on
+re-resolving, for every offset `o` whose occupancy CHANGED, enqueue every class with
+a claimant `cand ∈ [o, o + MAX_PROBE_DISTANCE]` (the only classes whose walks can reach `o` —
+probes go DOWN, so influence propagates only within a 64-wide window; located by the ordered
+range query, §3.4 index 5). **Termination is BY CONSTRUCTION, not by iteration-to-fixpoint:
+each drain step widens the affected REGION (a set of classes, grow-only within one drain) and
+re-executes the §3.5.1 step-2 pass RESTRICTED to that region — all displaced tuples whose
+`cand` lies in the region, in global `≺` order, against a taken set rebuilt for the region
+(reserved canonicals + displaced assignments of classes OUTSIDE the region are read as fixed
+occupancy) — a fresh restricted evaluation of the pure function, never a per-class chaotic
+relaxation that could oscillate. The drain ends when a restricted pass changes no occupancy
+outside the region already enqueued; since the region only grows and is bounded by the
+classes in `R`, it terminates, and the restricted pass equals the full pure function on the
+region by locality (no walk crosses a >64 gap).** The cascade REGION is the transitive
+overlap-closure of the touched class:
+in the accidental regime it is almost always one class (adjacent genuine collisions within 64
+ids of each other are negligible per the §3.3 birthday math); adversarially, an attacker
+chaining classes 64 apart pays ≥1 crafted record per 64-id window (each class-capped at 16
+uncorroborated), so total cascade work stays LINEAR in the records the attacker ships —
+amortized O(1) per ingested record, never O(|R|). §10 asserts BOTH: byte-equivalence of the
+incremental cascade to a from-scratch full recompute over the same `R` (including
+adjacent-class shapes), and per-record ingest cost independent of `|R|` against a large
+seeded `R`. Bulk arrival batches: the classes touched in a batch are collected and the
+cascade is drained ONCE at the batch end, never once per record.
 
 **"Same `R` on every machine" is DELIVERED by the transport, not assumed
 (R2-adversarial-3).** The bespoke store rides the journal transport whose generic `receive()`
@@ -1173,7 +1237,13 @@ that demand OPPOSITE treatments; they are split:
 - **Pool-relative transport quarantine is RETRYABLE — with P19 brakes.** The held record
   moves to a per-origin SIDE-QUEUE (the cursor advances past it, so the origin's later
   records ingest normally while it waits), retried with exponential backoff (base 60 s, ×2
-  per attempt, capped at 1 h) up to `quarantineRetryMax = 20` attempts (≈24 h). Exhaustion is
+  per attempt, capped at 1 h) up to `quarantineRetryMax = 20` attempts (≈24 h). **The
+  side-queue's CARDINALITY is bounded (R4-minor-2 — per-record retries were bounded but the
+  record COUNT was not; a peer streaming pool-relative-quarantined records would grow the
+  queue without limit for ~24 h): `quarantineSideQueueMax = 256` held records per origin;
+  a record arriving past the cap skips the retry ladder and parks-aside IMMEDIATELY (the same
+  loud terminal as exhaustion, counted in the aggregated refusal item) — never an unbounded
+  in-memory queue (Bounded Blast Radius, the memory axis).** Exhaustion is
   LOUD, never silent: the record is parked-aside + ONE deduped attention item stating the
   honest condition — the machines genuinely hold unequal `R` for that record and are
   non-convergent on it until the origin re-emits or the operator intervenes. A broken-clock
@@ -1196,13 +1266,17 @@ The round-3 `sticky` marker tried to protect a durably-bound id INSIDE the merge
 the algebra three ways (C1 provisional-id divergence, C2 monotonic-vs-expiry
 self-contradiction, C3 the unreconcilable two-sided partition). The protection it was after
 is real — a beacon must keep landing in the thread its commitment was opened in, across any
-merge outcome — so it is rebuilt here as a LOCAL, DELIVERY-TIME overlay with four hard
+merge outcome — so it is rebuilt here as a LOCAL, DELIVERY-TIME overlay with five hard
 properties:
 
-1. **Never a merge input, never on the wire.** A bind-pin is machine-local state: not a field
-   on the registry entry, not in the replication record (an inbound `sticky`/binding field is
-   STRIPPED at the §3.5 clamp), and §3.5.1 never reads it. The merge stays a pure function of
-   `R` by construction — restoring the correctness argument the sticky marker invalidated.
+1. **Never a merge input, never on the REGISTRY wire.** A bind-pin is machine-local state:
+   not a field on the registry entry, not in the registry replication record (an inbound
+   `sticky`/binding field is STRIPPED at the §3.5 clamp), and §3.5.1 never reads it. The
+   merge stays a pure function of `R` by construction — restoring the correctness argument
+   the sticky marker invalidated. (Precision, so property 5 is not read as a contradiction:
+   the record-carried `boundTuple` travels the COMMITMENTS wire on the binding record — never
+   the registry's — and is consumed exclusively at delivery time; the registry merge has no
+   path that reads commitment records, so nothing binding-derived can reach `R` on any wire.)
 2. **The pin binds an id to a TUPLE, not to an assignment.** When a durable consumer binds to
    a minted id (a commitment opens, a working-set carry attaches — the §3.3 `durableBinding`
    paths), the binding machine records `bind-pin { boundId, tuple, refcount }` — the tuple
@@ -1228,6 +1302,29 @@ properties:
    replicated, its lifecycle is purely local-authoritative and there is nothing to converge:
    C2's set-vs-clear partition contradiction cannot arise for it. Boot replay (§3.4 `seq`
    order) restores live pins exactly.
+5. **The bind-time tuple ALSO rides the durable binding record itself — so the pin is
+   RECONSTRUCTIBLE on any machine that ever delivers the binding (R4-M1).** The journaled
+   machine-local pin above protects delivery on the machine that BOUND — but §5's stand-down/
+   pickup path is a DESIGNED second deliverer: with increment 9 live, `CommitmentsSync`
+   replicates a commitment to a machine that never bound it, and that machine's beacon picks
+   the delivery up on becoming the owner. Without the pin it would deliver via bare
+   `resolve(id)` — reopening the exact C3-class misdelivery on the ownership-migration path.
+   Therefore every durable bind DENORMALIZES the bind-time tuple onto the binding record as
+   `boundTuple` (a new optional field on the commitment / working-set record, written at bind
+   time by the same §3.3 WAL-fsynced open; the deployed `Commitment` shape already grows
+   per-feature optional fields — `CommitmentTracker.ts:59+`). Delivery-time rule, UNIFORM on
+   every machine: a durable binding's delivery target is `resolve(binding.boundTuple)` when
+   `boundTuple` is present — the local journaled pin and the record-carried `boundTuple`
+   yield the SAME tuple by construction (recorded at the same bind moment); a legacy binding
+   with neither falls back to `resolve(id)` (today's behavior). The reconstruction is
+   delivery-time-only and NEVER a merge input (the merge never reads commitment records).
+   **Trust posture, stated honestly:** `boundTuple` arrives on a REPLICATED record, so it is
+   shape-clamped at the `CommitmentsSync` receive clamp (the `clampReplicatedRow` chokepoint,
+   `CommitmentsSync.ts:149-155` — platform enum, channelId/threadTs shape regexes, exactly
+   the §3.5 tuple clamps) — and it grants NO authority `topicId` does not already grant: a
+   forged replicated commitment could already point its `topicId` anywhere, and delivery
+   still requires the delivering machine to pass §5.0 `ownsConversation` + the local-origin
+   resolution of the TARGET. The field narrows misdelivery; it cannot widen it.
 
 **The C3 two-sided partition, walked through the overlay (the case the sticky design could
 not reconcile).** T1, T2 collide at `C`; during a partition machine A opens a commitment on
@@ -1237,10 +1334,13 @@ byte-identical on A and B (the pins were never inputs). A's pin (`C→T1`): T1 s
 no redirect, delivery unchanged. B's pin (`C→T2`): T2 now sits at `C-1` — B's beacon delivers
 through the pin into T2's real thread; its commitment record still reads `topicId = C`,
 untouched. No id serves two conversations, no binding is stranded, no commitment is mutated,
-and no machine disagrees on `resolve(C)`. **Residual, stated honestly:** a pin lives only on
-the machine that holds the binding — which is exactly right, because delivery authority is
-local (§3.5/§5.0) and only that machine's beacon fires for it; a machine that bound nothing
-needs no protection. **Degradation:** if a pin's tuple is itself in the §3.6 pending-mint
+and no machine disagrees on `resolve(C)`. **Locality, stated honestly (corrected per R4-M1 —
+the round-4 wording claimed "only that machine's beacon fires for it," which §5's own
+stand-down/pickup path contradicts):** the JOURNALED pin lives only on the machine that
+bound; a DIFFERENT machine that later becomes the deliverer (ownership adoption, §5)
+reconstructs the same protection from the binding record's `boundTuple` (property 5) — so
+the protection follows the binding wherever `CommitmentsSync` carries it, while the overlay
+itself stays delivery-time-only and off the wire as merge input. **Degradation:** if a pin's tuple is itself in the §3.6 pending-mint
 state (no current assignment), delivery returns the §5.1 typed non-delivery + one deduped
 attention item — the beacon retries; never a misdeliver, never a silent drop.
 
@@ -1248,7 +1348,13 @@ attention item — the beacon retries; never a misdeliver, never a silent drop.
 pins — the fuzz suite runs WITH pins present); redirect correctness (the C3 walk above, both
 machines); refcount semantics (two binds, one close → pin holds; last close → released);
 restart replay restores live pins; a wire-arriving `sticky`/binding field is stripped on
-ingest; a redirect raises exactly ONE deduped attention item per episode.
+ingest; a redirect raises exactly ONE deduped attention item per episode; **and the
+ownership-migration pickup (R4-M1): commitment bound on machine A (boundTuple recorded),
+replicated to B, B becomes the owner (first authenticated inbound adoption), the merge
+demotes the bound id → B's beacon delivers into the bound tuple's REAL thread via
+`resolve(boundTuple)`, never bare `resolve(id)`; a forged/malformed replicated `boundTuple`
+is shape-clamp-rejected at the CommitmentsSync receive and the binding falls back to
+`resolve(id)` (never a crash, never an unclamped tuple applied).**
 
 ### 3.6 Failure modes (decided)
 
@@ -1428,6 +1534,30 @@ R2-security-NEW-3, R2-security-NEW-4):
   derivation. An ambiguous re-fire of the SAME logical send is suppressed WHENEVER it arrives
   — 40 minutes or 6 hours later; the next logical send (new seq) never matches. §10 runs the
   idempotency test at the 6-hour backed-off cadence, never a sub-window fast retry.
+- **The dedup entry is DURABLE — it rides the §3.4 journal, because a retirement-scoped entry
+  is long-lived BY DESIGN and instar restarts on every auto-update (R4-M2 — the round-4 text
+  parked it in an in-memory bounded map, which a restart or cap eviction wipes: ambiguous
+  outcome → entry recorded → server restarts inside the 40 min–6 h re-fire gap → empty map →
+  the re-fire of the SAME `logicalSendId` passes the guard → the exact double-post E1 exists
+  to prevent. Note R3-M2's durable `sendSeq` makes the restart case WORSE alone: it correctly
+  re-fires the same logical send, and only this guard was supposed to suppress it).** The
+  mechanism: an ambiguous/likely-posted outcome appends `op:"ambiguous-send"
+  { conversationId, logicalSendId, recordedAt }` to the §3.4 journal (fsynced — it is
+  precisely a durable-binding-class write: not re-derivable after a crash); retirement
+  appends `op:"send-retire"`. The two ops join the §3.4 record-framing enum, replay
+  idempotently in `seq` order like `bind-pin`/`bind-release`, and boot replay restores every
+  UNRETIRED entry — so the guard's answer is identical before and after a restart. The
+  journal's pinned retention floor (≥7 days, §3.4 rotation) equals the entry TTL by
+  construction, so rotation can never prune a live entry. The in-memory map becomes a CACHE
+  of this durable state, rebuilt at boot.
+- **An UNRETIRED entry is NEVER evicted below its TTL (R4-M2, the second arm).** The §5.2
+  bounded/evicting structure applies to RETIRED/TTL-expired entries only. If the hard cap is
+  reached with every entry still live (pathological — it means thousands of simultaneously
+  ambiguous unretired sends), the guard sheds LOUDLY: ONE aggregated attention item naming
+  the shed count, never a silent eviction that re-opens the double-post. §10 pins both
+  directions: the restart-double-post test (ambiguous → restart → re-fire at the backed-off
+  cadence → still ONE post) alongside the existing false-suppression direction (post-restart
+  NEW heartbeat is NOT suppressed).
 - **The guard keys on a STABLE logical send identity, not the raw content-hash
   (R2-lessons-1b), and the send sequence is DURABLE + MONOTONIC (R3-M2 — the deployed beacon
   has no send-seq concept, and a naive one breaks the guard in BOTH directions).** A beacon
@@ -1435,8 +1565,15 @@ R2-security-NEW-3, R2-security-NEW-4):
   and a content-hash never matches. The dedup key is `(conversationId, logicalSendId)` where
   `logicalSendId` = **`commitmentId + sendSeq`** for beacon sends (the beacon passes it via
   `opts`), falling back to the content-hash ONLY for callers with no logical identity.
-  `sendSeq` semantics are pinned: **persisted in the beacon's per-commitment hot state
-  (journaled with it — never in-memory-only), advanced ONLY on a DELIVERED outcome, held
+  `sendSeq` semantics are pinned: **persisted in the beacon's per-commitment hot state —
+  never in-memory-only — via an ATOMIC write (tmp→rename, the house pattern at
+  `StateManager.ts:521-530`; R4-minor-1: the round-4 "journaled with it" wording is RETRACTED
+  as overstating the deployed medium — `PromiseBeacon.saveHotState` is a plain non-atomic
+  `fs.writeFileSync` (`PromiseBeacon.ts:1408-1411`), and a crash mid-write could corrupt the
+  file and reset the seq, which would re-collide a reset seq against the now-DURABLE R4-M2
+  dedup entry and silently suppress a legitimate post-restart heartbeat; the seq-bearing file
+  therefore moves to the atomic pattern as part of the proof-consumer increment) — advanced
+  ONLY on a DELIVERED outcome, held
   constant across `not-delivered`/ambiguous/suppressed outcomes** — the natural
   increment-per-`fire()` would give the ambiguous re-fire a NEW seq and make E1 a no-op, and
   an in-memory counter resetting on restart would collide the first post-restart heartbeat
@@ -1454,9 +1591,12 @@ R2-security-NEW-3, R2-security-NEW-4):
   5xx / connection refused before the request was accepted). Recording on ATTEMPT would make
   a clean-transient retry falsely suppressed → SILENT loss of the heartbeat. §10 pins the
   distinction: clean transient failure → retry NOT suppressed; ambiguous → single post.
-- **The dedup map is BOUNDED (R2-security-NEW-4 / scalability-2):** it reuses the §5.2
-  `AttentionTopicGuard` bounded/evicting structure (hard cap + `evictStaleSources`) — never a
-  monotonic map; the §10 burst test asserts the bound.
+- **The dedup map is BOUNDED (R2-security-NEW-4 / scalability-2) — scoped per R4-M2:** the
+  in-memory CACHE reuses the §5.2 `AttentionTopicGuard` bounded/evicting structure (hard cap
+  + `evictStaleSources`) — never a monotonic map — but eviction applies ONLY to
+  retired/TTL-expired entries; an unretired entry is never evicted below the TTL (the durable
+  journal record is the authority regardless — see the durability bullet above); the §10
+  burst test asserts the bound AND that a burst never evicts a live unretired entry.
 It is length-gated exactly like the Telegram dedup (brief acks never suppressed) and
 bypassable with `allowDuplicate` for the rare genuine resend — **with a structural guard
 (R3-minor): a CI assertion pins that the BEACON path never sets `allowDuplicate` (symmetric
@@ -1491,9 +1631,16 @@ the deferral left open:
   replicated commitment can sit on a machine that does NOT own its conversation. That
   machine's beacon does not retry-forever into typed failures (a silent wasted loop): on a
   non-owning typed failure the commitment's beacon enters a **STAND-DOWN state — no re-fire
-  scheduling — re-evaluated on a bounded ownership recheck each sweep pass**, so a machine
-  that BECOMES the owner (adoption on first authenticated inbound, §3.5) picks the beacon up
-  within one sweep. The dead-letter counter is never armed (the scoping above).
+  scheduling — re-evaluated on a bounded ownership recheck riding the beacon's EXISTING
+  external-block sweep (R4-minor-4 — the sweep is now NAMED, so the latency claim is
+  falsifiable: `externalBlockSweepMs`, default 3,600,000 ms = hourly, lease-gated —
+  `PromiseBeacon.ts:518-527`; the recheck is one O(active-stood-down) pass appended to that
+  sweep, no new timer)**, so a machine that BECOMES the owner (adoption on first
+  authenticated inbound, §3.5) picks the beacon up within one sweep interval (default ≤ 1 h).
+  **The pickup deliverer reconstructs the bind-pin from the commitment's record-carried
+  `boundTuple` (§3.5.2 property 5 — R4-M1): pickup delivery is `resolve(boundTuple)`, never
+  bare `resolve(id)`, so an ownership migration cannot reopen the C3-class misdelivery the
+  pin exists to prevent.** The dead-letter counter is never armed (the scoping above).
 - **Active-active double-delivery is a CORRECTNESS blocker for §11.2, not an efficiency
   note.** Two machines each holding a live Slack socket can BOTH satisfy
   `ownsConversation(id)` → double-post. Until §11.2 lands, the increment-9 emitter carries a
@@ -1632,8 +1779,11 @@ roadmap item and slots in UNDER this funnel without changing its callers.
    routes, `deliverToConversation`. Behavior-identical; ships live.
 2. **Commitments + PromiseBeacon — THE proof consumer** (roadmap Phase-1 live proof):
    Slack inbound mints eagerly (§6.3, ships live/ungated with THIS increment); the
-   session's commitment carries the minted id; beacon heartbeats deliver through the
-   funnel into the exact thread; fire() re-arm + typed-failure contract (§5.1) land here.
+   session's commitment carries the minted id AND the denormalized bind-time `boundTuple`
+   (§3.5.2 property 5 — R4-M1); beacon heartbeats deliver through the
+   funnel into the exact thread; fire() re-arm + typed-failure contract (§5.1), the §7
+   stateless bind token (R4-M3), the atomic seq-bearing hot-state write (R4-minor-1), and
+   the durable E1 journal ops (R4-M2) land here.
    *Live proof:* create a commitment from a Slack THREAD, restart the server, watch the
    beacon heartbeat land back in that thread (delivery via `/slack/reply`'s current
    guarantee — tone gate + the §5.1 classification; retry/dedup/idempotency is Phase 2.1
@@ -1818,18 +1968,45 @@ binding gap named in the audit closes to "creates the identity everything else c
   (`middleware.ts:120+`); the request carries NO authenticated session identity, and
   `source`/`boundBy` are caller-supplied — the server could not determine WHICH session was
   calling, so "its OWN bootstrap context" had nothing to check against.)** The primitive: at
-  session spawn the server mints a per-session **bind token** (random, single-session,
-  delivered ONLY through the spawned session's environment/bootstrap context — never over a
-  route) and records `bindToken → { sessionName, bootstrapConversationIds }` server-side
-  (in-memory, re-minted on respawn — nothing durable to steal). A durable-state open
-  (`POST /commitments`, working-set bind) targeting a MINTED id MUST carry the bind token;
-  the server resolves the token — NEVER a caller-supplied session name — and checks the
-  target against THAT session's bootstrap set. A missing/unknown token on a minted-id bind is
-  the same typed `conversation-bind-not-authorized` refusal (fail-closed; positive Telegram
-  ids keep their existing behavior until their branch migrates — §10 pins both branches).
-  `boundBy` is recorded FROM the resolved token, never from the body. This ships as a named
-  part of the proof-consumer increment (§6.1 step 2) — B7 without the primitive is a wish,
-  not a gate.
+  session spawn the server mints a per-session **bind token**, delivered ONLY through the
+  spawned session's environment/bootstrap context (the tmux `-e` env block the spawn already
+  builds — `SessionManager.ts:2169-2210` region) — never over a route. **The token is
+  SELF-AUTHENTICATING and validation is STATELESS (R4-M3 — the round-4 "server-side in-memory
+  map, re-minted on respawn" is RETRACTED: sessions are tmux processes that OUTLIVE the
+  server process, and the server restarts on every auto-update — an in-memory map plus the
+  fail-closed unknown-token rule meant every restart refused every live session's minted-id
+  binds until that session was respawned, a standing availability hole in the flagship
+  proof-consumer path).** Shape:
+  `bindToken = base64url(payload) + "." + base64url(HMAC-SHA256(bindTokenSecret, payload))`
+  where `payload = { sessionName, bootstrapConversationIds, mintedAt }` and
+  `bindTokenSecret` is a random 32-byte secret generated once at first boot and persisted in
+  the stateDir (the same at-rest posture as `authToken` in config — plaintext machine-local;
+  it authorizes only bind-scoping, never delivery or message content). A restarted server
+  re-derives nothing and stores nothing per-session: it verifies the MAC and reads the
+  bootstrap set FROM the token — so a live session's token remains valid across any number of
+  server restarts, with no map to lose. A durable-state open (`POST /commitments`,
+  working-set bind) targeting a MINTED id MUST carry the bind token; the server verifies —
+  NEVER trusts a caller-supplied session name — and checks the target against the token's
+  OWN bootstrap set. A missing/MAC-invalid token on a minted-id bind is the same typed
+  `conversation-bind-not-authorized` refusal (fail-closed; positive Telegram ids keep their
+  existing behavior until their branch migrates — §10 pins both branches). `boundBy` is
+  recorded FROM the verified payload, never from the body. **Honest residuals:** (a) a
+  respawned session gets a FRESH token but its old token stays cryptographically valid for
+  the same bootstrap set — accepted (it grants nothing the session was not already granted;
+  theft surface = the session's own env, which already holds the live token); (b) rotating
+  `bindTokenSecret` (a deliberate operator lever, and the revocation story) invalidates ALL
+  outstanding tokens — live sessions then hit the typed refusal + its attention item until
+  respawned, a LOUD deliberate trade, never a silent side effect of a routine restart.
+  **Server-internal callers are OUT of the token gate's scope (R4-minor-3):** the gate exists
+  to stop a confused/buggy SESSION from binding into a foreign conversation; internal
+  features that open commitments IN-PROCESS (the action-claim observer, scheduled jobs) are
+  the server itself — they carry a server-self principal (`boundBy: "server:<component>"`)
+  and do not traverse the route-level token check. An internal caller that reaches the
+  HTTP route anyway (a job shelling out to curl) needs a session token like anyone else —
+  the discriminator is the code path, not the caller's self-description. This ships as a
+  named part of the proof-consumer increment (§6.1 step 2) — B7 without the primitive is a
+  wish, not a gate. §10 adds the restart test: token minted at spawn → server restarts
+  (session persists) → the session's next minted-id bind SUCCEEDS with the same token.
 - **The mesh-forward replay path is shape-validated at the owner mint site (security-M1c):**
   `server.ts:18233-18246` → `slackInboundDispatch` → the §6.3 mint validates
   `channelId`/`threadTs` shape before minting, so a compromised peer cannot supply a
@@ -1969,12 +2146,16 @@ binding gap named in the audit closes to "creates the identity everything else c
   post-merge; **the local probe loop is bounded by `MAX_PROBE_DISTANCE=64` (the SAME constant
   the ingest coherence check uses) — a >64 probe degrades to the pending-mint path, never a
   peer-un-ingestable id** (local-probe-distance ≤ ingest-bound invariant).
-- **Local collision-class displacement (R2-adversarial-2):** TWO tuples colliding at ONE
-  candidate, minted locally in EITHER order, receive DISTINCT ids (no reverse-index
-  overwrite), and the local assignment is byte-identical to what the §3.5.1 merge computes
-  for the same tuple set — the **shared-implementation equivalence test** (the same
-  displacement function serves §3.3 and §3.5.1 step 2; feeding it the same tuple set through
-  both entry points yields identical assignments). Also asserts `candidateCollides` performs
+- **Local collision-class displacement (R2-adversarial-2; cross-class per R4-C1):** TWO
+  tuples colliding at ONE candidate, minted locally in EITHER order, receive DISTINCT ids (no
+  reverse-index overwrite), and the local assignment is byte-identical to what the §3.5.1
+  merge computes for the same tuple set — the **shared-implementation equivalence test** (the
+  same displacement function serves §3.3 and §3.5.1 step 2; feeding it the same tuple set
+  through both entry points yields identical assignments). **PLUS the ADJACENT-class shape
+  (R4-C1): two collision classes at `C` and `C−1`, two claimants each, minted locally in
+  every arrival order → all four ids DISTINCT (the global taken set forbids the `C−2`
+  duplicate the per-class rule produced), byte-identical to the merge's global-`≺` pass.**
+  Also asserts `candidateCollides` performs
   NO linear scan (bounded ops per mint against a large seeded store — R2-scalability-1).
 - **WAL crash-durability** (the four-reviewer round-3 finding): a PROBED mint and a
   durable-binding-forced mint append+fsync their journal line BEFORE returning the id; kill
@@ -2065,9 +2246,21 @@ binding gap named in the audit closes to "creates the identity everything else c
   `adopted-replicated` copy witness-dominates (no self-conflict); a peer-forged
   `reachability:unreachable`/`origin` is neutralized on ingest. And the round-4 merge
   additions:
-  - **Incremental ingest cost (R3-M3):** per-record ingest against a large seeded `R`
-    performs bounded ops independent of `|R|` (the cand→claimants locator + one-class
-    re-resolve — no full recompute); bulk arrival resolves each touched class ONCE per batch.
+  - **Incremental ingest cost (R3-M3, cascade per R4-C1):** per-record ingest against a large
+    seeded `R` performs bounded ops independent of `|R|` (the cand→claimants locator + the
+    bounded cascade — no full recompute); bulk arrival drains the cascade ONCE per batch;
+    **and the incremental cascade's output is BYTE-EQUIVALENT to a from-scratch full
+    recompute over the same `R` — asserted on adjacent-class shapes where a re-resolved class
+    changes a neighbor class's displacement (the exact coupling the round-3 one-class rule
+    missed).**
+  - **Cross-class no-duplicate-assignment invariant (R4-C1):** the ≥3-machine fuzz suite
+    seeds MULTIPLE collision classes at adjacent candidates (walk-overlap shapes included)
+    and asserts, on every machine and every permutation, that no id is assigned to more than
+    one tuple — the §3.5.1 step-3 invariant checked EXPLICITLY, not implied. Plus the
+    3-record ADVERSARIAL construction from the round-4 report: a crafted back-dated tuple
+    colliding at a victim's candidate `C` (winning `≺`, displacing the victim) + a crafted
+    two-record class at `C−1` → the victim's conversation and the attacker record must NOT
+    both resolve to `C−2`; every id resolves to exactly one tuple.
   - **Collision-class stuffing (R3-M7):** ≤64 fabricated uncorroborated colliding records
     from one origin → only the `≺`-least `uncorroboratedClassCap = 16` enter `R`
     (deterministically on every machine), the victim's legitimate local mint still lands
@@ -2103,10 +2296,16 @@ binding gap named in the audit closes to "creates the identity everything else c
   authenticated bootstrap context) is REFUSED (`conversation-bind-not-authorized`) + attention
   item, never delivered into the foreign thread — BOTH branches pinned: own bootstrap topic
   (positive or minted) → allowed; arbitrary foreign positive id → refused. **The check runs
-  through the §7 bind token: a minted-id bind with a MISSING or UNKNOWN token is refused
+  through the §7 bind token: a minted-id bind with a MISSING or MAC-INVALID token is refused
   fail-closed; a bind presenting session A's valid token against session B's bootstrap
-  conversation is refused; `boundBy` is asserted to come from the resolved token, never the
-  request body.**
+  conversation is refused; `boundBy` is asserted to come from the verified payload, never the
+  request body; a TAMPERED payload (bootstrap set edited, MAC stale) is refused. And the
+  R4-M3 restart-survival test: token minted at spawn → the SERVER restarts while the tmux
+  session persists → the session's next minted-id bind with its ORIGINAL token SUCCEEDS (no
+  respawn required); rotating `bindTokenSecret` → the same bind is refused with the typed
+  error + attention item (the loud deliberate trade, never silent). An in-process
+  server-self open (R4-minor-3) bypasses the route gate and records
+  `boundBy: "server:<component>"`.**
 - **Recording-off bind refusal (R2-integration-§9):** with `recording.enabled:false`, a
   durable-state open on a MINTED id is refused (`conversation-recording-disabled`) + one deduped
   attention item; a positive Telegram bind still succeeds; re-enabling restores minted binds.
@@ -2126,11 +2325,20 @@ binding gap named in the audit closes to "creates the identity everything else c
   send seq) is NOT
   suppressed; **the restart-between-heartbeats test (M2): restart the server between two
   heartbeats → the durable `sendSeq` does not reset and the post-restart heartbeat is NOT
-  suppressed**; a CLEAN transient failure (5xx, never posted) is NOT recorded and
+  suppressed**; **the restart-DOUBLE-POST test (R4-M2 — the direction the round-4 suite
+  missed): ambiguous outcome recorded → server restarts inside the re-fire gap → the SAME
+  logical send re-fires at the backed-off cadence → STILL exactly ONE post (the journaled
+  `ambiguous-send` entry survived the restart)**; a CLEAN transient failure (5xx, never
+  posted) is NOT recorded and
   its retry is NOT suppressed (distinct from ambiguous → single post); entries retire on
-  delivered outcome / commitment close, with the 7-day TTL backstop asserted as safety-only;
-  the dedup map is bounded/evicting (burst-asserted); `allowDuplicate` bypasses — **and the
-  CI assertion pins that the beacon path never sets it**; brief acks never suppressed.
+  delivered outcome / commitment close (journaled `send-retire`), with the 7-day TTL backstop
+  asserted as safety-only;
+  the dedup CACHE is bounded/evicting for retired/expired entries (burst-asserted) **and a
+  burst never evicts a live UNRETIRED entry — cap-with-all-live sheds LOUDLY with one
+  aggregated attention item (R4-M2)**; `allowDuplicate` bypasses — **and the
+  CI assertion pins that the beacon path never sets it**; brief acks never suppressed;
+  **the seq-bearing hot-state write is atomic tmp→rename (R4-minor-1 — a simulated torn
+  write never yields a parseable file with a reset seq).**
 - **Dead-letter scoping (I1):** a non-owning-machine typed-failure NEVER increments the
   dead-letter counter; only an owning-machine real delivery failure does. And the multi-machine
   cliff (>1 machine + CommitmentsSync live + `stateSync.conversations` dark) raises exactly ONE
@@ -2140,7 +2348,9 @@ binding gap named in the audit closes to "creates the identity everything else c
   the tail; a crash mid-append never corrupts an earlier record; a crash mid-replay re-runs
   cleanly; **a replay SPANNING a rotation boundary applies records in the single global `seq`
   order — no skip, no double-apply — and the boot counter resumes from the max seen, never
-  0/1 (R3-M14)**.
+  0/1 (R3-M14)**; **snapshot completeness (R4-M2 corollary): a snapshot taken after live
+  bind-pins and unretired `ambiguous-send` entries exist, followed by pruning every
+  superseded journal file, still restores pins AND dedup entries exactly.**
 
 **Tier 2 — integration** (full HTTP pipeline):
 - `GET /conversations*` routes: list/resolve/health, 404 semantics, Bearer auth, label
@@ -2252,7 +2462,9 @@ permission scenarios run on throwaway channels, never the live operator channel:
    INTEGER schemas, deployed negative-id convention, zero-loss skew requirement).
 2. **Legacy hash as deterministic mint candidate; probe direction DOWN (`id -= 1`),
    FROZEN forever; alias ids count as occupied during a probe; the local mint applies the
-   FULL §3.5.1 displacement rule including step 2(b)'s collision-class taken-offset set,
+   FULL §3.5.1 displacement rule including step 2(b)'s GLOBAL taken-offset set (one set
+   across ALL collision classes, one global `≺` displacement order — R4-C1; the round-4
+   per-class set is retracted as unsound),
    via ONE shared implementation with the merge** — §3.3 (R2-adversarial-2).
 3. **Identity = structured tuple `(platform, channelId, threadTs)` + minted id; the
    canonical key is its normalized lookup string; workspaceId is upgradable metadata,
@@ -2322,8 +2534,18 @@ permission scenarios run on throwaway channels, never the live operator channel:
     counter across rotations and restarts (R3-M14); bind-pins ride the same journal
     (`op:"bind-pin"`/`"bind-release"`).** — §3.3, §3.4.
 18. **The E1 guard is RETIREMENT-based with a DURABLE per-commitment `sendSeq` (advanced only
-    on a delivered outcome, never reset by restart) — no fixed dedup window races the beacon's
-    real 6-hour backoff cap (R3-M1/M2).** — §5.0(a).
+    on a delivered outcome, never reset by restart; the seq-bearing hot-state write is atomic
+    tmp→rename — R4-minor-1) — no fixed dedup window races the beacon's real 6-hour backoff
+    cap (R3-M1/M2) — and the dedup ENTRIES are durable too: `op:"ambiguous-send"`/
+    `"send-retire"` journal lines riding the §3.4 WAL, with unretired entries never evicted
+    below TTL (R4-M2).** — §5.0(a).
+19. **Durable-binding protection travels WITH the binding: the bind-time tuple is
+    denormalized onto the binding record (`boundTuple`, shape-clamped at the CommitmentsSync
+    receive), so ANY machine delivering it — including the §5 stand-down/pickup path —
+    reconstructs the pin at delivery time (R4-M1). And bind-token validation is STATELESS
+    (self-authenticating HMAC token against a persisted `bindTokenSecret`), so tmux sessions
+    that outlive a server restart keep binding without a respawn (R4-M3); in-process
+    server-self opens bypass the route gate (R4-minor-3).** — §3.5.2 property 5, §5, §7.
 
 ## Open questions
 
@@ -2346,7 +2568,8 @@ kill-switch, `E1` idempotency, `F1`–`F3` proof/testing, `G1`–`G4` scalabilit
 merge-algebra cluster (`A1`–`A7`) is the load-bearing one — it is what makes the cross-machine
 merge a pure function of the record set (§3.5.1). Tags prefixed `R2-` map to the Round-2
 findings resolved by the Round-3 revision (Appendix B); tags prefixed `R3-` map to the Round-3
-findings resolved by the Round-4 revision (Appendix C). Provenance lives here; the design lives
+findings resolved by the Round-4 revision (Appendix C); tags prefixed `R4-` map to the Round-4
+findings resolved by the Round-5 revision (Appendix D). Provenance lives here; the design lives
 above.
 
 ## Appendix B — Round-3 revision log (Round-2 findings → resolutions)
@@ -2398,11 +2621,11 @@ replaced by the local, never-replicated §3.5.2 bind-pin overlay.
 | **C2** (`sticky` expiry vs monotonic replication self-contradictory) | Dissolved by removal: the bind-pin overlay is machine-local and NEVER replicated, so its lifecycle is purely local-authoritative — there is no set-vs-clear partition state to converge (§3.5.2 property 4); any wire-arriving sticky/binding field is stripped at the §3.5 clamp. |
 | **C3** (two-sticky partition unreconcilable — heal-forward would mutate `topicId` or alias one id to two targets) | The pin binds an id to its bind-time TUPLE; delivery follows the tuple to its CURRENT merge assignment (`resolve(pin.tuple)`), so the consumer's `topicId` is NEVER mutated and no id serves two conversations — the §3.5.2 partition walk shows both machines' bindings deliver correctly over byte-identical registries; winner-flips are unconditional (§3.5). |
 | **C4** (backup-manifest glob `logs/conversation-registry.jsonl*` silently refused by the deployed `expandGlob`) | Journal RELOCATED to the stateDir ROOT (`<stateDir>/conversation-registry.jsonl`, beside `shared-state.jsonl`) with the top-level trailing-star glob `conversation-registry.jsonl*` — byte-parallel to the one deployed working precedent, zero shared-code change (extending `expandGlob` considered + rejected); §3.4/§6.2/§8/§10 references updated; the §10 Tier-2 test asserts the glob's EXPANDED set is non-empty and every expanded file lands IN the snapshot through the real deployed `BackupManager` (the round-3 "resolves via the stateDir-join" wording was unfalsifiable for a glob). Re-verified against this worktree's `src/core/BackupManager.ts` (expandGlob returns the literal for any `/`-containing pattern; `createSnapshot` existsSync-skips it silently). |
-| **M1** (E1 window < the real 6h max beacon re-fire) | Suppression is RETIREMENT-based (§5.0(a)): a dedup entry persists until its logical send retires (delivered outcome / commitment close; 7-day TTL as safety only) — no window races the atRisk-doubled (40 min) or capped (6 h) cadence; §10 tests at the backed-off cadences. |
+| **M1** (E1 window < the real 6h max beacon re-fire) | Suppression is RETIREMENT-based (§5.0(a)): a dedup entry persists until its logical send retires (delivered outcome / commitment close; 7-day TTL as safety only) — no window races the atRisk-doubled (40 min) or capped (6 h) cadence; §10 tests at the backed-off cadences. **(EXTENDED in Round 5 — R4-M2, Appendix D: the retirement-scoped entry is now DURABLE — journaled ambiguous-send/send-retire ops — with unretired entries never evicted below TTL.)** |
 | **M2** (`logicalSendId` sendSeq had no durability/increment semantics) | `sendSeq` pinned durable + monotonic per commitment (persisted in beacon hot state), advanced ONLY on a delivered outcome, held constant across not-delivered/ambiguous/suppressed; §10 restart-between-heartbeats test (post-restart heartbeat NOT suppressed). |
-| **M3** (merge had no complexity bound at ingest — O(N²) freeze risk) | §3.5.1: the pure function specifies the RESULT, not the strategy; application MUST be incremental per touched collision class (cand→claimants locator, §3.4 index 5), batch-resolve-once for bulk arrival; §10 bounded-ops ingest assertion. |
-| **M4** (index inventory undercount: 2 declared, 4–5 required) | §3.4 full inventory: 2 synchronous + 3 DERIVED indexes (reserved-canonical map, per-class taken-offsets, cand→claimants), derived ones rebuilt-at-boot/never-persisted; resident-heap honesty updated (5–10× fileSizeBytes). |
-| **M5** (B7 bind-time authority had no enforcement primitive) | §7: per-session bind token minted at spawn (env/bootstrap-only delivery), server-side token→{session, bootstrapConversationIds} map, resolved server-side (never a caller-supplied name); missing/unknown token on a minted-id bind → fail-closed typed refusal; `boundBy` from the resolved token; ships with the proof-consumer increment; §10 pins the token branches. |
+| **M3** (merge had no complexity bound at ingest — O(N²) freeze risk) | §3.5.1: the pure function specifies the RESULT, not the strategy; application MUST be incremental per touched collision class (cand→claimants locator, §3.4 index 5), batch-resolve-once for bulk arrival; §10 bounded-ops ingest assertion. **(RESTATED in Round 5 — R4-C1, Appendix D: the one-class independence premise fails when displacement walks overlap; incrementality is now a bounded cascade.)** |
+| **M4** (index inventory undercount: 2 declared, 4–5 required) | §3.4 full inventory: 2 synchronous + 3 DERIVED indexes (reserved-canonical map, per-class taken-offsets, cand→claimants), derived ones rebuilt-at-boot/never-persisted; resident-heap honesty updated (5–10× fileSizeBytes). **(SUPERSEDED in Round 5 — R4-C1, Appendix D: the per-class taken-offsets sets were UNSOUND as an occupancy structure and are replaced by ONE GLOBAL displaced-assignment set; per-class state survives only as the ordered locator.)** |
+| **M5** (B7 bind-time authority had no enforcement primitive) | §7: per-session bind token minted at spawn (env/bootstrap-only delivery), server-side token→{session, bootstrapConversationIds} map, resolved server-side (never a caller-supplied name); missing/unknown token on a minted-id bind → fail-closed typed refusal; `boundBy` from the resolved token; ships with the proof-consumer increment; §10 pins the token branches. **(SUPERSEDED in Round 5 — R4-M3, Appendix D: the in-memory map dies with the server while tmux sessions don't; the token is now self-authenticating/stateless against a persisted secret.)** |
 | **M6** (forged low HLC wins — back-dating threat undisclosed) | §3.5 back-dating threat-honesty paragraph (mirrors §3.3 birthday-honesty): registry shape IS peer-perturbable within the window, stated plainly; blast radius bounded by authority scoping (local-origin delivery, bind-pins, coherence/seize/class-cap); per-origin displacement-anomaly tripwire (`displacementAnomalyPerWindow = 8`/10 min) + aggregated refusals make the churn loud. |
 | **M7** (collision-class stuffing → targeted pending-mint DoS) | §3.5 `uncorroboratedClassCap = 16` per collision class, `≺`-least selection (a pure function of the received set — convergence preserved); local-origin/corroborated records never capped; 16 + genuine ≪ 64 keeps the walk off the cliff; §10 stuffing test. |
 | **M8** (`sticky` single boolean strands the second live binding) | The §3.5.2 bind-pin carries a live-binding REFCOUNT (`bind-pin`/`bind-release` journal ops); released only at zero; §10 refcount test. |
@@ -2415,3 +2638,24 @@ replaced by the local, never-replicated §3.5.2 bind-pin overlay.
 | **M15** (convergence/test-critical defaults unpinned) | Dead-letter `deadLetterAfterConsecutiveFailures = 3`; §5.2 budget values pinned (12/window, global 60/window, 10-min window); the E1 "margin" term superseded by the retirement-based design (M1). |
 | **M16** (lease-holder ↔ owner reconciliation deferred while replication is Phase 1) | §5: non-owning beacon STAND-DOWN defined (no re-fire scheduling; bounded ownership recheck per sweep); active-active double-delivery named a CORRECTNESS blocker for §11.2; structural tripwire — `>1` live Slack adapter + `stateSync.conversations` enabled → the emitter HOLDS + one attention item (degrade safely, never double-post). |
 | ~25 MINORS (batch) | All folded: option-(b) chi-square parameters pinned (≥10k ids, ≤4,096 buckets, p<0.01); 60 s coalescing window pinned; journal rotation line cap (50k) + retention floor (≥2 backup cycles / 7 days) pinned; `pendingMintMax = 1000`; health threshold 80% (40k/8 MB); off-loop flush trigger (>20k entries / >2 MB); adoption-gate source store named (MessageStore); `HLC_ABS_MAX` horizon documented; null-`threadTs` sorts before concrete (byte-form empty string); alias-repoint O(k²) bound noted + §10-asserted; reachability flap dampening (3 flips/24 h → one flap item); beacon-path `allowDuplicate` CI assertion; flood-path neither-tuple-registered read = transport sessionKey; `op:"alias"`/bind-op replay idempotency stated seq-ordered; fire()-path ownership-gate citation corrected (`PromiseBeacon.ts:590-605`, not `:522-523`); `GET /conversations/:id` label sanitized + tested; adopted-replicated upgrade trigger collapsed to ONE wording (first authenticated inbound; delivery-time resolve never confers origin); working-set key-space claim converted to an increment-7 acceptance criterion; gate-exempt arm scope pinned (skips ONLY the tone gate; substitutions never peer-sourced); `getWorkspaceId()` honesty note (config read, not live auth; dormant-corroboration consequence stated); §6.2 adoption-flood credit corrected to the authorized-sender gate; mint-breaker budget map bounded; "coalesce" = batching never lossy; macOS fsync footnote (F_FULLFSYNC named); `supervision` frontmatter key added (the conformance-gate flag's declarative fix); `lessons-engaged` invented names marked spec-local/canonical; Slack degenerate-sender-registry honesty sentence (§6.1-3, owned by Phase-2.2/3.1); codex-R3-#3 SQLite-projection comparison added (§3.7); codex-R3-#5/gemini-R3-#1 normative core extracted (§3.0); gemini-R3-#2 any-durability-incident migration trigger endorsed (§3.7); gemini-R3-#3 statistical test treated critical-path driving §11.9 (§3.0). |
+
+## Appendix D — Round-5 revision log (Round-4 findings → resolutions)
+
+Applied from `docs/specs/reports/durable-conversation-identity-round4-findings.md`; every tag
+below is traceable inline as `R4-<finding>`. Every code claim in the resolutions was
+re-verified against THIS worktree's source (`CommitmentsSync.ts:149-155` clampReplicatedRow,
+`PromiseBeacon.ts:518-527` external-block sweep default + `:1408-1411` non-atomic
+saveHotState, `StateManager.ts:521-530` tmp→rename, the tmux `-e` spawn env block in
+`SessionManager.ts`).
+
+| Finding | Resolution |
+|---|---|
+| **C1** (cross-collision-class displacement overlap — two displaced tuples from ADJACENT classes take the SAME id under the per-class taken-offsets rule; convergent-but-wrong, 3-record adversarial construction inside the M7 threat model) | ONE coherent rule, not a patch: the taken-offsets set is GLOBAL. §3.5.1 step 2 restated — ALL displaced tuples across ALL classes are processed in ONE GLOBAL `≺` order against ONE global taken set (initialized to the reserved canonicals; each assignment enters the set exactly once, so "no id resolves to more than one tuple" holds BY CONSTRUCTION across classes). §3.3 clause (c) + §3.4 index 4 aligned to the global structure (per-class state survives only as the cand→claimants LOCATOR, now ordered for range queries); the fixpoint paragraph's "per collision class" evaluation order corrected. R3-M3's "touches exactly ONE class" incrementality premise RETRACTED and restated as a deterministic BOUNDED CASCADE over the walk-overlap closure (influence propagates only within a 64-wide window; adversarial chaining costs the attacker ≥1 record per window → amortized O(1) per ingested record). §10 additions: adjacent-class local-mint shape, cross-class no-duplicate-assignment invariant in the ≥3-machine fuzz suite, the 3-record adversarial construction, and cascade-vs-full-recompute byte-equivalence. |
+| **M1** (the bind-pin is machine-local but §5's stand-down/pickup path lets a DIFFERENT machine deliver the replicated commitment with no pin → C3-class misdelivery on ownership migration) | §3.5.2 property 5: the bind-time tuple is DENORMALIZED onto the durable binding record itself (`boundTuple`, written at bind time by the same WAL-fsynced open) so ANY machine delivering the binding reconstructs the pin at delivery time (`resolve(boundTuple)`, uniform rule; legacy records fall back to `resolve(id)`). Shape-clamped at the CommitmentsSync receive chokepoint; grants no authority `topicId` does not already grant (delivery still requires §5.0 ownership + local-origin resolution). The §3.5.2 residual sentence corrected to name the pickup path; §5 stand-down pickup delivers via `boundTuple`; §10 ownership-migration pickup test (bound on A, adopted by B, merge demotes → B lands in the bound tuple's real thread). |
+| **M2** (the E1 dedup entry is long-lived by design but lived in an in-memory bounded/evicting map — a restart or cap eviction wipes it → the exact double-post E1 exists to prevent) | The entry is DURABLE: `op:"ambiguous-send"`/`"send-retire"` journal lines riding the §3.4 WAL discipline (fsynced — a durable-binding-class write), replayed idempotently at boot; the journal's ≥7-day retention floor equals the entry TTL by construction; the in-memory map becomes a cache. An UNRETIRED entry is NEVER evicted below TTL (eviction applies to retired/expired only; cap-with-all-live sheds LOUDLY with one aggregated item). Snapshot-completeness corollary made explicit (§3.4): the snapshot persists live pins + unretired dedup entries, so rotation pruning can never lose them. §10: the restart-DOUBLE-POST direction (ambiguous → restart → re-fire → still ONE post) added alongside the existing false-suppression direction. |
+| **M3** (the bind-token map is in-memory "re-minted on respawn" but tmux sessions OUTLIVE the server process — every auto-update restart fail-closes all live sessions' minted-id binds until respawn) | §7 primitive rebuilt STATELESS: `bindToken = base64url(payload)."."base64url(HMAC-SHA256(bindTokenSecret, payload))` with `payload = {sessionName, bootstrapConversationIds, mintedAt}` and a random 32-byte `bindTokenSecret` persisted in the stateDir at first boot — a restarted server verifies the MAC and reads the bootstrap set FROM the token; no per-session server state exists to lose. Honest residuals stated (an old token stays valid for the same bootstrap set — grants nothing new; secret rotation is the loud deliberate revocation lever). §10 restart-survival test (server restarts, session persists, original token still binds) + tamper/rotation refusal tests. |
+| minor-1 (`sendSeq` "journaled with it" overstated the medium — saveHotState is a plain non-atomic writeFileSync) | Retracted and re-pinned: the seq-bearing hot-state write MUST be atomic tmp→rename (the `StateManager.ts:521-530` house pattern), named in the proof-consumer increment; §10 torn-write assertion. Composition with the durable R4-M2 entry (a reset seq re-colliding with a durable entry) named as the reason this is now load-bearing, not polish. |
+| minor-2 (pool-relative side-queue cardinality unbounded) | `quarantineSideQueueMax = 256` held records per origin; past the cap a record parks-aside IMMEDIATELY (same loud terminal as exhaustion, counted in the aggregated refusal item). |
+| minor-3 (server-internal callers of minted-id binds have no bind token) | Pinned: in-process server-self opens (action-claim observer, scheduled jobs) bypass the ROUTE-level token gate and record `boundBy: "server:<component>"`; anything arriving over the HTTP route needs a session token regardless of self-description — the discriminator is the code path. |
+| minor-4 (stand-down recheck sweep unnamed — pickup latency unfalsifiable) | Named: the recheck rides the beacon's EXISTING external-block sweep (`externalBlockSweepMs`, default 3,600,000 ms = hourly, lease-gated — `PromiseBeacon.ts:518-527`), one O(active-stood-down) pass appended, no new timer; pickup latency ≤ one sweep interval (default ≤ 1 h). |
+| minor-5 (`workspacePin` "replicated single-writer fleet value" naming over-promises) | Renamed "replicated pin CANDIDATE, corroboration-gated" with the explicit anti-instruction (an implementer must NOT build an actual single-writer register; under conflict each machine keeps minting under its locally-authenticated teamId). |
