@@ -69,9 +69,9 @@ pins the copy set so a fourth is a CI failure).
   into a permanent address book with a stable number the moment a message
   arrives, so upcoming increments can make promises/reminders/notices in
   Slack survive restarts the way they do on Telegram. A negative topic id in
-  my state is one of these minted conversation ids — resolvable at
-  `GET /conversations/:id` — not an error. Delivery to Slack through this
-  identity stays switched off (dry-run first on development agents).
+  my state is one of these minted conversation ids — I can look it up in the
+  address book — not an error. Delivery to Slack through this identity stays
+  switched off (dry-run first on development agents).
 
 ## Summary of New Capabilities
 

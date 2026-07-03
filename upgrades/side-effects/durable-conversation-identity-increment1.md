@@ -73,3 +73,8 @@ CapabilityIndex gains the `/conversations` prefix classification (agent-facing
 capability — surfaced in /capabilities discovery, not INTERNAL_PREFIXES), and
 the backup-manifest parity test learns the two new manifest entries (the
 predictable behavior-change-breaks-old-tests category, swept before push).
+
+## Part-4 landing note (release-fragment polish)
+
+The release fragment's "What to Tell Your User" line drops inline code
+formatting (the pre-push gate's plain-conversational rule).
