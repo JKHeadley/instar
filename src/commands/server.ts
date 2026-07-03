@@ -20516,8 +20516,63 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           });
           void peerPresencePuller.pullOnce();
+
+          // ── Machine-Coherence Guard (machine-coherence-guard §3.3/§3.4/§6/§7,
+          // roadmap 4.1 F4/P0-1) — PURE SIGNAL, rides THIS 30s peerPresenceTick ──
+          // Compares version/resolved-flag/protocol/manifest across the agent's OWN
+          // ONLINE machines (the F4 skew class) and — Session B — will raise ONE
+          // episode-scoped attention item from exactly ONE elected machine. Dev-gate
+          // dark on the fleet (`enabled` OMITTED → resolveMachineCoherenceConfig), dry-
+          // run FIRST even on dev. Constructed ONLY when the gate resolves enabled — a
+          // dark guard is never constructed (route 503s, no tick); single-machine is a
+          // strict no-op inside tick(). MUTATES NOTHING. Own try/catch: a wiring
+          // failure is logged non-fatal and the server runs without the evaluator.
+          let machineCoherenceSentinel:
+            import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null = null;
+          try {
+            const mcMod = await import('../monitoring/MachineCoherenceSentinel.js');
+            const mcCfg = mcMod.resolveMachineCoherenceConfig(config as unknown as Record<string, unknown>);
+            if (mcCfg.enabled) {
+              machineCoherenceSentinel = new mcMod.MachineCoherenceSentinel(
+                {
+                  listCapacities: () => machinePoolRegistry?.getCapacities() ?? [],
+                  selfMachineId: () => meshSelfId ?? null,
+                  // Election lease view: the holder id when a lease coordinator is
+                  // attached; null otherwise (a git-only mesh has no live holder for
+                  // election — electRaiser then falls to the lowest machineId).
+                  leaseHolderMachineId: () => (leaseCoordinatorRef ? leaseCoordinatorRef.currentHolder() : null),
+                  now: () => Date.now(),
+                },
+                mcCfg,
+              );
+              // expectRuntime:true on the GUARD_MANIFEST entry — register the
+              // synchronous runtime getter so /guards grades the guard's posture.
+              guardRegistry.register('monitoring.machineCoherence.enabled', () => machineCoherenceSentinel!.guardStatus());
+              try {
+                const mfMod = await import('../core/machineCoherenceManifest.js');
+                console.log(pc.dim(
+                  `  MachineCoherenceGuard: enabled dryRun=${mcCfg.dryRun} ` +
+                  `manifestHash=${mfMod.selfManifestHash().slice(0, 12)} flags=${mfMod.COHERENCE_CRITICAL_FLAGS.length} ` +
+                  `(pool-skew evaluator — pure signal)`,
+                ));
+              } catch { /* boot log line only — never fatal */ }
+            }
+          } catch (e) {
+            // @silent-fallback-ok — optional dev-gated, pure-signal feature: a wiring
+            // failure is logged (console.error, NOT silent) and is non-fatal BY DESIGN
+            // — the monitoring sentinel must never crash server boot.
+            console.error('  MachineCoherenceGuard wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
+          }
+
           const peerPresenceTick = (): void => {
             void peerPresencePuller.pullOnce();
+            // Machine-Coherence Guard rider (machine-coherence-guard §3.3): the
+            // evaluator tick, riding this existing 30s cadence (no new timer). Null
+            // when the guard is dark. tick() fails toward silence internally; the
+            // extra guard here keeps the shared presence tick crash-proof.
+            if (machineCoherenceSentinel) {
+              try { machineCoherenceSentinel.tick(); } catch { /* fail toward silence (§3.3) */ }
+            }
             // mesh-coherence-live-state-honesty (Fix (b)): the periodic, signal-only live-vs-config
             // mesh coherence recheck. Dev-gated dark (resolveDevAgentGate on the nested ?.enabled).
             if (resolveDevAgentGate(config.monitoring?.meshCoherenceLiveCheck?.enabled, config)) {

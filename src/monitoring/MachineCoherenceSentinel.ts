@@ -197,6 +197,18 @@ export class MachineCoherenceSentinel {
     }
   }
 
+  /**
+   * The GuardRegistry runtime getter (GUARD-POSTURE-ENDPOINT-SPEC §2.1): a
+   * synchronous in-memory read the /guards endpoint snapshots per request.
+   * `expectRuntime:true` on the GUARD_MANIFEST entry requires the C₁b server-boot
+   * wiring to register THIS at boot. `enabled`/`dryRun` come from the resolved
+   * config; `lastTickAt` drives the on-stale grading (a constructed-but-never-
+   * ticking guard reads stale, never "on"). Pure — never mutates.
+   */
+  guardStatus(): { enabled: boolean; dryRun: boolean; lastTickAt: number } {
+    return { enabled: this.cfg.enabled, dryRun: this.cfg.dryRun, lastTickAt: this.lastTickAtMs };
+  }
+
   /** The §6 status snapshot (pure read — never mutates). */
   status(): MachineCoherenceStatus {
     const counts = { compared: 0, unknown: 0, advertStale: 0, advertRejected: 0 };

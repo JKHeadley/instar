@@ -196,3 +196,29 @@ describe('MachineCoherenceSentinel.tick — gates + classification + election', 
     expect(s.status().openEpisode).toBeNull();
   });
 });
+
+describe('MachineCoherenceSentinel.guardStatus — the C₁b-i GuardRegistry runtime getter (§6)', () => {
+  it('returns a GuardRuntimeStatus-shaped object (enabled boolean, dryRun boolean, lastTickAt number)', () => {
+    const s = makeSentinel({ capacities: [cap('m_self', freshAdvert('live'))], config: { developmentAgent: true, monitoring: { machineCoherence: { dryRun: false } } } });
+    const g = s.guardStatus();
+    expect(typeof g.enabled).toBe('boolean');
+    expect(typeof g.dryRun).toBe('boolean');
+    expect(typeof g.lastTickAt).toBe('number');
+    expect(g.enabled).toBe(true);
+    expect(g.dryRun).toBe(false);
+  });
+
+  it('lastTickAt is 0 before the first tick (constructed-but-never-ticking reads on-stale, never "on"), and advances after a tick', () => {
+    const s = makeSentinel({ capacities: [cap('m_self', freshAdvert('live')), cap('m_peer', freshAdvert('live'))] });
+    expect(s.guardStatus().lastTickAt).toBe(0);
+    s.tick();
+    expect(s.guardStatus().lastTickAt).toBe(NOW); // the injected clock
+  });
+
+  it('mirrors the resolved dev-gate posture: dry-run-first on a dev agent, dark posture reflected in enabled', () => {
+    const dev = makeSentinel({ capacities: [cap('m_self', freshAdvert('live'))], config: { developmentAgent: true } });
+    expect(dev.guardStatus()).toMatchObject({ enabled: true, dryRun: true }); // dry-run FIRST even on dev
+    const fleet = makeSentinel({ capacities: [cap('m_self', freshAdvert('live'))], config: {} });
+    expect(fleet.guardStatus().enabled).toBe(false); // dark on the fleet
+  });
+});

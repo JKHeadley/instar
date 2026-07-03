@@ -442,9 +442,13 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     // F4/P0-1). `enabled` is deliberately OMITTED from ConfigDefaults — the
     // runtime resolves it through the developmentAgent dark-feature gate (dark
     // on the fleet, live on a dev agent; dry-run first). defaultEnabled:false
-    // reflects the fleet default. expectRuntime:false FOR NOW — increment C₁a
-    // ships the evaluator core unconstructed; C₁b adds the server-boot
-    // construction + guardRegistry.register callsite and flips this to true.
+    // reflects the fleet default. expectRuntime:true — increment C₁b-i adds the
+    // server-boot construction + guardRegistry.register('monitoring.machineCoherence.enabled')
+    // callsite on the peerPresenceTick path, registered ONLY when the gate
+    // resolves enabled. The `missing` classification requires configEnabled===true
+    // (guardPostureView §precedence), so a dark fleet agent (gate → false) never
+    // constructs, never registers, and is never falsely graded `missing` — the
+    // ws13Reconcile/holdForStability expectRuntime:true precedent.
     // NOT loadBearing (Frontloaded Decision D6): signal-only, no critical path
     // consumes it yet, and loadBearing:true would raise G3 gap alarms on every
     // fleet agent where the guard is deliberately dark.
@@ -454,7 +458,7 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     defaultEnabled: false,
     expectedTickMs: 30_000,
     process: 'server',
-    expectRuntime: false,
+    expectRuntime: true,
     component: 'MachineCoherenceSentinel',
     description: 'Machine-coherence guard evaluator: compares version/resolved-flag/protocol/manifest across the agent\'s own ONLINE machines (the F4 skew class) and will raise ONE episode-scoped attention item from exactly ONE elected machine. Signal-only; MUTATES NOTHING.',
   },
