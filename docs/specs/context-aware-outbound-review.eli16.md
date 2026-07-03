@@ -1,7 +1,8 @@
 # Teach the message reviewer what you actually asked for (plain-English overview)
 
-Companion to `context-aware-outbound-review.md` (draft r2 — round-1 findings
-folded; see `reports/context-aware-outbound-review-round1-findings.md`).
+Companion to `context-aware-outbound-review.md` (draft r3 — round-1 and
+round-2 findings folded; see `reports/context-aware-outbound-review-round1-findings.md`
+and `…-round2-findings.md`).
 
 ## The problem
 
@@ -44,10 +45,15 @@ carefully bounded rule:
   question — let it through.** Judged by meaning, not keywords.
 - **One-way only.** The conversation can only rescue a message from a wrong
   block. It can never become a new reason to block something. And this is now
-  MEASURED, not just promised: during the trial period, every would-block gets
-  one extra check with the conversation hidden — if hiding the conversation
-  would have let the message pass, that's a rule violation and the trial
-  restarts.
+  MEASURED, not just promised — on BOTH sides (round 2 caught that checking
+  only one side proves nothing about the other): during the trial period,
+  each relevant would-block gets one extra check with the conversation hidden
+  (if hiding it would have let the message pass, that's a rule violation and
+  the trial restarts); AND every day a fixed set of booby-trapped test
+  messages (like a password paste with a matching "send me the key" ask) is
+  run through the live reviewer — if the "you asked for it" rule ever lets
+  one of those through, the trial fails and restarts. A small daily sample of
+  passed messages also gets a human once-over.
 - **Never for secrets.** Even if you ask for a password or API key in chat, the
   reviewer still flags pasting it — secrets have their own safe delivery path.
   The separate hard-block layer for policy violations is untouched.
@@ -107,7 +113,11 @@ that change is now a named, tested build item).
    unbound topic with just one person talking, that person's asks count; the
    moment an unbound topic has MULTIPLE different people in the recent window,
    everyone drops to weak hints (so a second person's ask can't unlock
-   technical content in a shared room). Say the word to go stricter or looser.
+   technical content in a shared room). Round 2 added the missing plumbing:
+   the system now computes which of those three situations applies and STAMPS
+   it on the conversation snippet as a one-line mode marker, so the reviewer
+   is told the rule instead of having to guess it. Say the word to go
+   stricter or looser.
 2. **How fresh must the ask be?** Decided: last ~6 messages, same as the
    sibling gate. If an ask scrolls out mid-thread and causes a wrong block,
    the trial period catches it (that's a clock-reset mistake) and the window
@@ -116,11 +126,17 @@ that change is now a named, tested build item).
    message, secrets scrubbed; for hard calls you check the actual chat, which
    you already have. Full bodies stay off disk.
 4. **Which reviewers get the conversation?** Decided: exactly one — the tone
-   reviewer. Widening ever again requires real evidence plus a design pass.
+   reviewer — and round 2 made the exclusion physical: the conversation is
+   only ever HANDED to that one reviewer, and only for messages addressed to
+   you (never for messages to other agents or outsiders). The others don't
+   "promise not to look" — they're never given it. Widening ever again
+   requires real evidence plus a design pass.
 5. **What counts as a "clean day"?** Decided floor: one full day, at least 10
-   real reviewed messages, zero wrong would-blocks, zero one-way violations,
-   any mistake restarts the clock. You can demand more at flip time; you
-   can't be given less.
+   real reviewed messages (the extra test-checks don't count toward that),
+   zero wrong would-blocks, zero one-way violations, zero booby-trap
+   failures, zero wrongly-waved-through passes in the daily sample — any
+   mistake restarts the clock. You can demand more at flip time; you can't
+   be given less.
 6. **Fix the sibling gate's wording too?** Decided: not in this change —
    separate follow-up.
 7. **What about non-Telegram sessions?** Decided: deferred unless a real miss
