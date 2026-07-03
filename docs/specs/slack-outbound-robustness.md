@@ -388,8 +388,13 @@ for a real attempt. Three consumers key on it:
   `findByTopicAndHashWithin` (`:285-299`) already keys on
   `(topic_id, text_hash)` which is unique across channels because minted ids
   are globally unique (keystone §3.3 mint rule); the §2.3 terminal notice
-  sweep is fully served by the existing `(state, next_attempt_at)` index
-  (state-prefix + the due-predicate — round-6 L2).
+  sweep gets ONE new PARTIAL index (round-7 m2 — corrects round-6 L2's
+  "fully served" overclaim: `notice_pending` is a post-filter on the
+  state-prefix, and terminal rows accumulate, so months of escalated rows
+  would force broad scans per tick):
+  `CREATE INDEX IF NOT EXISTS idx_notice_pending ON entries(state,
+  next_attempt_at) WHERE notice_pending = 1` — tiny by construction (only
+  pending-notice rows), idempotent via the existing schema machinery.
 - The dual writer parity note: `telegram-reply.sh` embeds its own schema
   bootstrap + INSERT (`src/templates/scripts/telegram-reply.sh:500-560, 604-625`).
   Its CREATE/ALTER mirror gains the same six columns; `slack-reply.sh`'s new
@@ -463,6 +468,7 @@ own notices. Per row:
    | `conversation-unreachable` (§5.1 PERMANENT) | terminal `escalated` with reason `conversation-unreachable` — NO 24h retry burn; the operator notice goes OUT-OF-BAND (below) |
    | non-owning / unresolvable / `conversation-binding-incoherent` / no local Slack adapter | **HOLD** (§2.2a — `hold_reason` set; `next_attempt_at` pushed to the §5 hold-recheck cadence); NO attempt increment, NO breaker arm, NO escalation (keystone stand-down: a by-design refusal is not a delivery failure) + ONE deduped attention item per row-class episode |
    | §5.2 budget-coalesced / overflow (round-2 m4) | **HOLD** (`hold_reason:'funnel-budget'`) — a P17 budget refusal is a by-design refusal, not a delivery failure: NO attempt increment, NO breaker arm, never a terminal; the row retries after the window |
+   | `delivery-in-flight` (route 409 — the §2.4 single-flight reservation; round-7 m5) | policy retry — a routine transient race, NO attention item (explicitly NOT the unmapped-result default below), NO breaker arm |
    | transient `not-delivered` | policy retry — backoff schedule unchanged |
    | dryRun / fleet-dark typed `not-delivered` | **HOLD** (`hold_reason:'dry-run'`), ledger row tagged `dryRun:true` (§5 — never success-shaped) |
 
@@ -507,10 +513,20 @@ own notices. Per row:
    per tick beside the claimable drain. **The sweep carries its own retry
    discipline (round-6 M1 — found independently by both externals; the
    path bypasses the per-channel breaker, so it must bring its own P19
-   bound):** a FAILED raise pushes the terminal row's `next_attempt_at`
-   forward per the existing 9-step backoff schedule, then holds a 4h floor
-   cadence — `next_attempt_at` is FREE on a terminal row, so the backoff
-   anchor is a reused column, not new state. Failed rows back off while
+   bound):** a TRANSIENT-failed raise pushes the terminal row's
+   `next_attempt_at` forward per the existing 9-step backoff schedule,
+   then holds a 4h floor cadence — `next_attempt_at` is FREE on a terminal
+   row, so the backoff anchor is a reused column, not new state. **The
+   step counter is the terminal row's `attempts` column, also free —
+   frozen at escalation, incremented per failed raise from there; the
+   schedule indexes `min(attempts, 8)` and converges to the floor
+   naturally (round-7 m1; the hold-lifecycle ledger rows disambiguate the
+   field's dual meaning on terminal rows). A PERMANENT-shaped raise
+   rejection (4xx excluding 408/429 — the house permanent/transient split;
+   round-7 m3) never retries: `notice_pending` clears with a P18 ledger
+   row `notice-failed-permanent` + one loud DegradationReporter line, and
+   the §4.1 status carries a distinct failed-notice count — never
+   infinite, never silent.** Failed rows back off while
    fresh episodes get attempts (a poison row can never starve a later
    episode — the due-predicate + oldest-due-first ordering guarantee it),
    the retry rate against a down attention surface is schedule-bounded
@@ -603,14 +619,28 @@ routes share (round-1 M4):
 - Read `X-Instar-DeliveryId`; if seen within 24h → `200 { ok, idempotent:
   true }` WITHOUT posting (`routes.ts:1615-1641` helpers are already
   route-file-scoped; the Slack route calls the same functions).
-- **Single-flight per delivery-id (round-6 C1):** before calling
-  `sendToChannel`, the route writes a short-TTL IN-FLIGHT reservation for
-  the id into the durable ledger (TTL = the route budget; a crashed handler
-  can never wedge an id). A concurrent POST with the SAME id while the
-  reservation is live gets a typed `409 delivery-in-flight` — the funnel
-  surfaces it as transient, so the sentinel retries at backoff (≥30s), by
-  which time the first call has resolved (recorded → `idempotent:true`, or
-  failed → the reservation expired and the retry proceeds). This closes the
+- **Single-flight per delivery-id (round-6 C1; ordering pinned round-7
+  M2):** before calling `sendToChannel`, the route writes a short-TTL
+  IN-FLIGHT reservation for the id into the durable ledger. **The TTL is
+  pinned STRICTLY ABOVE the handler's maximum send lifetime** — the
+  adapter call made under a reservation carries an explicit timeout
+  (pinned: adapter-call timeout 30s < reservation TTL 60s), because the
+  deployed route budget produces a 408 RESPONSE without aborting the
+  in-flight handler (`routes.ts:1965-1985` budget seam), so without the
+  ordering a still-alive handler could outlive its reservation and race
+  the retry — the exact double-post the reservation exists to close. A
+  handler that somehow exceeds its adapter timeout treats its OWN outcome
+  as AMBIGUOUS: it must NOT record the id and must NOT claim success (its
+  reservation is presumed lost). A concurrent POST with the SAME id while
+  the reservation is live gets a typed `409 delivery-in-flight` — the
+  funnel surfaces it as transient, so the sentinel retries at backoff
+  (≥30s), by which time the first call has resolved (recorded →
+  `idempotent:true`, or failed → retryable). **A DEFINITIVE send failure
+  explicitly DELETES its reservation in the failure path (round-7 m4)** —
+  relying on TTL expiry would feed the sentinel's ≥30s retry a spurious
+  409 that burns a real recovery attempt (attempts feed MAX_ATTEMPTS) and
+  inflates the backoff; a crash is the only case expiry exists for. This
+  closes the
   in-flight race the `--max-time` pin opened: the script abandons a slow
   call, enqueues the same id, the event kick redrives within seconds — and
   record-after-success alone cannot see the still-in-flight first call.
@@ -768,10 +798,17 @@ Port the recoverable-failure tail of `telegram-reply.sh` (`:391-666`):
   guidance — `slack-reply.sh:118-127` unchanged); 408 remains AMBIGUOUS
   guidance (`:108-117` unchanged) — never blind-enqueued (that would
   double-post; property 1). **A curl TIMEOUT (exit 28, the `--max-time`
-  case) is the client-side twin of HTTP 408 (round-6 C1(b)) — the outcome
-  is UNKNOWN and the send may still complete server-side — so it gets the
-  SAME ambiguous treatment: exit 0 with the verify-before-resend guidance,
-  NEVER a recoverable enqueue.** Conn-refused/reset keep the recoverable
+  case) is classified PHASE-AWARE (round-6 C1(b), sharpened round-7 M1 —
+  exit 28 fires regardless of phase, and the phases have opposite
+  epistemics):** the script adds `-w '%{time_connect}'` (curl emits it
+  even on failure). Exit 28 with an EMPTY/ZERO `time_connect` — the
+  connection was never established, the request was never sent, the
+  message DEFINITELY did not post — keeps the RECOVERABLE class and
+  enqueues (the automated-recovery case the queue exists for). Exit 28
+  with a NONZERO `time_connect` — the request may have been accepted —
+  is the client-side twin of HTTP 408: exit 0 with the
+  verify-before-resend guidance, NEVER a recoverable enqueue.
+  Conn-refused/reset keep the recoverable
   class (the §2.4 in-flight reservation covers the
   reset-while-handler-in-flight variant).
 - Non-recoverable (4xx auth/shape errors) remain exit-1 without enqueue.
@@ -856,7 +893,8 @@ The sentinel's per-tick counters (`processed/recovered/escalated`,
 on the existing sentinel events and a small read route
 `GET /delivery-recovery/status` (queue depth by channel+state, PER-CHANNEL
 breaker state (§2.3 point 5), held backlog counts by `hold_reason` (§2.2a),
-the PENDING out-of-band notice count (`notice_pending` — round-6 m2), dryRun
+the PENDING out-of-band notice count (`notice_pending` — round-6 m2) and
+the failed-notice count (`notice-failed-permanent` — round-7 m3), dryRun
 posture, last tick — Registry First for "did my Slack reply make it?").
 
 ### 4.2 The audit ledger (the live-proof "sentinel audit row")
@@ -1109,9 +1147,21 @@ LLM-visible surface.
   `delivery-in-flight`, exactly ONE post; the reservation expires at the
   route budget (a crashed handler never wedges the id — a post-expiry
   retry proceeds).
-- Script-side timeout classification (round-6 C1(b)): a curl exit-28
-  timeout → AMBIGUOUS guidance, exit 0, NO enqueue (the HTTP-408 twin);
-  conn-refused/reset still enqueue.
+- Script-side timeout classification (round-6 C1(b) + round-7 M1,
+  phase-aware): exit 28 with empty/zero `time_connect` → RECOVERABLE
+  enqueue (never connected = definitely unposted); exit 28 with nonzero
+  `time_connect` → AMBIGUOUS guidance, exit 0, NO enqueue (the HTTP-408
+  twin); conn-refused/reset still enqueue.
+- Reservation ordering (round-7 M2/m4): the in-reservation adapter call
+  times out strictly before the reservation TTL — the
+  handler-outlives-TTL shape asserts exactly ONE post (the late handler
+  records nothing); a definitive send failure deletes its reservation
+  in-line (the follow-up retry is NOT answered 409 and burns no spurious
+  attempt).
+- Sweep failure classes (round-7 m1/m3): a transient raise failure backs
+  off per `min(attempts, 8)` then the 4h floor; a permanent-shaped
+  rejection clears the marker with the `notice-failed-permanent` ledger
+  row + degradation line and never retries.
 - `/slack/reply` dedup: identical long text twice within window → one send +
   `suppressedDuplicate`; brief ack twice → two sends.
 - `/internal/slack-forward` (round-1 M6): ANY payload → `409
@@ -1274,10 +1324,20 @@ now a decided, test-pinned position. `## Open questions` below is empty.
    `next_attempt_at` (schedule-bounded retries, oldest-due-first fairness,
    nothing silently abandoned).
 
+15. **Round-7 precision pins (round-7 M1/M2/m1-m5).** Exit-28 is
+   phase-aware (`time_connect` splits definitely-unposted from ambiguous);
+   the reservation TTL strictly exceeds the bounded in-reservation adapter
+   timeout and definitive failures delete their reservation in-line; the
+   sweep's step counter is the reused `attempts` column and permanent
+   rejections terminate loudly; the sweep gets its tiny partial index; and
+   `delivery-in-flight` has its explicit mapping row (transient, no
+   attention noise).
+
 ## Open questions
 
 *(none — all round-1 resolutions verified landed in round 2, all round-2
 resolutions verified landed in round 3, all round-3 resolutions verified
 landed in round 4, all round-4 resolutions verified landed in round 5, all
-round-5 resolutions verified landed in round 6; the round-6 findings are
-folded above as of this round-7 revision)*
+round-5 resolutions verified landed in round 6, all round-6 resolutions
+verified landed in round 7; the round-7 findings are folded above as of
+this round-8 revision)*
