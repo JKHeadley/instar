@@ -1,7 +1,7 @@
 # Machine-Coherence Guard — plain-English overview
 
 **Companion to:** `docs/specs/machine-coherence-guard.md` (roadmap item 4.1,
-round-4 revision)
+round-5 revision)
 
 ## The problem, in one story
 
@@ -62,11 +62,13 @@ hold a quick deterministic election (the one currently "in charge" wins;
 otherwise the alphabetically-first live one) so exactly ONE machine raises the
 alert. Without that, every machine would confirm the same problem and you'd
 get two identical alarms for one issue. Two backstops keep that honest: each
-machine's heartbeat card now also says "I'm currently holding an open alarm
-about X" — so if the machine that WON the election is quietly broken (its
-alarm-sending arm is dead even though its heartbeat looks alive), the others
-notice the missing "I raised it" marker within about five minutes and the
-next machine in line steps up and raises it instead. And if a weird moment
+machine's heartbeat card now also says "I'm holding an alarm about X that
+actually reached you" — the card only makes that claim after the send
+SUCCEEDED, never merely because the machine noticed the problem — so if the
+machine that WON the election is quietly broken (its alarm-sending arm is
+dead even though its heartbeat looks alive), the others notice the missing
+"I raised it" marker within about five minutes and the next machine in line
+steps up and raises it instead. And if a weird moment
 ever produces TWO alerts for the same problem (a network split, a laggy
 view), the machines spot each other's markers and one of them politely
 withdraws its copy, labeled honestly as superseded — never two alarms dueling
@@ -81,6 +83,11 @@ is the one failure this whole build exists to prevent.
 goes to sleep (a laptop overnight), the alert doesn't declare victory — it
 notes "the divergent machine went offline, holding this open" and waits. It
 only says "restored" when both machines are actually back and actually agree.
+The same patience applies to a fix in flight: if the other machine goes dark
+while I'm verifying a fix you approved, the verification simply pauses and
+resumes when it returns — you never get a false "the fix didn't take" just
+because a laptop lid closed, and an approved-but-not-yet-applied fix that
+gets paused is named to you, never silently dropped.
 If the same problem flaps on and off, it re-opens the SAME alert instead of
 minting new ones; after three flaps it says "this is flapping — recording
 quietly until it stabilizes" and stops narrating each bounce — and the same
