@@ -200,6 +200,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Coordinates between the operator\'s OWN machines only — no external egress; when dark/single-machine the election returns "speak" unconditionally (byte-for-byte today\'s behavior) and never engages below 2 online machines; a verdict only WITHHOLDS a duplicate send (the safe direction), never fabricates one. No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'writeAdmission',
+    configPath: 'multiMachine.writeAdmission.enabled',
+    description: 'Standby-write reconciliation — ownership-scoped write admission + typed refusal (docs/specs/standby-write-reconciliation.md). Replaces the blanket lease-boolean standby guard with a per-domain, synchronous in-memory admission decision.',
+    justification: 'Ships dryRun:true even on dev (FD-7 telemetry pattern): the layer only EVALUATES and logs would-verdicts while the legacy blanket guard keeps enforcing — zero authority, zero behavior change, no egress, no spend. Refusal authority is double-latched behind dryRun:false AND the wave-2 inventory constant (WRITE_SURFACE_INVENTORY_COMPLETE, §9.14), so live-on-dev soak is observe-only by construction. Single-machine agents are a strict no-op (every domain admits).',
+  },
+  {
     name: 'ws13Reconcile',
     configPath: 'multiMachine.seamlessness.ws13Reconcile',
     description: 'WS1.3 ownership reconcile — bounded pin/owner convergence (cooperative transfer→claim while the owner lives; force only with owner-death evidence + quorum).',

@@ -1,0 +1,261 @@
+/**
+ * WriteDomainRegistry — the single source of truth mapping every classified
+ * mutating surface (StateManager op names, exact kv keys, HTTP route prefixes)
+ * to its write DOMAIN + convergence story.
+ *
+ * Spec: docs/specs/standby-write-reconciliation.md §3.1 (taxonomy), §3.5
+ * (registry + conformance ratchet), invariants I8/I9.
+ *
+ * Design rules enforced HERE (not by review vigilance):
+ *  - I8 Registry-or-legacy, never neither: an unclassified StateManager op or
+ *    kv key resolves to `cluster-shared` — exactly today's blanket guard. An
+ *    unwired route resolves to null (no admission wiring, today's behavior).
+ *  - I9 No machine-local without a convergence story — on BOTH axes: a
+ *    machine-local entry with no logical story, or one sitting on a git-synced
+ *    shared path with no file-level arm (`per-machine-path` |
+ *    `git-sync-excluded`), is REFUSED the classification and downgraded to
+ *    `cluster-shared` (recorded in `refusedClassifications` so the Tier-1 test
+ *    and the observability surface can see it).
+ *  - kv classification is EXACT-KEY (§9.12) — no prefix matching in wave 1. A
+ *    key whose contents mix domains is refused classification until the store
+ *    is split or re-keyed (first instance: `session-build-context` re-keyed
+ *    per machine; the LEGACY key stays cluster-shared).
+ *  - Topic-scoped absent-window opt-in (§3.2 table exception, §9.18) is
+ *    audited under the SAME story schema (I9).
+ */
+
+export type WriteDomain = 'machine-local' | 'session-scoped' | 'topic-scoped' | 'cluster-shared';
+
+export type LogicalConvergenceStory =
+  | 'ws2x-replicated'
+  | 'pool-scope-read-merge'
+  | 'per-machine-path'
+  | 'git-sync-excluded'
+  | 'ephemeral-rebuildable';
+
+export type FileLevelArm = 'per-machine-path' | 'git-sync-excluded';
+
+/** The two-axis convergence story a machine-local entry must carry (§3.1). */
+export interface ConvergenceStory {
+  /** How the LOGICAL state converges across machines. */
+  logical: LogicalConvergenceStory;
+  /** Whether the backing store sits on a git-synced shared path (the round-2
+   *  S1 axis: a logical story says nothing about the FILE). */
+  onSharedGitSyncedPath: boolean;
+  /** REQUIRED when onSharedGitSyncedPath — the file-level arm. */
+  fileLevel?: FileLevelArm;
+  /** Honesty note (e.g. "WS2.5 replication covers action-queue.json only and
+   *  is dark on the fleet"). Human-facing, never consulted by admission. */
+  note?: string;
+}
+
+export interface OpEntry {
+  kind: 'op';
+  /** StateManager operation name (e.g. 'saveSession'). */
+  op: string;
+  domain: WriteDomain;
+  story?: ConvergenceStory;
+}
+
+export interface KvEntry {
+  kind: 'kv';
+  /** EXACT kv key (post-validateKey charset) — never a prefix (§9.12). */
+  key: string;
+  domain: WriteDomain;
+  story?: ConvergenceStory;
+  /** §3.2 table exception (§9.18): a topic-scoped entry may opt into
+   *  admit-on-absent ONLY by declaring an explicit absent-window story,
+   *  I9-audited on both axes. */
+  absentWindowStory?: ConvergenceStory;
+}
+
+export type MutatingMethod = 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+
+export interface RouteEntry {
+  kind: 'route';
+  method: MutatingMethod;
+  /** Route path prefix (matched against the request path). */
+  pathPrefix: string;
+  domain: WriteDomain;
+  story?: ConvergenceStory;
+  absentWindowStory?: ConvergenceStory;
+}
+
+export type WriteDomainEntry = OpEntry | KvEntry | RouteEntry;
+
+export interface RefusedClassification {
+  entry: WriteDomainEntry;
+  reason: string;
+}
+
+/**
+ * Wave-2 inventory gate (§3.5 ladder gate (a), §9.14): `dryRun:false` is
+ * REFUSED until the complete write-surface inventory is present in the
+ * registry (TODO-classify rows permitted; absent rows are not). This constant
+ * is the structural latch: WriteAdmission treats live mode as unreachable
+ * while it is false, no matter what config says. Flipped by the wave-2 PR
+ * that lands the reviewed inventory — never by config.
+ */
+export const WRITE_SURFACE_INVENTORY_COMPLETE = false;
+
+function storyValid(story: ConvergenceStory | undefined): { ok: boolean; reason?: string } {
+  if (!story) return { ok: false, reason: 'no convergence story declared (I9 first axis)' };
+  if (story.onSharedGitSyncedPath && !story.fileLevel) {
+    return {
+      ok: false,
+      reason: 'store sits on a git-synced shared path but declares no file-level arm (I9 second axis: per-machine-path | git-sync-excluded)',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Charset-jail a machine id for embedding in a kv key (mirrors the
+ * sessionFileName jail in LocalSessionOwnershipStore, tightened to the
+ * StateManager validateKey charset [A-Za-z0-9_-]).
+ */
+export function jailMachineIdForKey(machineId: string): string {
+  return machineId.replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+/**
+ * The per-machine kv key for SessionBuildContextStore (§3.3 / §9.12).
+ * `machineId` comes from the coordinator/mesh identity; installs with no mesh
+ * identity use the literal 'local' (no peers ⇒ no second writer ⇒ no fork).
+ */
+export function sessionBuildContextKeyFor(machineId: string | null | undefined): string {
+  const id = machineId && machineId.trim() ? jailMachineIdForKey(machineId) : 'local';
+  return `session-build-context-${id}`;
+}
+
+export class WriteDomainRegistry {
+  private readonly ops = new Map<string, OpEntry>();
+  private readonly kv = new Map<string, KvEntry>();
+  private readonly routes: RouteEntry[] = [];
+  /** Entries that failed I9 validation and were downgraded to cluster-shared. */
+  readonly refusedClassifications: RefusedClassification[] = [];
+
+  /** Add an entry, enforcing I9. A machine-local entry failing the story
+   *  validation is DOWNGRADED to cluster-shared (refused classification) —
+   *  fail toward today, never silently machine-local. */
+  add(entry: WriteDomainEntry): void {
+    let effective = entry;
+    if (entry.domain === 'machine-local') {
+      const v = storyValid(entry.story);
+      if (!v.ok) {
+        this.refusedClassifications.push({ entry, reason: v.reason! });
+        effective = { ...entry, domain: 'cluster-shared' } as WriteDomainEntry;
+      }
+    }
+    // An absent-window opt-in on a scoped entry is audited under the same schema.
+    if ((entry.kind === 'kv' || entry.kind === 'route') && entry.absentWindowStory) {
+      const v = storyValid(entry.absentWindowStory);
+      if (!v.ok) {
+        this.refusedClassifications.push({ entry, reason: `absent-window story invalid: ${v.reason}` });
+        effective = { ...effective, absentWindowStory: undefined } as WriteDomainEntry;
+      }
+    }
+    if (effective.kind === 'op') this.ops.set(effective.op, effective);
+    else if (effective.kind === 'kv') this.kv.set(effective.key, effective);
+    else this.routes.push(effective);
+  }
+
+  /**
+   * Resolve the domain for a StateManager op (I8: unclassified ⇒
+   * cluster-shared, today's exact guard). kv ops ('set'/'delete') resolve by
+   * EXACT key when one is supplied.
+   */
+  entryForOp(op: string, key?: string): OpEntry | KvEntry | null {
+    if ((op === 'set' || op === 'delete') && key !== undefined) {
+      return this.kv.get(key) ?? null;
+    }
+    return this.ops.get(op) ?? null;
+  }
+
+  domainForOp(op: string, key?: string): { domain: WriteDomain; entry: OpEntry | KvEntry | null } {
+    const entry = this.entryForOp(op, key);
+    return { domain: entry?.domain ?? 'cluster-shared', entry };
+  }
+
+  /** Resolve a mutating HTTP route. null ⇒ unwired (today's exact behavior,
+   *  lint-visible — I8). */
+  entryForRoute(method: string, routePath: string): RouteEntry | null {
+    const m = method.toUpperCase();
+    for (const r of this.routes) {
+      if (r.method === m && routePath.startsWith(r.pathPrefix)) return r;
+    }
+    return null;
+  }
+
+  /** All route entries (conformance-ratchet + observability reads). */
+  routeEntries(): readonly RouteEntry[] {
+    return this.routes;
+  }
+
+  kvKeys(): string[] {
+    return [...this.kv.keys()];
+  }
+
+  opNames(): string[] {
+    return [...this.ops.keys()];
+  }
+}
+
+/**
+ * Build the WAVE-1 registry (§3.1 initial classification + §3.5 wave-1 route
+ * wiring). ONE builder — the server wires THIS map and the tests assert
+ * against THIS map (the PR-#334 dead-code lesson: registry↔wiring identity).
+ */
+export function buildWriteDomainRegistry(opts: { machineId: string | null }): WriteDomainRegistry {
+  const reg = new WriteDomainRegistry();
+
+  // ── Store seam: StateManager ops (§3.1 table) ──────────────────────────
+  // Today's `sessionScoped` carve-out generalizes into the session-scoped rule.
+  reg.add({ kind: 'op', op: 'saveSession', domain: 'session-scoped' });
+  reg.add({ kind: 'op', op: 'removeSession', domain: 'session-scoped' });
+  // Genuinely cluster-shared, single-writer = lease holder (byte-identical to today).
+  reg.add({ kind: 'op', op: 'saveJobState', domain: 'cluster-shared' });
+  reg.add({ kind: 'op', op: 'appendEvent', domain: 'cluster-shared' });
+  // kv `set`/`delete` default cluster-shared for unclassified keys (I8) — no
+  // op-level entry needed; exact-key entries below override per key.
+
+  // ── First kv entry: SessionBuildContextStore re-keyed per machine (§3.3) ──
+  // Convergence: per-machine key ⇒ single writer per file by construction;
+  // git-sync carries peers' copies inertly. The LEGACY shared key
+  // `session-build-context` is deliberately NOT classified — it stays
+  // cluster-shared (I8) and self-drains (6h max age) + one-time lease-holder
+  // cleanup.
+  reg.add({
+    kind: 'kv',
+    key: sessionBuildContextKeyFor(opts.machineId),
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'per-machine-path',
+      note: 'machine id embedded in the kv key — single writer per file; peers’ copies ride git-sync inertly',
+    },
+  });
+
+  // ── Route seam, wave 1: the P2-6 family (§3.5) ─────────────────────────
+  // Both families are machine-local ⇒ admit everywhere — the user-visible
+  // P2-6 fix. Stories per §3.1 + frontloaded decision §9.3.
+  const evolutionStory: ConvergenceStory = {
+    logical: 'ws2x-replicated',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'WS2.5 replication covers state/evolution/action-queue.json ONLY and is dark on the fleet (the fleet’s logical story today is honestly “none yet”); file-level arm shipped in FileClassifier sync exclusions (wave-1 build item)',
+  };
+  const attentionStory: ConvergenceStory = {
+    logical: 'pool-scope-read-merge',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'pool-scope GET merge + WS4.1 durable remote-ack; file-level arm shipped in FileClassifier sync exclusions (wave-1 build item)',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
+  reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
+  reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
+
+  return reg;
+}

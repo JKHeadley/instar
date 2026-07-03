@@ -517,6 +517,9 @@ export class AgentServer {
     secretSync?: import('../core/SecretSync.js').SecretSyncHandle;
     /** U4.5 rope-health alerts monitor — backs GET /mesh/rope-health (null = dark → 503). */
     ropeHealthMonitor?: import('../monitoring/RopeHealthMonitor.js').RopeHealthMonitor | null;
+    /** Standby-write reconciliation — ownership-scoped write admission + typed
+     *  refusal (backs GET /write-admission; null = dark → 503). */
+    writeAdmission?: import('../core/WriteAdmission.js').WriteAdmission | null;
     /** This machine's mesh id. */
     meshSelfId?: string;
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
@@ -2473,6 +2476,7 @@ export class AgentServer {
       leaseHandback: options.leaseHandback ?? null,
       secretSync: options.secretSync ?? null,
       ropeHealthMonitor: options.ropeHealthMonitor ?? null,
+      writeAdmission: options.writeAdmission ?? null,
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
       sendDrain: options.sendDrain ?? null,
