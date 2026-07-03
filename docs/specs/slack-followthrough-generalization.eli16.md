@@ -41,4 +41,4 @@ Ships dark on the fleet, live-in-"dry-run" on the dev machine first (it decides 
 
 ---
 
-*Design-review status: the technical design is **converged** — it passed an internal multi-lens review plus two independent AI cross-model reviews (Gemini and GPT), both clean, with the biggest catch being a private-message mis-delivery seam that's now closed. It is **waiting on your approval** before I build it. Nothing ships until you say go.*
+*Design-review status: the technical design is **converged** — it passed an internal multi-lens review plus two independent AI cross-model reviews (Gemini and GPT), both clean, with the biggest catch being a private-message mis-delivery seam that's now closed. It was **operator-approved** and built; it ships dev-gated dark (off for everyone until an operator turns it on after a clean soak). This work is an instance of the **Structure beats Willpower** constitutional standard — the promise gets written down by machinery, not by anyone remembering to.*

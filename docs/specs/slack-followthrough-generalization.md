@@ -6,11 +6,10 @@ review-convergence-detail: "spec-converge ceremony over the DRAFT. Internal mult
 approved: true
 approval-basis: "standing Session-A/B run operator preapproval — Justin, topic 29836, 2026-07-03 14:49 ('yes, please proceed with opus 4.8'), which explicitly covers spec approvals + in-scope reversible decisions. This spec is task 2 (the named critical path) and ships dev-gated DARK (reversible), squarely inside that envelope. Applying an already-granted go, not a self-grant."
 eli16-overview: "slack-followthrough-generalization.eli16.md"
-parent-principle: Structure > Willpower
+parent-principle: Structure beats Willpower
 related-principles:
   - The Agent Carries the Loop
   - Close the Loop (Untracked = Abandoned)
-  - Deferral = Deletion
 roadmap: Phase 2.3 — follow-through generalization
 reuses-specs:
   - durable-conversation-identity.md (§5 funnel, §6.1 increment 2, §6.3 eager mint, §7 bind-time authority)
@@ -81,7 +80,7 @@ durable-conversation-identity §6.1 already **assigns** the following; this spec
 | Slack delivery robustness parity (PendingRelayStore lane, DeliveryFailureSentinel `channel:'slack'`, delivery-id idempotency, GFM→mrkdwn) | §5.2 Phase 2.1 non-goals |
 | Bespoke conversations replicated store (multi-machine) | Increment 9 |
 
-This spec's **only** surface is the **registration trigger** — a genuinely-deferred Phase 2.3 item (durable-conversation-identity §6.0 names "per-conversation Slack ack UX" and "Slack KYP auto-bind" as Phase 2.3; the registration trigger is the sibling that closes S7).
+This spec's **only** surface is the **registration trigger** — a genuinely-separate Phase 2.3 item (durable-conversation-identity §6.0 names "per-conversation Slack ack UX" and "Slack KYP auto-bind" as Phase 2.3; the registration trigger is the sibling that closes S7).
 
 ### §2.3 Explicit non-goals of THIS spec
 
@@ -328,7 +327,7 @@ Per the **Live-User-Channel Proof Before Done** standard, a user-role session dr
 
 ## §10. Open questions (carried to the operator via the eli16)
 
-- **Q1 — Detection recall knob.** Lanes A+B (+ the hedge fix) close the S7 case and the dev-ops/time-boxed families. Do we stop there (highest precision), or widen Lane B's recall to catch bare-verb conversational promises ("I'll send you the summary", "I'll wire that up") that carry **no** time marker? Widening buys recall at the cost of false nagging-beacons (the FD2 harm) and is the riskier, LLM-tempting direction. **Recommendation: ship A+B+hedge first; treat further recall as a separately-soaked follow-up.**
+- **Q1 — Detection recall knob.** Lanes A+B (+ the hedge fix) close the S7 case and the dev-ops/time-boxed families. Do we stop there (highest precision), or widen Lane B's recall to catch bare-verb conversational promises ("I'll send you the summary", "I'll wire that up") that carry **no** time marker? Widening buys recall at the cost of false nagging-beacons (the FD2 harm) and is the riskier, LLM-tempting direction. **Recommendation: ship A+B+hedge first; treat further recall as a separately-soaked later increment.**
 - **Q2 — Lane-B dedup strength.** Lane B keys on normalized promise text, so a **reworded** restatement of the same promise opens a second (cap-bounded, expiring) commitment. Is the per-topic cap + 6 h expiry an acceptable bound, or does Lane B need a coarser per-topic-time-window anchor (fewer duplicates, but risks collapsing two genuinely-distinct promises)? **Recommendation: ship the content-hash key + cap; revisit only if dev soak shows duplicate churn.**
 - **Q3 — Telegram time-promise registration (§8.4).** The shared route means Lane B also starts registering Telegram time-boxed promises when the fleet flag graduates. Intended improvement, or should Lane B be Slack-scoped until a separate Telegram soak? **Recommendation: keep it shared (one classifier set), rely on the shared dark gate + dev soak.**
 - **Q6 — Keystone doc-correction (cross-spec).** durable-conversation-identity's R4-minor-3 / minor-3 parenthetical mislabels "the action-claim observer" as an in-process server-self caller (§4.3 reconciliation). The action-claim path is the HTTP route + Stop hook, so it takes the session-token gate per the keystone's own discriminator. **Recommendation: land a one-line keystone edit dropping "action-claim observer" from that in-process example when the build PR touches the shared bind-verify helper — no design decision, just a doc-truth fix so the two specs never read as contradictory.**
