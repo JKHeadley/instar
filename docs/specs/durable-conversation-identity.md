@@ -744,11 +744,12 @@ JSON snapshot is a rebuildable cache. The contract:
   discriminator, stamped by the funnel at APPEND time (the funnel knows the lane at that
   moment: the caller either supplied a logical send identity via `opts` or fell back to the
   content hash), NEVER inferred at boot from the id's shape. **A parseable `send-intent`
-  record MISSING `lane` (R9-minor-1 — a malformed record: no deployed pre-lane writer
-  exists, since the lane field ships in the FIRST implementation that ever writes this op;
-  the case is framing corruption or a hand-edit, defensive-completeness like the unknown-op
-  rule below) resolves toward RETRY (the content-hash treatment) + ONE deduped attention
-  item naming the malformed record. Direction chosen by wrong-guess cost, the writer being
+  record MISSING `lane` — or carrying an UNRECOGNIZED `lane` value (R10-low-2: the same
+  malformed-discriminator case one notch over) — (R9-minor-1 — a malformed record: no
+  deployed pre-lane writer exists, since the lane field ships in the FIRST implementation
+  that ever writes this op; the case is framing corruption or a hand-edit,
+  defensive-completeness like the unknown-op rule below) resolves toward RETRY (the
+  content-hash treatment) + ONE deduped attention item naming the malformed record. Direction chosen by wrong-guess cost, the writer being
   unknown: defaulting logical on a notice's record silently loses the notice (the exact
   R8-M1 class); defaulting content-hash on a beacon's record costs at most one unguarded
   re-fire — one visible duplicate heartbeat, superseded by the next cadence tick.
@@ -792,23 +793,34 @@ JSON snapshot is a rebuildable cache. The contract:
   belong to the newer version's feature, and the record SURVIVES for it — **a journal file
   containing an unapplied unknown-op record is EXEMPT from the fully-superseded prune** (a
   snapshot that could not incorporate the record cannot supersede it), so a later re-upgrade
-  replays the preserved line and loses nothing. **The WATERMARK carries the same principle
-  (R9-M1 — preservation of BYTES alone is defeated by the replay bound): while any
-  unknown-op record remains unapplied, `snapshotHighWaterSeq` NEVER advances past
-  `lowestUnappliedUnknownOpSeq − 1` — a snapshot cannot claim to supersede a record it
-  could not incorporate, in the replay bound exactly as in the prune rule. Every
-  consequence rides already-pinned machinery: known records above the held watermark
-  re-apply on each boot (replay is idempotent by this section's own contract); the prune
-  exemption above becomes automatic (a file holding records above the watermark is never
-  fully-superseded — the explicit sentence stays as the principle's restatement); and on
-  re-upgrade the recognizing version's tail replay starts BELOW the preserved record and
-  applies it in correct global `seq` order — never an out-of-order application of a record
-  whose semantics may be order-dependent. Honest cost, named: while unknown ops remain
-  unapplied, the held watermark means journal retention and boot-replay work GROW for the
-  duration of the rollback stay — bounded operationally (the deduped unknown-op attention
-  item MUST name the held watermark and the unapplied count) and inherently temporary
-  (resolved by re-upgrading, which applies the records and lets the next snapshot advance
-  normally).** §10 pins both shapes.
+  replays the preserved line and loses nothing. **SNAPSHOT FLUSHING IS SUSPENDED while any unknown-op record remains unapplied (R9-M1 as
+  refined by R10-M1 — preservation of BYTES alone is defeated by the replay bound, and a
+  merely-HELD watermark over a still-flushing snapshot is defeated one level deeper: the
+  flushed snapshot would MATERIALIZE the effects of known records past the held floor, so
+  a formerly-unknown op with order-dependent or conditional semantics — exactly the
+  future-version population this rule serves — would compose wrongly on re-upgrade,
+  applied against a state that already reflects its own future).** The rule: from the
+  moment a replay first skips-and-preserves an unknown-op record until every such record
+  has been applied by a recognizing version, NO new snapshot is flushed — the on-disk
+  snapshot stays the PRE-SKEW one, whose `snapshotHighWaterSeq` precedes the first
+  unapplied unknown op BY CONSTRUCTION (had the watermark been past that record, replay
+  would never have visited it and no suspension would engage). Everything else is
+  machinery this section already pins: boot under suspension = pre-skew snapshot + full
+  ordered tail replay (unknown ops skipped, deterministically — the same composed state
+  every boot); SERVING is untouched (the in-memory image still applies known records
+  live; only the cache flush suspends); the journal remains the durability authority
+  exactly as in the normal regime, so crash-safety is unchanged; prune keys on the static
+  pre-skew watermark, so every file the eventual re-upgrade needs is retained
+  MECHANICALLY (the explicit unknown-op prune exemption above stays as the principle's
+  restatement); and re-upgrade = the SAME pre-skew snapshot + fresh ordered application
+  of the whole tail with the formerly-unknown op IN POSITION — correct global `seq` order
+  with NO reliance on any re-application-over-materialized-state semantics. The first
+  flush after a replay that leaves zero unapplied unknown ops resumes normally and the
+  watermark advances. Honest cost, named: for the suspension's duration, snapshot
+  staleness, journal retention, and boot-replay length all GROW — bounded operationally
+  (the deduped unknown-op attention item MUST name the suspension, the pre-skew
+  watermark, and the unapplied count) and inherently temporary (a rollback stay ends by
+  re-upgrading). §10 pins the shapes.
 - **Append serialization — the journal has its OWN single-writer discipline (scalability-G3).**
   The serialized `mutate()` (§3.4 above) is scoped to the SNAPSHOT; it does NOT cover journal
   appends, so two probed/durable mints in the SAME tick could otherwise interleave `seq`
@@ -1938,7 +1950,12 @@ R7-M1/M2/M3; the lane-scoped boot conversion per R8-M1):
   R9-low-3 pins the WHEN: the conversion appends are STAGED during replay and written AFTER
   replay composes — post-compose, before serving — so the append never mutates the journal
   mid-read, never participates in the same pass's last-word determination, and replay's
-  input stays byte-stable under the §3.4 idempotency contract).
+  input stays byte-stable under the §3.4 idempotency contract; R10-minor-1 pins the
+  durability class: staged conversion appends are FSYNCED before the registry begins
+  serving — boot-time, off any hot path, the same durable-binding class as the intent they
+  resolve — so implementations cannot diverge on the serving boundary (a crash before the
+  staged append lands is still safe either way: the next boot re-decides the same verdict
+  deterministically from the same last-word record).
   **Boot rule: for each `(conversationId,
   logicalSendId)` PAIR — the guard's own composite key, never `logicalSendId` alone (R7-M3:
   beacon `commitmentId:sendSeq` ids are globally unique, so a single-field rule was
@@ -2948,13 +2965,22 @@ binding gap named in the audit closes to "creates the identity everything else c
   applied), PRESERVED untouched, and raises ONE deduped attention item naming the op kind(s)
   + count — replay completes (no HALT: version skew is not corruption); a journal file
   containing an unapplied unknown-op record is asserted EXEMPT from the fully-superseded
-  prune, and a later re-upgrade replays the preserved line**; **the WATERMARK-FLOOR shape
-  (R9-M1): write an op outside the enum at seq 100 ("future version's record") → replay
-  skips-and-preserves it → apply + snapshot LATER known records (seq 101…120) → assert the
-  persisted `snapshotHighWaterSeq` is HELD at 99 (never advanced past the unapplied record)
-  and boot re-applies 101…120 idempotently → "re-upgrade" (register the op in the enum) →
-  assert seq 100 APPLIES on the next replay, in global seq order, and the following
-  snapshot's watermark advances normally**; **a replay SPANNING a rotation boundary applies records in the single global `seq`
+  prune, and a later re-upgrade replays the preserved line**; **the SNAPSHOT-SUSPENSION shape
+  (R9-M1/R10-M1): write an op outside the enum at seq 100 ("future version's record") →
+  replay skips-and-preserves it → apply LATER known records (seq 101…120) live → assert
+  NO new snapshot is flushed (the on-disk snapshot stays the pre-skew one, watermark < 100)
+  AND the deduped attention item is raised NAMING the suspension, the pre-skew watermark,
+  and the unapplied count (R10-minor-2 — the observability guarantee is pinned, not just
+  the correctness) → "re-upgrade" (register the op in the enum) → assert the next boot
+  composes pre-skew snapshot + the WHOLE tail in fresh global seq order with seq 100
+  applied IN POSITION, with an order-dependence probe (the formerly-unknown op writes a
+  field a later known record also writes → the later record's value wins, and a field
+  ONLY the formerly-unknown op writes → its value persists) → assert the following flush
+  resumes and the watermark advances past 120; and the MULTI-UNKNOWN progression shape
+  (R10-low-1): unknown ops at seq 100 AND 150 with known records between and after →
+  partial "re-upgrade" recognizing only the op at 100 → assert suspension PERSISTS (150
+  still unapplied, no flush) with 100 applied → a later re-upgrade recognizing 150 ends
+  the suspension and the flush resumes**; **a replay SPANNING a rotation boundary applies records in the single global `seq`
   order — no skip, no double-apply — and the boot counter resumes from the max seen, never
   0/1 (R3-M14)**; **snapshot completeness (R4-M2 corollary, extended per R6-M1/M3): a
   snapshot taken after live bind-pins, unretired `ambiguous-send` entries, unresolved
@@ -3226,7 +3252,8 @@ findings resolved by the Round-6 revision (Appendix E); tags prefixed `R6-` map 
 findings resolved by the Round-7 revision (Appendix F); tags prefixed `R7-` map to the Round-7
 findings resolved by the Round-8 revision (Appendix G); tags prefixed `R8-` map to the Round-8
 findings resolved by the Round-9 revision (Appendix H); tags prefixed `R9-` map to the Round-9
-findings resolved by the Round-10 revision (Appendix I). Provenance lives here; the design lives
+findings resolved by the Round-10 revision (Appendix I); tags prefixed `R10-` map to the Round-10
+findings resolved by the Round-11 revision (Appendix J). Provenance lives here; the design lives
 above.
 
 ## Appendix B — Round-3 revision log (Round-2 findings → resolutions)
@@ -3403,7 +3430,21 @@ the pre-lane conversion outcome for a content-hash intent, and three appendix en
 
 | Finding | Resolution |
 |---|---|
-| **M1** (the unknown-op preservation guarantee was defeated by the snapshot watermark — replay is bounded to `seq > snapshotHighWaterSeq`, and the rolled-back version advances the watermark past the skipped record while applying later known records; on re-upgrade the preserved line is on disk but NEVER applied — preservation of bytes, not application) | Watermark floor (§3.4 unknown-op bullet): while any unknown-op record remains unapplied, `snapshotHighWaterSeq` NEVER advances past `lowestUnappliedUnknownOpSeq − 1` — the snapshot cannot claim to supersede a record it could not incorporate, in the replay bound exactly as in the prune rule. Consequences all ride pinned machinery: interleaved known records re-apply idempotently; the prune exemption becomes automatic (kept as restatement); re-upgrade applies the record in correct global seq order (no out-of-order application). Honest cost named: journal retention + boot-replay work grow for the rollback stay's duration, bounded operationally (the deduped attention item MUST name the held watermark + unapplied count), inherently temporary. §10: the watermark-floor shape (skip at 100 → apply 101–120 → watermark held at 99 → re-upgrade → 100 applies, watermark advances). |
+| **M1** (the unknown-op preservation guarantee was defeated by the snapshot watermark — replay is bounded to `seq > snapshotHighWaterSeq`, and the rolled-back version advances the watermark past the skipped record while applying later known records; on re-upgrade the preserved line is on disk but NEVER applied — preservation of bytes, not application) | Watermark floor (§3.4 unknown-op bullet): while any unknown-op record remains unapplied, `snapshotHighWaterSeq` NEVER advances past `lowestUnappliedUnknownOpSeq − 1` — the snapshot cannot claim to supersede a record it could not incorporate, in the replay bound exactly as in the prune rule. Consequences all ride pinned machinery: interleaved known records re-apply idempotently; the prune exemption becomes automatic (kept as restatement); re-upgrade applies the record in correct global seq order (no out-of-order application). Honest cost named: journal retention + boot-replay work grow for the rollback stay's duration, bounded operationally (the deduped attention item MUST name the held watermark + unapplied count), inherently temporary. §10: the watermark-floor shape (skip at 100 → apply 101–120 → watermark held at 99 → re-upgrade → 100 applies, watermark advances). **(SUPERSEDED in Round 11 — R10-M1, Appendix J: the held-watermark-while-still-flushing mechanism was itself one seam short — the flushed snapshot materialized effects past the floor; replaced by full snapshot-flush SUSPENSION while any unknown op is unapplied.)** |
 | minor-1 (a parseable `send-intent` record MISSING `lane` had no defined replay treatment — both externals found it, pi as MAJOR, gemini as MINOR; reconciled MINOR: no deployed pre-lane writer can exist since the E1 machinery is unbuilt and `lane` ships in the first implementation; the residual is the malformed-record case) | §3.4 record framing: a parseable lane-less `send-intent` resolves toward RETRY + ONE deduped attention item naming the malformed record. Direction by wrong-guess cost, REVERSING gemini's proposed default-logical: defaulting logical on a notice's record silently loses the notice (the R8-M1 class); defaulting content-hash on a beacon's record costs one visible duplicate heartbeat, next-tick-superseded. Loss-is-never-silent picks retry. §10: the missing-lane malformed-record shape. |
 | low batch (1: Appendix A's provenance map stopped at `R7-`→G; 2: the §7 grace-clock deploy stamp was absent from the §3.4 backup manifest — a disaster restore would recreate it and silently RESET the 14-day token-less grace window; 3: the boot-replay conversion append's timing was unstated — a naive mid-replay append mutates the journal being read) | All folded: Appendix A extended through `R9-`→I; `state/conversation-registry-deploy.json` added to the backup manifest with the reset-consequence named; §5.0(a) pins staged post-compose appends (never mid-read, never same-pass last-word input, replay input byte-stable under the idempotency contract). |
 | cross-verified residuals (a: the §10 R7-M3 composite-key boot shape asserted "A's intent CONVERTS" for a content-hash intent — a test pin contradicting the R8-M1 lane rule; b: Appendix C-M14 still asserted "rotation carries the checkpoint anchor" after the R9 anchor drop, and Appendix F-M1/G-M2 asserted the pre-lane conversion / "boot replay lane-identical" without round-9 markers) | The composite-key shape restated per-lane (A resolves BY ITS OWN PAIR AND LANE — content-hash retry delivers; the lane-independent load-bearing assertion, no cross-conversation supersession, unchanged; a logical-lane variant added asserting conversion); REFINED markers added to C-M14 (anchor dropped, global-seq assertions stand), F-M1 (conversion lane-scoped), and G-M2 (boot replay no longer lane-identical; keying/journal-op machinery still is). |
+
+## Appendix J — Round-11 revision log (Round-10 findings → resolutions)
+
+Applied from `docs/specs/reports/durable-conversation-identity-round10-findings.md`; every
+tag below is traceable inline as `R10-<finding>`. The one MAJOR resolved by REPLACING the
+round-10 watermark-floor mechanism with strictly less machinery; behavior changes only in
+the rollback-with-newer-journal regime.
+
+| Finding | Resolution |
+|---|---|
+| **M1** (the watermark floor fixed replay SELECTION but not snapshot STATE — a flushed snapshot with a held watermark still MATERIALIZED the effects of known records past the floor, so on re-upgrade a formerly-unknown op with order-dependent or conditional semantics — exactly the future-version population the unknown-op rule serves — was applied against a state already reflecting its own future; §3.4's "replay is idempotent" is a property both ordered-re-application and skip-if-present satisfy, and nothing pinned the mechanism) | Snapshot-flush SUSPENSION (§3.4 unknown-op bullet, replacing the floor): NO snapshot is flushed from the first skip-and-preserve until every unknown op has been applied by a recognizing version; the on-disk snapshot stays the pre-skew one (its watermark precedes the first unapplied op by construction). Boot under suspension = pre-skew snapshot + full ordered tail replay (deterministic, same composed state every boot); serving untouched (in-memory image live; only the cache flush suspends); journal stays the durability authority (crash-safety unchanged); prune keys on the static pre-skew watermark so re-upgrade's inputs are retained mechanically; re-upgrade = the SAME pre-skew snapshot + fresh ordered application of the whole tail with the formerly-unknown op IN POSITION — no re-application-over-materialized-state semantics relied on at all. First flush after a zero-unapplied replay resumes and advances. Honest cost extended (snapshot staleness + retention + boot-replay growth for the suspension's duration; the attention item MUST name the suspension, pre-skew watermark, and unapplied count). §10: the watermark-floor shape REPLACED by the suspension shape with an order-dependence probe; Appendix I's M1 row carries the SUPERSEDED marker. |
+| minor-1 (the staged conversion appends' durability class and serving boundary were implicit — "durably" without a named fsync class; implementations could diverge on whether serving may begin first) | §5.0(a) pins the class: staged conversion appends are FSYNCED before the registry begins serving (boot-time, off-hot-path, the durable-binding class of the intent they resolve); the crash-before-append case stated safe either way (the next boot re-decides the same verdict deterministically from the same last-word record). |
+| minor-2 (the §10 unknown-op shape verified correctness but never asserted the attention item's REQUIRED content — the honest-cost observability could regress silently) | The §10 suspension shape asserts the deduped item is raised NAMING the suspension, the pre-skew watermark, and the unapplied count. |
+| low batch (1: multiple-unknown progression deserved its own §10 shape; 2: the R9-minor-1 malformed-lane rule keyed on "missing" only — an UNRECOGNIZED lane value fell outside it) | Both folded: the §10 MULTI-UNKNOWN progression shape (partial re-upgrade recognizing 100 but not 150 → suspension persists with 100 applied; recognizing 150 ends it); §3.4's rule extended to "missing — or carrying an UNRECOGNIZED `lane` value" with identical retry-plus-attention treatment. |

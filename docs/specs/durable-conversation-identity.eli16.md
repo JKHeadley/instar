@@ -220,6 +220,25 @@ asserted the old pre-round-9 behavior was restated; and three history entries go
 "this changed in round 9" markers so old resolutions can't be mistaken for current
 rules.
 
+## Round-11 hardening (the rollback corner, finished properly)
+
+Round 10's blocker was in round 10's own repair, one level deeper: holding the recovery
+bookmark below a newer-version journal line wasn't enough, because the state file we
+keep writing alongside it still baked in the effects of everything AFTER that line — so
+when the newer version came back, it would apply its line against a world that already
+contained the line's own future. The round-11 fix is simpler, not cleverer: while any
+newer-version line sits unapplied, we stop writing the state file entirely. The last
+good pre-rollback state file stays put; every restart rebuilds from it plus the full
+journal in order; and when the newer version returns, it replays everything in true
+order with its line in its rightful place. Costs (a staler cache, a longer journal, a
+slower boot — only for as long as the rollback lasts) are named and alerted.
+
+Also pinned: the restart-time repair notes are flushed to disk before the system starts
+serving (so implementations can't differ on that boundary); a bookkeeping line whose
+"who sent this" field is garbled (not just absent) gets the same retry treatment; and
+the tests now also check the alert's CONTENT and the case of two different
+newer-version lines resolving at different times.
+
 ## Open questions
 
 None. Earlier drafts had two, and both turned out to be items already tracked on
