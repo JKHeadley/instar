@@ -73,6 +73,14 @@ export const TTL_MS = 24 * 60 * 60_000;
 
 export const MAX_ATTEMPTS = BACKOFF_SCHEDULE_MS.length;
 
+/**
+ * Structured error code the reservation route (§2.4 single-flight) returns in
+ * the body of a `409` when a concurrent POST arrives for a delivery-id whose
+ * send is still in flight. Exported so the route and the policy share ONE
+ * source of truth for the wire string (spec R8-M1 Arm A).
+ */
+export const DELIVERY_IN_FLIGHT_ERROR = 'delivery-in-flight';
+
 // ── HTTP-code classification helpers ─────────────────────────────────
 
 /**
@@ -94,6 +102,23 @@ function isRecoverableTransport(httpCode: number): boolean {
  * since we don't know what failed).
  */
 function parse403(body: string | null | undefined): string | null {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed.error === 'string') return parsed.error;
+  } catch {
+    // not JSON
+  }
+  return null;
+}
+
+/**
+ * Parse any structured `{ error: string }` body (the shape the reservation
+ * route uses for `409 delivery-in-flight`). Distinct from `parse403` so the
+ * deployed 403 path stays byte-identical (spec: recovery-policy is
+ * byte-untouched EXCEPT the single named 409 branch below).
+ */
+function parseErrorCode(body: string | null | undefined): string | null {
   if (!body) return null;
   try {
     const parsed = JSON.parse(body);
@@ -155,6 +180,28 @@ export function evaluatePolicy(input: PolicyInput): PolicyDecision {
     return {
       action: 'finalize-ambiguous',
       reason: 'http_408_ambiguous',
+      attemptOrdinal: input.attempts,
+    };
+  }
+
+  // 409 delivery-in-flight — the §2.4 single-flight reservation saw a
+  // concurrent same-delivery-id POST while the first send was still in flight.
+  // This is a routine TRANSIENT race (the first call resolves within its
+  // bounded adapter timeout), NOT a client error: classify RETRY at backoff —
+  // by the next attempt the first call has recorded (→ idempotent) or failed
+  // (→ retryable). This is THE ONE named exception to "recovery-policy stays
+  // byte-untouched" (spec R8-M1 Arm A): without it the deployed generic
+  // `4xx → escalate` below terminalizes a deliverable message on BOTH redrive
+  // lanes and fires a spurious operator escalation. An UNSTRUCTURED / unknown
+  // 409 keeps the deployed default-deny direction (escalate).
+  if (input.httpCode === 409) {
+    const code = parseErrorCode(input.responseBody ?? null);
+    if (code === DELIVERY_IN_FLIGHT_ERROR) {
+      return scheduleRetryOrEscalate(input, now, 'delivery_in_flight');
+    }
+    return {
+      action: 'escalate',
+      reason: code ? `http_409_${code}` : 'http_409_unstructured',
       attemptOrdinal: input.attempts,
     };
   }
