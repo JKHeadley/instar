@@ -47,8 +47,14 @@
 
 **Blast radius:** the advert is an ADDITIVE optional heartbeat field (the same additive-advert path every prior field took — peers without the code ignore it). Ships LIVE by design (M3): every machine on this version emits ~1–2 KB more per 30s self-beat and stores peers' clamped adverts in the in-memory registry. No route, no alarm, no evaluator yet — nothing CONSUMES the advert until increment C, so fleet behavior is unchanged beyond the heartbeat payload. Rejection markers are data-at-rest only until C classifies them.
 
-### Increment C — the evaluator + episode/election/fix (§3.3/§3.4/§4) — PENDING
-(Includes the `clampRejections`/marker-drop counters on the status route — the clamp itself landed in B; the counters belong to the sentinel's counter block.)
+### Increment C₀ — evaluator PURE helpers (§3.3 classification + N1 identity) — LANDED
+
+**What changed:** `src/monitoring/machineCoherenceEvaluate.ts` (NEW, pure, zero wiring — the increment-A pattern): `classifyPeer` (compared / unknown / advert-stale / advert-rejected, each class's pinned handling; rejection wins over a co-existing advert; an unparseable receipt time degrades — never trusts), `skewRowIdentity` (the N1 canonical `dimension|key|sorted(machineId=valueClass)` key that confirmation counters, episode membership, the §4.5 damper, and the latches all key on), `rowIdentityHash` (the §3.2 marker wire format — first 16 lowercase hex of sha256; content-free). Tier 0 supervision (N6) noted in-module. 12 unit tests (`tests/unit/machine-coherence-evaluate.test.ts`) — both sides of every classification boundary incl. the at-bound staleness edge.
+
+**Blast radius:** pure module; the tests are the only consumer until the sentinel (C₁) composes it.
+
+### Increment C₁ — the sentinel: tick loop + dimensions/confirmation + §3.4 election + §4 episode/alarm/fix — PENDING
+(Includes the `clampRejections`/marker-drop counters on the status route — the clamp itself landed in B; the counters belong to the sentinel's counter block. Also wires the `alarm` marker into refreshPool's B-landed `buildCoherenceAdvert` call, currently omitted.)
 ### Increment D₂a — per-peer lease-observation map (§5b's NEW retained state) — LANDED
 
 **What changed:**

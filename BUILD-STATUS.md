@@ -11,6 +11,7 @@
 | `de8ce26ad` | D₁ | §5a version telemetry: `captureHardware(ProcessIntegrity.runningVersion)` at the sole callsite (server.ts) + 3 editorial spec rephrases (orphan-deferral gate now passes WITHOUT the audited override) + eli16 header sync |
 | `6e413bfbf` | B | §3.2 advert transport: `src/core/machineCoherenceAdvert.ts` (builder + M4 receive clamp), `types.ts` MachineCapacity fields, `MachinePoolRegistry` receipt/carry-forward/rejection semantics (M5), `PeerPresencePuller` ratchet + R2-N1 spread + clamp-at-narrowing, `server.ts` UNCONDITIONAL emission (M3) with liveGet wiring (M8). 22 new + extended tests |
 | `dc0efd0c3` | D₂a | §5b NEW retained state: `HttpLeaseTransport.lastPulledByPeer` (dialed-id keyed, hearsay-proof, prune-on-depair) + `observedByPeer()` + `LeaseCoordinator.peerLeaseObservations()`. +5 tests |
+| (HEAD) | C₀ | `src/monitoring/machineCoherenceEvaluate.ts` — pure §3.3 helpers: `classifyPeer` (4 classes, pinned handling), `skewRowIdentity` (N1), `rowIdentityHash` (§3.2 marker format). 12 tests. Zero wiring — C₁ composes these |
 
 ## Test / tsc state
 
@@ -20,10 +21,10 @@
 
 ## Remaining work, in dependency order
 
-### Increment C — `MachineCoherenceSentinel` (§3.3 evaluator + §3.4 election + §4 episode/alarm/fix) — THE BIG ONE
+### Increment C₁ — `MachineCoherenceSentinel` (§3.3 evaluator + §3.4 election + §4 episode/alarm/fix) — THE BIG ONE
 - `src/monitoring/MachineCoherenceSentinel.ts`, pure-core + thin wiring, riding the existing 30s `peerPresenceTick` (rider precedent at `src/commands/server.ts:20113-20129`, `checkPoolFlagCoherence` shape).
 - Input: `machinePoolRegistry.getCapacities()` — each capacity NOW carries `coherenceAdvert` / `coherenceAdvertReceivedAt` / `coherenceAdvertRejected` (landed in B). Self advert included (refreshPool records self).
-- Peer classification: compared / unknown / advert-stale (`advertStaleMs` vs `coherenceAdvertReceivedAt`) / advert-rejected. Comparison-universe honesty M11 (`machinesRegisteredOnline` vs `machinesCompared`).
+- Peer classification: USE `classifyPeer` from `src/monitoring/machineCoherenceEvaluate.ts` (landed C₀), plus M11 universe honesty (`machinesRegisteredOnline` vs `machinesCompared`) which the caller owns. Row keys: `skewRowIdentity`/`rowIdentityHash` from the same module.
 - Dimensions + confirmation: flag (2 ticks, R2-L3 consecutive-reset rule), version (major.minor 2 ticks vs patch-only 45min grace), manifest-class (M7), protocol. M6 update-wave suppression. N8 warm-up (4 ticks). N1 canonical row identity `dimension|key|sorted(machineId=valueClass)`.
 - §3.4 election: candidates = advertised `guard:'live'`; raiser = lease-holder-if-candidate else lowest machineId; sticky episode ownership; owner-loss takeover + raise-liveness fallback (`raiserTakeoverTicks`, R3-M2 iterative subtraction); duplicate reconciliation (lowest-machineId survivor from MARKER DATA ALONE, R3-L5); alarm marker attach — wire `alarm` into the B-landed `buildCoherenceAdvert` call in refreshPool (currently omitted; read the episode file's `itemRaisedAt`-stamped rows — R4-M1/R5-N1 idempotent re-stamp).
 - §4: episode state `<stateDir>/state/machine-coherence-episode.json` (N7 agent-scoped, atomic tmp+rename, N3/N4 corrupt-state re-baseline), ONE attention item (HIGH, spec §4.2 body wording — read §4.2 verbatim before writing it), §4.2.1 pendingFix flow (proposed → approved-holding → executing-verifying; operator-uid-gated; atomic config funnel write; R5-M1 held-offline re-propose), §4.3 close-reason taxonomy, §4.4 escalation, §4.5 recurrence damper + per-day cap + append budget (R3-M5 burst-invariant SHARED budget), §4.6 disable-mid-episode retention.
