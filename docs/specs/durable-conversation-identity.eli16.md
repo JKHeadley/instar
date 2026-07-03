@@ -201,6 +201,25 @@ Round 8 found one real blocker plus polish; all closed:
   disk); and the 14-day grace clock for old ungated sessions now names the file
   that anchors it.
 
+## Round-10 hardening (making the preservation promise actually keep)
+
+Round 9's one real blocker was in round 9's own repair: we promised that a journal
+line from a newer version survives a rollback and gets applied after re-upgrading —
+but the recovery bookmark could quietly step past it, so the line survived as bytes
+and never as behavior. Fixed: while any such line remains unapplied, the bookmark is
+held just below it. Re-applying the records above the held bookmark is harmless
+(recovery is re-runnable by design), and the honest cost — the journal grows a bit
+for as long as the rollback lasts — is named and alerted, not hidden.
+
+Also closed: a bookkeeping line missing its new "who sent this" field now retries
+instead of guessing (worst case one visible duplicate, never a silent loss); the
+14-day grace clock's anchor file now rides the backup (a disaster restore no longer
+resets the clock); restart-time repair notes are written only after recovery
+finishes reading (never into the file being read); one recovery test that still
+asserted the old pre-round-9 behavior was restated; and three history entries got
+"this changed in round 9" markers so old resolutions can't be mistaken for current
+rules.
+
 ## Open questions
 
 None. Earlier drafts had two, and both turned out to be items already tracked on
