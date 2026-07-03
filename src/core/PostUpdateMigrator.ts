@@ -12267,6 +12267,13 @@ process.stdin.on('end', async () => {
     // template (preflight for every non-script sender) reaches existing
     // agents.
     '4dfcc184c012d52f0e28c9fe8aca301c23b76d792155c821b8b0f0666da4984b',
+    // TIME_CLAIM version (pre-delivery-id-pre-POST-mint). The current shipped
+    // template before slack-outbound-robustness §2.6 moved the delivery-id
+    // mint BEFORE the initial send (X-Instar-DeliveryId on the first POST) +
+    // added the 409 delivery-in-flight recoverable branch (R8-M1 Arm C).
+    // Recorded so deployed agents cleanly upgrade to the pre-POST-mint
+    // template instead of getting a `.new` candidate.
+    '63ca933e2d7c59d92c92d2799afa71b9c75e45caf3ab7c1cb06aa8eb95ba2900',
   ]);
 
   /**

@@ -341,6 +341,20 @@ if [ -z "$JSON_BODY" ]; then
   JSON_BODY="{\"text\":\"${ESCAPED}\"${META_FIELD}}"
 fi
 
+# ── delivery-id minted BEFORE the first POST (spec slack-outbound-robustness
+# §2.6, round-3 C1) ──
+# The id is sent as X-Instar-DeliveryId on the INITIAL send so the server
+# records THIS id the moment the send lands. Every later redrive of a
+# recoverable failure then reuses this exact id and is answered
+# `idempotent:true` — closing the latent double-post window that minting at
+# ENQUEUE time left open (the first send was permanently outside the id-ledger
+# guarantee, so a redrive past the content-dedup window re-posted the message
+# under an id the server had never seen). The enqueue below reuses this same
+# DELIVERY_ID and ATTEMPTED_AT. A mint failure (python3 gone) degrades to
+# today's headerless send — fail toward delivery, never a refused send.
+DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+ATTEMPTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
 # Assemble curl args. Always include X-Instar-AgentId when we can resolve it
 # from config — the server uses it to reject wrong-port requests before
 # evaluating the token.
@@ -352,6 +366,9 @@ if [ -n "$AUTH_TOKEN" ]; then
 fi
 if [ -n "$AGENT_ID" ]; then
   CURL_ARGS+=(-H "X-Instar-AgentId: ${AGENT_ID}")
+fi
+if [ -n "$DELIVERY_ID" ]; then
+  CURL_ARGS+=(-H "X-Instar-DeliveryId: ${DELIVERY_ID}")
 fi
 
 RESPONSE=$(curl "${CURL_ARGS[@]}")
@@ -398,13 +415,33 @@ else
   #   - 5xx, conn-refused (HTTP_CODE=000), DNS failure (also 000)
   #   - 403 with structured `agent_id_mismatch`
   #   - 403 with structured `rate_limited` (sentinel honors Retry-After)
+  #   - 409 with structured `delivery-in-flight` (R8-M1 Arm C — the reservation
+  #     race; NON-LOSING, redriven under the same pre-minted id)
   # NOT recoverable here (already handled above or terminal):
   #   - 200 (success), 408 (ambiguous), 422 (tone gate)
-  #   - 400, 403/revoked, 403 unstructured
+  #   - 400, 403/revoked, 403 unstructured, 409 unstructured
   RECOVERABLE=0
   if [ "$HTTP_CODE" = "000" ] || \
      ( [ "$HTTP_CODE" -ge 500 ] 2>/dev/null && [ "$HTTP_CODE" -le 599 ] 2>/dev/null ); then
     RECOVERABLE=1
+  elif [ "$HTTP_CODE" = "409" ]; then
+    # 409 delivery-in-flight (spec R8-M1 Arm C): the server's §2.4 single-flight
+    # reservation saw a concurrent POST for THIS delivery-id still in flight.
+    # This is NON-LOSING, never terminal — enqueue under the SAME pre-minted id
+    # so the sentinel redrives; by then the first call has resolved (recorded →
+    # idempotent, or failed → retryable). recovery-policy classifies structured
+    # 409 delivery-in-flight as retry (Arm A). An UNSTRUCTURED 409 is terminal
+    # (default-deny) exactly like an unstructured 4xx.
+    IN_FLIGHT_CODE=$(echo "$BODY" | python3 -c 'import sys,json
+try:
+  print(json.load(sys.stdin).get("error",""))
+except Exception:
+  print("")' 2>/dev/null)
+    if [ "$IN_FLIGHT_CODE" = "delivery-in-flight" ]; then
+      RECOVERABLE=1
+    else
+      RECOVERABLE=0
+    fi
   elif [ "$HTTP_CODE" = "403" ]; then
     # Inspect the structured error code in the body. Unstructured 403 is
     # default-deny per spec § 2b.
@@ -433,11 +470,16 @@ except Exception:
     SAFE_AGENT_ID=$(printf '%s' "${AGENT_ID:-unknown}" | tr -c 'A-Za-z0-9._-' '_')
     QUEUE_DB="${QUEUE_DIR}/pending-relay.${SAFE_AGENT_ID}.sqlite"
 
-    # delivery_id — UUIDv4 via python3 (already a hard dep above).
-    DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+    # delivery_id — the id was minted BEFORE the initial POST and sent on it
+    # (spec §2.6 round-3 C1); the enqueue reuses that exact id so a redrive of
+    # THIS row is answered idempotent:true by the server that already recorded
+    # it. If the pre-POST mint failed (python3 unavailable), the initial send
+    # went out headerless — the server never recorded an id, so there is
+    # nothing to make the redrive idempotent; skip the enqueue with the loud
+    # note (fail toward loudness, exactly today's degraded behavior).
     if [ -z "$DELIVERY_ID" ]; then
       echo "Failed (HTTP $HTTP_CODE): $BODY" >&2
-      echo "  (also: failed to generate delivery_id; queue write skipped)" >&2
+      echo "  (also: no delivery_id was minted pre-POST; queue write skipped)" >&2
       exit 1
     fi
 
@@ -457,7 +499,10 @@ except Exception:
       TRUNCATED=1
     fi
 
-    ATTEMPTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    # ATTEMPTED_AT was stamped at the PRE-POST mint (spec §2.6 round-5 m3): the
+    # 25h-ledger > 24h-row-TTL margin holds only if both clocks anchor at the
+    # send, so the enqueue reuses the mint-time stamp rather than re-stamping
+    # `now` (which a wedged/slept script would push arbitrarily late).
     NOW_EPOCH=$(date -u +%s)
 
     # Run the queue write through python3's stdlib sqlite3 module — it
