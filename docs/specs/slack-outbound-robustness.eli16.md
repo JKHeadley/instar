@@ -28,28 +28,41 @@ Telegram pipeline to carry more than one channel.
    `channel` ("telegram" or "slack"). Old rows automatically read as
    "telegram", so nothing existing changes. Never destructive — columns are
    only added, never renamed or dropped.
-2. **One address for every conversation.** This work leans on the Phase-1
-   "durable conversation identity" project: every Slack channel or thread gets
-   a permanent numeric ID (a negative number, so it can never collide with
-   Telegram's positive topic numbers). The queue stores that ID; at retry
-   time the registry translates it back to the real Slack channel + thread.
-   That's why this spec can't be built until Phase 1 lands — it's the
-   addressing system everything here writes down.
-3. **The sentinel learns to speak Slack.** The retry engine looks at each
-   queued row's channel and sends it back out the right door — Slack rows to
-   the Slack route, Telegram rows exactly as before. The retry schedule,
-   give-up rules, and circuit breaker are shared and unchanged.
-4. **No double-posting.** Every send carries a unique delivery ID; the server
-   remembers recent IDs and answers "already delivered" instead of posting
-   again. Separately, sending byte-identical long text to the same
-   conversation twice within ~15 minutes is suppressed (short acks like "on
-   it" are never suppressed). Both are copies of what Telegram already has.
-5. **The ungated route gets gated.** `/internal/slack-forward` now passes the
-   same outbound safety gate as every other message. (We also found and wrote
-   down an oddity: that route looks like it was meant for *incoming* messages
-   but actually sends *outgoing* ones. It has never run live. Fixing its
-   direction belongs to the next phase; this phase just makes sure nothing
-   ungated can leave through it.)
+2. **One address for every conversation — checked twice.** This work leans on
+   the Phase-1 "durable conversation identity" project (now fully reviewed
+   and approved): every Slack channel or thread gets a permanent numeric ID
+   (a negative number, so it can never collide with Telegram's positive topic
+   numbers). The queue stores that ID — but only after checking that the ID
+   actually points at the channel the reply was aimed at (the review caught
+   that blindly trusting the session's own ID could re-deliver a failed
+   message into the WRONG channel). If no trustworthy ID exists, the script
+   fails loudly instead of queueing something misaddressed — a visible error
+   beats a message quietly landing in the wrong room. At retry time the
+   address is checked again before anything posts.
+3. **The sentinel learns to speak Slack — through the front door.** The retry
+   engine looks at each queued row's channel and sends Slack rows through the
+   SAME delivery gateway the identity project built (the "funnel"), which
+   already knows which machine owns a conversation, refuses mismatched
+   addresses, spots permanently-dead channels (archived, bot removed) so we
+   don't retry them for 24 hours, and rate-limits notices. Telegram rows go
+   out exactly as before. The retry schedule and give-up rules are shared;
+   the circuit breaker now pauses ONE channel's retries at a time, so a
+   Slack outage can never freeze Telegram recovery (a review catch).
+4. **No double-posting — even across restarts.** Every send carries a unique
+   delivery ID; the server remembers recent IDs and answers "already
+   delivered" instead of posting again — and that memory is now saved to
+   disk, because the review found a real (if narrow) sequence where a
+   restart wiped the in-memory list and a late retry could double-post.
+   Separately, sending byte-identical long text to the same conversation
+   twice within ~15 minutes is suppressed (short acks like "on it" are never
+   suppressed).
+5. **The broken internal route gets refused, not just gated.** We found that
+   `/internal/slack-forward` looks like it was meant for *incoming* messages
+   but actually sends *outgoing* ones — an echo bug that has never run live
+   (nothing calls it). Both external reviewers agreed that politely gating a
+   bug still ships a bug, so until the next phase rebuilds it properly, the
+   route now answers with a clear "this route is misdirected" error instead
+   of sending anything.
 
 ## The safety philosophy (why the failure directions matter)
 
@@ -57,9 +70,15 @@ The house rule is: **a delivery system's own failures must never silence the
 agent.** So every failure here leans toward delivery: if the queue can't
 open, the message still sends directly; if a retry engine breaks, queued
 messages sit safely on disk instead of being deleted; if retries run out, you
-get exactly ONE clear escalation notice (not a flood). The only thing allowed
-to withhold a message is the safety gate itself making a real "this contains
-a leak" verdict — and the retry engine is never allowed to overrule it.
+get exactly ONE clear escalation notice (not a flood). When a channel is
+permanently dead (archived, bot kicked out), the heads-up about it goes to
+your attention queue — not into the dead channel, where you'd never see it
+(a review catch). The only thing allowed to withhold a message is the safety
+gate itself making a real "this contains a leak" verdict — and the retry
+engine is never allowed to overrule it. One address rule with teeth: if the
+stored ID and the stored channel name ever disagree about where a queued
+message should go, the system refuses to deliver to either and asks for
+attention — it never guesses.
 
 Every dropped or refused message leaves a trace: a counter and a line in an
 audit log (`logs/delivery-recovery.jsonl`). "It vanished and nobody knows
@@ -73,9 +92,16 @@ the Slack thread **exactly once** after the network returns — not zero times
 
 ## Rollout
 
-Ships dark on the fleet. On the development agent it runs first in dry-run
-(it goes through all the motions and logs what it *would* retry, but posts
-nothing), then live after the proof above passes. Config keys:
+Ships dark on the fleet. On the development agent it runs first in dry-run —
+and dry-run is honest by design: it logs what it *would* retry but never
+marks anything "delivered" and never posts (the review caught that a
+sloppier dry-run could have recorded fake deliveries and lost real
+messages). Then live after the proof above passes. While the Slack lane is
+switched off or drying, queued Slack messages are HELD — the boot-time
+cleanup that deletes stale rows is scoped to channels that are actually
+allowed to retry, so a lane that never got a chance to deliver can never
+have its messages deleted (this was the review's biggest new catch — the
+exact silent-deletion accident from June 5th, one level up). Config keys:
 `monitoring.deliveryFailureSentinel.channels` and `.slackDryRun`. Existing
 agents get the changes through the normal update path — the database upgrades
 itself additively on boot, and the Slack reply script refreshes via the
