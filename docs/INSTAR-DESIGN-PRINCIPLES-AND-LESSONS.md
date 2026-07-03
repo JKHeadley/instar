@@ -942,11 +942,64 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 **Earned from:** The crystallizing instance, not the first — 2026-06-24 (topic 16566): the RateLimitSentinel fired "this turn died on an API error" because the words `API Error:` were on the pane (put there by the session *investigating* API errors), then cried wolf for 11 min because its verifier looked in one Claude home while the session ran under another account home (absence-of-file read as never-recovered). The detector that diagnosed the bug was tripped by the bug, live. The class had recurred under disguises — the 2026-06-06 stale-pointer crying-wolf (mode C), the AUP-rejection wedge (mode B, a CLAUDE.md note only), and L5's origin (mode C for parsers). Per *Distrust Temporary Success*: four-plus recurrences is one missing standard, not four bugs.
 
+### P21. An Instar Agent Is Always a Multi-Machine Entity (unified is the default; machine-local must justify itself)
+
+**Statement:** Every feature, state surface, and design decision treats the agent as a SINGLE entity spread across many machines, BY DEFAULT. "Unified across my machines" is the default posture; "machine-local" is an EXCEPTION that must name a concrete reason it *cannot* be unified (a credential physically bound to one disk's keychain; a hardware-bound resource; an operator-ratified exception) — never a default chosen for expedience. A design that silently assumes one machine, or declares "machine-local BY DESIGN" with no justification, is a violation, not a valid posture.
+
+**Source:** constitution article "An Instar Agent Is Always a Multi-Machine Entity" (Building — sibling of Cross-Machine Coherence); operator-ratified by Justin 2026-07-03 (topic 29723). Distinct from Cross-Machine Coherence (which governs lease/seamlessness robustness under degraded conditions) — this governs the default posture of every NEW feature: the machinery only makes the agent whole if features actually ride it.
+
+**Translation:**
+- For every state surface, notice, or generated URL in a spec, ask: "what is its cross-machine posture — `unified`, `proxied-on-read`, or `machine-local + justification`?" Absence defaults to `unified`-required.
+- "machine-local BY DESIGN" is NOT a valid answer on its own — it must name the concrete reason it cannot be unified, jailed to the closed taxonomy (physical-credential-locality, hardware-bound-resource, operator-ratified exception).
+- The existing per-feature posture check tests for a *declaration*; this principle tests for the unified *default* — a wrong posture that is merely declared still fails.
+
+**Enforcement (structural):**
+- The enforcement build (tracked, post-ratification): the `/spec-converge` cross-machine check is STRENGTHENED to reject undefended "machine-local"; the side-effects review §7 posture field gains the justification requirement; the Standards-Conformance Gate gets a guard marker for a machine-local surface shipped without justification.
+- Existing features swept for undefended machine-local surfaces (folds into the feature-maturation audit, topic 30668).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer asks the posture question of every spec while that build lands.
+
+**Earned from:** 2026-07-03 (topic 29723): the tiered-intelligence-delegation spec defaulted its consult memory to machine-local and survived SEVEN convergence rounds before the operator caught it on read. That the review machinery passed it and only the operator's read caught it is the tell — the always-multi-machine expectation lived in prose and reviewer habit, not in structure. Justin: "it should be fundamental in our constitution that an Instar agent is always supported as a multi-machine entity."
+
+### P22. Self-Heal Before Notify (the operator hears only when self-healing fails)
+
+**Statement:** An internal issue is routed to the parts of the system that pick it up and self-heal — the watchers, and the watchers of the watchers. The operator is notified ONLY when the self-healing measures THEMSELVES have failed (exhausted, crashed, unable to recover). A watcher that detects a gap must attempt a bounded, audited self-heal FIRST and escalate to the operator as a LAST resort, never as its first move. Composes with No Silent Degradation (nothing is swallowed — every detection + heal attempt + outcome is audited) by refining *to whom* the report goes: into the self-heal machinery, not the user; the audit trail IS the report, the operator is the last resort.
+
+**Source:** constitution article "Self-Heal Before Notify — The Operator Hears Only When Self-Healing Fails" (Interaction); operator-ratified by Justin 2026-07-03 (topic 29723). General rule beneath Near-Silent Notifications (self-lifecycle narration is default-silent housekeeping).
+
+**Translation:**
+- For every watcher/monitor in a spec that can raise an operator-facing notice, ask: "what bounded self-heal does it attempt, and is the operator-raise gated on that heal's EXHAUSTION (attempted, bounded retries per P19, still failing) rather than on the raw detection?"
+- A watcher that escalates on first detection with no heal attempt is the anti-pattern — the escalation must be structurally downstream of a failed heal.
+- Nothing goes silent: every detection + heal attempt + outcome is audited; only the exhausted-heal path reaches the operator, deduped, one item.
+
+**Enforcement (structural):**
+- The enforcement build (tracked, post-ratification, newly required): self-heal-before-notify becomes a spec-review question for every escalating watcher, checked at spec-converge and in the side-effects review; existing first-notify watchers that skip a heal are swept in the same audit.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer asks the self-heal question of every watcher spec while that build lands.
+
+**Earned from:** 2026-07-03 (topic 29723): hardening the tiered-intelligence spec's "watcher for the watcher," the operator named the general rule — "the user almost never gets notified of internal issues; those get routed to aspects of the system that pick them up and self-heal (the watchers, and the watchers of the watchers); the only time the user should be notified is if these self-healing measures themselves fail."
+
+### P23. Notices Route to the Alerts Topic, Never a New One (an ownerless notice has ONE destination)
+
+**Statement:** A user-facing message that belongs to an existing conversation goes THERE; one that belongs to NO existing conversation topic (an alert, system notice, housekeeping escalation) routes to the ONE dedicated alerts/hub topic. Creating a NEW Telegram topic per alert/event/item is forbidden — the only topics created are user-initiated ones and a small fixed set of bounded, create-once system topics. The routing corollary of P17 (Bounded Notification Surface): P17 caps how MANY topics may be born; this names WHERE an ownerless notice goes instead.
+
+**Source:** constitution article "Notices Route to the Alerts Topic, Never a New One" (Building — extends Bounded Notification Surface); a standing operator rule since 2026-07-01, operator-ratified to constitutional status by Justin 2026-07-03 (topic 29723).
+
+**Translation:**
+- The alerts/hub topic is the DEFAULT destination for an ownerless notice — routing there is the rule, not a fallback the code stumbles into.
+- A feature notifying per-element over a collection must AGGREGATE (one summary item with the count + list), never one item per element.
+- Much of the machinery already ships (P17's `createForumTopic` budget, `AttentionTopicGuard` coalescing, the burst-invariant test) — this principle makes it the rule and closes the unique-source dodge.
+
+**Enforcement (structural):**
+- `topicCreationBudget` inside `TelegramAdapter.createForumTopic` (origin-typed, auto-by-default) + `AttentionTopicGuard` at `createAttentionItem` + `tests/integration/notification-flood-burst-invariant.test.ts` (existing, made load-bearing for routing).
+- The enforcement build (tracked): the ownerless-notice → alerts-topic default asserted at the routing chokepoint and checked at spec-review.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags a feature that would create a topic per alert.
+
+**Earned from:** The recurring topic-spam floods, all the same shape — a housekeeping feature spawning one topic per event: 2026-05-22 (sentinel), 2026-05-28 (collaboration-redrive), 2026-06-05 (worktree-detector, which dodged the per-source budget with unique sources — the reason the ceiling moved to the create primitive itself). Standing operator rule since 2026-07-01; directed to constitutional status 2026-07-03 (topic 29723): "any message sent to the user that didn't belong to a topic needs to go to the dedicated alerts topic; this needs to be a standard."
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P20):
+For each Part 1 principle (P1-P23):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
