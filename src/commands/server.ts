@@ -5800,6 +5800,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §4.5: per-attempt swap timeout, inline-defaulted to 5s (no ConfigDefaults
           // entry — codexExecJson precedent; absent ⇒ 5s, present ⇒ operator's value).
           swapAttemptTimeoutMs: config.intelligence?.swapAttemptTimeoutMs ?? 5000,
+          // Per-target swap caps + clamp + total budget (docs/specs/
+          // per-target-swap-timeout-spec.md): all three thread through UNSET by
+          // default — dark ship, byte-identical routing behavior until the operator
+          // opts in. Validation (invalid → fall-through / 120s default / treated
+          // unset) happens inside the router's resolveSwapCap, never here.
+          swapAttemptTimeoutMsByFramework: config.intelligence?.swapAttemptTimeoutMsByFramework,
+          swapAttemptTimeoutMsMax: config.intelligence?.swapAttemptTimeoutMsMax,
+          swapTotalBudgetMs: config.intelligence?.swapTotalBudgetMs,
           // The dedicated queue for the DEFERRABLE queue rung (§3b.3); undefined when the rung is
           // dark ⇒ the rung is a no-op (a deferrable call falls straight to its heuristic, as before).
           llmQueue: degradationLadderQueue,

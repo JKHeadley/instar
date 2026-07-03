@@ -94,6 +94,37 @@ export interface IntelligenceRouterOptions {
    */
   swapAttemptTimeoutMs?: number;
   /**
+   * Per-TARGET-framework swap-attempt caps in ms (per-target-swap-timeout-spec.md).
+   * Resolution per swap target: `byFramework[target]` (if valid: finite number > 0)
+   * → the global `swapAttemptTimeoutMs` (if valid) → undefined (no cap). An INVALID
+   * per-framework value (0, negative, NaN, Infinity, non-number) FALLS THROUGH to
+   * the global — never "no cap", never an immediate-0ms kill (FD5). DEFAULT UNSET ⇒
+   * the global cap applies to every target — byte-identical routing behavior to today.
+   */
+  swapAttemptTimeoutMsByFramework?: Partial<Record<IntelligenceFramework, number>>;
+  /**
+   * Clamp (ms) on any single resolved swap-attempt cap, so a huge/typo'd value
+   * cannot create an effectively unbounded subprocess that pins a host spawn-cap
+   * slot (FD7). The value is itself validated (finite > 0); invalid/unset ⇒ 120000.
+   */
+  swapAttemptTimeoutMsMax?: number;
+  /**
+   * Wall-clock TOTAL budget (ms) over the WHOLE failure-swap tail (FD6). UNSET ⇒ no
+   * budget enforcement — semantics unchanged from today (the dark default). When set,
+   * each attempt's effective cap is `min(resolvedCap, budgetRemaining)` — measured on
+   * a MONOTONIC clock, never Date.now() — and the loop stops and falls closed once
+   * `budgetRemaining ≤ 250ms`, so worst-case swap-tail latency is literally ≤ this
+   * value (the budget clamps each IN-FLIGHT attempt, not just the loop gate). An
+   * invalid value (0, negative, NaN, non-number) is treated as unset.
+   */
+  swapTotalBudgetMs?: number;
+  /**
+   * Test seam: the monotonic clock used for the total-budget elapsed measurement.
+   * Defaults to `performance.now()` — a wall-clock jump (NTP step, DST) must not
+   * make the budget spuriously short or long (round-3 external finding).
+   */
+  monotonicNow?: () => number;
+  /**
    * Build a provider for a non-default framework, with its OWN circuit breaker.
    * Returns null when that framework's binary isn't available. Called at most
    * once per framework (result cached). MUST NOT throw (catch internally).
@@ -140,6 +171,89 @@ interface CachedFramework {
 }
 
 /**
+ * Runtime framework ids for the unknown-key hygiene warning on
+ * `swapAttemptTimeoutMsByFramework` (per-target-swap-timeout-spec.md, change
+ * surface). The TYPE is the compile-time guard; this set catches a stray key
+ * arriving from raw JSON config at runtime (no effect — warn once, ignore).
+ */
+const KNOWN_FRAMEWORKS: ReadonlySet<string> = new Set(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli']);
+
+/** Default clamp on any single resolved swap-attempt cap (per-target-swap-timeout-spec.md FD7). */
+const DEFAULT_SWAP_ATTEMPT_TIMEOUT_MAX_MS = 120_000;
+
+/**
+ * Below this much remaining total budget (ms), a swap attempt is not worth
+ * admitting — the loop stops and falls closed (per-target-swap-timeout-spec.md
+ * FD6, fixed floor). A configured `swapTotalBudgetMs` below this value passes
+ * validation but simply disables swapping on the first attempt (fail-SAFE).
+ */
+const SWAP_BUDGET_MIN_REMAINING_MS = 250;
+
+/**
+ * The spec's uniform validity contract for every timeout/budget value:
+ * `typeof x === 'number' && Number.isFinite(x) && x > 0`. `0`, negatives, NaN,
+ * Infinity, and non-numbers are all INVALID — selection never uses `||` (the
+ * zero-is-falsy lesson).
+ */
+function isValidMs(x: unknown): x is number {
+  return typeof x === 'number' && Number.isFinite(x) && x > 0;
+}
+
+/**
+ * resolveSwapCap — per-TARGET swap-attempt cap resolution
+ * (docs/specs/per-target-swap-timeout-spec.md, `resolveCap` contract).
+ *
+ * Resolution: `byFramework[target]` (if valid) → `globalCap` (if valid) →
+ * `undefined` (no cap — today's behavior when the global is ≤0/unset). An
+ * INVALID per-framework value (0, negative, NaN, Infinity, non-number) FALLS
+ * THROUGH to the global — it NEVER means "no cap" and NEVER produces an
+ * immediate-0ms kill (FD5: per-framework config cannot express "unbounded";
+ * only the global's ≤0/unset does — closes the accidental-uncap footgun).
+ * The resolved cap is clamped to `maxCap` (itself validated; invalid → 120s
+ * default) so a huge/typo'd value cannot pin a host spawn-cap slot unbounded.
+ *
+ * Exported for direct unit testing (pure function, no router state).
+ */
+export function resolveSwapCap(
+  target: IntelligenceFramework,
+  globalCap: number | undefined,
+  byFramework: Partial<Record<IntelligenceFramework, number>> | undefined,
+  maxCap: number | undefined,
+): number | undefined {
+  const perTarget = byFramework?.[target];
+  const candidate = isValidMs(perTarget) ? perTarget : isValidMs(globalCap) ? globalCap : undefined;
+  if (candidate === undefined) return undefined;
+  const effMax = isValidMs(maxCap) ? maxCap : DEFAULT_SWAP_ATTEMPT_TIMEOUT_MAX_MS;
+  return Math.min(candidate, effMax);
+}
+
+/**
+ * withSwapTimeout — the shipped Promise.race crash-safe pattern (per-input
+ * settlement handlers; a late reject/resolve from the abandoned attempt is
+ * handled/ignored), PLUS timer hygiene: the pending timeout timer is CLEARED
+ * on settle in a `finally` so a fast success does not leak a timer per call
+ * (per-target-swap-timeout-spec.md FD7 / codex-review finding). The rejection
+ * message format (`swap-attempt-timeout: <target> (<cap>ms)`) is load-bearing —
+ * the swap loop's degrade-reason detection prefix-matches it.
+ */
+async function withSwapTimeout<T>(promise: Promise<T>, capMs: number, target: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`swap-attempt-timeout: ${target} (${capMs}ms)`)),
+          capMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * Is this a rate-limit / usage-limit / 429 error? The circuit-breaking provider wraps these as a
  * `RateLimitError` (name-checked, no import needed); we also duck-type the message so a provider
  * that throws a plain Error on a limit is still recognized. Used by the deferrable backoff rung to
@@ -153,7 +267,33 @@ function isRateLimitError(e: unknown): boolean {
 export class IntelligenceRouter implements IntelligenceProvider {
   private readonly cache = new Map<IntelligenceFramework, CachedFramework>();
 
+  /** Unknown byFramework keys already warned about (warn ONCE per key, never per call). */
+  private warnedUnknownCapKeys?: Set<string>;
+
   constructor(private readonly opts: IntelligenceRouterOptions) {}
+
+  /**
+   * Unknown-key hygiene (per-target-swap-timeout-spec.md, change surface): a stray/
+   * misspelled key arriving from raw JSON config has NO effect (that target simply
+   * falls through to the global cap) — but it is logged once so the typo is visible
+   * instead of silently ignored. Type-level the map is keyed to the framework union;
+   * this is the runtime backstop.
+   */
+  private warnUnknownSwapCapKeys(
+    byFramework: Partial<Record<IntelligenceFramework, number>> | undefined,
+  ): void {
+    if (!byFramework) return;
+    for (const key of Object.keys(byFramework)) {
+      if (KNOWN_FRAMEWORKS.has(key)) continue;
+      if (!this.warnedUnknownCapKeys) this.warnedUnknownCapKeys = new Set();
+      if (this.warnedUnknownCapKeys.has(key)) continue;
+      this.warnedUnknownCapKeys.add(key);
+      console.warn(
+        `IntelligenceRouter: unknown framework key '${key}' in swapAttemptTimeoutMsByFramework — ` +
+          `ignored (that key has no effect; targets fall through to the global cap)`,
+      );
+    }
+  }
 
   /**
    * The framework the default (shared, global-breaker) provider speaks — i.e. the
@@ -303,18 +443,23 @@ export class IntelligenceRouter implements IntelligenceProvider {
         if (!gating) this.opts.onHeuristicFallthrough?.(component ?? '(none)', framework);
         throw err; // not gating/deferrable, or no swap configured ⇒ today's behavior
       }
-      // §4.5 bounded per-attempt swap timeout: a positive cap races each attempt so a
-      // slow-but-not-erroring provider is abandoned at the cap (total swap latency ≤
-      // cap × (1 + tail.length)) instead of stacking long waits and re-creating the
-      // very stall this policy exists to prevent. The cap also flows through to the
+      // §4.5 bounded per-attempt swap timeout, now resolved PER TARGET
+      // (docs/specs/per-target-swap-timeout-spec.md): each attempt's cap resolves
+      // `byFramework[target]` → global → undefined, clamped to `maxCap`, so a
+      // slow-but-honest target (gemini p50 ≈ 8.5s) can be GIVEN its measured time
+      // instead of being killed at a one-size-fits-all 5s. When a TOTAL budget is
+      // set, each attempt is additionally clamped to the remaining budget (monotonic
+      // clock) and the loop falls closed once < 250ms remains — so the whole tail is
+      // literally ≤ swapTotalBudgetMs. All three knobs default UNSET ⇒ byte-identical
+      // routing behavior to the single global cap. The cap also flows through to the
       // provider as `timeoutMs` so the CLI subprocess SIGTERMs itself at the same bound.
-      const capMs = this.opts.swapAttemptTimeoutMs;
-      const cap = typeof capMs === 'number' && capMs > 0 ? capMs : undefined;
-      // Pass the cap through as the provider's per-call timeout so the subprocess
-      // self-terminates at the bound (no AbortSignal exists on IntelligenceOptions).
-      const attemptOptions: IntelligenceOptions | undefined = cap
-        ? { ...(options ?? {}), timeoutMs: cap }
-        : options;
+      const globalCapMs = this.opts.swapAttemptTimeoutMs;
+      const byFramework = this.opts.swapAttemptTimeoutMsByFramework;
+      this.warnUnknownSwapCapKeys(byFramework);
+      const maxCapMs = this.opts.swapAttemptTimeoutMsMax;
+      const budgetMs = isValidMs(this.opts.swapTotalBudgetMs) ? this.opts.swapTotalBudgetMs : undefined;
+      const monotonicNow = this.opts.monotonicNow ?? (() => performance.now());
+      const swapStartedAt = monotonicNow();
       for (const target of swapTargets) {
         // GATING budget: if the awaited gate's total wall-clock budget is consumed, stop swapping
         // and fail closed now (responsiveness over completeness — spec §3a). Deferrable calls have
@@ -323,22 +468,32 @@ export class IntelligenceRouter implements IntelligenceProvider {
         if (target === framework) continue; // don't retry the framework that just failed
         const tp = this.resolveProvider(target);
         if (!tp) continue; // target binary missing → skip
+        let cap = resolveSwapCap(target, globalCapMs, byFramework, maxCapMs);
+        if (budgetMs !== undefined) {
+          const remaining = budgetMs - (monotonicNow() - swapStartedAt);
+          // Too little budget left to be worth an attempt → stop, fall closed (FD6).
+          if (remaining <= SWAP_BUDGET_MIN_REMAINING_MS) break;
+          // The budget clamps each IN-FLIGHT attempt, not just the loop gate — an
+          // attempt admitted at budget−ε must NOT run its full per-target cap
+          // (worst case would be budget + maxCap, not ≤ budget). It also bounds an
+          // otherwise-UNcapped attempt (no per-target cap, global ≤0/unset).
+          cap = cap === undefined ? remaining : Math.min(cap, remaining);
+        }
+        // Pass the cap through as the provider's per-call timeout so the subprocess
+        // self-terminates at the bound (no AbortSignal exists on IntelligenceOptions).
+        const attemptOptions: IntelligenceOptions | undefined =
+          cap !== undefined ? { ...(options ?? {}), timeoutMs: cap } : options;
         try {
-          // Promise.race is the shipped, crash-safe pattern (InputGuard precedent):
-          // it attaches a settlement handler to EACH input, so a late rejection from
-          // an abandoned attempt is already handled (no unhandledRejection) and a late
-          // resolve is ignored. NEVER a detached/awaited handle.
-          const result = cap
-            ? await Promise.race([
-                tp.evaluate(prompt, attemptOptions),
-                new Promise<never>((_, reject) =>
-                  setTimeout(
-                    () => reject(new Error(`swap-attempt-timeout: ${target} (${cap}ms)`)),
-                    cap,
-                  ),
-                ),
-              ])
-            : await tp.evaluate(prompt, attemptOptions);
+          // withSwapTimeout keeps the shipped, crash-safe Promise.race pattern
+          // (InputGuard precedent): it attaches a settlement handler to EACH input,
+          // so a late rejection from an abandoned attempt is already handled (no
+          // unhandledRejection) and a late resolve is ignored. NEVER a detached/
+          // awaited handle. It additionally CLEARS the timer on settle (FD7) so a
+          // fast success does not leak a pending timer.
+          const result =
+            cap !== undefined
+              ? await withSwapTimeout(tp.evaluate(prompt, attemptOptions), cap, target)
+              : await tp.evaluate(prompt, attemptOptions);
           this.opts.onDegrade?.({
             component: component ?? '(none)',
             category,
