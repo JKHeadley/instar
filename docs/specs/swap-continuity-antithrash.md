@@ -1,7 +1,7 @@
 ---
 slug: swap-continuity-antithrash
 title: Swap Continuity Under Pressure — Anti-Thrash Brakes + In-Flight Work Deferral (Roadmap 4.4, F3/P1-A6)
-status: draft (round-6 revision — all round-1 through round-5 findings folded; see §15–§19 dispositions)
+status: converged (round-6 verdict CONVERGED — 0 CRITICAL / 0 MAJOR; all 8 round-5 findings verified resolved; 3 MINOR + 4 LOW folded in-round; GPT-tier via pi SERIOUS-ISSUES→calibrated-zero-MAJOR + gemini-2.5-pro MINOR-ISSUES, calibrations on the round-6 record)
 author: echo
 eli16-overview: swap-continuity-antithrash.eli16.md
 parent-principle: "No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes"
@@ -9,8 +9,9 @@ constitution: Bounded Blast Radius (a quota optimization must not silently expan
 lessons-engaged: "P19 (three brakes + a bounded, loud breaker on a repeating loop — §3, §3.5; the monitor's pre-existing silent-retry gap is ALSO fixed, §3.6); P17 (ONE deduped attention item per thrash episode / per failure streak / per ledger loss — §3.5, §3.6, §6.4); P18 (every refusal, deferral, drop, and failure is a counter + a ledger row — sole named exception: ledger-lost refusals are counter-only because the writer itself is down, I5/§3.5; dry-run counters soak before authority — §6, §10); P14-family flap accounting (dwell + reversal state persisted, restart-safe — §3.2, §3.5); F3 finding family (killed-subagent enumeration + unanswered-inbound re-injection at the swap chokepoint — §4.3); Bounded-Notification-Surface lesson shape (bind the PRIMITIVE with a default class, never a per-caller table — §4.2); #1001 anti-mechanism (dev-gated key OMITTED from shipped config, never an explicit false — §7, §10); dynamic-MCP half-enable precedent (per-key config-liveness table — §7.1); CMT-1118 durable inbound queue named as the future inbound-mitigation source (§4.3); Signal vs. Authority (the gate's blocking authority argued, bounded, and classed — §4.4); P20 Verify the State, Not Its Symbol (the work gate verifies live pane/process/subagent STATE before any kill and treats an unreadable symbol as indeterminate, never as idle — §4.1, I7); P7 supervision: Tier 0, declared (§4.4 — deterministic quota/state math at every decision point, no LLM policy judgment anywhere in either piece)."
 earned-from: 2026-07-02 proactive-swap thrash day (echo dev agent, v1.3.722 — 36 executed proactive swaps / 72 [SessionRefresh] account-swap log lines across 8 waves; repeated kills of six parallel build subagents during the U4 and Session-A autonomous runs); F3 finding family (inbound eaten by respawn) and P1-A6
 roadmap: Session A item 4.4 — "Continuity under pressure: proactive/reactive swap + model-swap + refresh defer while a turn or live subagents are in flight, or re-inject the last unanswered inbound + enumerate killed subagents"
-review-convergence: null   # round 6 in flight — has not converged
-approved: false
+review-convergence: "2026-07-03T04:31:03.000Z"
+approved: true
+approved-basis: "Operator standing preapproval, topic 29836, 2026-07-02 (recorded in the registered Session-A run goal: spec approvals + all in-scope reversible decisions). Approval recorded transparently under that authorization; the converged verdict is round-6 CONVERGED with zero outstanding findings at any severity (0 MUST-FIX, 0 SHOULD-FIX, 0 LOW outstanding — the 3 MINOR + 4 LOW raised in-round were folded as d62c78ff1 with the §20 disposition table)."
 ---
 
 # Swap Continuity Under Pressure (roadmap 4.4 + thrash brake)
