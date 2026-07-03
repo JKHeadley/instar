@@ -126,7 +126,11 @@ instead of a durable marker — hence the marker). A parked message also re-chec
 reason on a short cadence and is released the moment the reason clears (the
 lane turns on, the right machine takes over, a rate window passes) — the
 third review round caught that without an explicit release rule, "parked"
-could quietly have meant "parked forever". And a message can't sit parked
+could quietly have meant "parked forever". And release itself is recorded
+on the row, because the fifth round caught that a just-released backlog
+looked "stale" to the boot-time cleanup if a restart landed before it
+finished sending — released messages now get a fresh grace window instead
+of being mistaken for ancient leftovers. And a message can't sit parked
 forever either way: after a week on hold it's surfaced loudly to your
 attention queue instead of being quietly dropped. Config keys:
 `monitoring.deliveryFailureSentinel.channels` and `.slackDryRun`. Existing
