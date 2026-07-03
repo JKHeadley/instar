@@ -31,7 +31,7 @@ by a named test in §7 and each failure of one is a bug, not a tuning issue.
    server (24h DURABLE id-ledger + hot in-memory LRU, §2.4 — upgraded from the
    Telegram lane's in-memory-only LRU, whose restart wipe left a derivable
    double-post window; round-1 M4), and AT LEAST once via the durable queue +
-   sentinel redrive — converging to exactly-once, with TWO honestly-named
+   sentinel redrive — converging to exactly-once, with THREE honestly-named
    residuals: (a) an **ambiguous** outcome (HTTP 408 / response-lost after the
    Slack API may have accepted the post) finalizes as `delivered-ambiguous`
    and is NEVER blindly re-posted — on the script lane via
@@ -278,7 +278,13 @@ NULL→non-NULL, PRESERVED across reason relabels so a row bouncing
 `non-owning`→`funnel-budget` is still continuously held, cleared only on
 release-to-deliverable; no existing column can carry "held since" —
 `attempted_at` mismeasures a row that retried live for hours before being
-held, and `next_attempt_at` is the pushed liveness knob). The reason is set
+held, and `next_attempt_at` is the pushed liveness knob). Both fields are written ATOMICALLY in the
+same `transition()` write (single transaction — round-4 m2), stored as
+ISO-8601 UTC strings (`YYYY-MM-DDTHH:mm:ss.sssZ`, the store's existing
+timestamp convention — round-4 L1); defensively, a held row observed with
+`hold_started_at NULL` (corruption, partial migration) gets the anchor set
+AT OBSERVATION + one ledger row, so no corrupt-held row can sit purge-exempt
+outside the long-stop forever (round-4 m2). The reason is set
 the moment the disposition is decided and CLEARED when the row is released
 for a real attempt. Three consumers key on it:
 
@@ -440,10 +446,22 @@ own notices. Per row:
    the escalation MACHINERY entirely (round-3 m5):** the unreachable
    terminalization writes the `escalated` transition and raises the
    attention item directly — it never invokes the deployed `escalate()`
-   (the 2-attempt in-conversation post, `:573-580`) and never calls
+   (the 2-attempt in-conversation post, `:571-580`) and never calls
    `recordEscalationFailure`, so an attention-surface hiccup on this path
    can never arm the per-channel breaker (it is a delivery-failure
-   CLASSIFICATION, not a failure of the escalation machinery). **Near-silent decision
+   CLASSIFICATION, not a failure of the escalation machinery). **The notice
+   itself is DURABLE, not best-effort (round-4 M1 — the m5 bypass must not
+   trade the breaker hazard for a droppable notice; deployed Telegram at
+   least tries twice):** the terminalization stamps the row
+   `notice_pending` in the same transition, the attention raise gets
+   deployed-parity bounded retry (2 attempts) in-line, and a terminal
+   unreachable row still carrying `notice_pending` is RE-RAISED idempotently
+   by a later partition tick (dedup key = the conversation, riding the
+   keystone's 60s coalescing window) until the raise is accepted — then the
+   marker clears. One transient attention hiccup can DELAY the operator
+   notice, never delete it (§0 property 3 holds through the hiccup); §7
+   pins the shape (raise fails once → the notice lands on a later tick →
+   exactly ONE item). **Near-silent decision
    (conformance-gate flag, stated):** recovered markers and tone-gate
    meta-notices KEEP their in-conversation delivery for Telegram parity —
    each is a single short fixed template explaining a late/withheld message
@@ -486,14 +504,26 @@ is MACHINE-LOCAL BY DESIGN (a per-agent SQLite file beside the process whose
 send failed — the failure and its retry belong to the machine that owns the
 conversation's socket). The funnel's ownership gate makes that safe rather
 than assumed: a row that lands on (or is orphaned on) a machine that does not
-own the conversation HOLDS under stand-down semantics (§2.2a — a durable
-disposition the boot purge cannot outrun; round-2 C2) instead of burning
+own the conversation HOLDS under stand-down semantics (§2.2a — once
+CLASSIFIED, a durable disposition the boot purge cannot outrun; round-2 C2 +
+round-4 m1 scoping) instead of burning
 retries, and heals when ownership arrives (adapter comes up / topic moves
 back) or ages out LOUDLY at the §5 held-retention long-stop with the
 out-of-band notice (round-2 m1: the 24h TTL is drain-evaluated and cannot
 bound a row that never drains — the long-stop is the honest ceiling for held
-rows). In today's single-Slack-machine reality the holding case never occurs;
-active-active reconciliation stays the keystone's tracked §11.2 follow-up.
+rows). **A NEVER-classified row is outside that guarantee BY DESIGN (round-4
+m1):** a live-lane row enqueued while the server is down that is already
+older than the 60-min staleness cutoff at boot is purged LOUDLY before its
+first classification — byte-for-byte the deployed Telegram staleness
+judgment (`restorePurgeAgeMs`, delivery-failure-sentinel.ts:80-90: not
+redelivering genuinely ancient messages after a long outage beats late
+delivery), inherited deliberately, with the honest residual named: in a
+future multi-machine posture, a row that WOULD have classified as a
+stand-down HOLD (ownership moved while the server was down) is purged as
+stale instead — loud, never misdelivered, and unreachable in today's
+single-Slack-machine reality. In today's single-Slack-machine reality the
+holding case never occurs; active-active reconciliation stays the keystone's
+tracked §11.2 follow-up.
 
 ### 2.4 `/slack/reply` — delivery-id idempotency (DURABLE) + system-template bypass
 
@@ -514,8 +544,11 @@ routes share (round-1 M4):
   The row state machine does NOT cover it (the row never transitioned — the
   2xx never reached the sentinel). Fix: a small SQLite delivery-id ledger
   beside `SqliteOutboundDedupStore` (same stateDir, same fail-open-to-
-  in-memory degradation posture), 24h TTL, size-capped, shared by
-  `/telegram/reply` AND `/slack/reply`; the in-memory LRU stays as the hot
+  in-memory degradation posture), **25h TTL — deliberately one hour LONGER
+  than the row's 24h retry TTL (round-4 L2): both clocks anchor at the
+  initial send, so a strictly greater ledger TTL makes the
+  redrive-races-a-just-pruned-entry boundary impossible by construction** —
+  size-capped, shared by `/telegram/reply` AND `/slack/reply`; the in-memory LRU stays as the hot
   cache in front of it. Additive; a ledger open-failure degrades to today's
   in-memory-only behavior with a degradation report (fail toward delivery,
   never capture-and-drop).
@@ -908,7 +941,15 @@ LLM-visible surface.
   `delivered-ambiguous` — never a retry, never a re-post; BUDGET shape
   (round-2 m4): a §5.2 budget-coalesced result HOLDS with no attempt burn
   and no terminal; an UNMAPPED future funnel result maps to transient retry
-  + one deduped attention item (table totality); PERMANENT shape:
+  + one deduped attention item (table totality); NULL-REF shape (round-4
+  m3): a `channel:'slack'` row with a NULL `conversation_ref` →
+  `binding-incoherent` HOLD, asserted as its own case (telegram rows
+  exempt); RELEASE-CLEARS-ANCHOR shape (round-4 m4): a row released from
+  ANY hold has `hold_reason` AND `hold_started_at` both NULL (a later
+  re-hold starts a fresh retention clock); NOTICE-DURABILITY shape (round-4
+  M1): a `conversation-unreachable` terminalization whose attention raise
+  fails transiently keeps `notice_pending` and a later tick re-raises it —
+  exactly ONE item lands, never zero, never two; PERMANENT shape:
   `conversation-unreachable` terminalizes with NO retry burn and its notice
   goes to the attention queue, never the failing conversation;
   escalation/stampede/recovered-marker ride the funnel for slack rows;
@@ -1092,8 +1133,19 @@ now a decided, test-pinned position. `## Open questions` below is empty.
    "never delivered" notice; a >5-row release burst lands in Telegram-parity
    stampede semantics deliberately.
 
+11. **The out-of-band notice is durable, not best-effort (round-4 M1).**
+   The unreachable path's attention raise carries deployed-parity bounded
+   retry + an idempotent `notice_pending` re-raise on later ticks — one
+   transient hiccup delays the notice, never deletes it.
+12. **The never-classified staleness purge is a stated decision (round-4
+   m1).** Once CLASSIFIED, a hold is purge-proof; a live-lane row already
+   past the 60-min staleness cutoff at boot, never seen by any tick, purges
+   loudly — the deployed Telegram judgment inherited deliberately, residual
+   named.
+
 ## Open questions
 
 *(none — all round-1 resolutions verified landed in round 2, all round-2
-resolutions verified landed in round 3; the round-3 findings are folded
-above as of this round-4 revision)*
+resolutions verified landed in round 3, all round-3 resolutions verified
+landed in round 4; the round-4 findings are folded above as of this round-5
+revision)*
