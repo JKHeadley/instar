@@ -1,0 +1,64 @@
+# Reaper log-flood fix — transition-dedup + bounded read + rotation for `reap-log.jsonl`
+
+<!-- bump: patch -->
+
+## What Changed
+
+Three self-limiting changes to `src/monitoring/ReapLog.ts` (the audit trail behind
+`GET /sessions/reap-log`) that stop the reaper from flooding — and freezing on — its own log.
+
+The reaper re-evaluates every session on each tick. When a session **can't** be reaped yet — it
+holds an open commitment, or it belongs to another machine (`not-lease-holder`), or it's
+protected — the reaper skips it and recorded a `skipped` row **every tick**. On a live agent
+that produced 3218 `open-commitment` + 1608 `not-lease-holder` **identical repeat rows** and
+grew `reap-log.jsonl` to **142MB / 463k lines** (observed 2026-07-03). Worse, `read()` did
+`fs.readFileSync(WHOLE file).split('\n')` just to return the last N rows — a 142MB slurp that
+**blocked the event loop** (~90s CPU-bound stalls) whenever the route was queried.
+
+- **Write-side transition dedup (primary cure).** `recordSkipped()` now logs on *transition*:
+  it keeps an in-memory `session → last-logged skip signature (${reason}::${skipped})` map and
+  drops a re-append when the signature is unchanged — mirroring the sibling `reaper-audit.jsonl`
+  "log on change, not every tick" discipline. State is cleared when the session is reaped
+  (`forgetSkip`) so a same-named successor logs fresh and the map can't leak (hard ceiling
+  `MAX_SKIP_STATE`, 2000, oldest-pruned). The reaper still **evaluates** every tick, so the
+  moment a veto lifts the next skip — or the reap — is logged.
+- **Read-side bounded tail.** `read()` now reads only the last `TAIL_READ_BYTES` (2MB) via a
+  positional `readSync`, drops a torn leading line, and merges the rotated `.1` tail if needed —
+  so a large log can never be slurped whole into memory again.
+- **Size-cap rotation (defense-in-depth).** `append()` rolls the file to `<path>.1` (O(1)
+  `renameSync`, no hot-path rewrite) once it crosses `MAX_LOG_BYTES` (16MB), so it can never
+  grow unbounded even if a future caller floods it.
+
+Caps are overridable via an optional `ReapLogOptions` constructor arg (defaults = the module
+constants) purely so tests can trigger rotation cheaply; the production callsite is unchanged.
+
+## Evidence
+
+- `npx vitest run tests/unit/reap-log.test.ts` → **16 tests, 0 failures** (transition-dedup:
+  identical-skip-suppressed, reason-transition-logs, per-session independence, re-log-after-reap;
+  bounded read returns correct last-N; rotation to `.1` + cross-boundary merge + live file
+  bounded; absent-file empty read).
+- `npx vitest run tests/unit/reap-log.test.ts tests/unit/session-reaper.test.ts
+  tests/unit/reap-notifier.test.ts tests/unit/reap-guard.test.ts` → **115 tests, 0 failures**
+  (reaper family regression-clean; `normalizeEntry` whitelist untouched).
+- `npx tsc --noEmit -p tsconfig.json` → **0 errors**.
+- Independent second-pass reviewer: **Concur** — observability-only, touches no kill/keep
+  decision; no operator-needed row hidden; read/rotation off-by-one-clean.
+- Side-effects review: `upgrades/side-effects/reaper-log-flood-fix.md` (8 questions +
+  signal-vs-authority + multi-machine posture + second-pass concurrence).
+
+## What to Tell Your User
+
+If your agent's server ever felt like it "froze for a minute" periodically, or your disk was
+filling up with a giant session-audit log, this is a fix for that. The background tidier that
+closes finished sessions was writing the same "couldn't clean this up yet" note thousands of
+times, and reading that log loaded the whole thing at once. Now it writes the note once and
+reads only the end of the file. Nothing you do changes — your "why did my session vanish?"
+history is still complete (the first skip, every change of reason, and every actual close are
+all still recorded); it just stops the duplicate spam and the stall it caused, and a log that's
+already huge stops growing and gets trimmed automatically.
+
+## Summary of New Capabilities
+
+None — this is a reliability fix to existing behavior, not a new capability. The session-audit
+history keeps the same shape and meaning; it's just bounded and de-duplicated now.
