@@ -218,3 +218,83 @@ describe('server-boot wiring: lease transport timeout derivation (source-shape p
     expect(block).toContain('requestTimeoutMs: Math.min(seamlessness.leaseTtlMs / 2, 30_000)');
   });
 });
+
+// ── machine-coherence-guard §5b: the per-peer lease-observation map ─────────
+// The NEW retained state behind the lease-live awakeMachineCount derivation.
+// The single lastObserved slot keeps only the most recent record ACROSS peers;
+// this map keeps one observation PER DIALED PEER (the machine-auth-verified
+// registry id — never the response body's holder claim), filled from the same
+// dials pullPeer already makes (zero new network traffic).
+describe('HttpLeaseTransport.observedByPeer (machine-coherence-guard §5b)', () => {
+  it('records one observation per dialed peer, keyed on the DIALED id even when the lease names a third machine', async () => {
+    let now = 5_000_000;
+    // m_b re-serves a lease held by m_c (its effective VIEW — hearsay about a
+    // third machine). The map must key the observation on m_b (who we dialed).
+    const thirdPartyLease = lease({ holder: 'm_c', epoch: 4, nonce: 2 });
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: thirdPartyLease }) })) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer-b' }], fetchImpl, () => now);
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer-b' });
+    const byPeer = t.observedByPeer();
+    expect(byPeer.size).toBe(1);
+    expect(byPeer.get('m_b')).toEqual({ lease: thirdPartyLease, observedAtMs: 5_000_000 });
+    expect(byPeer.has('m_c')).toBe(false); // hearsay never mints a row for the third machine
+  });
+
+  it('a confirmed pull that returns NO lease records an honest null observation (not absence)', async () => {
+    let now = 6_000_000;
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: null }) })) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer-b' }], fetchImpl, () => now);
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer-b' });
+    expect(t.observedByPeer().get('m_b')).toEqual({ lease: null, observedAtMs: 6_000_000 });
+  });
+
+  it('an UNCONFIRMED dial records nothing — a stale entry ages out via the freshness bound, never a fake refresh', async () => {
+    let now = 7_000_000;
+    let fail = false;
+    const peerLease = lease({ holder: 'm_b', epoch: 2, nonce: 1 });
+    const fetchImpl = vi.fn(async () => {
+      if (fail) throw new Error('ECONNREFUSED');
+      return { ok: true, json: async () => ({ lease: peerLease }) };
+    }) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer-b' }], fetchImpl, () => now);
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer-b' });
+    expect(t.observedByPeer().get('m_b')?.observedAtMs).toBe(7_000_000);
+    now = 7_060_000;
+    fail = true;
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer-b' });
+    // The old observation stands with its ORIGINAL time — not refreshed, not deleted.
+    expect(t.observedByPeer().get('m_b')?.observedAtMs).toBe(7_000_000);
+  });
+
+  it('pullAllPeers prunes observations for machines that left the peer set (a de-paired machine cannot linger as a claimant)', async () => {
+    let peers: LeasePeer[] = [
+      { machineId: 'm_b', url: 'http://peer-b' },
+      { machineId: 'm_c', url: 'http://peer-c' },
+    ];
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: null }) })) as any;
+    let seq = 0;
+    const t = new HttpLeaseTransport({
+      selfMachineId: 'm_a',
+      signingKeyPem: privateKey,
+      peers: () => peers,
+      nextSequence: () => ++seq,
+      fetchImpl,
+      reachabilityWindowMs: 60_000,
+    });
+    await t.pullAllPeers();
+    expect(t.observedByPeer().size).toBe(2);
+    peers = [{ machineId: 'm_b', url: 'http://peer-b' }]; // m_c de-paired
+    await t.pullAllPeers();
+    expect(t.observedByPeer().has('m_c')).toBe(false);
+    expect(t.observedByPeer().has('m_b')).toBe(true);
+  });
+
+  it('observedByPeer returns a COPY — callers cannot mutate transport state', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: null }) })) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer-b' }], fetchImpl);
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer-b' });
+    const copy = t.observedByPeer();
+    copy.delete('m_b');
+    expect(t.observedByPeer().has('m_b')).toBe(true);
+  });
+});

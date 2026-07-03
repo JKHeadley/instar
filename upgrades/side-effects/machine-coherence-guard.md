@@ -49,7 +49,17 @@
 
 ### Increment C — the evaluator + episode/election/fix (§3.3/§3.4/§4) — PENDING
 (Includes the `clampRejections`/marker-drop counters on the status route — the clamp itself landed in B; the counters belong to the sentinel's counter block.)
-### Increment D₂ — the awakeMachineCount shape rework (§5b, D5) — PENDING
+### Increment D₂a — per-peer lease-observation map (§5b's NEW retained state) — LANDED
+
+**What changed:**
+1. **`src/core/HttpLeaseTransport.ts`** — `lastPulledByPeer: Map<peerMachineId, { lease, observedAtMs }>` recorded inside `pullPeer()` from the SAME dials it already makes (zero new network traffic), keyed on the DIALED peer's machine-auth-verified registry id — NEVER the response body's holder claim (a pulled lease naming a third machine is hearsay; it never mints a row for the third machine). A confirmed no-lease pull records an honest `null`; an UNCONFIRMED dial records nothing (the stale entry ages out via the counting rule's freshness bound). Pruned in `pullAllPeers()` when a peer leaves the peer set. Exposed as `observedByPeer()` (a copy).
+2. **`src/core/LeaseCoordinator.ts`** — `LeaseTransport` interface gains optional `observedByPeer?()`; surfaced as `LeaseCoordinator.peerLeaseObservations()` (empty map on a git-only mesh — the counting rule degrades to `'registry-roles'` there).
+3. **Tests:** `tests/unit/HttpLeaseTransport.test.ts` +5 (§5b describe): dialed-id keying vs third-machine hearsay, honest-null observation, unconfirmed-dial non-refresh, de-pair pruning, copy semantics.
+
+**Blast radius:** additive retained state + two read surfaces; NOTHING consumes them yet (the counting-rule rework is D₂b). Advisory data only (L4/SEC-4) — never demotion authority.
+
+### Increment D₂b — the awakeMachineCount counting rule + shape rework (§5b, D5) — PENDING
+(The counting rule in `MultiMachineCoordinator.getSyncStatus` — self `holdsLease()` + fresh/live/self-claim peers; `number | null` + `awakeMachineCountSource` tag; the FULL consumer/test/template/docstring sweep the D5 decision mandates in the same PR: docstring, /health + GET /pool serializers + the two other route callers, multimachine-syncstatus + split-brain e2e + pool-routes tests, the two CLAUDE.md template mentions via generateClaudeMd + migrateClaudeMd, doctor + machine list labels (M12), upgrade-guide entry.)
 ### Increment E — integration + e2e + CLAUDE.md template + release fragment — PENDING
 
 ---
