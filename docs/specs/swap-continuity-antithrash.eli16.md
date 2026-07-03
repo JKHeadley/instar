@@ -38,6 +38,10 @@ alive became the main thing destroying work.
    or running helper tasks. If it is, the move waits (up to 30 minutes) for
    the work to finish. If the work is still going at the end of the wait, the
    move is simply **cancelled** — your work always outranks an optimization.
+   And if the agent **can't tell** whether helper tasks are running (the
+   check fails, or the session is in a rare state where its helpers can't be
+   looked up at all), it plays it safe and treats the session as busy — "I
+   can't see" is never a license to interrupt.
 
 There is one deliberate exception to rule 4: if an account **actually hits its
 hard limit**, the session must move or it dies. Even then it waits up to 2
@@ -45,7 +49,10 @@ minutes for the current step to finish, and after the forced move the
 restarted session gets a note listing exactly which helper tasks were
 interrupted, plus a copy of the last message you sent that never got answered
 — so nothing is silently lost, and the restarted session can pick up where the
-old one left off.
+old one left off. (In the rare case where the agent couldn't see the helper
+tasks at all, the note says exactly that — "I couldn't check what was running
+when this happened, look for half-finished work" — instead of pretending
+nothing was interrupted.)
 
 ## What you'll notice
 
@@ -59,10 +66,12 @@ sends you one alert — not a flood. The misbehavior detector catches all the
 shapes we know: the simple back-and-forth between two accounts, the same
 back-and-forth spread across different sessions, and the sneakier version
 where a session gets pushed around a circle of three or more accounts — the
-agent keeps three hours of move history exactly so that circle is visible,
-and the third move in three hours trips the breaker on the spot (even if the
-circling never repeats a pair, and even if the server restarts partway
-through — the history survives restarts).
+agent keeps four hours of move history exactly so that circle (and any
+still-relevant pause that followed one) stays visible, and the third move in
+three hours trips the breaker on the spot (even if the circling never
+repeats a pair, and even if the server restarts partway through — the
+history, the pause, and "this is the same ongoing problem, don't re-alert"
+all survive restarts).
 
 Two more things: you'll see fewer repeated "session restarted" notices (at
 most one per move, not one per hop), and you'll no longer get silence when
