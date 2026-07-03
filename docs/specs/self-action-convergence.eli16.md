@@ -40,6 +40,10 @@ The big realization: **the structural fix isn't missing anymore — it landed to
 
 Report-only first, exactly like the class-closure system it rides on: (1) register the class + land the guardrail test + the lint + the detector, all logging-only; (2) measure how often real self-action changes declare correctly; (3) a human flips it to actually-blocking once the declarations prove reliable. The bigger follow-on work — one shared "backpressure" service every self-action rides by default, and the real fix that stops account-swaps from needing a session restart at all — are named as separate specs, not built here.
 
-## Still owed
+## The review it went through
 
-An outside-model review pass (codex + gemini) has NOT run yet — this overview and the spec are the internal-review draft. Two things that pass should poke at: whether this bug class should be split into "floods" vs "spirals" (they escalate at different sensitivities), and whether the word-based detector flags too many innocent changes.
+Two outside AI models (codex GPT-tier and gemini) reviewed the spec. They caught real problems that got fixed: the commit-time check pointed at a file that doesn't exist yet (fixed — the declaration now lives in the trace the developer already writes); the lint that forces registration was dodgeable by renaming a method (fixed — it now triggers on the *action itself*, not the method name); and a claim that the check "blocks" was corrected to match what the system actually does today (report-only, with the new blocking behavior added explicitly). A second confirmation pass verified all of it was fixed with nothing new broken.
+
+## Still for the operator to decide
+
+Two calls are deliberately left to Justin, not silently made: whether this should be ONE bug class or split into "floods" vs "spirals" (they trip at different sensitivities), and the final calibration of the detector's word list. And the proposed constitutional standard is exactly that — a *proposal*; adopting it into the constitution is the operator's, not the design's.
