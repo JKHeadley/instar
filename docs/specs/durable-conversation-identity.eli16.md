@@ -252,3 +252,11 @@ The follow-through behavior rides a config flag (dark by default, dry-run first)
 flipping it off restores today's behavior entirely. The address book file itself is
 inert data to old code: old versions never read it, so rolling back the code cannot
 be hurt by its existence.
+
+## Build status
+
+Increment 1 (the address book itself, its crash-proof journal, and the eager
+"write the conversation down on first contact" step) is built and shipping;
+the delivery funnel exists but stays switched off by default (dry-run first on
+development agents), exactly as the rollout section prescribes. Later
+increments wire the consumers (promises/reminders first) onto it.
