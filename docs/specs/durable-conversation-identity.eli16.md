@@ -67,6 +67,48 @@ all become possible on Slack.
   it's the next roadmap item and slots in underneath the funnel without touching
   its callers.
 
+## How we made the multi-machine math airtight (round-6 hardening)
+
+Because the agent can run on several machines at once, two machines can hand out a
+number for the same conversation at the same time. The spec's answer is a fixed set
+of tie-break rules that every machine applies identically, so they always end up
+agreeing without talking to each other. Six review rounds hammered on those rules,
+and the latest round closed the last known holes:
+
+- **A forwarding note can never argue with an owner.** When two conversations fight
+  over a number, the loser gets a little "see the new number" forwarding note. We
+  found a rare timing where a forwarding note could point at a number that a THIRD
+  conversation legitimately owns — two answers for one number. Now ownership always
+  wins: a forwarding note is only created for a number nobody owns, and if an owner
+  shows up later, the stale note is deleted in the same breath. Promises made under
+  the old number still arrive in the right thread, because every promise also
+  carries its own "which thread was this made in" note.
+- **Flood-proofing at two zoom levels.** A vandal shipping fake records could
+  previously spread them across neighboring number ranges to crowd a victim's
+  parking spots without tripping the per-range limit. There is now also an overall
+  density limit per stretch of numbers, so no amount of spreading can crowd a real
+  conversation out.
+- **The promise's thread-note is sanity-checked before use.** If that note is ever
+  corrupted (a bug, a bad migration), delivery falls back to the normal lookup and
+  raises one visible alert — never a silent redirect into the wrong thread.
+- **No double-posting even if the server dies mid-bookkeeping.** Finishing a send
+  updates two separate files; we pinned the order so that a crash between the two
+  can only leave a harmless expiring leftover, never a repeated message.
+- **One unambiguous tie-breaker.** When the same conversation has several records
+  floating around, the rules now say exactly which record's timestamp represents it
+  — so no machine can order things differently just because records arrived in a
+  different order.
+
+None of this changes what users see; it changes what can silently go wrong (now:
+nothing we know of).
+
+## Open questions
+
+None. Earlier drafts had two, and both turned out to be items already tracked on
+the roadmap (Slack delivery robustness, and how a later phase keys its
+exactly-once inbox) — there is no decision left that needs the operator's call
+before building.
+
 ## Rollback
 
 The follow-through behavior rides a config flag (dark by default, dry-run first) —
