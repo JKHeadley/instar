@@ -36,6 +36,45 @@ const WRITE_VERB = /\b(post|create|file a ticket|open a ticket|schedule|add a|wr
 const OP_VERB = /\b(run|trigger|kick off|start|rerun|re-run)\b/;
 const OP_NOUN = /\b(job|task|script|pipeline|staging|test|tests|build)\b/;
 
+// ── Conversational self-post detection (member-seat false-positive fix) ──────────
+// A "post a check-in note here in 5 minutes" is the bot AUTHORING conversational
+// content into the CURRENT conversation — not an organizational write. It carries
+// no floor signal (floor detection runs FIRST and always wins) and no org-write /
+// external side-effect. Such a request is conversational (T1 read/draft level), so
+// an ordinary member may direct it — the earlier blanket T2 low-write classification
+// wrongly put it above the member ceiling and refused every member.
+//
+// A verb that FRAMES posting/scheduling conversational content...
+const SELF_POST_VERB = /\b(post|drop|leave|put|write|schedule|set|send|remind|share)\b/;
+// ...applied to a conversational-content noun (a note, check-in, reminder, update…).
+const CONVERSATIONAL_NOUN =
+  /\b(note|notes|check[- ]?in|checkin|reminder|reminders|heads[- ]?up|update|updates|standup|stand[- ]?up|message|ping|nudge)\b/;
+// An organizational-write or EXTERNAL side-effect marker — its presence means this is
+// NOT a harmless conversational post but a genuine low-write/external action that must
+// keep its higher tier (a ticket, a record, another/named channel, a doc, a calendar
+// hold, an email, an outside party). Any match disqualifies the conversational path.
+const ORG_WRITE_OR_EXTERNAL_MARKER =
+  /\b(ticket|tickets|jira|linear|asana|notion|confluence|wiki|calendar|invite|record|records|doc|docs|document|documents|announcement|announcements|another channel|other channel|email|e-mail|invoice|spreadsheet|sheet|client|clients|customer|customers|vendor|vendors|external|outside|partner|press|public)\b|#[a-z0-9][\w-]*/i;
+// An operational marker — asking the bot to RUN/DEPLOY/execute something is never a
+// conversational post, even if phrased as "post a note to run …". Disqualifies too.
+const OPERATIONAL_MARKER =
+  /\b(run|trigger|execute|kick off|deploy|rerun|re-run|migrat\w+|job|pipeline|build|script)\b/;
+
+/**
+ * Is this a harmless conversational self-post (a note / check-in / reminder / status
+ * update the bot would post into the CURRENT conversation)? Deterministic and
+ * conservative: it requires BOTH a self-post verb AND a conversational-content noun,
+ * and it disqualifies on ANY organizational-write / external / operational marker.
+ * Floor actions are already handled (and short-circuited) before this runs, so this
+ * only ever sees non-floor text. Requiring both a post-verb AND a content-noun keeps
+ * plain chatter ("just checking in, how's it going?") at T0 rather than promoting it.
+ */
+export function isConversationalSelfPost(t: string): boolean {
+  if (ORG_WRITE_OR_EXTERNAL_MARKER.test(t)) return false;
+  if (OPERATIONAL_MARKER.test(t)) return false;
+  return SELF_POST_VERB.test(t) && CONVERSATIONAL_NOUN.test(t);
+}
+
 /** Does the text CLAIM an authorization from some named party ("X said it's fine")? */
 export function mentionsClaimedAuthority(text: string): boolean {
   const t = text.toLowerCase();
@@ -49,8 +88,9 @@ function intent(
   confidence: number,
   directed: boolean,
   floorAction?: FloorAction,
+  conversational?: boolean,
 ): RequestIntent {
-  return { action, tier, floorAction, confidence, directed };
+  return { action, tier, floorAction, confidence, directed, conversational };
 }
 
 /**
@@ -94,6 +134,13 @@ export class HeuristicIntentClassifier implements IntentClassifier {
     // ── Non-floor tiers ──
     if (OP_VERB.test(t) && OP_NOUN.test(t)) {
       return intent('operational', 3, 0.78, directed);
+    }
+    // Harmless conversational self-post (note/check-in/reminder into the current
+    // conversation, no org/external/operational marker) → T1, not the T2 low-write
+    // that wrongly refused ordinary members. Checked BEFORE the generic WRITE_VERB
+    // branch so "post a check-in note here" isn't swept up as a low-write.
+    if (isConversationalSelfPost(t)) {
+      return intent('conversational-post', 1, 0.78, directed, undefined, true);
     }
     if (WRITE_VERB.test(t)) {
       return intent('low-write', 2, 0.78, directed);

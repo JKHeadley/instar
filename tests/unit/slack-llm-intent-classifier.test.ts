@@ -77,6 +77,42 @@ describe('LlmIntentClassifier — floor stays deterministic (LLM never consulted
   });
 });
 
+describe('LlmIntentClassifier — conversational self-post stays deterministic (member-seat fix)', () => {
+  it('returns the T1 conversational read AS-IS and never consults the LLM (no upward re-escalation)', async () => {
+    const cap = { calls: 0 };
+    // The LLM would "confidently" call a posted note a T2 low-write — which, via
+    // reconcile's Math.max, would push the member back above their ceiling. The
+    // deterministic conversational short-circuit prevents that: the LLM is never called.
+    const c = new LlmIntentClassifier({
+      intelligence: fakeProvider(() => '{"action":"post-note","tier":2,"directed":true,"confidence":0.95}', cap),
+    });
+    const i = await c.classify('post a check-in note here in 5 minutes', { directed: true });
+    expect(i.tier).toBe(1);
+    expect(i.conversational).toBe(true);
+    expect(cap.calls).toBe(0);
+  });
+
+  it('reports the conversational-deterministic degrade reason', async () => {
+    const reasons: LlmIntentDegradeReason[] = [];
+    const c = new LlmIntentClassifier({
+      intelligence: fakeProvider(() => '{"action":"post-note","tier":2,"directed":true,"confidence":0.9}'),
+      onDegrade: (r) => reasons.push(r),
+    });
+    await c.classify('drop a quick reminder in this channel', { directed: true });
+    expect(reasons).toContain('conversational-deterministic');
+  });
+
+  it('THROUGH THE GATE: a member conversational self-post is ALLOWED even with an escalating LLM', async () => {
+    const classifier = new LlmIntentClassifier({
+      intelligence: fakeProvider(() => '{"action":"post-note","tier":2,"directed":true,"confidence":0.95}'),
+    });
+    const gate = new SlackPermissionGate({ classifier, anomalyScorer: new NullAnomalyScorer() });
+    const v = await gate.evaluate({ principal: p({ role: 'member' }), text: 'post a check-in note here in 5 minutes', directed: true });
+    expect(v.decision).toBe('allow');
+    expect(v.basis).toBe('within-authority');
+  });
+});
+
 describe('LlmIntentClassifier — judgment band (non-floor) refinement via the LLM', () => {
   it('uses the LLM verdict for a non-floor message (correct tier + action + directedness)', async () => {
     const c = new LlmIntentClassifier({
@@ -171,8 +207,10 @@ describe('LlmIntentClassifier — FAIL-CLOSED (no silent degradation, never a si
       intelligence: fakeProvider(() => 'I am not JSON at all, just chatty prose.'),
       onDegrade: (r) => reasons.push(r),
     });
-    const i = await c.classify('post a quick note in the channel', { directed: true });
-    const h = await heuristic.classify('post a quick note in the channel', { directed: true });
+    // A genuine non-floor low-write (a ticket) — NOT a conversational self-post, so
+    // the LLM path actually runs and its unparseable output falls back to the heuristic.
+    const i = await c.classify('file a ticket for the login bug', { directed: true });
+    const h = await heuristic.classify('file a ticket for the login bug', { directed: true });
     expect(i).toEqual(h);
     expect(reasons).toContain('unparseable');
   });
@@ -181,8 +219,8 @@ describe('LlmIntentClassifier — FAIL-CLOSED (no silent degradation, never a si
     const c = new LlmIntentClassifier({
       intelligence: fakeProvider(() => '{"action":"weird","tier":9,"directed":true,"confidence":0.9}'),
     });
-    const i = await c.classify('post a note', { directed: true });
-    const h = await heuristic.classify('post a note', { directed: true });
+    const i = await c.classify('file a ticket for the login bug', { directed: true });
+    const h = await heuristic.classify('file a ticket for the login bug', { directed: true });
     expect(i).toEqual(h);
   });
 
