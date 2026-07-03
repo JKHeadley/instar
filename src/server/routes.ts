@@ -11564,6 +11564,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     )
       return;
 
+    // In-flight reservation (2026-07-03): the isDuplicate pre-check above and the
+    // record-after-success below leave a race — under a server stall a send can be
+    // in flight for tens of seconds, and a second identical request that arrives in
+    // that window passes the pre-check (nothing recorded yet) and sends a duplicate
+    // (the reworded-vs-identical double-send class). tryReserve atomically re-checks
+    // AND claims the fingerprint in one synchronous step, so the loser of the race
+    // is suppressed. Taken AFTER the tone gate (a held/blocked message never
+    // reserves → no leak); resolved by record() on success or releaseReservation()
+    // in the catch on failure. allowDuplicate bypasses it (no reserve, no block).
+    if (!allowDuplicate && !outboundContentDedup.tryReserve(topicId, text)) {
+      console.log(`[telegram/reply] suppressed in-flight duplicate for topic ${topicId} (identical text already sending/sent)`);
+      res.json({ ok: true, topicId, suppressedDuplicate: true });
+      return;
+    }
     try {
       // Capture the SendResult so the response can carry the REAL Telegram
       // messageId. A tokenless-standby relay reads this messageId to decide
@@ -11670,6 +11684,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json({ ok: true, topicId, messageId: sendResult?.messageId });
     } catch (err) {
+      // The send failed → release the in-flight reservation so the legitimate
+      // retry of this exact text is not wrongly suppressed as a duplicate. Safe
+      // no-op when nothing was reserved (allowDuplicate / below-floor text).
+      outboundContentDedup.releaseReservation(topicId, text);
       // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the
       // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
       // window reaches past this route's end into the next route's `db = null`
