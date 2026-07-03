@@ -1,7 +1,7 @@
 # Machine-Coherence Guard — plain-English overview
 
 **Companion to:** `docs/specs/machine-coherence-guard.md` (roadmap item 4.1,
-round-2 revision)
+round-3 revision)
 
 ## The problem, in one story
 
@@ -35,19 +35,47 @@ differs, and proposes a fix **that I perform if you approve it** — you reply
 "fix it" and I equalize the setting and restart that machine myself. You're
 never handed a config command to run.
 
+**The fix has guardrails of its own.** Only YOU can approve it — the approval
+only counts from the verified owner of that conversation, and it's tied to
+the exact proposal you were shown (if the situation changes, I re-propose
+rather than act on a stale yes). The proposal always says which machine gets
+changed, to what value, and why that direction (match the majority, or match
+the machine currently in charge) — a one-word "fix it" can never flip
+something in a direction you weren't told. Two switches are never auto-fixed:
+the master "this is my dev machine" switch (it changes dozens of things at
+once) and the watchdog's own on/off state — for those I show you the
+difference and ask which way you want it. The change is always made ON the
+divergent machine by my own hands there — there's no remote-rewrite channel
+between machines, on purpose. And if the fix doesn't take, I say so once and
+keep the alert open — the alert only ever closes when the machines are
+OBSERVED agreeing again, never because a fix claims it worked.
+
 **Exactly one machine speaks.** Both machines run the comparator, but they
 hold a quick deterministic election (the one currently "in charge" wins;
 otherwise the alphabetically-first live one) so exactly ONE machine raises the
 alert. Without that, every machine would confirm the same problem and you'd
-get two identical alarms for one issue.
+get two identical alarms for one issue. Two backstops keep that honest: each
+machine's heartbeat card now also says "I'm currently holding an open alarm
+about X" — so if the machine that WON the election is quietly broken (its
+alarm-sending arm is dead even though its heartbeat looks alive), the others
+notice the missing "I raised it" marker within about five minutes and the
+next machine in line steps up and raises it instead. And if a weird moment
+ever produces TWO alerts for the same problem (a network split, a laggy
+view), the machines spot each other's markers and one of them politely
+withdraws its copy, labeled honestly as superseded — never two alarms dueling
+for days.
 
 **The alert never lies about being fixed.** If the differing machine simply
 goes to sleep (a laptop overnight), the alert doesn't declare victory — it
 notes "the divergent machine went offline, holding this open" and waits. It
 only says "restored" when both machines are actually back and actually agree.
 If the same problem flaps on and off, it re-opens the SAME alert instead of
-minting new ones, and there's a hard cap of three new alert topics per day —
-past that it records quietly and tells you once that it's capped.
+minting new ones; after three flaps it says "this is flapping — recording
+quietly until it stabilizes" and stops narrating each bounce. And there's a
+hard cap of three new alert topics per day — past that it records quietly
+and tells you once that it's capped. The flap/cap bookkeeping is saved to
+disk, so a restart (which is exactly when settings flap) can't wipe the
+brakes.
 
 **Trust rules for the heartbeat cards.** A card from another machine is
 untrusted data: it's size- and type-checked on receipt, a malformed card makes
