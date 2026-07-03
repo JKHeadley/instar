@@ -601,6 +601,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'structural-stub',
     reason: 'sleep/respawn mechanism is a later slice; not wired',
   },
+  {
+    configPath: 'prGate.classClosure.enabled',
+    category: 'structural-stub',
+    reason: 'class-closure gate increment 1 is CI-only report-only tooling (scripts/class-closure-lint.mjs) read at build time, NOT a runtime server feature — resolveDevAgentGate does not apply; enabled:false + dryRun:true is the intended report-only ship state (spec rollout step 1), enforcing is a later opt-in; no runtime consumer wired (route/escalator are increment 3), repo-gated no-op off the maintainer repo',
+  },
   // ── optional-integration — opt-in per deployment ──
   {
     configPath: 'multiMachine.sessionPool.enabled',

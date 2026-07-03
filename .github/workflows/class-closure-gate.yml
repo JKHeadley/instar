@@ -1,0 +1,41 @@
+# class-closure-gate — the REPORT-ONLY class-closure lint at the PR boundary.
+#
+# A fix for a defect found in an agent-authored artifact (prompts, hooks,
+# configs, skills, standards text) is supposed to declare, in its committed
+# instar-dev decision-audit entry, WHAT CLASS of defect it is an instance of and
+# HOW the class is closed (a live guard, or a tracked gap). This lint validates
+# those declarations. In increment 1 it is REPORT-ONLY: it prints findings and
+# ALWAYS exits 0 (the script only fails the build when
+# prGate.classClosure.enabled && !dryRun AND a hard structural violation exists).
+#
+# Mirrors decision-audit-gate.yml. Repo-gated: on a checkout without
+# docs/defect-classes.json the script prints a skip line and exits 0.
+#
+# Spec: docs/specs/class-closure-gate.md (Rollout step 1).
+
+name: class-closure
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  class-closure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Class-closure declarations (report-only)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/class-closure-lint.mjs

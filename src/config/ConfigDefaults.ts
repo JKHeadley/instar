@@ -816,6 +816,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // 404 until explicitly flipped by Phase B+. Runtime kill-switch.
   prGate: {
     phase: 'off' as const,
+    // Class-Closure Gate (docs/specs/class-closure-gate.md) — ships dark +
+    // report-only (the CI lint logs findings and always exits 0 until an
+    // operator flips enabled+!dryRun). backfilled to existing agents via the
+    // add-missing applyDefaults path, exactly like prGate.phase.
+    classClosure: {
+      enabled: false,
+      dryRun: true,
+      escalatorDrafting: false,
+    },
   },
   // Restart-cascade dampener — minimum ms between two update-driven restart
   // requests. AutoUpdater batches a new restart that lands within this window

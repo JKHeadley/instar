@@ -3973,6 +3973,19 @@ export interface PrGateConfig {
   primaryMachineId?: string;
   /** Machine IDs paired for replication / cross-tunnel failover. */
   pairedMachineIds?: string[];
+  /**
+   * Class-Closure Gate (docs/specs/class-closure-gate.md). Ships dark +
+   * report-only: `enabled:false, dryRun:true` means the CI lint logs findings
+   * and always exits 0. `enabled && !dryRun` lets the lint fail on a hard
+   * structural violation (malformed registry / a novel class with no
+   * semantics). `escalatorDrafting` is the dark-staged LLM drafting arm's own
+   * key (increment 3) — the deterministic trigger rides `enabled`.
+   */
+  classClosure?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    escalatorDrafting?: boolean;
+  };
 }
 
 // ── Integrated-Being Ledger (v1) ────────────────────────────────────
