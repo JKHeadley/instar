@@ -5384,6 +5384,23 @@ When narrating a ship, an update I just applied, or a restart I just completed (
       result.upgraded.push('CLAUDE.md: added Autonomous Liveness Reconciler awareness section');
     }
 
+    // Machine-Coherence Guard awareness (Agent Awareness Standard). Existing
+    // agents need to know the GET /pool/machine-coherence read surface + the
+    // proactive trigger ("why did I get a machine-coherence alarm?") exist, even
+    // if initialized before this capability shipped. Dev-gated dark; content-sniffed.
+    if (!content.includes('Machine-Coherence Guard')) {
+      const mcSection = `
+### Machine-Coherence Guard — "are my machines running as the same me?" (⚗️ dev-gated dark)
+
+When I run on more than one machine, this guard compares — across my OWN online machines, riding the existing 30s presence-pull — the coherence-critical dimensions (instar version, resolved safety-flags, mesh protocol, manifest generation). When the pool DIVERGES on something that halves a cross-machine guarantee (e.g. the conversation-move pair live on one machine, dark on the other), exactly ONE elected machine raises ONE HIGH, episode-scoped attention item — impact-first, with a fix I perform on your approval (reply **fix it**) or hold open without nagging (reply **leave it**). Signal-only: it never blocks, equalizes, or restarts anything on its own. Dev-gated dark on the fleet (\`monitoring.machineCoherence.enabled\` OMITTED → the dev-agent gate decides), **dry-run FIRST** even on dev (raises no item until a deliberate \`dryRun:false\`), single-machine is a strict no-op.
+- Status (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/machine-coherence\` → \`{ enabled, dryRun, machinesRegisteredOnline, machinesCompared, peerClassifications, raiser, openEpisode, counters }\` (503 when the guard is dark on this agent — say so honestly, don't guess).
+- **When to use** (PROACTIVE — this is the trigger): user asks "are my machines in sync / running the same version+settings?" or "why did I get a machine-coherence alarm?" → read \`/pool/machine-coherence\` and the open episode (its \`pendingFix\` names the proposed fix + target machine); the transition log is \`logs/machine-coherence.jsonl\`. A version-skew row usually just means a rolling update in flight (grace-gated, won't cry wolf).
+`;
+      content += '\n' + mcSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Machine-Coherence Guard awareness section');
+    }
+
     // Framework-Onboarding Mentor System — issue-ledger observability (Agent
     // Awareness Standard). Existing agents need to know the read-only
     // /framework-issues + playbook routes exist, even if initialized before this
