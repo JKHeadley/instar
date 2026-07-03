@@ -4,6 +4,11 @@
  * Implements the MessagingAdapter interface using Socket Mode (WebSocket)
  * for event intake and the Slack Web API for outbound messages.
  *
+ * CONTRACT-EVIDENCE: EXEMPT — this change only reads an ADDITIONAL field
+ * (`team_id`) from the EXISTING `auth.test` response already called at start and
+ * exposes it via an internal getter. It adds no new Slack Web-API call and
+ * changes no request/response contract, so no live-API contract test applies.
+ *
  * Key design decisions:
  * - DIY app model (each user creates their own Slack app)
  * - Socket Mode (no public URLs, no webhooks)
@@ -56,6 +61,8 @@ export class SlackAdapter implements MessagingAdapter {
   private autoJoinChannels: boolean;
   private respondMode: SlackRespondMode;
   private botUserId: string | null = null;
+  /** VERIFIED connected team id from `auth.test` at start (null until verified). */
+  private connectedTeamId: string | null = null;
 
   // Threads-as-first-class-sessions (§5.3). Resolved once from config. When a
   // channel is opted in, a message carrying a thread_ts routes to a session keyed
@@ -236,12 +243,15 @@ export class SlackAdapter implements MessagingAdapter {
     await Promise.race([connectPromise, timeoutPromise]);
     this.started = true;
 
-    // Fetch bot user ID (needed for @mention detection in shared mode)
+    // Fetch bot user ID (needed for @mention detection in shared mode) and the
+    // VERIFIED connected team id (consumed by the test-cast principal source's
+    // workspace scope check — config alone is never the scope authority).
     try {
       const authResult = await this.apiClient.call('auth.test', {}) as Record<string, unknown>;
       this.botUserId = authResult.user_id as string ?? null;
+      this.connectedTeamId = typeof authResult.team_id === 'string' ? authResult.team_id : null;
       if (this.botUserId) {
-        console.log(`[slack] Bot user ID: ${this.botUserId}`);
+        console.log(`[slack] Bot user ID: ${this.botUserId}${this.connectedTeamId ? ` (team ${this.connectedTeamId})` : ''}`);
       }
     } catch {
       console.warn('[slack] Could not fetch bot user ID — mention detection may not work');
@@ -384,6 +394,15 @@ export class SlackAdapter implements MessagingAdapter {
 
   /** The Slack workspace/team id this adapter is configured for (undefined if unset). */
   getWorkspaceId(): string | undefined { return this.config.workspaceId; }
+
+  /**
+   * The VERIFIED connected workspace/team id, captured from Slack's own
+   * `auth.test` response at adapter start — null until verified (or when
+   * verification failed). This — never config — is the scope authority for the
+   * test-cast principal source: fail-closed, the cast is inert until the
+   * adapter has proven which workspace it is actually connected to.
+   */
+  getConnectedTeamId(): string | null { return this.connectedTeamId; }
 
   /** Get the current workspace behavior config. */
   getWorkspaceConfig(): { mode: SlackWorkspaceMode; autoJoinChannels: boolean; respondMode: SlackRespondMode } {

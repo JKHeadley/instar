@@ -1,5 +1,9 @@
 /**
  * Slack adapter types — configuration, messages, events, and rate limit tiers.
+ *
+ * CONTRACT-EVIDENCE: EXEMPT — this change is type-only (adds the optional
+ * `permissionGate.testCast` config shape); it touches NO Slack Web-API request
+ * or response contract, so no live-API contract test applies.
  */
 
 // ── Configuration ──
@@ -79,6 +83,36 @@ export interface SlackConfig {
   permissionGate?: {
     observeOnly?: boolean;
     enforce?: boolean;
+    /**
+     * Sanctioned live-test-workspace scenario cast (roadmap 0.3 entry condition).
+     * The July-2026 lesson: the cast must NEVER live in the production user
+     * registry (`users.json`) — the fixture-identity guard refuses it there, and
+     * a registry rebuild silently dropped it once already. Carried HERE, in the
+     * same config block as the workspace tokens, the cast shares the workspace
+     * config's lifecycle: a users.json rebuild can never remove it again.
+     *
+     * Scope (fail-closed): entries resolve ONLY while the adapter's VERIFIED
+     * connected team id (`auth.test`) equals `workspaceId`. Partition invariant:
+     * each `slackUserId` MUST match the fixture-identity markers
+     * (`users/testIdentityMarkers.ts`) — a non-fixture UID is refused at load.
+     * The production registry always takes precedence on resolution.
+     *
+     * Self-declaration (fail-closed): the block MUST set `testWorkspace: true` —
+     * without it the whole cast is IGNORED (zero principals, one loud log line,
+     * no production effect). Sanctioning a live-test cast is a deliberate opt-in,
+     * never an implicit side effect of the block being present.
+     */
+    testCast?: {
+      /**
+       * Required self-declaration. The cast loads NOTHING unless this is `true`
+       * (fail-closed to ignoring the block; the production registry is unaffected).
+       */
+      testWorkspace?: boolean;
+      /** The live-test workspace/team id (T…) the cast is scoped to. */
+      workspaceId?: string;
+      /** The cast seats (max 12). `slackUserId` must be a fixture-marker id. */
+      principals?: Array<{ slackUserId: string; name?: string; orgRole: string }>;
+    };
   };
   /**
    * Conservative ambient "should I speak?" gate (Slack considered/ambient mode,
