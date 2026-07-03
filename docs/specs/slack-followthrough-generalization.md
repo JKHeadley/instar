@@ -101,12 +101,34 @@ Every mechanism below is deployed on v1.3.737 and cited so a reviewer can verify
 
 (Alternatives — the in-process send-chokepoint classifier, and the `commitment-detection` job — are considered and rejected in §11.)
 
+### §4.1a The load-bearing invariant: ONE session ↔ ONE conversation (and the deliberate DM carve-out)
+
+**The whole mechanism rests on a session being 1:1 with the conversation it is registering for.** The Stop hook reads a **session-level** env var (`INSTAR_CONVERSATION_ID`, §4.4) once per turn — it has no turn-level knowledge of *which* conversation the just-finished turn belonged to. That is correct **only** when the session serves exactly one conversation.
+
+- **Slack channel/thread asks (the S7 case) satisfy the invariant.** A channel/thread ask spawns a **dedicated, isolated** session (`targetSession=undefined`, `src/commands/server.ts:7740`; the thread session "NEVER folds into the DM lifeline", `:7738`), whose spawn env carries *that* conversation's minted id + a bind token scoped to it. 1:1 holds; the hook's session-level env is unambiguous.
+- **Slack DMs fold into the shared `lifeline` session — they do NOT satisfy the invariant, and are OUT OF SCOPE for this spec.** A DM routes `isDM && !isThreadSession ? 'lifeline'` (`src/commands/server.ts:7740`) into the long-lived lifeline session, which also serves Telegram system traffic and is **reused** (its env is not re-applied on reuse). A DM-born promise firing the Stop hook would read the lifeline's *Telegram* env — registering the Slack promise on a **Telegram** topic and delivering the beacon into **Telegram** (positive-id legacy fail-open path, §4.3). That is a silent cross-channel **mis-delivery** — precisely the durable FD2 harm this spec must never cause.
+  - **The structural guard (§4.4 change 1):** `INSTAR_CONVERSATION_ID` is injected **only when the spawn is 1:1 with a freshly-minted conversation** — i.e. a dedicated channel/thread (or Telegram-topic) session. It is **NOT** set on a reused/lifeline session. On the lifeline the hook falls back to `INSTAR_TELEGRAM_TOPIC` (today's Telegram-only behavior, unchanged), so a Slack-DM promise stays **untracked** (the accepted recall miss of §6) instead of mis-delivered. Delivering DM follow-through durably needs a **turn-level** conversation id, which is a separate increment (noted §10-Q5).
+
 ### §4.2 Detection: two reuse lanes (deterministic, no LLM)
 
-The trigger registers when **EITHER** deterministic classifier fires on `last_assistant_message`:
+The trigger runs the two deterministic classifiers on `last_assistant_message` in a **strict precedence order — Lane A first, Lane B only on a Lane-A miss** (§4.2a). This precedence is not cosmetic: it is what prevents a **double registration** for a message that carries both a dev-verb and a time marker.
 
-- **Lane A — action claims:** `classifyActionClaim` (`src/core/action-claim.ts:115`), unchanged. Registers a `one-time-action` commitment keyed on the verb (existing behavior). Not beacon-armed unless the text also carries a time marker (existing `record()` auto-beacon).
-- **Lane B — time-boxed conversational promises (the S7 family):** `CommitmentTracker.detectTimePromise` (`src/monitoring/CommitmentTracker.ts:1072`) is **promoted from an inside-`record()` beacon-sniff to a first-class trigger predicate** on the observe route. When it fires, a `one-time-action` commitment is opened with `beaconEnabled:true` and the cadence/deadline it returns — so a "I'll do X in N minutes / by EOD / shortly" promise is durably tracked AND beacon-carried. This is the lane that closes S7 (a time-boxed promise the dev-ops verb set would miss).
+- **Lane A — action claims:** `classifyActionClaim` (`src/core/action-claim.ts:115`), unchanged. When it fires, register a `one-time-action` commitment keyed on the verb (existing behavior) **and RETURN** — do not run Lane B for this turn. Not explicitly beacon-armed; if the same text also carries a time marker, `record()`'s internal auto-beacon (`CommitmentTracker.ts:601-610`) arms it — so the dual-signal case ("I'll deploy in 10 min") registers **once**, verb-anchored, beacon-armed.
+- **Lane B — time-boxed conversational promises (the S7 family):** runs **only when Lane A did not fire.** `CommitmentTracker.detectTimePromise` (`src/monitoring/CommitmentTracker.ts:1072`) is **promoted from an inside-`record()` beacon-sniff to a first-class trigger predicate** on the observe route: the route calls it purely to (a) decide whether to proceed and (b) build the Lane-B `externalKey` (§5). When it fires, the route calls `record()` with the Lane-B `externalKey` and **NO beacon fields** — `record()`'s internal auto-arm (same `detectTimePromise`, hedge-fixed once below) then sets `beaconEnabled:true` + the conservative cadence/hard-deadline from the SAME function. This is the lane that closes S7 (a time-boxed promise the dev-ops verb set would miss).
+
+**Why the route must NOT pass `beaconEnabled:true` itself (the §4.2 fold — R1-C2).** `record()` auto-arms the beacon **only when `input.beaconEnabled === undefined`** (`CommitmentTracker.ts:601`). If Lane B passed `beaconEnabled:true` **without** a cadence, it would *suppress* the internal auto-arm and create a **cadence-less** beacon (a PromiseBeacon misbehavior). Passing **nothing** beacon-related is therefore both the max-reuse path AND the correct one: one detector, one source of truth, hedge-fixed in one place.
+
+### §4.2a Precedence & dedup — exact route control flow
+
+```
+classify Lane A (classifyActionClaim)
+  → fires  → record(actionclaim: key)        → RETURN (Lane B NOT run)
+  → misses → classify Lane B (detectTimePromise)
+               → fires  → record(timepromise: key, no beacon fields)
+               → misses → { observed:true, registered:false, reason:'no-claim' }
+```
+
+At most **one** commitment is created per turn. A restated promise dedups within its own lane (§5); the shared per-topic cap (§5) bounds the total across both lanes.
 
 **The S7 hedge fix (small, in-scope, reuses the function):** `detectTimePromise`'s numeric regex (`:1079-1081`) misses the hedge in "in **about** 5 minutes" because `about` breaks `in\s+(an?|\d+)`. A one-token widening — `in\s+(?:about\s+|around\s+|roughly\s+|~\s*)?(an?|\d+)\s*<unit>` — makes the exact S7 string register. This is a tested tweak to an existing pure function, not new machinery. (§10-Q1 carries whether to widen recall further.)
 
@@ -116,25 +138,34 @@ The trigger registers when **EITHER** deterministic classifier fires on `last_as
 
 **The gap.** `POST /action-claim/observe` calls `commitmentTracker.record()` **without** verifying a bind token (`src/server/routes.ts:22313-22367`). Today that is safe *only* because the hook feeds **positive** Telegram ids, which are under the §7 legacy fail-open policy. The moment the hook feeds a **negative minted Slack id**, §7 becomes **load-bearing**: an unauthenticated caller could open a durable commitment (with a nagging beacon) on a conversation it does not own.
 
-**The closure (reuse, don't rebuild).** For a **negative** `topicId`, `/action-claim/observe` MUST run the **same** bind-token verification `POST /commitments` runs (`src/server/routes.ts:22157-22172`), reusing `ctx.conversationBindAuth`:
+**The closure (reuse, don't rebuild).** The **same** verification block `POST /commitments` runs (`src/server/routes.ts:22137-22206`) is factored into one shared helper both routes call (a refactor, not a second implementation — a second copy is the drift the §7 golden test forbids), reusing `ctx.conversationBindAuth`:
 
 1. Require `X-Instar-Bind-Token` (from the hook, §4.4). Missing → typed `403 conversation-bind-not-authorized` + the existing deduped attention item; **fail-closed**.
 2. `bindAuth.verify(token)` the MAC. Invalid → same 403.
 3. Assert `numericTopicId ∈ payload.bootstrapConversationIds`. Foreign id → same 403 (the exact refusal `POST /commitments` raises).
 4. On success, pass `boundBy:"session:<payload.sessionName>"` into `record()` (identical to `POST /commitments`).
 
-For a **positive** `topicId`, behavior is **unchanged** (legacy fail-open + the R7-minor-2 straggler backstop), so the Telegram path is byte-identical. The verification block is **shared code** with `POST /commitments` (factor the §22129-22206 block into one helper both routes call — a refactor, not a second implementation; a second copy would be the kind of drift the §7 golden test forbids).
+**Ordering (R2 — the check gates the WRITE, not the observe).** The bind-verify runs **on the register path only** — after a lane has fired and immediately before `record()`. A **no-claim** observe returns `{registered:false, reason:'no-claim'}` **without** any bind check, so a probing / non-claim turn never trips the 403 attention item. Sequence: parse → classify (Lane A, else Lane B) → **on a lane hit:** bind-verify (per the id's sign) → cap → `record()`.
+
+**Keystone reconciliation (R2 — the action-claim observer is a ROUTE, not an in-process caller).** durable-conversation-identity's R4-minor-3 / minor-3 (`durable-conversation-identity.md:2536`, `:3359`) *lists* "the action-claim observer" among in-process server-self callers that carry `boundBy:"server:<component>"` and **bypass** the route token gate. That parenthetical is **inaccurate for the actual architecture**: the action-claim path is the HTTP route `/action-claim/observe`, driven by the Stop hook over HTTP — it has never been an in-process call. By the keystone's **own** load-bearing discriminator — *"anything arriving over the HTTP route needs a session token regardless of self-description; the discriminator is the code path, not the caller's self-description"* — the observe route takes the **session-token** gate (`boundBy:"session:<name>"`), exactly as §4.3 specifies. So this spec is the keystone's rule applied correctly, **not** a contradiction of it. **Cross-spec correction owed:** the keystone's minor-3 parenthetical should drop "action-claim observer" from its in-process examples (carried to the operator via §10 / the eli16). A builder must NOT wire the observe route to stamp `boundBy:"server:action-claim"` or skip the token.
+
+**Positive-id honesty (R2 — the hook now sends the token on BOTH paths).** Because the generalized hook sends `X-Instar-Bind-Token` whenever `INSTAR_BIND_TOKEN` is set (§4.4) — which is every post-migration session, Telegram included — a **positive** `topicId` observe is now **token-bearing** and therefore rides the **R6-minor-4 token-bearing arm** of the shared helper (`routes.ts:22173-22185`): the positive id is validated against the token's bootstrap set (it always matches, since `INSTAR_CONVERSATION_ID` and the token are minted over the identical set — §4.4/R1-C4), and `boundBy` is stamped. This is **not** "byte-identical" to today's un-gated observe — it is the same behavior `POST /commitments` already has for a token-bearing positive id, and it is a strict improvement (a durable stamp). A **token-LESS** positive observe (a legacy session spawned before the bind-token increment, no `INSTAR_BIND_TOKEN`) stays on the **legacy fail-open** arm + the R7-minor-2 straggler backstop — unchanged. Net: no Telegram regression; negative (Slack minted) ids are hard-gated fail-closed.
 
 **Net:** the Slack session self-registers under **its own** authority (its `INSTAR_BIND_TOKEN`, scoped to its minted id); no other principal can open a commitment on that conversation; in-process callers are unaffected.
 
 ### §4.4 The seam changes (exhaustive — this is the whole build)
 
-1. **Spawn env (`src/core/SessionManager.ts` ~:4271).** Inject a **channel-neutral** `INSTAR_CONVERSATION_ID=<bootstrapConversationIds[0]>` whenever a bootstrap conversation id is present (alongside the existing Slack env at `:4272-4281`). For Telegram this equals the positive topic id (consistent); for Slack it is the minted negative id. `INSTAR_BIND_TOKEN` is already injected (`:4243-4247`).
+1. **Spawn env (`src/core/SessionManager.ts` ~:4268).** Inject a **channel-neutral** `INSTAR_CONVERSATION_ID` **using the IDENTICAL resolution the bind token is minted over** (`bootstrapConversationIds[0] ?? (typeof telegramTopicId === 'number' ? telegramTopicId : undefined)`, mirroring `:4245-4246`) — so the posted id is **always** an element of the token's `bootstrapConversationIds` set (else the §4.3 gate would 403 its own session; R1-C4). For Telegram this equals the positive topic id; for a dedicated Slack channel/thread session it is the minted negative id. **1:1 GUARD (R1-C1):** inject it **only for a dedicated session that is 1:1 with the freshly-minted conversation** — do **NOT** inject it on a reused/lifeline session (`targetSession==='lifeline'`), so a Slack DM folded into the lifeline falls back to `INSTAR_TELEGRAM_TOPIC` and stays untracked rather than mis-delivered (§4.1a). `INSTAR_BIND_TOKEN` is already injected (`:4243-4247`).
 2. **The Stop hook (`PostUpdateMigrator.getActionClaimFollowthroughHook`, `src/core/PostUpdateMigrator.ts:11843-11903`).**
-   - Topic source: prefer `process.env.INSTAR_CONVERSATION_ID`, fall back to `process.env.INSTAR_TELEGRAM_TOPIC` (legacy sessions spawned before change 1). Accept a **negative** parsed id (drop the implicit "must be a Telegram positive" assumption; `Number.isFinite` already admits negatives).
+   - Topic source: prefer `process.env.INSTAR_CONVERSATION_ID`, fall back to `process.env.INSTAR_TELEGRAM_TOPIC` (legacy sessions spawned before change 1). Accept a **negative** parsed id (drop the implicit "must be a Telegram positive" assumption; `Number.isFinite` already admits negatives, verified `:11883`).
    - Bind token: read `process.env.INSTAR_BIND_TOKEN`; when set, send it as the `X-Instar-Bind-Token` header on the POST.
-   - Everything else (last_assistant_message, `messaging.actionClaim` gate, `always exit(0)`) unchanged. Regenerated on every migration (`instar/` hooks are always-overwritten — §8.5).
-3. **The route (`src/server/routes.ts` `/action-claim/observe`, :22313).** Add the §4.3 negative-id bind-token gate (shared helper) + the §4.2 Lane-B `detectTimePromise` predicate + Lane-B `externalKey` (§5) + Lane-B `beaconEnabled` pass-through. Both lanes ride the existing per-topic cap + expiry + never-500 contract.
+   - Everything else (last_assistant_message, the ≥20-char floor `:11881` (R1-C5, §6), `messaging.actionClaim.enabled` gate, `always exit(0)`) unchanged. Regenerated on every migration (`instar/` hooks are always-overwritten — §8.5).
+3. **The route (`src/server/routes.ts` `/action-claim/observe`, :22313).** Additions, all riding the existing never-500 contract:
+   - the §4.3 negative-id bind-token gate (shared helper);
+   - the **Slack dev-gate read (R1-C8):** for a **negative** `topicId`, resolve `messaging.actionClaim.slack` via `resolveDevAgentGate` (live-on-dev, dark-fleet) and honor its `dryRun` (§8.1); a positive id is unaffected;
+   - the §4.2a Lane-A-precedence control flow (Lane A first-and-return, else Lane B);
+   - the Lane-B `detectTimePromise` predicate + Lane-B `externalKey` (§5), calling `record()` with **no** beacon fields (§4.2 fold);
+   - the **per-topic cap widened to count BOTH lanes (R1-C3):** the open-commitment filter counts `externalKey` starting with `actionclaim:` **OR** `timepromise:` against ONE shared budget (`messaging.actionClaim.perTopicCap`, default 5) — today's filter counts only `actionclaim:` (`:22340-22342`), so Lane-B rows would escape the cap unless widened.
 
 ### §4.5 Which process owns registration — summary
 
@@ -146,6 +177,8 @@ The **responding Slack session** owns registration, via **its own post-turn Stop
 
 - **Lane A (action claims):** unchanged — `externalKey='actionclaim:'+sha256(topicId|verb).slice(0,16)` (`src/server/routes.ts:22336`). A restated action claim across turns updates ONE commitment (`record()` short-circuit, `CommitmentTracker.ts:562-565`).
 - **Lane B (time-boxed promises):** `externalKey='timepromise:'+sha256(topicId|normalizedPromiseText).slice(0,16)`, where `normalizedPromiseText` = lowercased, whitespace-collapsed, time-token-preserving slice of `last_assistant_message`. An **exact restatement** dedups to ONE commitment; a **reworded** restatement opens a new one (weaker than the verb anchor). The **per-topic cap (default 5, `messaging.actionClaim.perTopicCap`)** bounds the blast radius of reworded restatements; auto-expiry (6 h) sweeps stale rows. (§10-Q2 carries whether Lane B needs a stronger cross-restatement anchor.)
+- **The cap is ONE shared budget across both lanes (R1-C3).** The route's open-commitment count filter matches `externalKey` starting with `actionclaim:` **OR** `timepromise:` (the pre-existing filter matched only `actionclaim:`, `routes.ts:22340-22342`, so a Lane-B row would have escaped the cap). A topic's total durable action/promise surface is therefore bounded at `perTopicCap` regardless of lane mix — the Bounded-Notification guarantee §5's "bounds the blast radius" line depends on.
+- **No double-count-then-double-create:** because Lane A returns before Lane B (§4.2a), a single turn contributes at most one row, so the cap is never spuriously consumed twice for one utterance.
 - **Cross-machine idempotency** is inherited: a commitment is created only on the owning machine (§7), and the minted id + `boundTuple` are that machine's; a peer never opens a competing row (write-admission refuses a minted-id write on a non-owner, and the bind token verifies only against the owner's secret).
 
 ---
@@ -163,7 +196,7 @@ The trigger is **signal-only**: it runs **after** the Slack reply has already be
 **"Never lose the promise silently" — the two failure classes and where each surfaces:**
 
 1. **Refused registration** (bind-token invalid, capacity, `conversation-recording-disabled`, or `followThrough` dark/dry): **never silent.** The §7 refusal raises the deduped `conversation-bind-not-authorized` attention item (`src/server/routes.ts:22144-22156`); a minted-id bind while delivery is dark raises the §6.1 dark-window-honesty item (`src/server/routes.ts:22225-22239`). Both route through the existing attention surface (Telegram lifeline / `slack-attention-channel` mirror), never the dark minted-id funnel.
-2. **Missed classification** (neither lane fired): **silent by design** — this is the accepted recall trade above. It is bounded by the two detectors' coverage and improved only by §10-Q1's recall knob.
+2. **Missed classification** (neither lane fired, OR the hook's ≥20-char floor dropped a terse promise like "back in 5" before the route (`PostUpdateMigrator.ts:11881`), OR the promise was made in a lifeline-folded Slack DM (§4.1a)): **silent by design** — this is the accepted recall trade above. It is bounded by the two detectors' coverage + the length floor + the 1:1-session invariant, and improved only by §10-Q1's recall knob / §10-Q5's turn-level DM id.
 
 **We NEVER fail toward:** a duplicate commitment, a spurious beacon, or a commitment on a conversation the caller does not own (§4.3 fail-closed).
 
@@ -173,6 +206,7 @@ The trigger is **signal-only**: it runs **after** the Slack reply has already be
 
 The **Mini** fronts Slack (serving-lease holder); Slack inbound + `mintForInbound` run on the Mini (`src/commands/server.ts:7575`), so **the Mini owns the minted conversation id and its registry row**. Registration MUST happen there. This is enforced **by construction**, not convention:
 
+0. **Precondition — the 1:1-session invariant (§4.1a).** The reasoning below holds because a Slack channel/thread ask spawns a **dedicated** session bound to exactly this conversation. A DM folded into the shared lifeline is explicitly excluded (§4.1a) precisely so this "the session IS the conversation" chain stays sound.
 1. The Slack conversational session is spawned **on the Mini** (`spawnInteractiveSession`, `src/commands/server.ts:7742`), so its Stop hook posts to the **Mini's** `localhost` server.
 2. The session's `INSTAR_BIND_TOKEN` is minted by the **Mini's** `conversationBindAuth` using the **Mini's** `bindTokenSecret` (`src/commands/server.ts:5278-5279`), so it verifies **only** on the Mini. A hook that somehow posted to a peer would be `403`-refused (different secret) — fail-closed, not a wrong-machine write.
 3. `record()`'s `conversationBinder.bind()` resolves the minted id against the **local** registry (`CommitmentTracker.ts:580-587`); a peer that never minted the id would throw `conversation-bind-unresolvable` → `409`, not a silent divergent row.
@@ -186,8 +220,9 @@ The **Mini** fronts Slack (serving-lease holder); Slack inbound + `mintForInboun
 
 ### §8.1 Graduated rollout (dev-gated dark → dev live → operator fleet flip)
 
-- **Trigger gate:** a **new** dryRun-first, dev-gated flag `messaging.actionClaim.slack` = `{ enabled?: omitted, dryRun: true }`, registered in `DEV_GATED_FEATURES` (`src/core/devGatedFeatures.ts`), so `resolveDevAgentGate` flips it **live-on-dev, dark-on-fleet** (the same pattern as `conversationIdentity.followThrough.enabled` at `:168`). `enabled` is **OMITTED** — never materialized as a literal `false` (the #1001 trap).
-- **dryRun semantics:** while `dryRun:true`, the observe route runs the full classify + bind-verify + would-register decision and **audits** it (a `would-register` line + the typed bind verdict), but performs **no** `record()`. A deliberate `dryRun:false` on dev enables real registration for the live proof (§9.4).
+- **Trigger gate:** a **new** dryRun-first, dev-gated flag `messaging.actionClaim.slack` = `{ enabled?: omitted, dryRun: true }`, registered in `DEV_GATED_FEATURES` (`src/core/devGatedFeatures.ts`), so `resolveDevAgentGate` flips it **live-on-dev, dark-on-fleet** (the same pattern as `conversationIdentity.followThrough.enabled` at `:168`). `enabled` is **OMITTED** — never materialized as a literal `false` (the #1001 trap). The **observe route reads this gate for a NEGATIVE topicId** (§4.4 change 3): dark → the Slack (negative-id) lane is a strict no-op; dryRun → would-register audit only.
+- **⚠ The master-`enabled` precondition (R1-C8 — do not skip).** The `messaging.actionClaim.slack` sub-flag governs the route's Slack lane, but the **Stop hook itself exits before any POST unless `messaging.actionClaim.enabled` is true** (`PostUpdateMigrator.ts:11873`, `:11876`). So the Slack lane cannot go "live-on-dev" via the sub-flag alone — the dev soak REQUIRES setting **`messaging.actionClaim.enabled: true` on the dev agent** (the whole sentinel's master gate). Consequence to accept deliberately: enabling the master on dev also activates **Lane A action-claims for Telegram** on dev (existing behavior) and — via the shared route — **Lane B time-promises for Telegram** on dev (§8.4). This is the intended one-detector-set posture; it is called out so the operator does not read the sub-flag as independently sufficient.
+- **dryRun semantics + audit sink (R1-C6):** while the resolved `dryRun` holds, the observe route runs the full classify + Lane-precedence + bind-verify + would-register decision, appends **one audit line to `logs/action-claim-observe.jsonl`** (`{ts, topicId, lane, verb|promiseHash, bindVerdict, wouldRegister:true, dryRun:true}` — the append is **best-effort/try-catch**, "audit is observability", so a log-write failure can never break the route's never-500 contract), and returns `{observed:true, registered:false, dryRun:true, wouldRegister:true, ...}` — but performs **no** `record()`. A deliberate `dryRun:false` on dev enables real registration for the live proof (§9.4).
 - **Delivery gate:** unchanged — follow-through delivery rides `conversationIdentity.followThrough` (already live-on-dev). Registration can green (dev) before or after delivery; the §6.1 dark-window-honesty item covers the "registered but delivery dark" window.
 - **Fleet flip:** the operator flips `messaging.actionClaim.slack.dryRun:false` (and, when the fleet-wide action-claim rollout lands, `messaging.actionClaim.enabled`) after a measured clean dev soak. Never automatic.
 
@@ -238,12 +273,14 @@ Adding the Lane-B `detectTimePromise` predicate to the **shared** observe route 
 
 ### §9.2 Tier 2 — integration (`tests/integration/`, full HTTP pipeline)
 
-- `POST /action-claim/observe` with a **negative** topicId + a valid `X-Instar-Bind-Token` + a time-promise message → `201`-shaped `{registered:true, beaconEnabled:true}`, and `GET /commitments` shows the row bound to the minted id with the denormalized `boundTuple`.
+- `POST /action-claim/observe` with a **negative** topicId + a valid `X-Instar-Bind-Token` + a time-promise message → **200** `{observed:true, registered:true, commitmentId, externalKey}` (the observe route's real shape — **not** the `201` of `POST /commitments`), and `GET /commitments` shows the row bound to the minted id with the denormalized `boundTuple` and `beaconEnabled:true` (armed by `record()`'s internal auto-detect, not a route-passed flag — §4.2).
 - Same with **no** bind token → `403 conversation-bind-not-authorized`, no row, and the deduped attention item present.
 - Same with a **foreign** minted id (not in the token's bootstrap set) → `403`, no row.
-- Idempotency: two identical observes → ONE row; per-topic cap enforced at 5.
-- dryRun: `messaging.actionClaim.slack.dryRun:true` → would-register audit line, **no** row.
-- Feature-off (`messaging.actionClaim.enabled:false`) → `{observed:false, reason:'feature-disabled'}`, no row (503-equivalent honesty).
+- **Lane precedence (R1-C9):** a message with BOTH a dev-verb AND a time marker ("I'll deploy in 10 min") → exactly **ONE** row, `externalKey` starting `actionclaim:`, beacon-armed; assert NO `timepromise:` row was also created.
+- **Shared cap (R1-C3):** a mix of `actionclaim:` and `timepromise:` rows on one topic is bounded at `perTopicCap` (default 5) — the cap counts both prefixes.
+- Idempotency: two identical observes (same lane) → ONE row.
+- dryRun: negative topicId with `messaging.actionClaim.slack` resolving `dryRun:true` → a `logs/action-claim-observe.jsonl` would-register line + `{registered:false, dryRun:true, wouldRegister:true}`, **no** row.
+- Feature-off (`messaging.actionClaim.enabled:false`) → `{observed:false, registered:false, reason:'feature-disabled'}`, no row.
 
 ### §9.3 Tier 3 — E2E lifecycle (`tests/e2e/`)
 
@@ -266,6 +303,8 @@ Per the **Live-User-Channel Proof Before Done** standard, a user-role session dr
 - **Q1 — Detection recall knob.** Lanes A+B (+ the hedge fix) close the S7 case and the dev-ops/time-boxed families. Do we stop there (highest precision), or widen Lane B's recall to catch bare-verb conversational promises ("I'll send you the summary", "I'll wire that up") that carry **no** time marker? Widening buys recall at the cost of false nagging-beacons (the FD2 harm) and is the riskier, LLM-tempting direction. **Recommendation: ship A+B+hedge first; treat further recall as a separately-soaked follow-up.**
 - **Q2 — Lane-B dedup strength.** Lane B keys on normalized promise text, so a **reworded** restatement of the same promise opens a second (cap-bounded, expiring) commitment. Is the per-topic cap + 6 h expiry an acceptable bound, or does Lane B need a coarser per-topic-time-window anchor (fewer duplicates, but risks collapsing two genuinely-distinct promises)? **Recommendation: ship the content-hash key + cap; revisit only if dev soak shows duplicate churn.**
 - **Q3 — Telegram time-promise registration (§8.4).** The shared route means Lane B also starts registering Telegram time-boxed promises when the fleet flag graduates. Intended improvement, or should Lane B be Slack-scoped until a separate Telegram soak? **Recommendation: keep it shared (one classifier set), rely on the shared dark gate + dev soak.**
+- **Q6 — Keystone doc-correction (cross-spec).** durable-conversation-identity's R4-minor-3 / minor-3 parenthetical mislabels "the action-claim observer" as an in-process server-self caller (§4.3 reconciliation). The action-claim path is the HTTP route + Stop hook, so it takes the session-token gate per the keystone's own discriminator. **Recommendation: land a one-line keystone edit dropping "action-claim observer" from that in-process example when the build PR touches the shared bind-verify helper — no design decision, just a doc-truth fix so the two specs never read as contradictory.**
+- **Q5 — Turn-level conversation id for shared (lifeline) sessions.** §4.1a scopes this spec to dedicated channel/thread sessions and deliberately leaves Slack-DM (lifeline-folded) promises untracked, because the Stop hook reads a session-level env id and a shared session serves many conversations across turns. Closing the DM gap needs a **turn-level** conversation id — e.g. the hook reading the just-finished turn's conversation from the injected message metadata (`message.metadata.conversationId`, already minted at `server.ts:7575`) rather than a session env var, or the send-chokepoint backstop of §11-A. **Recommendation: separate increment; do NOT widen 2.3 to chase it — the guard (don't set `INSTAR_CONVERSATION_ID` on the lifeline) makes the DM case a safe miss, not a mis-delivery.**
 - **Q4 — Should a server-side backstop exist?** The Stop hook can be absent on a session spawned before the migration, or crash. Do we want a low-frequency `commitment-detection`-style backstop that scans Slack conversation transcripts for missed promises (recall insurance), accepting its cadence lag and cost? **Recommendation: NO for Phase 2.3 (keep minimal); the always-overwrite hook migration (§8.5) closes the stale-hook window, and recall-insurance is Q1's territory.**
 
 ---
@@ -281,13 +320,13 @@ Per the **Live-User-Channel Proof Before Done** standard, a user-role session dr
 
 ## §12. Build sequencing (for the /instar-dev increment that follows convergence)
 
-1. `detectTimePromise` hedge fix + unit tests (isolated, no wiring).
-2. Factor the `POST /commitments` §7 bind-verify block (`routes.ts:22129-22206`) into a shared helper; prove `POST /commitments` unchanged.
-3. `/action-claim/observe`: add the negative-id bind gate (shared helper) + Lane-B predicate + Lane-B `externalKey` + dryRun audit; integration tests.
-4. `INSTAR_CONVERSATION_ID` spawn env (`SessionManager.ts`).
+1. `detectTimePromise` hedge fix + unit tests (isolated, no wiring). One fix covers both the route predicate AND `record()`'s internal auto-arm (same function).
+2. Factor the `POST /commitments` §7 bind-verify block (`routes.ts:22129-22206`) into a shared helper; prove `POST /commitments` unchanged (the §7 golden test).
+3. `/action-claim/observe`: add the negative-id bind gate (shared helper) + the negative-id `messaging.actionClaim.slack` dev-gate/dryRun read + the §4.2a Lane-A-precedence control flow + Lane-B predicate + Lane-B `externalKey` + the **cap filter widened to both prefixes** (R1-C3) + the `logs/action-claim-observe.jsonl` dryRun audit sink (R1-C6); integration tests incl. the lane-precedence single-row assertion (R1-C9).
+4. `INSTAR_CONVERSATION_ID` spawn env (`SessionManager.ts`) — the bind-token-identical resolution + the **1:1 guard** (not on `targetSession==='lifeline'`; R1-C1/C4).
 5. Generalize the Stop hook body (`getActionClaimFollowthroughHook`) — topic-source fallback + bind-token header; hook regression (no-bare-require, always exit 0).
 6. `messaging.actionClaim.slack` dev-gate registration + `migrateConfig` existence-check + CLAUDE.md template paragraph.
-7. E2E aliveness test.
-8. Live-proof S7 round-trip on dev (§9.4); signed matrix.
+7. E2E aliveness test (incl. the negative-lifeline-session assertion: a lifeline session does NOT carry `INSTAR_CONVERSATION_ID`).
+8. Live-proof S7 round-trip on dev (§9.4; requires `messaging.actionClaim.enabled:true` on dev per §8.1); signed matrix.
 
 Each step is independently testable; steps 1–3 are shippable behind the dark gate before the Slack env/hook seam exists.

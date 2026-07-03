@@ -21,6 +21,8 @@ That's it. No new storage, no new delivery path, no new AI in the loop. It reuse
 - **It won't double-file.** Say the same promise twice and it updates one reminder, not two. There's a cap of 5 per conversation and they auto-expire.
 - **It errs on the side of staying quiet.** A *false* reminder would mean I ping your Slack thread for no reason — annoying — so when in doubt, it files nothing. The cost is that a very unusual phrasing might slip through untracked (same as today), which is the safer miss.
 - **It writes down on the right machine.** The machine that fronts Slack (the Mini) is the one that files the reminder, enforced by the signed token — a different machine literally can't file it.
+- **One promise files one reminder — never two.** If a message is both a tech action AND time-boxed ("I'll deploy in 10 min"), it files exactly one reminder, not one per category.
+- **Slack DMs (private messages to me) aren't covered yet — on purpose.** A DM is handled by a shared session that also does other work, so it can't safely tell which conversation a promise belonged to. Rather than risk filing it against the wrong conversation (or worse, replying in the wrong place), a DM promise simply stays untracked for now — the same as today — until a follow-up adds per-message tracking. The covered case (and the real one that broke on 2026-07-03) is a promise in a Slack channel/thread, which gets its own dedicated session.
 - **Nothing goes silent.** If filing is *refused* (bad token, or the delivery half is still turned off), you get a visible note about it — it's never dropped without a trace.
 
 ## Rollout & the off switch
