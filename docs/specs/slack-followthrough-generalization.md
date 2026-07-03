@@ -2,7 +2,9 @@
 title: Slack Follow-Through Generalization (Phase 2.3)
 status: "converged (0C/0M) — internal multi-lens + gemini-2.5-pro + codex-cli/gpt all clean (2026-07-03); awaits operator approval before build"
 review-convergence: "2026-07-03"
-review-convergence-detail: "spec-converge ceremony over the DRAFT. Internal multi-lens (adversarial/security/integration-code-grounded/decision-completeness/keystone-drift) rounds 1-2 folded 2C+7M+4m; two external cross-model doors: gemini-2.5-pro (rounds 2-4: 1C → 2M → CLEAN) and codex-cli/gpt (0.137.0, one final pass: CLEAN — no critical or major). Load-bearing catch: the 1:1-session/DM cross-channel mis-delivery seam (gemini refined the internal fix — the hook now keys ONLY on INSTAR_CONVERSATION_ID, no Telegram fallback). Every fold re-walked against v1.3.737 code. approved: NOT set — build awaits the operator's go."
+review-convergence-detail: "spec-converge ceremony over the DRAFT. Internal multi-lens (adversarial/security/integration-code-grounded/decision-completeness/keystone-drift) rounds 1-2 folded 2C+7M+4m; two external cross-model doors: gemini-2.5-pro (rounds 2-4: 1C → 2M → CLEAN) and codex-cli/gpt (0.137.0, one final pass: CLEAN — no critical or major). Load-bearing catch: the 1:1-session/DM cross-channel mis-delivery seam (gemini refined the internal fix — the hook now keys ONLY on INSTAR_CONVERSATION_ID, no Telegram fallback). Every fold re-walked against v1.3.737 code."
+approved: true
+approval-basis: "standing Session-A/B run operator preapproval — Justin, topic 29836, 2026-07-03 14:49 ('yes, please proceed with opus 4.8'), which explicitly covers spec approvals + in-scope reversible decisions. This spec is task 2 (the named critical path) and ships dev-gated DARK (reversible), squarely inside that envelope. Applying an already-granted go, not a self-grant."
 eli16-overview: "slack-followthrough-generalization.eli16.md"
 parent-principle: Structure > Willpower
 related-principles:
