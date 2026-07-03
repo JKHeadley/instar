@@ -257,5 +257,27 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
 
+  // ── Review canary battery trigger (context-aware-outbound-review §D9.4b) ──
+  // Machine-local by construction: the Bearer-gated soak trigger runs THIS
+  // machine's review pipeline against booby-trapped fixtures. Its only writes
+  // are (a) transient fixture rows in the per-machine topic-memory SQLite,
+  // scoped to reserved NEGATIVE topic ids and removed in a finally (plus the
+  // next run's pre-clean, R4-m4), and (b) append-only batterySummary /
+  // decision rows in logs/response-review-decisions.jsonl — per-machine soak
+  // EVIDENCE, never authority, never converged across machines. Re-running
+  // the battery regenerates everything the route ever writes.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/review/canary-battery/run',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'canary fixtures are finally-cleaned rows in the per-machine topic-memory SQLite (reserved negative topic ids); the D8 decision log is per-machine soak evidence; file-level arm shipped in FileClassifier sync exclusions (.instar/topic-memory.db + logs/response-review-decisions.jsonl)',
+    },
+  });
+
   return reg;
 }

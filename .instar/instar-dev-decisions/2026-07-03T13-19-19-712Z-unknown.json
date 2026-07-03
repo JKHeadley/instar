@@ -1,0 +1,21 @@
+{
+  "ts": "2026-07-03T13:19:19.712Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 32,
+  "causalAutopsy": {
+    "origin": "environment-shift",
+    "relatedPrs": [
+      1341
+    ],
+    "notes": "PR #1341 (standby-write reconciliation) landed on main after this branch's commit ceremony, adding the write-domain conformance ratchet that catches the new POST /review/canary-battery/run route; the template-agent-id-header standard likewise post-dates the template. Both are conformance to guards that shifted under the branch, not defects in the built feature."
+  },
+  "verdict": "pass"
+}

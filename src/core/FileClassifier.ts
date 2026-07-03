@@ -160,6 +160,13 @@ const DEFAULT_GENERATED_PATTERNS = [
   // `git-sync-excluded` as its file-level arm.
   '.instar/state/attention-items.json',
   '.instar/state/evolution/',
+  // Context-aware outbound review (§D9.4b) — the review-canary-battery route's
+  // write targets, classified MACHINE-LOCAL with an ephemeral-rebuildable
+  // story: the per-machine topic-memory SQLite (canary fixtures transit its
+  // reserved negative topic ids; a live binary db must never git-sync) and the
+  // D8 decision log (per-machine soak evidence, never converged).
+  '.instar/topic-memory.db',
+  'logs/response-review-decisions.jsonl',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
