@@ -6,7 +6,7 @@ When our test suite runs, it doesn't run as one process — it spins up a worker
 
 ## The fix in one paragraph
 
-A machine-wide "test lane" counter: before a full test suite starts, it takes a ticket. Only one full suite runs at a time per machine (the operator's explicit rule); everyone else waits their turn, up to a time limit, then stops with a clear message that says "the machine was busy — this is NOT a test failure" and names exactly which process holds the lane. Small, targeted test runs (a developer iterating on one file) don't need a ticket at all, so day-to-day work isn't slowed — but they're capped to a small worker pool so that exemption can't be abused to smuggle a whole suite past the queue.
+A machine-wide "test lane" counter: before a full test suite starts, it takes a ticket. Only one full suite runs at a time per machine (the operator's explicit rule); everyone else waits their turn, up to a time limit, then stops with a clear message that says "the machine was busy — this is NOT a test failure" and names exactly which process holds the lane. Small, targeted test runs (a developer iterating on one file) get their own second, roomier lane — six tickets instead of one, each run capped to a small worker pool — so day-to-day iterating never waits behind a full suite. The final review round made the two lanes deliberately identical in mechanism (the earlier draft gave small runs a free pass plus a separate tally, and every review round found a new hole in that special-casing; one shared, proven mechanism closed them all — including the trick of splitting a big suite into many "small" runs to dodge the queue: the second lane's tickets simply run out).
 
 ## The design choice everything hangs on
 
@@ -23,7 +23,7 @@ A test suite that hangs forever would jam the lane forever, so after a generous 
 
 ## What could still hurt, honestly
 
-Full suites serialize: on a busy multi-agent machine, someone's push waits for someone else's suite. That's the deliberate price of the operator's rule, and the log makes the cost measurable so the cap can be raised with evidence. Older work branches that predate the change don't carry the ticket-taking code until they rebase — the bound covers the machine progressively, not instantly. And the whole thing is per-machine, per-user by design (a test run burns THIS machine's cores; there's nothing to coordinate across machines).
+Full suites serialize: on a busy multi-agent machine, someone's push waits for someone else's suite. That's the deliberate price of the operator's rule, and the log makes the cost measurable so the cap can be raised with evidence. And because the system deliberately errs toward letting runs through when its own bookkeeping is broken, it's honestly a *best-effort* bound — in a rare stuck-lock situation a few extra runs can slip through for a short window (the safe direction), and those windows are logged and visible rather than silent. Older work branches that predate the change don't carry the ticket-taking code until they rebase — the bound covers the machine progressively, not instantly. And the whole thing is per-machine, per-user by design (a test run burns THIS machine's cores; there's nothing to coordinate across machines).
 
 ## Escape hatches
 
