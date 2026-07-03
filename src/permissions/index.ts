@@ -16,3 +16,4 @@ export * from './MandateBackedGrantStore.js';
 export * from './SlackPrincipalResolver.js';
 export * from './SlackPermissionObserver.js';
 export * from './SlackUserRegistry.js';
+export * from './TestWorkspacePrincipalSource.js';

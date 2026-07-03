@@ -7141,6 +7141,20 @@ export async function startServer(options: StartOptions): Promise<void> {
                 bucketMs?: number;
               };
             };
+            /**
+             * Sanctioned live-test-workspace scenario cast (roadmap 0.3 entry
+             * condition). Resolves cast principals for the permission gate ONLY —
+             * scoped to the adapter's VERIFIED connected team id, fixture-marker
+             * identities only, production registry always wins. The cast lives in
+             * config (same lifecycle as the workspace tokens) so a users.json
+             * rebuild can never silently drop principal resolution again
+             * (the 2026-07-01 lesson). See SLACK-ORG-INTEGRATION-SPEC.md §6.2.1.
+             */
+            testCast?: {
+              testWorkspace?: boolean;
+              workspaceId?: string;
+              principals?: Array<{ slackUserId: string; name?: string; orgRole: string }>;
+            };
           } | undefined;
           if (pgCfg && (pgCfg.observeOnly || pgCfg.enforce)) {
             const {
@@ -7155,6 +7169,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               RelationshipBehaviorStore,
               RelationshipAnomalyScorer,
               MandateBackedGrantStore,
+              TestWorkspacePrincipalSource,
+              ChainedUserLookup,
             } = await import('../permissions/index.js');
             // Own UserManager instance for verified-principal resolution (the
             // Telegram-block userManager is out of scope here). Reads users.json.
@@ -7248,10 +7264,51 @@ export async function startServer(options: StartOptions): Promise<void> {
                 `[slack] relationship-aware anomaly scorer attached (observe-only baseline; LLM style check ${raCfg.useLlmStyleCheck ? 'ON' : 'off'}; poisoning-resistance: min-age ${pr.minBaselineAgeDays ?? 7}d, rate-cap ${pr.maxObservationsPerWindow ?? 50}/window, decay ${pr.decayHalfLifeWindows ?? 30}w)`,
               );
             }
+            // ── Principal resolution: production registry first; optionally chained
+            // with the sanctioned test-cast source (roadmap 0.3 entry condition).
+            // The cast source is workspace-scoped (VERIFIED connected team id from
+            // auth.test — fail-closed until verified), fixture-marker-only (the
+            // partition invariant: the production registry refuses fixtures, this
+            // source accepts ONLY fixtures — one identity space, two disjoint homes),
+            // and read-only (it never touches users.json; the fixture-identity
+            // guard's production invariant is fully intact).
+            const productionLookup: import('../permissions/index.js').UserLookup = {
+              resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
+            };
+            let principalLookup: import('../permissions/index.js').UserLookup = productionLookup;
+            const tcCfg = pgCfg.testCast;
+            if (tcCfg && typeof tcCfg.workspaceId === 'string' && tcCfg.workspaceId.trim()
+                && Array.isArray(tcCfg.principals) && tcCfg.principals.length > 0) {
+              try {
+                const adapterForScope = slackAdapter;
+                const testCastSource = new TestWorkspacePrincipalSource({
+                  workspaceId: tcCfg.workspaceId,
+                  testWorkspace: tcCfg.testWorkspace === true,
+                  principals: tcCfg.principals,
+                  getVerifiedWorkspaceId: () => adapterForScope?.getConnectedTeamId() ?? null,
+                });
+                if (testCastSource.disabled) {
+                  // Fail-closed: the source already logged the single loud line
+                  // (missing "testWorkspace: true"). Stay production-registry-only —
+                  // do NOT attach an inert chain, so behavior is byte-identical to
+                  // having no cast configured.
+                } else {
+                  for (const r of testCastSource.rejected) {
+                    console.warn(`[slack] test-cast principal REFUSED (${r.reason}): "${r.slackUserId}" — the cast admits fixture-marker identities only (see users/testIdentityMarkers.ts)`);
+                  }
+                  principalLookup = new ChainedUserLookup([productionLookup, testCastSource]);
+                  console.log(
+                    `[slack] permission-gate test-cast principal source attached: workspace ${tcCfg.workspaceId}, ` +
+                    `${testCastSource.size} seat(s) admitted, ${testCastSource.rejected.length} refused ` +
+                    `(production registry takes precedence; cast inert until the connected team id is verified)`,
+                  );
+                }
+              } catch (tce) {
+                console.warn('[slack] test-cast principal source wiring skipped:', (tce as Error).message);
+              }
+            }
             const observer = new SlackPermissionObserver({
-              resolver: new SlackPrincipalResolver({
-                resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
-              }),
+              resolver: new SlackPrincipalResolver(principalLookup),
               gate: new SlackPermissionGate({
                 rolePolicy: new RolePolicy(),
                 classifier: intentClassifier,
