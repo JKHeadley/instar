@@ -6,7 +6,7 @@ status: "draft"
 parent-principle: "Guards Degrade, Not Outage — a safety/delivery layer on the user-facing path may never convert its own infra failure into the user's silence (the constitution's named OUTBOUND extension of The Operator Channel Is Sacred; re-anchored round 2 per the conformance gate — the Operator-Channel-Sacred rule text governs the INBOUND consume gate)"
 sibling-principles: "The Operator Channel Is Sacred (sibling context — the inbound twin of this spec's fail-toward-delivery posture); Structure > Willpower (a durable queue, not a session remembering to retry); A Refusal Stays a Refusal / P18 (every drop is a counter + ledger row, never silent); Bounded Notification Surface (P17 — one deduped escalation per failure episode); Bounded Blast Radius (P19 — breaker on every loop, PER-CHANNEL suspension state §2.3); Migration Parity (additive SQLite columns, never destructive); Verify the State, Not Its Symbol (delivery state machine over 'the curl said ok'); Signal vs Authority (the sentinel never overrides the tone gate); Near-Silent Notifications (§2.3 — recovery chatter decision stated, unreachable-conversation escalations out-of-band)"
 constitution: "The Operator Channel Is Sacred — Critical-Path Gates Fail Toward Delivery (docs/STANDARDS-REGISTRY.md); Guards Degrade, Not Outage; Bounded Notification Surface (P17); A Refusal Stays a Refusal (P18); Bounded Blast Radius (P19); Migration Parity Standard; Testing Integrity Standard"
-lessons-engaged: "2026-06-05 restore-purge silent deletion (five queued outbound messages eaten at boot — delivery-failure-sentinel.ts:83-90; every purge here is LOUD, channel-tagged, AND channel-SCOPED to enabled lanes — round-1 C2 caught the same lesson recurring one level up) · 2026-06-06 duplicate-message fix (byte-identical status 13.5 min apart — OutboundContentDedup.ts:5-12; the same dedup now covers Slack) · 2026-06-05 restart-cascade never-drains (immediate first drain on start — delivery-failure-sentinel.ts:258-271; inherited by the Slack lane unchanged) · outbound-gate-tiered-fail-direction (fail direction argued per failure point, §3) · Maturation Path — Every Feature Ships Enabled on Developer Agents (§6 rollout ladder)"
+lessons-engaged: "2026-06-05 restore-purge silent deletion (five queued outbound messages eaten at boot — delivery-failure-sentinel.ts:83-90; every purge here is LOUD, channel-tagged, AND scoped to live lanes + unheld rows — round-1 C2 caught the lesson recurring one level up; round-2 C1/C2 caught it a THIRD time inside the folds (stampede consumption + hold-arithmetic purge), driving the §2.2a durable HOLD disposition) · 2026-06-06 duplicate-message fix (byte-identical status 13.5 min apart — OutboundContentDedup.ts:5-12; the same dedup now covers Slack) · 2026-06-05 restart-cascade never-drains (immediate first drain on start — delivery-failure-sentinel.ts:258-271; inherited by the Slack lane unchanged) · outbound-gate-tiered-fail-direction (fail direction argued per failure point, §3) · Maturation Path — Every Feature Ships Enabled on Developer Agents (§6 rollout ladder)"
 earned-from: "docs/audits/slack-ai-employee-audit-2026-07.md §3.1 'Outbound robustness (queue/retry/dedup/idempotency/formatter): MISSING (tone gate only; one internal route bypasses even that)'; live incident record in telegram-delivery-robustness.md (the Telegram lane exists because these exact losses happened there first)"
 roadmap: "docs/roadmaps/instar-two-goal-roadmap-2026-07.md Phase 2.1 — live proof: 'Kill network mid-reply; message arrives exactly once with a sentinel audit row'"
 parent-spec: "docs/specs/telegram-delivery-robustness.md (Layers 1-3 — this spec generalizes them); docs/roadmaps/instar-two-goal-roadmap-2026-07.md (Phase 2, depends on Phase 1)"
@@ -31,13 +31,21 @@ by a named test in §7 and each failure of one is a bug, not a tuning issue.
    server (24h DURABLE id-ledger + hot in-memory LRU, §2.4 — upgraded from the
    Telegram lane's in-memory-only LRU, whose restart wipe left a derivable
    double-post window; round-1 M4), and AT LEAST once via the durable queue +
-   sentinel redrive — converging to exactly-once, with the one honestly-named
-   exception inherited from the Telegram lane: an **ambiguous** outcome (HTTP
-   408 / response-lost after the Slack API may have accepted the post)
-   finalizes as `delivered-ambiguous` and is NEVER blindly re-posted
-   (`recovery-policy.ts` `finalize-ambiguous`; `slack-reply.sh:108-117` already
-   prints the AMBIGUOUS guidance). Content dedup (§2.5) is the second net
-   under that window.
+   sentinel redrive — converging to exactly-once, with TWO honestly-named
+   residuals: (a) an **ambiguous** outcome (HTTP 408 / response-lost after the
+   Slack API may have accepted the post) finalizes as `delivered-ambiguous`
+   and is NEVER blindly re-posted — on the script lane via
+   `recovery-policy.ts` `finalize-ambiguous` (`slack-reply.sh:108-117` already
+   prints the AMBIGUOUS guidance), and on the FUNNEL lane via the §2.3
+   ambiguous typed result mapped to the same terminal (round-2 M1 — the
+   funnel must surface ambiguity distinctly; a retried ambiguous send is only
+   accidentally safe); (b) the **crash-between-accept-and-record window**
+   (round-2 M1): if the process dies after Slack accepts a post but before
+   the durable id-ledger records it, ONE duplicate of that message is
+   derivable at the next redrive — bounded, visible, the same accepted
+   residual class as the keystone's R8-M1 ("at most one duplicate per
+   crash-during-send"); content dedup (§2.5) is the second net under both
+   windows.
 2. **Bounded retry with backoff.** Redrives follow the deployed 9-step schedule
    (30s → 4h, `recovery-policy.ts:60-70`) with a hard 24h TTL
    (`recovery-policy.ts:72`) — reused BYTE-UNCHANGED. No new schedule is
@@ -51,8 +59,10 @@ by a named test in §7 and each failure of one is a bug, not a tuning issue.
 4. **Every drop is a counter + ledger row (P18).** There is NO silent-deletion
    path: restore-purge lists victims and reports a degradation before deleting
    (`delivery-failure-sentinel.ts:670-705` — the 2026-06-05 lesson, inherited)
-   AND is CHANNEL-SCOPED to the sentinel's enabled channels (§5 — a lane that
-   was never allowed to drain can never have its rows purged; round-1 C2);
+   AND is SCOPED to live-enabled channels + `hold_reason IS NULL` rows (§5 —
+   a lane or row that was never allowed to drain can never have its rows
+   purged, by durable DISPOSITION rather than timing; round-1 C2 + round-2
+   C1/C2);
    every state transition additionally lands one JSONL row in
    `logs/delivery-recovery.jsonl` (§4.2, NEW — this is the "sentinel audit row"
    of the roadmap's live-proof clause), channel-tagged.
@@ -96,7 +106,7 @@ outbound path is a single ungated-or-once-gated HTTP hop. Side by side:
 | Content dedup (same text, fresh id) | `OutboundContentDedup`, SQLite-backed, before the gate (`routes.ts:1644-1660`, `:11272-11276`, recorded `:11324`) | **absent** — a Slack re-announce after restart double-posts |
 | Durable failure queue (Layer 2) | script-side SQLite enqueue + `POST /events/delivery-failed` (`src/templates/scripts/telegram-reply.sh:391-666`; store `src/messaging/pending-relay-store.ts`) | **absent** — `slack-reply.sh` exits 1 and the message is GONE (`src/templates/scripts/slack-reply.sh:128-131`) |
 | Recovery sentinel (Layer 3) | `DeliveryFailureSentinel` — state machine, backoff, breaker, restore-purge (`src/monitoring/delivery-failure-sentinel.ts`) | **absent** — and the sentinel is structurally Telegram-only today (below) |
-| Adapter-level send | `sendToTopic` with relay/dedup/kind-metadata layers | `chat.postMessage`, one shot, no retry (`SlackAdapter.ts:565-579`) |
+| Adapter-level send | `sendToTopic` with relay/dedup/kind-metadata layers | `chat.postMessage`, one shot, no retry (`src/messaging/slack/SlackAdapter.ts:565-579`) |
 
 The sentinel's Telegram hardcodes (what "channel-typed" must actually touch):
 
@@ -138,10 +148,11 @@ increments are merged. Every `registry.resolve(id)` and every
 ### 2.0 Shape of the change (one paragraph)
 
 Extend the EXISTING three layers rather than building parallel Slack ones.
-Layer 2 (`PendingRelayStore`) gains two additive columns — `channel` (default
-`'telegram'`) and `conversation_ref` (audit + drain-time coherence input,
-never delivery authority) — via the store's existing idempotent-ALTER
-machinery. Layer 1 (`slack-reply.sh`) gains the same recoverable-failure
+Layer 2 (`PendingRelayStore`) gains three additive columns — `channel`
+(default `'telegram'`), `conversation_ref` (audit + drain-time coherence
+input, never delivery authority), and `hold_reason` (the durable HOLD
+disposition, §2.2a — round-2 C1/C2) — via the store's existing
+idempotent-ALTER machinery. Layer 1 (`slack-reply.sh`) gains the same recoverable-failure
 classifier + enqueue + `POST /events/delivery-failed` tail that
 `telegram-reply.sh` already has, writing `channel:'slack'` rows addressed by a
 TUPLE-VALIDATED minted id (§2.6 — no id, no enqueue). Layer 3
@@ -173,16 +184,23 @@ re-points it. One new JSONL audit ledger records every transition.
 - **`conversation_ref` (new column) is audit + drain-time COHERENCE INPUT —
   never delivery authority (round-1 M1, keystone §3.5.2 R5-M2/R6-M4 parity).**
   It stores the canonical key string
-  (`slack:<teamId>:<channelId>[:<threadTs>]`) captured at enqueue. At drain,
-  the `(channelId[,threadTs])` TAIL of `conversation_ref` must match the tuple
-  `resolve(row.topic_id)` yields; a tail mismatch is the typed
-  `conversation-binding-incoherent` verdict — a HOLD + ONE deduped attention
-  item, NEVER a delivery on either field (mirroring the keystone's bind-pin
-  delivery-time coherence check: an id and its captured tuple disagreeing is
-  the C3-class misdelivery signature, and the converged posture is refusal,
-  not diagnosis-and-deliver). A key-STRING-only difference (a `_`→teamId
-  upgrade rewrote the prefix) is benign by construction — the tuple tail is
-  immutable once minted — and is not a mismatch. The ref is never itself
+  (`slack:<teamId>:<channelId>[:<threadTs>]`) captured at enqueue — built
+  from the SCRIPT'S OWN `CHANNEL_ID[:THREAD_TS]` argument, NEVER from session
+  context (round-2 m2: the drain-time check's entire value is that the ref
+  records where the send was actually AIMED; a ref sourced from the context
+  pair would validate a forged/stale pair against itself). At drain, the
+  `(channelId[,threadTs])` TAIL of `conversation_ref` must match the tuple
+  `resolve(row.topic_id)` yields AND the teamIds must be COMPATIBLE (round-2
+  M2): a `_` placeholder on either side matching a concrete teamId is benign
+  (the `_`→teamId upgrade path); a CONCRETE-vs-CONCRETE teamId mismatch is
+  incoherent even when the tail matches — no legal registry transition
+  rewrites one concrete teamId to another, so per the keystone's R6-M4 logic
+  the pair affirmatively proves corruption. Any mismatch (tail or concrete
+  teamId) is the typed `conversation-binding-incoherent` verdict — a HOLD +
+  ONE deduped attention item, NEVER a delivery on either field (mirroring the
+  keystone's bind-pin delivery-time coherence check: an id and its captured
+  tuple disagreeing is the C3-class misdelivery signature, and the converged
+  posture is refusal, not diagnosis-and-deliver). The ref is never itself
   resolved to deliver.
 - **Thread delivery**: the funnel's `id < 0 (normal)` arm already resolves
   `threadTs?` and POSTs `/slack/reply/:channelId` with `thread_ts`, so a
@@ -216,37 +234,66 @@ COLUMN", duplicate-column errors swallowed):
 ```sql
 ALTER TABLE entries ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram';
 ALTER TABLE entries ADD COLUMN conversation_ref TEXT;  -- canonical key: audit + drain-time coherence input (§2.1)
+ALTER TABLE entries ADD COLUMN hold_reason TEXT;       -- durable HOLD disposition (§2.2a) — NULL = deliverable
 ```
 
 - **Never destructive.** No column is renamed, retyped, or dropped; no row is
   rewritten. Every legacy row reads as `channel='telegram'` by DEFAULT — the
   existing Telegram lanes (DFS Telegram drain, ReapNoticeDrain's
   `reap-notify:` PK-range lane, `pending-relay-store.ts:399-414`) are
-  byte-identically served. A ROLLED-BACK binary ignores the two unknown
+  byte-identically served. A ROLLED-BACK binary ignores the three unknown
   columns and keeps working (SQLite reads by name) — the same
   forward/backward-compat argument the `message_metadata` column shipped with
   (`pending-relay-store.ts:139-142`).
-- `PendingRelayRow` gains `channel: string` and `conversation_ref: string | null`;
-  `EnqueueInput` gains optional `channel` (default `'telegram'`) and
-  `conversation_ref`. `enqueue()` idempotency on `delivery_id` is unchanged
-  (`pending-relay-store.ts:236-271`).
+- `PendingRelayRow` gains `channel: string`, `conversation_ref: string | null`,
+  and `hold_reason: string | null`; `EnqueueInput` gains optional `channel`
+  (default `'telegram'`) and `conversation_ref`. `enqueue()` idempotency on
+  `delivery_id` is unchanged (`pending-relay-store.ts:236-271`).
+
+**§2.2a HOLD is a durable DISPOSITION, not a timestamp accident (round-2
+C1/C2 — the load-bearing round-3 change).** Round 2 falsified the round-1
+folds' protection mechanism: held rows were protected only by
+`next_attempt_at` arithmetic (which the boot purge outruns across a downtime)
+and by dropping out of the selector (which the stampede path outruns at first
+sight). The fix is structural: every held row carries an explicit
+`hold_reason` (`disabled-channel` | `dry-run` | `non-owning` | `unresolvable`
+| `binding-incoherent` | `no-adapter` | `funnel-budget`), set the moment the
+disposition is decided and CLEARED when the row is released for a real
+attempt. Three consumers key on it:
+
+1. **The purge predicate** (§5) skips any row with a live `hold_reason` — in
+   ADDITION to being scoped to LIVE-enabled channels. Held rows are bounded
+   by the §5 held-retention long-stop (loud escalation, never a silent
+   delete), not by the 60-min staleness purge.
+2. **The drain's DISPOSITION PARTITION runs on the selector's results BEFORE
+   stampede grouping** (round-2 C1 — the placement is pinned, resolving the
+   §2.2/§5 ambiguity round 2 flagged): rows whose channel is disabled, whose
+   lane is in dryRun, or whose prior verdict left a live hold are RE-HELD
+   (ensure `hold_reason`, push `next_attempt_at` by the §5 hold-recheck
+   cadence, emit the dryRun would-redrive ledger row when applicable) and
+   NEVER enter `groupByTopic` — so stampede accounting, digest posting, and
+   the all-but-newest `delivered-ambiguous` consumption apply ONLY to rows
+   the drain may actually deliver on this tick. §7 pins the
+   burst-in-held-posture shape (6+ held rows on one conversation → zero
+   transitions, zero posts).
+3. **The §4.1 status surface** counts held rows by `hold_reason`.
+
 - **Selectors stay channel-agnostic in SQL; the DRAIN is channel-aware.**
   `selectClaimable` (`:375-390`) returns rows of every channel; the SENTINEL
-  dispatches per-row (§2.3). A row whose channel is NOT in the enabled
-  `channels` set is skipped-and-HELD (its `next_attempt_at` is pushed
-  forward — so it drops out of the selector predicate until the hold
-  expires, stays purge-exempt via the hold exemption, and is counted on the
-  §4.1 disabled-backlog surface; round-1 C2). Rationale for one loop: one
-  claim/lease path and one rate-cap bookkeeping — while breaker SUSPENSION
-  state is per-channel (§2.3 point 5, P19). The reap-notify PK-range
-  exclusion is untouched.
+  partitions by disposition (§2.2a) then dispatches per-row (§2.3). A row
+  whose channel is NOT in the enabled `channels` set is held via §2.2a
+  (`hold_reason:'disabled-channel'` — purge-exempt by DISPOSITION, counted on
+  the §4.1 disabled-backlog surface; round-1 C2 + round-2 C1/C2). Rationale
+  for one loop: one claim/lease path and one rate-cap bookkeeping — while
+  breaker SUSPENSION state is per-channel (§2.3 point 5, P19). The
+  reap-notify PK-range exclusion is untouched.
 - New index: none required. The dedup-window query
   `findByTopicAndHashWithin` (`:285-299`) already keys on
   `(topic_id, text_hash)` which is unique across channels because minted ids
   are globally unique (keystone §3.3 mint rule).
 - The dual writer parity note: `telegram-reply.sh` embeds its own schema
   bootstrap + INSERT (`src/templates/scripts/telegram-reply.sh:500-560, 604-625`).
-  Its CREATE/ALTER mirror gains the same two columns; `slack-reply.sh`'s new
+  Its CREATE/ALTER mirror gains the same three columns; `slack-reply.sh`'s new
   enqueue path (§2.6) shares that exact embedded SQL shape. The
   TemplatesDriftVerifier (Layer 7) covers both scripts already.
 
@@ -271,8 +318,8 @@ own notices. Per row:
    `'slack'` today, `routes.ts:12177`). Deployed semantics kept EXACTLY
    (round-1 M5): a clean `passed:false` verdict finalizes
    `delivered-tone-gated`; a gate ERROR fails OPEN at this pre-check
-   (`local-tone-check.ts` — `passed:true, failedOpen:true`, the sentinel
-   proceeds) and the ROUTE-side gate then owns the availability-failure
+   (`src/messaging/local-tone-check.ts` — `passed:true, failedOpen:true`,
+   the sentinel proceeds) and the ROUTE-side gate then owns the availability-failure
    direction (`failClosedMode` tri-state, `src/core/MessagingToneGate.ts:608-621`);
    the policy layer classifies whatever status the route returns. No behavior
    change is proposed on either channel.
@@ -281,16 +328,29 @@ own notices. Per row:
    calls `deliverToConversation(row.topic_id, text, { deliveryId:
    row.delivery_id, metadata: row.message_metadata (forwarded WHOLE — kind,
    allowDuplicate, formatMode ride there, matching defaultPostReply's parity;
-   round-1 MINOR-4), systemTemplate: <true for fixed templates> })`. Two
-   ADDITIVE funnel opts are pinned here (the keystone's opts contract is
-   extensible by design): `deliveryId` — forwarded to the route as
-   `X-Instar-DeliveryId` so §2.4 idempotency sees the redrive; and
+   round-1 MINOR-4), systemTemplate: <true for fixed templates> })`. THREE
+   ADDITIVE funnel opts are pinned here (round-2 L1 — the keystone's opts
+   contract is extensible by design, and this spec owns scoping every
+   extension it consumes): `deliveryId` — forwarded to the route as
+   `X-Instar-DeliveryId` so §2.4 idempotency sees the redrive;
    `systemTemplate` — forwarded as `X-Instar-System`, where the ROUTE's
    compiled-in membership check (`matchesSystemTemplate` + build-time SHA
    integrity) remains the sole bypass authority (the flag is a transport
-   marker, never trust). Before the funnel call, the drain runs the
-   `conversation_ref` tail-coherence check (§2.1) — mismatch is the typed
-   incoherent HOLD, no funnel call.
+   marker, never trust); and `metadata` — the queue row's serialized kind
+   blob, forwarded to the route body's `metadata` field (the funnel maps it
+   through; its `allowDuplicate`/`messageKind` fields land exactly where the
+   keystone's pinned per-field opts land). **Two ADDITIVE funnel TYPED-RESULT
+   requirements are pinned the same way (round-2 M1 — the mapping table below
+   consumes result vocabulary the keystone deliberately left to this lane):**
+   (a) an ambiguous/likely-posted transport outcome (route 408, or
+   accepted-but-ack-lost observed by the funnel) is surfaced DISTINCTLY
+   (e.g. `not-delivered` with pinned reason `ambiguous-likely-posted`), never
+   folded into plain transient; (b) a route tone-gate VERDICT (422) is
+   surfaced DISTINCTLY — without it a tone-gated Slack row is
+   indistinguishable from transient and would burn the 24h TTL before
+   escalating. Before the funnel call, the drain runs the `conversation_ref`
+   tail+teamId coherence check (§2.1) — mismatch is the typed incoherent
+   HOLD, no funnel call.
 3. **Typed-result → policy mapping (pinned; replaces raw-HTTP classification
    for Slack rows — the pure `evaluatePolicy` stays byte-untouched, fed
    through this static table):**
@@ -299,11 +359,19 @@ own notices. Per row:
    |---|---|
    | delivered | `finalize-success` (+ §2.4 ledger record rides the route) |
    | `already-delivered-recently` (E1/route dedup suppression) | `finalize-success` — DELIVERED-EQUIVALENT, keystone R7-M1 posture |
-   | tone-gate VERDICT withhold (route 422 surfaced typed) | `finalize-tone-gated` + meta-notice (unchanged semantics) |
+   | ambiguous / likely-posted (`ambiguous-likely-posted` — the pinned additive surfacing above; round-2 M1) | `finalize-ambiguous` — terminal, NEVER re-posted (Telegram-lane parity; §0 property 1). The E1 entry + §2.4 id-ledger remain the nets if a caller manually resends |
+   | tone-gate VERDICT withhold (route 422 — the pinned additive surfacing above) | `finalize-tone-gated` + meta-notice (unchanged semantics) |
    | `conversation-unreachable` (§5.1 PERMANENT) | terminal `escalated` with reason `conversation-unreachable` — NO 24h retry burn; the operator notice goes OUT-OF-BAND (below) |
-   | non-owning / unresolvable / `conversation-binding-incoherent` / no local Slack adapter | **HOLD** — `next_attempt_at` pushed to the ownership-recheck cadence; NO attempt increment, NO breaker arm, NO escalation (keystone stand-down: a by-design refusal is not a delivery failure) + ONE deduped attention item per row-class episode |
+   | non-owning / unresolvable / `conversation-binding-incoherent` / no local Slack adapter | **HOLD** (§2.2a — `hold_reason` set; `next_attempt_at` pushed to the §5 hold-recheck cadence); NO attempt increment, NO breaker arm, NO escalation (keystone stand-down: a by-design refusal is not a delivery failure) + ONE deduped attention item per row-class episode |
+   | §5.2 budget-coalesced / overflow (round-2 m4) | **HOLD** (`hold_reason:'funnel-budget'`) — a P17 budget refusal is a by-design refusal, not a delivery failure: NO attempt increment, NO breaker arm, never a terminal; the row retries after the window |
    | transient `not-delivered` | policy retry — backoff schedule unchanged |
-   | dryRun / fleet-dark typed `not-delivered` | **HOLD**, ledger row tagged `dryRun:true` (§5 — never success-shaped) |
+   | dryRun / fleet-dark typed `not-delivered` | **HOLD** (`hold_reason:'dry-run'`), ledger row tagged `dryRun:true` (§5 — never success-shaped) |
+
+   The table is TOTAL over the funnel's result vocabulary as consumed by this
+   lane (round-2 M1/m4): any future funnel result not listed here maps to the
+   transient row (retry — the direction that never loses a message) plus ONE
+   deduped attention item naming the unmapped result, mirroring the keystone's
+   drift-canary posture.
 
 4. **Escalation / stampede digest / recovered marker / tone-gate-rejection
    notice** (`:513`, `:575`, `:657`, `:492`): for Slack rows these are
@@ -343,11 +411,14 @@ own notices. Per row:
 
 Unchanged and shared: claim CAS + lease format (`:398-405`, `:385-395`),
 `evaluatePolicy` and the backoff schedule (`recovery-policy.ts` —
-byte-untouched), restore-purge semantics incl. the hold exemption and
-far-future clamp (`pending-relay-store.ts:478-541`) — now CHANNEL-SCOPED per
-§5 (round-1 C2), stampede grouping (keys on `topic_id` = minted id — already
-per-conversation), per-topic rate cap (`lastTopicDelivery` Map keyed by
-number — minted ids fit).
+byte-untouched), restore-purge semantics incl. the far-future clamp
+(`pending-relay-store.ts:478-541`) — now scoped to LIVE-enabled channels AND
+`hold_reason IS NULL` per §5 (round-1 C2 + round-2 C2), stampede grouping
+(keys on `topic_id` = minted id — already per-conversation) — now fed ONLY
+deliverable rows by the §2.2a disposition partition (round-2 C1: the deployed
+stampede path consumes all-but-newest as `delivered-ambiguous` and posts a
+digest, which must never touch a held/dark/dry row), per-topic rate cap
+(`lastTopicDelivery` Map keyed by number — minted ids fit).
 
 **Whoami gate scope**: the `/whoami` identity check (`:410-432`) protects
 against replying through a rotated/foreign server config; it is
@@ -358,11 +429,14 @@ is MACHINE-LOCAL BY DESIGN (a per-agent SQLite file beside the process whose
 send failed — the failure and its retry belong to the machine that owns the
 conversation's socket). The funnel's ownership gate makes that safe rather
 than assumed: a row that lands on (or is orphaned on) a machine that does not
-own the conversation HOLDS under stand-down semantics instead of burning
+own the conversation HOLDS under stand-down semantics (§2.2a — a durable
+disposition the boot purge cannot outrun; round-2 C2) instead of burning
 retries, and heals when ownership arrives (adapter comes up / topic moves
-back) or ages out LOUDLY at TTL with the out-of-band notice. In today's
-single-Slack-machine reality the holding case never occurs; active-active
-reconciliation stays the keystone's tracked §11.2 follow-up.
+back) or ages out LOUDLY at the §5 held-retention long-stop with the
+out-of-band notice (round-2 m1: the 24h TTL is drain-evaluated and cannot
+bound a row that never drains — the long-stop is the honest ceiling for held
+rows). In today's single-Slack-machine reality the holding case never occurs;
+active-active reconciliation stays the keystone's tracked §11.2 follow-up.
 
 ### 2.4 `/slack/reply` — delivery-id idempotency (DURABLE) + system-template bypass
 
@@ -407,11 +481,14 @@ Two pieces, matching the Telegram precedent:
    `:11324`. The store instance is SHARED (one `OutboundContentDedup`,
    `routes.ts:1652-1660`, SQLite-backed, already keyed by numeric topic id —
    minted ids are numbers, zero changes to the module). Length floor +
-   window defaults unchanged (`OutboundContentDedup.ts:42-47`). The route
-   resolves the minted id from `(channelId, thread_ts)` via the registry
-   (in-process tuple lookup, keystone §3.1); when the conversation is not yet
-   minted (pre-first-inbound edge), the route SKIPS content dedup for that
-   send — fail-open to delivery, never a block. (Round-1 MINOR-3 replaced the
+   window defaults unchanged (`OutboundContentDedup.ts:42-47`). **This is an
+   explicit `/slack/reply` HANDLER modification (round-2 m3 — the deployed
+   route has no registry access and no topicId concept): the handler gains an
+   in-process registry read** resolving the minted id from
+   `(channelId, thread_ts)` (tuple lookup, keystone §3.1); when the
+   conversation is not yet minted (pre-first-inbound edge), the route SKIPS
+   content dedup for that send and omits `topicId` from the gate call —
+   fail-open to delivery, never a block. (Round-1 MINOR-3 replaced the
    draft's string-hash fallback: `OutboundContentDedup` keys on a NUMBER, and
    a string-hash-as-number can collide with a real minted id or a Telegram
    topic id → cross-conversation suppression; skipping is honest, the window
@@ -434,8 +511,19 @@ Port the recoverable-failure tail of `telegram-reply.sh` (`:391-666`):
   the per-agent SQLite queue with `channel:'slack'`, `topic_id` = the
   TUPLE-VALIDATED minted id (below), `conversation_ref` = the canonical key,
   then best-effort `POST /events/delivery-failed` so the in-process sentinel
-  reacts in <1s (`routes.ts:2741-2749` fan-out; the event payload gains an
-  optional `channel` field, default `'telegram'`). The embedded enqueue also
+  reacts in <1s (`routes.ts:2741-2749` fan-out). **The deployed event
+  VALIDATOR must change for this to work at all (round-2 M3 — found
+  independently by both externals + the internal grounding sweep):**
+  `createDeliveryFailedHandler` rejects `topic_id < 0` with a 400
+  ("non-negative integer", `routes.ts:583-585`) and 400s ANY field outside
+  its allowlist (`routes.ts:496-504`) — so as deployed, every Slack event
+  kick (negative minted id + a `channel` field) fails on BOTH counts and the
+  "<1s" property silently degrades to the 5-min watchdog. Pinned changes:
+  `topic_id` accepts keystone minted ids (any non-zero integer; `0` stays
+  rejected — the deleted C1 lane's key), and `channel` joins the allowlist
+  (optional, enum `{'telegram','slack'}`, default `'telegram'`). §7 Tier-2
+  pins both directions (a valid slack event kicks the tick; a `channel`
+  outside the enum, or `topic_id: 0`, still 400s). The embedded enqueue also
   ports `telegram-reply.sh`'s 5-second same-`(topic_id, text_hash)` dedup
   (the tight-loop flood guard — round-1 LOW-2; distinct from the route's
   15-min window).
@@ -540,16 +628,16 @@ conversational replies; only a real content VERDICT withholds.
 |---|---|---|
 | SQLite store won't open at boot | toward delivery | direct-send path untouched; degradation report (`assertSqliteAvailable`, `pending-relay-store.ts:610-658`; precedent `server.ts:7987-7997`) — a broken NET never becomes capture-and-drop |
 | Script can't enqueue after a failed send | toward loudness | exit-1 semantics preserved (the agent SEES the failure and can resend) + stderr names the queue miss — same as `telegram-reply.sh:436-440` |
-| Registry can't resolve a minted id at drain / non-owning machine / no local adapter | toward HOLD, then loud | funnel typed failure → stand-down HOLD (§2.3 — no attempt burn, no breaker arm) + ONE deduped attention item; heals on ownership arrival or ages out LOUDLY at TTL; never a guess-delivery |
-| `conversation_ref` tail disagrees with `resolve(id)` at drain | toward typed REFUSAL | `conversation-binding-incoherent` HOLD + attention item — never a delivery on either field (keystone §3.5.2 R5-M2/R6-M4 parity; the C3 misdelivery signature) |
+| Registry can't resolve a minted id at drain / non-owning machine / no local adapter | toward HOLD, then loud | funnel typed failure → stand-down HOLD (§2.2a durable disposition — no attempt burn, no breaker arm, purge-proof) + ONE deduped attention item; heals on ownership arrival or ages out LOUDLY at the §5 held-retention long-stop; never a guess-delivery |
+| `conversation_ref` tail OR concrete teamId disagrees with `resolve(id)` at drain (round-2 M2) | toward typed REFUSAL | `conversation-binding-incoherent` HOLD + attention item — never a delivery on either field (keystone §3.5.2 R5-M2/R6-M4 parity; the C3 misdelivery signature); `_`↔concrete teamId stays benign (the upgrade path) |
 | Tone gate 422 on redrive | WITHHOLD (verdict) | `delivered-tone-gated` terminal + fixed-template meta-notice — the sentinel never overrides the gate (`delivery-failure-sentinel.ts:439-444, 503-519`) |
-| Tone gate UNAVAILABLE on redrive | layered, per deployed reality (round-1 M5) | the sentinel's LOCAL pre-check fails OPEN on a gate ERROR (`local-tone-check.ts` — `passed:true, failedOpen:true`, proceeds); the ROUTE-side gate then owns availability direction (`failClosedMode` tri-state, `src/core/MessagingToneGate.ts:608-621`); the policy layer classifies the route's resulting status. No behavior change on either channel |
+| Tone gate UNAVAILABLE on redrive | layered, per deployed reality (round-1 M5) | the sentinel's LOCAL pre-check fails OPEN on a gate ERROR (`src/messaging/local-tone-check.ts` — `passed:true, failedOpen:true`, proceeds); the ROUTE-side gate then owns availability direction (`failClosedMode` tri-state, `src/core/MessagingToneGate.ts:608-621`); the policy layer classifies the route's resulting status. No behavior change on either channel |
 | Slack API 5xx / network down (transient) | toward retry | recoverable class → backoff schedule (property 2) |
 | Slack channel-state PERMANENT error (`is_archived` / `channel_not_found` / `not_in_channel`) | toward terminal-with-out-of-band-notice | funnel §5.1 classification → `escalated: conversation-unreachable` with NO 24h retry burn; the notice goes to the ATTENTION queue, never into the unreachable conversation (round-1 M2); unrecognized permanent-shaped codes stay transient + one deduped attention item (the keystone drift canary) |
-| Slack API 408 / ambiguous | toward NOT double-posting | `delivered-ambiguous` terminal (property 1) — content dedup is the net if a caller manually resends |
+| Slack API 408 / ambiguous | toward NOT double-posting | script lane: `delivered-ambiguous` terminal via recovery-policy; funnel lane: the pinned `ambiguous-likely-posted` typed surfacing → `finalize-ambiguous` (round-2 M1; property 1) — content dedup + the §2.4 id-ledger are the nets if a caller manually resends |
 | Sentinel escalation itself fails repeatedly | toward pause-with-queue-intact, PER CHANNEL | P19 breaker suspends THAT channel's retries only (§2.3 point 5); rows stay queued (never deleted); degradation report names the resume levers (`:600-613`) |
-| Server restart with queued rows | toward delivery | immediate first drain on `start()` (`:258-271`); restore-purge only beyond 60min staleness, LOUD, hold-exempt, and CHANNEL-SCOPED to enabled channels (§5 — round-1 C2) |
-| Channel configured OFF (`channels` omits it) or in dryRun | toward HOLD, never purge, never fake-delivery | rows not claimable, purge-exempt, `next_attempt_at` held forward; >24h backlog raises ONE deduped attention item; dryRun ticks log would-redrive (`dryRun:true` ledger rows) with NO `delivered-*` transition (§5 — round-1 C2/C3; keystone §5.1 never-success-shaped parity) |
+| Server restart with queued rows | toward delivery | immediate first drain on `start()` (`:258-271`); restore-purge only beyond 60min staleness, LOUD, scoped to LIVE-enabled channels AND `hold_reason IS NULL` (§5 — round-1 C2 + round-2 C2: a held row is exempt by DISPOSITION, so a downtime that outlasts the hold arithmetic can never make it purge-bait) |
+| Channel configured OFF (`channels` omits it) or in dryRun | toward HOLD, never purge, never fake-delivery, never stampede-consumption | rows held via §2.2a (`hold_reason` set pre-grouping — excluded from purge, stampede accounting, AND digest posting; round-2 C1); >24h backlog raises ONE deduped attention item; dryRun ticks log would-redrive (`dryRun:true` ledger rows) with NO `delivered-*` transition (§5 — round-1 C2/C3; keystone §5.1 never-success-shaped parity); held rows age out LOUDLY only at the §5 held-retention long-stop |
 | Duplicate POST same delivery-id | toward idempotent-200 | durable id-ledger + hot LRU (§2.4) — "delivered once" beats "delivered again", across restarts (round-1 M4) |
 
 ## 4. Observability (P18 concretely)
@@ -560,7 +648,7 @@ The sentinel's per-tick counters (`processed/recovered/escalated`,
 `delivery-failure-sentinel.ts:306-317`) gain a `byChannel` breakdown, surfaced
 on the existing sentinel events and a small read route
 `GET /delivery-recovery/status` (queue depth by channel+state, PER-CHANNEL
-breaker state (§2.3 point 5), held/disabled-channel backlog counts, dryRun
+breaker state (§2.3 point 5), held backlog counts by `hold_reason` (§2.2a), dryRun
 posture, last tick — Registry First for "did my Slack reply make it?").
 
 ### 4.2 The audit ledger (the live-proof "sentinel audit row")
@@ -593,33 +681,63 @@ LLM-visible surface.
                                    // ["telegram","slack"] on a development agent
                                    // (the developmentAgent gate pattern,
                                    // MultiMachineCoordinator.ts:113-118 precedent).
-      "slackDryRun": true          // NEW — HOLD-shaped dry run (§ below): would-redrive
+      "slackDryRun": true,         // NEW — HOLD-shaped dry run (§ below): would-redrive
                                    // verdicts logged (ledger rows tagged dryRun:true),
                                    // NO delivered-* transition, NO post, rows held.
+      "holdRecheckMs": 900000,     // NEW (round-2 C2) — held-row recheck cadence (15 min).
+                                   // Liveness knob only: the purge keys on hold_reason,
+                                   // never on this timestamp.
+      "heldRetentionMs": 604800000 // NEW (round-2 m1) — held-row LOUD long-stop (7 days):
+                                   // escalated + P18 rows + one out-of-band attention item,
+                                   // never a silent delete.
     }
   }
 }
 ```
 
-- **Disabled-channel semantics, pinned (round-1 C2 — previously undefined):**
-  a row whose `channel` is NOT in `channels` is (a) NOT claimable by the
-  drain, (b) EXEMPT from restore-purge — `listStaleClaimable` /
-  `purgeStaleClaimable` gain a channel filter so the purge is SCOPED to the
-  sentinel's enabled channels (the round-1 walk: unconditional enqueue + the
+- **Disabled-channel semantics, pinned (round-1 C2 + round-2 C1/C2):**
+  a row whose `channel` is NOT in `channels` is (a) held by the §2.2a
+  disposition partition BEFORE stampede grouping (`hold_reason:
+  'disabled-channel'` — never claimable, never stampede-consumed, never
+  digest-triggering; round-2 C1), (b) EXEMPT from restore-purge —
+  `listStaleClaimable` / `purgeStaleClaimable` gain BOTH filters so the purge
+  is SCOPED to LIVE-enabled channels (enabled AND not in dryRun) AND to
+  `hold_reason IS NULL` rows (the round-1 walk: unconditional enqueue + the
   fleet's telegram-only default + the deployed CHANNEL-BLIND purge would have
   deleted every queued Slack row at the first boot older than 60 min without
   one drain attempt — the 2026-06-05 silent-deletion lesson recurring one
-  level up), and (c) surfaced: a disabled-channel backlog older than 24h
-  raises ONE deduped attention item naming the config fix.
+  level up; the round-2 walk: a DRY lane is channel-ENABLED, so channel
+  scoping alone left every fresh-or-lapsed-hold dry row purge-bait at the
+  first boot after a long downtime — round-2 C2), and (c) surfaced: a
+  disabled-channel backlog older than 24h raises ONE deduped attention item
+  naming the config fix.
+- **Hold-recheck cadence + held-retention long-stop, pinned (round-2 C2/m1):**
+  a held row's `next_attempt_at` is pushed by `holdRecheckMs` (default
+  900000 = 15 min — bounded staleness for ownership arrival / a lane flip;
+  since the purge keys on `hold_reason`, NOT on this timestamp, the cadence
+  is a liveness tuning knob, never a safety parameter). A row held
+  CONTINUOUSLY for `heldRetentionMs` (default 604800000 = 7 days — the
+  far-future-clamp scale) exits LOUDLY: transition to `escalated` with reason
+  `held-retention-exceeded`, one P18 ledger row per row, and ONE deduped
+  OUT-OF-BAND attention item per channel-episode (the lane can't deliver, so
+  the notice never targets it) — never a silent delete. This replaces the
+  draft's false claim that "the 24h TTL bounds" held rows (the TTL is
+  evaluated at DRAIN time; a held row never drains, so nothing ever TTLed it
+  — round-2 m1).
 - **dryRun semantics, pinned (round-1 C3 — the keystone §5.1 contract:
   "dryRun returns typed not-delivered, NEVER success-shaped"):** a dry tick
   logs the would-redrive verdict as a `dryRun:true` ledger row, makes NO
   `delivered-*` transition, increments NO attempt counter, arms NO breaker,
-  and pushes the row's `next_attempt_at` forward (riding the purge's existing
-  hold-exemption — `pending-relay-store.ts:478-541`). Rows survive the whole
-  soak intact; when the lane flips live they drain for real, and rows already
-  past TTL escalate LOUDLY (visible, never silent). A dry run can never
-  fabricate a delivery record or feed the purge.
+  and holds the row via §2.2a (`hold_reason:'dry-run'` + the hold-recheck
+  push — the durable disposition IS the purge exemption; round-2 C2 replaced
+  the draft's timestamp-arithmetic exemption, which a downtime longer than
+  the hold push outran at the boot purge). Dry rows never enter stampede
+  grouping (§2.2a — round-2 C1: the deployed stampede path would otherwise
+  consume all-but-newest as `delivered-ambiguous` and post a real digest,
+  both forbidden in a soak). Rows survive the whole soak intact; when the
+  lane flips live the partition clears `hold_reason` and they drain for real,
+  and rows already past TTL escalate LOUDLY (visible, never silent). A dry
+  run can never fabricate a delivery record, feed the purge, or post.
 - **Rollout ladder (Maturation Path):** dark on the fleet (`channels` omitted
   ⇒ telegram-only; Slack rows held + purge-exempt + surfaced per the pinned
   semantics above), live-in-dryRun on the dev agent, then `slackDryRun:false`
@@ -628,10 +746,11 @@ LLM-visible surface.
   (`delivery-failure-sentinel.ts:32-35` — "Layer 1 + Layer 2 ship
   unconditionally; Layer 3 is opt-in"): a queued-but-not-yet-drained row is
   strictly better than a lost message NOW THAT the disabled-channel semantics
-  above make "not yet drained" a held state rather than purge-bait, and the
-  24h TTL bounds it.
-- **`migrateConfig()` parity:** add-missing-only — `channels` and
-  `slackDryRun` are added ONLY when the `deliveryFailureSentinel` block
+  above make "not yet drained" a DURABLE held disposition rather than
+  purge-bait or stampede-bait, and the held-retention long-stop bounds it
+  loudly (round-2 m1).
+- **`migrateConfig()` parity:** add-missing-only — `channels`,
+  `slackDryRun`, `holdRecheckMs`, and `heldRetentionMs` are added ONLY when the `deliveryFailureSentinel` block
   already exists AND lacks them; the migration never materializes
   `enabled:false` into a config that omitted the block (the keystone's §9
   posture, and the standing migrateConfig rule). Idempotent by existence
@@ -683,7 +802,14 @@ LLM-visible surface.
   transient / dryRun); STAND-DOWN shape: a non-owning or unresolvable verdict
   HOLDS with NO attempt increment, NO breaker arm, ONE deduped attention
   item; COHERENCE shape: a `conversation_ref` tail mismatch refuses before
-  the funnel call, never delivers on either field; PERMANENT shape:
+  the funnel call, never delivers on either field — AND the teamId arm
+  (round-2 M2): concrete-vs-concrete teamId mismatch with a MATCHING tail
+  refuses; `_`↔concrete passes (the upgrade path); AMBIGUOUS shape (round-2
+  M1): the funnel's `ambiguous-likely-posted` result finalizes
+  `delivered-ambiguous` — never a retry, never a re-post; BUDGET shape
+  (round-2 m4): a §5.2 budget-coalesced result HOLDS with no attempt burn
+  and no terminal; an UNMAPPED future funnel result maps to transient retry
+  + one deduped attention item (table totality); PERMANENT shape:
   `conversation-unreachable` terminalizes with NO retry burn and its notice
   goes to the attention queue, never the failing conversation;
   escalation/stampede/recovered-marker ride the funnel for slack rows;
@@ -691,14 +817,26 @@ LLM-visible surface.
   the SLACK suspension only — Telegram redrives continue (asserted both
   directions).**
 - `recovery-policy` untouched — existing table tests prove byte-parity.
-- `pending-relay-store` channel scoping (round-1 C2): `listStaleClaimable` /
-  `purgeStaleClaimable` with a channel filter purge ONLY enabled channels; a
-  disabled-channel row older than the cutoff SURVIVES the purge; the
-  `selectClaimable` claim path never returns a disabled channel's rows.
-- dryRun shape (round-1 C3): a dry tick over a queued slack row → would-
-  redrive ledger row tagged `dryRun:true`, row still `queued`, zero attempts
-  added, `next_attempt_at` advanced (purge-held), NO post; flip live → the
-  same row drains for real exactly once.
+- `pending-relay-store` purge scoping (round-1 C2 + round-2 C2):
+  `listStaleClaimable` / `purgeStaleClaimable` purge ONLY live-enabled-channel
+  rows with `hold_reason IS NULL`; a disabled-channel row older than the
+  cutoff SURVIVES the purge; a HELD row (any `hold_reason`) older than 3× the
+  cutoff with a LAPSED `next_attempt_at` SURVIVES the boot purge (the
+  boot-after-long-downtime shape — round-2 C2) and is re-held or drained on
+  the next tick; a held row past `heldRetentionMs` escalates LOUDLY
+  (`held-retention-exceeded` + out-of-band attention), never silently
+  deleted (round-2 m1).
+- dryRun shape (round-1 C3 + round-2 C1): a dry tick over a queued slack row
+  → would-redrive ledger row tagged `dryRun:true`, row still `queued` with
+  `hold_reason:'dry-run'`, zero attempts added, NO post; flip live → the
+  same row drains for real exactly once. **Burst-in-held-posture (round-2
+  C1):** 6+ queued rows on ONE conversation in a dark lane AND in a dry lane
+  → the disposition partition holds ALL of them pre-grouping — ZERO
+  `delivered-ambiguous` transitions, ZERO stampede digests, zero posts (the
+  deployed stampede path consumes all-but-newest and posts a digest; this
+  asserts held rows never reach it); the same burst on a LIVE lane keeps
+  today's stampede semantics (digest + all-but-newest dropped, Telegram
+  parity).
 - Dedup: slack content-dedup keyed on minted id; length floor; allowDuplicate
   bypass; record-only-after-success; pre-mint send SKIPS content dedup
   (MINOR-3 — no string-hash keying, asserted).
@@ -723,6 +861,11 @@ LLM-visible surface.
   misdirected-route` typed refusal + the one-time attention breadcrumb (today
   it sends ungated — the regression this closes); auth still required (an
   unauthed request stays 401, never reaches the refusal).
+- `/events/delivery-failed` validator (round-2 M3): a slack event (negative
+  minted `topic_id` + `channel:'slack'`) is ACCEPTED and kicks the tick (the
+  deployed validator 400s both — this is the regression the pinned §2.6
+  change closes); `topic_id: 0` still 400s (the deleted C1 lane's key); a
+  `channel` outside the enum still 400s.
 - Full pipeline: enqueue slack row via `POST /events/delivery-failed`
   (channel:'slack') → sentinel tick (test-driven, `tick()` is public) → the
   REAL funnel with a mocked registry + mocked `/slack/reply` 200 → row
@@ -798,7 +941,26 @@ now a decided, test-pinned position. `## Open questions` below is empty.
    ledger beside `SqliteOutboundDedupStore`, 24h TTL, hot LRU in front,
    fail-open-to-in-memory degradation.
 
+5. **HOLD as a durable disposition (round-2 C1/C2/m1/m4).** Round 2 proved
+   the round-1 folds' protections were timing accidents: the boot purge's
+   timestamp-arithmetic exemption dies across a downtime, and the shared
+   stampede path consumes held rows before any per-row dispatch. Decision:
+   `hold_reason` column (§2.2a) — the purge, the stampede grouper, and the
+   status surface all key on the DISPOSITION; the disposition partition runs
+   pre-grouping; held rows are bounded by a LOUD `heldRetentionMs` long-stop
+   (never the drain-evaluated 24h TTL, which cannot bound a row that never
+   drains).
+6. **Funnel result vocabulary is pinned additively (round-2 M1/m4).**
+   Ambiguous/likely-posted and route-422 tone-verdict are surfaced as
+   distinct typed results (the two additive typed-result requirements,
+   §2.3); ambiguous finalizes `delivered-ambiguous` (never re-posted);
+   budget-coalesced HOLDS; the mapping table is total with a
+   drift-canary-style default (transient + one attention item).
+7. **`/events/delivery-failed` validator relaxation (round-2 M3).** Minted
+   negative ids accepted, `channel` enum field allowed, `topic_id: 0` still
+   refused — pinned in §2.6 with both-direction tests.
+
 ## Open questions
 
-*(none — all resolved into §8 Frontloaded Decisions as of the round-2
-revision)*
+*(none — all round-1 resolutions verified landed in round 2; the round-2
+findings are folded above as of this round-3 revision)*

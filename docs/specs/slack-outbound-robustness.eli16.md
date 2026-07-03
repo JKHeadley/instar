@@ -24,10 +24,18 @@ Telegram pipeline to carry more than one channel.
 
 ## How, concretely
 
-1. **The queue learns channels.** The on-disk retry queue gets one new column:
-   `channel` ("telegram" or "slack"). Old rows automatically read as
+1. **The queue learns channels — and learns to say "on hold".** The on-disk
+   retry queue gets new columns: `channel` ("telegram" or "slack") and a
+   `hold_reason` marker for any message that is deliberately parked (its lane
+   is switched off, it's in a dry-run soak, or the machine holding it isn't
+   the one that owns the conversation). Old rows automatically read as
    "telegram", so nothing existing changes. Never destructive — columns are
-   only added, never renamed or dropped.
+   only added, never renamed or dropped. The hold marker matters: the second
+   review round found two ways a parked message could still be destroyed by
+   older machinery (the boot-time stale-row cleanup, and the "too many
+   failures, collapse them into a digest" path) because "parked" was only
+   implied by timestamps. Now it's written on the row, and both of those
+   paths are required to leave marked rows alone.
 2. **One address for every conversation — checked twice.** This work leans on
    the Phase-1 "durable conversation identity" project (now fully reviewed
    and approved): every Slack channel or thread gets a permanent numeric ID
@@ -44,7 +52,8 @@ Telegram pipeline to carry more than one channel.
    SAME delivery gateway the identity project built (the "funnel"), which
    already knows which machine owns a conversation, refuses mismatched
    addresses, spots permanently-dead channels (archived, bot removed) so we
-   don't retry them for 24 hours, and rate-limits notices. Telegram rows go
+   stop immediately instead of wasting a full day of retries on them, and
+   rate-limits notices. Telegram rows go
    out exactly as before. The retry schedule and give-up rules are shared;
    the circuit breaker now pauses ONE channel's retries at a time, so a
    Slack outage can never freeze Telegram recovery (a review catch).
@@ -53,9 +62,15 @@ Telegram pipeline to carry more than one channel.
    delivered" instead of posting again — and that memory is now saved to
    disk, because the review found a real (if narrow) sequence where a
    restart wiped the in-memory list and a late retry could double-post.
-   Separately, sending byte-identical long text to the same conversation
-   twice within ~15 minutes is suppressed (short acks like "on it" are never
-   suppressed).
+   When the outcome of a send is genuinely unknowable (the network died
+   right as Slack may have accepted it), the retry engine marks it
+   "ambiguous" and refuses to blind-repost — on both the script path and the
+   retry path. One honest fine-print case remains: if the machine crashes in
+   the instant between Slack accepting a post and the server writing it
+   down, one duplicate is possible — bounded, visible, and caught by the
+   next net. Separately, sending byte-identical long text to the same
+   conversation twice within ~15 minutes is suppressed (short acks like "on
+   it" are never suppressed).
 5. **The broken internal route gets refused, not just gated.** We found that
    `/internal/slack-forward` looks like it was meant for *incoming* messages
    but actually sends *outgoing* ones — an echo bug that has never run live
@@ -97,11 +112,15 @@ and dry-run is honest by design: it logs what it *would* retry but never
 marks anything "delivered" and never posts (the review caught that a
 sloppier dry-run could have recorded fake deliveries and lost real
 messages). Then live after the proof above passes. While the Slack lane is
-switched off or drying, queued Slack messages are HELD — the boot-time
-cleanup that deletes stale rows is scoped to channels that are actually
-allowed to retry, so a lane that never got a chance to deliver can never
-have its messages deleted (this was the review's biggest new catch — the
-exact silent-deletion accident from June 5th, one level up). Config keys:
+switched off or drying, queued Slack messages are HELD — marked as on-hold
+right on the row — and the boot-time cleanup that deletes stale rows must
+skip both lanes that aren't live and rows carrying the hold marker, so a
+message that never got a chance to deliver can never be deleted (round one
+caught the June-5th silent-deletion accident recurring one level up; round
+two caught it AGAIN inside the fix, because the protection relied on timing
+instead of a durable marker — hence the marker). A message can't sit parked
+forever either: after a week on hold it's surfaced loudly to your attention
+queue instead of being quietly dropped. Config keys:
 `monitoring.deliveryFailureSentinel.channels` and `.slackDryRun`. Existing
 agents get the changes through the normal update path — the database upgrades
 itself additively on boot, and the Slack reply script refreshes via the
