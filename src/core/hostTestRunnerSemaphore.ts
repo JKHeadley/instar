@@ -1358,7 +1358,18 @@ export class HostTestRunnerSemaphore {
     }
     try {
       const after = fs.lstatSync(aside);
-      if (after.dev === before.dev && after.ino === before.ino) return true;
+      // Identity = dev + ino + mtime. dev+ino alone is NOT sufficient: a freed
+      // inode can be REUSED for the peer's FRESH file (observed on CI's
+      // filesystem), giving a false identity match. rename(2) preserves mtime,
+      // so the object we actually moved matches `before.mtimeMs` on the happy
+      // path — while a swapped-in fresh file (written "now") never will (the
+      // reclaimed object was provably wedged/dead, so its mtime is old).
+      if (
+        after.dev === before.dev &&
+        after.ino === before.ino &&
+        after.mtimeMs === before.mtimeMs
+      )
+        return true;
     } catch {
       /* @silent-fallback-ok: the aside vanished — treat as lost */
     }
