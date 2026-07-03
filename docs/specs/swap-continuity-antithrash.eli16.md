@@ -49,7 +49,11 @@ again, a built-in circuit breaker pauses all planned moves for an hour and
 sends you one alert — not a flood. The misbehavior detector catches all the
 shapes we know: the simple back-and-forth between two accounts, the same
 back-and-forth spread across different sessions, and the sneakier version
-where a session gets pushed around a circle of three or more accounts.
+where a session gets pushed around a circle of three or more accounts — the
+agent keeps three hours of move history exactly so that circle is visible,
+and the third move in three hours trips the breaker on the spot (even if the
+circling never repeats a pair, and even if the server restarts partway
+through — the history survives restarts).
 
 Two more things: you'll see fewer repeated "session restarted" notices (at
 most one per move, not one per hop), and you'll no longer get silence when
@@ -69,6 +73,11 @@ nothing.
 - If the server restarts, it remembers recent moves, any open circuit-breaker
   pause (including exactly when that pause was due to end), and which sessions
   were having trouble — a reboot can't reset any of the brakes.
+- If the agent ever CAN'T write its move-history file (the memory all these
+  brakes run on), planned moves pause entirely until it can write again, and
+  you get one alert saying so. Emergency moves still work as always. The
+  logic: better to skip an optimization than to run it with the brakes
+  disconnected.
 - One narrow piece stays off at first: the extra check that stops a *model*
   change (not an account move) from interrupting quiet background helpers. It
   gets its own on-switch later, so nothing about today's model-changing
