@@ -1,6 +1,17 @@
-# BUILD-STATUS — machine-coherence-guard (Session B handoff)
+# BUILD-STATUS — machine-coherence-guard (Session C handoff)
 
-**As of:** 2026-07-03 12:52 PDT (final for this session) · branch `echo/machine-coherence-guard` · worktree `~/.instar/agents/echo/.worktrees/machine-coherence-guard`
+**As of:** 2026-07-03 15:31 PDT (Session C — resumed the C₁b build) · branch `echo/machine-coherence-guard` · worktree `~/.instar/agents/echo/.worktrees/machine-coherence-guard`
+
+## Session C progress (this session)
+- **`a004f3307` — C₁b-ii** (the in-flight uncommitted work, now committed): §3.3 dimension comparison (`computeDivergentRows`) + the sentinel confirmation engine (R2-L3 consecutive rule, patch-only version grace clock, M6 update-wave flag suppression, fail-toward-silence state retention). Added 14 dedicated semantic tests the in-flight work lacked (the prior builder had only updated counter shapes). Signal-only — no episode/alarm.
+- **`16d34a385` — C₁b-iii-a**: the episode DURABLE state layer (`src/monitoring/machineCoherenceEpisode.ts`) — §4.1 types (EpisodeState / PendingFix three-state / RecurrenceBlock / close taxonomy) + episodeId mint + atomic tmp+rename write + absent/ok/corrupt read (§4.6 re-baseline gate). Pure module, +12 tests. NOT wired — the state machine consuming it is next.
+- **tsc clean; targeted coherence tests green (66 across evaluate/sentinel/episode). NOT pushed, no PR.** Next unit (C₁b-iii-b: episode state machine + §4.2 attention item + §4.2.1 pendingFix reply flow) deliberately NOT started — it is large/high-risk (needs the running server + §4.2 verbatim wording) and starting it half-built would break the commit-each-piece discipline.
+
+---
+
+## (Session B handoff — retained below)
+
+**Prior as-of:** 2026-07-03 12:52 PDT · branch `echo/machine-coherence-guard` · worktree `~/.instar/agents/echo/.worktrees/machine-coherence-guard`
 **Spec:** `docs/specs/machine-coherence-guard.md` (CONVERGED r6, approved) + `.eli16.md`. **Side-effects artifact:** `upgrades/side-effects/machine-coherence-guard.md` (kept current per increment — read its Increment sections first; they are the authoritative landed/pending ledger).
 
 ## Commits on this branch (build increments, in order)
