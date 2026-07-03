@@ -47,8 +47,8 @@ pipeline, transport stubbed below the funnel).
 - **Slack messages now look right**: when your agent replies in Slack, its
   formatting renders natively — bold is bold, links are clickable, lists get
   real bullets, and code blocks stay monospaced — instead of showing raw
-  `**asterisks**` and bracket syntax. Nothing to configure; if you ever want
-  the old raw behavior back, one config flag restores it exactly.
+  asterisks and bracket syntax. Nothing to configure; if you ever want the
+  old raw behavior back, one setting restores it exactly.
 
 ## Summary of New Capabilities
 
