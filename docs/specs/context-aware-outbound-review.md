@@ -2,7 +2,11 @@
 title: "Context-Aware Outbound Review — teach the response-review reviewers conversational context before they get blocking power (S2)"
 slug: "context-aware-outbound-review"
 author: "echo"
-status: "draft r4 (post round-3 — all round-1 + round-2 + round-3 findings folded: docs/specs/reports/context-aware-outbound-review-round1-findings.md, …-round2-findings.md, …-round3-findings.md; decision-complete — §8 holds decided defaults, not open questions)"
+status: "converged r4 (round-4 verdict CONVERGED — 0 CRITICAL / 0 MAJOR; all round-1..4 findings folded: docs/specs/reports/context-aware-outbound-review-round1-findings.md, …-round2-findings.md, …-round3-findings.md, …-round4-findings.md; decision-complete — §8 holds decided defaults, not open questions)"
+review-convergence: "2026-07-02"
+review-convergence-detail: "4-round /spec-converge ceremony: six internal lenses (security, adversarial, integration re-grounding of every cite against the tree, decision-completeness, fail-direction, lessons-aware) + two external cross-model doors per round (pi→openai-codex/gpt-5.5; gemini-cli/gemini-2.5-pro). Trajectory: r1 6M/5m/4L → r2 2M/2m/5L → r3 2M/0m/3L → r4 0M/5m/2L (CONVERGED; the r4 sub-major findings were folded editorially in the tag commit, enumerated per-finding in the round-4 report). Round-4 fold table 5/5 verified by the internal panel and BOTH externals."
+approved: true
+approval-basis: "standing Session-A preapproval (topic 29836); the enforcement flip itself remains gated on §D9 and is the operator's action alone"
 eli16-overview: "context-aware-outbound-review.eli16.md"
 parent-principle: "Intelligent Prompts — An LLM Gate Must Not String-Match (the LLM's entire reason for being in the loop is contextual judgment; a reviewer that cannot SEE the conversation cannot judge in context — its 'user explicitly asked' carve-out is prose with no input, a wish wearing a rule's clothing)"
 sibling-principles: "Structure > Willpower (the carve-out must be fed structurally, not remembered); No Silent Degradation to Brittle Fallback (context-fetch failure degrades to the CURRENT gate, never to a weaker one); Know Your Principal — An Unverified Identity Is a Guess (whose ask counts is a principal question); The Operator Channel Is Sacred (fail direction reasoning for the carve-out's one-way loosening); Observable Intelligence (every would-block must be durably auditable before enforcement flips); Maturation Path — Every Feature Ships Enabled on Developer Agents; Bounded Blast Radius (token bounds on injected context); Testing Integrity"
@@ -117,9 +121,19 @@ envelope rather than inventing a second one.
 `CoherenceGate` gains an optional injected dependency (constructor option):
 
 ```ts
-conversationContextProvider?: (topicId: number, limit: number) =>
-  Array<{ role: 'user' | 'agent'; text: string; senderUid?: string }>;
+conversationContextProvider?: (topicId: number, limit: number) => {
+  messages: Array<{ role: 'user' | 'agent'; text: string; verifiedOperator?: boolean }>;
+  askLicenseMode: 'verified-operator' | 'single-sender' | 'weak-corroboration-only';
+};
 ```
+
+(Signature widened r4, R4-m1: the provider RETURNS the wiring-computed
+per-row `verifiedOperator` tags and the window's `askLicenseMode` alongside
+the rows — the D2/D4 principal values now have a carrier through the
+interface. The gate stays decoupled from `src/users/`: it copies the
+returned mode into `conversationContextMeta` and NEVER computes or infers
+it; a provider-side tagging/mode throw is a provider throw, caught at
+acquisition per D5.)
 
 - The provider is SYNCHRONOUS (decided r2, resolves round-1 m2): the server
   wires it to `TopicMemory.getRecentMessages` (the same source the
@@ -320,8 +334,10 @@ verified-operator binding, the prompt honors the carve-out for
 `USER(verified-operator)` asks and treats other users' asks as weak
 corroboration only. In a topic WITHOUT a binding, the rule depends on the
 window's sender diversity, computed structurally at the wiring layer from the
-rows' authenticated uids: if the fetched window contains asks from at most
-ONE distinct authenticated sender uid, any USER-role ask counts (the healthy
+rows' authenticated uids: if EVERY user-role row in the window carries an
+authenticated uid and exactly ONE distinct uid appears among them (r4
+reword, R4-L1 — "at most one" would have misread a zero-uid window as
+licensed), any USER-role ask counts (the healthy
 single-operator shape — refusing the carve-out there would reproduce the
 exact false positives this spec exists to fix); if the window contains
 MULTIPLE distinct authenticated sender uids AND no binding, ALL asks degrade
@@ -331,10 +347,11 @@ topic).
 
 **Uid-less rows degrade AWAY from licensing (r4 — resolves round-3 M2,
 fail-closed):** `TopicMessage.telegramUserId` and `.userId` are BOTH
-optional (`src/memory/TopicMemory.ts:32-47`), and D1's provider signature
-says `senderUid?: string` — user-role rows without an authenticated uid are
-admitted by the spec's own interface (older rows, non-Telegram adapters,
-migration-era data). A count over ZERO uids must never read as "one
+optional (`src/memory/TopicMemory.ts:32-47`), and the D1 provider's row
+shape carries only an OPTIONAL `verifiedOperator?` tag — user-role rows
+without an authenticated uid are admitted by the store schema and the
+spec's own interface (older rows, non-Telegram adapters, migration-era
+data). A count over ZERO uids must never read as "one
 sender": a USER-role row lacking an authenticated uid is UNVERIFIED. In an
 UNBOUND topic, a window containing ANY uid-less user-role row therefore
 computes `weak-corroboration-only` — full `single-sender` licensing
@@ -498,6 +515,15 @@ matters for D9), written at the same seam as `logAudit`:
   (r4), so a real reviewed turn cannot self-tag out of the denominator. Both
   row classes are excluded from the D9.3 denominator and adjudication queue
   (r3, round-2 L3).
+- The per-run battery SUMMARY row (D9.4b(a)) is a SECOND, additive row type
+  on the same JSONL, written directly by the driver through the same writer
+  (r4, R4-m5): `{ "batterySummary": true, "t": "<ISO>", "verdict":
+  "passed" | "failed" | "inconclusive", "fixtures": [<per-arm outcomes>],
+  "reason": "<refusal/invalid reason if any>" }`. It is NOT an `_evaluate`
+  verdict line — the "one line per `_evaluate` verdict" contract covers
+  evaluation rows only — and it is written on EVERY run outcome INCLUDING
+  refusals (which perform no evaluation), so a silent battery skip is
+  impossible. Summary rows are likewise excluded from the D9.3 denominator.
 
 ### D9. Data-gated enforcement-flip criteria
 
@@ -559,7 +585,14 @@ It is NEVER automatic; the gate below defines when proposing it is legitimate:
    - **Driver (build item):** a `ReviewCanaryBattery` module exposing one
      `run()` (seed → replay → assert → clean up → summary), invoked by a
      new built-in scheduler job `review-canary-battery` (ships OFF; the
-     operator enables it on the soaking dev agent for the soak window). The
+     operator enables it on the soaking dev agent for the soak window).
+     Invocation + auth seam (r4, R4-m3): the job drives the driver through
+     a Bearer-gated trigger route `POST /review/canary-battery/run` (part
+     of this build item; 503 when the feature is dark — the house
+     `feedback-factory-process` job pattern), using the agent's own
+     authToken — the same credential every instar hook/script already
+     holds; the driver's `/review/test` replays carry the same Bearer. No
+     auth-less bypass seam exists. The
      driver REFUSES to run — recording an `inconclusive` battery summary,
      never a silent skip — unless the feature resolves LIVE, `observeOnly`
      is true (the battery is absent under enforcement — boundary 13), and
@@ -584,16 +617,34 @@ It is NEVER automatic; the gate below defines when proposing it is legitimate:
      the route's returned `contextMeta` — see tag plumbing); the covering
      ask is the MOST RECENT user row (recency licensing per D3.1); every
      row carries `userId: 'review-canary-fixture'` (the cleanup key),
-     `privacyScope: 'private'`, and a `[CANARY-FIXTURE]` body prefix so any
-     surfacing elsewhere is self-identifying. Cleanup runs in a `finally`:
+     `sessionName: 'review-canary-battery'`, and `privacyScope: 'private'`.
+     Fixture identity lives ONLY in those non-rendered columns — NEVER in
+     the rendered `text` (r4, R4-m2: a visible test marker inside the
+     quoted context would let the reviewer recognize the battery and judge
+     un-live, masking exactly the laundering it hunts; the D2 renderer
+     emits role labels + JSON-encoded text only, so these columns never
+     reach the prompt — verified). Any surfacing elsewhere (the
+     seconds-long FTS residency) is identified by those columns. Seeding is
+     crash-safe and idempotent (r4, R4-m4): each run PRE-CLEANS
+     (`deleteMessagesByUser('review-canary-fixture')`) BEFORE seeding — so
+     rows stranded by a crash that skipped a prior run's `finally` can
+     never be silently reused — seeds with per-run-unique `messageId`s
+     (`insertMessages` is `INSERT OR IGNORE` on (message_id, topic_id) and
+     would otherwise no-op against strays), and asserts the inserted row
+     count before replaying; a failed seed assertion ⇒ battery
+     INCONCLUSIVE. Cleanup runs in a `finally`:
      `TopicMemory.deleteMessagesByUser('review-canary-fixture')`
      (`TopicMemory.ts:548` — exists today for GDPR erasure; the FTS delete
      trigger drops the index entries and `rebuildTopicMeta` runs) — fixture
      rows live in the production store for seconds per day. Owned residue,
      stated honestly: `rebuildTopicMeta` never deletes the meta row of an
      emptied topic, so a stale, content-free `topic_meta` row for the
-     reserved id lingers — bounded to the reserved range, names no fixture
-     text. The alternative carrier — an explicit context-row injection
+     reserved id lingers — a CONSTANT handful, not an accumulation (r4,
+     R4-L2: the reserved ids are FIXED per fixture and reused every run, so
+     `rebuildTopicMeta`'s INSERT OR REPLACE updates the SAME rows — the
+     residue is bounded by the fixture-set size), bounded to the reserved
+     range, names no fixture text. The alternative carrier — an explicit
+     context-row injection
      parameter on `/review/test` — is REJECTED: it would let any Bearer
      holder synthesize arbitrary "conversation" through the same seam real
      reviews use, a standing laundering-adjacent surface for a

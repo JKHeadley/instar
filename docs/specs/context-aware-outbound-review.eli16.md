@@ -1,8 +1,9 @@
 # Teach the message reviewer what you actually asked for (plain-English overview)
 
-Companion to `context-aware-outbound-review.md` (draft r4 — round-1, round-2
-and round-3 findings folded; see `reports/context-aware-outbound-review-round1-findings.md`,
-`…-round2-findings.md` and `…-round3-findings.md`).
+Companion to `context-aware-outbound-review.md` (converged r4 — round-1
+through round-4 findings folded; see
+`reports/context-aware-outbound-review-round1-findings.md`,
+`…-round2-findings.md`, `…-round3-findings.md` and `…-round4-findings.md`).
 
 ## The problem
 
