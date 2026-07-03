@@ -26,9 +26,15 @@
 
 **Blast radius:** pure module, zero runtime wiring yet — nothing imports it in production until increment B/C. The unit test is the only consumer. No config, no route, no behavior change on the fleet.
 
+### Increment D₁ — version telemetry populated (§5a) — LANDED
+
+**What changed:** `src/commands/server.ts` — the sole `captureHardware()` callsite (~:17458) now passes `ProcessIntegrity.getInstance()?.runningVersion`. When ProcessIntegrity is unavailable the argument is `undefined` (OMITTED), so `hardware.instarVersion` stays honestly absent (L1) — never a possibly-stale `config.version`.
+
+**Blast radius:** ships LIVE (a bug-fix — correcting a field that was structurally always `undefined`, not a new behavior). Retroactively activates the already-written consumer at `src/server/routes.ts:6645/6671` (the peer-version annotation on `/guards?scope=pool` failure rows). Additive: `hardware.instarVersion` was optional and always undefined before; now populated on machines running this version. No shape change (that is §5b's D5, still pending).
+
 ### Increment B — advert transport (§3.2) — PENDING
 ### Increment C — the evaluator + episode/election/fix (§3.3/§3.4/§4) — PENDING
-### Increment D — the awakeMachineCount telemetry fix (§5) — PENDING
+### Increment D₂ — the awakeMachineCount shape rework (§5b, D5) — PENDING
 ### Increment E — integration + e2e + CLAUDE.md template + release fragment — PENDING
 
 ---

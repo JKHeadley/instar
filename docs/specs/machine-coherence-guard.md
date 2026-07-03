@@ -3,7 +3,7 @@ slug: machine-coherence-guard
 title: Agent Machine-Coherence Guard — pool-wide version + flag-skew detection, one alarm (Roadmap 4.1, F4/P0-1)
 status: "converged r6 (round-6 verdict CONVERGED — 0 CRITICAL / 0 MAJOR / 0 MINOR / 2 LOW folded editorially in the tag commit; all round-1..6 findings folded: docs/specs/reports/machine-coherence-guard-round{1..6}-findings.md; decision-complete — ## Open questions verifiably empty since round 2)"
 review-convergence: "2026-07-03"
-review-convergence-detail: "6-round /spec-converge ceremony: internal multi-lens panel (security, scalability, adversarial, integration, decision-completeness, lessons-aware — every round grounded against the real pool/heartbeat/lease/attention/ratifier source; rounds 3+ under a WALK-RE-EXECUTION charter after round 3 proved prose folds can carry their own seams) + two external cross-model doors per round (pi→openai-codex/gpt-5.5; gemini-cli/gemini-2.5-pro; codex-cli honestly absent on this machine) + the Standards-Conformance Gate every round (0 flags rounds 1–5; 1 advisory flag round 6, dispositioned in the round-6 report as the D21-frontloaded v1 held-path scope with the Phase-2 tracked follow-up). Trajectory: 3C+12M → 0C+3M → 0C+6M → 0C+2M → 0C+1M → 0C+0M (CONVERGED; the 2 round-6 LOWs folded editorially in the tag commit, enumerated in the round-6 report). Round-6: BOTH externals fully clean (0/0/0/0) AND every internal lens converged — the ceremony's first unanimous round; all 11 round-5 folds held under walk re-execution, both round-4 MAJOR walks stayed closed, and the whole-§4.2.1 cross-reference sweep found no new contradiction. Notable ceremony property: rounds 3–5 each found exactly the seams the prior fold introduced (the walk-re-execution discipline is what caught them; round 5's MAJOR was found independently by an external and the internal adversarial lens — the first two-door overlap)."
+review-convergence-detail: "6-round /spec-converge ceremony: internal multi-lens panel (security, scalability, adversarial, integration, decision-completeness, lessons-aware — every round grounded against the real pool/heartbeat/lease/attention/ratifier source; rounds 3+ under a WALK-RE-EXECUTION charter after round 3 proved prose folds can carry their own seams) + two external cross-model doors per round (pi→openai-codex/gpt-5.5; gemini-cli/gemini-2.5-pro; codex-cli honestly absent on this machine) + the Standards-Conformance Gate every round (0 flags rounds 1–5; 1 advisory flag round 6, dispositioned in the round-6 report as the D21-frontloaded v1 held-path scope with the Phase-2 tracked continuation). Trajectory: 3C+12M → 0C+3M → 0C+6M → 0C+2M → 0C+1M → 0C+0M (CONVERGED; the 2 round-6 LOWs folded editorially in the tag commit, enumerated in the round-6 report). Round-6: BOTH externals fully clean (0/0/0/0) AND every internal lens converged — the ceremony's first unanimous round; all 11 round-5 folds held under walk re-execution, both round-4 MAJOR walks stayed closed, and the whole-§4.2.1 cross-reference sweep found no new contradiction. Notable ceremony property: rounds 3–5 each found exactly the seams the prior fold introduced (the walk-re-execution discipline is what caught them; round 5's MAJOR was found independently by an external and the internal adversarial lens — the first two-door overlap)."
 approved: true
 approval-basis: "standing Session-A operator preapproval (topic 29836, 2026-07-02 — spec approvals named in scope); build authorization for the §7 graduated ladder (dark fleet → dev dry-run soak → dev live → operator-owned fleet flip); the §4.2.1 fix flow keeps its own per-episode operator-approval gate and the D7 soak criterion gates every rollout rung"
 author: echo
@@ -1786,7 +1786,7 @@ decisions the round-1 findings forced. None remain parked.
   table as drafted, KEEPING `meshTransport.enabled` (a single-rope pool
   varying it legitimately is not observed in practice; if a legit topology
   emerges, removal is a one-line manifest change — the manifest is
-  code-shipped, additions/removals are follow-up-cheap), PLUS per-entry
+  code-shipped, additions/removals are cheap one-line changes), PLUS per-entry
   `readSource` (M8) and the guard's own posture row (N2). `topicProfiles` /
   `subscriptionPool` posture: excluded — per-machine by design (seat/quota
   state is genuinely machine-local), recorded in the N5 exclusion list.
@@ -1808,7 +1808,7 @@ decisions the round-1 findings forced. None remain parked.
 - **D5 (was Q5) — `awakeMachineCount` shape.** `number | null` + source tag,
   shipped WITH the full consumer/test/template/docstring sweep in the same PR
   (§5b). The compat alternative (keep `0`) preserves the exact lie the fix
-  removes. Published-surface change ⇒ decided in-spec, never deferred.
+  removes. Published-surface change ⇒ decided in-spec, never left for later.
 - **D6 (was Q6) — Guard posture weight.** NOT `loadBearing` in v1 —
   signal-only, no critical path consumes it yet, and the flag would raise G3
   gap alarms on every fleet agent where the guard is deliberately dark.

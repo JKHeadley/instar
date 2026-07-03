@@ -17455,7 +17455,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
         if (poolSelfId) {
           try {
-            poolIdMgr.recordSelfHardware(poolSelfId, poolMod.captureHardware());
+            // §5a (machine-coherence-guard): stamp the RUNNING version into
+            // hardware self-attest so peers can see it (activates the already-
+            // written consumer at routes.ts:6645/6671). When ProcessIntegrity is
+            // unavailable the argument is OMITTED so the field stays honestly
+            // absent (L1) — never a possibly-stale config.version.
+            poolIdMgr.recordSelfHardware(
+              poolSelfId,
+              poolMod.captureHardware(ProcessIntegrity.getInstance()?.runningVersion),
+            );
           } catch { /* best-effort hardware self-attest */ }
           // Quota-aware placement (2026-06-05): self-report whether a NEW
           // session on THIS machine could work right now. Blocked = a provider

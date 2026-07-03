@@ -1,7 +1,7 @@
 # Machine-Coherence Guard — plain-English overview
 
 **Companion to:** `docs/specs/machine-coherence-guard.md` (roadmap item 4.1,
-round-6 revision)
+round-6 revision, converged + approved 2026-07-03)
 
 ## The problem, in one story
 
