@@ -452,9 +452,11 @@ purely-additive refinement (`freshness-hysteresis`), not v1.
 **Sustained measurement blindness surfaces once, and the trigger is
 POOL-LEVEL, not candidacy-dependent (P17/P19; R5-m1):** the
 `measurement-blind` condition is evaluated per monitor tick over the POOL
-ITSELF — `proactiveSwap` enabled AND zero accounts in the pool carry a
-present, fresh reading — NOT over "the alternate set of some candidate
-evaluation". This distinction is load-bearing: when the poller dies
+ITSELF — `proactiveSwap` enabled AND the pool holds ≥2 non-disabled accounts
+AND zero of them carry a present, fresh reading — NOT over "the alternate
+set of some candidate evaluation". (The ≥2 conjunct, R6-L4: a pool of 0–1
+accounts has no alternate to swap to, so the optimizer is inherently a no-op
+there — "blind" would be a false alarm about a pause that costs nothing.) This distinction is load-bearing: when the poller dies
 outright, every SOURCE reading also goes stale within `quotaFreshnessMs`,
 stale sources leave candidacy, no candidate evaluation runs, and a
 candidacy-scoped trigger would never fire — whole-pool blindness (the
@@ -463,7 +465,18 @@ has held continuously for longer than `allHotHeartbeatMs`, ONE deduped
 attention item is raised ("proactive optimization is measurement-blind — no
 fresh quota readings on any account for 30+ min"), `episodeKind:
 'measurement-blind'`, episode-deduped as usual — a paused-by-blindness
-optimizer must never be silent about why. The check reads the pool's
+optimizer must never be silent about why. **Where the episode's dedupe
+state lives, stated honestly (R6-m2):** when candidate evaluations DO run,
+`target-unmeasured` rows carry the `episodeId` and anchor the dedupe
+durably like every other episode; in the whole-pool case — where zero rows
+are written by construction — the episode lives in memory plus the §6.3
+status block only, so a RESTART during a sustained blind episode may
+re-raise the item once. Accepted at that bound (the R5-m2/R5-m3
+calibration class: one extra item, toward alerting, during a state that
+genuinely warrants attention); a durable pool-level marker row (the
+`outage-summary` shape) is the named purely-additive refinement
+(`measurement-blind-marker-row`) if a soak shows restart-flap noise. The
+check reads the pool's
 snapshots directly and must NOT assume the poller loop is running: today
 `quotaPoller.start()` is gated on `subscriptionPool.size() > 0` AT BOOT
 (server.ts), so a pool populated after boot has no background poller until
@@ -503,7 +516,11 @@ floor.
    under the absolute ceiling (bound 1). If the filtered set is empty → the
    refusal is `all-hot` iff every alternate carried a VALID reading at/above
    the ceiling, `target-unmeasured` the moment any alternate lacked a valid
-   reading — regardless of its frozen value (§3.1, R5-L2).
+   reading — regardless of its frozen value (§3.1, R5-L2). **Scope guard
+   (R6-L2):** both clauses CLASSIFY an empty filtered set and nothing else
+   — while ANY alternate survives the filter, selection proceeds to
+   scoring; a mixed pool holding one valid under-ceiling target alongside
+   unmeasured others is never refused by this rule.
 2. **SCORE** with `selectAccount`'s existing use-before-reset scoring — over
    the FILTERED cool set ONLY (drain the soonest-resetting COOL account
    first). The scoring was never the bug; applying it over the hot band was.
@@ -589,8 +606,12 @@ respawn — §4.3 — never a refusal.)
 ### 3.5 Thrash detection + the swap ledger
 
 Every proactive decision — executed, refused, deferred, dropped, invalidated,
-failed — and every reactive swap is appended to a durable JSONL ledger:
-`state/swap-ledger.jsonl`. The authoritative row schema is §6.1 (single
+failed — every reactive swap, AND every interactive work-gate outcome (the
+§4.5 `session-busy` refusal and the `force` proceed) is appended to a durable
+JSONL ledger: `state/swap-ledger.jsonl`. Recovery-class refreshes write NO
+swap-ledger rows (R6-m1, decided): a recovery respawn is gate-exempt by
+class (§4.2) — no swap decision exists to record — and its durable record is
+the reap-log, where refused and executed recoveries already land. The authoritative row schema is §6.1 (single
 source; the sketch that used to live here was incomplete). The ledger is the
 restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
 
@@ -724,6 +745,25 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   it is individually-justified churn at ≤⅔ the incident pace, bounded by
   dwell alone. Named so a soak reading "green detectors + steady ~90-min
   churn" is interpreted as the band, not as proof of no rotation.
+  **The band has a POOL-AGGREGATE shape too (R6-L1, from GPT-tier —
+  calibrated with the rationale recorded):** a COHORT of sessions each
+  executing at most `swapFrequencyThreshold − 1` hops (e.g. a two-hop
+  A→B→C migration wave, 45 min apart, then stopping) trips T2 on no
+  session and inverts no pair — aggregate churn of up to 2 kills per
+  session inside one window with every detector green. This is NOT the
+  incident pathology wearing a new shape: every hop must independently
+  pass bound 0 + (a) + (c) + dwell on FRESH readings (a genuine ≥15-point
+  improvement onto a genuinely cool target — the 2026-07-02 jitter hops
+  pass none of these), pool-wide execution pace is capped by
+  `maxSwapsPerCycle` per tick plus the per-target cap, and the §4 work
+  gate protects in-flight work on every kill regardless of detector
+  state. The residual is bounded, individually-justified movement whose
+  AGGREGATE volume is visible in the ledger's `swapped` rows and the
+  §6.3 counters; a pool-level aggregate-churn detector is the named
+  purely-additive refinement (`pool-aggregate-churn-detector`) if a soak
+  shows cohort waves recurring. (The §3.5 multi-session sentence below is
+  scoped to wave ROTATIONS — returning cycles — which this terminating
+  migration shape is not.)
 - **Thrash episode / breaker (two trigger tiers — the arithmetic is
   load-bearing, R3-M2):** the breaker opens on EITHER trigger:
   - **T1 (inversion tier):** ≥ `thrashBreakerThreshold` (default **2**)
@@ -781,7 +821,16 @@ restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
   for T2 / tier + unordered pair for T1), and boot hydration re-derives
   continuation memory from the most-recent close row per signature inside
   the hydration window (whose formula's R5-m2 term exists exactly so that
-  row is still retained, §3.2). Without this, a restart inside the
+  row is still retained, §3.2). **The close row can be MISSING for a real
+  episode (R6-m3 — the down-across-the-deadline case):** the leave row is
+  written by a live process at backoff-elapse; a server that is DOWN when
+  the deadline passes never writes it. Hydration therefore synthesizes
+  the close IN MEMORY from the signature-carrying OPEN-marker row
+  whenever that row's `breakerDeadline` elapsed with no matching close
+  row inside the window — the deadline IS the close time — writing
+  nothing to the ledger (the read path stays read-only). A restart that
+  spans the deadline keeps continuation memory instead of minting a
+  duplicate item for the same sustained pathology. Without this, a restart inside the
   continuation window forgot the close, and the same session's next
   crossing minted a new `episodeId` + a second item for a sustained
   pathology — the alert-drip class this paragraph exists to forbid, riding
@@ -1376,7 +1425,7 @@ matrix (● = always, ○ = when applicable, — = never):
 | field | type | swapped | refused | deferred | dropped | invalidated | failed | proceeded |
 |---|---|---|---|---|---|---|---|---|
 | `ts` | ISO-8601 | ● | ● | ● | ● | ● | ● | ● |
-| `kind` | `'proactive'\|'reactive'` | ● | ● | ● | ● | ● | ● | ● |
+| `kind` | `'proactive'\|'reactive'\|'interactive'` | ● | ● | ● | ● | ● | ● | ● |
 | `decision` | enum (row headers) | ● | ● | ● | ● | ● | ● | ● |
 | `callerClass` | `SwapWorkGateCallerClass` | ● | ● | ● | ● | ● | ● | ● |
 | `session` | string | ● | ● | ● | ● | ● | ● | ● |
@@ -1403,6 +1452,15 @@ matrix (● = always, ○ = when applicable, — = never):
 | `triggerSignature` | `{tier: 'T1'\|'T2', session?, pair?}` | ○ (thrash-breaker open marker) | ○ (thrash-breaker open/close rows) | — | — | — | — | — |
 | `transition` | `'enter'\|'leave'\|'heartbeat'` | — | ○ (all-hot / thrash-breaker / target-unmeasured) | — | — | — | — | — |
 | `errorClass` | string (constructor-name/enum ONLY — §3.6) | — | — | — | — | — | ● | — |
+
+**`kind` mirrors the caller's lane (R6-m1 — the third member is the §4.5
+rows' home):** `proactive` for `proactive-swap` decisions, `reactive` for
+`reactive-swap`, `interactive` for the interactive-refresh work-gate rows
+(the 409 `session-busy` refusal and the `force`-proceeded row — the rows
+whose `force`/`authLevel` fields exist). `recovery`-class refreshes write no
+rows at all (§3.5); no fourth member exists. The §3.6 failure-streak
+kind-separation continues to read only `proactive`/`reactive` — an
+interactive row never joins a streak.
 
 **Episode-field pairing rule (R3-m1):** `episodeId` and `episodeKind` travel
 together — every episodeId-stamped row carries the kind, and
@@ -1794,7 +1852,11 @@ Run on the dev agent, real pool, real sessions:
   (with `unmeasuredAlternates ≥ 1`) the moment ANY alternate lacked a valid
   reading — INCLUDING the mixed pool where the others are validly hot AND
   the all-stale-frozen-hot pool (the R5-L2 misreading pinned out) — and
-  `all-hot` only when every alternate carried a valid hot reading;
+  `all-hot` only when every alternate carried a valid hot reading; the
+  R6-L2 scope guard pinned from the other side: a mixed pool holding ONE
+  valid under-ceiling target alongside unmeasured alternates is NOT
+  refused — it proceeds to scoring and can execute (the empty-filter
+  classification never fires while an eligible target survives);
   enrollment-day flip: an account enrolled mid-run is refused as a target
   until its first poll lands, then becomes eligible on the next tick (no
   permanent exile); REACTIVE selection with an unmeasured account stays
@@ -1834,7 +1896,13 @@ Run on the dev agent, real pool, real sessions:
   `retentionBoundMs − ε` is still hydrated (the continuation term of the
   §3.2 formula pinned: a builder shipping the old 4-term max fails this
   test); same-signature lookup pinned (R5-L3: an interleaved
-  different-signature episode does not break the match); **ledger-outage
+  different-signature episode does not break the match); the
+  down-across-the-deadline case pinned (R6-m3: breaker opens, server
+  stops BEFORE the backoff elapses, boots after the deadline but inside
+  the continuation window — no close row exists; hydration synthesizes
+  the close at `breakerDeadline` from the open-marker row and the next
+  same-signature crossing JOINS the episode, no second item, nothing
+  written at boot); **ledger-outage
   index priming (R4-m1):** a reactive swap executed while the ledger is
   unwritable primes dwell in the in-memory index (the post-resume first
   tick refuses `dwell` for that session) and increments `rowsLostWhileDown`;
@@ -2094,7 +2162,7 @@ monitor's existing `triggerPoll` hook. No §0 property was weakened; (a) and
 | R4-M1 (absent/unboundedly-stale quota reading fails toward MORE swapping — properties (a)/(c) vacuous when the measurement layer is blind; corroborated by the GPT-tier external) | Adopted — bound 0: proactive target eligibility requires a reading PRESENT and fresher than `quotaFreshnessMs` (default 30 min = 2× the poller's 15-min cadence); absent/stale is NOT under the ceiling and counts toward all-hot; refusal `target-unmeasured` (state-transition rows) distinguishes measurement outage from genuine heat; the SOURCE leg carries the same validity (stale-hot never nominates a kill; absent-0 stated as normative); execute-time revalidation re-checks bound 0; REACTIVE deliberately untouched (I6 — unknown-selectable is rescue's feature); enrollment-day self-heal ≤1 poll interval (pollAll covers all accounts; `triggerPoll` accelerates under pressure) — no permanent exile of a healthy new account; sustained whole-pool blindness raises ONE `measurement-blind` item (I13); §13's stale-data row corrected to scope its claim to bounded poll-lag | §3.1, §3.3, I2, I13, §6.1–§6.4, §7, §12, §13 |
 | R4-m1 (I5's "single named exception" inaccurate during an unwritable-ledger episode; in-memory index behavior on failed append unspecified) | Adopted — non-refusal decisions during the outage UPDATE the in-memory index regardless of append failure (dwell/frequency/reversal stay primed; the post-resume premature-re-swap case closed) and are counted (`rowsLostWhileDown`, §6.3 ledger block); I5's exception re-worded as the outage CLASS (refusals counter-only; executed/proceeded index-primed + counted; durable trace = the episode's one item) | §3.5, I5, §6.3, §12, §13 |
 | R4-m2 (episode continuation defined only for T2/same-session; sustained T1 thrash re-alerts hourly; half-open only implicit) | Adopted — continuation generalized over both tiers by trigger signature (T2: same session within `swapFrequencyWindowMs` of close; T1: same unordered account pair within `reversalWindowMs` of close): same episodeId, extended deadline (the continuation row's new `breakerDeadline` keeps the boot anchor correct), no second item; half-open pinned = closed-with-continuation-memory (no third persisted state) | §3.5, §6.4, §12 |
-| R4-m3 (I7 "indeterminate on BOTH legs" ambiguous for the mixed case; `\|\|` undefined over tri-states) | Adopted — normative any-leg rule for proactive callers: idle ONLY when every READABLE leg affirmatively reports idle; `'working'`/`'indeterminate'` on ANY leg ⇒ busy; `'absent'` excluded per the R3-L1 pin (remaining leg decides); the mixed case (footer indeterminate + subagent false ⇒ BUSY) decided in-text; the pseudocode's `\|\|` defined over the tri-state; I7 restated to match | §4.1, I7, §12 |
+| R4-m3 (I7 "indeterminate on BOTH legs" ambiguous for the mixed case; `\|\|` undefined over tri-states) | Adopted — normative any-leg rule for proactive callers: idle ONLY when every READABLE leg affirmatively reports idle; `'working'`/`'indeterminate'` on ANY leg ⇒ busy; `'absent'` excluded per the R3-L1 pin (remaining leg decides); the mixed case (footer indeterminate + subagent false ⇒ BUSY) decided in-text; the pseudocode's `\|\|` defined over the tri-state; I7 restated to match. **[Historical record — the `'absent'`-excluded arm of this fold is SUPERSEDED: it contradicted the R3-L1 pin (R5-M1) and was re-decided in round 6 — `absent` now resolves like `indeterminate` for every caller class (§4.1, §19). Do not build from this row.]** | §4.1, I7, §12 |
 | R4-m4 (execute-time revalidation re-checks target ceiling + source identity but not fresh source-pressure or the improvement delta) | Adopted — the revalidation checklist is enumerated (target validity+ceiling / source identity / source pressure fresh / improvement delta fresh) with refusal reasons per arm (`target-revalidation-failed` / `intent-stale`); property (c) verified at the actual kill point on the snapshot the revalidation already holds | §3.3, §12 |
 | R4-L1 (sub-threshold rotation pacing band unnamed) | Adopted — the ~90-min evasion band named in §3.5 with the soak-interpretation note (each such hop still passes (a)+(c)+dwell individually) | §3.5 |
 | R4-L2 (no cross-knob coherence constraint; raising dwellMs can silently disarm T2) | Adopted — two warn-only config-load checks: dwell-vs-frequency-window disarms T2; `quotaFreshnessMs` below the poll cadence degrades toward permanent refusal (safe, but flagged) | §7, §12 |
@@ -2125,6 +2193,27 @@ round-5 report's property table).
 | R5-L3 (T1 continuation lookup ambiguity — "the previous episode's close" could read as most-recent-of-any-signature) | Adopted — lookup pinned: continuation matches the most recent episode WITH THE SAME TRIGGER SIGNATURE; §12 pins the interleaved-episode case | §3.5, §12 |
 | R5-L4 (first-reading pile-on onto a fresh account unnamed — a soak could read the bounded case as a regression) | Adopted — named in §3.3 with its three bounds (per-tick `triggerPoll` refresh, the 15-point headroom budget, dwell per moved session) and the `burn-aware-targeting` smoothing pointer | §3.3 |
 
+## 20. Round-6 findings disposition (convergence round — all folded IN-ROUND)
+
+Round 6 verified all 8 round-5 findings genuinely resolved and raised **zero
+CRITICAL and zero MAJOR** findings (report: `docs/specs/reports/
+swap-continuity-antithrash-round6-findings.md`, reviewed commit c3eba1dde).
+The 3 MINOR + 4 LOW items raised were each a bounded textual/schema-completing
+touch — none alters any brake bound, caller-class direction, invariant,
+default, or §0 property — and all were folded in-round per the disclosed
+process (the report carries the honest delta accounting). Calibrations of
+external severities are recorded per finding, never silent.
+
+| finding | disposition | where |
+|---|---|---|
+| R6-m1 (ledger `kind` enum cannot represent the §4.5 interactive work-gate rows; recovery-row question undecided — from GPT-tier #1, calibrated MAJOR→MINOR: pure schema-completeness, no brake or safety property reads the field on these rows; the R3-m1/R3-m2 precedent class) | Folded in-round — `kind` gains the `'interactive'` member (the §4.5 refusal/force rows' home); `kind` mirrors the caller's lane, stated; recovery-class refreshes DECIDED to write no swap-ledger rows (gate-exempt, no decision exists; the reap-log is their record); §3.6 streak note (interactive rows never join a streak) | §3.5, §6.1 |
+| R6-m2 (pool-level `measurement-blind` episode has no ledger anchor in the whole-pool case — its dedupe is not restart-proof and the §6.1 stamping implication cannot happen when zero rows are written; from GPT-tier #2, calibrated MAJOR→MINOR: alert-hygiene bound of one extra item per restart×blind-episode, the R5-m2/R5-m3 class; the pause direction stays safe) | Folded in-round — anchoring stated honestly: candidate-row episodes anchor durably via `target-unmeasured` rows; the whole-pool episode lives in memory + the §6.3 status block, restart MAY re-raise once (accepted, toward alerting); `measurement-blind-marker-row` named as the purely-additive durable refinement | §3.3 |
+| R6-m3 (episode close row is never written when the server is DOWN as the backoff deadline elapses — hydration then loses continuation memory and re-alerts once; from GPT-tier #4, adopted at its filed MINOR) | Folded in-round — hydration synthesizes the close IN MEMORY at `breakerDeadline` from the signature-carrying open-marker row when the deadline elapsed with no matching close row (read path stays read-only, nothing written at boot); §12 pins the down-across-deadline join | §3.5, §12 |
+| R6-L1 (a terminating cohort migration — each session ≤ `swapFrequencyThreshold − 1` hops, no inversion — produces aggregate churn with every detector green; from GPT-tier #3, calibrated MAJOR→LOW with the rationale recorded: every hop must pass bound 0 + (a) + (c) + dwell on fresh readings — individually-justified movement, not the 2026-07-02 jitter pathology, which passes none; pace capped by `maxSwapsPerCycle` + per-target cap + dwell; the §4 work gate protects in-flight work regardless of detector state; the R4-L1/R5-L4 named-bound class. The "contradicts §3.5" arm refuted: the multi-session sentence is scoped to returning ROTATIONS) | Folded in-round — the pool-aggregate band named beside R4-L1's single-session band, with its bounds and ledger visibility; `pool-aggregate-churn-detector` named as the purely-additive refinement | §3.5 |
+| R6-L2 (the R5-L2 empty-filter classification could be misread as refusing while a valid target survives; from gemini-2.5-pro #1, calibrated MINOR→LOW: both sites already carry the "filtered set is empty" conditional — the misreading requires lifting the clause out of its stated scope) | Folded in-round — explicit scope guard added at the §3.3 selection order (the clauses classify an EMPTY filtered set and nothing else); §12 pins the mixed-pool-with-one-valid-target proceeds case from the other side | §3.3, §12 |
+| R6-L3 (internal — §18's R4-m3 disposition row still records the superseded "absent excluded / remaining leg decides" arm with no supersession marker; a §18-skimming builder could resurrect the exact contradiction R5-M1 killed) | Folded in-round — supersession marker added to the row ("do not build from this row"; §4.1/§19 carry the decided direction) | §18 |
+| R6-L4 (internal — the pool-level measurement-blind trigger as written fires vacuously on a 0–1-account pool, where proactive optimization is inherently a no-op: a false alarm about a pause that costs nothing) | Folded in-round — ≥2 non-disabled accounts conjunct added to the trigger condition | §3.3 |
+
 ## Open questions
 
 *(none — all resolved into §14 Frontloaded Decisions)*
@@ -2153,5 +2242,8 @@ trigger made pool-level and candidacy-independent; continuation memory made
 restart-proof via the signature-carrying close row + the retention formula's
 continuation term; and the outage+restart residual stated honestly with a
 durable `outage-summary` breadcrumb replacing the false under-primed claim).
-Evidence: `logs/server.log` (echo, v1.3.722). Convergence round 6 in flight;
-nothing here is approved for build.*
+Round-6 convergence review same day: all 8 round-5 findings verified
+genuinely resolved, both external families ran (GPT-tier via the pi door +
+gemini-2.5-pro), zero CRITICAL/MAJOR; the 3 MINOR + 4 LOW raised were folded
+in-round with the delta disclosed (§20) — verdict CONVERGED. Evidence:
+`logs/server.log` (echo, v1.3.722).*
