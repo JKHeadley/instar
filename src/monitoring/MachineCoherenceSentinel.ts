@@ -143,8 +143,12 @@ export interface MachineCoherenceStatus {
   machinesCompared: number;
   peerClassifications: { compared: number; unknown: number; advertStale: number; advertRejected: number };
   raiser: { machineId: string | null; isSelf: boolean; candidates: string[] };
-  /** The open episode (§4), or null when none / the durable machinery is unwired. */
-  openEpisode: { episodeId: string; rows: number; suspended: boolean; itemRaisedAt: string | null } | null;
+  /** The open episode (§4), or null when none / the durable machinery is unwired.
+   *  `pendingFix` carries the §4.2.1 proposal awaiting operator approval (or null). */
+  openEpisode: {
+    episodeId: string; rows: number; suspended: boolean; itemRaisedAt: string | null;
+    pendingFix: { state: import('./machineCoherenceEpisode.js').PendingFixState; key: string; targetMachineId: string; targetValue: string; proposalHash: string } | null;
+  } | null;
   /** Episode lifecycle counters (§4.5) — present only when the machinery is wired. */
   episodeCounters?: import('./machineCoherenceEpisodeManager.js').EpisodeManagerCounters;
   /**
@@ -199,6 +203,19 @@ export class MachineCoherenceSentinel {
   /** Passthrough for the conversational reply path (b3): the durable "leave it" ack. */
   setOperatorAck(ack: boolean): void {
     this.episode?.setOperatorAck(ack);
+  }
+
+  /**
+   * Operator "fix it" approval passthrough (§4.2.1-i). The caller (conversational
+   * reply path) has verified the sender is the topic's VERIFIED operator (Know
+   * Your Principal) and passes `verifiedOperator`; `proposalHash` is the display-
+   * integrity authority. Returns the transition + any effects (an `execute-fix`
+   * for the divergent==raiser case) the caller executes immediately. A dark/
+   * unwired guard is a no-op refusal.
+   */
+  approveFix(args: { proposalHash: string; verifiedOperator: boolean; now?: number }): { result: { ok: boolean; reason?: string; state?: string }; effects: EpisodeEffect[] } {
+    if (!this.episode) return { result: { ok: false, reason: 'guard-not-active' }, effects: [] };
+    return this.episode.approveFix({ proposalHash: args.proposalHash, verifiedOperator: args.verifiedOperator, now: args.now ?? (this.deps.now ?? Date.now)() });
   }
 
   /**

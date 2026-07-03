@@ -22,6 +22,7 @@
  * never here — D17 intact).
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
@@ -42,6 +43,8 @@ import {
   type EpisodeCloseReason,
   type EpisodeFile,
   type EpisodeState,
+  type PendingFix,
+  type PendingFixState,
 } from './machineCoherenceEpisode.js';
 
 /** One effect the sentinel/server executes (the manager never does I/O beyond
@@ -49,7 +52,27 @@ import {
 export type EpisodeEffect =
   | { kind: 'raise'; itemId: string; title: string; summary: string; description: string }
   | { kind: 'append'; itemId: string; text: string }
-  | { kind: 'resolve'; itemId: string; note: string };
+  | { kind: 'resolve'; itemId: string; note: string }
+  // §4.2.1-iv (divergent == raiser, mechanized): the LOCAL config write + self-
+  // restart the raiser's own server performs on approval. The caller executes it
+  // through the atomic config funnel (write-ahead outcome, then restart).
+  | { kind: 'execute-fix'; itemId: string; key: string; configPath: string; targetValue: string };
+
+/**
+ * The two row classes §4.2.1-iii NEVER auto-proposes: `developmentAgent` (the F4
+ * root switch — flipping it flips every omitted dev-gated resolution) and the
+ * guard's OWN posture row (flipping the guard live is a §7 graduation action).
+ */
+const NEVER_AUTO_PROPOSE_KEYS = new Set(['developmentAgent', 'monitoring.machineCoherence']);
+
+/** The result of an operator approval attempt (§4.2.1-i). */
+export interface FixApprovalResult {
+  ok: boolean;
+  /** Why an approval was refused (lapsed / not-verified / in-flight / no-fix). */
+  reason?: string;
+  /** The pendingFix state AFTER a successful transition. */
+  state?: PendingFixState;
+}
 
 /** Per-reconcile inputs the sentinel assembles from its classification pass. */
 export interface EpisodeReconcileInput {
@@ -87,6 +110,12 @@ export class MachineCoherenceEpisodeManager {
   private file: EpisodeFile;
   /** In-memory tick counters (R2-N3 — never persisted; warm-up-absorbed on restart). */
   private resolveCleanTicks = 0;
+  /** The last self machine id seen on reconcile (for approveFix's raiser==divergent check). */
+  private lastSelfMachineId: string | null = null;
+  /** The last nickname resolver seen on reconcile (for out-of-tick approveFix notes). */
+  private lastNicknameOf?: (m: string) => string;
+  /** In-memory verify-tick counter for an executing-verifying fix (§4.2.1-v). */
+  private fixVerifyTicks = 0;
   private counters: EpisodeManagerCounters = {
     episodesOpened: 0, wouldRaise: 0, itemsRaised: 0, suspends: 0, resumes: 0, closes: EMPTY_CLOSES(), escalations: 0,
   };
@@ -132,6 +161,8 @@ export class MachineCoherenceEpisodeManager {
   reconcile(input: EpisodeReconcileInput): EpisodeEffect[] {
     const effects: EpisodeEffect[] = [];
     const { now } = input;
+    this.lastSelfMachineId = input.selfMachineId;
+    this.lastNicknameOf = input.nicknameOf;
     const rowById = new Map(input.confirmedRows.map((r) => [r.identity, r]));
     const confirmedIds = new Set(rowById.keys());
 
@@ -189,8 +220,15 @@ export class MachineCoherenceEpisodeManager {
     this.resolveCleanTicks = 0;
     const newRows = [...confirmedIds].filter((id) => !ep.skewRowIdentities.includes(id));
     if (newRows.length > 0) {
+      // §4.2.1-i: a skew-set change INVALIDATES a not-yet-executed pendingFix.
+      this.invalidatePendingFix(input, ep, 'skew-set-changed', effects);
       this.joinRows(input, ep, newRows, effects);
     }
+
+    // §4.2.1-v verify: an executing-verifying fix whose row hasn't cleared within
+    // fixVerifyTicks fires ONE honest failure append and clears (retry needs
+    // fresh approval); the episode stays open (closure belongs to §4.3 alone).
+    this.verifyPendingFix(input, ep, confirmedIds, effects);
 
     // ── §4.4 escalation: open past escalateAfterMs (unsuspended clock), once,
     //    suppressed by the operator "leave it" ack. ──
@@ -236,6 +274,8 @@ export class MachineCoherenceEpisodeManager {
     const itemsToday = this.file.recurrence.newItemTimestamps.length;
     const overCap = itemsToday >= this.cfg.maxEpisodeItemsPerDay;
     if (this.speaks(input) && !overCap) {
+      // Record the §4.2.1 proposal BEFORE rendering so the body can name it.
+      this.maybeProposeFix(input, ep);
       const body = this.renderBody(input, ep);
       ep.itemRaisedAt = input.now;
       ep.attentionItemId = this.itemId(episodeId);
@@ -309,6 +349,9 @@ export class MachineCoherenceEpisodeManager {
     ep.suspendReason = offline.length > 0 ? 'peer-offline' : 'peer-unverifiable';
     this.resolveCleanTicks = 0;
     this.counters.suspends += 1;
+    // §4.2.1-i/iv: suspension INVALIDATES a proposed/approved-holding pendingFix
+    // (an executing-verifying fix is exempt — its write already happened; R5-N2).
+    this.invalidatePendingFix(input, ep, 'suspended', effects);
     const who = input.nicknameOf(offline[0] ?? unverifiable[0]);
     const text = offline.length > 0
       ? `the divergent machine (${who}) went offline — holding this open; I'll re-check when it returns`
@@ -316,6 +359,103 @@ export class MachineCoherenceEpisodeManager {
     this.pushFlapAppend(input, ep, text, true, effects);
     this.persist();
     this.log({ t: 'suspend', episodeId: ep.episodeId, reason: ep.suspendReason });
+  }
+
+  // ── §4.2.1 pendingFix state machine (proposal → approved-holding →
+  //    executing-verifying; operator-uid-gated; single-flight; loud failure) ──
+
+  /** Record the FIRST auto-proposable row as a `proposed` pendingFix (§4.2.1). A
+   *  version/manifest/protocol row (no config override to write) and the two
+   *  excluded flag classes (§4.2.1-iii) are NEVER auto-proposed. */
+  private maybeProposeFix(input: EpisodeReconcileInput, ep: EpisodeState): void {
+    if (ep.pendingFix) return; // cardinality: one at a time (R3-N8)
+    const row = ep.skewRowIdentities.find((id) => this.isAutoProposable(id));
+    if (!row) return;
+    const key = keyOf(row);
+    const targetMachineId = divergentMachineFor(row, input);
+    const targetValue = plainValue(targetValueClassFor(row, input));
+    ep.pendingFix = {
+      state: 'proposed',
+      rowIdentity: row,
+      key,
+      dimension: 'flag',
+      targetMachineId,
+      targetValue,
+      proposalHash: proposalHash(ep.episodeId, key, targetMachineId, targetValue),
+    };
+  }
+
+  /** Only FLAG rows carry a config override to equalize; the two §4.2.1-iii root
+   *  classes are excluded (manual decision block instead). */
+  private isAutoProposable(rowIdentity: string): boolean {
+    return dimensionOf(rowIdentity) === 'flag' && !NEVER_AUTO_PROPOSE_KEYS.has(keyOf(rowIdentity));
+  }
+
+  /**
+   * Operator approval of the recorded proposal (§4.2.1-i). The caller (the
+   * conversational reply path) has ALREADY verified the sender is the topic's
+   * verified operator (Know Your Principal) and passes `verifiedOperator`; the
+   * `proposalHash` is the display-integrity authority (a reply confirms ONLY the
+   * exact recorded proposal). Returns the transition + (for divergent==raiser)
+   * an `execute-fix` effect the caller runs through the atomic config funnel.
+   */
+  approveFix(args: { proposalHash: string; verifiedOperator: boolean; now: number }): { result: FixApprovalResult; effects: EpisodeEffect[] } {
+    const effects: EpisodeEffect[] = [];
+    const ep = this.file.episode;
+    if (!ep || !ep.pendingFix) return { result: { ok: false, reason: 'no-open-proposal' }, effects };
+    const pf = ep.pendingFix;
+    if (!args.verifiedOperator) return { result: { ok: false, reason: 'not-verified-operator' }, effects }; // Know Your Principal
+    if (pf.proposalHash !== args.proposalHash) return { result: { ok: false, reason: 'proposal-lapsed' }, effects };
+    if (pf.state !== 'proposed') return { result: { ok: false, reason: 'already-in-flight' }, effects }; // single-flight (R4-N4)
+    pf.approvedAtMs = args.now;
+    if (pf.targetMachineId === this.lastSelfMachineId) {
+      // Divergent == raiser (mechanized): the raiser's own server writes + restarts.
+      pf.state = 'executing-verifying';
+      this.fixVerifyTicks = 0;
+      const cfgPath = getFlagByKey(pf.key)?.configPath ?? pf.key;
+      if (ep.attentionItemId) effects.push({ kind: 'execute-fix', itemId: ep.attentionItemId, key: pf.key, configPath: cfgPath, targetValue: pf.targetValue });
+    } else {
+      // Divergent == any other machine (held): the write is the agent's own hand
+      // on that machine; v1 has no cross-machine execution trigger (§4.2.1-iv).
+      pf.state = 'approved-holding';
+      if (ep.attentionItemId) effects.push({ kind: 'append', itemId: ep.attentionItemId, text: `approved — I'll apply this from my own hands on ${this.nick(pf.targetMachineId)}; I'll confirm here when it lands` });
+    }
+    this.persist();
+    this.log({ t: 'fix-approved', episodeId: ep.episodeId, state: pf.state, target: pf.targetMachineId });
+    return { result: { ok: true, state: pf.state }, effects };
+  }
+
+  /** Invalidate a NOT-YET-EXECUTED pendingFix (§4.2.1-i). An executing-verifying
+   *  fix is exempt (its durable write already happened — R5-N2). */
+  private invalidatePendingFix(input: EpisodeReconcileInput, ep: EpisodeState, reason: string, effects: EpisodeEffect[]): void {
+    const pf = ep.pendingFix;
+    if (!pf || pf.state === 'executing-verifying') return;
+    ep.pendingFix = undefined;
+    this.fixVerifyTicks = 0;
+    if (reason === 'suspended' && pf.state === 'approved-holding' && this.speaks(input) && ep.attentionItemId) {
+      effects.push({ kind: 'append', itemId: ep.attentionItemId, text: `the fix you approved is paused — ${this.nick(pf.targetMachineId)} is unverifiable/offline; I'll re-propose when it returns` });
+    }
+    this.log({ t: 'fix-invalidated', episodeId: ep.episodeId, reason, wasState: pf.state });
+  }
+
+  /** §4.2.1-v verify: an executing-verifying fix whose row hasn't cleared within
+   *  fixVerifyTicks fires ONE loud failure append + clears (episode stays open). */
+  private verifyPendingFix(input: EpisodeReconcileInput, ep: EpisodeState, confirmedIds: Set<string>, effects: EpisodeEffect[]): void {
+    const pf = ep.pendingFix;
+    if (!pf || pf.state !== 'executing-verifying') return;
+    if (!confirmedIds.has(pf.rowIdentity)) { ep.pendingFix = undefined; this.fixVerifyTicks = 0; this.log({ t: 'fix-cleared-row-gone', episodeId: ep.episodeId }); return; }
+    this.fixVerifyTicks += 1;
+    if (this.fixVerifyTicks >= this.cfg.fixVerifyTicks) {
+      ep.pendingFix = undefined;
+      this.fixVerifyTicks = 0;
+      if (this.speaks(input) && ep.attentionItemId) effects.push({ kind: 'append', itemId: ep.attentionItemId, text: `the fix didn't take — ${pf.key} is still divergent; a retry needs your fresh approval` });
+      this.persist();
+      this.log({ t: 'fix-failed', episodeId: ep.episodeId, key: pf.key });
+    }
+  }
+
+  private nick(machineId: string): string {
+    return this.lastNicknameOf ? this.lastNicknameOf(machineId) : machineId;
   }
 
   /**
@@ -451,12 +591,27 @@ export class MachineCoherenceEpisodeManager {
     return effects;
   }
 
-  status(): { openEpisode: { episodeId: string; rows: number; suspended: boolean; itemRaisedAt: string | null } | null; counters: EpisodeManagerCounters } {
+  status(): {
+    openEpisode: { episodeId: string; rows: number; suspended: boolean; itemRaisedAt: string | null; pendingFix: { state: PendingFixState; key: string; targetMachineId: string; targetValue: string; proposalHash: string } | null } | null;
+    counters: EpisodeManagerCounters;
+  } {
     const ep = this.file.episode;
+    const pf = ep?.pendingFix;
     return {
-      openEpisode: ep ? { episodeId: ep.episodeId, rows: ep.skewRowIdentities.length, suspended: !!ep.suspended, itemRaisedAt: ep.itemRaisedAt ? new Date(ep.itemRaisedAt).toISOString() : null } : null,
+      openEpisode: ep ? {
+        episodeId: ep.episodeId,
+        rows: ep.skewRowIdentities.length,
+        suspended: !!ep.suspended,
+        itemRaisedAt: ep.itemRaisedAt ? new Date(ep.itemRaisedAt).toISOString() : null,
+        pendingFix: pf ? { state: pf.state, key: pf.key, targetMachineId: pf.targetMachineId, targetValue: pf.targetValue, proposalHash: pf.proposalHash } : null,
+      } : null,
       counters: this.counters,
     };
+  }
+
+  /** The current proposal's hash (the reply-recognition authority), or null. */
+  currentProposalHash(): string | null {
+    return this.file.episode?.pendingFix?.proposalHash ?? null;
   }
 
   private persist(): void {
@@ -490,23 +645,31 @@ export class MachineCoherenceEpisodeManager {
     const guarantees = uniq(rows.map((id) => guaranteeFor(id))).join('; ');
     const summary = `My machines have drifted apart — ${nickList} aren't running as the same me: ${guarantees}.`;
 
-    // 2. A complete proposed fix (direction is canonical + always named, §4.2.1-ii).
+    // 2. A complete proposed fix (direction is canonical + always named, §4.2.1-ii),
+    //    OR a MANUAL decision block for the two excluded row classes (§4.2.1-iii:
+    //    developmentAgent + the guard's own posture — flipping either is a
+    //    graduation/blast-radius action the agent never auto-proposes).
     const first = rows[0];
-    const divergent = divergentMachineFor(first, input); // the machine to change
-    const targetValue = plainValue(targetValueClassFor(first, input));
-    const feature = plainFeatureName(first);
-    const divergentNick = input.nicknameOf(divergent);
-    const restOfPool = joinNicknames([...this.episodeParticipants(ep)].filter((m) => m !== divergent).map((m) => input.nicknameOf(m)));
     let fixLine: string;
-    if (divergent === input.selfMachineId) {
-      const holdsLease = input.leaseHolderMachineId === input.selfMachineId;
-      const peerNick = input.nicknameOf([...this.episodeParticipants(ep)].find((m) => m !== divergent) ?? divergent);
-      const leaseClause = holdsLease
-        ? `; I currently hold the serving lease, so the restart hands serving to ${peerNick} for that blip (a failover, named, not a surprise)`
-        : '';
-      fixLine = `Reply **fix it** and I'll switch ${feature} to ${targetValue} here on ${divergentNick} to match ${restOfPool}, then restart my own server — a ~30-second blip${leaseClause}.`;
+    if (!this.isAutoProposable(first)) {
+      const divergentNick = input.nicknameOf(divergentMachineFor(first, input));
+      fixLine = `This one I won't touch on my own — ${keyOf(first)} is a root switch (flipping it changes far more than this setting). It differs on ${divergentNick} vs ${restOfPoolExcluding(this.episodeParticipants(ep), divergentMachineFor(first, input), input.nicknameOf)}. Tell me which way you want it and I'll set it — I'll do nothing until you say.`;
     } else {
-      fixLine = `Reply **fix it** and I'll switch ${feature} to ${targetValue} on ${divergentNick} from my own hands there — no remote config-write exists, so I'll confirm here when it lands (and tell you loudly if it doesn't within a few minutes).`;
+      const divergent = divergentMachineFor(first, input); // the machine to change
+      const targetValue = plainValue(targetValueClassFor(first, input));
+      const feature = plainFeatureName(first);
+      const divergentNick = input.nicknameOf(divergent);
+      const restOfPool = joinNicknames([...this.episodeParticipants(ep)].filter((m) => m !== divergent).map((m) => input.nicknameOf(m)));
+      if (divergent === input.selfMachineId) {
+        const holdsLease = input.leaseHolderMachineId === input.selfMachineId;
+        const peerNick = input.nicknameOf([...this.episodeParticipants(ep)].find((m) => m !== divergent) ?? divergent);
+        const leaseClause = holdsLease
+          ? `; I currently hold the serving lease, so the restart hands serving to ${peerNick} for that blip (a failover, named, not a surprise)`
+          : '';
+        fixLine = `Reply **fix it** and I'll switch ${feature} to ${targetValue} here on ${divergentNick} to match ${restOfPool}, then restart my own server — a ~30-second blip${leaseClause}.`;
+      } else {
+        fixLine = `Reply **fix it** and I'll switch ${feature} to ${targetValue} on ${divergentNick} from my own hands there — no remote config-write exists, so I'll confirm here when it lands (and tell you loudly if it doesn't within a few minutes).`;
+      }
     }
     const leaveLine = `Or reply **leave it** and I'll keep this episode open without further nagging.`;
 
@@ -517,6 +680,16 @@ export class MachineCoherenceEpisodeManager {
     const description = `${summary}\n\n${fixLine}\n\n${leaveLine}\n\nTechnical detail:\n${tech}`;
     return { title, summary, description };
   }
+}
+
+/** The §4.2.1-i display-integrity authority: a hash over the exact proposal tuple
+ *  (episodeId|key|targetMachine|targetValue). A reply confirms ONLY this tuple. */
+function proposalHash(episodeId: string, key: string, targetMachineId: string, targetValue: string): string {
+  return crypto.createHash('sha256').update(`${episodeId}|${key}|${targetMachineId}|${targetValue}`).digest('hex').slice(0, 16);
+}
+
+function restOfPoolExcluding(participants: Set<string>, exclude: string, nicknameOf: (m: string) => string): string {
+  return joinNicknames([...participants].filter((m) => m !== exclude).map((m) => nicknameOf(m)));
 }
 
 // ── Pure row-identity helpers (the N1 identity is `dimension|key|sorted(id=vc)`) ──

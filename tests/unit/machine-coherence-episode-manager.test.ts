@@ -246,6 +246,105 @@ describe('§4.5 shared append budget (R3-M5 burst invariant)', () => {
   });
 });
 
+describe('§4.2.1 pendingFix state machine', () => {
+  it('records a `proposed` pendingFix for the first auto-proposable row on open', () => {
+    const m = mgr();
+    m.reconcile(input());
+    const pf = m.status().openEpisode?.pendingFix;
+    expect(pf?.state).toBe('proposed');
+    expect(pf?.key).toBe('seamlessness.ws13Reconcile');
+    expect(pf?.targetMachineId).toBe('m_mini'); // divergent side (laptop=live wins via holder tiebreak)
+    expect(pf?.targetValue).toBe('on');
+  });
+
+  it('a version/manifest/protocol row is NOT auto-proposed (no config override to write)', () => {
+    const m = mgr();
+    const proto = { identity: skewRowIdentity('protocol', 'protocolVersion', { m_laptop: '1', m_mini: '2' }), dimension: 'protocol' as const, key: 'protocolVersion', participants: ['m_laptop', 'm_mini'], valueClasses: { m_laptop: '1', m_mini: '2' } };
+    m.reconcile(input({ confirmedRows: [proto] }));
+    expect(m.status().openEpisode?.pendingFix).toBeNull();
+  });
+
+  it('an EXCLUDED root class (developmentAgent) renders the manual decision block, no pendingFix', () => {
+    const m = mgr();
+    const devRow = { identity: skewRowIdentity('flag', 'developmentAgent', { m_laptop: 'true', m_mini: 'false' }), dimension: 'flag' as const, key: 'developmentAgent', participants: ['m_laptop', 'm_mini'], valueClasses: { m_laptop: 'true', m_mini: 'false' } };
+    const eff = m.reconcile(input({ confirmedRows: [devRow] }));
+    expect(m.status().openEpisode?.pendingFix).toBeNull();
+    const raise = eff.find((e) => e.kind === 'raise');
+    expect(raise?.kind === 'raise' && raise.description).toContain('root switch');
+    expect(raise?.kind === 'raise' && raise.description).toContain("do nothing until you say");
+  });
+
+  it('Know Your Principal: approveFix from an UNVERIFIED sender is refused', () => {
+    const m = mgr();
+    m.reconcile(input());
+    const hash = m.status().openEpisode!.pendingFix!.proposalHash;
+    const r = m.approveFix({ proposalHash: hash, verifiedOperator: false, now: NOW });
+    expect(r.result).toEqual({ ok: false, reason: 'not-verified-operator' });
+    expect(m.status().openEpisode?.pendingFix?.state).toBe('proposed'); // unchanged
+  });
+
+  it('approveFix with a stale/lapsed hash is refused (display-integrity authority)', () => {
+    const m = mgr();
+    m.reconcile(input());
+    const r = m.approveFix({ proposalHash: 'deadbeefdeadbeef', verifiedOperator: true, now: NOW });
+    expect(r.result.ok).toBe(false);
+    expect(r.result.reason).toBe('proposal-lapsed');
+  });
+
+  it('divergent != raiser → approved-holding + an honest "from my own hands" append', () => {
+    const m = mgr(); // self=laptop, divergent=mini
+    m.reconcile(input());
+    const hash = m.status().openEpisode!.pendingFix!.proposalHash;
+    const r = m.approveFix({ proposalHash: hash, verifiedOperator: true, now: NOW });
+    expect(r.result).toMatchObject({ ok: true, state: 'approved-holding' });
+    expect(r.effects.find((e) => e.kind === 'append' && e.text.includes('from my own hands'))).toBeDefined();
+    expect(m.status().openEpisode?.pendingFix?.state).toBe('approved-holding');
+  });
+
+  it('divergent == raiser (self) → executing-verifying + an execute-fix effect', () => {
+    const m = mgr();
+    m.reconcile(input({ selfMachineId: 'm_mini', raiserMachineId: 'm_mini', leaseHolderMachineId: 'm_laptop' }));
+    const hash = m.status().openEpisode!.pendingFix!.proposalHash;
+    const r = m.approveFix({ proposalHash: hash, verifiedOperator: true, now: NOW });
+    expect(r.result).toMatchObject({ ok: true, state: 'executing-verifying' });
+    const exec = r.effects.find((e) => e.kind === 'execute-fix');
+    expect(exec?.kind === 'execute-fix' && exec.configPath).toBe('multiMachine.seamlessness.ws13Reconcile');
+    expect(exec?.kind === 'execute-fix' && exec.targetValue).toBe('on');
+  });
+
+  it('single-flight: a second approval while one is in flight is refused', () => {
+    const m = mgr();
+    m.reconcile(input());
+    const hash = m.status().openEpisode!.pendingFix!.proposalHash;
+    m.approveFix({ proposalHash: hash, verifiedOperator: true, now: NOW }); // → approved-holding
+    const again = m.approveFix({ proposalHash: hash, verifiedOperator: true, now: NOW });
+    expect(again.result).toEqual({ ok: false, reason: 'already-in-flight' });
+  });
+
+  it('suspension INVALIDATES an approved-holding fix with a named note', () => {
+    const m = mgr();
+    m.reconcile(input());
+    const hash = m.status().openEpisode!.pendingFix!.proposalHash;
+    m.approveFix({ proposalHash: hash, verifiedOperator: true, now: NOW });
+    const eff = m.reconcile(input({ onlineMachineIds: new Set(['m_laptop']) })); // mini offline → suspend
+    expect(eff.find((e) => e.kind === 'append' && e.text.includes('the fix you approved is paused'))).toBeDefined();
+    expect(m.status().openEpisode?.pendingFix ?? null).toBeNull();
+  });
+
+  it('§4.2.1-v: an executing-verifying fix whose row does not clear within fixVerifyTicks fails LOUDLY, episode stays open', () => {
+    const m = mgr({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, fixVerifyTicks: 2 } } });
+    m.reconcile(input({ selfMachineId: 'm_mini', raiserMachineId: 'm_mini', leaseHolderMachineId: 'm_laptop' }));
+    const hash = m.status().openEpisode!.pendingFix!.proposalHash;
+    m.approveFix({ proposalHash: hash, verifiedOperator: true, now: NOW });
+    // Row stays divergent across verify ticks.
+    m.reconcile(input({ selfMachineId: 'm_mini', raiserMachineId: 'm_mini', leaseHolderMachineId: 'm_laptop' }));
+    const eff = m.reconcile(input({ selfMachineId: 'm_mini', raiserMachineId: 'm_mini', leaseHolderMachineId: 'm_laptop' }));
+    expect(eff.find((e) => e.kind === 'append' && e.text.includes("the fix didn't take"))).toBeDefined();
+    expect(m.status().openEpisode).not.toBeNull(); // episode stays open (closure is §4.3's alone)
+    expect(m.status().openEpisode?.pendingFix ?? null).toBeNull(); // retry needs fresh approval
+  });
+});
+
 describe('§4.2 verbatim body render', () => {
   it('divergent == raiser (self): impact-first, fix-it/leave-it, failover named when holding the lease', () => {
     const m = mgr();
