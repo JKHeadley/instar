@@ -3148,6 +3148,43 @@ export interface InstarConfig {
     dryRun?: boolean;
   };
   /**
+   * Durable, channel-agnostic conversation identity
+   * (docs/specs/durable-conversation-identity.md §9). The FOUNDATION (registry
+   * + journal + eager mint) is always-on once shipped; `recording` is its
+   * runtime KILL-SWITCH (D1 — forces the §3.6 in-memory-candidate degradation,
+   * behavior-identical to legacy hashing, without a redeploy). `followThrough`
+   * gates DELIVERY only (the §5 funnel's id<0 arm) and is dev-gated:
+   * `enabled` is deliberately OMITTED from ConfigDefaults so
+   * resolveDevAgentGate decides — LIVE on a development agent, DARK on the
+   * fleet — with `dryRun: true` FIRST (delivery is externally visible).
+   */
+  conversationIdentity?: {
+    /** §3.1 fleet workspace pin (source 1 — authoritative when present): the ONE
+     *  Slack teamId this fleet mints concrete-workspace ids for. */
+    workspacePin?: string;
+    recording?: {
+      /** D1 kill-switch. Default true; migrateConfig existence-checks and NEVER
+       *  materializes a literal false (the #1001 mechanism). */
+      enabled?: boolean;
+      /** Narrower escape hatch: keep recording, skip the durable-path fsync. */
+      disableJournalFsync?: boolean;
+    };
+    followThrough?: {
+      /** Dev-gate switch. Omit to ride resolveDevAgentGate; NEVER written by
+       *  migrateConfig. */
+      enabled?: boolean;
+      /** Delivery dry-run canary (default true): typed §5.1 non-delivery +
+       *  would-deliver audit lines, no external send. */
+      dryRun?: boolean;
+    };
+    /** §3.3 mint-rate breaker (Bounded Blast Radius) — pinned defaults. */
+    mintBreaker?: {
+      windowMs?: number;
+      speculativePerWindow?: number;
+      durableBindingPerWindow?: number;
+    };
+  };
+  /**
    * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).
    * `capture.enabled` (default true) is the kill-switch for the per-turn extraction
    * loop. See docs/specs/topic-intent-capture-loop.md.

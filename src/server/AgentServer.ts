@@ -25,6 +25,7 @@ import { resolveOwningSession } from '../monitoring/McpProcessReaper.js';
 import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
+import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
 import { UserManager } from '../users/UserManager.js';
@@ -488,6 +489,9 @@ export class AgentServer {
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
     topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore;
+    /** Durable conversation identity (durable-conversation-identity §8) — backs
+     *  the read-only GET /conversations* surface. Always-on foundation. */
+    conversationRegistry?: import('../core/ConversationRegistry.js').ConversationRegistry;
     /** U4.1 §2C — sticky skew-quarantine set (GET /pool/pin-quarantine + re-admit). */
     topicPinSkewQuarantine?: import('../core/TopicPinSkewQuarantine.js').TopicPinSkewQuarantine;
     /** U4.1 §2C — the answer-complete pin fold view (status + re-admit refold). */
@@ -2490,6 +2494,18 @@ export class AgentServer {
       forwardCommitmentMutate: options.forwardCommitmentMutate ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
+      // Durable conversation identity: the bootstrap's fully-wired instance
+      // (workspace source, attention, live kill-switch) takes precedence; the
+      // fallback keeps the READ surface alive on any init path that predates
+      // the bootstrap wiring (routes are read-only, so a fallback instance can
+      // never become a second journal WRITER — eager mint uses the bootstrap
+      // instance only). GET /conversations/health must answer 200, not 503.
+      conversationRegistry:
+        options.conversationRegistry ??
+        new ConversationRegistry({
+          stateDir: options.config.stateDir,
+          machineId: () => 'agent-server',
+        }),
       topicPinSkewQuarantine: options.topicPinSkewQuarantine ?? null,
       topicPinFoldView: options.topicPinFoldView ?? null,
       ownershipReconciler: options.ownershipReconciler ?? null,

@@ -164,6 +164,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Stores vault secret NAMES only (never values) + browser-profile metadata; reads are advisory signal; the only destructive op (activate: MCP-config rewrite + session restart) ships dryRun:true and is reversible; dev-dogfooded.',
   },
   {
+    name: 'conversationFollowThrough',
+    configPath: 'conversationIdentity.followThrough.enabled',
+    description: 'Durable conversation identity — the §5 deliverToConversation funnel\'s minted-id (id<0) DELIVERY arm (durable-conversation-identity §9). The registry/journal/eager-mint FOUNDATION is always-on and NOT gated here; only delivery rides this gate.',
+    justification: 'Delivery is externally visible, so the block ships dryRun:true even live-on-dev: the id<0 arm returns typed §5.1 non-deliveries + would-deliver audit lines (never success-shaped) until a deliberate dryRun:false flip for the live proof. Zero consumers ride the funnel in increment 1, so enabling is inert until the §6.1 proof-consumer increment; no spend, no destructive action, no egress while dry.',
+  },
+  {
     name: 'prHandLease',
     configPath: 'monitoring.prHandLease.enabled',
     description: 'Per-branch PR-push lease so two of the agent’s own concurrent sessions can’t push competing commits to the same branch (spec: parallel-hand-pr-lease).',

@@ -439,6 +439,16 @@ When you message a topic and I genuinely can't start (or restart) a session for 
 - It is an ALWAYS-ON safety floor (no enable flag) — the standard forbids dark-shipping reachability. The notice fires on the existing inbound cold-spawn AND restart failure paths.
 - If a user asks "why did I get a message telling me to go to the lifeline?" / "why couldn't this topic start?" — explain: I couldn't start a session for that topic (the reply states the reason), and the Lifeline is the guaranteed-reachable place where I can diagnose it and free resources. Their message isn't lost — resend once things settle. The copy-paste block is pre-written so they don't have to describe the failure.
 
+### Durable Conversation Identity (\`GET /conversations*\`)
+
+Every conversation I talk in has ONE durable numeric identity: a Telegram topic IS its positive id (pass-through, never registered), and a non-Telegram conversation (a Slack channel or thread) is minted a stable NEGATIVE id in a durable registry the moment a message arrives — so durable state (commitments, memory, notices) can attach to a Slack conversation and survive restarts. A negative \`topicId\` anywhere in my state is a minted conversation id, not an error.
+- Inventory: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/conversations?platform=slack&limit=100"\` — entries + the alias table.
+- Resolve one id: \`GET /conversations/:id\` (positive → Telegram pass-through; unknown negative → an honest 404 "never minted on this machine").
+- Forward lookup (mints NOTHING — read-only): \`GET /conversations/resolve?key=slack:<team>:<channel>[:<thread>]\` or \`?sessionKey=<routing key | topic id>\`.
+- Health: \`GET /conversations/health\` — entry count, origins, alias count, adoption-pass state, quarantine + snapshot-suspension state, mint-budget state.
+- **When to use** (PROACTIVE — these are the triggers): "what is this negative topic id?" / "which Slack conversation is -N?" → \`GET /conversations/:id\`; before reasoning about Slack follow-through or conversation identity → read \`GET /conversations/health\`, never guess.
+- Recording is an always-on foundation with an emergency kill-switch (\`conversationIdentity.recording.enabled: false\` degrades to legacy in-memory hashing — no durable writes); DELIVERY to minted ids (the follow-through funnel) is a separate dev-gated rollout (\`conversationIdentity.followThrough\`, dryRun-first).
+
 ### Guard Posture — which safety systems are genuinely on (\`GET /guards\`)
 
 Every guard (monitoring sentinels, reapers, the scheduler, …) is graded by what can be VERIFIED, never by what the config wishes: \`on-confirmed\` / \`on-unverified\` / \`on-stale\` / \`on-dry-run\` / \`off\` (\`dark-default\` = ships-dark, quiet vs \`diverged-from-default\` = default-on but currently off — the load-shed signature) / \`diverged-pending-restart\` / \`errored\` / \`missing\` / \`off-runtime-divergent\`. Only the "off that shouldn't be off" and runtime-contradiction classes alert — a ships-dark feature that is off is normal, never noise.

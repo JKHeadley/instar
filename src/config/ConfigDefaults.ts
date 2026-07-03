@@ -1656,6 +1656,32 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   playwrightRegistry: {
     dryRun: true,
   },
+  // Durable conversation identity (docs/specs/durable-conversation-identity.md §9).
+  // recording is the ALWAYS-ON foundation's runtime kill-switch (default true —
+  // flipping it false forces the §3.6 legacy-identical in-memory degradation
+  // without a redeploy; the CommitmentTracker-freeze precedent). followThrough
+  // gates DELIVERY only and is a developmentAgent dark feature: `enabled` is
+  // OMITTED so resolveDevAgentGate resolves it LIVE on a dev agent + DARK on the
+  // fleet (the DEV_GATED_FEATURES entry), with dryRun:true FIRST because delivery
+  // is externally visible (typed §5.1 non-deliveries + would-deliver audit lines
+  // until a deliberate dryRun:false). DO NOT hardcode followThrough.enabled here
+  // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate
+  // lint forbids for a dev-gated block). mintBreaker carries the §3.3 pinned
+  // defaults (existence-checked add-missing on update — Migration Parity).
+  conversationIdentity: {
+    recording: {
+      enabled: true,
+      disableJournalFsync: false,
+    },
+    followThrough: {
+      dryRun: true,
+    },
+    mintBreaker: {
+      windowMs: 600000,
+      speculativePerWindow: 200,
+      durableBindingPerWindow: 50,
+    },
+  },
   // Feedback-factory processing wiring (docs/specs/feedback-factory-migration.md
   // §191 — "the processor job is actually constructed and scheduled, not dead
   // code"). Turns the already-parity'd processUnprocessed clustering pass into a

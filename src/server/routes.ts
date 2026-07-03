@@ -1187,6 +1187,11 @@ export interface RouteContext {
    *  pinned-vs-load-placed distinction in GET /pool/placement and the deterministic
    *  POST /pool/transfer. Null/absent when the pool is not wired (dark). */
   topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
+  /** Durable conversation identity (durable-conversation-identity §8) — backs the
+   *  read-only `GET /conversations*` surface. Always constructed on the production
+   *  init path (recording is always-on foundation; only DELIVERY is dev-gated), so
+   *  a 503 here means the wiring is broken, not a dark feature. */
+  conversationRegistry?: import('../core/ConversationRegistry.js').ConversationRegistry | null;
   /** U4.1 §2C — the sticky durable skew-quarantine set (GET /pool/pin-quarantine +
    *  the explicit per-record re-admit). Null/absent when the pool is not wired. */
   topicPinSkewQuarantine?: import('../core/TopicPinSkewQuarantine.js').TopicPinSkewQuarantine | null;
@@ -28391,6 +28396,90 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const entries = ctx.liveTestRunnerCtx.artifactStore.allEntries();
     res.json({ count: entries.length, entries });
+  });
+
+  // ── Durable conversation identity — read-only observability (spec
+  //    durable-conversation-identity §8). NO write routes exist by design (§7):
+  //    mint happens only at internal server-side chokepoints (inbound dispatch,
+  //    adoption pass); these four GETs are inventory/resolution/health. The
+  //    registry is always constructed on the production init path (recording is
+  //    always-on foundation), so a 503 here means broken wiring, not a dark
+  //    feature — GET /conversations/health is the Tier-3 "feature is alive"
+  //    target. Labels are UNTRUSTED display data (§3.5 B3): escaped at this, the
+  //    only Phase-1 render surface. ──
+  const escapeConversationLabel = (label: string | undefined): string | undefined =>
+    label === undefined
+      ? undefined
+      : label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  // GET /conversations — inventory (?platform=slack, ?limit=N) + the alias table.
+  router.get('/conversations', (req, res) => {
+    if (!ctx.conversationRegistry) {
+      res.status(503).json({ error: 'conversation registry not available (wiring error — the foundation is always-on)' });
+      return;
+    }
+    const platform = typeof req.query.platform === 'string' ? req.query.platform : undefined;
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const rows = ctx.conversationRegistry.list({ platform, limit: Number.isFinite(limit) ? limit : undefined });
+    const health = ctx.conversationRegistry.health() as { entryCount: number; fileSizeBytes: number };
+    res.json({
+      entryCount: health.entryCount,
+      fileSizeBytes: health.fileSizeBytes,
+      conversations: rows.map(({ key, entry }) => ({ key, ...entry, label: escapeConversationLabel(entry.label) })),
+      aliases: ctx.conversationRegistry.aliasTable(),
+    });
+  });
+
+  // GET /conversations/health — counts by platform/origin, alias count, adoption
+  // state, quarantine + snapshot-suspension observability (R11-low-1), mint-budget
+  // state. The e2e "feature is alive" target (§8/§10 Tier 3).
+  router.get('/conversations/health', (_req, res) => {
+    if (!ctx.conversationRegistry) {
+      res.status(503).json({ error: 'conversation registry not available (wiring error — the foundation is always-on)' });
+      return;
+    }
+    res.json(ctx.conversationRegistry.health());
+  });
+
+  // GET /conversations/resolve?key=… (or ?sessionKey=…) — forward lookup. Mints
+  // NOTHING (read-only — §8; the read-shaped-callsite rule, §4 integration-nit).
+  router.get('/conversations/resolve', (req, res) => {
+    if (!ctx.conversationRegistry) {
+      res.status(503).json({ error: 'conversation registry not available (wiring error — the foundation is always-on)' });
+      return;
+    }
+    const key = typeof req.query.key === 'string' ? req.query.key : typeof req.query.sessionKey === 'string' ? req.query.sessionKey : null;
+    if (!key) {
+      res.status(400).json({ error: 'pass ?key=<canonical key> or ?sessionKey=<routing key | topic id>' });
+      return;
+    }
+    const resolved = ctx.conversationRegistry.resolveByKey(key);
+    if (!resolved) {
+      res.status(404).json({ error: `no conversation resolves "${key}" on this machine (resolve mints nothing)` });
+      return;
+    }
+    res.json(resolved.platform === 'slack' ? { ...resolved, label: escapeConversationLabel(resolved.label) } : resolved);
+  });
+
+  // GET /conversations/:id — resolve one id. Positive → Telegram pass-through;
+  // minted → the full entry (+ aliasOf when the queried id was a one-hop alias);
+  // unknown negative → the honest 404 ("never minted on this machine").
+  router.get('/conversations/:id', (req, res) => {
+    if (!ctx.conversationRegistry) {
+      res.status(503).json({ error: 'conversation registry not available (wiring error — the foundation is always-on)' });
+      return;
+    }
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id === 0) {
+      res.status(400).json({ error: 'conversation id must be a non-zero integer (positive = Telegram, negative = minted)' });
+      return;
+    }
+    const resolved = ctx.conversationRegistry.resolve(id);
+    if (!resolved) {
+      res.status(404).json({ error: `conversation ${id} was never minted on this machine` });
+      return;
+    }
+    res.json(resolved.platform === 'slack' ? { ...resolved, label: escapeConversationLabel(resolved.label) } : resolved);
   });
 
   return router;

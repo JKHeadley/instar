@@ -50,3 +50,19 @@
 ## Agent awareness
 
 - A "Durable Conversation Identity" Capabilities entry (GET /conversations*, the health surface, what a negative topicId means) ships in `generateClaudeMd` + an idempotent content-sniffed `migrateClaudeMd` section. <!-- tracked: durable-conversation-identity -->
+
+## Part-2 landing note (wiring)
+
+Part 1 landed the three core modules + Tier-1 tests. Part 2 (this commit)
+lands the wiring: the read-only `GET /conversations*` routes (labels escaped —
+the only Phase-1 render surface), the AgentServer plumbing (bootstrap instance
+takes precedence; a read-only fallback keeps the health surface alive on any
+init path — it can never become a second journal writer because eager mint
+uses the bootstrap instance only), the server-bootstrap construction (live
+kill-switch reads, late-bound workspace source, attention wiring), the §6.3
+eager mint + bootstrap-context carry, the §6.2 adoption pass (session-registry
+membership as the authorized-traffic record), config types/defaults +
+DEV_GATED_FEATURES registration, the PostUpdateMigrator additions (backup
+manifest, dev-gate strip, CLAUDE.md section + shadow markers), the scaffold
+template section, and the Tier-2/Tier-3 tests + docs-coverage artifacts
+(release fragment + architecture page).

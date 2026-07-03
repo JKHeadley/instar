@@ -300,6 +300,29 @@ export function migrateConfigPlaywrightRegistryDevGate(config: Record<string, un
 }
 
 /**
+ * Durable conversation identity (durable-conversation-identity §9):
+ * `conversationIdentity.followThrough` is a developmentAgent dark feature —
+ * `enabled` must be OMITTED so resolveDevAgentGate resolves it (live-on-dev,
+ * dark fleet). Strip a default-shaped literal `false` (the #1001 mechanism —
+ * it would force-dark even a dev agent); an explicit `true` (operator
+ * fleet-flip) is preserved. This migration NEVER writes `enabled` (pinned by a
+ * unit test); `recording.enabled: true` + `dryRun: true` arrive via the
+ * applyDefaults add-missing deep-merge, never as literal migrator writes.
+ * Idempotent — a second run finds nothing to strip.
+ */
+export function migrateConfigConversationFollowThroughDevGate(config: Record<string, unknown>): boolean {
+  const ci = config.conversationIdentity as Record<string, unknown> | undefined;
+  if (!ci || typeof ci !== 'object') return false;
+  const ft = ci.followThrough as Record<string, unknown> | undefined;
+  if (!ft || typeof ft !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(ft, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (ft.enabled !== false) return false;
+  delete ft.enabled;
+  return true;
+}
+
+/**
  * "Self-Unblock Before Escalating" (docs/specs/self-unblock-before-escalating.md):
  * the two nested blockerLedger sub-features — selfUnblockChecklist + durableVaultSession
  * — are dev-gated dark features resolved via resolveDevAgentGate, so the config must
@@ -5519,6 +5542,29 @@ When you message a topic and I genuinely can't start (or restart) a session for 
       result.skipped.push('CLAUDE.md: Cold-Start Lifeline Fallback section already present');
     }
 
+    // Durable Conversation Identity (durable-conversation-identity §6.2(b)/§9 —
+    // Agent Awareness + Migration Parity: the GET /conversations* capability
+    // must reach EXISTING agents, or a negative topicId in their state is an
+    // unexplainable mystery). Idempotent via the unique heading phrase.
+    if (!content.includes('Durable Conversation Identity')) {
+      const section = `
+### Durable Conversation Identity (\`GET /conversations*\`)
+
+Every conversation I talk in has ONE durable numeric identity: a Telegram topic IS its positive id (pass-through, never registered), and a non-Telegram conversation (a Slack channel or thread) is minted a stable NEGATIVE id in a durable registry the moment a message arrives — so durable state (commitments, memory, notices) can attach to a Slack conversation and survive restarts. A negative \`topicId\` anywhere in my state is a minted conversation id, not an error.
+- Inventory: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/conversations?platform=slack&limit=100"\` — entries + the alias table.
+- Resolve one id: \`GET /conversations/:id\` (positive → Telegram pass-through; unknown negative → an honest 404 "never minted on this machine").
+- Forward lookup (mints NOTHING — read-only): \`GET /conversations/resolve?key=slack:<team>:<channel>[:<thread>]\` or \`?sessionKey=<routing key | topic id>\`.
+- Health: \`GET /conversations/health\` — entry count, origins, alias count, adoption-pass state, quarantine + snapshot-suspension state, mint-budget state.
+- **When to use** (PROACTIVE — these are the triggers): "what is this negative topic id?" / "which Slack conversation is -N?" → \`GET /conversations/:id\`; before reasoning about Slack follow-through or conversation identity → read \`GET /conversations/health\`, never guess.
+- Recording is an always-on foundation with an emergency kill-switch (\`conversationIdentity.recording.enabled: false\` degrades to legacy in-memory hashing — no durable writes); DELIVERY to minted ids (the follow-through funnel) is a separate dev-gated rollout (\`conversationIdentity.followThrough\`, dryRun-first).
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Durable Conversation Identity section');
+    } else {
+      result.skipped.push('CLAUDE.md: Durable Conversation Identity section already present');
+    }
+
     // Topic-Flood Guard (2026-05-28 lockdown) — the structural backstop that
     // caps how many forum topics a single attention source may spawn. Without
     // this section an agent asked "why are my notices grouped / where did topic
@@ -7713,6 +7759,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // will guess. Mirrored like every agent-facing capability.
       '### Mesh Self-Healing: stale-owner release + lease hand-back',
       '### Cold-Start Lifeline Fallback',
+      // Durable Conversation Identity: framework-agnostic HTTP surface — a
+      // Codex/Gemini agent seeing a negative topicId must know it is a minted
+      // conversation id resolvable at GET /conversations/:id, or it will guess.
+      '### Durable Conversation Identity',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
@@ -8585,6 +8635,18 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.skipped.push('config.json: playwrightRegistry.enabled dev-gate already correct (omitted or operator-set)');
     }
 
+    // Durable conversation identity (durable-conversation-identity §9): the
+    // followThrough delivery gate is dev-gated — strip a default-shaped
+    // enabled:false so it resolves live-on-dev / dark-fleet. recording.enabled
+    // (the D1 kill-switch, default true) + dryRun:true arrive via applyDefaults
+    // add-missing; this migration never WRITES any conversationIdentity key.
+    if (migrateConfigConversationFollowThroughDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped conversationIdentity.followThrough.enabled=false so the developmentAgent gate resolves it (live-on-dev, dark fleet)');
+    } else {
+      result.skipped.push('config.json: conversationIdentity.followThrough.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
     // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger
     // dev-gated sub-features (selfUnblockChecklist + durableVaultSession) OMIT
     // `enabled`. Strip a default-shaped `false` so the developmentAgent gate resolves
@@ -9038,6 +9100,20 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     const THREADLINE_CANONICAL_HISTORY_BACKUP_ENTRIES = [
       'threadline/conversations.json',
     ];
+    // Durable conversation identity (durable-conversation-identity §3.4/§6.2 —
+    // gemini-C1 CRITICAL: BOTH the JSON snapshot AND the WAL enter the manifest;
+    // a snapshot-only backup would silently lose every probed/thread-level id
+    // minted since the last flush). The journal glob is TOP-LEVEL trailing-star
+    // — the ONE shape the deployed BackupManager.expandGlob actually expands
+    // (R3-C4; byte-parallel to the `shared-state.jsonl*` precedent) — capturing
+    // the live file plus rotated `conversation-registry.jsonl.<epoch>` files
+    // within retention. The snapshot is a literal subdirectory FILE path (only
+    // GLOBS are top-level-constrained). stateDir-relative per the pinned
+    // round-6 path-shape lesson above.
+    const CONVERSATION_IDENTITY_BACKUP_ENTRIES = [
+      'state/conversation-registry.json',
+      'conversation-registry.jsonl*',
+    ];
 
     const configPath = path.join(this.config.stateDir, 'config.json');
     if (!fs.existsSync(configPath)) {
@@ -9063,6 +9139,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       ...PR_GATE_BACKUP_ENTRIES,
       ...TOPIC_PROFILE_BACKUP_ENTRIES,
       ...THREADLINE_CANONICAL_HISTORY_BACKUP_ENTRIES,
+      ...CONVERSATION_IDENTITY_BACKUP_ENTRIES,
     ]));
 
     for (const entry of merged) {
