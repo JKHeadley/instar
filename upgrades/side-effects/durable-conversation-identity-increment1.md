@@ -66,3 +66,10 @@ DEV_GATED_FEATURES registration, the PostUpdateMigrator additions (backup
 manifest, dev-gate strip, CLAUDE.md section + shadow markers), the scaffold
 template section, and the Tier-2/Tier-3 tests + docs-coverage artifacts
 (release fragment + architecture page).
+
+## Part-3 landing note (surface classification + test parity)
+
+CapabilityIndex gains the `/conversations` prefix classification (agent-facing
+capability — surfaced in /capabilities discovery, not INTERNAL_PREFIXES), and
+the backup-manifest parity test learns the two new manifest entries (the
+predictable behavior-change-breaks-old-tests category, swept before push).

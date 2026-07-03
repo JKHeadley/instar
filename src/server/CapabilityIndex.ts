@@ -119,6 +119,20 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'conversationIdentity',
+    prefixes: ['/conversations'],
+    description: 'Durable Conversation Identity (durable-conversation-identity §8) — the read-only registry surface behind channel-agnostic conversation ids. Every conversation has ONE durable numeric identity: a Telegram topic IS its positive id (pass-through, never registered); a non-Telegram conversation (Slack channel/thread) is minted a stable NEGATIVE id at first inbound, so durable state (commitments, memory, notices) can attach to it and survive restarts. A negative topicId anywhere in state is a minted conversation id, not an error. GET /conversations lists entries + the alias table; GET /conversations/:id resolves one id (unknown negative → honest 404 "never minted on this machine"); GET /conversations/resolve?key=…|?sessionKey=… is the forward lookup that mints NOTHING; GET /conversations/health carries entry counts, origins, quarantine + snapshot-suspension state, and the growth tripwire. Recording is always-on foundation (kill-switch: conversationIdentity.recording.enabled=false degrades to legacy in-memory hashing); DELIVERY to minted ids is dev-gated (conversationIdentity.followThrough, dryRun-first). When asked "what is this negative topic id?" / "which Slack conversation is -N?" → read /conversations/:id, never guess.',
+    build: () => ({
+      configured: true,
+      endpoints: [
+        'GET /conversations',
+        'GET /conversations/:id',
+        'GET /conversations/resolve',
+        'GET /conversations/health',
+      ],
+    }),
+  },
+  {
     key: 'spawnLimiter',
     prefixes: ['/spawn-limiter'],
     description: 'Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE design, docs/specs/forkbomb-prevention-simple.md). A SAFETY FLOOR that ships ON for every agent (never dark): a host-local counting semaphore bounds how many `claude -p`/`codex exec` subprocesses run AT ONCE across every compliant Instar process on the host (default 8), the chokepoint for the 2026-06-20 OOM fork-bomb. GET /spawn-limiter reports the live holder count, the cap, available slots, saturation, the live concurrent-poller count (P3 bounded ingress), and the acquire budget. Tune via intelligence.spawnCap.* or env (INSTAR_HOST_SPAWN_MAX / INSTAR_SPAWN_ACQUIRE_MS / INSTAR_SPAWN_WAITERS_MAX). When asked "are we capped against a fork-bomb?" / "how many LLM spawns are running right now?" → read this.',
