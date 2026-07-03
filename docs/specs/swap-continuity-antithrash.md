@@ -1,12 +1,15 @@
 ---
 slug: swap-continuity-antithrash
 title: Swap Continuity Under Pressure — Anti-Thrash Brakes + In-Flight Work Deferral (Roadmap 4.4, F3/P1-A6)
-status: draft
-eli16-overview: swap-continuity-antithrash.eli16.md   # authored at convergence, per house convention
-constitution: Bounded Blast Radius (a quota optimization must not silently expand into "all my subagents were killed"); Structure > Willpower (the anti-thrash rule lives at the swap chokepoint, not in prose); The User Experience Is the Product (F-series umbrella — the safety/continuity mechanism must not BE the disruption)
+status: draft (round-2 revision — all round-1 findings folded; see §15 disposition)
+author: echo
+eli16-overview: swap-continuity-antithrash.eli16.md
+parent-principle: "No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes"
+constitution: Bounded Blast Radius (a quota optimization must not silently expand into "all my subagents were killed"); Structure beats Willpower (the anti-thrash rule lives at the swap chokepoint, not in prose); The User Experience Is the Product (F-series umbrella — the safety/continuity mechanism must not BE the disruption)
+lessons-engaged: "P19 (three brakes + a bounded, loud breaker on a repeating loop — §3, §3.5; the monitor's pre-existing silent-retry gap is ALSO fixed, §3.6); P17 (ONE deduped attention item per thrash episode / per failure streak / per ledger loss — §3.5, §3.6, §6.4); P18 (every refusal, deferral, drop, and failure is a counter + a ledger row; dry-run counters soak before authority — §6, §10); P14-family flap accounting (dwell + reversal state persisted, restart-safe — §3.2, §3.5); F3 finding family (killed-subagent enumeration + unanswered-inbound re-injection at the swap chokepoint — §4.3); Bounded-Notification-Surface lesson shape (bind the PRIMITIVE with a default class, never a per-caller table — §4.2); #1001 anti-mechanism (dev-gated key OMITTED from shipped config, never an explicit false — §7, §10); dynamic-MCP half-enable precedent (per-key config-liveness table — §7.1); CMT-1118 durable inbound queue named as the future inbound-mitigation source (§4.3); Signal vs. Authority (the gate's blocking authority argued, bounded, and classed — §4.4)."
 earned-from: 2026-07-02 proactive-swap thrash day (echo dev agent, v1.3.722 — 36 executed proactive swaps / 72 [SessionRefresh] account-swap log lines across 8 waves; repeated kills of six parallel build subagents during the U4 and Session-A autonomous runs); F3 finding family (inbound eaten by respawn) and P1-A6
 roadmap: Session A item 4.4 — "Continuity under pressure: proactive/reactive swap + model-swap + refresh defer while a turn or live subagents are in flight, or re-inject the last unanswered inbound + enumerate killed subagents"
-review-convergence: null   # DRAFT — has not entered the convergence ceremony
+review-convergence: null   # round 2 in flight — has not converged
 approved: false
 ---
 
@@ -25,6 +28,36 @@ Two composable pieces, independently shippable, sharing one observability spine:
 Piece 1 removes most of the kills. Piece 2 makes the remaining, genuinely-needed
 kills non-destructive to in-flight work. They compose but do not depend on each
 other.
+
+## 0. The four operator-demanded properties (the non-negotiable core)
+
+These four properties are the operator's direct demand after the 2026-07-02
+thrash day. Every design decision below serves them; every round-1 finding was
+resolved WITHOUT weakening any of them:
+
+- **(a) The all-hot brake** — when every account is near quota, STAY PUT. A move
+  between two hot accounts buys nothing and costs a kill. (§3.1)
+- **(b) A per-session swap cooldown** — a session that was just moved is not
+  moved again for a dwell window, restart-safe. (§3.2)
+- **(c) Destination must be meaningfully better** — no swap onto a target that
+  is itself hot, or only trivially cooler than the source. (§3.3)
+- **(d) Never swap while work is in flight** — a session mid-turn or carrying
+  live subagents is never killed by an optimization. The swap defers until the
+  work lands, and if the wait runs out the swap is DROPPED, not forced. (§4)
+
+**The one deliberate boundary on (d), stated up front (resolves the B10/S2
+tension explicitly):** property (d) is ABSOLUTE for every optimization-class
+caller — a proactive swap, a model-swap, an agent-initiated refresh can never
+kill in-flight work; they defer or refuse, and the ceiling path DROPS the
+intent rather than forcing it. The single, named exception is the REACTIVE
+continuity guarantee: when an account genuinely walls, the session's work is
+already failing against a rate-limited account, so after a short bounded grace
+(§4.2) the swap proceeds — always carrying the §4.3 mitigations. "Never swap
+while work is in flight" therefore means precisely: *no optimization ever
+outranks live work; only a wall does, and even the wall waits briefly and then
+pays the F3 mitigation toll.* This is not a softening of (d); it is (d) plus
+the continuity guarantee the operator already relies on, with the priority
+order stated instead of implied.
 
 ---
 
@@ -98,7 +131,7 @@ The monitor prechecks "an alternate below 80 exists"
 (`src/core/ProactiveSwapMonitor.ts:226-231`, `selectAccount(…, {softThresholdPct:
 this.thresholdPct}, c.accountId)`), then executes via the injected swap
 (`src/core/ProactiveSwapMonitor.ts:248-256`) which is wired to
-`QuotaAwareScheduler.onQuotaPressure` (`src/commands/server.ts:16028-16031`).
+`QuotaAwareScheduler.onQuotaPressure` (`src/commands/server.ts:16023-16026`).
 `onQuotaPressure` **re-selects the target itself**
 (`src/core/QuotaAwareScheduler.ts:224-228`) with a DIFFERENT threshold — the
 scheduler's `softThresholdPct` = `config.subscriptionPool.swapSoftThresholdPct`,
@@ -131,7 +164,9 @@ in-flight-REFRESH guard (`src/core/SessionRefresh.ts:216` — prevents two
 concurrent refreshes, not a refresh during work). The kill is what destroys
 subagents and eats the turn.
 
-Meanwhile the codebase already HAS both detection primitives, used elsewhere:
+Meanwhile the codebase already HAS the underlying detection signals, used
+elsewhere (though not in the shape this spec needs — see §4.1's honest note on
+the new tri-state probe):
 
 - **In-flight turn:** `SessionManager.isSessionActivelyWorking(tmuxSession)`
   (`src/core/SessionManager.ts:3095-3105`) — true when the captured pane shows
@@ -157,7 +192,8 @@ Meanwhile the codebase already HAS both detection primitives, used elsewhere:
 
 `ProactiveSwapMonitor.lastSwapAt` (`src/core/ProactiveSwapMonitor.ts:127`) dies
 with the server process. On a restart-heavy day (the sleep/wake crash-loop
-family) every cooldown resets to zero.
+family) every cooldown resets to zero. (Also a pre-existing unbounded-growth
+gap: `lastSwapAt` entries are never evicted — fixed alongside, §3.5.)
 
 ---
 
@@ -165,6 +201,18 @@ family) every cooldown resets to zero.
 
 All brakes live at the proactive DECISION chokepoint
 (`ProactiveSwapMonitor.evaluate`). The reactive path is untouched (§3.4).
+
+**Candidate-set rule (frontloaded decision Q3, §14):** UNTAGGED sessions —
+sessions whose account resolves through the DEFAULT config slot rather than an
+explicit account tag — are **excluded from the proactive candidate set
+entirely**. Proactively swapping an untagged session mutates
+`resolveDefaultAccountId`, i.e. changes which account EVERY future untagged
+spawn lands on — a background optimizer must never mutate the default-slot
+binding as a side effect (default-slot optimization is `POST
+/credentials/set-default`'s job, an explicit operator-visible lever). Reactive
+rescue of untagged sessions is unchanged (a walled untagged session still
+swaps, forced); its ledger row carries `defaultAccountChanged: true` so the
+side effect is visible, never silent.
 
 ### 3.1 Brake (a) — the all-hot brake
 
@@ -175,9 +223,14 @@ good as moving — the move buys no material margin and costs a kill+respawn.
 Only a hard rate-limit wall justifies a move then, and that is the reactive
 path's job.
 
-Refusal is per-candidate-session and logged with reason `all-hot` (§6). The
-monitor keeps ticking; the moment a window resets and a genuinely-cool target
-appears, proactive swapping resumes on its own.
+Refusal is per-candidate-session and logged with reason `all-hot` (§6). To
+keep the ledger write rate sane during a sustained all-hot afternoon, all-hot
+refusals are recorded as **state-transition rows**, not per-tick rows: one row
+when a candidate ENTERS all-hot refusal, one when it LEAVES, plus a low-rate
+heartbeat row (one per candidate per 30 min while the state persists) so a
+long episode stays externally provable (the I2 proof is preserved at ~2% of
+the naive write volume). The monitor keeps ticking; the moment a window resets
+and a genuinely-cool target appears, proactive swapping resumes on its own.
 
 **The honest tradeoff, argued.** A refused proactive swap can mean the session
 hits the wall and takes the REACTIVE swap instead — one interruption at a
@@ -199,6 +252,18 @@ avoided one reactive blip is refused. Accepted: that margin is exactly what the
 reactive guarantee exists to absorb, and the blip costs one interruption
 either way.
 
+**All-hot reactive cascade, accepted explicitly (frontloaded decision Q2,
+§14):** in an all-hot pool a walled session's reactive swap lands on a hot
+target and may wall again within minutes — a hop chain. This is accepted for
+v1: each hop is a genuinely-forced move (the alternative is a dead session),
+the chain is bounded by the pre-existing per-session refresh rate counter
+(5 per 10 min, `src/core/SessionRefresh.ts:204-205`) which caps hops
+mechanically, and every hop is a `reactive` ledger row so a chain is visible.
+"Reactive prefers the coolest under-ceiling target when one exists" is a NAMED
+follow-up (`reactive-coolest-target`), deliberately NOT in this spec: it
+changes the reactive path's target choice, and I6 promises byte-identical
+reactive behavior.
+
 ### 3.2 Brake (b) — per-session dwell
 
 **Rule:** a session that was account-swapped (proactively OR reactively) within
@@ -207,13 +272,22 @@ the last `dwellMs` is not proactively swapped again. Refusal reason: `dwell`.
 - Default `dwellMs`: **2 700 000 (45 min)** — chosen against the evidence: the
   16:34→16:46→16:58 reversals were 12 min apart; the standing wave period
   across the day was ~2.5–3 h. 45 min kills intra-wave ping-pong while still
-  allowing one proactive rescue per standing wave. (The old `cooldownMs` 10 min
-  demonstrably braked nothing; it is subsumed — see §8 migration.)
+  allowing one proactive rescue per standing wave. Frontloaded decision (Q1,
+  §14): a CONSTANT, not adaptive scaling, in v1 — the structural decision
+  (constant vs derived) is frontloaded; the numeric default carries a justified
+  cheap-to-change-after tag (a config constant behind a dry-run soak that
+  measures exactly this number's effect, §10 rung 2).
 - Dwell also counts REACTIVE swaps as its clock-start (a just-rescued session
   is not immediately re-optimized), but dwell never BLOCKS a reactive swap
   (I6).
 - Dwell state is persisted in the swap ledger (§3.5) so a server restart does
   not reset it (fixes §2.4).
+- The old `cooldownMs` (10 min) demonstrably braked nothing; it is subsumed —
+  see §9 migration.
+- **Index hygiene:** the in-memory dwell/reversal index prunes entries older
+  than `max(dwellMs, reversalWindowMs)` on each tick; the pre-existing
+  `lastSwapAt` never-evicted leak is fixed by the same sweep. Hard bound: the
+  index never exceeds (live sessions + entries younger than the window).
 
 ### 3.3 Brake (c) — target-materially-better
 
@@ -229,6 +303,37 @@ snapshot that the decision logs (§6):
    Guards the case where the source reading is barely over threshold (80–81%)
    and jitter alone created the "pressure".
 
+**Note on shipped defaults (stated so retuning is safe):** at the shipped
+numbers, bound 2 is mathematically implied by bound 1 (source ≥ 80 ∧ target
+< 65 ⇒ improvement > 15) — `minImprovementPct` is inert until an operator
+RAISES `targetHeadroomPct`'s ceiling (lowers the headroom). It exists so that
+loosening one knob never silently removes the materially-better property; an
+operator who sets `targetHeadroomPct: 5` still gets the 15-point improvement
+floor.
+
+**Normative selection order (order of operations is load-bearing):**
+
+1. **FILTER** the alternate set to accounts whose `bindingUtilization` is
+   under the absolute ceiling (bound 1). If the filtered set is empty → the
+   all-hot brake refuses (§3.1).
+2. **SCORE** with `selectAccount`'s existing use-before-reset scoring — over
+   the FILTERED cool set ONLY (drain the soonest-resetting COOL account
+   first). The scoring was never the bug; applying it over the hot band was.
+3. **VERIFY** the survivor against bound 2 (relative improvement vs the
+   source). Fail → refusal `no-material-target`.
+
+A builder must NOT score the full alternate set and rely on execute-time
+revalidation to catch a hot pick — the filter comes first, structurally. The
+executed target is the survivor of filter→score→verify.
+
+**Intra-tick pile-on cap:** at most **1 executed swap per target account per
+monitor tick**. All `maxSwapsPerCycle` candidates evaluating against the same
+stale snapshot could otherwise pass bounds against the SAME cool target and
+pile onto it inside one tick — §2.2's poll-lag mechanism at intra-tick scale.
+After a swap executes onto target T in a tick, T leaves the candidate target
+set for the remainder of that tick (refusal reason `no-material-target` if no
+other target survives).
+
 **Closing the §2.2 seam (the load-bearing design decision):** the monitor
 performs ONE authoritative target selection under these bounds and passes the
 chosen target THROUGH the swap call — `cfg.swap` gains an optional
@@ -242,47 +347,100 @@ scoring, which remains correct there. The checked target IS the executed
 target (invariant I1), and the proactive and reactive paths stop sharing a
 threshold they were never supposed to share.
 
-Selection among targets under the ceiling stays `selectAccount`'s
-use-before-reset scoring (drain the soonest-resetting COOL account first) —
-the scoring was never the bug; applying it over the hot band was.
+**The funnel contract, stated (accepted-risk shape):** `onQuotaPressure` is a
+public seam; the contract is — an explicit `targetAccountId` means "the caller
+already ran the brake pipeline; revalidate, never re-select"; NO
+`targetAccountId` means "reactive semantics: today's 90-threshold re-selection,
+drain-first scoring". A future proactive-class caller that skips the brakes by
+omitting the target gets reactive semantics, not silent brake bypass — the
+worst-case failure of the contract is today's exact behavior, never something
+new. This is the accepted funnel boundary, and the wiring test (§12) pins it.
 
 ### 3.4 The reactive path is untouched
 
 `autoSwapOnRateLimit` → `rate-limit:escalated` → `onQuotaPressure` with no
 explicit target (`src/commands/server.ts:15965-15981`) keeps its exact
 semantics: 90-threshold eligibility, drain-first scoring, `onNoAlternate`
-attention item. A genuinely walled account still swaps, immediately, even in
-an all-hot pool, even inside another session's dwell window. The brakes bind
-the OPTIMIZATION, never the GUARANTEE. (Piece 2 adds only the short
-mitigation grace + F3 payload to the reactive respawn — §4.3 — never a
-refusal.)
+attention item. A genuinely walled account still swaps — within
+`reactiveGraceMs` + one tick (§4.2), not "immediately"; the grace is Piece 2's
+only touch on this path — even in an all-hot pool, even inside another
+session's dwell window. The brakes bind the OPTIMIZATION, never the GUARANTEE.
+(Piece 2 adds only the short mitigation grace + F3 payload to the reactive
+respawn — §4.3 — never a refusal.)
 
 ### 3.5 Thrash detection + the swap ledger
 
-Every proactive decision — executed, refused, deferred — and every reactive
-swap is appended to a durable JSONL ledger: `state/swap-ledger.jsonl`
-(`{ts, kind: proactive|reactive, decision: swapped|refused|deferred|proceeded,
-session, topicId?, from, to?, fromUtilPct, toUtilPct?, reason, dwellRemainingMs?,
-inFlight?: {turn: boolean, subagents: number}}`). The ledger is the restart-safe
-source for dwell (§3.2) and reversal detection:
+Every proactive decision — executed, refused, deferred, dropped, invalidated,
+failed — and every reactive swap is appended to a durable JSONL ledger:
+`state/swap-ledger.jsonl`. The authoritative row schema is §6.1 (single
+source; the sketch that used to live here was incomplete). The ledger is the
+restart-safe source for dwell (§3.2), reversal detection, AND breaker state:
 
-- **Reversal:** a proactive swap intent whose `(from,to)` is the inverse of the
-  same session's most recent executed swap within `reversalWindowMs` (default
-  **1 800 000, 30 min**). A reversal intent is refused outright (reason
-  `reversal`) and increments the **thrash counter**.
+- **Write path (single chokepoint):** one `SwapLedger` module owns the file —
+  the ONLY append site. Monitor, scheduler, and SessionRefresh all call it;
+  none writes the file directly. Rotation uses the O(1) segment helper
+  (`maybeRotateJsonlSegment` + a cached byte counter — NOT the legacy
+  whole-file `maybeRotateJsonl` rewrite, which is marked non-conformant),
+  size-rotated at 10 MB, keep 2 segments.
+- **Read path (never a per-decision scan):** hydrate ONCE at boot, bounded to
+  rows within `max(dwellMs, reversalWindowMs)` of now — INCLUDING the newest
+  rotated segment when the active file is younger than the window (a rotation
+  seconds before boot must not blind the brakes). After boot: an in-memory
+  per-session index, write-through on append. No decision ever re-reads the
+  file.
+- **Reversal (refusal — same-session keyed):** a proactive swap intent whose
+  `(from,to)` is the inverse of the same session's most recent executed swap
+  within `reversalWindowMs` (default **1 800 000, 30 min**) is refused outright
+  (reason `reversal`) and increments the thrash counter.
+- **Reversal (detection — pair-level, any session):** a proactive EXECUTION
+  whose `(from,to)` inverts ANY executed swap on the same account pair within
+  `reversalWindowMs` — regardless of session — ALSO increments the thrash
+  counter (detection-only; it never refuses). Same-session keying alone is
+  blind to the multi-session ping-pong shape a brake-(c) regression would
+  actually take (session A goes X→Y while session B goes Y→X); the pair-level
+  detector sees it. Refusal stays same-session-keyed on purpose — the
+  legitimate 08:19 wave (different sessions, same pair, same direction under
+  real pressure) must not be refused by a pair-level rule.
 - **Thrash episode / breaker:** ≥ `thrashBreakerThreshold` (default **2**)
-  reversals pool-wide within `reversalWindowMs` opens a breaker that suppresses
-  ALL proactive swaps for `thrashBreakerBackoffMs` (default **3 600 000, 1 h**),
-  raises ONE deduped attention item ("proactive account-swap is thrashing —
-  suppressed for 1h; accounts A/B/C all ≥80%"), and logs every suppressed
-  intent with reason `thrash-breaker`. The breaker auto-half-opens after the
-  backoff (P19 family: a guard's own failure mode must be bounded and loud,
-  never a silent permanent off). Reactive swaps ignore the breaker (I6).
+  thrash-counter increments pool-wide within `reversalWindowMs` opens a breaker
+  that suppresses ALL proactive swaps for `thrashBreakerBackoffMs` (default
+  **3 600 000, 1 h**), raises ONE deduped attention item ("proactive
+  account-swap is thrashing — suppressed for 1h; accounts A/B/C all ≥80%"), and
+  logs every suppressed intent with reason `thrash-breaker`. The breaker
+  auto-half-opens after the backoff (P19 family: a guard's own failure mode
+  must be bounded and loud, never a silent permanent off). Reactive swaps
+  ignore the breaker (I6).
+- **Breaker state survives restart (this spec must not re-create §2.4):**
+  breaker state is DERIVED, not stored — at boot, the same ledger hydration
+  that primes dwell re-derives the thrash counter and any open episode from
+  reversal-bearing rows within `reversalWindowMs` (episode identity =
+  `episodeId`, minted at open and stamped on every suppressed row). If the
+  derivation shows an episode whose backoff has not elapsed, the breaker boots
+  OPEN with the original deadline. The episode attention item is deduped on
+  the ledger-persisted `episodeId`, so a reconstructed episode does NOT
+  re-alert — the restart-heavy day that motivated §2.4 gets a breaker that
+  holds, silently, exactly as if the process had lived.
 
 With brakes (a)+(c) working, reversals should be structurally impossible — the
 breaker is the belt-and-suspenders detector that PROVES it, and the alarm if a
 future change reopens the hole (the same role the guard-posture tripwire plays
 for config flips).
+
+### 3.6 Execution-failure accounting (closes a pre-existing P19 gap)
+
+The monitor's current behavior when the executed swap call THROWS is a silent
+retry next tick — no record, no backoff, no escalation. The draft's decision
+enum reproduced that hole; it is now closed:
+
+- A swap execution that fails writes a `decision: 'failed'` ledger row
+  (reason `swap-exec-failed`, sanitized error class only — never raw error
+  text that could carry paths/tokens).
+- Each consecutive failure puts the SESSION into execution-failure backoff:
+  skip it for `tickMs × 2^n` (n = consecutive failures, capped at `dwellMs`).
+  A success resets the counter.
+- After **3** consecutive failures on one session: ONE deduped attention item
+  (per session per episode) — "proactive swap for session X is failing
+  repeatedly (reason class)". Counters on the status route (§6.3).
 
 ---
 
@@ -294,40 +452,138 @@ A new small module — `SwapWorkGate` (`src/core/SwapWorkGate.ts`) — answers o
 question at every session-killing mutation chokepoint: **does this session have
 in-flight work right now?**
 
+**The probe is a NEW tri-state surface (honest accounting — the draft
+overclaimed "invents no new detection"):** the underlying SIGNALS exist today
+(§2.3), but not in the shape this gate needs. `isSessionActivelyWorking`
+swallows its own failures (`catch → false`) — which is the OPPOSITE resolution
+I7 requires for proactive callers — and it is built on synchronous
+`execFileSync` forks. The gate therefore introduces:
+
+```
+checkSessionWorkState(session) → 'working' | 'idle' | 'indeterminate'
+```
+
+composing the ASYNC primitives that already exist for exactly this reason:
+`hasActiveProcessesAsync` for the child-process leg and the coalesced tmux
+pane capture (`tmuxExecCoalesced`) for the footer leg, plus
+`SubagentTracker.hasActiveSubagents` (O(1), in-memory, cannot block). A leg
+that cannot be read reports `indeterminate` instead of a silent `false`.
+"Non-baseline child process" means the canonical baseline filter in
+`SessionManager.hasActiveProcesses` (the shell/tmux-infrastructure exclusion
+list) — defined by reference so the term is not free-floating.
+
+**Event-loop safety (mandatory, not advisory):** the gate NEVER calls the
+synchronous probe path. At spec'd frequency (deferred intents re-checked per
+tick + per-10 s grace re-checks across a reactive wave), the sync path's 2–4
+blocking `execFileSync` forks (including a full `ps -eo` scan) would stall the
+server event loop for seconds at exactly the hot moment — the mesh lease tick
+(~5 s) and Telegram ingress share that loop. One shared `ps` snapshot is taken
+per re-check SWEEP (all sessions under evaluation in a tick share it), not per
+session.
+
 ```
 busy(session) :=
-     sessionManager.isSessionActivelyWorking(session.tmuxSession)     // turn in flight (footer/child-proc)
-  || (session.claudeSessionId != null
-        && subagentTracker.hasActiveSubagents(session.claudeSessionId)) // live Agent-tool subagents
+     turnLeg     = checkSessionWorkState(session)             // 'working'|'idle'|'indeterminate'
+  || subagentLeg = session.claudeSessionId != null
+        ? subagentTracker.hasActiveSubagents(session.claudeSessionId)
+        : 'indeterminate'                                     // leg unavailable, flagged
 ```
 
-Grounding: both predicates exist today (§2.3) — the gate composes them, it
-invents no new detection. Direction of uncertainty is caller-class-dependent
-(I7): for a PROACTIVE/optimization caller, a failed pane capture or missing
-`claudeSessionId` on the subagent leg resolves to **busy** (fail toward not
-killing work — mirrors `paneIdleWithEmptyInput`'s fail-closed); for a REACTIVE
-caller the same uncertainty resolves to **not busy** (fail toward the
-continuity guarantee — a walled session must never be stranded by a broken
-detector). Note the asymmetry inside the proactive arm: `claudeSessionId`
-missing disables only the subagent leg's confidence, the footer leg still
-decides; only when BOTH legs are unreadable does the proactive arm defer on
-uncertainty, and such deferrals carry reason `busy-indeterminate` so a broken
-detector is visible in the ledger rather than masquerading as real work.
+**Uncertainty direction (I7, restated with the reactive-arm fix):**
 
-### 4.2 Who consults it, and what "defer" means per caller
+- **Proactive/optimization callers:** any `indeterminate` on BOTH legs →
+  resolve **busy** (fail toward not killing work). If only the subagent leg is
+  unavailable (`claudeSessionId` missing), the footer leg still decides; the
+  ledger row flags `subagentLeg: 'absent'` so the blind spot is measurable.
+  Deferrals caused purely by indeterminacy carry reason `busy-indeterminate` —
+  a broken detector is visible in the ledger rather than masquerading as real
+  work.
+- **Reactive callers:** `indeterminate` resolves **busy-for-grace** — the
+  session is treated as busy WITHIN the grace window (worst case: the swap
+  waits the full `reactiveGraceMs`, 120 s). It does NOT resolve to not-busy:
+  the reactive arm's wait is hard-bounded, so stranding is impossible by
+  construction, and resolving indeterminate to not-busy would forfeit the
+  grace on flaky tmux exactly under load — when tmux is most likely to be
+  flaky. The guarantee is unharmed (the swap always proceeds at deadline);
+  only the mid-write protection is preserved.
 
-| Caller | Today | With the gate |
+### 4.2 The chokepoint, caller classes, and what "defer" means per class
+
+**The gate binds the PRIMITIVE, not a caller list (Bounded-Notification-Surface
+lesson shape):** `SwapWorkGate` is consulted INSIDE
+`SessionRefresh.refreshSession` — the one funnel every session-killing
+account/model/refresh mutation already flows through. Callers pass a
+`callerClass`; an UNLISTED or absent caller class defaults to
+`'interactive-refresh'` (refusal semantics — the safest default: nothing is
+killed, the caller is told why). This is how today's unlisted killing callers
+(`POST /sessions/restart-all`, manual `POST /subscription-pool/swap`,
+credential-repointing respawns, tier-escalation respawns) are bound without
+being enumerated — a table of callers can never bind the caller added next
+month; the chokepoint with a default class binds everything by construction.
+
+```
+type SwapWorkGateCallerClass =
+  | 'proactive-swap'       // optimization — defer, ceiling-drop
+  | 'reactive-swap'        // continuity guarantee — grace, then proceed + mitigations
+  | 'interactive-refresh'  // agent/API/operator refresh — refuse with work summary (DEFAULT)
+  | 'recovery'             // sentinel recovery respawn — exempt
+```
+
+**Gate-before-rate-guard (order is load-bearing):** the busy check runs BEFORE
+`refreshSession`'s rate-guard records the attempt. A deferred or refused
+attempt consumes ZERO of the 5-per-10-min rate budget — otherwise a busy
+session's own deferrals would exhaust the budget and starve the eventual
+legitimate swap.
+
+| Caller class | Today | With the gate |
 |---|---|---|
-| ProactiveSwapMonitor (account swap) | kills unconditionally via refresh | busy → **defer**: keep the intent, retry each tick; the swap runs when the work lands. Bounded by `deferralCeilingMs`. At ceiling: **the wall wins** — the intent is DROPPED (reason `deferral-ceiling-dropped`), the session keeps working, and if the account genuinely walls the reactive path fires with §4.3 mitigations. Rationale: a proactive swap is an optimization; killing six subagents to pre-empt a wall that may never arrive inverts the priority order. Dropping is safe precisely because the reactive floor exists. |
-| Reactive swap (`autoSwapOnRateLimit`) | kills unconditionally | busy → wait at most `reactiveGraceMs` (default **120 s**, single re-check cadence of 10 s) for the current tool-write to land, then **proceed with F3 mitigations** (§4.3). Never refused: a walled session's turn is failing against a rate-limited account anyway — deferring long has no upside. The grace only absorbs a mid-write tool call. |
-| Model-swap (`ModelSwapService`) | refuses non-idle (retryable) — `src/core/ModelSwapService.ts:119-136` | unchanged refusal semantics, plus the subagent leg is added to its idle check (a session at an idle prompt CAN have live background subagents — today's pane-only check would swap under them; same footer blind spot F3 hit). Its existing retry surface is the deferral. |
-| Agent/API session refresh (`POST /sessions/refresh`, MCP-lifecycle restarts, topic-profile respawns) | kills unconditionally | busy → structured refusal `session-busy` with the live work summary (turn? N subagents + ages), so the caller (agent or operator surface) decides: wait, or re-issue with `force: true`. An operator `force` proceeds with §4.3 mitigations. No silent queueing on this path — the caller is interactive and can carry its own retry. |
-| Sentinel recovery respawns (ContextWedge, stuck-signature) | kill/respawn | exempt — by definition the session is wedged, its "work" is not progressing; gating recovery on a broken pane's indicators would deadlock recovery. Exemption is explicit in code (a `callerClass: 'recovery'`), not an accident of wiring. |
+| `proactive-swap` | kills unconditionally via refresh | busy → **defer**: keep the intent, retry each tick; the swap runs when the work lands. Bounded by `deferralCeilingMs`. At ceiling: **the wall wins** — the intent is DROPPED (reason `deferral-ceiling-dropped`), the session keeps working, and if the account genuinely walls the reactive path fires with §4.3 mitigations. Rationale: a proactive swap is an optimization; killing six subagents to pre-empt a wall that may never arrive inverts the priority order. Dropping is safe precisely because the reactive floor exists. |
+| `reactive-swap` | kills unconditionally | busy → wait at most `reactiveGraceMs` (default **120 s**, re-check cadence 10 s) — and execute the swap at the FIRST not-busy observation, never sitting out the full grace. If NEW work starts inside the grace, it is killed at the deadline WITH mitigations — acceptable and stated: any new turn on a walled account is failing anyway. Never refused: deferring long has no upside; the grace only absorbs a mid-write tool call. |
+| `interactive-refresh` (default) | kills unconditionally | busy → structured refusal `session-busy` with the live work summary (turn? N subagents + ages), so the caller decides: wait, or re-issue with `force: true`. A `force` proceeds with §4.3 mitigations. No silent queueing — the caller is interactive and carries its own retry. Route shape: §4.5. |
+| `recovery` | kill/respawn | exempt — by definition the session is wedged, its "work" is not progressing; gating recovery on a broken pane's indicators would deadlock recovery. Exemption is explicit in code (the caller class), not an accident of wiring. |
 
-Deferral bookkeeping is in-memory per intent with the ledger row (§3.5) as the
-durable trace; a server restart drops pending deferrals (safe: the intent
-regenerates on the next monitor tick from live quota state — deferral state is
-derived, never authoritative).
+Model-swap (`ModelSwapService`) keeps its own refusal surface (it refuses
+non-idle already, retryable — its existing retry surface IS its deferral). The
+change: its idle check gains the SUBAGENT leg — a session at an idle prompt
+CAN have live background subagents; today's pane-only check would swap under
+them (the same footer blind spot F3 hit). Frontloaded decision (Q5, §14): the
+subagent leg ships behind its **own micro-flag on the model-swap config block**
+(`subagentIdleLeg`, default follows the model-swap feature's rollout stage),
+NOT inside `swapContinuity` — the pieces stay independently shippable, and a
+live feature's refusal surface must not silently change (or silently REVERT)
+when an unrelated flag flips.
+
+**Deferral ownership (who holds what state):** `SwapWorkGate` is a STATELESS
+predicate — `busy()` and nothing else. `ProactiveSwapMonitor` owns the deferral
+map, `deferralAgeMs` accounting, ceiling enforcement, and drop-at-ceiling — it
+owns the tick and the intent lifecycle, so the deferral lifecycle lives with
+it. The reactive grace loop runs as a bounded ASYNC wait inside the
+account-swap branch of `SessionRefresh` (never a blocking wait inside a
+scheduler callback). Deferral bookkeeping is in-memory per intent with the
+ledger row as the durable trace; a server restart drops pending deferrals
+(safe: the intent regenerates on the next monitor tick from live quota state —
+deferral state is derived, never authoritative).
+
+**A deferred intent re-runs the FULL brake pipeline at fire time (not just
+target revalidation):** each deferral retry tick re-evaluates, in order:
+source-pressure ≥ threshold (the wave may have subsided — all 8 observed waves
+subsided wall-free; executing a stale intent would be a pointless kill), the
+breaker (an episode that opened mid-wait suppresses the pending intent — it is
+NOT exempt), dwell, reversal, all-hot, and both target bounds + fresh target
+selection. An intent whose session's ACCOUNT changed underneath it (a reactive
+swap already moved it) is INVALIDATED (`decision: 'invalidated'`, reason
+`intent-stale`) — never executed as a second kill inside the dwell window that
+dwell exists to prevent. The intent that finally fires is one that would have
+been approved fresh at that moment; deferral never launders a stale decision.
+
+**Defer→drop→regenerate churn brake:** after a `deferral-ceiling-dropped`, the
+(session, source→target pair) enters re-intent backoff for `dwellMs` (default)
+— a never-idle session on a hot account must not cycle
+defer→drop→regenerate→defer forever. Repeated defer observations within one
+intent episode are deduped in the ledger to first + final + `deferCount`
+(never one row per re-check). Deferred intents do NOT consume
+`maxSwapsPerCycle` slots — only executed swaps count against the per-tick
+budget (a wave of deferrals must not starve the tick's executable swaps).
 
 `deferralCeilingMs` default: **1 800 000 (30 min)** — long enough for a real
 build/turn to land (p95 turn length on the autonomous runs is minutes, not
@@ -337,11 +593,17 @@ indefinitely. Starvation is structurally impossible in both directions: the
 proactive intent dies at the ceiling (never blocks the wall), and the reactive
 path never waits more than `reactiveGraceMs`.
 
+**Why polling, not events (stated constraint):** the pane/process detectors
+have no completion event to subscribe to — a 10 s re-check cadence inside a
+bounded window is the honest mechanism available. If `SubagentTracker` gains
+completion events later, event-driven continuation for the subagent leg is a
+named possible refinement (the poll stays for the footer leg regardless).
+
 ### 4.3 The F3 mitigations (attached to every forced kill)
 
 When a swap DOES proceed over in-flight work — reactive after grace, or
-operator `force` — the respawn carries a mitigation payload. Both hooks
-already exist; this wires them:
+`force` on an interactive refresh — the respawn carries a mitigation payload.
+Both hooks already exist; this wires them:
 
 1. **Enumerate killed subagents.** Before the kill, snapshot
    `subagentTracker.getActiveSubagents(claudeSessionId)`
@@ -362,71 +624,196 @@ already exist; this wires them:
    the restart, this message arrived and was not yet answered: «…» — answer it
    first."* This is the F3 fix at the swap chokepoint: today the kill eats the
    turn that was answering the user, and the respawned session greets the void.
-3. Payload hygiene: the followUpPrompt block is length-clamped and the inbound
-   is quoted as data (same envelope discipline as replicated-store injections);
-   subagent `lastMessage` bodies are NOT included (transcript paths land in the
-   ledger row only).
+   Frontloaded decision (Q4, §14): v1 reads the in-memory map; across a server
+   restart the last unanswered inbound is unknowable and the mitigation
+   degrades HONESTLY — the ledger row's `inbound` field is a tri-state:
+   `'reinjected'` | `'none'` (map consulted, genuinely no unanswered inbound)
+   | `'unknown'` (map unavailable: post-restart, or the exactly-once ingress
+   ledger is dark on this install). The durable inbound queue (CMT-1118
+   family) is the named future source that upgrades `'unknown'` to a real
+   answer; Close the Loop: that upgrade is a tracked follow-up, not a silent
+   hope.
+3. **Payload hygiene (normative, not advisory):** the mitigation block is a
+   QUOTED-DATA envelope, same discipline as replicated-store injections — the
+   inbound body is (a) delimiter-neutralized (any occurrence of the envelope's
+   own delimiter sequence inside the body is escaped so the quoted region
+   cannot be closed early by content), (b) attributed from the stored
+   `SenderEnvelope` ("from <sender> at <time>"), never laundered into bare
+   instruction position — the respawned session sees "a message from X awaits
+   an answer", not an anonymous imperative. Clamps: mitigation block ≤ 2 000
+   chars total; quoted inbound ≤ 1 000 chars (ellipsized); subagent list ≤ 10
+   entries then "+N more". Subagent `lastMessage` bodies are NOT included
+   (transcript PATHS land in the ledger row only, never bodies — §6.1).
 
 Mitigations are additive to the respawn and never gate it — a failure to
 enumerate or resolve the inbound logs and proceeds (the kill is already
 justified when we reach here; the mitigation must not become a new wedge).
+
+### 4.4 Signal vs. Authority — why this gate may block (argued, not assumed)
+
+The gate holds real blocking authority (it defers/refuses kills) while being a
+low-context detector. That is defensible here, and the spec says why instead
+of hoping nobody asks: the gate is a DETERMINISTIC structural-state check
+(pane footer, child processes, subagent registry — no LLM judgment, no content
+interpretation), the same accepted class as `ModelSwapService`'s idle refusal
+and the reaper's KEEP-guards. Its authority is bounded on every edge: the
+ceiling (a deferral cannot outlive 30 min), the grace (a reactive wait cannot
+exceed 120 s), `force` (an interactive caller can always override with the
+mitigation toll), the recovery exemption (it can never deadlock recovery), and
+I7 (its own uncertainty never strands either direction). A wrong "busy" costs
+a delayed optimization; a wrong "idle" costs what today's behavior ALWAYS
+costs. No unbounded or unappealable authority exists in the design.
+
+### 4.5 `/sessions/refresh` refusal shape (interactive callers)
+
+The gate check runs PRE-202 — the route answers the truth synchronously
+instead of accepting-then-failing:
+
+- Busy → **HTTP 409** `{code: 'session_busy', turnInFlight: boolean,
+  subagents: [{agentType, ageMinutes}]}` (counts and ages only — no titles,
+  no transcript paths, no message content on the wire).
+- The request body gains optional `force: true` — overrides ONLY the work
+  gate, NEVER the rate guard (a forced refresh still consumes rate budget and
+  still respects the 5-per-10-min cap; `force` is not a rate bypass).
+- **Force provenance (Know Your Principal):** `force` arrives over the Bearer
+  token — bearer-level authority, not operator authority. The spec does NOT
+  attribute `force` to "the operator"; the ledger row records provenance
+  honestly (`force: true`, `callerClass`, `authLevel: 'bearer'`). If a future
+  surface wants operator-attributed force, it must arrive via an
+  operator-authenticated surface (dashboard PIN) — out of scope here, named so
+  it is a decision and not an accident.
+- Existing internal callers of `/sessions/refresh` and `refreshSession` are
+  audited for the new refusal code as part of the build (test plan §12 —
+  every caller either handles 409/`session-busy` or passes a deliberate
+  caller class).
 
 ---
 
 ## 5. Invariants
 
 - **I1 (checked = executed):** a proactive swap executes only onto the exact
-  target that passed brakes (a)+(c); execute-time revalidation refuses, never
-  re-selects. The two-threshold seam (§2.2) is structurally closed for
-  proactive callers.
+  target that passed brakes (a)+(c) via filter→score→verify (§3.3);
+  execute-time revalidation refuses, never re-selects. The two-threshold seam
+  (§2.2) is structurally closed for proactive callers.
 - **I2 (all-hot ⇒ zero proactive):** when no eligible target is under the
-  target ceiling, zero proactive swaps execute; each candidate logs one
-  `all-hot` refusal per tick (deduped in the attention surface, not in the
-  ledger).
+  target ceiling, zero proactive swaps execute; the ledger carries
+  enter/leave/heartbeat rows per candidate (§3.1) sufficient to prove the
+  episode externally.
 - **I3 (dwell):** a session account-swapped at T is not proactively swapped
   again before T+`dwellMs`, across server restarts (ledger-backed).
-- **I4 (no proactive kill of live work):** a proactive swap, model-swap, or
-  agent-initiated refresh never kills a session that the gate reports busy —
-  it defers or refuses. Only reactive-after-grace and operator-`force` may,
-  and then always with the §4.3 mitigation payload attached.
-- **I5 (nothing silent):** every refused, deferred, dropped, suppressed, or
-  proceeded-over-work decision writes one structured ledger row with its
-  reason, and the counters are readable on the status route (§6).
+- **I4 (no optimization kill of live work):** a proactive swap, model-swap, or
+  interactive refresh never kills a session that the gate reports busy — it
+  defers or refuses. Only reactive-after-grace and explicit `force` may, and
+  then always with the §4.3 mitigation payload attached.
+- **I5 (nothing silent):** every refused, deferred, dropped, invalidated,
+  failed, suppressed, or proceeded-over-work decision writes one structured
+  ledger row with its reason (per the §6.1 schema), and the counters are
+  readable on the status route.
 - **I6 (the guarantee is untouched):** the reactive swap path never waits more
-  than `reactiveGraceMs`, ignores dwell, reversal, the all-hot brake, and the
-  thrash breaker, and with Piece 1+2 dark its behavior is byte-identical to
-  today's.
-- **I7 (uncertainty direction):** detector uncertainty resolves busy for
-  proactive callers (protect work) and not-busy for reactive callers (protect
-  continuity); indeterminate-detector deferrals are distinguishable in the
-  ledger (`busy-indeterminate`).
-- **I8 (breaker is bounded and loud):** the thrash breaker always half-opens
-  after its backoff, and opening it raises exactly one deduped attention item
-  per episode. No permanent silent suppression state exists.
+  than `reactiveGraceMs` (+ one tick of scheduling), ignores dwell, reversal,
+  the all-hot brake, and the thrash breaker, and with Piece 1 dry-run + Piece
+  2 dark its decision behavior is byte-identical to v1.3.722.
+- **I7 (uncertainty direction, per caller class):** detector uncertainty
+  resolves BUSY for proactive/optimization callers (protect work) and
+  BUSY-FOR-GRACE for reactive callers (protect the mid-write without ever
+  stranding — the grace deadline always proceeds); indeterminate-detector
+  deferrals are distinguishable in the ledger (`busy-indeterminate`).
+- **I8 (breaker is bounded, loud, and restart-proof):** the thrash breaker
+  always half-opens after its backoff, opening it raises exactly one deduped
+  attention item per `episodeId` (surviving restarts — §3.5), and no permanent
+  silent suppression state exists.
+- **I9 (a deferred intent is never stale at fire time):** every deferral
+  retry re-runs the full brake pipeline; an intent invalidated by an
+  account-change underneath it never executes (§4.2).
+- **I10 (default-slot integrity):** no proactive swap ever changes which
+  account the default config slot serves — untagged sessions are outside the
+  proactive candidate set by construction (§3, Q3).
 
 ## 6. Observability
 
+### 6.1 The authoritative ledger-row schema (single source)
+
+`state/swap-ledger.jsonl` — one JSON object per decision. Field × decision-kind
+matrix (● = always, ○ = when applicable, — = never):
+
+| field | type | swapped | refused | deferred | dropped | invalidated | failed | proceeded |
+|---|---|---|---|---|---|---|---|---|
+| `ts` | ISO-8601 | ● | ● | ● | ● | ● | ● | ● |
+| `kind` | `'proactive'\|'reactive'` | ● | ● | ● | ● | ● | ● | ● |
+| `decision` | enum (row headers) | ● | ● | ● | ● | ● | ● | ● |
+| `callerClass` | `SwapWorkGateCallerClass` | ● | ● | ● | ● | ● | ● | ● |
+| `session` | string | ● | ● | ● | ● | ● | ● | ● |
+| `topicId` | number? | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
+| `machineId` | string | ● | ● | ● | ● | ● | ● | ● |
+| `from` | account id | ● | ● | ● | ● | ● | ● | ● |
+| `to` | account id | ● | ○ | ○ | ○ | ○ | ○ | ● |
+| `fromUtilPct` / `toUtilPct` | number / number? | ● | ○ | ○ | ○ | ○ | ○ | ● |
+| `reason` | enum §6.2 | — | ● | ● | ● | ● | ● | ● |
+| `dwellRemainingMs` | number | — | ○ (dwell) | — | — | — | — | — |
+| `deferralAgeMs` | number | ○ (post-defer) | — | ● | ● | ○ | — | ○ |
+| `deferCount` | number | ○ | — | ● (final row) | ● | ○ | — | ○ |
+| `inFlight` | `{turn: boolean, subagents: number}` | ○ | ○ | ● | ● | ○ | — | ● |
+| `subagentLeg` | `'ok'\|'absent'\|'indeterminate'` | ○ | ○ | ● | ● | ○ | — | ● |
+| `killedSubagents` | number | — | — | — | — | — | — | ● |
+| `killedSubagentList` | `[{agentType, ageMinutes, transcriptPath?}]` | — | — | — | — | — | — | ● |
+| `inbound` | `'reinjected'\|'none'\|'unknown'` | — | — | — | — | — | — | ● |
+| `force` / `authLevel` | boolean / `'bearer'` | — | — | — | — | — | — | ○ |
+| `defaultAccountChanged` | boolean | ○ (reactive untagged) | — | — | — | — | — | ○ |
+| `episodeId` | string | ○ (breaker) | ○ (breaker/all-hot) | ○ | ○ | ○ | ○ (failure streak) | ○ |
+| `transition` | `'enter'\|'leave'\|'heartbeat'` | — | ○ (all-hot) | — | — | — | — | — |
+| `errorClass` | string (sanitized) | — | — | — | — | — | ● | — |
+
+**Never in a row:** message bodies, subagent `lastMessage` content, raw error
+text, tokens, credentialed URLs. Transcript PATHS appear only in
+`killedSubagentList`; the status route (§6.3) serves counters only and no
+route serves raw rows.
+
+### 6.2 Enums (single-sourced; §3/§4 reference these)
+
+- `decision`: `swapped | refused | deferred | dropped | invalidated | failed |
+  proceeded` (`proceeded` = proceeded over busy with mitigations — reactive
+  after grace, or force).
+- `reason`: `all-hot | dwell | no-material-target | reversal | thrash-breaker
+  | target-revalidation-failed | busy-turn | busy-subagents |
+  busy-indeterminate | deferral-ceiling-dropped | intent-stale |
+  session-busy | swap-exec-failed`.
+- `breakerState`: `closed | open | half-open`.
+- `callerClass`: §4.2 (defined once as the gate's input type).
+
+### 6.3 Log lines + status surface
+
 - **Log lines (grep-stable):** `[ProactiveSwap] REFUSED session=… from=…
-  reason=all-hot|dwell|no-material-target|reversal|thrash-breaker|
-  target-revalidation-failed fromUtil=… bestAltUtil=…` · `[SwapWorkGate]
-  DEFERRED session=… caller=proactive-swap reason=busy-turn|busy-subagents(N)|
-  busy-indeterminate deferralAgeMs=…` · `[SwapWorkGate] PROCEEDED-WITH-
-  MITIGATIONS session=… caller=reactive-swap killedSubagents=N
-  reinjectedInbound=true|false`.
-- **Durable ledger:** `state/swap-ledger.jsonl` (§3.5) — every decision, both
-  pieces, one schema. Bounded by size-rotation (10 MB, keep 2), like the other
-  state JSONLs.
+  reason=<reason> fromUtil=… bestAltUtil=…` · `[SwapWorkGate] DEFERRED
+  session=… caller=proactive-swap reason=busy-turn|busy-subagents(N)|
+  busy-indeterminate deferralAgeMs=…` · `[SwapWorkGate]
+  PROCEEDED-WITH-MITIGATIONS session=… caller=reactive-swap
+  killedSubagents=N inbound=reinjected|none|unknown`.
 - **Status surface:** `GET /subscription-pool/proactive-swap` (existing route
   for the monitor's `status()`) grows `brakes: {refusals: {byReason},
-  thrash: {reversalsDetected, breakerState, breakerOpenedAt, episodes},
-  deferrals: {active, byReason, dropped, proceededWithMitigations}}` — the
-  **thrash-detected counter** the operator asks for lives here.
-- **Guard posture:** both pieces register in the guard manifest
-  (`src/monitoring/guardManifest.ts`) so `GET /guards` grades them
-  (`on-dry-run` during soak, `dark-default` on the fleet) and a load-shed
-  disable trips the posture tripwire like every other guard.
-- **Attention items:** one per thrash episode (§3.5); one if the ledger is
-  unwritable (observability loss is itself surfaced, not swallowed).
+  thrash: {reversalsDetected, pairLevelDetections, breakerState,
+  breakerOpenedAt, episodes: [{episodeId, openedAt, expiresAt}]},
+  execFailures: {bySession, streaks}, deferrals: {active, byReason, dropped,
+  invalidated, proceededWithMitigations}}` — the **thrash-detected counter**
+  the operator asks for lives here. All fields are LOCAL-SCOPE (this machine —
+  §8); the route documents that.
+
+### 6.4 Guard posture + attention hygiene
+
+- Both pieces register in the guard manifest (`src/monitoring/guardManifest.ts`)
+  so `GET /guards` grades them (`on-dry-run` during soak, `dark-default` on the
+  fleet) and a load-shed disable trips the posture tripwire like every other
+  guard. **Manifest note:** the proactive-swap monitor currently sits on the
+  manifest's exclusion list; registering the brakes requires RECLASSIFYING
+  that existing exclusion entry (a deliberate edit, called out so the
+  exclusion-lint doesn't get a silent carve-out).
+- `swapContinuity` gates the refresh/model-swap paths INDEPENDENTLY of
+  `proactiveSwap` — its posture row exists even where proactive swap is off.
+  While its parent lever is off it grades `dark-default` (ships-dark, quiet —
+  never a load-bearing gap, because no critical path depends on it until the
+  fleet flip).
+- Attention items: ONE per thrash episode (deduped on `episodeId`, §3.5); ONE
+  per execution-failure streak (§3.6); ONE if the ledger is unwritable
+  (observability loss is itself surfaced, not swallowed).
 
 ## 7. Config surface (all additive; shipped defaults shown)
 
@@ -437,73 +824,138 @@ justified when we reach here; the mitigation must not become a new wedge).
       // existing: enabled, thresholdPct: 80, watchMarginPct: 15,
       //           maxSwapsPerCycle: 3, tickMs: 180000
       // cooldownMs (10m) is SUBSUMED by antiThrash.dwellMs — kept working
-      // for back-compat when antiThrash is dark (§8).
+      // for back-compat when antiThrash is dark (§9).
       "antiThrash": {
-        "enabled": true,          // sub-feature of an already-opt-in feature; see §9 ladder
+        "enabled": true,          // sub-feature of an already-opt-in feature; §10 ladder
         "dryRun": true,           // log would-refuse/would-defer, change nothing
         "targetHeadroomPct": 15,  // target ceiling = thresholdPct - this (→ 65)
-        "minImprovementPct": 15,  // source - target must be ≥ this
+        "minImprovementPct": 15,  // source - target must be ≥ this (see §3.3 defaults note)
         "dwellMs": 2700000,       // 45 min
         "reversalWindowMs": 1800000,
         "thrashBreakerThreshold": 2,
         "thrashBreakerBackoffMs": 3600000
       }
-    },
-    "swapContinuity": {           // Piece 2 (the work gate)
-      "enabled": false,           // OMITTED in shipped config → dev-agent gate resolves it
-      "dryRun": true,             // log would-defer/would-mitigate, change nothing
-      "deferralCeilingMs": 1800000, // 30 min
-      "reactiveGraceMs": 120000,    // 2 min
-      "recheckMs": 10000            // busy re-check cadence inside a grace window
     }
+    // Piece 2 (the work gate). The "swapContinuity" KEY IS OMITTED from the
+    // shipped config ON PURPOSE — omission is what routes it through the
+    // dev-agent gate (live on a development agent, dark on the fleet). An
+    // explicit `"enabled": false` would pin it dark EVERYWHERE including dev
+    // (the #1001 anti-mechanism). Shown here for documentation only:
+    //
+    // "swapContinuity": {
+    //   "enabled": <omitted — dev-agent gate resolves>,
+    //   "dryRun": true,             // log would-defer/would-mitigate, change nothing
+    //   "deferralCeilingMs": 1800000, // 30 min
+    //   "reactiveGraceMs": 120000,    // 2 min
+    //   "recheckMs": 10000            // busy re-check cadence inside a grace window
+    // }
   }
 }
 ```
 
-All numeric reads use nullish coalescing (`?? default`, never `||` — zero is a
-legal disable for several of these). Both blocks are read live where feasible
-(the monitor tick re-reads its config object per pass); the gate's wiring into
-SessionRefresh requires a server restart, stated honestly in the migration
-notes.
+The model-swap subagent leg (Q5) is a micro-flag on the MODEL-SWAP config
+block (`subagentIdleLeg`, default follows that feature's rollout stage), not
+here — §4.2.
 
-## 8. Migration & back-compat
+All numeric reads use nullish coalescing (`?? default`, never `||` — zero is a
+legal disable for several of these).
+
+### 7.1 Per-key config liveness (the half-enable trap, named per key)
+
+The monitor snapshots knobs into readonly fields at construction today, so
+"read live" must be engineered, not asserted (the dynamic-MCP half-enable
+precedent). Normative table:
+
+| key | liveness | mechanism |
+|---|---|---|
+| `antiThrash.enabled` / `dryRun` | live per tick | monitor re-reads via config getter each pass |
+| `antiThrash.*` numeric knobs | live per tick | same getter (constructor re-wired from snapshot fields to getter) |
+| `swapContinuity.enabled` | **restart-required** | the gate's wiring into `SessionRefresh` is constructor-injected |
+| `swapContinuity.dryRun` | live per evaluation | gate reads via getter |
+| `swapContinuity.*` numeric knobs | live per evaluation | same getter |
+| model-swap `subagentIdleLeg` | live per evaluation | `ModelSwapService` getter |
+
+A key marked restart-required is stated in the CLAUDE.md template blurb (§9)
+so "I flipped it and nothing changed" has a documented answer.
+
+## 8. Cross-machine posture (declared, not implied)
+
+Everything this spec introduces is **machine-local BY DESIGN**: the
+subscription pool is per-machine seats (a login lives in one machine's config
+homes), the sessions being swapped are tmux processes on THIS machine, and the
+swap ledger records THIS machine's decisions (`machineId` stamped per row).
+Consequences, stated honestly:
+
+- **Dwell does NOT follow a topic across a machine move** (`POST
+  /pool/transfer`): the destination machine's ledger has no row for the moved
+  session, so its dwell starts cold there. Bounded gap: at most one
+  proactive swap sooner than dwell would have allowed, once, after a move —
+  and the move itself already respawned the session (the work-gate carries no
+  cross-machine memory either, same bound). Ledger-visible on both machines.
+- **The breaker is per-machine.** A thrash episode on machine A does not
+  suppress proactive swaps on machine B — correct, because B's pool pressure
+  is B's own seats; wrong only in the cross-machine contention case below.
+- **Status fields are local-scope** (§6.3) — the route says so; no `?scope=pool`
+  merge ships in v1.
+- **Cross-machine account contention** — two machines each independently
+  evacuating onto (or off) the SAME shared account, reproducing §2.2's seam at
+  mesh scale — is REAL and OUT OF SCOPE here: it needs pool-scope quota
+  placement input (the capacity-heartbeat quota state already replicated for
+  session placement), not a bigger ledger. Registered as a named tracked
+  follow-up (`cross-machine-swap-contention`) per Close the Loop; until then
+  each machine's brakes still bound ITS OWN loop (the 2026-07-02 incident was
+  single-machine).
+
+## 9. Migration & back-compat
 
 - **Config:** `migrateConfig()` adds nothing (absence = defaults; both blocks
-  are optional). No existing key changes meaning. `cooldownMs` keeps its exact
-  current semantics whenever `antiThrash` is disabled/dry-run; when antiThrash
-  is live, dwell (the stricter bound) governs and `cooldownMs` is ignored with
-  one boot-log notice — never a startup error.
+  are optional; `swapContinuity` MUST stay omitted — §7). No existing key
+  changes meaning. `cooldownMs` keeps its exact current semantics whenever
+  `antiThrash` is disabled/dry-run; when antiThrash is live, dwell (the
+  stricter bound) governs and `cooldownMs` is ignored with one boot-log notice
+  — never a startup error.
 - **Behavioral back-compat:** antiThrash `dryRun:true` + swapContinuity dark ⇒
   every decision byte-identical to v1.3.722, plus ledger/log rows. The seam
   closure (§3.3) only activates for calls that pass an explicit target — the
   reactive path and any third-party `onQuotaPressure` caller are untouched by
-  construction.
+  construction (the §3.3 funnel contract).
 - **API:** `cfg.swap`/`onQuotaPressure` gain optional fields only; `status()`
   gains additive fields; the `/subscription-pool/proactive-swap` response stays
-  a superset. No route is renamed; nothing 503s that didn't.
+  a superset. `/sessions/refresh` gains the 409 refusal + `force` field (§4.5)
+  — a new response code on an existing route, flagged in the release notes and
+  caller-audited (§12). No route is renamed; nothing 503s that didn't.
 - **Ledger:** new file; absence = cold start (dwell begins un-primed — the one
   accepted gap: the first post-upgrade 45 min can proactively swap a session
   that was swapped pre-upgrade. One-time, bounded, logged).
 - **Template awareness (Agent Awareness Standard):** the CLAUDE.md template's
   proactive-swap bullet gains the refusal semantics + "why didn't my session
-  swap?" → read `GET /subscription-pool/proactive-swap` brakes/deferrals, and
-  "why did my swap wait?" → the work gate. `PostUpdateMigrator` carries the
-  section per Migration Parity.
+  swap?" → read `GET /subscription-pool/proactive-swap` brakes/deferrals, "why
+  did my swap wait?" → the work gate, and the §7.1 restart-required note.
+  `PostUpdateMigrator` carries the section per Migration Parity.
 
-## 9. Rollout ladder (graduated, per house convention)
+## 10. Rollout ladder (graduated, per house convention)
 
 1. **Dark (fleet):** both features ship in code, OFF. `proactiveSwap.enabled`
    is already fleet-dark; `antiThrash` nested under it inherits that darkness.
-   `swapContinuity.enabled` omitted → dev-agent gate → dark on fleet.
+   `swapContinuity` key omitted → dev-agent gate → dark on fleet. Rung-1
+   honesty for fleet opt-ins: an install that ALREADY opted into
+   `proactiveSwap.enabled` receives antiThrash dry-run ledger rows immediately
+   on update (observability, zero behavior change) — that is stated here
+   rather than calling rung 1 fully dark; rung 4 is where their live behavior
+   changes. **Mandatory registration:** `swapContinuity` lands in
+   `DEV_GATED_FEATURES` with its justification line + the wiring test (the
+   dev-gate lint enforces the registration).
 2. **Dev-gate, dryRun (echo, immediately on merge):** antiThrash
    `enabled:true, dryRun:true` and swapContinuity live-on-dev `dryRun:true`.
    Soak target: one full all-hot afternoon. Success = the ledger shows
    would-refuse rows covering ≥90% of the swaps that a replay of §1 would have
-   executed, and zero would-refuse rows against a genuine wall event.
-   (Dark-but-load-bearing note: while in dryRun these guards are
-   `loadBearingSoaking` on `/guards`, with the bounded soak window — they lapse
-   loud if the flip stalls.)
-3. **Live on dev:** flip both `dryRun:false` on echo. Run the §10 live proof.
+   executed, and — operationalized — **no would-refuse row within 15 min
+   preceding a genuine wall event on the refused session's account** (the
+   naive "zero would-refuse against a genuine wall" is vacuously green on a
+   wall-free day; this form is falsifiable). (Dark-but-load-bearing note:
+   while in dryRun these guards are `loadBearingSoaking` on `/guards`, with
+   the bounded soak window — they lapse loud if the flip stalls.)
+3. **Live on dev:** flip both `dryRun:false` on echo. Run the §11 live proof.
 4. **Fleet default:** antiThrash defaults `enabled:true, dryRun:false` for any
    install that opts into `proactiveSwap.enabled` (the brake becomes part of
    the feature's definition — a proactive swapper without anti-thrash is the
@@ -512,91 +964,202 @@ notes.
    soak).
 
 Rollback levers at every rung: `antiThrash.dryRun:true` restores v1.3.722
-decision behavior without losing observability; `swapContinuity.enabled:false`
-un-wires the gate entirely (SessionRefresh reverts to unconditional kill).
+decision behavior without losing observability; removing the dev-agent's
+`swapContinuity` enablement un-wires the gate entirely (SessionRefresh reverts
+to unconditional kill).
 
-## 10. Live-proof clause (gate for "built", not for this draft)
+## 11. Live-proof clause (gate for "built", not for this draft)
 
 Run on the dev agent, real pool, real sessions:
 
 1. **All-hot afternoon replay:** with ≥3 accounts measured ≥80% (arrange by
    scheduling normal autonomous work; the state recurs most afternoons), over a
    ≥4 h window: **zero executed proactive swaps; zero ping-pong reversals;**
-   ledger shows `all-hot`/`no-material-target` refusals; `GET
-   /subscription-pool/proactive-swap` counters match the ledger.
+   ledger shows `all-hot`/`no-material-target` refusals (enter/leave/heartbeat
+   rows); `GET /subscription-pool/proactive-swap` counters match the ledger.
 2. **Genuine wall still swaps:** drive one account to an actual rate-limit
    escalation (or replay the sentinel event on a tagged test session): the
    reactive swap fires exactly once, within `reactiveGraceMs`+one tick, onto a
    least-bad target per today's semantics, breaker/dwell notwithstanding.
 3. **Subagent survival:** in a session with 6 live Agent-tool subagents,
    trigger a proactive swap intent (lower the threshold on a test config):
-   the intent defers (`busy-subagents(6)` rows), the subagents run to
-   completion untouched, the swap executes after they land. **Zero subagent
-   kills attributable to proactive swaps in the window** (cross-check
+   the intent defers (`busy-subagents(6)` rows, deduped first/final/count),
+   the subagents run to completion untouched, the swap executes after they
+   land — after re-passing the full pipeline (I9). **Zero subagent kills
+   attributable to proactive swaps in the window** (cross-check
    SubagentTracker stop records vs swap-ledger timestamps).
 4. **Forced-kill mitigations:** force a reactive swap over a busy session:
    the respawned session's first prompt contains the enumerated-subagent block
-   and the re-injected unanswered inbound; the topic receives the honest
-   respawn notice; ledger row carries `killedSubagents=N,
-   reinjectedInbound=true`.
+   and the re-injected unanswered inbound (quoted-data envelope, §4.3); the
+   topic receives the honest respawn notice; ledger row carries
+   `killedSubagents=N, inbound=reinjected`.
 5. **Breaker proof:** with brakes (a)/(c) artificially disabled in a test
    config, manufacture one reversal: the breaker opens at the threshold,
-   raises ONE attention item, suppresses proactive swaps for the backoff, and
-   half-opens on schedule.
+   raises ONE attention item, suppresses proactive swaps for the backoff,
+   half-opens on schedule — and a mid-backoff server restart boots the breaker
+   OPEN with the original deadline and does NOT re-alert (I8).
 
-## 11. Failure modes
+## 12. Testing Integrity (three tiers — NON-NEGOTIABLE house standard)
+
+- **Unit (`tests/unit/`):** both sides of EVERY brake boundary — all-hot at
+  ceiling−1/at-ceiling; dwell at T+dwellMs−1/+1 (including ledger-hydrated
+  dwell after a simulated restart); improvement bounds at exactly-15/14.9;
+  reversal window edges; same-session refusal vs pair-level detection-only;
+  breaker open→half-open timing + restart re-derivation (episodeId dedupe);
+  the full I7 uncertainty×caller matrix (proactive/reactive/recovery ×
+  working/idle/indeterminate × subagent-leg present/absent); filter→score→
+  verify order (a hot target must be unreachable even when scoring prefers
+  it); intra-tick per-target cap; deferral full-pipeline re-run (stale-wave,
+  breaker-mid-wait, account-changed→invalidated); defer dedupe
+  (first/final/count); ceiling-drop→re-intent backoff; execution-failure
+  backoff + streak escalation; ledger hydration including the
+  newest-rotated-segment case; schema round-trip for every decision kind;
+  mitigation payload clamps + delimiter neutralization.
+- **Integration (`tests/integration/`):** `/subscription-pool/proactive-swap`
+  additive `brakes`/`deferrals` fields; `/sessions/refresh` 409
+  `session_busy` shape + `force:true` semantics (force overrides the gate,
+  never the rate guard); ledger single-writer (concurrent decisions produce
+  well-formed interleaved rows); per-key config liveness (§7.1 — a live-knob
+  change binds next tick; `swapContinuity.enabled` does not).
+- **E2E (`tests/e2e/`):** feature-is-alive through the real server init path —
+  with the features enabled the status fields and refusal codes are served
+  (200, populated), with them dark the posture rows grade `dark-default` and
+  no behavior changes; guard-manifest registration present (the exclusion-list
+  reclassification lands with it).
+- **Wiring-integrity:** the gate's injected deps (sessionManager async probe,
+  subagentTracker, config getter, SwapLedger) are non-null, non-no-op, and
+  delegate to real implementations; the monitor→scheduler `targetAccountId`
+  pass-through is pinned (the funnel contract §3.3); every existing
+  `refreshSession` caller either handles the new refusal or declares a caller
+  class (the §4.5 caller audit, as a test).
+- **P19 sustained-failure tests:** a permanently-busy session (footer wedged
+  30+ min) produces bounded, constant-cost deferral rows (dedup holds) →
+  ceiling drop → re-intent backoff — never unbounded rows or a stuck intent; a
+  permanently-failing swap execution produces bounded retries with backoff +
+  exactly ONE deduped attention item.
+- **Burst invariant:** one thrash episode = exactly one attention item,
+  regardless of suppressed-intent volume (the notification-flood test shape).
+
+## 13. Failure modes
 
 | Failure | Behavior |
 |---|---|
-| Pane capture fails / tmux busy (proactive check) | busy-indeterminate → defer (I7); persistent indeterminate rows in the ledger are the detector-broken signal |
-| `claudeSessionId` missing on the state record | subagent leg silently unavailable → footer leg decides; ledger rows flag `subagentLeg:absent` so the blind spot is measurable |
-| Swap ledger unwritable/corrupt | treated as empty (dwell un-primed, reversal detection cold), ONE attention item; decisions continue — observability loss never blocks the guarantee |
-| Thrash breaker wedges open | impossible by construction (time-based half-open, no external latch); posture visible on `/guards` |
-| Deferral records accumulate | per-session keyed map, entries die at execute/drop/ceiling; hard cap = live session count |
+| Pane capture fails / tmux busy (proactive check) | `busy-indeterminate` → defer (I7); persistent indeterminate rows in the ledger are the detector-broken signal |
+| Pane capture fails (reactive grace) | busy-for-grace (S2/I7) — worst case the swap waits the full 120 s, then proceeds; never stranded, never mid-write |
+| `claudeSessionId` missing on the state record | subagent leg unavailable → footer leg decides; ledger rows flag `subagentLeg:'absent'` so the blind spot is measurable |
+| Swap ledger unwritable/corrupt | treated as empty (dwell un-primed, reversal/breaker detection cold), ONE attention item; decisions continue — observability loss never blocks the guarantee |
+| Swap execution throws | `failed` row + per-session exponential backoff (cap dwellMs); 3 consecutive → ONE deduped attention item (§3.6) — never a silent every-tick retry |
+| Thrash breaker wedges open | impossible by construction (time-based half-open, no external latch); state re-derived identically across restarts; posture visible on `/guards` |
+| Deferral records accumulate | per-session keyed map, entries die at execute/drop/ceiling/invalidate; hard cap = live session count; ledger rows deduped first/final/count |
+| Defer→drop→regenerate loop | re-intent backoff per (session, pair) after a ceiling drop (default dwellMs) — bounded churn (§4.2) |
 | QuotaPoller stale during grace window | execute-time revalidation (§3.3) uses the freshest snapshot and refuses on ceiling breach — stale data fails toward NOT swapping (proactive) |
 | Server restart mid-deferral | pending deferrals dropped; intent regenerates from live quota state next tick (deferral state is derived) |
-| Both detector legs broken for a genuinely idle session | proactive swaps defer until the 30 min ceiling then drop — cost is a missed optimization, never a stuck session; reactive unaffected |
+| Server restart mid-breaker-backoff | breaker re-derives OPEN from the ledger with the original deadline; no re-alert (episodeId dedupe) |
+| Both detector legs broken for a genuinely idle session | proactive swaps defer until the 30 min ceiling then drop (with re-intent backoff); cost is a missed optimization, never a stuck session; reactive unaffected (busy-for-grace bounds it at 120 s) |
 
-## 12. Open questions for the convergence ceremony
+## 14. Frontloaded Decisions (all round-1 draft open questions, resolved)
 
-1. **Dwell default (45 min) vs wave period:** the 2026-07-02 standing wave was
-   ~2.5–3 h; is 45 min too permissive (allows one mid-wave re-swap) or should
-   dwell scale from the observed poll interval instead of a constant?
-2. **Should brake (c)'s relative-improvement bound also apply to REACTIVE
-   target selection?** This draft says no (a walled session takes any port in
-   the storm, drain-first scoring is correct there) — but a reactive swap onto
-   an 89% target will likely wall again within minutes. Is one more hop
-   acceptable, or should reactive prefer the coolest target when one exists
-   under the ceiling? (Changes the guarantee's target choice, not its
-   existence — flagged because I6 currently promises byte-identical reactive
-   behavior.)
-3. **Untagged-session default-account swaps:** a proactive swap of an UNTAGGED
-   session changes which account the DEFAULT config serves for every future
-   untagged spawn, not just the moved session (`resolveDefaultAccountId`
-   coupling). Does the dwell key belong on the session, the account-pair, or
-   both? Draft says session-keyed with the reversal detector as the pair-level
-   backstop; a pair-keyed dwell is stricter and simpler to reason about but
-   would have blocked the legitimate 08:19 wave (different sessions, same
-   pair).
-4. **`currentInboundByTopic` lifetime:** the map is in-memory and cleared on
-   reply; across a server restart the "last unanswered inbound" is lost and
-   mitigation (2) silently degrades to absent. Is the durable inbound queue
-   (CMT-1118 family) the right future source, and should the ledger row
-   distinguish `inbound:none` from `inbound:unknown`?
-5. **Model-swap subagent leg (§4.2 row 3):** adding the subagent check to
-   `ModelSwapService`'s idle gate changes an existing live-on-dev feature's
-   refusal surface (more refusals). Ship it inside Piece 2's flag, or as its
-   own micro-flag on the model-swap config?
-6. **Does the deferral ceiling need a per-caller override for autonomous
-   runs?** A 12 h autonomous run with rolling subagents could see every
-   proactive intent die at the 30 min ceiling (acceptable per §4.2 — the wall
-   wins by design), but if operators find reactive swaps too disruptive
-   mid-run, a "swap at the next turn boundary" hook (the same boundary the
-   pool-transfer consent gate uses) is the finer instrument. Deferred here as
-   scope discipline; name it so it isn't silently dropped (Close the Loop).
+1. **Q1 — dwell is a constant 45 min in v1; no adaptive scaling.** The
+   structural decision (constant vs poll-interval-derived) is made here:
+   constant. Adaptive dwell couples the brake to poller behavior and makes the
+   soak unreadable. The NUMBER carries a justified cheap-to-change-after tag:
+   it is a config constant behind a dry-run soak (§10 rung 2) whose explicit
+   success metric measures this number's effect; changing it later is a config
+   default edit with no interface, money, identity, or durable-side-effect
+   surface.
+2. **Q2 — reactive stays byte-identical (I6).** "Reactive prefers the
+   coolest under-ceiling target" is the NAMED follow-up
+   `reactive-coolest-target`, not this spec. The all-hot reactive hop-chain is
+   accepted explicitly, bounded by the pre-existing 5-per-10-min refresh rate
+   counter (§3.1). §3.4's wording is reconciled with the 120 s grace ("within
+   `reactiveGraceMs` + one tick", not "immediately").
+3. **Q3 — untagged sessions are excluded from the proactive candidate set**
+   (§3). A background optimizer must not mutate the default-slot binding
+   (`resolveDefaultAccountId`) as a side effect; that lever is `POST
+   /credentials/set-default`. Reactive rescue of untagged sessions is
+   unchanged and its ledger row carries `defaultAccountChanged: true`.
+4. **Q4 — inbound re-injection reads the in-memory map in v1**, and the
+   ledger `inbound` field is the honest tri-state
+   `'reinjected'|'none'|'unknown'` (`unknown` = post-restart, or the
+   exactly-once ingress ledger dark on this install). The durable inbound
+   queue (CMT-1118) is the named future source (Close the Loop).
+5. **Q5 — the model-swap subagent leg ships behind its own micro-flag on the
+   model-swap config** (`subagentIdleLeg`), not inside `swapContinuity`. The
+   pieces stay independently shippable; a live feature's refusal surface must
+   not silently change or revert when an unrelated flag flips.
+6. **Q6 — a per-caller deferral-ceiling override for autonomous runs is out
+   of scope in v1.** The "swap at the next turn boundary" hook (the boundary
+   the pool-transfer consent gate already uses) is the finer instrument, named
+   as the follow-up `swap-at-turn-boundary`; cheap-to-change-after is
+   justified: purely additive later, and v1 behavior at the ceiling (drop, the
+   wall wins) is safe by construction — the accepted cost is a missed
+   optimization, never killed work.
+
+## 15. Round-1 findings disposition
+
+Every round-1 finding (report: `docs/specs/reports/
+swap-continuity-antithrash-round1-findings.md`, reviewed commit 932b77b9e) and
+what this revision did with it. **Adopted = the design changed** (not a
+rebuttal appended). Zero findings were rejected; the one genuine tension a
+finding created with the operator's four properties (B10 vs property (d)) is
+resolved in §0 — the property is scoped precisely (absolute for optimization
+callers; the reactive guarantee is the single named, bounded, mitigated
+exception) rather than either the finding or the property being discarded.
+
+| finding | disposition | where |
+|---|---|---|
+| B1 (six open questions) | Adopted — all six resolved into Frontloaded Decisions | §14, §3, §4.2, §4.3 |
+| B2 (breaker restart) | Adopted — breaker state derived from ledger at boot; episodeId-deduped alerts | §3.5, I8, §13 |
+| B3 (stale deferred intent) | Adopted — full brake pipeline re-runs at every retry; account-change invalidates | §4.2, I9 |
+| B4 (sync probe stalls loop) | Adopted — async coalesced probes mandatory; shared ps snapshot per sweep | §4.1 |
+| B5 (cross-machine absent) | Adopted — machine-local-by-design declared with reasons + bounded gaps; contention follow-up registered | §8 |
+| B6 (no parent-principle) | Adopted — frontmatter parent-principle + exact registry heading "Structure beats Willpower" | frontmatter |
+| B7 (gate at chokepoint) | Adopted — gate inside refreshSession, default callerClass 'interactive-refresh'; funnel contract stated | §4.2, §3.3 |
+| B8 (config self-contradiction) | Adopted — swapContinuity key OMITTED (shown commented-out); DEV_GATED_FEATURES registration named | §7, §10 |
+| B9 (rate-guard ordering) | Adopted — gate check before the rate record; refusals consume zero budget | §4.2 |
+| B10 (grace semantics) | Adopted — swap at first not-busy; new-work-at-deadline outcome stated; §3.4 wording fixed. Tension with property (d) resolved in §0 | §4.2, §3.4, §0 |
+| B11 (selection order) | Adopted — normative filter→score→verify; hot targets structurally unreachable | §3.3 |
+| B12 (deferral ownership) | Adopted — gate stateless; monitor owns deferrals; reactive grace = bounded async in SessionRefresh | §4.2 |
+| B13 (ledger schema) | Adopted — single authoritative field×decision matrix | §6.1 |
+| B14 (test plan) | Adopted — three tiers + wiring-integrity + P19 sustained-failure + burst invariant | §12 |
+| S1 (pair-level reversal) | Adopted — pair-level detection feeds the breaker; refusal stays session-keyed (08:19 wave preserved) | §3.5 |
+| S2 (reactive indeterminate) | Adopted — busy-for-grace in the reactive arm; I7 restated | §4.1, I7, §13 |
+| S3 (defer churn) | Adopted — re-intent backoff after ceiling drop; defer rows deduped first/final/count | §4.2 |
+| S4 (ledger reads) | Adopted — boot hydration bounded to the window incl. newest rotated segment; write-through index | §3.5 |
+| S5 (rotation helper) | Adopted — maybeRotateJsonlSegment + cached byte counter, named | §3.5 |
+| S6 (intra-tick pile-on) | Adopted — max 1 executed swap per target per tick | §3.3 |
+| S7 (force provenance) | Adopted — force is bearer-level, recorded as such; operator attribution requires an operator surface | §4.5 |
+| S8 (re-injection envelope) | Adopted — quoted-data envelope normative: delimiter neutralization, SenderEnvelope attribution, concrete clamps | §4.3 |
+| S9 (failed kind + P19 gap) | Adopted — 'failed' decision; per-session backoff; streak escalation; failure-mode row | §3.6, §6.2, §13 |
+| S10 (signal-vs-authority) | Adopted — the gate's blocking authority argued and bounded explicitly | §4.4 |
+| S11 (I7 unimplementable) | Adopted — new tri-state checkSessionWorkState named; "invents no new detection" overclaim dropped | §4.1, §2.3 |
+| S12 (config liveness) | Adopted — per-key liveness table; getter re-wiring named; restart-required keys documented | §7.1 |
+| S13 (independence/posture) | Adopted — swapContinuity independent of proactiveSwap; dark-default posture stated | §6.4 |
+| S14 (single append site) | Adopted — SwapLedger module is the only writer | §3.5 |
+| S15 (refresh refusal shape) | Adopted — pre-202 409 shape; force semantics; caller audit as a test | §4.5, §12 |
+| S16 (baseline by reference) | Adopted — canonical baseline filter referenced | §4.1 |
+| S17 (polling justified) | Adopted — no completion event exists; event-driven named as refinement | §4.2 |
+| L1 (inert bound) | Adopted — defaults note: minImprovementPct binds only when headroom is retuned | §3.3 |
+| L2 (soak criterion) | Adopted — falsifiable form: no would-refuse within 15 min preceding a wall | §10 |
+| L3 (all-hot row volume) | Adopted — enter/leave/heartbeat state-transition rows | §3.1, §6.1 |
+| L4 (index eviction) | Adopted — window-bounded prune per tick; pre-existing lastSwapAt leak fixed alongside | §3.2, §2.4 |
+| L5 (no bodies in rows) | Adopted — never-in-a-row list; counters-only status; no raw-row route | §6.1 |
+| L6 (status enums) | Adopted — breakerState + episodes shape specified | §6.2, §6.3 |
+| L7 (callerClass enum) | Adopted — defined once as the gate input type | §4.2 |
+| L8 (deferrals vs cycle budget) | Adopted — only executed swaps consume maxSwapsPerCycle | §4.2 |
+| L9 (reason enum single source) | Adopted — §6.2 is the source; other sections reference it | §6.2 |
+| L10 (line drift) | Adopted — swap wiring corrected to server.ts:16023-16026 | §2.2 |
+| L11 (guardManifest exclusion) | Adopted — reclassification of the monitor's exclusion entry called out | §6.4 |
+| L12 (rung-1 honesty) | Adopted — fleet opt-ins get dry-run rows at rung 1; stated in the ladder | §10 |
+| L13 (merged into B1-Q4) | Adopted via Q4 tri-state | §4.3, §14 |
+
+## Open questions
+
+*(none — all resolved into §14 Frontloaded Decisions)*
 
 ---
 
 *Draft authored 2026-07-02 (Session A, roadmap 4.4 + operator-priority thrash
-brake). Evidence: `logs/server.log` (echo, v1.3.722). No convergence ceremony
-has run; nothing here is approved for build.*
+brake); round-2 revision same day (round-1 findings folded — §15). Evidence:
+`logs/server.log` (echo, v1.3.722). Convergence round 2 in flight; nothing
+here is approved for build.*
