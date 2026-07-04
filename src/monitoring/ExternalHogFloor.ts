@@ -54,6 +54,21 @@ export function matchAllowlistClass(name: string, fullArgv: string): string | nu
 }
 
 /**
+ * The ORDERED rule-source list for a class — the SINGLE source of truth the content-hash
+ * arm-scope is computed from (docs/specs §7-§8). BOTH the PIN arm route (building the marker's
+ * `allowlistSnapshot`) and the funnel's `currentClassContentHash` MUST derive the hash from THIS,
+ * so a class's armed hash and its re-checked hash always agree — and ANY change to the matcher
+ * (a new name-regex or argv token) yields a different hash, forcing a fresh PIN re-arm before that
+ * class can kill again. Returns null for an unknown class id. Ordered = [nameRegex source, then
+ * the shared argv-token sources] so a reordering (which changes anchored matching) is a new hash.
+ */
+export function classRuleSources(classId: string): readonly string[] | null {
+  const cls = EXTERNAL_HOG_ALLOWLIST.find((c) => c.id === classId);
+  if (!cls) return null;
+  return [cls.nameRegex.source, ...ALLOWLIST_ARGV_TOKENS.map((t) => t.source)];
+}
+
+/**
  * The deterministically-computed facts the floor evaluates. Every field is derived by the
  * discovery/sampler layer from the live OS (never from model output). Optional fields that
  * are UNKNOWN (undefined) fail the floor CLOSED — an unestablished invariant is a veto.

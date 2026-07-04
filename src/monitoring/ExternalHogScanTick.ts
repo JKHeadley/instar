@@ -38,8 +38,9 @@ export interface ScanDeps {
   readProcTable(): readonly ProcTableRow[];
   /** Build the ownership sets (tree + owned pids) from the current table + instar pids. */
   buildOwnership(table: readonly ProcTableRow[]): { tree: ProcTree; owned: OwnedRefs };
-  /** Full deterministic facts for a candidate (the floor input); null if it vanished. */
-  factsFor(candidate: Candidate): ExternalHogFacts | null;
+  /** Full deterministic facts for a candidate (the floor input); null if it vanished. May be async
+   *  (a per-candidate ps -o args= read + launchctl) — the orchestrator awaits it. */
+  factsFor(candidate: Candidate): ExternalHogFacts | null | Promise<ExternalHogFacts | null>;
   /** The command-hash + ledger key + class for a candidate (identity for the ledger/funnel). */
   identityFor(candidate: Candidate, facts: ExternalHogFacts): { commandHash: string; ledgerKey: string; classId: string } | null;
   /** Call the classifier (LlmQueue). Returns raw model output, or null if the decider is unavailable. */
@@ -115,7 +116,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
   // second-pass reviewer: the §4 broad-observability guarantee — no present hog is invisible).
   const enriched: Array<{ c: Candidate; facts: ExternalHogFacts; id: { commandHash: string; ledgerKey: string; classId: string }; tuple: { pid: number; startTime: string; commandHash: string }; coreEquivalents: number }> = [];
   for (const c of tick.candidates) {
-    const rawFacts = deps.factsFor(c);
+    const rawFacts = await deps.factsFor(c);
     if (!rawFacts) continue; // vanished → nothing to surface (safe)
     // Override sustainedHighCpu with the AUTHORITATIVE N-window signal: it stays true ONLY if the
     // fact builder's single-window read was GENUINELY boolean-true AND the streak has reached N

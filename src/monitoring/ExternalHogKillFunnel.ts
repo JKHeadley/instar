@@ -42,14 +42,16 @@ export interface KillArmState {
 }
 
 export interface KillFunnelDeps {
-  /** Re-read the LIVE deterministic facts for (pid, startTime); null if gone/identity-changed. */
-  reReadFacts(pid: number, startTime: string): ExternalHogFacts | null;
+  /** Re-read the LIVE deterministic facts for (pid, startTime); null if gone/identity-changed.
+   *  May be async (a fresh ps + argv read) — the funnel awaits it. */
+  reReadFacts(pid: number, startTime: string): ExternalHogFacts | null | Promise<ExternalHogFacts | null>;
   /** Re-read the LIVE arm state (config + marker + lastDisarmEpoch). */
   reReadArmState(): KillArmState;
   /** The current content-hash of a class's compiled match rules (for the arm-scope check). */
   currentClassContentHash(classId: string): string;
-  /** True if the pid holds an open writable REGULAR file under a workspace/document path. */
-  hasOpenWritableWorkspaceFile(pid: number): boolean;
+  /** True if the pid holds an open writable REGULAR file under a workspace/document path.
+   *  May be async (an lsof-shaped probe) — the funnel awaits it. */
+  hasOpenWritableWorkspaceFile(pid: number): boolean | Promise<boolean>;
   /** Send a signal ('SIGTERM' | 'SIGKILL') to the pid. */
   sendSignal(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void;
   /** Is (pid, startTime) still the live, same process? */
@@ -67,12 +69,12 @@ export interface KillFunnelOpts {
 
 /** Re-check the full authorization + floor for a target, live. Returns null if OK to proceed,
  *  or a `would-kill`/`aborted` outcome to short-circuit. */
-function reCheck(target: KillTarget, deps: KillFunnelDeps): KillOutcome | null {
+async function reCheck(target: KillTarget, deps: KillFunnelDeps): Promise<KillOutcome | null> {
   const arm = deps.reReadArmState();
   if (!canKillLive(arm.config, arm.marker, arm.lastDisarmEpoch, target.classId, deps.currentClassContentHash(target.classId))) {
     return { action: 'would-kill', reason: arm.config && arm.config.dryRun !== false ? 'dry-run' : 'not-armed' };
   }
-  const facts = deps.reReadFacts(target.pid, target.startTime);
+  const facts = await deps.reReadFacts(target.pid, target.startTime);
   if (!facts) return { action: 'aborted', reason: 'identity-changed-or-gone' };
   // Re-verify the target is still in the allowlist class it was matched under (belt + suspenders).
   if (matchAllowlistClass(facts.name, facts.argv) !== target.classId) {
@@ -90,7 +92,7 @@ function reCheck(target: KillTarget, deps: KillFunnelDeps): KillOutcome | null {
  */
 export async function runKillFunnel(target: KillTarget, opts: KillFunnelOpts, deps: KillFunnelDeps): Promise<KillOutcome> {
   // (1)+(2) Pre-SIGTERM gate + Stage-B floor re-check.
-  const pre = reCheck(target, deps);
+  const pre = await reCheck(target, deps);
   if (pre) return pre; // would-kill (watch-only/unarmed) or aborted — NO signal sent.
 
   // (3) SIGTERM → grace.
@@ -102,14 +104,14 @@ export async function runKillFunnel(target: KillTarget, opts: KillFunnelOpts, de
 
   // (5) Pre-SIGKILL re-check: a disarm / identity change / floor veto in the grace window aborts
   //     the escalation (the SIGTERM already sent is a graceful ask; we do NOT force-kill).
-  const post = reCheck(target, deps);
+  const post = await reCheck(target, deps);
   if (post) {
     // If it de-authorized (would-kill) or a fact changed (aborted) mid-grace, do NOT SIGKILL.
     return post.action === 'would-kill' ? { action: 'aborted', reason: `disarmed-mid-grace:${post.reason}` } : post;
   }
 
   // (6) fd-skip: an in-progress workspace write DEFERS the SIGKILL (bounded).
-  if (deps.hasOpenWritableWorkspaceFile(target.pid) && opts.currentDeferrals < opts.maxKillDeferrals) {
+  if ((await deps.hasOpenWritableWorkspaceFile(target.pid)) && opts.currentDeferrals < opts.maxKillDeferrals) {
     return { action: 'deferred', reason: 'writable-workspace-file' };
   }
 

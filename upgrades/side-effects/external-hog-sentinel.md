@@ -471,6 +471,36 @@ Files: `src/monitoring/ExternalHogClassifierPrompt.ts` (`buildClassifierPrompt`)
   a prompt. **Tests:** 6 — derived facts present, strict verdict demanded, identity-tuple excluded,
   untrusted envelope + forge-resistance + length clamp.
 
+### Slice 20 — the real-I/O adapter factory (the glue that makes it run)
+Files: `src/monitoring/ExternalHogRealAdapters.ts` (`createExternalHogAdapters` + pure lsof/launchctl
+parsers), `src/monitoring/ExternalHogKillFunnel.ts` + `ExternalHogScanTick.ts` + `ExternalHogSentinel.ts`
+(async-ified factsFor / reReadFacts / hasOpenWritableWorkspaceFile), `src/monitoring/ExternalHogFloor.ts`
+(additive `classRuleSources` export), `tests/unit/external-hog-real-adapters.test.ts` (13 tests).
+- **What it is:** the impure edge binding the reviewed pure modules to the real OS. Every raw
+  side-effect (spawn ps/launchctl/lsof off-loop, process.kill, the model call, raiseAttention,
+  clock, arm-file read) is a single INJECTED primitive → the wiring is unit-testable with fakes and
+  NO real process is spawned/signalled in a test. Holds NO kill decision — it READS the OS to
+  produce facts and EXECUTES the signals the reviewed funnel decides on.
+- **Async-ification (kill-path files):** factsFor (orchestrator) + reReadFacts/hasOpenWritableWorkspaceFile
+  (funnel) genuinely need async I/O (a live ps+argv / lsof read). Widened to accept a Promise +
+  `await` — NO decision change; every existing sync test fake still works via await; all 25
+  prior funnel/scan-tick/sentinel tests stay green.
+- **The §4.5 kill-time CPU RE-CONFIRM (a gap I caught + fixed mid-build):** reReadFacts must not
+  assume the candidate is still a hog. Added a `cpuCoresOver(pid, windowMs)` micro-probe primitive;
+  reReadFacts sets sustainedHighCpu from a FRESH sample — a below-threshold OR null reading →
+  sustainedHighCpu:false → the floor re-check ABORTS the kill (the "went idle since classify" guard).
+  Tested (still-pinning → true; idle → false; null → false).
+- **classRuleSources (floor, additive):** the SINGLE source of truth for a class's content-hash,
+  so the arm route's snapshot and the funnel's `currentClassContentHash` always agree (tested).
+- **Fail-safe directions:** ps fail → empty table (→ on-stale); argv null → skip candidate; lsof
+  error → DEFER (bounded); launchctl error → empty set (floor-bounded, feature keeps working);
+  cpu null → not-sustained (abort); attention delivery best-effort (never throws into a tick).
+- **Signal vs authority:** pure forwarding — no authority beyond the modules it wires.
+  **Multi-machine:** machine-local BY DESIGN (spawns/signals THIS host's processes). **Rollback:**
+  delete the factory; the server construction (next slice) is what instantiates it.
+- **Tests:** 13 — pure lsof/launchctl parsers, readProcTable/ownedRefs/factsFor/identityFor/classify
+  wiring, armStatus composition, deliverNotices, and the §4.5 CPU re-confirm + arm-scope hash agreement.
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
@@ -527,5 +557,25 @@ wrong-permit after an adversarial walk:
 - **C/D/E:** field derivations veto-leaning; `--parentPid`-strip hash collisions only shift breaker
   counts (never the envelope); same-uid + allowlist + sustained + orphaned conjunction bounds an
   argv-attacker to killing a zombie-shaped process they themselves crafted.
+
+Verdict: **Concur with the review.**
+
+### Slice 20 Phase-5 verdict — CONCUR
+An independent reviewer read the factory + funnel + orchestrator + arm-marker + floor + the two
+fail-safe dependency modules, and found no safety defect yielding a wrong-KILL or a skipped abort:
+- **A async:** awaiting changes no logic — both funnel re-checks survive; every awaited path can
+  only ABORT, never introduce a signal; the residual check-then-signal pid-reuse gap is inherent
+  POSIX (identical to the sync version), bounded by the startTime-verified stillAlive.
+- **B §4.5 CPU re-confirm:** `stillHog = cores!==null && finite && cores>=threshold`; null/NaN/below
+  → false → floor `not-sustained-hog` veto. No non-hog reaches true through the glue. Strictly
+  veto-STRENGTHENING.
+- **C launchctl-empty:** contained — killing a real launchd job ADDITIONALLY requires same-non-root-
+  uid + orphaned + sustained + the editor-exthost allowlist match (an unreachable conjunction for a
+  managed daemon; the allowlist is the true containment).
+- **D:** pid-reuse → startTime mismatch → null → abort; stale lastOwned → isInstarProcess:false can't
+  open a kill (an instar process won't match the exthost regex — ownership isn't the kill-protection).
+- **E arm-scope:** both sides derive from classRuleSources; a matcher change → new hash → re-arm
+  required; snapshot keyed by classId (no cross-class arming); any divergence fails toward no-kill.
+- **F:** deliverNotices / classify only raise attention / call the model.
 
 Verdict: **Concur with the review.**

@@ -42,8 +42,9 @@ export interface ExternalHogAdapters {
   readProcTable(): Promise<readonly ProcTableRow[]>;
   /** instar-owned pids → their EXPECTED start-time (server pid, sampler pid, tmux panes). */
   ownedRefs(): Promise<OwnedRefs>;
-  /** Deterministic facts for a candidate (the floor input); null if it vanished/unreadable. */
-  factsFor(candidate: Candidate, table: readonly ProcTableRow[]): ExternalHogFacts | null;
+  /** Deterministic facts for a candidate (the floor input); null if it vanished/unreadable. May be
+   *  async (a per-candidate ps -o args= read + launchctl) — the orchestrator awaits it. */
+  factsFor(candidate: Candidate, table: readonly ProcTableRow[]): ExternalHogFacts | null | Promise<ExternalHogFacts | null>;
   /** command-hash + ledger key + class for a candidate; null if not a killable allowlist class. */
   identityFor(candidate: Candidate, facts: ExternalHogFacts): { commandHash: string; ledgerKey: string; classId: string } | null;
   /** The classifier (LlmQueue). Raw model output, or null when the decider is unavailable. */
