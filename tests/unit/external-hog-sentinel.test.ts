@@ -72,6 +72,7 @@ function mkSentinel(cfg: Cfg = {}) {
   };
   const opts: ExternalHogRuntimeOpts = {
     sampler: { ownEuid: OWN, cpuCoreThreshold: 1.5, sampleWindowMs: 30_000, maxAncestorHops: 30 },
+    sustainedSampleCount: 1, // single-window = sustained here; the N-window gate is covered in the sustained + scan-tick suites
     maxClassificationsPerScan: 4,
     breaker: { windowMs: 3_600_000, maxPerWindow: 3, keyIsVolatile: false },
     killFunnel: { sigtermGraceMs: 12_000, maxKillDeferrals: 3 },

@@ -24,10 +24,13 @@ import {
   isBreakerTripped, recordKill, type KillLedgerState, type BreakerOpts,
 } from './ExternalHogKillLedger.js';
 import { coalesceNotices, type Notice, type CoalesceResult } from './ExternalHogNoticeCoalescer.js';
+import { advanceSustained, isSustained, candidateSignature, type SustainedState } from './ExternalHogSustained.js';
 
 export interface ScanState {
   readonly sampler: SamplerState;
   readonly ledger: KillLedgerState;
+  /** Stage-2 N-window sustained-CPU streaks (§1 anti-spike; feeds sustainedHighCpu authoritatively). */
+  readonly sustained: SustainedState;
 }
 
 export interface ScanDeps {
@@ -51,6 +54,8 @@ export interface ScanDeps {
 
 export interface ScanOpts {
   readonly sampler: SamplerOpts;
+  /** N consecutive delta windows over threshold before sustainedHighCpu is true (§1 anti-spike). */
+  readonly sustainedSampleCount: number;
   readonly maxClassificationsPerScan: number;
   readonly breaker: Omit<BreakerOpts, 'nowMs'>;
   readonly killFunnel: Omit<KillFunnelOpts, 'currentDeferrals'>;
@@ -90,6 +95,13 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
   const tick = advanceSampler(state.sampler, table, tree, owned, now, opts.sampler);
   const nextSampler = tick.nextState;
 
+  // Stage-2 sustained confirmation (§1 anti-spike): advance the per-signature streak with THIS
+  // tick's over-threshold candidates. A failed/empty parse yields no candidates → every streak
+  // resets (fail toward not-sustained). This is the AUTHORITATIVE N-window signal that overrides
+  // whatever single-window read the fact builder produced.
+  const sustainedTick = advanceSustained(state.sustained, tick.candidates.map((c) => candidateSignature(c.pid, c.startTime)));
+  const nextSustained = sustainedTick.nextState;
+
   // Worst-CPU-first under the per-scan classifier cap.
   const outcomes: ScanOutcome[] = [];
   const notices: Notice[] = [];
@@ -103,8 +115,20 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
   // second-pass reviewer: the §4 broad-observability guarantee — no present hog is invisible).
   const enriched: Array<{ c: Candidate; facts: ExternalHogFacts; id: { commandHash: string; ledgerKey: string; classId: string }; tuple: { pid: number; startTime: string; commandHash: string }; coreEquivalents: number }> = [];
   for (const c of tick.candidates) {
-    const facts = deps.factsFor(c);
-    if (!facts) continue; // vanished → nothing to surface (safe)
+    const rawFacts = deps.factsFor(c);
+    if (!rawFacts) continue; // vanished → nothing to surface (safe)
+    // Override sustainedHighCpu with the AUTHORITATIVE N-window signal: it stays true ONLY if the
+    // fact builder's single-window read was GENUINELY boolean-true AND the streak has reached N
+    // consecutive windows (§1). A one-window spike (streak < N) is forced to false → the floor's
+    // hard veto downgrades it to alert — never a kill on a transient burst.
+    //
+    // We apply the AND-gate ONLY to a strict `=== true`; a MALFORMED value (a degraded fact
+    // builder emitting `1`/undefined/null under the CPU starvation this sentinel hunts) is
+    // PRESERVED verbatim, NOT coerced. `x && sustained` would launder a truthy non-boolean into
+    // boolean `true`, defeating the floor's round-11 `typeof !== 'boolean' → field-unknown` veto
+    // in the kill-PERMITTING direction (Phase-5 reviewer). Preserving it keeps that veto intact.
+    const sustained = isSustained(sustainedTick, candidateSignature(c.pid, c.startTime), opts.sustainedSampleCount);
+    const facts: ExternalHogFacts = { ...rawFacts, sustainedHighCpu: rawFacts.sustainedHighCpu === true ? sustained : rawFacts.sustainedHighCpu };
     const id = deps.identityFor(c, facts);
     if (!id) {
       // Present sustained hog, not kill-eligible → surface (observability), never classify/kill.
@@ -170,5 +194,5 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
   }
 
   const coalesced = coalesceNotices(notices, { budgetPerWindow: opts.noticeBudgetPerWindow });
-  return { nextState: { sampler: nextSampler, ledger }, outcomes, notices: coalesced };
+  return { nextState: { sampler: nextSampler, ledger, sustained: nextSustained }, outcomes, notices: coalesced };
 }

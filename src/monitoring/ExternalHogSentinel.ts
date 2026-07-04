@@ -26,6 +26,7 @@
 import { runScanTick, type ScanState, type ScanDeps, type ScanOpts, type ScanOutcome, type ScanResult } from './ExternalHogScanTick.js';
 import { EMPTY_SAMPLER_STATE, isSamplerDead } from './ExternalHogSampler.js';
 import { EMPTY_KILL_LEDGER } from './ExternalHogKillLedger.js';
+import { EMPTY_SUSTAINED_STATE } from './ExternalHogSustained.js';
 import type { ProcTableRow } from './ExternalHogProcTable.js';
 import type { ProcTree, ProcNode, OwnedRefs } from './ExternalHogOwnership.js';
 import type { ExternalHogFacts } from './ExternalHogFloor.js';
@@ -108,7 +109,7 @@ function isTerminal(o: ScanOutcome['outcome']): boolean {
 }
 
 export class ExternalHogSentinel {
-  private state: ScanState = { sampler: EMPTY_SAMPLER_STATE, ledger: EMPTY_KILL_LEDGER };
+  private state: ScanState = { sampler: EMPTY_SAMPLER_STATE, ledger: EMPTY_KILL_LEDGER, sustained: EMPTY_SUSTAINED_STATE };
   /** ledgerKey → how many times this signature has been deferred (persisted across ticks). */
   private readonly deferrals = new Map<string, number>();
   private lastTickAt: number | null = null;

@@ -358,31 +358,54 @@ Files: `src/monitoring/ExternalHogSentinel.ts` (`ExternalHogSentinel`, `buildPro
 - **Tests:** 5 — buildProcTree, watch-only ride-through + delivery-every-tick + on-dry-run,
   armed→SIGKILL + on-confirmed, cross-tick deferral→SIGKILL-at-cap, sampler-dead→on-stale.
 
+### Slice 16 — the N-window sustained-CPU confirmation (§1 anti-spike)
+Files: `src/monitoring/ExternalHogSustained.ts` (`advanceSustained`/`isSustained`/`candidateSignature`),
+`src/monitoring/ExternalHogScanTick.ts` (orchestrator amendment: ScanState.sustained,
+ScanOpts.sustainedSampleCount, advance-after-candidacy, AND into sustainedHighCpu),
+`src/monitoring/ExternalHogSentinel.ts` (state init gains sustained),
+`tests/unit/external-hog-sustained.test.ts` (9), scan-tick +1 anti-spike test, sentinel opts.
+- **What it is + why:** the spec §1 requires sustainedHighCpu to be an N-window confirmation
+  (`sustainedSampleCount:3`) — a kill must NOT fire on a single-window CPU spike (a compile, a GC
+  pause). The sampler only produces SINGLE-window candidates; this tracker holds the per-signature
+  CONSECUTIVE-window streak and the orchestrator sets sustainedHighCpu authoritatively =
+  (fact-builder single-window read) AND (streak ≥ N). A one-window spike (streak < N) is forced to
+  sustainedHighCpu:false → the floor's HARD VETO downgrades it to alert — never a kill.
+- **Where it lives (architecture):** the streak is stage-2 decision state that ONLY the
+  orchestrator can coordinate — it alone has both the full tick candidate set (to advance streaks)
+  AND the per-candidate fact call (to apply the result). So it is threaded through ScanState, not
+  hidden in the adapter. Advanced ONCE per tick right after candidacy.
+- **Safe direction everywhere:** absence resets the streak (strict consecutive — a one-window dip
+  from ps quantization re-accumulates rather than shortening the path to a kill); a failed/empty
+  parse resets EVERY streak (fail toward not-sustained); a bad N (≤0/non-finite) → isSustained
+  false (a misconfigured N can never let a spike qualify). Bounded: the next streak map is rebuilt
+  ONLY from this tick's candidates (≤ live candidate count).
+- **Over-block:** a genuine hog that dips below threshold for one noisy window is delayed N more
+  windows (≈90s at defaults) — an acceptable, deliberately-conservative delay, never a missed kill
+  (it re-qualifies). **Under-block:** none — the gate only ever ADDS a precondition to a kill.
+- **Signal vs authority:** pure predicate feeding the floor's veto; holds no authority itself.
+- **Multi-machine:** machine-local BY DESIGN (a host's process CPU history is physical to one
+  machine; `physical-credential-locality`-class). No cross-machine state.
+- **Rollback:** revert the amendment (sustainedHighCpu falls back to the single-window read) +
+  delete the tracker. **Tests:** 9 tracker + 1 orchestrator anti-spike (single-window+N=2 → veto,
+  no kill); all 8 scan-tick + 6 sentinel stay green (N=1 preserves single-window behavior there).
+
 ## Phase 5 — Second-pass review
 
-### Slice 15 Phase-5 verdict — CONCUR (with one honesty fix folded)
-An independent second-pass reviewer read all six kill-path files in full and traced each risk:
-- **A watch-only integrity:** airtight — the shell only forwards `killFunnelDeps` to `runScanTick`,
-  never constructs a signal; `status()`/`armStatus()` are display-only, never feed the kill path.
-- **B deferral counter:** correct in the safe direction — would-kill/alert-only neither bump nor
-  clear; the count only moves when genuinely armed; a stale-count inheritance can only SHORTEN
-  fd-grace on an already fully-authorized kill, never cause a wrong kill.
-- **C state/memory:** map bounded (oldest-pruned); scan state threaded via nextState; a mid-tick
-  throw leaves state UN-updated, not half-updated.
-- **E snapshot bridge:** the async→sync snapshot feeds only candidacy/classify; the funnel re-reads
-  LIVE facts+arm+class before each signal (the real stale-data guard). ScanOutcome amendment is
-  additive; all 5 push sites carry ledgerKey/classId.
-- **D (non-blocking honesty note, FOLDED):** a boot where `ps` fails from the start (no parse ever
-  succeeds) would have read `on-confirmed` while blind. FIXED: `status()` now treats "never
-  successfully parsed" as blind → `on-stale`; on-confirmed REQUIRES a fresh successful parse.
-  Added a test (`ps NEVER parses reads on-stale, never a false on-confirmed`). 6 shell tests green.
+### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
+An independent reviewer read all six kill-path files and traced A–E:
+- **A (false-sustained):** handled — `candidateSignature` is byte-identical to the sampler's
+  `idKey`, the streak accrues to the right process, `startTime` defeats pid-reuse, duplicates
+  dedupe.
+- **B (AND-composition) — REAL DEFECT FOUND + FIXED:** `rawFacts.sustainedHighCpu && sustained`
+  could LAUNDER a degraded truthy non-boolean (`1`) into boolean `true`, defeating the floor's
+  round-11 `typeof !== 'boolean' → field-unknown` veto in the kill-PERMITTING direction. FIXED to
+  the reviewer's exact prescription: `rawFacts.sustainedHighCpu === true ? sustained :
+  rawFacts.sustainedHighCpu` — the N-window gate applies ONLY to a genuine boolean `true`; every
+  other value (false / 1 / undefined / null) is PRESERVED verbatim so the floor still vetoes it.
+  Added a regression test (a `sustainedHighCpu:1` fact + full streak → NO kill, alert-only,
+  floor-veto-downgrade). Reviewer RE-CONFIRMED: "Category B is fully closed; the regression test
+  pins it. Preserving `false` is identical to forcing it — introduces nothing."
+- **C/D/E:** handled — bad-N fail-closed, empty-parse reset, bounded map, correct state threading,
+  and the funnel's live re-read composes subtractively (no gate bypass).
 
-Verdict: **Concur with the review** — the shell adds no new kill authority; every signal stays
-gated in the reviewed funnel.
-
-**Guard-manifest classification (lint-forced, part of this slice):** the `*Sentinel.ts` filename
-makes `lint-guard-manifest` require classification. Declared in `GUARD_MANIFEST`
-(`monitoring.externalHogSentinel.enabled`, dev-gated `defaultEnabled:false`, `dryRunConfigPath`,
-`expectedTickMs:60000`, `component:'ExternalHogSentinel'`, `expectRuntime:false` until the boot
-GuardRegistry self-registration lands in the server slice, `loadBearing:false` — a dark watch-only
-capability nothing else depends on). It now appears in the `/guards` inventory.
+Verdict: **Concur with the review** (after the category-B fix).
