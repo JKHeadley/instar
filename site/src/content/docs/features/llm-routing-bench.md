@@ -31,6 +31,13 @@ Two CI lints enforce the benchmark discipline structurally:
 - **Bench-cited nature** — each benched component carries its bench-established task-nature
   (bounded verdict / critical judgment / background digest) and production chain, so *routing*
   (not just existence) is benchmark-cited.
+- **Model-registry freshness** — the derived-frontier freshness lint
+  (`scripts/lint-model-registry-freshness.mjs`) keeps each routing pin consistent with its
+  door's reviewed top-model set. Its live counterpart is the off-by-default
+  [`doorway-scan`](/reference/default-jobs) job: a deterministic prober re-probes which
+  doorways still answer and which top models each exposes, so a stale routing pin is
+  *surfaced* as an operator diff (never auto-applied). See
+  `docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md`.
 
 ## The bench-refresh job
 

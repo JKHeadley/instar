@@ -396,6 +396,22 @@ export interface JobDefinition {
    *  Default-absent = NOT state-writing → never guarded (additive-safe; older
    *  agents' parsers ignore the unknown field). */
   writesState?: boolean;
+  /** DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.8 / Frontloaded Decision D11 —
+   *  run this job on EVERY machine independently, skipping the global
+   *  `jobSlug`-keyed claim/lease negotiation (the same way `script`-type jobs
+   *  skip it). Needed for a per-machine scan whose result is a physical fact of
+   *  THAT machine's disk (the doorway scan), which the lease would otherwise
+   *  elect exactly one machine to run — silently starving the others.
+   *
+   *  ⚠ MISUSE WARNING (load-bearing): setting this `true` means EVERY machine
+   *  runs the job on every fire, UNTRACKED by the lease — so the job MUST be
+   *  per-machine-idempotent and cheap. A scan that only reads local disk +
+   *  writes local scan-state qualifies. A job that mutates shared/canonical
+   *  state, spends metered budget on the cadence, or spawns duplicated
+   *  cross-machine side-effects must NOT set it. Default-absent = `false` =
+   *  today's exact claim/lease behavior (additive-safe; older parsers ignore
+   *  the unknown field). */
+  perMachineIndependent?: boolean;
   /** Tags for filtering/grouping */
   tags?: string[];
   /** Telegram topic ID this job reports to (auto-created if not set) */
