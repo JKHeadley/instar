@@ -143,3 +143,11 @@ CLAUDE.md still says the agent will NOT see "open this." This is the intentional
 already recorded in §2 (Under-block) / §5 (Shadowing); it is the SAFE direction (pass-through, never
 swallow) and not a safety concern. It is a product-completeness item to close at graduation (flip the
 gate, or update the fleet CLAUDE.md guidance for the dark window) — not a blocker for this change.
+
+---
+
+**CI follow-up (2026-07-04):** the new `HubIntentClassifier` gate is registered in
+`COMPONENT_CATEGORY`, which the untrusted-input-classification ratchet requires to carry an explicit
+`LLM_UNTRUSTED_INPUT` classification. It judges an inbound hub message's bind-intent (untrusted user
+text), so it is classified `true` in `src/data/llmBenchCoverage.ts`. Mechanical consequence of the
+component registration; no behavior change.

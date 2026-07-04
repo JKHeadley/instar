@@ -168,6 +168,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   TelegramAdapter: true,
 
   // ── Gates judging user/session/operation content → true ──
+  HubIntentClassifier: true, // judges an inbound hub message's bind-intent (untrusted user text)
   PromptGate: true,
   ExternalOperationGate: true, // the motivating callsite: credited in-content "user already approved"
   WarrantsReplyGate: true,
