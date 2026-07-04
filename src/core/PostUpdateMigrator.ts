@@ -165,6 +165,23 @@ A durable per-agent registry mapping each Playwright browser **profile** (a phys
 }
 
 /**
+ * CLAUDE.md awareness block for the Doorway/Model Knowledge Registry + the `GET /doorways`
+ * read + the dark scan job (docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §Agent
+ * Awareness). A POINTER, not an inlined door/model table (avoid CLAUDE.md bloat). The unique
+ * heading substring `Doorway/Model Knowledge Registry` is the content-sniff marker used by
+ * migrateClaudeMd (Migration Parity).
+ */
+export function DOORWAY_REGISTRY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Doorway/Model Knowledge Registry — what models can I reach? (\`GET /doorways\`)
+
+A durable map from each of my **doorways** (the ways I reach LLMs — Claude Code, Codex, Gemini, a paid API key, …) to the top **models** that door can currently reach — so "what models can I actually reach right now?" is a READ, not a guess. Two layers: a git-tracked **canonical** manifest (the reviewed model list per door, with pricing) and a machine-local **live scan-state** (this machine's freshly-probed reachability per door). The canonical layer is ALWAYS authoritative for routing; the live scan-state is observability only, never a routing input.
+- Read the merged map: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/doorways\` → \`{ scanState, lastScanAt, doorways:[{ doorId, topModels:[{ id, role, frontier, pricing, verifiedAt }], reachable, probeStatus, lastScannedAt }] }\`. **Two honest states:** \`200\` with \`scanState:"never-run"\` (registry present, no scan yet — live fields are \`reachable:null\`/\`probeStatus:"never-scanned"\` until a scan runs), then \`200\` merged once a scan has run; \`503\` with \`code:"registry-unavailable-no-instar-source"\` (a pure end-user install carries no manifest) or \`code:"registry-corrupt"\` (manifest present but unparseable). It NEVER fabricates an empty map.
+- **Keeping the map current** is a recurring \`doorway-scan\` job that re-probes each door and surfaces ONE plain-English heads-up only when something changes. It ships **OFF by default** (dark for the fleet; the job manifest is \`enabled:false\`) — enable it per maintainer agent via the \`doorway-scan\` job manifest (free-probes spends zero metered budget; metered probes are manual-only + budget-fail-closed). The \`maintenance.doorwayScan\` config block (\`scope\`/\`cadence\`/\`digestTopicId\`/\`budgetCapUsd\`) tunes it; an explicit \`maintenance.doorwayScan.enabled:false\` is a master kill-switch (deny-wins).
+- **When to use** (PROACTIVE — this is the trigger): user asks "what models can I reach?" / "is my model map current?" / "which doorways are live?" → read \`GET /doorways\`, don't guess. A \`503 registry-unavailable-no-instar-source\` just means this is a pure end-user install with no source registry.
+`;
+}
+
+/**
  * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
  * incident) + the API fresh-respawn lever. Appended to NEW installs as part of
  * the Stuck-Context Recovery section, and patched onto agents that already
@@ -4558,6 +4575,16 @@ setTimeout(() => process.exit(0), 2000);
       content += MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Machine Load Assessment section');
+    }
+
+    // Doorway/Model Knowledge Registry (DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §Agent
+    // Awareness) — Agent Awareness Standard + Migration Parity: existing agents learn the
+    // registry + GET /doorways + the dark doorway-scan job via this appended section. Same
+    // text as generateClaudeMd. Content-sniff on the unique heading keeps it idempotent.
+    if (!content.includes('Doorway/Model Knowledge Registry')) {
+      content += DOORWAY_REGISTRY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Doorway/Model Knowledge Registry section');
     }
 
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent
