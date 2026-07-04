@@ -42,6 +42,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   CommitmentSentinel: 'sentinel',
   PresenceProxy: 'sentinel',
   PromiseBeacon: 'sentinel',
+  ExternalHogClassifier: 'sentinel',
   MessageSentinel: 'sentinel',
   ProjectDriftChecker: 'sentinel',
   TemporalCoherenceChecker: 'sentinel',

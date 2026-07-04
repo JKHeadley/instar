@@ -724,6 +724,9 @@ export class AgentServer {
     /** AgentWorktreeReaper — reclaims stale CLI worktrees. Powers
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
+    /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel (CMT-1901). Powers
+     *  GET /external-hog + the PIN-gated arm/disarm routes. */
+    externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel;
     /** OrphanedWorkSentinel — the silent-uncommitted-death backstop. Powers
      *  GET /orphaned-work. */
     orphanedWorkSentinel?: import('../monitoring/OrphanedWorkSentinel.js').OrphanedWorkSentinel;
@@ -2469,6 +2472,7 @@ export class AgentServer {
       geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
+      externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
       geminiLoopRunner: options.geminiLoopRunner ?? null,

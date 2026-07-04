@@ -152,6 +152,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | ProjectDriftChecker | src/core/ProjectDriftChecker.ts:351 | project/topic drift | B | OC(balanced) | ✅ |
 | PresenceProxy | src/monitoring/PresenceProxy.ts:1809 | standby status / tier message | A | OC(fast/balanced) | ⚠ |
 | PromiseBeacon | (sentinel) | follow-through heartbeat wording | A | OC(fast) | ⚠ |
+| ExternalHogClassifier | src/commands/server.ts (via ExternalHogRealAdapters classify) | zombie kill/leave/alert (SUBTRACTIVE — the deterministic floor carries kill-safety; the model carries effectiveness) | A | OC(fast) | ✅ fast fits — bounded strict-JSON verdict; a wrong verdict can only false-spare, never widen a kill |
 | SessionActivitySentinel ×3 | src/monitoring/SessionActivitySentinel.ts:300/552/659 | session digest/synthesis | D | OC(fast) | ⚠ cheap fits |
 | SessionWatchdog | src/monitoring/SessionWatchdog.ts:718 | is a destructive Ctrl-C legit? | B | OC(default) | ✅ |
 | StallTriageNurse | src/monitoring/StallTriageNurse.ts:609 | diagnose stalled session | B | OC(balanced) | ✅ |

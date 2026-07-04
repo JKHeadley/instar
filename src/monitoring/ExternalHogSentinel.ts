@@ -154,6 +154,17 @@ export class ExternalHogSentinel {
     return result;
   }
 
+  /**
+   * The `/guards` runtime getter (GuardRegistry). `lastTickAt` is the last SUCCESSFUL PARSE (the
+   * sampler heartbeat), NOT the tick time — so a sentinel that is ticking but BLIND (ps failing,
+   * never parsing) reports a stale/zero lastTickAt and `/guards` honestly derives `on-stale`
+   * instead of a falsely-reassuring `on-confirmed`. A never-parsed sentinel → 0 → on-stale.
+   */
+  guardRuntimeStatus(): { enabled: boolean; dryRun: boolean; lastTickAt: number } {
+    const arm = this.adapters.armStatus();
+    return { enabled: arm.enabled, dryRun: arm.dryRun, lastTickAt: this.state.sampler.lastSnapshotAt ?? 0 };
+  }
+
   /** Honest guard posture (§8): reflects VERIFIED kill-capability, never a config wish. */
   status(): ExternalHogStatus {
     const arm = this.adapters.armStatus();

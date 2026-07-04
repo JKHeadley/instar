@@ -567,6 +567,34 @@ Files: `src/monitoring/ExternalHogServerPrimitives.ts` (`makeCpuCoresOver` + `cr
 - **Tests:** 7 — still-pinning → ~2 cores, idle → ~0, vanished → null, pid-reused → null, exec-throw
   → null, tmux-pane parse, and the factory assembly (config/loadArm/serverPid/tmux pass-through).
 
+### Slice 24 — server construction (make it alive) + guard registration
+Files: `src/commands/server.ts` (construct primitives → adapters → sentinel; guardRegistry.register;
+the dev-gate-gated interval; pass to AgentServer), `src/server/AgentServer.ts` (the externalHogSentinel
+option → ctx), `src/monitoring/guardManifest.ts` (expectRuntime false→true), `src/monitoring/
+ExternalHogSentinel.ts` (guardRuntimeStatus getter), `tests/e2e/external-hog-routes-alive.test.ts` (4).
+- **What it is:** the production composition root. Resolves the developmentAgent gate
+  (resolveDevAgentGate) → live-on-dev / dark-fleet; builds the real primitives (execFileAsync
+  ps/launchctl/lsof w/ 15s timeout + 8MB cap, process.kill, sharedIntelligence.evaluate,
+  telegram.createAttentionItem, resolved config, loadArmState, the §4.5 probe); creates the adapters
+  + the ExternalHogSentinel; ALWAYS registers the /guards runtime getter (honest posture even when
+  dark); and starts the scan interval ONLY when the dev-gate resolves enabled (unref'd so it never
+  holds the process open). Construction is TRY-guarded → a failure disables the feature this boot,
+  never crashes the server.
+- **The interval is dev-gate-gated:** when dark (fleet), no interval → NO tick → NO kill, ever. The
+  dryRun canary flows to the sentinel's config() so even a live-on-dev tick is watch-only until a
+  PIN arm. `guardRuntimeStatus().lastTickAt` = the sampler heartbeat, so /guards reads on-stale when
+  blind (never a false on-confirmed).
+- **guardManifest expectRuntime false→true:** now that the getter is registered at boot, /guards
+  expects the runtime report (an un-registered expectRuntime would manufacture a phantom `missing`).
+- **Over/under-block:** none new — the construction only WIRES reviewed pieces; the kill decision is
+  entirely below it. **Signal vs authority:** composition, no authority. **Multi-machine:**
+  machine-local BY DESIGN (each machine constructs its own sentinel over ITS process table; nothing
+  replicates). **Rollback:** the try-guard + the dev-gate + the omitted config `enabled` mean the
+  feature is dark-by-default; removing the construction block reverts cleanly.
+- **Tests:** 4 (Tier-3 E2E "feature is alive" over the real AgentServer) — GET 200 with a live status
+  (a benign tick advanced the sampler → on-dry-run), the arm→disarm→re-arm epoch-2 lifecycle
+  end-to-end, dark → 503, and auth (Bearer required, arm needs the PIN not just Bearer).
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
@@ -679,3 +707,25 @@ false-high on an idle process:
 - **D:** contract order correct; a swap → negative Δwall → UNKNOWN → safe.
 
 Verdict: **Concur with the review** — fails safe in every direction.
+
+### Slice 24 Phase-5 verdict — CONCUR (with one robustness nit folded)
+An independent reviewer traced all five areas — the dark-on-fleet / watch-only-on-dev / PIN-to-kill
+invariant holds:
+- **A interval gating SAFE:** `_externalHogEnabled = resolveDevAgentGate(...) = explicitEnabled ??
+  !!config.developmentAgent`. Fleet + enabled-omitted → false → NO setInterval, NO tick, NO kill.
+  The interval runs only on developmentAgent:true or explicit enabled:true (both deliberate);
+  enabled:false force-darks even a dev agent. guardRegistry.register installs a LAZY getter
+  (reads arm/heartbeat only, never tick()).
+- **B dryRun/PIN AIRTIGHT:** default dryRun omitted → true (watch-only). canKillLive needs enabled
+  && !dryRun && isMarkerValid && classIsArmed; construction NEVER writes an arm marker → null →
+  invalid. So even enabled:true+dryRun:false yields would-kill until a PIN-route epoch-fenced
+  marker exists. NO real signal reachable from construction alone.
+- **C SAFE:** setInterval sits after successful construction inside the try; any throw → undefined →
+  routes 503, no timer. Timer unref'd.
+- **D (robustness nit, FOLDED):** ehNum rejected NaN but passed negative/zero/huge finite — a garbage
+  scanIntervalMs:0 could hot-loop the DEV tick (no kill-safety impact — the gate is unaffected).
+  CLOSED: the interval-critical knobs are now positive-clamped (scanIntervalMs ≥ 1000, cpuCoreThreshold
+  ≥ 0.1, sampleWindowMs ≥ 1000, sustainedSampleCount ≥ 1).
+- **E SAFE:** externalHogSentinel threads options → ctx (`?? null`); routes get null when dark, no clobber.
+
+Verdict: **Concur with the review.**
