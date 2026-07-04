@@ -33,6 +33,20 @@ command kinds (readout / undo / clear / reapply / switch-now / confirm) and the 
 thinking intent). The `TopicProfileWriteSurface` authority + confirm-slot ordering guards are
 unchanged.
 
+## Evidence
+
+Not reproducible in dev as a live false-positive: the removed regexes were `^…$`-anchored, so
+they rarely MIS-fired today ("should we use codex here?" never matched `^use …$`). This converts
+the banned anti-pattern (a keyword/regex list DECIDING natural-language intent) pre-emptively —
+the sibling offender #2 (`NicknameCommand`) is the one that produced the actual 2026-07-03 hijack;
+offender #1 is the same CLASS, converted before it can misfire. Observed before/after is proven by
+the committed discrimination corpus (`tests/unit/profile-intent-discrimination.test.ts`): the old
+class fires on the words, not the meaning — the corpus asserts, both directions, that "use codex
+here" actuates while "should we use codex here?", "codex here keeps failing", and a stale-context
+"yeah go with that" all pass through, and that a valid paraphrase the anchored regex MISSED
+("let's run this topic on claude") is now recognized. The deterministic harness runs in CI; the
+opt-in `INSTAR_LIVE_PROFILE_INTENT=1` real-model harness is the graduation gate before `dryRun:false`.
+
 ## What to Tell Your User
 
 Nothing user-facing right now — this ships dark on the fleet and dry-run on a development agent, so
