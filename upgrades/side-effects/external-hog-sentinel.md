@@ -501,6 +501,28 @@ parsers), `src/monitoring/ExternalHogKillFunnel.ts` + `ExternalHogScanTick.ts` +
 - **Tests:** 13 — pure lsof/launchctl parsers, readProcTable/ownedRefs/factsFor/identityFor/classify
   wiring, armStatus composition, deliverNotices, and the §4.5 CPU re-confirm + arm-scope hash agreement.
 
+### Slice 21 — migration parity (existing agents get the dev-gated config on update)
+Files: `src/core/PostUpdateMigrator.ts` (`migrateConfigExternalHogSentinelDevGate` + its registration
+in `migrateConfig`), `tests/unit/PostUpdateMigrator-externalHogSentinel.test.ts` (7 tests).
+- **What it is:** the Migration Parity Standard for the config. On update, an EXISTING agent gets the
+  `monitoring.externalHogSentinel` DARK defaults block (dryRun:true + kill-gate knobs, `enabled`
+  OMITTED) via ConfigDefaults + applyDefaults add-missing — no add-migration needed. The migrator
+  handles the ONE case applyDefaults can't: it STRIPS a default-shaped `enabled:false` (the #1001
+  force-dark mechanism that would dark even a dev agent), so `resolveDevAgentGate` resolves it
+  live-on-dev / dark-fleet. Mirrors the credentialRepointing / playwrightRegistry precedents exactly.
+- **Never clobbers:** an explicit `enabled:true` (an operator fleet-flip) is PRESERVED; the `dryRun`
+  canary is left untouched. Existence-checked + idempotent.
+- **Over/under-block:** none — it only removes a default-shaped literal that would misconfigure the
+  gate. **Signal vs authority:** a config migration, no runtime decision. **Multi-machine:**
+  machine-local config edit (each machine migrates its own config). **Rollback:** the strip is
+  idempotent; re-adding `enabled:false` to config restores the old shape.
+- **Second-pass not-required:** a config-defaults migration (not kill-logic), purely additive,
+  mirroring two reviewed dev-gate precedents; the pure strip predicate + the through-migrateConfig
+  behavior are unit-asserted. **Tests:** 7 — strip predicate (3), block-install / strip / no-clobber
+  / idempotent through the real migrateConfig (4).
+- **CLAUDE.md agent-awareness (Agent Awareness Standard) is a SEPARATE upcoming slice** (generateClaudeMd
+  + migrateClaudeMd). <!-- tracked: CMT-1901 -->
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR

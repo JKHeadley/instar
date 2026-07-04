@@ -317,6 +317,28 @@ export function migrateConfigPlaywrightRegistryDevGate(config: Record<string, un
 }
 
 /**
+ * The External-Hog zombie auto-kill sentinel (external-hog-zombie-autokill-sentinel §7-§8) is a
+ * developmentAgent dark feature: `monitoring.externalHogSentinel.enabled` is OMITTED from
+ * ConfigDefaults so resolveDevAgentGate resolves it (live-on-dev watch-only, dark on the fleet).
+ * The `dryRun:true` canary + the kill-gate knobs arrive via applyDefaults add-missing. An existing
+ * agent that somehow carries a default-shaped literal `enabled: false` would force-dark even a dev
+ * agent (the #1001 mechanism) — strip it so the gate resolves. An explicit `true` (an operator
+ * fleet-flip) is PRESERVED; the separate `dryRun` field is left untouched (it stays the kill-safety
+ * canary). Idempotent + existence-checked.
+ */
+export function migrateConfigExternalHogSentinelDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const eh = monitoring.externalHogSentinel as Record<string, unknown> | undefined;
+  if (!eh || typeof eh !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(eh, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (eh.enabled !== false) return false;
+  delete eh.enabled;
+  return true;
+}
+
+/**
  * Durable conversation identity (durable-conversation-identity §9):
  * `conversationIdentity.followThrough` is a developmentAgent dark feature —
  * `enabled` must be OMITTED so resolveDevAgentGate resolves it (live-on-dev,
@@ -8863,6 +8885,16 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: stripped default-shaped playwrightRegistry.enabled=false so the developmentAgent gate resolves it (live-on-dev, dark fleet)');
     } else {
       result.skipped.push('config.json: playwrightRegistry.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // External-Hog zombie auto-kill sentinel re-gated to the developmentAgent gate: strip a
+    // default-shaped enabled:false so it resolves live-on-dev (watch-only) / dark-fleet. The
+    // separate dryRun:true (kill-safety canary) + the kill-gate knobs are left untouched.
+    if (migrateConfigExternalHogSentinelDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.externalHogSentinel.enabled=false so the developmentAgent gate resolves it (live-on-dev watch-only, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.externalHogSentinel.enabled dev-gate already correct (omitted or operator-set)');
     }
 
     // Durable conversation identity (durable-conversation-identity §9): the
