@@ -1,0 +1,8 @@
+  830   818   501 Thu Jul  2 15:09:11 2026       0:00.10 -zsh
+ 2031   830   501 Thu Jul  2 20:37:08 2026       7:26.57 /Users/xxxxxx/.asdf/installs/nodejs/22.18.0/bin/claude
+ 2633  2031   501 Thu Jul  2 20:37:09 2026       0:01.80 npm exec @playwright/mcp@latest
+ 2673  2031   501 Thu Jul  2 20:37:09 2026       0:00.26 node
+ 2678  2031   501 Thu Jul  2 20:37:09 2026       0:01.77 npm exec mcp-remote@latest https://xxx.xxxxxx.xx/xxx
+ 5335     1   501 Thu Jul  2 11:34:22 2026    1-05:42:00 Code Helper (Plugin)
+ 6000  5999   501 Thu Jul  2 15:00:00 2026       0:00.00 <defunct>
+  7000  6999

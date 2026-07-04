@@ -211,6 +211,28 @@ Files: `src/monitoring/ExternalHogNoticeCoalescer.ts` (`coalesceNotices`),
   ordering (keeps highest severity, reports dropped-by-class), kills-always-pierce, robustness
   (zero/negative/NaN budget, malformed notice ignored, empty batch).
 
+### Slice 9 — ps whole-table parser + realness fixture (load-bearing, SCRAPE_PARSERS)
+Files: `src/monitoring/ExternalHogProcTable.ts` (`parseProcTable`),
+`tests/unit/external-hog-proc-table.test.ts` (5 tests), the captured fixture
+`tests/fixtures/captured/ps-proc-table/{table.txt,table.meta.json}`, and the SCRAPE_PARSERS
+registration in `scripts/lint-scrape-fixture-realness.js`.
+- **What it is:** the whole-table `ps -o pid=,ppid=,uid=,lstart=,time=,comm=` parse into rows
+  (pid/ppid/uid/startTime/cputimeSeconds/comm) the sampler uses. LOAD-BEARING for kill
+  eligibility (the CPU-delta pivots on `time=`), so REGISTERED in SCRAPE_PARSERS with a
+  captured realness fixture (§Testing F1, resolves the round-9 lessons-aware blocker).
+- **Dangerous direction:** a parse bug that OVER-reports cputime → a false sustained hog. The
+  fixture proves the parser survives the real structural bytes (dd- day-prefix, embedded-space
+  lstart + comm, <defunct>, malformed short) and fails CLOSED: unidentifiable pid/ppid/uid →
+  row SKIPPED; malformed `time=` → cputimeSeconds undefined → CPU-delta UNKNOWN → alert-never-kill.
+- **Signal vs authority:** parsing only; feeds the deterministic CPU-delta. Multi-machine: pure.
+- **External surfaces:** the parser is pure (the actual `ps` spawn is the sampler slice).
+  parseProcTimeToSeconds stays a non-blocking register-or-justify note (a field parser, not a
+  whole-output parser — exercised transitively through this fixture).
+- **Rollback:** delete the module + fixture + registration entry.
+- **Tests:** 5 — the byte-for-byte fixture parse (7 rows, 1 malformed skipped; dd- anchor =
+  106920s; comm-with-spaces preserved; <defunct>), the time= realness (dd- day-prefix), and
+  fail-closed (malformed time → undefined, non-numeric pid → skip, non-string → []).
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -311,3 +333,16 @@ recorded instar `lstart`, so pid-reuse spoofing is structurally defeated. Bounde
 `seen` cycle-guard). Every uncertainty (ppid-not-in-tree, cycle, hop-bound, ppid≤1, invalid/
 NaN/negative inputs) fails to NOT-owned (the anti-evasion direction). The candidate-itself case
 is checked before the ppid≤1 stop, so an owned root pid is detected.
+
+### Slice-9 (ps parser) reviewer verdict
+
+**Concur (no bug; one strict-only tightening applied).** The reviewer verified adversarially
+that no realistic ps input yields a spuriously-high `cputimeSeconds` or a mis-attributed pid:
+the `time=` column is ps-generated and LEFT-anchored (t[8]), comm is strictly rightward and its
+control chars are ps-ESCAPED (empirically `\n`→`\012` on macOS, so no fabricated-row injection
+via a newline in argv), a malformed time fails CLOSED to `undefined` (never a spurious number),
+and <10-token / non-numeric-pid rows are skipped. Fixture honesty confirmed (dd- anchor,
+embedded-space lstart+comm, <defunct>, malformed short; same-length redactions; honest
+representative-vs-live meta). The one residual it flagged — an unbounded `(\d+:)*` in the time
+regex, unreachable via t[8] — was tightened to `{0,2}` colon groups (strictly toward
+fail-closed; accepts every valid `[dd-]hh:mm:ss.ff`), all 5 tests still pass.

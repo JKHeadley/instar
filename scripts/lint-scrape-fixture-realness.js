@@ -56,6 +56,20 @@ export const SCRAPE_PARSERS = [
     testFile: 'tests/unit/framework-login-driver.test.ts',
     testName: 'parses the REAL wrapped Mac Mini login pane',
   },
+  // External-Hog sentinel (CMT-1901, external-hog-zombie-autokill-sentinel.md §1/§Testing):
+  // the whole-table `ps` parse is LOAD-BEARING for kill eligibility (the CPU-delta pivots on
+  // `time=`). Registered with a captured realness fixture covering the `[dd-]hh:mm:ss`
+  // day-prefix 24h anchor, an embedded-space lstart + comm, a <defunct> row, and a short/
+  // permission-denied malformed row. `parseProcTimeToSeconds` (the single-field `[dd-]hh:mm:ss`
+  // time parser this consumes) is exercised transitively through this fixture — it is a field
+  // parser, not a whole-output parser, so it doesn't fit the whole-fixture realness model and
+  // stays a non-blocking register-or-justify note.
+  {
+    parserSymbol: 'parseProcTable',
+    fixtureSlug: 'ps-proc-table',
+    testFile: 'tests/unit/external-hog-proc-table.test.ts',
+    testName: 'parses the REAL captured ps process table byte-for-byte',
+  },
   // U4.3 (u4-3-breaker-recovery-probe §6): the recovery probe's typed-contract
   // success classifier consumes untrusted wire bytes (a captive portal or wrong
   // server can answer anything) — registered with captured byte-for-byte

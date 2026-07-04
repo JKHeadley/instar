@@ -1,0 +1,16 @@
+{
+  "source": "real `ps -o pid=,ppid=,uid=,lstart=,time=,comm=` stdout on the echo build laptop (macOS) \u2014 the exact byte stream the External-Hog sampler's whole-table parse consumes",
+  "command": "ps -o pid=,ppid=,uid=,lstart=,time=,comm=",
+  "capturedAt": "2026-07-03T22:30:00Z",
+  "machine": "echo laptop (build worktree)",
+  "redactions": [
+    "user home segment /Users/justin/ -> /Users/xxxxxx/ (same-length x-fill; not a secret, hygiene only)",
+    "mcp-remote target URL https://api.fathom.ai/mcp -> https://xxx.xxxxxx.xx/xxx (same-length, URL grammar preserved)"
+  ],
+  "representativeRows": [
+    "pid 5335 (Code Helper (Plugin), time 1-05:42:00): a FORMAT-ACCURATE representative of the `[dd-]hh:mm:ss` 24h+-CPU day-prefix case (the 2026-07-03 MongoDB-exthost anchor) \u2014 no LIVE process currently has 24h+ CPU time, so this row uses the documented macOS `ps time=` day-prefix format the parser MUST survive; it also exercises the comm-with-embedded-spaces case",
+    "pid 6000 (<defunct>): a zombie/defunct comm row",
+    "pid 7000: a short/permission-denied malformed row (< 10 tokens) the parser must SKIP (fail-closed)"
+  ],
+  "note": "All live rows are byte-real (column alignment, the space-padded lstart day-of-month 'Jul  2', embedded-space comm). The `time=` values are the parse target and are UNREDACTED. Redactions are same-length so column offsets are preserved."
+}
