@@ -273,6 +273,25 @@ Files: `src/monitoring/ExternalHogClassifier.ts` (`parseClassifierVerdict`,
   select (decoy-flood can't starve, tie-break, non-positive cap), cache (TTL, reused-pid-no-inherit,
   LRU eviction, non-finite→miss).
 
+### Slice 12 — kill funnel (the hardened SIGTERM→SIGKILL sequence, the ONLY signal path)
+Files: `src/monitoring/ExternalHogKillFunnel.ts` (`runKillFunnel`),
+`tests/unit/external-hog-kill-funnel.test.ts` (10 tests).
+- **What it is:** the ONLY place a real signal is sent. The watch-only guarantee is BY
+  CONSTRUCTION: unless canKillLive (enabled && !dryRun && a valid PIN marker for this class) at
+  BOTH re-check points, NO signal is sent (returns `would-kill`). All I/O injected → fully
+  testable without killing anything. Sequence: pre-SIGTERM arm-gate + Stage-B floor re-check →
+  SIGTERM → grace → exited? → pre-SIGKILL re-check (disarm/identity/floor mid-grace aborts) →
+  fd-skip defer (bounded) → SIGKILL.
+- **Dangerous direction:** sending SIGKILL without full authorization. Guarded: canKillLive at
+  entry (would-kill/no-signal in watch-only) AND re-checked before SIGKILL; a disarm/identity-
+  change/floor-veto mid-grace aborts the escalation (the graceful SIGTERM already sent is not
+  forced to SIGKILL); class re-matched at kill time; fd-write defers (capped).
+- **Signal vs authority:** executes the floor+model decision; never decides. Multi-machine:
+  machine-local (a host process). Rollback: delete; the sentinel class consumes it.
+- **Tests:** 10 — dryRun/not-armed/disarmed → would-kill NO SIGNAL; floor-veto/gone → aborted NO
+  SIGNAL; sigterm-exit (SIGTERM only); full kill (SIGTERM+SIGKILL); disarm-mid-grace → aborted
+  (SIGTERM only, no SIGKILL); fd-write defer (SIGTERM only); defer-cap-exhausted → SIGKILL.
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -422,3 +441,18 @@ degrade to alert, deterministic non-attacker tie-break) and the cache (full-tupl
 reused pid misses, correct TTL/LRU, non-finite now/ttl → miss at read) are sound. The one nit
 — a NaN-clock `cacheSet` storing an immortal entry (not attacker-reachable, not a false-kill
 path) — was hardened: `cacheSet` now returns the cache unchanged on a non-finite `nowMs`.
+
+### Slice-12 (kill funnel) reviewer verdict
+
+**Concur (no bug — the hardest review, clean).** The reviewer traced every signal-reachable
+path adversarially and confirmed the WATCH-ONLY guarantee is AIRTIGHT: dryRun:true / not-armed /
+disarmed all return `would-kill` at the pre-SIGTERM reCheck BEFORE any sendSignal (canKillLive
+fails closed on config.dryRun!==false, marker null, and armEpoch<=lastDisarmEpoch). Even the
+SIGTERM is gated by canKillLive + floor + class-re-match. SIGKILL is STRUCTURALLY IMPOSSIBLE
+after a mid-grace disarm / identity-change / floor-veto — it requires reCheck to return null at
+BOTH checkpoints, and every error/uncertainty path (a throwing dep, a would-kill post-grace)
+aborts toward no-kill. The one residual — the funnel can't detect a dep that LIES about live
+state — is the correct DI boundary (deps are contracted to read live; the epoch/content-hash
+safety is proven airtight in ExternalHogArmMarker, which canKillLive ANDs), and the inherent
+re-check→SIGKILL TOCTOU is unavoidable and placed as late as feasible (only the protective
+fd-probe follows, which can only PREVENT a kill).
