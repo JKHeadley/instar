@@ -1,0 +1,14 @@
+<!-- audience: agent-only | maturity: preview -->
+
+## What Changed
+
+Added a new CI ratchet, `tests/unit/keyword-intent-decision-ratchet.test.ts`, that enforces the constitutional standard **"Intelligence Infers, Keywords Only Guard"**: a natural-language keyword/phrase/regex list must never be the thing that DECIDES what a human meant (classify intent, gate/reroute/swallow a message). The ratchet walks `src/{core,monitoring,server,threadline,messaging}`, detects the anti-pattern, subtracts an explicit per-file allowlist reproduced from the 2026-07-03 audit (enum validators, security scrubbers, error/process-message classifiers, structured-output parsers, cosmetic selectors, quantity extractors, observe-only signal loggers), exempts declared safety floors carrying a new inline `@intent-safety-floor-ok` marker, and asserts the remaining offender count against a committed baseline of **6** (the audit's six findings — the number can only decrease). It ships in **report mode** (`ENFORCE = false`): it prints offenders every run but never fails CI on a net-new violation until the flag is deliberately flipped after a clean soak. `MessageSentinel` gains the `@intent-safety-floor-ok` marker (the standard's survivor #2 — the emergency-stop fast-path with an LLM stage behind it); no logic change.
+
+## What to Tell Your User
+
+Nothing user-facing — this is an internal development guardrail (agent-only, preview maturity). It is the enforcement arm of the "Intelligence Infers, Keywords Only Guard" standard: it structurally prevents new code that dumbs a "what did the human mean?" decision down to keyword matching, the class of bug that once made the agent swallow the operator's "keep the work on the laptop" as a move command. If asked why a future PR fails this check: the change added a keyword list that decides natural-language intent — convert it to an LLM-with-context decision (the CoherenceGate / cheap-prefilter→LLM template) or justify it as one of the two survivors.
+
+## Summary of New Capabilities
+
+- `tests/unit/keyword-intent-decision-ratchet.test.ts` — report-mode ratchet detecting keyword-list intent decisions; baseline 6; sibling to `no-silent-fallbacks`.
+- New inline marker convention `@intent-safety-floor-ok` (mirroring `@silent-fallback-ok`) for declaring a legitimate LLM-backed safety floor.
