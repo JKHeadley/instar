@@ -155,6 +155,27 @@ Files: `src/monitoring/ExternalHogArmMarker.ts` (`classContentHash`, `isMarkerVa
   disarm-restart-bypass-closed, per-class armed/new/broadened/unrelated, canKillLive doubly-
   held (dryRun-never-kills, bare-config-flip-never-arms, enabled:false, unarmed class).
 
+### Slice 6 — P19 loop brakes (kill-ledger + respawn breaker + in-flight set)
+Files: `src/monitoring/ExternalHogKillLedger.ts` (`recordKill`, `isBreakerTripped`,
+`killCountInWindow`, `shouldEvictInFlight`, `isInFlight`), `tests/unit/external-hog-kill-ledger.test.ts` (14 tests).
+- **What it is:** the pure state machines that STOP a kill-respawn loop (#863). After K kills
+  of the same respawn-surviving key in a rolling window → breaker trips (stop killing +
+  surface). A VOLATILE key falls back to a CLASS-level breaker (a per-volatile-key count could
+  never accumulate). The in-flight set stops re-killing a SIGTERM'd pid; eviction on confirmed
+  exit or the TTL.
+- **Safe direction:** for a LOOP BRAKE the safe failure is TRIP (stop killing) — a non-finite
+  window/now returns tripped rather than risk an unbounded loop. The breaker shields same-key
+  hogs from KILL only, never from the §4 observability floor.
+- **Bounded:** `recordKill` prunes past the retention bound so the durable ledger can't grow
+  without limit. In-flight eviction (confirmed-exit OR ttl, ~3×sigtermGrace) prevents a leak
+  and prevents re-killing a mid-write LS early.
+- **External surfaces:** none yet (durable persistence + the actual kill are the caller's);
+  pure logic. Multi-machine: machine-local (the kill ledger is per-machine).
+- **Rollback:** delete the module; nothing consumes it yet.
+- **Tests:** 14 — append+prune, per-key breaker (trip at K, ignore out-of-window, a decoy
+  can't shield another key), volatile→class fallback, safe-trip on bad window inputs, in-flight
+  detect + pid-reuse distinction + TTL/confirmed-exit/non-finite eviction.
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -221,3 +242,26 @@ rejected); `classIsArmed`'s `typeof armedHash === 'string'` guard blocks `undefi
 AND neutralizes prototype-chain keys (`__proto__`, `toString`); `canKillLive` requires
 enabled===true + dryRun===false (`!== false` rejects dryRun:undefined/0/missing) + valid marker
 + armed class, with no path letting `config.dryRun:false` alone authorize.
+
+### Slice-6 (kill-ledger / P19) reviewer verdict
+
+**Round 1 — Concern raised (VALID, fixed):** `isBreakerTripped`'s fail-safe guard only tripped
+on NON-FINITE window inputs, but a NON-POSITIVE `windowMs` (≤0 — finite) slipped past →
+`since = now - windowMs >= now` → count collapses to ~0 → spurious NOT-tripped (the dangerous
+unbounded-loop direction). Also flagged the `retentionMs >= windowMs` caller precondition
+(recordKill can't see windowMs, so a shorter retention would prune in-window kills and
+undercount). Everything else confirmed sound (per-key counting, `>=` trip, cross-key
+isolation, boundary at now-window excluded, volatile→class fallback, in-flight pid+startTime
+keying + TTL/confirmed-exit/non-finite eviction).
+
+**Resolution:** the guard now trips unless windowMs AND maxPerWindow are BOTH finite AND
+positive (`Number.isFinite(x) && x > 0`) — closing ≤0 and Infinity together. Documented the
+`retentionMs >= windowMs` precondition on recordKill + a test proving the breaker still trips
+at K when retention == window. 16 tests pass (added: ≤0/negative window trips, maxPerWindow:0
+trips, retention==window still trips at K). Typecheck clean.
+
+**Round 2 — Concur.** The reviewer re-checked and CONCURRED: the finite-AND-positive guard
+closes the ≤0/negative/Infinity window and non-positive maxPerWindow gaps (all trip); the
+retention==window test genuinely exercises the prune/window boundary (a shorter retention would
+have pruned to 2 and not tripped — a real undercount guard, not a trivial pass); the change is
+strictly stricter (positive path untouched), so no new spurious-not-trip path.
