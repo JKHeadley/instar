@@ -233,6 +233,26 @@ registration in `scripts/lint-scrape-fixture-realness.js`.
   106920s; comm-with-spaces preserved; <defunct>), the time= realness (dd- day-prefix), and
   fail-closed (malformed time → undefined, non-numeric pid → skip, non-string → []).
 
+### Slice 10 — stage-1 candidacy state machine (pure)
+Files: `src/monitoring/ExternalHogSampler.ts` (`advanceSampler`, `isSamplerDead`),
+`tests/unit/external-hog-sampler.test.ts` (13 tests).
+- **What it is:** the pure stage-1 candidacy computation — from two successive ps snapshots it
+  selects external (own-uid, not instar-owned) processes whose cross-tick Δcputime/Δwall
+  crosses the threshold. Integrates the CPU-delta + ownership walk + parsed rows. Rebuilds the
+  identity map each tick (bounded). A liveness heartbeat advances only on a plausible parse.
+- **Dangerous direction:** a false CANDIDATE (an idle process flagged as a hog). Guarded: uses
+  the DELTA not lifetime average (emergent hog caught, idle not); different-uid / instar-owned /
+  unknown-cputime / first-sight → never a candidate; UNKNOWN delta → excluded.
+- **Signal vs authority:** produces a candidacy signal; never kills. The actual ps spawn + wall
+  clock live in the thin I/O worker shell (later); this is pure. Multi-machine: pure.
+- **Heartbeat:** advances on any plausible parse (≥1 row) regardless of candidate count (idle
+  machine not sampler-dead); a failed/empty parse does NOT advance (→ eventually sampler-dead)
+  and keeps the previous baseline (a transient hiccup doesn't lose the delta baseline).
+- **Rollback:** delete; the sentinel class (later) consumes it.
+- **Tests:** 13 — baseline/candidate/emergent-hog/low-cpu; exclusions (uid, instar-own, unknown
+  cputime); heartbeat (advances on zero-candidate plausible parse, not on empty/non-finite);
+  isSamplerDead (null=not-dead, fresh/stale, non-finite-now=not-dead).
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -346,3 +366,26 @@ embedded-space lstart+comm, <defunct>, malformed short; same-length redactions; 
 representative-vs-live meta). The one residual it flagged — an unbounded `(\d+:)*` in the time
 regex, unreachable via t[8] — was tightened to `{0,2}` colon groups (strictly toward
 fail-closed; accepts every valid `[dd-]hh:mm:ss.ff`), all 5 tests still pass.
+
+### Slice-10 (sampler candidacy) reviewer verdict
+
+**Round 1 — Concern raised (VALID cross-module bug, fixed).** All candidacy gates trace
+correct (first-sight/uid/instar-own/unknown-cputime/UNKNOWN-delta skip; only core>=threshold
+emits; pid-reuse → different key → first-sight; heartbeat advances only on a plausible parse;
+map rebuilt each tick). BUT `computeCoreEquivalents` gated BOTH Δwall guards behind
+`if (intendedWindowMs > 0)`, so a ≤0 `sampleWindowMs` (which advanceSampler passed through raw)
+would SKIP the guards → a tiny inter-tick Δwall + a 1s quantization tick inflates the ratio
+(1 CPU-s / 0.05s = 20 cores) → a FALSE stage-1 candidate. (Bounded: the §4 worker-side
+micro-check still blocks an actual kill — so impact is candidate noise + classifier spend, not
+a false kill — but a genuine false-candidate path in a kill pipeline.)
+
+**Resolution:** made `computeCoreEquivalents` fail CLOSED on a non-positive window
+(`intendedWindowMs <= 0 → CPU_DELTA_UNKNOWN`), so both bounds now apply unconditionally like
+every other guard (matching the module's fail-closed philosophy). Added a CPU-delta test (≤0
+window → UNKNOWN) and a sampler test (≤0 sampleWindowMs → no false candidate). 28 tests pass.
+
+**Round 2 — Concur.** The reviewer re-checked and CONCURRED: the ≤0-window guard sits after
+the finite + non-positive-Δwall guards so 0/-1 fail closed before any ratio; the large/small
+Δwall guards now run unconditionally but are behaviorally identical for a positive window (no
+regression — the math/jitter/large/small/decreasing cases all still hold); and the sampler
+emits no false candidate under a ≤0 window (UNKNOWN → skip). Concern fully resolved.

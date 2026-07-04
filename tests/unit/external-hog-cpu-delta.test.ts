@@ -60,6 +60,12 @@ describe('computeCoreEquivalents — FAILS CLOSED (→ UNKNOWN) on implausible i
     expect(computeCoreEquivalents(s(NaN, 0), s(60, 30_000), { intendedWindowMs: WINDOW })).toBe(CPU_DELTA_UNKNOWN);
     expect(computeCoreEquivalents(s(0, 0), s(Infinity, 30_000), { intendedWindowMs: WINDOW })).toBe(CPU_DELTA_UNKNOWN);
   });
+  it('a NON-POSITIVE window fails CLOSED → UNKNOWN (round-11: ≤0 window must not skip the guards)', () => {
+    // The cross-module bug the sampler review found: a ≤0 window would otherwise skip BOTH
+    // plausibility guards and let a tiny-Δwall quantization tick inflate the ratio.
+    expect(computeCoreEquivalents(s(0, 0), s(1, 50), { intendedWindowMs: 0 })).toBe(CPU_DELTA_UNKNOWN);
+    expect(computeCoreEquivalents(s(0, 0), s(1, 50), { intendedWindowMs: -1 })).toBe(CPU_DELTA_UNKNOWN);
+  });
   it('a slightly-long Δwall WITHIN the implausible factor still computes (jitter tolerance)', () => {
     // 30s window, Δwall = 90s (3× < the default 4× factor) — accepted, just a slower tick.
     const v = computeCoreEquivalents(s(0, 0), s(90, 90_000), { intendedWindowMs: WINDOW });

@@ -61,19 +61,20 @@ export function computeCoreEquivalents(
   const dWallMs = curr.monotonicWallMs - prev.monotonicWallMs;
   // Non-positive Δwall (clock went backward, or two reads at the same instant) → unknown.
   if (dWallMs <= 0) return CPU_DELTA_UNKNOWN;
-  if (opts.intendedWindowMs > 0) {
-    // Implausibly LARGE Δwall (a sleep slipped past the monotonic guarantee, or a stale
-    // sample) → the interval isn't the window we think it is → unknown (SAFE direction:
-    // deflates the ratio → miss → alert).
-    if (dWallMs > opts.intendedWindowMs * factor) return CPU_DELTA_UNKNOWN;
-    // Implausibly SMALL Δwall → unknown (DANGEROUS direction, so this guard is load-bearing):
-    // `ps time=` is 1-second-quantized (§1), so over an interval far SHORTER than the window a
-    // single quantization tick INFLATES the ratio — e.g. 1 CPU-sec / 0.2s = 5 cores from an
-    // idle process. The spec's "quantization is ±1.5%" holds only at Δwall ≈ the window; this
-    // pure function enforces it rather than trusting the caller to sample a full window apart.
-    // (round-11 — second-pass reviewer: symmetric lower bound.)
-    if (dWallMs < opts.intendedWindowMs / factor) return CPU_DELTA_UNKNOWN;
-  }
+  // A NON-POSITIVE window is unreasoned → fail CLOSED (round-11 — the sampler review found that
+  // a ≤0 `sampleWindowMs` would otherwise SKIP both plausibility guards and let a tiny-Δwall
+  // quantization tick emit a false-high; this makes the window-bound guards apply unconditionally
+  // like every other guard in the module). `intendedWindowMs` is already finite-checked above.
+  if (opts.intendedWindowMs <= 0) return CPU_DELTA_UNKNOWN;
+  // Implausibly LARGE Δwall (a sleep slipped past the monotonic guarantee, or a stale sample) →
+  // unknown (SAFE direction: deflates the ratio → miss → alert).
+  if (dWallMs > opts.intendedWindowMs * factor) return CPU_DELTA_UNKNOWN;
+  // Implausibly SMALL Δwall → unknown (DANGEROUS direction, so this guard is load-bearing):
+  // `ps time=` is 1-second-quantized (§1), so over an interval far SHORTER than the window a
+  // single quantization tick INFLATES the ratio — e.g. 1 CPU-sec / 0.2s = 5 cores from an idle
+  // process. This pure function enforces it rather than trusting the caller to sample a full
+  // window apart. (round-11 — second-pass reviewer: symmetric lower bound.)
+  if (dWallMs < opts.intendedWindowMs / factor) return CPU_DELTA_UNKNOWN;
 
   const dCpuSeconds = curr.cumulativeCpuSeconds - prev.cumulativeCpuSeconds;
   // A decreasing cumulative counter means the identity we're tracking changed (pid reuse) —
