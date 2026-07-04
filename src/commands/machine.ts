@@ -667,18 +667,21 @@ export async function doctor(options: DoctorOptions): Promise<void> {
     checks.push({ name: 'Machine identity', status: 'fail', detail: 'No identity found. Run `instar init`.' });
   }
 
-  // 2. Registry health
+  // 2. Registry health (registry-role VIEW — may lag; the live lease view below is
+  //    authoritative when the server is running — machine-coherence-guard §5b M12).
+  let registryAwakeCount: number | null = null;
   try {
     const registry = mgr.loadRegistry();
     const active = Object.entries(registry.machines).filter(([, e]) => e.status === 'active');
     const awake = active.filter(([, e]) => e.role === 'awake');
+    registryAwakeCount = awake.length;
 
     if (awake.length === 1) {
-      checks.push({ name: 'Registry', status: 'ok', detail: `${active.length} active machine(s), 1 awake` });
+      checks.push({ name: 'Registry', status: 'ok', detail: `${active.length} active machine(s), 1 awake (registry view — may lag; start the server for the live view)` });
     } else if (awake.length === 0) {
-      checks.push({ name: 'Registry', status: 'warn', detail: `${active.length} active machine(s), none awake. Run \`instar wakeup\`.` });
+      checks.push({ name: 'Registry', status: 'warn', detail: `${active.length} active machine(s), none awake in the registry view (may lag). Run \`instar wakeup\` if no live view below.` });
     } else {
-      checks.push({ name: 'Registry', status: 'fail', detail: `${awake.length} machines claim awake (split-brain?)` });
+      checks.push({ name: 'Registry', status: 'fail', detail: `${awake.length} machines claim awake in the registry view (split-brain?) — confirm against the live lease view below` });
     }
   } catch (e) {
     checks.push({ name: 'Registry', status: 'fail', detail: e instanceof Error ? e.message : String(e) });
@@ -703,14 +706,37 @@ export async function doctor(options: DoctorOptions): Promise<void> {
     }
   }
 
-  // 4. Server reachability
+  // 4. Server reachability + the LIVE lease view of "who is awake" (machine-coherence-guard §5b M12).
   try {
     const resp = await fetch(`http://localhost:${config.port}/health`, {
+      // Bearer so the authed /health branch (which carries multiMachine.syncStatus)
+      // is served — the basic check omits the mesh detail.
+      headers: config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {},
       signal: AbortSignal.timeout(3000),
     });
     if (resp.ok) {
-      const health = await resp.json() as { uptimeHuman?: string };
+      const health = await resp.json() as {
+        uptimeHuman?: string;
+        multiMachine?: { syncStatus?: { awakeMachineCount?: number | null; awakeMachineCountSource?: string } | null };
+      };
       checks.push({ name: 'Server', status: 'ok', detail: `Running (port ${config.port}, up ${health.uptimeHuman || '?'})` });
+
+      // Live lease view: the authoritative "who is awake" answer when the server is up.
+      const sync = health.multiMachine?.syncStatus;
+      if (sync && sync.awakeMachineCount !== undefined) {
+        const liveCount = sync.awakeMachineCount;
+        const source = sync.awakeMachineCountSource ?? 'unknown';
+        if (liveCount === null) {
+          checks.push({ name: 'Live lease view', status: 'warn', detail: `awake count unavailable (source: ${source}) — mesh state could not be read` });
+        } else {
+          const diverges = registryAwakeCount !== null && registryAwakeCount !== liveCount;
+          const detail = diverges
+            ? `${liveCount} awake ('${source}'); registry says ${registryAwakeCount} — registry roles may lag`
+            : `${liveCount} awake ('${source}')`;
+          const status = liveCount > 1 ? 'fail' : liveCount === 1 ? 'ok' : 'warn';
+          checks.push({ name: 'Live lease view', status, detail });
+        }
+      }
     } else {
       checks.push({ name: 'Server', status: 'warn', detail: `Responded with ${resp.status}` });
     }

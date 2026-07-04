@@ -5180,7 +5180,7 @@ What this means for how I behave:
 - **I know which machine I'm on.** Turn provenance is recorded; if a failover outran the sync I disclose that the exact provenance is still catching up rather than asserting a stale machine.
 
 Where to look (never guess mesh state — read it):
-- \`GET /health\` → \`multiMachine.syncStatus\` = \`{ leaseHolder, leaseEpoch, holdsLease, splitBrainState, awakeMachineCount, protocolVersion }\`. \`instar doctor\` surfaces the same.
+- \`GET /health\` → \`multiMachine.syncStatus\` = \`{ leaseHolder, leaseEpoch, holdsLease, splitBrainState, awakeMachineCount, awakeMachineCountSource, protocolVersion }\`. \`awakeMachineCount\` derives from LIVE lease observations (source \`lease-live\`), NOT last-written registry roles (source \`registry-roles\`, the git-only-mesh fallback that can lag); \`null\`/\`unavailable\` on a read failure — never a silent 0. \`instar doctor\` surfaces the same, and labels any registry-vs-live divergence.
 - A genuinely **unresolvable split-brain** (a machine looks alive but unreachable, so the lease can't move) surfaces as a single **Attention-queue** item with a Y/N decision ("demote machine X?") — it is deduped per partition episode, never per heartbeat. If I see one, I present the data and the decision to the user; I do not silently pick.
 - Dials live under \`.instar/config.json\` → \`multiMachine\` (ingressHeartbeatMs, leaseTtlMs, leasePullIntervalMs, liveTailMaxStalenessMs, handoffAckTimeoutMs, …). A nonsensical combination is rejected at startup with a clear message rather than degrading silently.
 `;

@@ -57,7 +57,7 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString(), loadAvg: 1.2 });
 
     const coordinator: any = {
-      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: 'm_a', leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1 }),
+      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: 'm_a', leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1, awakeMachineCountSource: 'lease-live' }),
       managers: { identityManager: idMgr },
     };
     const ctx: any = {
@@ -87,6 +87,9 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     expect(r.body.enabled).toBe(true);
     expect(r.body.router.holder).toBe('m_a');
     expect(r.body.router.holdsLease).toBe(true);
+    // machine-coherence-guard §5b — the awake count carries its source tag through /pool.
+    expect(r.body.router.awakeMachineCount).toBe(1);
+    expect(r.body.router.awakeMachineCountSource).toBe('lease-live');
     const byId = Object.fromEntries(r.body.machines.map((m: any) => [m.machineId, m]));
     expect(byId.m_a.nickname).toBe('Mac Mini');
     expect(byId.m_a.online).toBe(true);

@@ -82,7 +82,7 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     pinStore = new TopicPlacementPinStore({ filePath: path.join(dir, 'topic-pins.json') });
 
     const coordinator: any = {
-      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: SELF, leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1 }),
+      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: SELF, leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1, awakeMachineCountSource: 'lease-live' }),
       managers: { identityManager: idMgr },
     };
     placements = [];
