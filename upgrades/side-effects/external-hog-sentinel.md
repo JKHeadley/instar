@@ -448,6 +448,29 @@ INVERTED comment on `ownerAppRunning`), `tests/unit/external-hog-fact-builder.te
   branches, floor-validated permit/veto for orphan/root/launchctl/non-sustained, allowlist-gated +
   stable-hash identity.
 
+### Slice 19 — the classifier prompt builder (injection-hardening boundary)
+Files: `src/monitoring/ExternalHogClassifierPrompt.ts` (`buildClassifierPrompt`),
+`tests/unit/external-hog-classifier-prompt.test.ts` (6 tests).
+- **What it is:** the PURE composer of the kill/leave/alert prompt fed to the zombie-classify
+  model. Carries the envelope-wrapped DERIVED facts (matched class, ownerAppRunning,
+  sustainedHighCpu, launchctl-label, same-uid boolean) + the attacker-controllable name/argv
+  wrapped as explicit untrusted data, and demands a strict `{"action":"kill|leave|alert"}` verdict.
+- **Two spec §5 security properties enforced here:** (1) the raw (pid, start-time, command-hash)
+  IDENTITY TUPLE is NEVER in the prompt (round-8 — denies an injection payload a concrete target
+  to name); (2) the name/argv are wrapped in a `<untrusted-process-data>` envelope with a
+  treat-as-data instruction, and the embedded values are delimiter-stripped (a process forging the
+  close-tag can't break out) + length-clamped (no unbounded prompt growth). Unit-asserted.
+- **Signal vs authority — why no second-pass:** the prompt holds NO kill authority. The model's
+  verdict is SUBTRACTIVE (it can only SPARE an in-envelope process; the floor's two-key AND means
+  a kill still needs `floor.permitted`), so a prompt bug (or even a fully-successful injection) can
+  only cause a false-LEAVE / false-ALERT or a kill WITHIN the allowlist envelope the attacker
+  crafted — NEVER a wrong-kill outside the floor. This is effectiveness, not kill-safety; the
+  security properties are unit-asserted. (Consistent with the coalescer slice — not-kill-logic.)
+- **Over/under-block:** a poor prompt lowers effectiveness (more false-leaves), never safety.
+  **Multi-machine:** pure string builder, no state. **Rollback:** delete; the adapter would inline
+  a prompt. **Tests:** 6 — derived facts present, strict verdict demanded, identity-tuple excluded,
+  untrusted envelope + forge-resistance + length clamp.
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
