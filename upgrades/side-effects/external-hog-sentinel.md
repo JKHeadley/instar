@@ -389,6 +389,31 @@ ScanOpts.sustainedSampleCount, advance-after-candidacy, AND into sustainedHighCp
   delete the tracker. **Tests:** 9 tracker + 1 orchestrator anti-spike (single-window+N=2 → veto,
   no kill); all 8 scan-tick + 6 sentinel stay green (N=1 preserves single-window behavior there).
 
+### Slice 17 — the armed-marker persistence store (the live-kill authorization file)
+Files: `src/monitoring/ExternalHogArmStore.ts` (`loadArmState`/`armStore`/`disarmStore`),
+`tests/unit/external-hog-arm-store.test.ts` (9 tests).
+- **What it is:** the durable 0600 file behind the reviewed marker VALIDATORS — the thing the PIN
+  arm route writes, the disarm route bumps, and the poll loop reads. Upholds the two load-bearing
+  properties by how it mutates epochs: ARM raises armEpoch strictly above both prior armEpoch AND
+  lastDisarmEpoch (a fresh arm always wins); DISARM raises lastDisarmEpoch ≥ current armEpoch (the
+  marker becomes invalid — a disarm can NEVER be silently un-done; returning to live-kill always
+  needs a fresh PIN arm).
+- **Fail-closed reads:** missing / unparseable / wrong-shape / non-string-hash / corrupt-epoch →
+  `{marker:null, lastDisarmEpoch:0}` (marker null → not armed regardless of any epoch). No corrupt
+  shape yields a marker `canKillLive` accepts. `coerceMarker` rebuilds an allowlisted object +
+  strictly string-checks every snapshot hash (no prototype-pollution).
+- **Durable atomic writes:** tmp → fsync → rename (0600). The fsync closes the Phase-5 residual —
+  a power loss right after a DISARM must not revert to armed (the one safety-critical direction).
+- **Over/under-block:** none — it never decides a kill; it only persists the authorization the PIN
+  route grants. **Signal vs authority:** the PIN route is the authority; this is its durable record.
+- **Multi-machine:** machine-local BY DESIGN — the arm is a physical, per-machine operator consent
+  to kill on THIS host's process table (`physical-credential-locality`-class); it MUST NOT
+  replicate (a PIN arm on one machine can never authorize a kill on another). No cross-machine state.
+- **Rollback:** delete the file + module; with no marker the feature is watch-only regardless.
+- **Tests:** 9 — fresh/corrupt/wrong-shape fail-closed, arm authorizes exactly the consented class,
+  new/broadened class not armed, 0600 mode, disarm invalidates + monotonic + idempotent, and
+  reboot-boots-unarmed (live config alone never re-arms).
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
@@ -409,3 +434,22 @@ An independent reviewer read all six kill-path files and traced A–E:
   and the funnel's live re-read composes subtractively (no gate bypass).
 
 Verdict: **Concur with the review** (after the category-B fix).
+
+### Slice 17 Phase-5 verdict — CONCUR
+An independent reviewer traced all five risks against the validators and found no safety defect:
+no corrupt/crafted/torn-write path yields a marker `canKillLive` accepts.
+- **A disarm durability:** `lastDisarmEpoch = max(cur, markerEpoch)` reads the CURRENT marker epoch
+  → however high armEpoch, the marker reads invalid; a failed rename leaves the OLD state and
+  throws (never a silent partial disarm).
+- **B fail-closed:** any corrupt/NaN/negative/missing lastDisarmEpoch collapses the read to
+  not-armed.
+- **C monotonicity:** `max(prior, lastDisarm)+1` is strictly above both; 2^53 float precision fails
+  SAFE (won't arm).
+- **D atomicity:** tmp+rename atomic; readers only open the main file.
+- **E laundering:** coerceMarker rebuilds an allowlisted object, rejects non-string snapshot values;
+  `__proto__` keys can't pollute.
+- **Residual (non-blocking, now CLOSED):** the reviewer noted writeState lacked fsync (a power loss
+  after a disarm could revert to a PREVIOUSLY-authorized arm — never new/widened). CLOSED by adding
+  the content fsync (tmp → fsync → rename) — strictly more durable, no behavior change.
+
+Verdict: **Concur with the review.**
