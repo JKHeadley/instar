@@ -1,0 +1,38 @@
+---
+user_announcement:
+  - audience: agent-only
+    maturity: stable
+---
+
+## What Changed
+
+Added a CI lint (`scripts/lint-no-unreachable-messaging-gate.js`, wired into the `lint` chain) that
+fails the build if any source reads a **default-OFF** config gate at a `messaging.<child>.*`
+dot-path. On a real install `messaging` is a JSON **array** of adapter configs, so
+`messaging.<child>.*` resolves `undefined` → the `false` default → the feature is structurally
+un-enablable. This is the class-level guard for the PR #1379 bug (the Action-Claim / Slack-followthrough
+sentinel that couldn't be turned on). It flags only the concrete `.get('messaging.*', false)` shape,
+exempts default-`true` gates, and supports an inline `// lint-allow-messaging-gate: <reason>`
+suppression. Zero current offenders — a pure forward guard.
+
+## What to Tell Your User
+
+Nothing proactive — this is an internal build-time safety check. It only matters to developers: it
+stops a whole class of "the on-switch was written in a place the program can't read" mistakes from
+ever landing again, which is the exact bug that made the promise follow-through tracker impossible to
+turn on earlier. It is the automated backstop so a human doesn't have to remember that quirk.
+
+## Summary of New Capabilities
+
+- CI now refuses a default-off config gate placed at an unreachable position under the messaging list.
+- Points the author at the fix (move the switch to a reachable top-level setting) with a precise
+  file:line, or lets them suppress a deliberate exception visibly.
+- No runtime effect; a build-time guard only.
+
+## Evidence
+
+- `tests/unit/lint-no-unreachable-messaging-gate.test.ts` — 8 cases: flags the #1379 shape (generic +
+  plain, both quote styles); exempts default-true, non-messaging, and top-level `actionClaim`; honors
+  same-line and preceding-line suppression; the exported regex matches the incident line.
+- `node scripts/lint-no-unreachable-messaging-gate.js` → `clean` on current `main` (0 offenders).
+- Side-effects review: `upgrades/side-effects/lint-unreachable-messaging-gate.md`.
