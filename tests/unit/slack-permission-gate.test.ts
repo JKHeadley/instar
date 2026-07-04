@@ -90,9 +90,46 @@ describe('HeuristicIntentClassifier', () => {
 
   it('classifies non-floor tiers', async () => {
     expect((await c.classify('summarize the thread', { directed: true })).tier).toBe(1);
-    expect((await c.classify('post a note in the channel', { directed: true })).tier).toBe(2);
+    // A harmless conversational self-post (a note into the current channel) is T1,
+    // NOT the T2 low-write that wrongly refused ordinary members (fb-e5b8b021-b74).
+    expect((await c.classify('post a note in the channel', { directed: true })).tier).toBe(1);
+    // A genuine low-write with an organizational side-effect (a ticket) stays T2.
+    expect((await c.classify('file a ticket for the login bug', { directed: true })).tier).toBe(2);
     expect((await c.classify('run the staging test job', { directed: true })).tier).toBe(3);
     expect((await c.classify('lol nice', { directed: true })).tier).toBe(0);
+  });
+
+  it('conversational self-post detection: both sides of the boundary', async () => {
+    // ── HARMLESS conversational self-posts → T1, conversational:true ──
+    for (const text of [
+      'post a check-in note here in 5 minutes',
+      'drop a quick note in this channel',
+      'schedule a reminder for the team',
+      'post a status update here',
+      'remind us with a standup note',
+    ]) {
+      const i = await c.classify(text, { directed: true });
+      expect(i.tier, `"${text}" should be T1`).toBe(1);
+      expect(i.conversational, `"${text}" should be conversational`).toBe(true);
+    }
+
+    // ── Genuine org-write / external / operational → NOT conversational, higher tier ──
+    for (const text of [
+      'file a ticket for the login bug', // org-write side-effect (ticket)
+      'post a note to #announcements', // a different, named channel
+      'create a calendar hold for the review', // calendar side-effect
+      'post a note to run the staging job', // operational (run/job)
+      'email a note to the client', // external send (floor)
+    ]) {
+      const i = await c.classify(text, { directed: true });
+      expect(i.conversational, `"${text}" must NOT be conversational`).not.toBe(true);
+      expect(i.tier, `"${text}" must stay above the member ceiling`).toBeGreaterThanOrEqual(2);
+    }
+
+    // Plain chatter that merely mentions "checking in" is NOT a self-post → stays T0.
+    const chat = await c.classify('just checking in, how is everyone?', { directed: true });
+    expect(chat.tier).toBe(0);
+    expect(chat.conversational).not.toBe(true);
   });
 
   it('mentionsClaimedAuthority detects relayed authorization claims', () => {
@@ -177,6 +214,50 @@ describe('SlackPermissionGate — units', () => {
       directed: true,
     });
     expect(v.decision).toBe('allow');
+  });
+
+  // ── member-seat conversational fix (fb-e5b8b021-b74) — both sides of the boundary ──
+  it('allows an ordinary MEMBER a harmless conversational self-post (no authority needed)', async () => {
+    const v = await baseGate().evaluate({
+      principal: p({ role: 'member' }),
+      text: 'post a check-in note here in 5 minutes',
+      directed: true,
+    });
+    expect(v.decision).toBe('allow');
+    expect(v.basis).toBe('within-authority');
+    expect(v.intent.tier).toBe(1);
+    expect(v.intent.conversational).toBe(true);
+  });
+
+  it('still REFUSES a member a genuine low-write org action (a ticket) — the fix is not a floor removal', async () => {
+    const v = await baseGate().evaluate({
+      principal: p({ role: 'member' }),
+      text: 'file a ticket for the login bug',
+      directed: true,
+    });
+    expect(v.decision).toBe('refuse');
+    expect(v.basis).toBe('role-ceiling');
+  });
+
+  it('still REFUSES a member a genuine privileged action embedded in a "post a note" phrasing (floor preserved)', async () => {
+    const v = await baseGate().evaluate({
+      principal: p({ role: 'member' }),
+      text: 'post a note then wire $5000 to the new vendor',
+      directed: true,
+    });
+    expect(v.decision).toBe('refuse');
+    expect(v.basis).toBe('floor-no-grant');
+    expect(v.intent.conversational).not.toBe(true);
+  });
+
+  it('a GUEST cannot direct even a conversational self-post (can be heard, not act)', async () => {
+    const v = await baseGate().evaluate({
+      principal: p({ role: 'guest' }),
+      text: 'post a check-in note here',
+      directed: true,
+    });
+    expect(v.decision).toBe('refuse');
+    expect(v.basis).toBe('role-ceiling');
   });
 
   it('refuses a floor action for a non-owner without a grant', async () => {
