@@ -67,6 +67,11 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
   CoherenceReviewer: 'gate',
+  // Move-intent recognizer — infers "move/run/pin this on <nickname>?" over the
+  // message + recent conversation, replacing the keyword verb-list that hijacked
+  // discussion (docs/specs/nickname-move-intent-llm-rebuild.md). It gates whether
+  // the inbound message is a relocation command vs passed through to the agent.
+  MoveIntentClassifier: 'gate',
   // Inbound-content sanitizer (token-audit-completeness baseline-zero pass).
   LLMSanitizer: 'gate',
   // uxConfirm pre-routing judgment calls (same pass).

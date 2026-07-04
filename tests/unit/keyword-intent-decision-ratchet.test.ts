@@ -138,9 +138,13 @@ function getSourceFiles(): string[] {
 // Each decides what a human MEANT from a keyword/regex list, wired into (or reachable
 // from) the inbound message path. These are the baseline; the number only DECREASES as
 // each is converted to LLM-with-context (the CoherenceGate / cheap-prefilter→LLM template).
+// #2 core/NicknameCommand.ts (recognizeNicknameCommand — TRANSFER_VERBS/PIN_VERBS,
+// the hijack) was CONVERTED to LLM-with-context (MoveIntentClassifier) on 2026-07-04
+// — the exemplar under this very standard (docs/specs/nickname-move-intent-llm-rebuild.md).
+// It no longer keyword-decides intent, so the detector no longer flags it: it is
+// removed from the baseline and BASELINE dropped 6→5 (this ratchet only ever DECREASES).
 const EXPECTED_OFFENDERS = [
   'core/topicProfileIngress.ts',   // #1 parseProfileTrigger — framework/model/thinking NL regexes (LIVE)
-  'core/NicknameCommand.ts',       // #2 recognizeNicknameCommand — TRANSFER_VERBS/PIN_VERBS (LIVE — the hijack)
   'threadline/hubCommands.ts',     // #3 parseHubCommand — open/tie NL regexes (LIVE — swallows the message)
   'core/TopicClassifier.ts',       // #4 scoreKeywords — TOPIC/INTENT/PROBLEM keyword density (latent)
   'core/AutonomySkill.ts',         // #5 INTENT_PATTERNS — autonomy phrases (latent, exported/unwired)
@@ -182,7 +186,7 @@ const ALLOWLIST: Record<string, string> = {
 // (per file). Landed at 6 (the audit's six findings). When an offender is converted to
 // LLM-with-context (and thus stops matching), lower this number.
 // ═══════════════════════════════════════════════════════════════════════════════
-const BASELINE = 6;
+const BASELINE = 5;
 
 // Report mode (graduated rollout). While false, the net-new `<= BASELINE` guard only
 // WARNS — it never fails CI. Flip to true after a clean soak to make it hard.

@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'sessionPoolMoveIntent',
+    configPath: 'multiMachine.sessionPool.moveIntent.enabled',
+    description: 'LLM-with-context move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md) — replaces the keyword verb-list that hijacked "keep the work on the laptop" (2026-07-03). Decides "move/run/pin this on <nickname>?" via MoveIntentClassifier over the message + recent conversation, guardrailed by structured enum output; the downstream TransferByNickname planner is unchanged.',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the classifier RUNS the full LLM decision loop and LOGS would-hijack vs would-pass to logs/move-intent.jsonl, but _tryNicknameRelocation ALWAYS returns handled:false (the message passes through, never hijacked) while dryRun holds — real hijacking needs a deliberate dryRun:false. The whole session-pool layer is itself dark unless stage advances past "dark", so this is doubly inert on the fleet. Fail-OPEN: every uncertainty (no provider, breaker open, timeout, unparseable output, target not in enum, low confidence) passes the message through. One bounded fast-tier LLM call per candidate message (gated behind a cheap no-nickname pre-filter); no destructive action, no egress beyond the shared IntelligenceProvider. Same dogfooding posture as topicProfiles.',
+  },
+  {
     name: 'agentOwnedFollowthrough',
     configPath: 'commitments.agentOwnedFollowthrough.enabled',
     description: 'The Agent Carries the Loop (C1+C2) — owner-gated beacon suppression + external-block staleness governor + evidence-gated graveyard reconciler; the user is never status-pinged for an agent-owned commitment.',

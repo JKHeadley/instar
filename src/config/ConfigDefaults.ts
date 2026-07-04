@@ -1191,6 +1191,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       transferOutputCutoffMs: 1000,
       placementCooldownMs: 300000,
       topicPlacementUpdateMinIntervalMs: 10000,
+      // §L4 move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md).
+      // The "move/run/pin this on <nickname>" decision is inferred by an LLM over
+      // the message + recent conversation (MoveIntentClassifier), NOT a keyword
+      // verb list (the 2026-07-03 hijack). `enabled` is DELIBERATELY OMITTED (not
+      // hardcoded false) so resolveDevAgentGate decides — DARK on the fleet, LIVE
+      // on a development agent (registered in DEV_GATED_FEATURES, configPath
+      // multiMachine.sessionPool.moveIntent.enabled). Ships dry-run FIRST: on a
+      // dev agent the classifier RUNS and LOGS would-hijack vs would-pass to
+      // logs/move-intent.jsonl, but the message ALWAYS passes through (never
+      // hijacked) until a deliberate dryRun:false — proving the false-positive
+      // rate collapsed before it can eat a message. Fail-OPEN on any uncertainty.
+      moveIntent: {
+        dryRun: true,
+        minConfidence: 0.85,
+        timeoutMs: 4000,
+        contextWindowTurns: 6,
+        modelTier: 'fast',
+      },
       // G3 — lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3, FD6). "Spawn iff I hold
       // the fenced awake-lease, else forward to the holder" — stops the
       // duplicate-session harm (the 2026-06-27 incident). Ships DARK (enabled:
