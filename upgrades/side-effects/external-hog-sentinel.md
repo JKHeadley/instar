@@ -87,8 +87,63 @@ Files: `src/core/types.ts` (the `externalHogSentinel?` interface), `src/config/C
   defaults, the `maxClassificationsPerScan < hostSpawnCap` invariant) + the 151-test wiring
   suite. Typecheck clean.
 
+### Slice 3 — deterministic safety floor (the veto-only kill envelope)
+Files: `src/monitoring/ExternalHogFloor.ts` (the `ExternalHogFacts` type, the code-defined
+`EXTERNAL_HOG_ALLOWLIST` + `matchAllowlistClass`, and `evaluateKillFloor` — the pure
+veto-only predicate), `tests/unit/external-hog-floor.test.ts` (24 tests).
+- **Over-block:** the floor fails CLOSED — any unknown invariant (unknown uid, missing
+  field) → NOT permitted → alert. It "over-blocks" toward NOT killing, which is the correct
+  safe direction for an irreversible action. It does not reject any legitimate KILL that a
+  real orphaned in-envelope zombie would need (the anchor case permits).
+- **Under-block:** the floor is a NECESSARY, not sufficient, condition — it never authorizes
+  a kill on its own (the caller must ALSO have `classifier==='kill'`). It cannot under-block
+  a kill because it only ever removes kills.
+- **Level-of-abstraction fit:** pure function over a normalized fact set; the discovery/
+  sampler layer computes the facts, the floor evaluates them, the caller ANDs with the model
+  verdict. Correct separation.
+- **Signal vs authority:** COMPLIANT — this is the hard-invariant guard on an irreversible
+  action (the allowed brittle-blocker class). It holds VETO authority only; the model holds
+  the judgment. It can only BLOCK a kill, never trigger one (structurally: the return type is
+  permit-or-veto, and the only `permitted:true` path requires every invariant to pass).
+- **Interactions:** the allowlist is code-defined (not config), so no runtime widening;
+  instar-own exclusion is checked first (defense-in-depth vs the discovery-layer exclusion).
+- **Multi-machine:** pure logic, no state — N/A.
+- **External surfaces:** none — no I/O, no routes, no messages. Dormant until a runtime
+  consumer wires it (later slices).
+- **Rollback:** delete the module; nothing consumes it yet.
+- **Tests:** 24 — allowlist match (name+token, attacker-name inert, anchored regex), the
+  anchor permits, EVERY invariant load-bearing (instar-own, other-uid, root-euid, unknown-uid,
+  root-daemon, launchctl, live-parent, not-sustained, outside-allowlist ×2), and the 8
+  zombie-classify cases as floor fixtures (permits only the exthost-kill case). Typecheck clean.
+
 ## Phase 5 — Second-pass review
 
-REQUIRED (touches "sentinel"/"guard"/kill lifecycle). A dedicated reviewer subagent
-audits this artifact once the runtime decision-logic slices (floor, classifier hookup,
-kill funnel, arm/disarm) land — the config slice carries no decision logic to audit.
+REQUIRED (touches "sentinel"/"guard"/kill decision logic). The floor slice (3) is the first
+decision-logic slice, so a dedicated reviewer subagent independently audits it below.
+
+### Reviewer verdict
+
+**Round 1 — Concern raised (VALID, fixed):** the module header + Slice-3 review claimed an
+ABSOLUTE fail-closed guarantee, but 4 of 8 hard invariants (`isInstarProcess`,
+`ownerRootDaemon`, `hasLaunchctlLabel`, `ownerAppRunning`) were tested with plain truthiness
+`if (facts.X)`, so a missing/`undefined` value would fail OPEN (skip the veto). Masked today
+by the required TS types + the sampler contract, but a kill floor must not delegate its
+fail-closed property to the type system or sampler correctness — exactly the layer that
+degrades under the starvation this sentinel hunts (a sampler that times out computing
+`ownerAppRunning` and drops the field would yield a permitted kill of a never-established
+orphan). The reviewer also confirmed everything else sound: no path initiates a kill (pure,
+permit-or-veto return), the only `permitted:true` is after all guards, the anchored regex
+rejects spoofed suffixes, euid===0 refused before uid-equality, attacker name/argv inert
+beyond the allowlist.
+
+**Resolution:** added a leading STRICT-boolean guard (step 0) — any required boolean that is
+not a genuine `boolean` VETOES with `field-unknown:<field>` — so `undefined`/non-boolean now
+fails CLOSED, matching the header claim. Added 6 fail-closed fixtures (each of the 5 required
+booleans dropped → veto; a non-boolean string → veto). 30 tests pass, typecheck clean.
+
+**Round 2 — Concur.** The independent reviewer re-checked the fix and CONCURRED: the
+step-0 strict-boolean guard runs before every truthiness check and vetoes with
+`field-unknown:<field>` on any non-boolean among the 5 required booleans, so a
+dropped/undefined field fails CLOSED; valid-boolean cases pass step 0 and still hit their
+specific vetoes (no regression, confirmed by the 30 passing tests incl. the 6 new
+missing-field/non-boolean fixtures). The original fail-open concern is fully closed.
