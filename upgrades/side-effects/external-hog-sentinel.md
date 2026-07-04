@@ -253,6 +253,26 @@ Files: `src/monitoring/ExternalHogSampler.ts` (`advanceSampler`, `isSamplerDead`
   cputime); heartbeat (advances on zero-candidate plausible parse, not on empty/non-finite);
   isSamplerDead (null=not-dead, fresh/stale, non-finite-now=not-dead).
 
+### Slice 11 — classifier orchestration (pure: verdict parse, cap-select, cache)
+Files: `src/monitoring/ExternalHogClassifier.ts` (`parseClassifierVerdict`,
+`selectForClassification`, the TTL+LRU `VerdictCache`), `tests/unit/external-hog-classifier.test.ts` (13 tests).
+- **What it is:** the pure orchestration around the model call (the actual LlmQueue call is the
+  sentinel-class adapter). Verdict parse (bounded enum, fail-safe), worst-CPU-first selection
+  under maxClassificationsPerScan, and the identity-tuple verdict cache.
+- **Dangerous direction:** `parseClassifierVerdict` returning 'kill' when it shouldn't. Guarded:
+  ONLY an exact `kill`/`leave`/`alert` (bare or `{action}`) parses; anything else → null →
+  decider-unavailable → ALERT, never kill. NEVER extracts a pid/target from output.
+- **Cap-select:** worst-CPU-first so a decoy flood can't starve the real hog; deterministic
+  non-attacker tie-break; non-positive cap → classify none.
+- **Cache:** keyed on the FULL identity tuple (pid+start-time+command-hash) so a reused pid
+  can't inherit a prior `kill`; TTL+LRU; advisory (the §4 kill-time re-check is authoritative;
+  a non-finite now/ttl → miss).
+- **Signal vs authority:** the model decides WITHIN the floor; this is the pure plumbing. Rollback:
+  delete; the sentinel class consumes it. Multi-machine: pure.
+- **Tests:** 13 — verdict parse (enum, JSON, unparseable→null, no-pid-extraction), worst-CPU-first
+  select (decoy-flood can't starve, tie-break, non-positive cap), cache (TTL, reused-pid-no-inherit,
+  LRU eviction, non-finite→miss).
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -389,3 +409,16 @@ the finite + non-positive-Δwall guards so 0/-1 fail closed before any ratio; th
 Δwall guards now run unconditionally but are behaviorally identical for a positive window (no
 regression — the math/jitter/large/small/decreasing cases all still hold); and the sampler
 emits no false candidate under a ≤0 window (UNKNOWN → skip). Concern fully resolved.
+
+### Slice-11 (classifier orchestration) reviewer verdict
+
+**Concur (no bug; one trivial nit hardened).** The reviewer verified adversarially that
+`parseClassifierVerdict` gates on a strict `===` allowlist of exactly {'kill','leave','alert'}
+applied only to `raw`/`.action` (never reason/pid/argv), so every adversarial input — extra/
+nested fields, `KILL`, `'kill; rm'`, whitespace, arrays, numbers, JSON-string `'"kill"'`, and
+`__proto__` pollution (JSON.parse sets it as an own data prop, leaving `.action` undefined) —
+falls through to `null → alert`. Selection (worst-CPU-first, over-cap + non-positive-cap both
+degrade to alert, deterministic non-attacker tie-break) and the cache (full-tuple key so a
+reused pid misses, correct TTL/LRU, non-finite now/ttl → miss at read) are sound. The one nit
+— a NaN-clock `cacheSet` storing an immortal entry (not attacker-reachable, not a false-kill
+path) — was hardened: `cacheSet` now returns the cache unchanged on a non-finite `nowMs`.
