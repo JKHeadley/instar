@@ -50,8 +50,17 @@ describe('getActionClaimFollowthroughHook — Slack generalization', () => {
     expect(body).toContain('process.exit(0)');
   });
 
-  it('still gates on the master messaging.actionClaim.enabled', () => {
+  it('still gates on the master actionClaim.enabled', () => {
     expect(body).toContain('actionClaim');
     expect(body).toContain('enabled');
+  });
+
+  it('resolves config from TOP-LEVEL actionClaim, array-messaging-safe (actionclaim-config-shape-fix)', () => {
+    // On a real install `messaging` is an ARRAY, so `cfg.messaging.actionClaim` is
+    // unreachable. The hook must read the top-level `cfg.actionClaim` and guard the
+    // legacy `messaging.actionClaim` fallback with Array.isArray so it never indexes
+    // an array.
+    expect(body).toContain('cfg.actionClaim');
+    expect(body).toContain('Array.isArray(cfg.messaging)');
   });
 });

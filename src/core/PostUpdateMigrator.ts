@@ -4662,7 +4662,7 @@ setTimeout(() => process.exit(0), 2000);
     // Agent Awareness: an agent that doesn't know this exists will be confused when a
     // commitment appears after it says "I'll restart X". Content-sniffed; idempotent.
     if (!content.includes('Action-Claim Follow-Through Sentinel')) {
-      content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with \`messaging.actionClaim.enabled\` (dev-first soak before fleet). It now covers **Slack** conversations too (a promise born in a Slack thread registers a durable commitment bound to the conversation's minted id, delivered back into that exact thread across restarts — dev-gated dark behind \`messaging.actionClaim.slack\`, dryRun-first) and **time-boxed conversational promises** ("I'll post that in about 5 minutes / by EOD / I'll check in"), not just dev-ops verbs. Proactive: user asks "why did a commitment appear when I said I'd restart something / promised to post in 5 min?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
+      content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with the top-level \`actionClaim.enabled\` (dev-first soak before fleet — the block is top-level, NOT nested under \`messaging\`, which is an array of adapters). It now covers **Slack** conversations too (a promise born in a Slack thread registers a durable commitment bound to the conversation's minted id, delivered back into that exact thread across restarts — dev-gated dark behind \`messaging.actionClaim.slack\`, dryRun-first) and **time-boxed conversational promises** ("I'll post that in about 5 minutes / by EOD / I'll check in"), not just dev-ops verbs. Proactive: user asks "why did a commitment appear when I said I'd restart something / promised to post in 5 min?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
@@ -12049,7 +12049,12 @@ process.stdin.on('end', async () => {
       const cfg = JSON.parse(readFileSync(configPath, 'utf-8'));
       serverPort = cfg.port || 4040;
       authToken = cfg.authToken || '';
-      enabled = !!(cfg.messaging && cfg.messaging.actionClaim && cfg.messaging.actionClaim.enabled);
+      // Config home (actionclaim-config-shape-fix): a real install's \`messaging\` is
+      // an ARRAY of adapters, so \`messaging.actionClaim.*\` is unreachable. Canonical
+      // home is a TOP-LEVEL \`actionClaim\`; the legacy object-shaped
+      // \`messaging.actionClaim\` is honored as a back-compat fallback.
+      var acCfg = cfg.actionClaim || (cfg.messaging && !Array.isArray(cfg.messaging) ? cfg.messaging.actionClaim : undefined);
+      enabled = !!(acCfg && acCfg.enabled);
     } catch {}
 
     if (!enabled) process.exit(0);

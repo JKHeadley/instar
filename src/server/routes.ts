@@ -22433,7 +22433,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.post('/action-claim/observe', (req, res) => {
-    const enabled = ctx.liveConfig?.get<boolean>('messaging.actionClaim.enabled', false) ?? false;
+    // ── Config location (actionclaim-config-shape-fix): on a real install
+    // `messaging` is an ARRAY of adapter configs, so `messaging.actionClaim.*` is
+    // UNREACHABLE (getNestedValue walks the array → `array['actionClaim']` is
+    // undefined → the default) — which made this default-OFF sentinel structurally
+    // un-enablable in production (CI never caught it: every test used an
+    // object-shaped `messaging`). The reachable, canonical home is a TOP-LEVEL
+    // `actionClaim` block; the legacy object-shaped `messaging.actionClaim` is
+    // honored as a back-compat fallback. Both are read LIVE (no restart).
+    const acGet = <T>(leaf: string, dflt: T): T =>
+      (ctx.liveConfig?.get<T | undefined>(`actionClaim.${leaf}`, undefined) ??
+        ctx.liveConfig?.get<T>(`messaging.actionClaim.${leaf}`, dflt)) as T;
+    const enabled = acGet<boolean>('enabled', false) ?? false;
     if (!enabled) {
       res.json({ observed: false, registered: false, reason: 'feature-disabled' });
       return;
@@ -22461,14 +22472,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let slackDryRun = false;
     if (isMinted) {
       const slackLaneLive = resolveDevAgentGate(
-        ctx.liveConfig?.get<boolean | undefined>('messaging.actionClaim.slack.enabled', undefined),
+        acGet<boolean | undefined>('slack.enabled', undefined),
         ctx.config,
       );
       if (!slackLaneLive) {
         res.json({ observed: true, registered: false, reason: 'slack-lane-dark' });
         return;
       }
-      slackDryRun = ctx.liveConfig?.get<boolean>('messaging.actionClaim.slack.dryRun', true) ?? true;
+      slackDryRun = acGet<boolean>('slack.dryRun', true) ?? true;
     }
 
     // ── §4.2a Lane-A precedence: classify Lane A first; ONLY on a Lane-A miss run
@@ -22521,7 +22532,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // ── §5 per-topic cap — ONE shared budget across BOTH lanes (R1-C3): count
     // open commitments whose externalKey starts with actionclaim: OR timepromise:.
-    const cap = ctx.liveConfig?.get<number>('messaging.actionClaim.perTopicCap', 5) ?? 5;
+    const cap = acGet<number>('perTopicCap', 5) ?? 5;
     const openForTopic = ctx.commitmentTracker
       .getActive()
       .filter(
@@ -22535,7 +22546,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ observed: true, registered: false, reason: 'per-topic-cap', lane, ...(verb ? { verb } : {}), cap });
       return;
     }
-    const expiresHrs = ctx.liveConfig?.get<number>('messaging.actionClaim.expiresHours', 6) ?? 6;
+    const expiresHrs = acGet<number>('expiresHours', 6) ?? 6;
     const expiresAt = new Date(Date.now() + expiresHrs * 3600_000).toISOString();
 
     // ── §8.1 dryRun (minted lane): would-register audit line + typed non-register,
