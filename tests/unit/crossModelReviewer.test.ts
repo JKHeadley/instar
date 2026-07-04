@@ -204,11 +204,14 @@ describe('buildCrossModelFlag (fallback states)', () => {
 // ── Spec-level aggregation across rounds (F2) ────────────────────────────
 
 describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
+  // crossFamily: true — these builders represent codex (a cross-model family);
+  // aggregateRoundOutcomes counts only crossFamily:true successes (§5.2).
   const ok = (model = 'gpt-5.5'): ReviewerResult => ({
     status: 'ok',
     framework: 'codex-cli',
     model,
     flag: `cross-model-review: codex-cli:${model}`,
+    crossFamily: true,
   });
   const degraded = (reason: string): ReviewerResult => ({
     status: 'degraded',
@@ -216,11 +219,13 @@ describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
     model: 'gpt-5.5',
     reason,
     flag: `cross-model-review: codex-cli:gpt-5.5 (degraded: ${reason})`,
+    crossFamily: true,
   });
   const unavailable = (reason = 'codex-not-installed'): ReviewerResult => ({
     status: 'unavailable',
     reason,
     flag: 'cross-model-review: unavailable',
+    crossFamily: true,
   });
 
   it('any successful round → the clean codex-cli flag (one real opinion is enough)', () => {

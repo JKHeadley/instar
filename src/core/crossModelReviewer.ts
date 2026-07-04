@@ -45,18 +45,22 @@
  *     to untrusted/custom endpoints).
  */
 
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectCodexPath, detectGeminiPath } from './Config.js';
+import { detectCodexPath, detectGeminiPath, detectClaudePath } from './Config.js';
 import { validateRule1 } from '../providers/adapters/openai-codex/credentials.js';
 import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
 import { resolveCliModelFlag as resolveGeminiModelFlag } from '../providers/adapters/gemini-cli/models.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
+import { ClaudeForbiddenError } from './claudeForbiddenGuard.js';
 import {
   buildIntelligenceProvider,
   type IntelligenceFramework,
 } from './intelligenceProviderFactory.js';
+import type { IntelligenceOptions } from './types.js';
 
 // ── Constants (tunable) ─────────────────────────────────────────────────
 
@@ -143,6 +147,12 @@ export type CrossModelUnavailableReason =
   | 'codex-auth-apikey-forbidden'
   | 'gemini-not-installed'
   | 'gemini-not-authed'
+  // Claude clean-door reviewer (REVIEWER-DOOR-REWIRING §1.2) — detection reasons
+  // are PURELY STATIC/presence-based; auth/entitlement failures are invocation-time
+  // `degraded` results (§1.4), never detection reasons.
+  | 'claude-not-installed'
+  | 'claude-config-missing'
+  | 'claude-forbidden'
   | 'no-supported-framework';
 
 export interface CrossModelDetectionResult {
@@ -153,6 +163,15 @@ export interface CrossModelDetectionResult {
   model?: string;
   /** Present when unavailable; a specific machine-readable reason. */
   reason?: CrossModelUnavailableReason;
+  /**
+   * Is this a CROSS-MODEL (non-Claude) reviewer family (REVIEWER-DOOR-REWIRING §5)?
+   * Populated at construction from the framework registry — so the guards that
+   * decide "did this spec get a cross-model opinion?" filter on data they HOLD,
+   * not a re-lookup against a list this spec adds claude to. Claude-reviewing-
+   * Claude is a clean-door second read, NOT cross-model (`false`). Fail-CLOSED:
+   * an absent value is treated as NOT cross-family by every consumer.
+   */
+  crossFamily?: boolean;
 }
 
 /**
@@ -184,6 +203,23 @@ export interface CrossModelDetectInputs {
    * `${GEMINI_HOME || ~/.gemini}/oauth_creds.json`.
    */
   geminiOauthCredsPath?: string;
+  /**
+   * Path to the claude binary if detected, else null. Defaults to
+   * `detectClaudePath()` (REVIEWER-DOOR-REWIRING §1.2).
+   */
+  claudePathDetected?: string | null;
+  /**
+   * Whether a Claude config-home (`$CLAUDE_CONFIG_DIR` or `~/.claude`) is present.
+   * Defaults to a real `existsSync` probe of that directory. Tests inject.
+   */
+  claudeConfigHomePresent?: boolean;
+  /**
+   * The agent's `enabledFrameworks`. When provided and it does NOT contain
+   * `claude-code`, the claude reviewer detects `claude-forbidden` (a claude-
+   * forbidden agent must never detect the family available — §1.2). Absent ⇒
+   * treated as allowed (the dominant claude-agent case).
+   */
+  enabledFrameworks?: string[];
 }
 
 /** Resolve the default codex auth.json path (CODEX_HOME-aware). */
@@ -247,6 +283,7 @@ export function detectCodexReviewer(
     available: true,
     framework: 'codex-cli',
     model: resolveCliModelFlag(REVIEW_MODEL_TIER),
+    crossFamily: true,
   };
 }
 
@@ -316,7 +353,157 @@ export function detectGeminiReviewer(
     available: true,
     framework: 'gemini-cli',
     model: resolveGeminiModelFlag(REVIEW_MODEL_TIER),
+    crossFamily: true,
   };
+}
+
+// ── Claude clean-door reviewer (REVIEWER-DOOR-REWIRING §1) ───────────────
+
+/**
+ * The concrete default model the Anthropic clean-door reviewer pins
+ * (REVIEWER-DOOR-REWIRING §1.3). NEVER the tier word `'capable'` — that resolves
+ * to opus (`src/core/models.ts`), the measured-penalized `opus × coding-harness`
+ * pair this reviewer family exists to move OFF. Registered in
+ * `scripts/model-registry-freshness.manifest.json` under the strict (CI-gating)
+ * freshness lint, so a rotted pin fails CI (the anti-rot ratchet); the
+ * degraded-loud no-silent-fallback path (§1.3) is the second, runtime guarantee.
+ */
+export const CLAUDE_REVIEWER_DEFAULT_MODEL = 'claude-fable-5';
+
+/**
+ * The accept-set a config override (`specConverge.reviewers.anthropic.model`) is
+ * validated against (§1.3). A concrete-but-non-frontier id — e.g.
+ * `claude-opus-4-8` — is REJECTED (`override-not-frontier`), never silently
+ * honored, because a misconfigured override could otherwise re-pin the reviewer
+ * to opus and re-create the exact door-penalty gap this spec closes. Kept fresh
+ * by the same freshness lint that pins `CLAUDE_REVIEWER_DEFAULT_MODEL`, so this
+ * "derived-from-the-manifest frontier set" stays current structurally rather than
+ * by willpower (Structure > Willpower).
+ */
+export const CLAUDE_REVIEWER_FRONTIER_MODELS: readonly string[] = [CLAUDE_REVIEWER_DEFAULT_MODEL];
+
+/** The default Claude config-home path (`$CLAUDE_CONFIG_DIR` or `~/.claude`). */
+function defaultClaudeConfigHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env['CLAUDE_CONFIG_DIR'] || path.join(os.homedir(), '.claude');
+}
+
+/**
+ * Detect a Claude clean-door reviewer (REVIEWER-DOOR-REWIRING §1.2). Reports
+ * "installed-and-configured" — NOT entitlement-verified: usable auth,
+ * subscription tier, and Fable-5 entitlement are INVOCATION-time `degraded`
+ * results (§1.4), never detection reasons. Detection reasons are the purely
+ * static presence set only: `claude-not-installed` / `claude-config-missing` /
+ * `claude-forbidden`. NEVER throws; all inputs injectable (mirrors codex/gemini).
+ */
+export function detectClaudeReviewer(
+  inputs: CrossModelDetectInputs = {},
+): CrossModelDetectionResult {
+  // 1. claude-code allowed on this agent? (A claude-forbidden agent must never
+  //    detect the family available — §1.2. Absent enabledFrameworks ⇒ allowed.)
+  if (inputs.enabledFrameworks && !inputs.enabledFrameworks.includes('claude-code')) {
+    return { available: false, reason: 'claude-forbidden', crossFamily: false };
+  }
+
+  // 2. Binary present?
+  const claudePath =
+    inputs.claudePathDetected !== undefined ? inputs.claudePathDetected : detectClaudePath();
+  if (!claudePath) {
+    return { available: false, reason: 'claude-not-installed', crossFamily: false };
+  }
+
+  // 3. Config-home present?
+  const configHomePresent =
+    inputs.claudeConfigHomePresent !== undefined
+      ? inputs.claudeConfigHomePresent
+      : fs.existsSync(defaultClaudeConfigHome());
+  if (!configHomePresent) {
+    return { available: false, reason: 'claude-config-missing', crossFamily: false };
+  }
+
+  return {
+    available: true,
+    framework: 'claude-code',
+    // The default pin; the config-override validation happens at INVOCATION
+    // (§1.4) so detection stays purely presence-based. crossFamily:false — Claude
+    // reviewing Claude is a clean-door second read, NOT a cross-model opinion (§5).
+    model: CLAUDE_REVIEWER_DEFAULT_MODEL,
+    crossFamily: false,
+  };
+}
+
+/** Outcome of resolving the Claude reviewer's concrete model (§1.3). */
+export type ClaudeReviewerModelResolution =
+  | { ok: true; model: string }
+  | { ok: false; reason: 'override-not-concrete' | 'override-not-frontier'; model: string };
+
+/**
+ * Resolve the Claude reviewer's concrete model (§1.3), with NO silent fallback:
+ *   1. a config override (`specConverge.reviewers.anthropic.model`) if set — it
+ *      MUST be a concrete id (`isConcreteReviewerModel`) AND a member of the
+ *      frontier accept-set (`CLAUDE_REVIEWER_FRONTIER_MODELS`); a non-frontier
+ *      concrete id (e.g. `claude-opus-4-8`) is REJECTED (`override-not-frontier`);
+ *   2. else the default pin `CLAUDE_REVIEWER_DEFAULT_MODEL` (`claude-fable-5`).
+ * A rejected override degrades the round LOUDLY (§1.4) — it is never coerced to
+ * a default, because a config typo silently re-opening the door penalty is
+ * exactly the "strongest model isn't actually reviewing" gap this spec closes.
+ */
+export function resolveClaudeReviewerModel(
+  config?: ReviewerConfig,
+): ClaudeReviewerModelResolution {
+  const override = config?.specConverge?.reviewers?.anthropic?.model;
+  if (typeof override === 'string' && override.trim().length > 0) {
+    const id = override.trim();
+    if (!isConcreteReviewerModel(id)) {
+      return { ok: false, reason: 'override-not-concrete', model: id };
+    }
+    if (!CLAUDE_REVIEWER_FRONTIER_MODELS.includes(id)) {
+      return { ok: false, reason: 'override-not-frontier', model: id };
+    }
+    return { ok: true, model: id };
+  }
+  return { ok: true, model: CLAUDE_REVIEWER_DEFAULT_MODEL };
+}
+
+/**
+ * Runtime hardening preflight (§1.4): does the INSTALLED Claude CLI actually
+ * ACCEPT the required inbound-safety hardening flags (`--allowedTools ''`,
+ * `--strict-mcp-config`)? A fleet machine may run a drifted CLI that renamed or
+ * dropped a flag, so the reviewer verifies support on EACH machine at runtime
+ * and is NEVER run unhardened. FAIL-CLOSED: an unresolvable binary, an exec
+ * error, or a `--help` output missing either flag ⇒ `false` (degrade, never run
+ * unsafe). Cached per process; `__resetClaudeHardeningPreflightCache()` for tests.
+ */
+let _claudeHardeningPreflightCache: boolean | null = null;
+export function claudeSupportsReviewerHardening(claudePath?: string): boolean {
+  if (_claudeHardeningPreflightCache !== null) return _claudeHardeningPreflightCache;
+  let supported = false;
+  try {
+    const bin = claudePath ?? detectClaudePath();
+    if (bin) {
+      // lint-allow-sync-spawn: one-shot CLI capability probe (`claude --help`),
+      // cached per-process (runs at most once), invoked only from the reviewer
+      // path driven by the spec-converge SKILL script — a short-lived CLI process,
+      // never the server event loop.
+      const help = execFileSync(bin, ['--help'], {
+        encoding: 'utf-8',
+        timeout: 10_000,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      supported = help.includes('--allowedTools') && help.includes('--strict-mcp-config');
+    }
+  } catch {
+    // @silent-fallback-ok — fail-CLOSED: an inconclusive preflight is treated as
+    // UNSUPPORTED so the reviewer degrades (`hardening-unsupported`) rather than
+    // running the untrusted-text review without the security boundary.
+    supported = false;
+  }
+  _claudeHardeningPreflightCache = supported;
+  return supported;
+}
+
+/** Test helper — clear the per-process hardening-preflight cache. */
+export function __resetClaudeHardeningPreflightCache(): void {
+  _claudeHardeningPreflightCache = null;
 }
 
 // ── Supported-reviewer registry (the extension point) ───────────────────
@@ -336,6 +523,36 @@ export interface ReviewerResult {
   reason?: string;
   /** The flag string that gets written to frontmatter + the report banner. */
   flag: string;
+  /**
+   * Is this a CROSS-MODEL (non-Claude) reviewer result (REVIEWER-DOOR-REWIRING §5)?
+   * Populated at construction from the framework registry. `aggregateRoundOutcomes`
+   * counts ONLY `crossFamily: true` successes toward the spec-level
+   * `cross-model-review` flag, so a claude-only success (`false`) can NEVER
+   * launder a clean cross-model pass. Fail-CLOSED: absent ⇒ treated as NOT
+   * cross-family by every consumer.
+   */
+  crossFamily?: boolean;
+}
+
+/**
+ * The minimal agent-config shape the reviewer layer reads (REVIEWER-DOOR-REWIRING
+ * §1.5): the developmentAgent gate flag + the `specConverge.reviewers` block. The
+ * driver reads `.instar/config.json` and threads this in; production callers pass
+ * it, tests inject it. Absent ⇒ the Anthropic clean-door family is DARK on the
+ * fleet (byte-identical `[codex, gemini]`) and LIVE on a development agent.
+ */
+export interface ReviewerConfig {
+  developmentAgent?: boolean;
+  specConverge?: {
+    reviewers?: {
+      anthropic?: {
+        /** Omitted ⇒ developmentAgent gate (live-on-dev / dark-fleet); explicit wins. */
+        enabled?: boolean;
+        /** Optional concrete frontier model override, validated in §1.3. */
+        model?: string;
+      };
+    };
+  };
 }
 
 export type ReviewVerdict = 'CLEAN' | 'MINOR ISSUES' | 'SERIOUS ISSUES' | 'UNKNOWN';
@@ -353,6 +570,14 @@ export interface ReviewFinding {
 interface SupportedReviewerFramework {
   /** Extend this union (in the type below) to add a framework. */
   id: IntelligenceFramework;
+  /**
+   * Is this a CROSS-MODEL (non-Claude) reviewer family (REVIEWER-DOOR-REWIRING
+   * §5.1)? A REQUIRED field with NO default: a future reviewer provider/door
+   * CANNOT be added to the registry without an explicit cross-model
+   * classification decision (a test asserts every entry sets it). codex/gemini
+   * `true`; the claude clean-door family `false`.
+   */
+  crossFamily: boolean;
   /** Detection — does this framework's reviewer have what it needs to run? */
   detect(inputs?: CrossModelDetectInputs): CrossModelDetectionResult;
   /**
@@ -369,10 +594,12 @@ export interface ReviewerInvokeArgs {
   /** Per-call timeout. */
   timeoutMs: number;
   /**
-   * Optional provider override — tests inject a stub so no real codex spawn
-   * happens. Production passes nothing and the factory builds the real one.
+   * Optional provider override — tests inject a stub so no real spawn happens.
+   * Production passes nothing and the factory builds the real one. Typed with
+   * the full IntelligenceOptions so a test can read the claude reviewer's
+   * `reviewerHardening.model` (the concrete-pin assertion, §1.4).
    */
-  providerOverride?: { evaluate(prompt: string, options?: { model?: 'fast' | 'balanced' | 'capable'; timeoutMs?: number }): Promise<string> };
+  providerOverride?: { evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> };
   /**
    * Optional detection override — `runCrossModelReview` passes the detection
    * it already computed (so review never re-probes the host), and tests inject
@@ -380,6 +607,26 @@ export interface ReviewerInvokeArgs {
    * Absent → the entry runs its own real-host detect, as before (back-compat).
    */
   detectionOverride?: CrossModelDetectionResult;
+  /**
+   * Agent config for the claude clean-door family (REVIEWER-DOOR-REWIRING §1.3):
+   * the model override is resolved + validated from this at invocation. Ignored
+   * by codex/gemini. Absent ⇒ the default pin.
+   */
+  reviewerConfig?: ReviewerConfig;
+  /**
+   * Test override for the claude hardening preflight (§1.4). When set, skips the
+   * real `claude --help` probe (`true` = supported, `false` = drives the
+   * `hardening-unsupported` degrade). Production omits it → the real preflight.
+   */
+  hardeningSupportedOverride?: boolean;
+  /**
+   * Test-only claude provider FACTORY override. Production omits it → the entry
+   * calls `buildIntelligenceProvider({ framework: 'claude-code' })`, whose
+   * constructor THROWS on a claude-forbidden agent. Tests inject a factory that
+   * throws (throw-safety → `degraded`) or returns null (`provider-unavailable`).
+   * A `providerOverride` still short-circuits this (no construction at all).
+   */
+  claudeProviderFactory?: () => { evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> } | null;
 }
 
 /**
@@ -406,6 +653,7 @@ export function isConcreteReviewerModel(model: string | undefined): boolean {
  */
 const codexReviewer: SupportedReviewerFramework = {
   id: 'codex-cli',
+  crossFamily: true,
   detect: (inputs) => detectCodexReviewer(inputs),
   review: async (args) => {
     const detection = args.detectionOverride ?? detectCodexReviewer();
@@ -421,6 +669,7 @@ const codexReviewer: SupportedReviewerFramework = {
         model,
         reason: 'model-resolution-canary',
         flag: `cross-model-review: codex-cli:${model} (degraded: model-resolution-canary)`,
+        crossFamily: true,
       };
     }
 
@@ -440,6 +689,7 @@ const codexReviewer: SupportedReviewerFramework = {
         model,
         reason: 'provider-unavailable',
         flag: `cross-model-review: codex-cli:${model} (degraded: provider-unavailable)`,
+        crossFamily: true,
       };
     }
 
@@ -458,6 +708,7 @@ const codexReviewer: SupportedReviewerFramework = {
         model,
         reason,
         flag: `cross-model-review: codex-cli:${model} (degraded: ${reason})`,
+        crossFamily: true,
       };
     }
 
@@ -469,6 +720,7 @@ const codexReviewer: SupportedReviewerFramework = {
       verdict: parsed.verdict,
       findings: [parsed],
       flag: `cross-model-review: codex-cli:${model}`,
+      crossFamily: true,
     };
   },
 };
@@ -481,6 +733,7 @@ const codexReviewer: SupportedReviewerFramework = {
  */
 const geminiReviewer: SupportedReviewerFramework = {
   id: 'gemini-cli',
+  crossFamily: true,
   detect: (inputs) => detectGeminiReviewer(inputs),
   review: async (args) => {
     const detection = args.detectionOverride ?? detectGeminiReviewer();
@@ -496,6 +749,7 @@ const geminiReviewer: SupportedReviewerFramework = {
         model,
         reason: 'model-resolution-canary',
         flag: `cross-model-review: gemini-cli:${model} (degraded: model-resolution-canary)`,
+        crossFamily: true,
       };
     }
 
@@ -515,6 +769,7 @@ const geminiReviewer: SupportedReviewerFramework = {
         model,
         reason: 'provider-unavailable',
         flag: `cross-model-review: gemini-cli:${model} (degraded: provider-unavailable)`,
+        crossFamily: true,
       };
     }
 
@@ -533,6 +788,7 @@ const geminiReviewer: SupportedReviewerFramework = {
         model,
         reason,
         flag: `cross-model-review: gemini-cli:${model} (degraded: ${reason})`,
+        crossFamily: true,
       };
     }
 
@@ -544,6 +800,140 @@ const geminiReviewer: SupportedReviewerFramework = {
       verdict: parsed.verdict,
       findings: [parsed],
       flag: `cross-model-review: gemini-cli:${model}`,
+      crossFamily: true,
+    };
+  },
+};
+
+/**
+ * The Claude clean-door reviewer entry (REVIEWER-DOOR-REWIRING §1). The headline
+ * change: the strongest available Anthropic model (`claude-fable-5`) reads the
+ * spec through the clean `claude -p` door instead of never reading it at all.
+ *
+ * This is a SECOND READ, not a cross-model opinion — `crossFamily: false` (§5).
+ * The call is hardened to codex-door parity for the untrusted-text review (§1.4):
+ * `reviewerHardening` makes `ClaudeCliIntelligenceProvider` run with empty
+ * allowed-tools + `--strict-mcp-config` + a neutral scratch cwd + the prompt via
+ * stdin + an env allowlist that strips agent secrets. The model argument is the
+ * CONCRETE resolved pin (never the tier word `'capable'`, which resolves to opus).
+ */
+const claudeReviewer: SupportedReviewerFramework = {
+  id: 'claude-code',
+  crossFamily: false,
+  detect: (inputs) => detectClaudeReviewer(inputs),
+  review: async (args) => {
+    // Model resolution + override validation (§1.3) — no silent fallback.
+    const resolution = resolveClaudeReviewerModel(args.reviewerConfig);
+    if (!resolution.ok) {
+      return {
+        status: 'degraded',
+        framework: 'claude-code',
+        model: resolution.model,
+        reason: resolution.reason,
+        flag: `clean-door-anthropic-review: claude-code:${resolution.model} (degraded: ${resolution.reason})`,
+        crossFamily: false,
+      };
+    }
+    const model = resolution.model;
+    const tag = `clean-door:claude-code:${model}`;
+
+    // Fail-loud model canary (§1.4): NEVER review on a tier word — passing
+    // 'capable' here would silently resolve to opus, the penalized pair.
+    if (!isConcreteReviewerModel(model)) {
+      return {
+        status: 'degraded',
+        framework: 'claude-code',
+        model,
+        reason: 'model-resolution-canary',
+        flag: `clean-door-anthropic-review: claude-code:${model} (degraded: model-resolution-canary)`,
+        crossFamily: false,
+      };
+    }
+
+    // Runtime hardening preflight (§1.4) — fail-CLOSED on THIS machine's CLI, not
+    // just CI. If the installed CLI does not accept the hardening flags, the
+    // reviewer is NEVER run unhardened.
+    const hardeningSupported =
+      args.hardeningSupportedOverride !== undefined
+        ? args.hardeningSupportedOverride
+        : claudeSupportsReviewerHardening();
+    if (!hardeningSupported) {
+      return {
+        status: 'degraded',
+        framework: 'claude-code',
+        model,
+        reason: 'hardening-unsupported',
+        flag: `clean-door-anthropic-review: claude-code:${model} (degraded: hardening-unsupported)`,
+        crossFamily: false,
+      };
+    }
+
+    // Build (or accept an injected) provider. Unlike codex/gemini,
+    // ClaudeCliIntelligenceProvider's constructor THROWS on a claude-forbidden
+    // agent — wrap construction so a throw maps to `degraded`, never escapes (§1.4).
+    let provider: { evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> } | null;
+    try {
+      provider =
+        args.providerOverride ??
+        (args.claudeProviderFactory
+          ? args.claudeProviderFactory()
+          : buildIntelligenceProvider({ framework: 'claude-code' }));
+    } catch (err) {
+      const reason = err instanceof ClaudeForbiddenError ? 'claude-forbidden' : classifyReviewFailure(err);
+      return {
+        status: 'degraded',
+        framework: 'claude-code',
+        model,
+        reason,
+        flag: `clean-door-anthropic-review: claude-code:${model} (degraded: ${reason})`,
+        crossFamily: false,
+      };
+    }
+    if (!provider) {
+      return {
+        status: 'degraded',
+        framework: 'claude-code',
+        model,
+        reason: 'provider-unavailable',
+        flag: `clean-door-anthropic-review: claude-code:${model} (degraded: provider-unavailable)`,
+        crossFamily: false,
+      };
+    }
+
+    let raw: string;
+    try {
+      raw = await provider.evaluate(args.promptText, {
+        // The CONCRETE pin travels via reviewerHardening.model (§1.4) — never
+        // options.model (a tier word). reviewerHardening also flips the claude
+        // provider into the inbound-safety lockdown.
+        reviewerHardening: { model },
+        timeoutMs: args.timeoutMs,
+        attribution: { component: 'crossModelReviewer' },
+      });
+    } catch (err) {
+      const reason = classifyReviewFailure(err);
+      return {
+        status: 'degraded',
+        framework: 'claude-code',
+        model,
+        reason,
+        flag: `clean-door-anthropic-review: claude-code:${model} (degraded: ${reason})`,
+        crossFamily: false,
+      };
+    }
+
+    const parsed = parseReviewerReply(raw, tag);
+    return {
+      status: 'ok',
+      framework: 'claude-code',
+      model,
+      verdict: parsed.verdict,
+      findings: [parsed],
+      // A clean-door second read gets its OWN disclosure field — NEVER the
+      // `cross-model-review:` flag (§5.5). A copy-paste of this into frontmatter
+      // cannot forge the cross-model field.
+      flag: `clean-door-anthropic-review: claude-code:${model}`,
+      crossFamily: false,
     };
   },
 };
@@ -557,7 +947,53 @@ const geminiReviewer: SupportedReviewerFramework = {
 export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
   codexReviewer,
   geminiReviewer,
+  // The Anthropic clean-door family (REVIEWER-DOOR-REWIRING §1). ALWAYS in the
+  // registry (so `isCrossFamilyReviewerFramework` can classify its id), but the
+  // ACTIVE set filters it by the developmentAgent config gate
+  // (`resolveActiveReviewerFrameworks`) — dark on the fleet, live on a dev agent.
+  claudeReviewer,
 ];
+
+/**
+ * Is the Anthropic clean-door reviewer family enabled on this agent
+ * (REVIEWER-DOOR-REWIRING §1.5)? Resolves through the standard developmentAgent
+ * gate: `specConverge.reviewers.anthropic.enabled` OMITTED ⇒ live on a
+ * development agent, dark on the fleet; an explicit value always wins. Absent
+ * config ⇒ fleet-dark (byte-identical `[codex, gemini]`).
+ */
+export function isAnthropicReviewerEnabled(config?: ReviewerConfig): boolean {
+  return resolveDevAgentGate(config?.specConverge?.reviewers?.anthropic?.enabled, config);
+}
+
+/**
+ * The reviewer frameworks ACTIVE for this agent, config-gated. codex + gemini
+ * are always active; the claude clean-door family is active only when
+ * `isAnthropicReviewerEnabled(config)`. This is the seam the detection paths
+ * iterate — so a fleet agent (no dev flag, no explicit enable) never sees the
+ * claude family, preserving today's exact `[codex, gemini]` behavior.
+ */
+export function resolveActiveReviewerFrameworks(
+  config?: ReviewerConfig,
+): SupportedReviewerFramework[] {
+  return SUPPORTED_REVIEWER_FRAMEWORKS.filter((f) =>
+    f.id === 'claude-code' ? isAnthropicReviewerEnabled(config) : true,
+  );
+}
+
+/**
+ * Is `id` a CROSS-MODEL (non-Claude) reviewer family (REVIEWER-DOOR-REWIRING §5)?
+ * Resolves against the FULL registry (independent of the config gate — this is a
+ * classification of the id, not an enablement check), returning the entry's
+ * `crossFamily`. Fail-CLOSED: an unknown / unresolvable / undefined id resolves
+ * `false` (it can NEVER gain cross-model status by a lookup miss). This is the
+ * single predicate the aggregate flag, both detection paths, and the 7-day
+ * baseline all key on — so the claude family can never launder any of them.
+ */
+export function isCrossFamilyReviewerFramework(id: string | undefined): boolean {
+  if (!id) return false;
+  const entry = SUPPORTED_REVIEWER_FRAMEWORKS.find((f) => f.id === id);
+  return entry?.crossFamily === true;
+}
 
 /**
  * Trusted-provider allowlist (Piece 3 — no spec egress to untrusted
@@ -568,8 +1004,20 @@ export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
  * cross-model review for exactly this reason — its provider may be a custom
  * endpoint. A framework id outside this list is refused by the script
  * wrapper (`--family`) with reason `untrusted-framework`.
+ *
+ * The invariant is "the spec text goes ONLY to the endpoint the OPERATOR THEMSELVES
+ * configured for that first-party CLI" (REVIEWER-DOOR-REWIRING §2.2) — NOT "no
+ * base-URL endpoint ever": each first-party CLI honors the operator's OWN
+ * `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`/`GEMINI_BASE_URL`, which is the operator's
+ * own trusted proxy. A third-party aggregator (OpenRouter) inserted by ADDING an
+ * adapter is categorically different and stays out — that is why OpenRouter is
+ * declined (§2). `claude-code` is added here (the clean-door family needs the
+ * `--family claude-code` egress check to pass) — COUPLED ATOMICALLY with swapping
+ * the 7-day baseline predicate off `isTrustedReviewerFramework` and onto
+ * `isCrossFamilyReviewerFramework` (§5.4), so this addition can NEVER let a
+ * claude-only activation satisfy the externals-mandatory baseline.
  */
-export const TRUSTED_REVIEWER_FRAMEWORKS: readonly string[] = ['codex-cli', 'gemini-cli'];
+export const TRUSTED_REVIEWER_FRAMEWORKS: readonly string[] = ['codex-cli', 'gemini-cli', 'claude-code'];
 
 /** Is `id` on the trusted first-party reviewer allowlist? */
 export function isTrustedReviewerFramework(id: string): boolean {
@@ -589,13 +1037,15 @@ export function isTrustedReviewerFramework(id: string): boolean {
  */
 export function detectCrossModelReviewer(
   inputs: CrossModelDetectInputs = {},
+  config?: ReviewerConfig,
 ): CrossModelDetectionResult {
-  for (const framework of SUPPORTED_REVIEWER_FRAMEWORKS) {
+  const active = resolveActiveReviewerFrameworks(config);
+  for (const framework of active) {
     const result = framework.detect(inputs);
     if (result.available) return result;
   }
   // Nothing available. Surface the preference-leader's specific reason.
-  const leader = SUPPORTED_REVIEWER_FRAMEWORKS[0];
+  const leader = active[0];
   if (leader) return leader.detect(inputs);
   return { available: false, reason: 'no-supported-framework' };
 }
@@ -610,9 +1060,10 @@ export function detectCrossModelReviewer(
  */
 export function detectAllCrossModelReviewers(
   inputs: CrossModelDetectInputs = {},
+  config?: ReviewerConfig,
 ): CrossModelDetectionResult[] {
   const available: CrossModelDetectionResult[] = [];
-  for (const framework of SUPPORTED_REVIEWER_FRAMEWORKS) {
+  for (const framework of resolveActiveReviewerFrameworks(config)) {
     const result = framework.detect(inputs);
     if (result.available) available.push(result);
   }
@@ -905,9 +1356,14 @@ export function aggregateRoundOutcomes(
     return buildCrossModelFlag('unavailable', 'no-rounds-recorded');
   }
 
-  // Any successful round → the spec received a real external opinion. Use the
-  // LAST successful round's flag (the freshest pass on the most-converged spec).
-  const successful = rounds.filter((r) => r.status === 'ok');
+  // Any successful CROSS-MODEL round → the spec received a real external opinion.
+  // ONLY `crossFamily: true` successes count toward the cross-model flag
+  // (REVIEWER-DOOR-REWIRING §5.2): a claude-only success (`crossFamily: false`)
+  // can NEVER launder a clean `cross-model-review` flag — it aggregates to
+  // `degraded-all-rounds`/`unavailable` exactly as today, and is disclosed
+  // separately in `clean-door-anthropic-review`. Fail-CLOSED on an absent field.
+  // Use the LAST successful round's flag (the freshest pass on the most-converged spec).
+  const successful = rounds.filter((r) => r.status === 'ok' && r.crossFamily === true);
   if (successful.length > 0) {
     const last = successful[successful.length - 1];
     return { status: 'available', flag: last.flag, ...(last.reason ? { reason: last.reason } : {}) };
@@ -940,22 +1396,32 @@ export async function runCrossModelReview(args: {
   timeoutMs?: number;
   detectInputs?: CrossModelDetectInputs;
   providerOverride?: ReviewerInvokeArgs['providerOverride'];
+  /** Agent config for the config-gated claude clean-door family (§1.5). */
+  config?: ReviewerConfig;
 }): Promise<ReviewerResult> {
-  const detection = detectCrossModelReviewer(args.detectInputs);
+  const detection = detectCrossModelReviewer(args.detectInputs, args.config);
   if (!detection.available) {
     const flag = buildCrossModelFlag('unavailable', detection.reason);
     return {
       status: 'unavailable',
       reason: detection.reason,
       flag: flag.flag,
+      crossFamily: isCrossFamilyReviewerFramework(detection.framework),
     };
   }
 
-  const framework = SUPPORTED_REVIEWER_FRAMEWORKS.find((f) => f.id === detection.framework);
+  const framework = resolveActiveReviewerFrameworks(args.config).find(
+    (f) => f.id === detection.framework,
+  );
   if (!framework) {
-    // Defensive: detection named a framework with no registry entry.
+    // Defensive: detection named a framework with no active registry entry.
     const flag = buildCrossModelFlag('unavailable', 'no-supported-framework');
-    return { status: 'unavailable', reason: 'no-supported-framework', flag: flag.flag };
+    return {
+      status: 'unavailable',
+      reason: 'no-supported-framework',
+      flag: flag.flag,
+      crossFamily: false,
+    };
   }
 
   return framework.review({
@@ -964,6 +1430,7 @@ export async function runCrossModelReview(args: {
     // Hand the already-computed detection down so the entry never re-probes
     // the host (and tests stay hermetic to the injected inputs).
     detectionOverride: detection,
+    ...(args.config ? { reviewerConfig: args.config } : {}),
     ...(args.providerOverride ? { providerOverride: args.providerOverride } : {}),
   });
 }
@@ -1075,11 +1542,16 @@ export function wasNonClaudeFrameworkActiveWithin(
         if (!Number.isFinite(ts) || ts < cutoff) continue;
         const frameworks = parsed.frameworks;
         if (frameworks && typeof frameworks === 'object') {
-          // Only TRUSTED reviewer framework ids count toward the baseline — a
-          // stray/hand-written key (e.g. "claude-code": true) must not flip
-          // the externals-mandatory decision (second-pass finding, PR 3).
+          // Only CROSS-MODEL (non-Claude) reviewer framework ids count toward the
+          // baseline (REVIEWER-DOOR-REWIRING §5.4 — swapped off
+          // `isTrustedReviewerFramework` ATOMICALLY with adding `claude-code` to
+          // TRUSTED). Keying on `isCrossFamilyReviewerFramework` is load-bearing:
+          // `claude-code` is now TRUSTED (its egress is allowed) but is NOT
+          // cross-family, so a claude-only activation must NEVER satisfy the
+          // externals-mandatory baseline. A stray/hand-written non-cross-family
+          // key likewise can't flip the decision.
           const entries = Object.entries(frameworks as Record<string, unknown>);
-          if (entries.some(([id, v]) => v === true && isTrustedReviewerFramework(id))) {
+          if (entries.some(([id, v]) => v === true && isCrossFamilyReviewerFramework(id))) {
             return true;
           }
         }

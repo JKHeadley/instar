@@ -91,6 +91,14 @@
       "file": "src/core/ModelTierEscalation.ts",
       "regex": "'claude-code':\\s*\\{\\s*default:\\s*'([^']+)',\\s*escalated:\\s*'([^']+)'",
       "note": "DEFAULT_TIER_ESCALATION.frameworks['claude-code'] default + escalated ids."
+    },
+    {
+      "id": "claude-clean-door-reviewer-default",
+      "door": "claude-code",
+      "tier": "capable",
+      "file": "src/core/crossModelReviewer.ts",
+      "regex": "CLAUDE_REVIEWER_DEFAULT_MODEL\\s*=\\s*'((?:claude|gpt|gemini)-[^']+)'",
+      "note": "CLAUDE_REVIEWER_DEFAULT_MODEL — the Anthropic clean-door reviewer pin (REVIEWER-DOOR-REWIRING §1.3). Extraction matches a frontier CONSTANT (not a capable:'…' tier decl), so the non-vacuity test (tests/unit/model-registry-freshness-reviewer-pin.test.ts) rots this constant and asserts the strict lint fails — closing the vacuous-tooth risk."
     }
   ],
   "$flaggedStaleNote": "Both prior flagged pins RESOLVED (operator-confirmed 2026-07-03): gemini capable swapped gemini-2.5-pro -> gemini-3.1-pro-preview (pin + topModels updated in the same change); codex capable stays gpt-5.5 (GA flagship — gpt-5.6-sol is preview-only/gov-gated/unreachable, NOT pinned). Nothing pending confirmation.",
