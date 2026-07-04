@@ -1155,6 +1155,9 @@ export interface RouteContext {
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel. Null when not wired
+   *  (dev-gated dark). Powers GET /external-hog + the PIN-gated arm/disarm routes (CMT-1901). */
+  externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel | null;
   /** OrphanedWorkSentinel — the silent-uncommitted-death backstop. Null when not
    *  wired / dark. Powers GET /orphaned-work observability. */
   orphanedWorkSentinel?: import('../monitoring/OrphanedWorkSentinel.js').OrphanedWorkSentinel | null;
@@ -6524,6 +6527,68 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.agentWorktreeReaper.snapshot());
+  });
+
+  // ── External-Hog zombie auto-kill sentinel (CMT-1901) ──
+  // GET /external-hog — status + the durable arm state. Read-only, Bearer-auth. 503 when the
+  // sentinel isn't wired (dev-gated dark on the fleet).
+  router.get('/external-hog', async (_req, res) => {
+    if (!ctx.externalHogSentinel) {
+      res.status(503).json({ error: 'external-hog sentinel unavailable (dark)' });
+      return;
+    }
+    try {
+      const { loadArmState } = await import('../monitoring/ExternalHogArmStore.js');
+      const arm = loadArmState(ctx.config.stateDir);
+      res.json({
+        status: ctx.externalHogSentinel.status(),
+        arm: {
+          armed: arm.marker ? arm.marker.armEpoch > arm.lastDisarmEpoch : false,
+          armEpoch: arm.marker?.armEpoch ?? null,
+          armedAt: arm.marker?.armedAt ?? null,
+          armedClasses: arm.marker ? Object.keys(arm.marker.allowlistSnapshot) : [],
+          lastDisarmEpoch: arm.lastDisarmEpoch,
+          disarmedAt: arm.disarmedAt ?? null,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ error: `external-hog status failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // POST /external-hog/arm — arm the LIVE kill for every current allowlist class (PIN-GATED;
+  // Know Your Principal — a Bearer token cannot authorize an irreversible-action floor like a
+  // real kill). Writes the durable armed marker (a fresh, higher armEpoch) whose per-class
+  // content-hash snapshot binds the PIN consent to exactly the class content that exists NOW.
+  router.post('/external-hog/arm', async (req, res) => {
+    if (!checkMandatePin(req, res)) return; // response already sent on failure
+    try {
+      const { armStore } = await import('../monitoring/ExternalHogArmStore.js');
+      const { EXTERNAL_HOG_ALLOWLIST, classRuleSources } = await import('../monitoring/ExternalHogFloor.js');
+      const { classContentHash } = await import('../monitoring/ExternalHogArmMarker.js');
+      const snapshot: Record<string, string> = {};
+      for (const cls of EXTERNAL_HOG_ALLOWLIST) {
+        const sources = classRuleSources(cls.id);
+        if (sources) snapshot[cls.id] = classContentHash(sources);
+      }
+      const marker = armStore(ctx.config.stateDir, snapshot, 'pin', () => new Date().toISOString());
+      res.json({ ok: true, armed: true, armEpoch: marker.armEpoch, armedAt: marker.armedAt, armedClasses: Object.keys(snapshot) });
+    } catch (err) {
+      res.status(500).json({ error: `external-hog arm failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // POST /external-hog/disarm — return the sentinel to watch-only (Bearer-auth; a disarm is the
+  // SAFE direction, so it does not need the PIN). Raises lastDisarmEpoch >= armEpoch so the marker
+  // is invalid; a disarm can NEVER be silently un-done (returning to live-kill needs a fresh arm).
+  router.post('/external-hog/disarm', async (_req, res) => {
+    try {
+      const { disarmStore } = await import('../monitoring/ExternalHogArmStore.js');
+      const state = disarmStore(ctx.config.stateDir, () => new Date().toISOString());
+      res.json({ ok: true, armed: false, lastDisarmEpoch: state.lastDisarmEpoch, disarmedAt: state.disarmedAt ?? null });
+    } catch (err) {
+      res.status(500).json({ error: `external-hog disarm failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
   });
 
   // OrphanedWorkSentinel — the silent-uncommitted-death backstop. Read-only

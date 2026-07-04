@@ -523,6 +523,30 @@ in `migrateConfig`), `tests/unit/PostUpdateMigrator-externalHogSentinel.test.ts`
 - **CLAUDE.md agent-awareness (Agent Awareness Standard) is a SEPARATE upcoming slice** (generateClaudeMd
   + migrateClaudeMd). <!-- tracked: CMT-1901 -->
 
+### Slice 22 — the HTTP routes (status + PIN-gated arm + disarm)
+Files: `src/server/routes.ts` (RouteContext.externalHogSentinel + GET /external-hog, POST
+/external-hog/arm, POST /external-hog/disarm), `tests/integration/external-hog-routes.test.ts` (6).
+- **What it is:** the operator surface. GET /external-hog (Bearer, read-only) returns
+  sentinel.status() + the durable arm state (503 when the sentinel is dark). POST /external-hog/arm
+  (PIN-gated via checkMandatePin — a Bearer token cannot arm a real kill; Know Your Principal)
+  builds the per-class content-hash snapshot from EXTERNAL_HOG_ALLOWLIST via classRuleSources +
+  classContentHash and calls armStore. POST /external-hog/disarm (Bearer — the SAFE direction, no
+  PIN) calls disarmStore.
+- **Why PIN on arm but not disarm:** arming turns ON an irreversible action (a real kill) → minimum
+  rung 1 (PIN). Disarming returns to watch-only (the safe direction) → Bearer is sufficient.
+- **Snapshot agreement:** the route arms every allowlist class with the SAME hash the funnel's
+  currentClassContentHash re-checks (both derive from classRuleSources) — so a legitimately-armed
+  class is recognized, and a matcher change forces a re-arm. Thin wiring over the reviewed
+  armStore/disarmStore epoch machinery.
+- **Over/under-block:** GET emits only the arm METADATA (armEpoch, armedAt, class NAMES) — never a
+  secret. **Signal vs authority:** the PIN + the arm-store epochs are the authority; the route is
+  the surface. **Multi-machine:** machine-local BY DESIGN (a PIN arm authorizes a kill on THIS
+  host's process table; the marker must not replicate). **Rollback:** the routes 503/no-op when the
+  sentinel is unwired.
+- **Tests:** 6 (Tier-2 integration over the real HTTP pipeline) — 503-when-dark, status shape,
+  arm-403-without-PIN, arm-403-wrong-PIN, arm-200-mints-epoch-1, and the full arm→disarm→re-arm
+  (epoch 2) lifecycle through the routes + the durable marker file.
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
@@ -599,5 +623,23 @@ fail-safe dependency modules, and found no safety defect yielding a wrong-KILL o
 - **E arm-scope:** both sides derive from classRuleSources; a matcher change → new hash → re-arm
   required; snapshot keyed by classId (no cross-class arming); any divergence fails toward no-kill.
 - **F:** deliverNotices / classify only raise attention / call the model.
+
+Verdict: **Concur with the review.**
+
+### Slice 22 Phase-5 verdict — CONCUR
+An independent reviewer traced the load-bearing property (a live kill needs enabled && !dryRun &&
+isMarkerValid && classIsArmed; the marker is written ONLY by armStore, whose sole caller is the
+PIN-gated arm route — grep-confirmed) and found no safety defect:
+- **A PIN gate:** checkMandatePin is the FIRST statement; every failure path (no dashboardPin→503,
+  rate-limit→429, missing/non-string/wrong pin→403 timing-safe) sends a response + returns false
+  BEFORE any write. Bearer-only / `{}` / PIN-in-wrong-field all yield pin===undefined → 403; even
+  absent body-parsing, `req.body ?? {}` fails closed to 403.
+- **B snapshot:** arm's classContentHash(classRuleSources(id)) is the IDENTICAL call the funnel's
+  currentClassContentHash makes, same classId key — byte-identical, every allowlist class included.
+- **C disarm:** no PIN (safe); lastDisarmEpoch = max(cur, markerEpoch) ≥ armEpoch invalidates; atomic
+  + fsync write; fs error → 500, never a 200-without-write.
+- **D leak:** returns only epoch/timestamps/class-ids — no token/PIN/secret (armedBy not even surfaced).
+- **E monotonicity:** max(prior, lastDisarm)+1 mints strictly-higher, finite-guarded — stale markers
+  can't re-authorize.
 
 Verdict: **Concur with the review.**
