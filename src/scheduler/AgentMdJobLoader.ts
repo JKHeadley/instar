@@ -94,6 +94,7 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'machines',
   'supervision',
   'mcpAccess',
+  'perMachineIndependent',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -142,6 +143,10 @@ export interface PerSlugManifest {
   gate?: string;
   unrestrictedTools?: boolean;
   manifestVersion?: number;
+  /** DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.8 / D11 — run on every machine
+   *  independently (skip the global jobSlug claim/lease). See JobDefinition
+   *  for the misuse warning. Absent → false → today's claim/lease behavior. */
+  perMachineIndependent?: boolean;
   /** MCP access for the spawned session — 'none' spawns with zero project MCP
    *  servers (claude-code only). Absent → legacy full-project-MCP behavior. */
   mcpAccess?: 'project' | 'none';
@@ -1088,6 +1093,7 @@ function manifestToJobDefinition(
     unrestrictedTools: manifest.unrestrictedTools,
     manifestVersion: manifest.manifestVersion,
     mcpAccess: manifest.mcpAccess,
+    perMachineIndependent: manifest.perMachineIndependent,
   };
 
   if (manifest.execute.type === 'agentmd') {

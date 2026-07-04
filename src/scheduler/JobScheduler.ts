@@ -520,10 +520,17 @@ export class JobScheduler {
     // two never run simultaneously for the same job set (the named migration
     // hazard). The decision is recomputed live at each seam; in the steady
     // coherent state it is stable across the same tick.
-    const claimPath = this.resolveClaimPath(slug);
-    const remoteHeld = claimPath?.path === 'journal'
-      ? this.leaseClaimStore!.hasRemoteClaim(slug)
-      : (this.claimManager?.hasRemoteClaim(slug) ?? false);
+    // DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.8 / D11 — a `perMachineIndependent`
+    // job (like the doorway scan, whose result is a physical fact of THIS
+    // machine's own disk) skips the global jobSlug claim/lease entirely, the same
+    // way `script`-type jobs bypass quota gating. It NEVER consults the claim path
+    // and so never yields to a peer's claim — every machine runs its own scan.
+    const claimPath = job.perMachineIndependent ? null : this.resolveClaimPath(slug);
+    const remoteHeld = job.perMachineIndependent
+      ? false
+      : (claimPath?.path === 'journal'
+          ? this.leaseClaimStore!.hasRemoteClaim(slug)
+          : (this.claimManager?.hasRemoteClaim(slug) ?? false));
     if (remoteHeld) {
       const claimedBy = claimPath?.path === 'journal'
         ? this.leaseClaimStore!.getClaim(slug)?.machineId
@@ -613,7 +620,11 @@ export class JobScheduler {
     // is LOGGED (the WS-wide "log intended claims" posture) but the bus path
     // still runs — so a dry-run pool never half-migrates.
     const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
-    if (claimPath?.path === 'journal') {
+    // Spec §2.8/D11 — a perMachineIndependent job takes NO claim (neither the
+    // journal lease nor the legacy bus broadcast); each machine runs it locally.
+    if (job.perMachineIndependent) {
+      // no-op: claim/lease deliberately skipped
+    } else if (claimPath?.path === 'journal') {
       // Synchronous, durable: the lease is persisted before the spawn, so a
       // crash between claim and spawn leaves the lease (fenced, expiring) rather
       // than a silent double-run window.
