@@ -23,7 +23,7 @@
     "gemini-cli": {
       "accessMethod": "gemini -m <model> (Homebrew formula, OAuth)",
       "status": "alive-but-deprecated-formula",
-      "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. Default model still gemini-2.5-pro; CLI already knows gemini-3-pro-preview / gemini-3-flash-preview. Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door)."
+      "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. capable tier now pinned to gemini-3.1-pro-preview (verified reachable 2026-07-03 via the gemini CLI / OpenRouter / paid Gemini key); gemini-2.5-pro remains a recognized/spawnable model + capacity fallback. Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door)."
     },
     "pi-cli": {
       "accessMethod": "pi --model <provider>/<id> (multi-provider: openai-codex, openrouter, ...)",
@@ -38,7 +38,7 @@
       "claude-fable-5"
     ],
     "anthropic-headless": [
-      "claude-opus-4-6",
+      "claude-opus-4-8",
       "claude-sonnet-4-6",
       "claude-haiku-4-5"
     ],
@@ -46,7 +46,7 @@
       "gpt-5.5"
     ],
     "gemini-cli": [
-      "gemini-2.5-pro"
+      "gemini-3.1-pro-preview"
     ]
   },
   "pins": [
@@ -83,22 +83,6 @@
       "note": "DEFAULT_TIER_ESCALATION.frameworks['claude-code'] default + escalated ids."
     }
   ],
-  "flaggedStale": [
-    {
-      "door": "gemini-cli",
-      "pin": "gemini-capable-tier",
-      "currentId": "gemini-2.5-pro",
-      "suspectedFrontier": "gemini-3-pro-preview",
-      "evidence": "gemini CLI v0.25.2 accepts gemini-3-pro-preview / gemini-3-flash-preview (in gemini-cli-core known-models); operator referenced 'Gemini 3-class'. Homebrew formula also deprecated (disabled 2026-12-18).",
-      "note": "OPERATOR TO CONFIRM exact frontier id before the pin+allowlist are updated. Also present at src/core/frameworkSessionLaunch.ts, src/commands/route.ts (KNOWN_MODELS), src/server/routes.ts."
-    },
-    {
-      "door": "codex-cli",
-      "pin": "codex-capable-tier",
-      "currentId": "gpt-5.5",
-      "suspectedFrontier": "gpt-5.6 (Sol) — UNVERIFIED",
-      "evidence": "codex CLI NOT installed on this machine, so newer accepted ids could NOT be probed. Operator referenced 'GPT-5.6 Sol'.",
-      "note": "OPERATOR TO CONFIRM. Cannot verify from a live probe (codex door not installed)."
-    }
-  ]
+  "$flaggedStaleNote": "Both prior flagged pins RESOLVED (operator-confirmed 2026-07-03): gemini capable swapped gemini-2.5-pro -> gemini-3.1-pro-preview (pin + allowlist updated in the same change); codex capable stays gpt-5.5 (GA flagship — gpt-5.6-sol is preview-only/gov-gated/unreachable, NOT pinned). Nothing pending confirmation.",
+  "flaggedStale": []
 }

@@ -78,7 +78,7 @@ export function resolveModelForFramework(
     // gemini-2.5-flash is the verified one-shot default (v0.25.2, cached-OAuth).
     if (key === 'fast' || key === 'haiku') return 'gemini-2.5-flash';
     if (key === 'balanced' || key === 'sonnet') return 'gemini-2.5-flash';
-    if (key === 'capable' || key === 'opus') return 'gemini-2.5-pro';
+    if (key === 'capable' || key === 'opus') return 'gemini-3.1-pro-preview';
     return modelOrTier;
   }
   if (framework === 'pi-cli') {

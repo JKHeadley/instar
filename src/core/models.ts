@@ -30,7 +30,7 @@
  */
 export const ANTHROPIC_MODELS = Object.freeze({
   /** Most capable model — deep reasoning, complex tasks */
-  opus: 'claude-opus-4-6',
+  opus: 'claude-opus-4-8',
 
   /** Best balance of capability and cost — default for most services */
   sonnet: 'claude-sonnet-4-6',

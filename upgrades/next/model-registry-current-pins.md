@@ -1,0 +1,24 @@
+# Model-registry current-pins correction
+
+## What Changed
+
+Corrected the stale "most capable" model-tier pins in the internal routing registry to the current, live-verified model IDs, and marked the model-registry freshness guard's two flagged items as resolved:
+
+- **Gemini capable tier:** `gemini-2.5-pro` → `gemini-3.1-pro-preview` (the current top usable Gemini Pro; verified reachable via the Gemini CLI, OpenRouter, and a paid Gemini key). `gemini-2.5-pro` stays a recognized/spawnable model and a capacity fallback.
+- **Claude Opus tier:** reconciled to `claude-opus-4-8` across both internal maps that had drifted apart (`src/core/models.ts` and the anthropic-headless adapter) — matching the running default and `ModelTierEscalation`.
+- **OpenAI/Codex capable tier:** left unchanged at `gpt-5.5` (the GA flagship). The preview-only `gpt-5.6-sol` is intentionally not pinned.
+- **Freshness manifest + routing doc:** the frontier allowlist now matches the corrected pins, the `flaggedStale` block is emptied (both prior pending items resolved), and `docs/LLM-ROUTING-REGISTRY.md` (capable row, Opus caveat, freshness note) is updated. The freshness lint now passes cleanly in both report and strict mode.
+
+## What to Tell Your User
+
+Your agent's heavy/"capable" internal work — spec review, cross-model review, and heavy-work model escalation — now points at current models (Gemini 3.1 Pro, Claude Opus 4.8) instead of older IDs that had quietly gone out of date. Nothing about how you interact with your agent changes; it just uses better-current models for the demanding internal jobs, and the built-in freshness check that watches for this kind of drift is now green.
+
+## Summary of New Capabilities
+
+No new capability or API. This is a maintenance correction of model-ID pins plus the matching freshness-manifest/doc updates. The model-registry freshness guard (report-only) reports zero findings after the change.
+
+## Evidence
+
+- `scripts/lint-model-registry-freshness.mjs` passes with zero findings and zero warnings in both report and strict mode after the change (all four pins drift-OK and in-allowlist; staleness OK).
+- `tsc --noEmit` clean.
+- Affected unit suites green: `geminiCapacityPolicy`, `gemini-cli-adapter`, `crossModelReviewer-piece3`, `model-registry-freshness` (incl. the shipped-manifest self-consistency test), `Models`, `routing-registry-freshness`, `frameworkSessionLaunch`, `modelTierEscalation-resolver` (185 tests total across the touched paths).

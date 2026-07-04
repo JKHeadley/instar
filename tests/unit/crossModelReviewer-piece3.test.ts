@@ -137,8 +137,8 @@ describe('detectGeminiReviewer', () => {
     });
     expect(r.available).toBe(true);
     expect(r.framework).toBe('gemini-cli');
-    // capable tier → gemini-2.5-pro per gemini-cli/models.ts.
-    expect(r.model).toBe('gemini-2.5-pro');
+    // capable tier → gemini-3.1-pro-preview per gemini-cli/models.ts.
+    expect(r.model).toBe('gemini-3.1-pro-preview');
     // The canary contract: detection NEVER emits a bare tier word.
     expect(isConcreteReviewerModel(r.model)).toBe(true);
   });

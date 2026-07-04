@@ -157,7 +157,7 @@ describe('gemini-cli adapter — model resolution', () => {
   it('tiers map to gemini ids; raw model ids pass through', () => {
     expect(resolveCliModelFlag('fast')).toBe('gemini-2.5-flash');
     expect(resolveCliModelFlag('balanced')).toBe('gemini-2.5-flash');
-    expect(resolveCliModelFlag('capable')).toBe('gemini-2.5-pro');
+    expect(resolveCliModelFlag('capable')).toBe('gemini-3.1-pro-preview');
     expect(resolveCliModelFlag('gemini-2.5-pro-exp')).toBe('gemini-2.5-pro-exp');
   });
 });
