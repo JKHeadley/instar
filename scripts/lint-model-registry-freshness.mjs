@@ -19,10 +19,21 @@
  *
  *   TOOTH 2 — DRIFT. Every pinned capable/latest model id (extracted live from
  *     the real source files via each pin's regex) must be a member of that
- *     door's `frontierAllowlist` (the CURRENT_FRONTIER_MODELS set). A pin that
- *     names a model not in the maintained allowlist fails — either the pin is
- *     stale, or the allowlist wasn't updated. To go green a human must reconcile
- *     the two, which IS the review.
+ *     door's DERIVED frontier set (spec §1.4, docs/specs/DOORWAY-MODEL-KNOWLEDGE-
+ *     REGISTRY-SPEC.md): the ids in `doors[door].topModels[]` carrying
+ *     `frontier: true`. `topModels` is the ONE hand-edited structure; the
+ *     frontier set is a *view* of it and cannot diverge by construction (this
+ *     supersedes the old hand-maintained `frontierAllowlist` — a second list is
+ *     exactly the rot this guard fights). A pin that names a model not in the
+ *     derived set fails — either the pin is stale, or `topModels` wasn't updated.
+ *     To go green a human must reconcile the two, which IS the review.
+ *
+ *     BACKWARD-COMPAT (un-enriched manifests): a door with a literal
+ *     `frontierAllowlist[door]` and NO `topModels` is read from the literal list
+ *     EXACTLY as before (no behavior change). A door with BOTH a literal
+ *     `frontierAllowlist[door]` AND `topModels` emits a TRANSITION finding
+ *     ("migrated to derived — delete the literal") so the old hand-list can't
+ *     silently linger and re-rot; the derived set is authoritative there.
  *
  * Plus: `flaggedStale[]` entries (known-stale-pending-operator-confirmation) are
  * always printed as WARN lines and, under strict enforcement, count as findings.
@@ -64,6 +75,42 @@ const REPO_ROOT = process.env.INSTAR_MODEL_FRESHNESS_ROOT
 const MANIFEST_PATH = process.env.INSTAR_MODEL_FRESHNESS_MANIFEST
   ? path.resolve(process.env.INSTAR_MODEL_FRESHNESS_MANIFEST)
   : path.join(__dirname, 'model-registry-freshness.manifest.json');
+
+/**
+ * Compute a door's effective frontier set — the ONE source of truth (spec §1.4).
+ *
+ *   DERIVED (schema v2): `doors[door].topModels` present (an array) → the set is
+ *     the ids of entries with `frontier === true`. `topModels` is the only
+ *     hand-edited structure; the frontier set is a view of it (cannot diverge).
+ *   LITERAL (backward-compat): no `topModels` for the door but a literal
+ *     `frontierAllowlist[door]` present → use it verbatim (un-enriched manifest,
+ *     today's exact behavior).
+ *   NONE: neither present → empty set (a pin on that door drifts, as before).
+ *
+ * `transition` is true when a door carries BOTH a literal `frontierAllowlist[door]`
+ * AND `topModels` — the derived set is authoritative and a transition finding is
+ * raised so the stale literal can't linger.
+ *
+ * @param {Record<string, any>} manifest
+ * @param {string} door
+ * @returns {{ set: string[], source: 'derived'|'literal'|'none', transition: boolean }}
+ */
+export function frontierSetForDoor(manifest, door) {
+  const doorEntry = (manifest && manifest.doors && manifest.doors[door]) || null;
+  const topModels = doorEntry && Array.isArray(doorEntry.topModels) ? doorEntry.topModels : null;
+  const literal =
+    manifest && manifest.frontierAllowlist && Array.isArray(manifest.frontierAllowlist[door])
+      ? manifest.frontierAllowlist[door]
+      : null;
+  if (topModels) {
+    const set = topModels
+      .filter((m) => m && m.frontier === true && typeof m.id === 'string')
+      .map((m) => m.id);
+    return { set, source: 'derived', transition: literal !== null };
+  }
+  if (literal) return { set: literal, source: 'literal', transition: false };
+  return { set: [], source: 'none', transition: false };
+}
 
 /**
  * Run the freshness check. Pure over its inputs (manifest + files under root +
@@ -111,8 +158,23 @@ export function checkModelRegistryFreshness({
     }
   }
 
-  // --- TOOTH 2: drift (pin id must be in its door's frontier allowlist) ---
-  const allowlist = manifest.frontierAllowlist || {};
+  // --- TRANSITION: a door carrying BOTH a literal frontierAllowlist entry AND
+  //     topModels has migrated to the derived set — flag the lingering literal so
+  //     it can't silently re-rot (spec §1.4). Deduped per door, independent of pins.
+  const doorsObj = manifest.doors || {};
+  const litAllow = manifest.frontierAllowlist || {};
+  for (const door of Object.keys(doorsObj)) {
+    const entry = doorsObj[door];
+    if (entry && Array.isArray(entry.topModels) && Array.isArray(litAllow[door])) {
+      findings.push(
+        `TRANSITION: door '${door}' has BOTH a literal frontierAllowlist['${door}'] and topModels[] — ` +
+        `it migrated to the DERIVED frontier set (§1.4; the derived set is now authoritative). ` +
+        `Delete the literal frontierAllowlist['${door}'] so the old hand-maintained list can't silently linger and re-rot.`
+      );
+    }
+  }
+
+  // --- TOOTH 2: drift (pin id must be in its door's DERIVED frontier set) ---
   for (const pin of manifest.pins || []) {
     const abs = path.join(repoRoot, pin.file);
     let src;
@@ -136,15 +198,19 @@ export function checkModelRegistryFreshness({
     }
     // All capture groups are candidate model ids (e.g. default + escalated).
     const ids = m.slice(1).filter(Boolean);
-    const doorAllow = allowlist[pin.door] || [];
+    const { set: doorFrontier, source } = frontierSetForDoor(manifest, pin.door);
+    const setLabel =
+      source === 'literal'
+        ? `frontierAllowlist['${pin.door}']`
+        : `the derived frontier set for '${pin.door}' (doors['${pin.door}'].topModels[frontier=true])`;
     for (const id of ids) {
-      if (!doorAllow.includes(id)) {
+      if (!doorFrontier.includes(id)) {
         findings.push(
-          `DRIFT: pin '${pin.id}' (${pin.door}) pins '${id}' in ${pin.file}, which is NOT in frontierAllowlist['${pin.door}'] = [${doorAllow.join(', ')}]. ` +
-          `Either the pin is stale or the allowlist wasn't updated — reconcile the two (operator-confirm the frontier id).`
+          `DRIFT: pin '${pin.id}' (${pin.door}) pins '${id}' in ${pin.file}, which is NOT in ${setLabel} = [${doorFrontier.join(', ')}]. ` +
+          `Either the pin is stale or the frontier set wasn't updated — reconcile the two (operator-confirm the frontier id).`
         );
       } else {
-        info.push(`Drift OK: ${pin.door} '${pin.id}' -> '${id}' (in allowlist).`);
+        info.push(`Drift OK: ${pin.door} '${pin.id}' -> '${id}' (in ${source === 'literal' ? 'allowlist' : 'derived frontier set'}).`);
       }
     }
   }

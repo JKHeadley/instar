@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error - plain ESM script, no types
-import { checkModelRegistryFreshness } from '../../scripts/lint-model-registry-freshness.mjs';
+import { checkModelRegistryFreshness, frontierSetForDoor } from '../../scripts/lint-model-registry-freshness.mjs';
 
 /**
  * Semantic-correctness tests for the model-registry freshness guard.
@@ -144,6 +144,108 @@ describe('flaggedStale + enforcement gating', () => {
     const manifestPath = writeManifest(root, manifest);
     const r = checkModelRegistryFreshness({ manifestPath, repoRoot: root, now: NOW, forceStrict: true });
     expect(r.strict).toBe(true);
+  });
+});
+
+describe('DERIVED frontier set (§1.4 — one source of truth, schema v2)', () => {
+  const base = {
+    lastReviewedAt: '2026-07-01',
+    stalenessWindowDays: 45,
+    enforcement: 'report',
+    pins: [basePin],
+  };
+
+  it('DRIFT passes when the pinned id is in the DERIVED set (topModels frontier=true)', () => {
+    const r = run({
+      ...base,
+      doors: { fake: { topModels: [{ id: 'gemini-2.5-pro', frontier: true }] } },
+    });
+    expect(r.findings.filter((f: string) => f.startsWith('DRIFT'))).toHaveLength(0);
+    // and it used the DERIVED path, not the literal one
+    expect(r.info.some((i: string) => i.includes('derived frontier set'))).toBe(true);
+  });
+
+  it('DRIFT fails when the pinned id is NOT in the DERIVED set (rot detected)', () => {
+    const r = run({
+      ...base,
+      doors: { fake: { topModels: [{ id: 'gemini-3.1-pro-preview', frontier: true }] } },
+    });
+    const drift = r.findings.filter((f: string) => f.startsWith('DRIFT'));
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain("pins 'gemini-2.5-pro'");
+    expect(drift[0]).toContain('derived frontier set');
+  });
+
+  it('a frontier:false entry is EXCLUDED from the derived set (a pin on it drifts)', () => {
+    const r = run({
+      ...base,
+      doors: { fake: { topModels: [{ id: 'gemini-2.5-pro', frontier: false }] } },
+    });
+    // frontier:false → not in derived set → the pin drifts
+    expect(r.findings.filter((f: string) => f.startsWith('DRIFT'))).toHaveLength(1);
+  });
+
+  it('a door with BOTH a literal frontierAllowlist AND topModels emits a TRANSITION finding', () => {
+    const r = run({
+      ...base,
+      frontierAllowlist: { fake: ['gemini-2.5-pro'] },
+      doors: { fake: { topModels: [{ id: 'gemini-2.5-pro', frontier: true }] } },
+    });
+    const transition = r.findings.filter((f: string) => f.startsWith('TRANSITION'));
+    expect(transition).toHaveLength(1);
+    expect(transition[0]).toContain("frontierAllowlist['fake']");
+    // the DERIVED set is authoritative there → the pin still resolves, no DRIFT
+    expect(r.findings.filter((f: string) => f.startsWith('DRIFT'))).toHaveLength(0);
+  });
+
+  it('an old-shape manifest (literal frontierAllowlist, NO topModels) behaves EXACTLY as today', () => {
+    const r = run({ ...base, frontierAllowlist: { fake: ['gemini-2.5-pro'] } });
+    // no drift, no transition, no staleness — the un-enriched path is a strict no-op change
+    expect(r.findings).toHaveLength(0);
+    expect(r.info.some((i: string) => i.includes('in allowlist'))).toBe(true);
+    expect(r.findings.some((f: string) => f.startsWith('TRANSITION'))).toBe(false);
+  });
+});
+
+describe('frontierSetForDoor (unit — the derivation helper)', () => {
+  it('derives from topModels when present (frontier=true entries only)', () => {
+    const m = {
+      doors: {
+        d: {
+          topModels: [
+            { id: 'a', frontier: true },
+            { id: 'b', frontier: false },
+            { id: 'c', frontier: true },
+          ],
+        },
+      },
+    };
+    const r = frontierSetForDoor(m, 'd');
+    expect(r.source).toBe('derived');
+    expect(r.set).toEqual(['a', 'c']);
+    expect(r.transition).toBe(false);
+  });
+
+  it('falls back to the literal allowlist when there is no topModels (backward-compat)', () => {
+    const r = frontierSetForDoor({ frontierAllowlist: { d: ['x', 'y'] } }, 'd');
+    expect(r.source).toBe('literal');
+    expect(r.set).toEqual(['x', 'y']);
+    expect(r.transition).toBe(false);
+  });
+
+  it('marks transition=true when BOTH topModels and a literal entry exist (derived wins)', () => {
+    const m = { frontierAllowlist: { d: ['x'] }, doors: { d: { topModels: [{ id: 'x', frontier: true }] } } };
+    const r = frontierSetForDoor(m, 'd');
+    expect(r.source).toBe('derived');
+    expect(r.transition).toBe(true);
+    expect(r.set).toEqual(['x']);
+  });
+
+  it('returns an empty set (source none) for an unknown door', () => {
+    const r = frontierSetForDoor({}, 'nope');
+    expect(r.source).toBe('none');
+    expect(r.set).toEqual([]);
+    expect(r.transition).toBe(false);
   });
 });
 
