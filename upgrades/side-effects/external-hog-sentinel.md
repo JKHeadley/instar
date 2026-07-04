@@ -176,6 +176,24 @@ Files: `src/monitoring/ExternalHogKillLedger.ts` (`recordKill`, `isBreakerTrippe
   can't shield another key), volatile→class fallback, safe-trip on bad window inputs, in-flight
   detect + pid-reuse distinction + TTL/confirmed-exit/non-finite eviction.
 
+### Slice 7 — instar-own exclusion (ancestry walk, start-time-aware, own-root fallback)
+Files: `src/monitoring/ExternalHogOwnership.ts` (`isInstarOwned` over a ProcTree snapshot),
+`tests/unit/external-hog-ownership.test.ts` (11 tests).
+- **What it is:** the pure ancestry walk that EXCLUDES a candidate whose chain reaches a
+  start-time-verified instar-owned pid (tmux pane OR own-root), so own busy build children
+  (vitest/tsc) aren't flagged as hogs. Extends resolveOwningSession with per-hop start-time.
+- **Dangerous direction:** a false "owned" would HIDE a real external hog. That requires a
+  start-time MATCH on an owned pid, so an external hog can't fake it. INCLUDE-on-uncertainty
+  (anti-evasion): an unresolvable edge / cycle / hop-bound → NOT owned (candidate stays);
+  instar-own KILL protection is carried by reparent-to-pid-1 + the §4 allowlist floor, not
+  this walk — so INCLUDE-on-uncertainty costs only observability noise, never a wrong kill.
+- **Signal vs authority:** produces a candidacy signal; never kills. Multi-machine: pure.
+- **External surfaces:** none yet (the ps read that builds the tree + the owned-pid set are a
+  later I/O slice). Rollback: delete; nothing consumes it yet.
+- **Tests:** 11 — direct/deep/self owned; genuine orphan (ppid 1) not owned; start-time
+  defeats pid reuse (reused number ≠ owned, matching start-time excludes); unresolvable edge
+  / cycle / hop-bound → not owned; invalid inputs → not owned.
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -265,3 +283,14 @@ closes the ≤0/negative/Infinity window and non-positive maxPerWindow gaps (all
 retention==window test genuinely exercises the prune/window boundary (a shorter retention would
 have pruned to 2 and not tripped — a real undercount guard, not a trivial pass); the change is
 strictly stricter (positive path untouched), so no new spurious-not-trip path.
+
+### Slice-7 (ownership walk) reviewer verdict
+
+**Concur (no bug).** The reviewer verified adversarially that no path yields a false `true`
+(owned) for an EXTERNAL process: to return owned the walk must reach a pid in `ownedRefs`
+whose snapshot start-time matches — and both the tree and ownedRefs are built by instar from a
+real `ps` read (the attacker controls neither); a recycled pid's start-time can never match the
+recorded instar `lstart`, so pid-reuse spoofing is structurally defeated. Bounded (hop-bound +
+`seen` cycle-guard). Every uncertainty (ppid-not-in-tree, cycle, hop-bound, ppid≤1, invalid/
+NaN/negative inputs) fails to NOT-owned (the anti-evasion direction). The candidate-itself case
+is checked before the ppid≤1 stop, so an owned root pid is detected.
