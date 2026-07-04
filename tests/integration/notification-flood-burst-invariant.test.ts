@@ -177,17 +177,66 @@ describe('Notification-flood burst invariant (production-default budgets)', () =
     expect(refused).toBeGreaterThanOrEqual(188);
   });
 
-  it('user-initiated and system topics are exempt (humans and create-once infra are self-bounded)', async () => {
+  it('user-initiated topics and BOUNDED create-once system topics are exempt; a bare origin:system is NOT (2026-07-04 conservatism pass)', async () => {
     const rec = installApiStub(adapter);
 
+    // (a) Humans explicitly asking for a topic are always honored.
     for (let i = 0; i < 30; i++) {
       await adapter.createForumTopic(`user topic ${i}`, undefined, { origin: 'user' });
     }
+    // (b) A create-once-then-reuse system topic that declares itself bounded is
+    //     exempt (Lifeline/Dashboard/Updates/Agent-Health/flood-notice pattern).
     for (let i = 0; i < 30; i++) {
-      await adapter.createForumTopic(`system topic ${i}`, undefined, { origin: 'system' });
+      await adapter.createForumTopic(`bounded system topic ${i}`, undefined, { origin: 'system', bounded: true });
+    }
+    expect(rec.forumTopicsCreated).toBe(60); // none refused so far
+  });
+
+  it('CLOSED BYPASS: a bare origin:system flood can NO LONGER dodge the ceiling', async () => {
+    const rec = installApiStub(adapter);
+
+    // Pre-fix, `origin: 'system'` skipped the budget entirely — a per-item stream
+    // (or any future mis-wired caller) could spawn unbounded topics by declaring
+    // itself 'system'. That bypass is now closed: a bare 'system' (no bounded)
+    // rides the same ceiling as 'auto'.
+    let refused = 0;
+    for (let i = 0; i < 200; i++) {
+      try {
+        await adapter.createForumTopic(`sys ${i}`, undefined, { origin: 'system', label: 'runaway-system' });
+      } catch (err) {
+        expect(err).toBeInstanceOf(TopicFloodBudgetError);
+        refused++;
+      }
+    }
+    expect(rec.forumTopicsCreated).toBeLessThanOrEqual(12); // global ceiling
+    expect(refused).toBeGreaterThanOrEqual(188);
+  });
+
+  it('CRITICAL-FLOOD BOUND: 1,000 distinct HIGH/URGENT attention items are bounded and never dropped', async () => {
+    const rec = installApiStub(adapter);
+
+    const N = 1000;
+    for (let i = 0; i < N; i++) {
+      await adapter.createAttentionItem({
+        id: `crit-${i}`,
+        title: `critical notice ${i}`,
+        summary: `s${i}`,
+        category: 'crit-burst',
+        priority: i % 2 === 0 ? 'HIGH' : 'URGENT',
+        // Unique source per item — the exact "mark everything HIGH with a novel
+        // title" shape that used to spawn unbounded topics via origin:'system'.
+        sourceContext: `/crit/${i}`,
+      });
     }
 
-    expect(rec.forumTopicsCreated).toBe(60); // none refused
+    // The critical stream is now bounded by the ceiling (its own label budget +
+    // the shared global cap) — never 1,000 topics.
+    expect(rec.forumTopicsCreated).toBeLessThanOrEqual(DEFAULT_ATTENTION_TOPIC_GUARD.maxTopicsGlobal + 4);
+    // No item dropped: every critical item is still in the attention store.
+    expect(adapter.getAttentionItems().filter((a) => a.category === 'crit-burst').length).toBe(N);
+    // The overflow was coalesced, not swallowed: at least some carry coalesced.
+    expect(adapter.getAttentionItems().filter((a) => a.category === 'crit-burst' && a.coalesced === true).length)
+      .toBeGreaterThan(0);
   });
 
   it('HIGH/URGENT attention items always get their own topic even mid-flood (critical never coalesced, never budget-refused)', async () => {
