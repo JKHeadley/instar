@@ -302,5 +302,22 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // ── External-hog arm/disarm (external-hog-sentinel spec, arm gate) ──
+  // Machine-local BY SAFETY DESIGN, not convenience: the PIN-gated arm marker
+  // (state/external-hog-arm.json) is this machine's operator consent to LIVE
+  // kills of THIS machine's processes. It must NEVER converge across machines —
+  // a synced marker would silently arm a peer's sentinel the operator never
+  // consented to (the exact silent-re-arm class the armEpoch/disarmEpoch design
+  // exists to prevent). So the logical story IS the file-level story: the
+  // marker is git-sync-excluded and each machine's arm state stands alone.
+  const externalHogArmStory: ConvergenceStory = {
+    logical: 'git-sync-excluded',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'arm marker is per-machine PIN consent — cross-machine convergence would BE the vulnerability (silent remote arm); file-level arm shipped in FileClassifier sync exclusions (.instar/state/external-hog-arm.json)',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/arm', domain: 'machine-local', story: externalHogArmStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/disarm', domain: 'machine-local', story: externalHogArmStory });
+
   return reg;
 }

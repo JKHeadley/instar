@@ -168,10 +168,11 @@ export function createExternalHogAdapters(prims: ExternalHogPrimitives, opts: Ex
       launchctlCache = { at: now, pids };
       return pids;
     } catch {
-      // launchctl failed — return an EMPTY set. hasLaunchctlLabel:false does NOT open a kill on its
-      // own (every OTHER floor invariant must still hold), and a genuinely labeled job that we fail
-      // to detect is a rare edge; the conservative alternative (mark everything labeled → never
-      // kill) would break the feature entirely. Fail toward the feature working, floor-bounded.
+      // @silent-fallback-ok: reviewed decision (round 8) — launchctl failed → EMPTY set.
+      // hasLaunchctlLabel:false does NOT open a kill on its own (every OTHER floor invariant
+      // must still hold), and a genuinely labeled job that we fail to detect is a rare edge;
+      // the conservative alternative (mark everything labeled → never kill) would break the
+      // feature entirely. Fail toward the feature working, floor-bounded.
       return new Set();
     }
   }
@@ -181,7 +182,9 @@ export function createExternalHogAdapters(prims: ExternalHogPrimitives, opts: Ex
       const out = (await prims.exec('ps', ['-o', 'args=', '-p', String(pid)])).trim();
       return out.length > 0 ? out : null;
     } catch {
-      return null; // can't read argv → the caller returns null facts → candidate skipped (safe)
+      // @silent-fallback-ok: fail-SAFE direction — can't read argv → the caller returns null
+      // facts → candidate skipped entirely (a missing fact always blocks, never permits).
+      return null;
     }
   }
 

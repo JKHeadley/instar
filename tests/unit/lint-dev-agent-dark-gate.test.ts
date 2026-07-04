@@ -359,36 +359,46 @@ describe('lint-dev-agent-dark-gate', () => {
       // EVERY `enabled: false` line below it DOWN by +22. Path SET unchanged (still 25
       // entries, same dotted paths); RE-VERIFIED via attributeEnabledFalsePaths on the
       // edited ConfigDefaults (uniform +22 shift, no new/removed entries).
+      // external-hog-zombie-autokill-sentinel (2026-07-04, PR #1370): the
+      // `monitoring.externalHogSentinel` defaults block (28 lines, at line 359 between
+      // agentWorktreeReaper and mcpProcessReaper) OMITS the `enabled` literal (it rides
+      // resolveDevAgentGate — a hardcoded `false` would dark dev agents, the #1001
+      // anti-pattern; the KILL side is separately gated by the PIN arm marker, never
+      // config). It adds NO attributed path — it only shifts every `enabled: false`
+      // line below it DOWN by +28. Path SET unchanged (still 25 entries, same dotted
+      // paths); RE-VERIFIED by hand against the edited ConfigDefaults (each shifted
+      // line remains a real `enabled: false,` in its named block; uniform +28 shift,
+      // no new/removed entries).
       '271': 'monitoring.sessionReaper.enabled',
       '329': 'monitoring.agentWorktreeReaper.enabled',
-      '410': 'monitoring.mcpProcessReaper.enabled',
-      '424': 'monitoring.agentSleep.enabled',
-      '495': 'monitoring.correctionLearning.enabled',
-      '598': 'monitoring.apprenticeshipCycleSla.enabled',
-      '606': 'monitoring.geminiCapacityEscalation.enabled',
-      '630': 'monitoring.greenPrAutoMerge.enabled',
-      '680': 'threadline.a2aCheckIn.enabled',
-      '811': 'mentor.enabled',
-      '822': 'mentor.autonomousFix.enabled',
-      '837': 'mentee.enabled',
-      '897': 'prGate.classClosure.enabled',
-      '960': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '964': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '971': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '981': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1218': 'multiMachine.sessionPool.enabled',
+      '438': 'monitoring.mcpProcessReaper.enabled',
+      '452': 'monitoring.agentSleep.enabled',
+      '523': 'monitoring.correctionLearning.enabled',
+      '626': 'monitoring.apprenticeshipCycleSla.enabled',
+      '634': 'monitoring.geminiCapacityEscalation.enabled',
+      '658': 'monitoring.greenPrAutoMerge.enabled',
+      '708': 'threadline.a2aCheckIn.enabled',
+      '839': 'mentor.enabled',
+      '850': 'mentor.autonomousFix.enabled',
+      '865': 'mentee.enabled',
+      '925': 'prGate.classClosure.enabled',
+      '988': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '992': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '999': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1009': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1246': 'multiMachine.sessionPool.enabled',
       // +18 lines below: #1367's moveIntent dev-gated sub-block was inserted under
       // sessionPool (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS
       // `enabled` (rides resolveDevAgentGate), adds no map row, and shifts the
       // subsequent `enabled:` lines. Recomputed via attributeEnabledFalsePaths on
       // the MERGED ConfigDefaults (hubIntent + moveIntent both present).
-      '1262': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1272': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1301': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1489': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1630': 'cartographer.freshnessSweep.enabled',
-      '1675': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1700': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1290': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1300': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1329': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1517': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1658': 'cartographer.freshnessSweep.enabled',
+      '1703': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1728': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

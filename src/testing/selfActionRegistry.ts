@@ -21,6 +21,8 @@
  * steady-state FREQUENCY under feedback).
  */
 
+import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
+
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
   nowMs(): number;
@@ -253,9 +255,58 @@ const livenessHeartbeat: SelfActionController = {
   },
 };
 
+/**
+ * external-hog-kill-breaker — the External-Hog sentinel's respawn brake
+ * (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md §6 — the
+ * #863 reaper-kill-loop shape: 17,503 identical requests is the ancestor
+ * incident). Unlike the other entries this model drives the REAL pure brake
+ * (`isBreakerTripped`/`recordKill` from ExternalHogKillLedger) rather than a
+ * re-model — so the ratchet proves the shipped code converges, not a copy.
+ * The pinned worst case: the SAME respawn-surviving zombie signature comes
+ * back sustained-hot on EVERY 60s scan (something keeps relaunching it — the
+ * targetAlwaysRejects shape: each kill "succeeds" but never sticks). The
+ * breaker permits K=3 kills of that signature within the rolling window, then
+ * STOPS killing it (in real code: one deduped degradation "keeps respawning —
+ * may be managed"; the §4 observability floor still surfaces the hog). The
+ * rolling window means the true steady state is a RATE bound (≤K per window
+ * per signature), with the ledger pruned to retention so state stays bounded;
+ * the horizon here (2N = 60 min = exactly one window) proves the within-window
+ * settle exactly: kills 3, then flat.
+ */
+const externalHogKillBreaker: SelfActionController = {
+  id: 'external-hog-kill-breaker',
+  actionVerb: 'kill',
+  models: 'src/monitoring/ExternalHogKillLedger.ts (respawn breaker driven by the ExternalHogScanTick kill path — real pure functions, not a re-model)',
+  boundK: 3,
+  perTargetBoundK: 3, // legitimately the SAME respawning signature, bounded by the window breaker (not a ping-pong)
+  ticks: 30,
+  tickMs: 60_000, // the real scan cadence; 2N ticks span 3,540,000 ms < the 1h window, so the settle check is exact
+  makeUnderPressure(f, sink) {
+    const WINDOW_MS = 3_600_000; // the shipped default (killLedgerMaxPerSignaturePerHour window)
+    const MAX_PER_WINDOW = 3; // the shipped default K
+    const RETENTION_MS = 3_600_000; // config wires retention >= window (recordKill precondition)
+    const KEY = 'sha256:code-helper-plugin|--user-data-dir=/Users/x/Library/Application Support/Code';
+    const CLASS_ID = 'editor-extension-host';
+    let ledger = EMPTY_KILL_LEDGER;
+    return {
+      tick() {
+        sink.considered += 1;
+        // Sustained pressure: the signature is back and hot every scan, forever.
+        if (!f.targetAlwaysRejects()) return;
+        const nowMs = f.clock.nowMs();
+        const opts = { nowMs, windowMs: WINDOW_MS, maxPerWindow: MAX_PER_WINDOW, keyIsVolatile: false };
+        if (isBreakerTripped(ledger, KEY, CLASS_ID, opts)) return; // the brake: stop fighting the respawner
+        sink.emit({ verb: 'kill', target: KEY });
+        ledger = recordKill(ledger, { key: KEY, classId: CLASS_ID, atMs: nowMs }, RETENTION_MS, nowMs);
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   proactiveSwapMonitor,
   ageKillBackoff,
   promiseBeaconNotify,
   livenessHeartbeat,
+  externalHogKillBreaker,
 ];

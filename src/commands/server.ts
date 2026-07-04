@@ -17348,7 +17348,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const ehEuid = process.geteuid?.() ?? -1;
       const ehPrims = createExternalHogServerPrimitives({
         exec: async (cmd, args) => (await execFileAsync(cmd, [...args], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 })).stdout,
-        signal: (pid, sig) => { try { process.kill(pid, sig === 0 ? 0 : sig); return true; } catch { return false; } },
+        signal: (pid, sig) => { try { process.kill(pid, sig === 0 ? 0 : sig); return true; } catch { return false; } }, // @silent-fallback-ok: `false` IS the signal primitive's contract (pid gone / EPERM → delivery failed); the kill funnel consumes the boolean and surfaces every outcome
         evaluate: (prompt) => (sharedIntelligence
           ? sharedIntelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'ExternalHogClassifier' } })
           : Promise.reject(new Error('no intelligence provider'))),
@@ -17389,7 +17389,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (_externalHogEnabled) {
         const ehRef = externalHogSentinel;
         const ehTimer = setInterval(() => {
-          void ehRef.tick().catch((e) => console.error('[external-hog] tick error:', e instanceof Error ? e.message : String(e)));
+          void ehRef.tick().catch((e) => console.error('[external-hog] tick error:', e instanceof Error ? e.message : String(e))); // @silent-fallback-ok: NOT silent — every tick error is logged; an interval callback must never throw (it would crash the server for a scan hiccup)
         }, ehScanIntervalMs);
         if (typeof ehTimer.unref === 'function') ehTimer.unref();
         console.log(pc.green(`  ExternalHogSentinel enabled (external-hog zombie auto-kill — ${ehCfg.dryRun === false ? 'config live; needs PIN arm to kill' : 'watch-only dryRun'})`));
@@ -17397,6 +17397,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) {
       console.error('[external-hog] construction failed (feature disabled this boot):', err instanceof Error ? err.message : String(err));
       externalHogSentinel = undefined;
+      DegradationReporter.getInstance().report({
+        feature: 'ExternalHogSentinel',
+        primary: 'external-hog zombie sentinel scanning on a schedule',
+        fallback: 'sentinel disabled for this boot (no scanning, no alerts, no kills)',
+        reason: `construction failed: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Outside-process CPU hogs go unnoticed until the next successful boot — the exact blindness the sentinel exists to close.',
+      });
     }
 
     // ── OrphanedWorkSentinel (the silent-uncommitted-death backstop) ──────────

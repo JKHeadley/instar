@@ -21,7 +21,11 @@
  * Watch-only rides straight through: in the shipped dryRun state the funnel returns `would-kill`
  * and no signal is sent, so a tick produces would-kill records + the §4 observability notices and
  * kills NOTHING.
+ *
+ * Self-action convergence (Capacity Safety — No Unbounded Self-Action): the kill loop's respawn
+ * brake is registered in the convergence ratchet, driving the REAL pure ledger functions.
  */
+/* @self-action-controller: external-hog-kill-breaker */
 
 import { runScanTick, type ScanState, type ScanDeps, type ScanOpts, type ScanOutcome, type ScanResult } from './ExternalHogScanTick.js';
 import { EMPTY_SAMPLER_STATE, isSamplerDead } from './ExternalHogSampler.js';

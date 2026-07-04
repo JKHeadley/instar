@@ -775,3 +775,58 @@ baseline (its output is machine-parsed into a closed kill/leave/alert verdict), 
 { nature: 'A', chain: 'SORT' }` (a background bounded verdict), plus the earlier bench-coverage
 (`zombie-classify`) + the routing-registry row + componentCategories (sentinel) + the CapabilityIndex
 prefix. All 7 ratchet suites green (198 tests). Registry decisions, not kill-logic.
+
+**Slice 27 — rebase onto main + the four merge-point ratchet declarations.** CI's merge-commit run
+(vs a main 28 commits ahead) surfaced four declaration ratchets the branch predated; all four are
+registry/annotation decisions, ZERO kill-logic changes:
+- **write-domain (§3.5):** `POST /external-hog/arm` + `POST /external-hog/disarm` classified
+  MACHINE-LOCAL in `buildWriteDomainRegistry` with a two-axis convergence story whose logical story
+  IS the file-level story: the arm marker (`state/external-hog-arm.json`) is per-machine PIN
+  consent, and cross-machine convergence would BE the vulnerability (a synced marker silently arms
+  a peer's sentinel the operator never consented to — the silent-re-arm class the armEpoch design
+  prevents). File-level arm shipped as a `FileClassifier` sync exclusion for that exact path.
+- **feature-delivery-completeness:** the 'External-Hog Zombie Auto-Kill Sentinel' CLAUDE.md section
+  tracked in `legacyMigratorSections` — dark dev-gated monitoring guard, template+migrator parity
+  via the shared `EXTERNAL_HOG_CLAUDEMD_SECTION` constant, NOT framework-shadowed (same class as
+  'Machine-Coherence Guard' / 'Write Admission').
+- **lint-dev-agent-dark-gate golden map:** the `monitoring.externalHogSentinel` ConfigDefaults block
+  (28 lines, OMITS the `enabled` literal — rides resolveDevAgentGate, the #1001 anti-pattern
+  avoided) adds NO attributed path; every `enabled: false` line below it shifts +28. Hand-verified
+  per entry (path set unchanged, 25 entries).
+- **no-silent-fallbacks:** the PR's 8 net-new flagged catches resolved honestly: the server-boot
+  construction-failure catch now REPORTS via DegradationReporter (a guard disabled for the boot is
+  a real degradation); the other 7 are reviewed fail-safe catches tagged `@silent-fallback-ok` with
+  their safety direction inline (signal-false is the primitive's contract; tick errors are logged;
+  verdict-parse falls to the enum shape then null=no-kill; launchctl-empty is the round-8 reviewed
+  floor-bounded decision; argv-null skips the candidate; CPU-probe-null refuses the reading; tmux-empty
+  leaves the orphan invariant blocking). Count back at main's own level (490 ≤ 491 baseline).
+Also folded at the rebase merge-point: `templates.ts` import-line conflict (main's
+DOORWAY_REGISTRY_CLAUDEMD_SECTION + this branch's EXTERNAL_HOG_CLAUDEMD_SECTION — both kept).
+Rollback: revert the commit; every change is a declaration/annotation, no runtime behavior moves
+except the added DegradationReporter report on a construction-failure path that previously only
+console.error'd.
+
+**Slice 27 (cont.) — Self-Action Convergence closure (guard).** Main's new Capacity-Safety gate
+("No Unbounded Self-Action") landed while this branch was in flight; the sentinel IS the class's
+subject (a killer on a 60s loop), so it gets the real closure, not a carve-out: registered
+`external-hog-kill-breaker` in `SELF_ACTION_CONTROLLERS` — and unlike the seeded entries, the
+model drives the REAL pure brake (`isBreakerTripped`/`recordKill` from ExternalHogKillLedger), so
+the ratchet proves the shipped code converges, not a re-model. Pinned worst case: the same
+respawn-surviving signature sustained-hot on every scan forever → kills settle at K=3 within the
+rolling window (2N horizon = exactly one window, settle-is-real exact), then the brake holds; the
+real steady state is the rate bound ≤K/window/signature with one deduped degradation, ledger
+pruned to retention. `@self-action-controller` marker added to ExternalHogSentinel.ts. Convergence
+ratchet green (30 tests).
+
+## Class-Closure Declaration (display-only mirror)
+
+`unbounded-self-action` → closure **guard**. The sentinel is a self-triggered kill controller (a
+60s scan loop that can signal processes), i.e. the class's exact subject. Guard: registered
+`external-hog-kill-breaker` in `SELF_ACTION_CONTROLLERS` (src/testing/selfActionRegistry.ts),
+covered by the convergence ratchet `tests/unit/self-action-convergence.test.ts` (enforcement:
+ratchet). The model drives the REAL pure brake functions (`isBreakerTripped`/`recordKill` from
+src/monitoring/ExternalHogKillLedger.ts — K=3 per rolling 1h window per signature, class-level
+fallback for volatile keys) under the pinned always-respawning fixture and settles at 3 kills,
+horizon-independent within the window; the real steady state is rate-bounded at ≤K/window/signature
+with one deduped degradation, ledger pruned to retention. Marker `@self-action-controller:
+external-hog-kill-breaker` sits in src/monitoring/ExternalHogSentinel.ts for the forcing lint.

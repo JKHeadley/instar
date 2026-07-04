@@ -56,6 +56,8 @@ export function makeCpuCoresOver(
         if (!row || row.cputimeSeconds === undefined || !Number.isFinite(row.cputimeSeconds)) return null;
         return { cpu: row.cputimeSeconds, start: row.startTime, at };
       } catch {
+        // @silent-fallback-ok: fail-SAFE direction — a probe that can't read the process
+        // yields null = an uncertain reading, which the measurement REFUSES to trust (no kill).
         return null;
       }
     };
@@ -98,7 +100,10 @@ export function createExternalHogServerPrimitives(deps: ServerPrimitiveDeps): Ex
       try {
         return parseTmuxPanePids(await deps.exec('tmux', ['list-panes', '-a', '-F', '#{pane_pid}']));
       } catch {
-        return []; // no tmux server / tmux unavailable → the server pid is still an owned root
+        // @silent-fallback-ok: no tmux server / tmux unavailable → empty pane set. The server
+        // pid remains an owned root, and any process a lost pane hosted still has a LIVING
+        // parent (the tmux server), so the orphan floor invariant blocks a kill regardless.
+        return [];
       }
     },
     loadArm: (): { marker: ArmMarker | null; lastDisarmEpoch: number } => {
