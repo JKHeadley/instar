@@ -765,3 +765,13 @@ invariant holds:
 - **E SAFE:** externalHogSentinel threads options → ctx (`?? null`); routes get null when dark, no clobber.
 
 Verdict: **Concur with the review.**
+
+**Slice 26 (cont.) — the full per-component ratchet set.** CI's sharded run surfaced that a new
+LLM component must carry a decision in EVERY per-COMPONENT_CATEGORY registry (not just bench-coverage).
+Added `ExternalHogClassifier` to all of them, each an honest classification: `LLM_UNTRUSTED_INPUT: true`
+(judges the attacker-controllable name/argv), `LLM_JUDGES_CLAIMS: false` (judges a process disposition,
+not a completion/health claim), `LLM_PARSER_CONTRACT: { pending: 'contract-wave-2' }` + its pinned
+baseline (its output is machine-parsed into a closed kill/leave/alert verdict), `LLM_ROUTING_NATURE:
+{ nature: 'A', chain: 'SORT' }` (a background bounded verdict), plus the earlier bench-coverage
+(`zombie-classify`) + the routing-registry row + componentCategories (sentinel) + the CapabilityIndex
+prefix. All 7 ratchet suites green (198 tests). Registry decisions, not kill-logic.
