@@ -615,6 +615,22 @@ append), `src/scaffold/templates.ts` (import + concat into generateClaudeMd), th
   posture + the two-key rule; idempotent + content-preserving; and the generateClaudeMd template
   emits it (fresh-install parity).
 
+### Slice 26 — CI ratchet fixes (route-prefix classification + bench-coverage decision)
+Files: `src/server/CapabilityIndex.ts` (INTERNAL_PREFIXES += external-hog), `src/data/llmBenchCoverage.ts`
+(ExternalHogClassifier bench decision). Two registry ratchets CI caught (the only 2 red tests among
+7448; every other test + all my local suites were green):
+- **capabilities-discoverability:** the `/external-hog` route prefix was registered in routes.ts but
+  not classified. Added it to `INTERNAL_PREFIXES` — agent-read operational observability (status) +
+  a PIN-gated operator action (arm/disarm), like `/green-pr-automerge`; dev-gated dark, 503 on the
+  fleet, surfaced via the CLAUDE.md agent-awareness section (not a user-invokable capability).
+- **llm-bench-coverage-ratchet:** `ExternalHogClassifier` (a new sentinel-category LLM component)
+  needed a bench-coverage decision. Added `{ task: 'zombie-classify' }` — the operator-approved
+  benchmark that IS this classifier's bench task (measures false-leave/false-alert EFFECTIVENESS;
+  kill-SAFETY is carried entirely by the deterministic floor, so it never gates a kill). The task
+  battery lives in the research tree; neither ratchet checks the task file on disk.
+- **Over/under-block:** none — registry/ratchet entries. **Signal vs authority:** no runtime
+  decision. **Rollback:** remove the two entries. **Tests:** both ratchet suites green (151 tests).
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR

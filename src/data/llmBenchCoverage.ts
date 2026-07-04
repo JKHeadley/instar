@@ -32,6 +32,12 @@ export type BenchCoverage =
 export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   // ── Covered by the critical set (Wave 1 — authored 2026-07-02) ──
   MessageSentinel: { task: 'sentinel-classify' },
+  // The zombie-classify benchmark IS this classifier's bench task (operator-approved; it is the
+  // reason the spec kept an AI decider over a rules-only reaper). The task battery lives in the
+  // research tree (research/llm-pathway-bench/instar-bench-v2/tasks/zombie-classify.json) and
+  // measures the model's false-leave / false-alert rate (EFFECTIVENESS) — kill-SAFETY is carried
+  // entirely by the deterministic floor, so this benchmark never gates a kill.
+  ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   // CompletionEvaluator has TWO judged surfaces; both benched.
   CompletionEvaluator: { task: 'completion-judge+p13-stop-judge' },
