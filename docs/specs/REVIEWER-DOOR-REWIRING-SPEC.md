@@ -2,7 +2,7 @@
 title: "Reviewer-Door Rewiring — strongest model via a clean door per provider for the spec-converge reviewers"
 slug: "reviewer-door-rewiring"
 author: "echo"
-status: "draft"
+status: "converged — pending operator approval"
 parent-principle: "Structure beats Willpower"
 extends:
   - "src/core/crossModelReviewer.ts (SUPPORTED_REVIEWER_FRAMEWORKS / TRUSTED_REVIEWER_FRAMEWORKS registry, aggregateRoundOutcomes, detectCrossModelReviewer, detectAllCrossModelReviewers, wasNonClaudeFrameworkActiveWithin)"
@@ -10,7 +10,7 @@ extends:
   - "docs/LLM-ROUTING-REGISTRY.md (door-penalty findings, task-nature taxonomy, freshness-lint enforcement state)"
   - "scripts/model-registry-freshness.manifest.json + scripts/lint-model-registry-freshness.mjs (Keep the Doorway/Model Map Current)"
   - "docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md (the doorway registry this spec consumes)"
-eli16-overview: "docs/specs/REVIEWER-DOOR-REWIRING-SPEC.eli16.md"
+eli16-overview: "REVIEWER-DOOR-REWIRING-SPEC.eli16.md"
 lessons-engaged:
   - "Structure beats Willpower — reviewer doors live in a typed registry + config gate, not in prose about which model to use (parent principle)"
   - "Signal vs. Authority — reviewer passes are signals into convergence; nothing here gains blocking authority (engaged, §6)"
@@ -22,6 +22,15 @@ lessons-engaged:
   - "Close the Loop / L8 — the two declined/deferred doors carry follow-through that RIDES the evolution-action queue cadence (not human report-reading); reconciled with the no-new-watcher posture (engaged, §8, §Standard-B note)"
   - "Distrust Temporary Success — the claude-family reviewer must NEVER launder the cross-model flag; the crossFamily semantics are threaded onto the DATA STRUCTURES the guards consume (ReviewerResult, CrossModelDetectionResult), fail-CLOSED on an unknown id, unit-tested — not asserted on a single interface (engaged, §5)"
   - "Untrusted-Input Containment — the claude -p door is NOT tool-less by default (loads user hooks + MCP servers, inherits full env); a spec under review is untrusted inbound text, so the reviewer call is hardened to codex parity (empty allowed-tools, --strict-mcp-config, neutral cwd, stdin, env allowlist) and verified by a STATE-level no-tool-execution test — not a flag-presence assertion (engaged, §1.4, §Security)"
+review-convergence: "2026-07-04T22:26:10.565Z"
+review-iterations: 6
+review-completed-at: "2026-07-04T22:26:10.565Z"
+review-report: "docs/specs/reports/REVIEWER-DOOR-REWIRING-SPEC-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 14
+cheap-to-change-tags: 3
+contested-then-cleared: 3
 ---
 
 # Reviewer-Door Rewiring — strongest model via a clean door per provider
@@ -240,4 +249,4 @@ This spec adds **no monitor, watcher, or recurring notice source**, so the Self-
 
 ## Open questions
 
-*(none — all decisions frontloaded above)*
+*(none)*
