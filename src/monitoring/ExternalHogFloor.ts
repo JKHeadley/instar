@@ -64,7 +64,10 @@ export interface ExternalHogFacts {
   /** Full argv — attacker-controllable; only ever used for the allowlist argv-token match. */
   readonly argv: string;
   readonly pid: number;
-  /** Provenance: the specific spawning parent (`--parentPid`) is dead → true. NOT bare ppid===1. */
+  /** Provenance: is the SPECIFIC spawning parent (argv `--parentPid`) still alive? `true` = owner
+   *  app running (or owner cannot be positively established) → floor VETO; `false` = the specific
+   *  `--parentPid` is dead (start-time-verified) → kill-eligible. NOT bare ppid===1. (The invariant
+   *  at evaluateKillFloor step 5 vetoes when this is `true`.) */
   readonly ownerAppRunning: boolean;
   /** Confirmed sustained CPU hog (the §1 N-window CPU-delta ≥ cpuCoreThreshold). Hard veto. */
   readonly sustainedHighCpu: boolean;

@@ -414,6 +414,40 @@ Files: `src/monitoring/ExternalHogArmStore.ts` (`loadArmState`/`armStore`/`disar
   new/broadened class not armed, 0600 mode, disarm invalidates + monotonic + idempotent, and
   reboot-boots-unarmed (live config alone never re-arms).
 
+### Slice 18 — the deterministic fact + identity builder (stage-2 derivation)
+Files: `src/monitoring/ExternalHogFactBuilder.ts` (`buildFacts`/`buildIdentity`/`deriveOwnerAppRunning`/
+`parseParentPid`/`lstartToEpochMs`), `src/monitoring/ExternalHogFloor.ts` (DOC-ONLY: fixed an
+INVERTED comment on `ownerAppRunning`), `tests/unit/external-hog-fact-builder.test.ts` (18 tests).
+- **What it is:** the PURE stage-2 derivation that turns a candidate's proc row + FULL argv (fetched
+  off-loop by the adapter) into the `ExternalHogFacts` the floor evaluates and the identity
+  (classId/commandHash/ledgerKey) the ledger + funnel key on. No process spawn, no clock — the
+  impure edges (ps -o args=, launchctl, geteuid) are passed IN, so every derivation is testable.
+- **The load-bearing derivation — `ownerAppRunning` polarity (§ round-6/round-8):** `true` = the
+  specific `--parentPid` owner is alive OR cannot be established → floor VETO; `false` = that
+  parent is dead (start-time-verified) → kill-eligible. Round-8 reused-pid rule: parent-pid absent
+  → dead; parent-pid present but its lstart is LATER than the child's → pid reused, real parent
+  dead; parent older-or-equal (or start-times un-orderable) → assume live → veto. EVERY
+  un-establishable branch fails toward `true` (veto). Validated by running the built facts through
+  the REAL floor (a genuine orphaned exthost PERMITS; root/launchctl/non-sustained VETO).
+- **The lstart ordering parse:** the proc-table parser keeps `startTime` an OPAQUE equality token
+  by design; this slice adds a CONFINED, fail-safe `lstartToEpochMs` used ONLY for the one
+  reused-pid ordering comparison (parse ambiguity → null → conservative veto). Does not change the
+  parser's opaque-token contract.
+- **Floor doc-bug fix (doc-only, no logic change):** the `ownerAppRunning` field comment in
+  ExternalHogFloor.ts read "parent is dead → true", the INVERSE of the floor's own step-5 logic
+  (`ownerAppRunning` true → veto). Corrected to match the authoritative logic + the spec.
+- **Identity:** `buildIdentity` is allowlist-gated (outside the code-defined allowlist → null → not
+  kill-eligible, surfaced not killed); the command-hash STRIPS the volatile `--parentPid` so the
+  P19 breaker counts respawns of the SAME command (proven: hash stable across a changed parentPid).
+- **Over/under-block:** over-vetoes on uncertainty (the safe direction); the only under-block risk
+  (a reused-then-immediately-hog parent) is the documented identity limit, fail-safe. **Signal vs
+  authority:** pure derivation feeding the floor; holds no authority. **Multi-machine:**
+  machine-local BY DESIGN (a process tree + argv are physical to one host; `physical-credential-
+  locality`). **Rollback:** delete the module (the real adapter's factsFor would inline it).
+- **Tests:** 18 — parentPid parse, lstart ordering + fail-safe null, all 5 ownerAppRunning
+  branches, floor-validated permit/veto for orphan/root/launchctl/non-sustained, allowlist-gated +
+  stable-hash identity.
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
@@ -451,5 +485,24 @@ no corrupt/crafted/torn-write path yields a marker `canKillLive` accepts.
 - **Residual (non-blocking, now CLOSED):** the reviewer noted writeState lacked fsync (a power loss
   after a disarm could revert to a PREVIOUSLY-authorized arm — never new/widened). CLOSED by adding
   the content fsync (tmp → fsync → rename) — strictly more durable, no behavior change.
+
+Verdict: **Concur with the review.**
+
+### Slice 18 Phase-5 verdict — CONCUR
+An independent reviewer read the builder + the floor + ownership + the proc-table, and found no
+wrong-permit after an adversarial walk:
+- **A polarity:** correct — `deriveOwnerAppRunning` returns `false` (kill-eligible) ONLY when the
+  parent-pid is absent from the tree OR its occupant started strictly after the child (reused pid);
+  every uncertain/owner-alive branch returns `true` → floor step-5 vetoes. The floor comment now
+  matches the logic exactly.
+- **B ordering:** sound — a real parent's start is necessarily ≤ its child's, so `parentMs > childMs
+  → dead` is valid; both lstarts parse through the same Date.parse in the same TZ (offset cancels);
+  same-second ties → veto (safe); unparseable → veto.
+- **Tree-completeness (where a wrong-permit could hide):** verified — buildProcTree uses the FULL
+  ps output with NO cpu filter and macOS ps lists all same-uid processes, so a live parent is
+  always present → branch-2 "absent" means genuinely dead.
+- **C/D/E:** field derivations veto-leaning; `--parentPid`-strip hash collisions only shift breaker
+  counts (never the envelope); same-uid + allowlist + sustained + orphaned conjunction bounds an
+  argv-attacker to killing a zombie-shaped process they themselves crafted.
 
 Verdict: **Concur with the review.**
