@@ -59,7 +59,15 @@ export interface GrowthDigestAuditEntry {
     | 'skipped-off'
     | 'skipped-overlap'
     | 'skipped-calm'
-    | 'error';
+    | 'error'
+    // C1 (maturation-followthrough-fix Standard C): a RETRYABLE block no longer
+    // consumes its window. `send-deferred` carries NO `window` field, so
+    // `recordedWindows()` does not swallow it and `catchUp()` retries it. A poison
+    // window that exhausts the bounded retry contract records `send-exhausted`
+    // WITH its `window` (consumed — it stops retrying forever) plus one escalated
+    // attention item. Both are audited so a defer/exhaust is never silent.
+    | 'send-deferred'
+    | 'send-exhausted';
   trigger?: GrowthDigestTrigger;
   /** ISO of the scheduled window this cycle belongs to. The idempotency key for
    *  catch-up: recorded ONLY on a real post-lease decision (never on a pre-lease
@@ -74,6 +82,57 @@ export interface GrowthDigestAuditEntry {
    *  a SIGNAL (never a cross-component mutation) that the old voice should be
    *  disabled to avoid two voices on the same initiatives. */
   supersedeConflict?: boolean;
+  /** C1: the retry-attempt count carried on a `send-deferred` / `send-exhausted`
+   *  entry (observability — the audit shows how many times a window was retried). */
+  attemptCount?: number;
+}
+
+// ── C1 durable delivery-attempt contract (maturation-followthrough-fix §C1) ──
+
+/**
+ * The single durable delivery-attempt record for a digest window that hit a
+ * RETRYABLE block. It is the shared idempotency ledger the spec's watcher (D,
+ * a later increment) also reads/advances — so watcher-drain and cron-retry can
+ * never both fire the same window. `state` is `deferred` while it may still
+ * retry, `terminal-failed` once it exhausts a ceiling (poison window — stops
+ * retrying, but is loudly surfaced, never silently dropped).
+ */
+export interface GrowthDigestDeferral {
+  windowId: string;
+  attemptCount: number;
+  firstDeferredAt: string;
+  nextAttemptAt: string;
+  lastReason: string;
+  attentionDedupeKey: string;
+  state: 'deferred' | 'terminal-failed';
+}
+
+/** Durable store for the C1 delivery-attempt records (one per deferred window). */
+export interface GrowthDigestDeferralStore {
+  get(windowId: string): GrowthDigestDeferral | undefined;
+  upsert(record: GrowthDigestDeferral): void;
+  remove(windowId: string): void;
+  /** Records still `deferred` whose `nextAttemptAt` is at/before `now`. */
+  duePending(now: Date): GrowthDigestDeferral[];
+  all(): GrowthDigestDeferral[];
+}
+
+/**
+ * The escalation input the publisher hands to whatever raises operator-facing
+ * attention items (wired to `TelegramAdapter.createAttentionItem` at route
+ * registration). SECURITY (C1): `reason` is a GENERIC plain-English string only
+ * — the publisher NEVER passes the raw rejected digest body or the tone gate's
+ * cited offending pattern (which would re-introduce the very leak C2 stripped).
+ */
+export interface GrowthDigestAttention {
+  /** Stable dedupe id (`<machineId>:growth-digest-defer:<windowId>`). */
+  id: string;
+  title: string;
+  summary: string;
+  /** Generic plain-English reason — never the raw body / offending pattern. */
+  reason: string;
+  priority: 'NORMAL' | 'HIGH';
+  windowId: string;
 }
 
 /** Refuse a cadence whose two soonest fires are < 1h apart — `buildDigest` is a
@@ -84,6 +143,58 @@ const DEFAULT_SETTLE_MS = 60 * 1000;
 const DEFAULT_PER_RULE_CAP = 5;
 const DEFAULT_DETAIL_CAP = 200;
 const TELEGRAM_MAX = 4096;
+
+// ── C1 bounded delivery-attempt contract (maturation-followthrough-fix §C1) ──
+// A retryable block re-queues (never consumes the window) under a bounded
+// contract so it can never loop forever. Concrete defaults from the spec.
+const DEFAULT_MAX_ATTEMPTS = 5;
+const DEFAULT_MAX_AGE_MS = 1_209_600_000; // 14 days = two weekly windows
+const BACKOFF_BASE_MS = 60_000; // 60s base, exponential per attempt
+
+/**
+ * A non-send reason is RETRYABLE (worth deferring + retrying) vs TERMINAL
+ * (retrying the same window changes nothing → consume it as today). Retryable =
+ * a transient tone-gate block (content may pass on a later window, or the gate
+ * fail-closed under transient pressure) or a provider/send failure. Terminal =
+ * a structural non-send (no updates topic, telegram not configured, no sender)
+ * or a content bug that a retry cannot fix (empty/too-long). Exported so the
+ * classification is testable on both sides of the boundary. Unknown → terminal
+ * (the SAFE direction: never defer a reason we can't reason about into an
+ * open-ended retry).
+ */
+export function isRetryableSendReason(reason: string | undefined): boolean {
+  if (!reason) return false;
+  const r = reason.toLowerCase();
+  // Terminal structural / content reasons — a retry of the SAME window is futile.
+  const TERMINAL = [
+    'no-updates-topic',
+    'telegram-not-configured',
+    'no-sender',
+    'empty-text',
+    'too-long',
+  ];
+  if (TERMINAL.some((t) => r.includes(t))) return false;
+  // Retryable transient reasons — the tone-gate block and any provider/send fault.
+  const RETRYABLE = [
+    'tone',
+    'gate',
+    'block',
+    'review',
+    'timeout',
+    'unavailable',
+    'provider',
+    'send-error',
+    'send-threw',
+    'network',
+    'econn',
+    'etimedout',
+    'rate',
+    '429',
+    '503',
+    '502',
+  ];
+  return RETRYABLE.some((t) => r.includes(t));
+}
 
 export interface GrowthDigestPublisherDeps {
   /** Bound to the live analyst (`(now) => analyst.buildDigest(now)`). */
@@ -117,6 +228,25 @@ export interface GrowthDigestPublisherDeps {
   perRuleCap?: number;
   /** Formatter: per-detail char cap (default 200). */
   detailCap?: number;
+
+  // ── C1 (maturation-followthrough-fix Standard C) — un-droppable delivery ──
+  /** Is the C1 un-droppable-delivery behavior on? Read live per cycle (a rollback
+   *  needs no restart). When absent OR returns false → LEGACY behavior (a
+   *  retryable block records `send-blocked` WITH its window = consume-and-drop),
+   *  so merging the code changes nothing until the flag is on. */
+  blockedDigestEscalationEnabled?: () => boolean;
+  /** Durable delivery-attempt store (C1's bounded-retry ledger). Absent → the C1
+   *  path is inert (legacy behavior) even if the flag is on — fail-safe. */
+  deferrals?: GrowthDigestDeferralStore;
+  /** Raise ONE operator-facing attention item on defer / exhaustion. Absent → the
+   *  audit still records the defer, but no attention item (degraded, not silent). */
+  raiseAttention?: (item: GrowthDigestAttention) => void;
+  /** This machine's id (for the dedupe key; default 'single'). */
+  machineId?: () => string;
+  /** C1 retry-contract ceilings (defaults 5 / 14d / 60s). Injectable for tests. */
+  maxAttempts?: number;
+  maxAgeMs?: number;
+  backoffBaseMs?: number;
 }
 
 export class GrowthDigestPublisher {
@@ -128,8 +258,14 @@ export class GrowthDigestPublisher {
   private readonly settleMs: number;
   private readonly perRuleCap: number;
   private readonly detailCap: number;
+  private readonly maxAttempts: number;
+  private readonly maxAgeMs: number;
+  private readonly backoffBaseMs: number;
 
   private sender?: (text: string) => Promise<DeliveryResult>;
+  /** C1: attached at route registration (needs ctx.telegram). Prefer over
+   *  deps.raiseAttention when set. */
+  private attentionRaiser?: (item: GrowthDigestAttention) => void;
   private cronTask: Cron | null = null;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -144,6 +280,9 @@ export class GrowthDigestPublisher {
     this.settleMs = deps.settleMs ?? DEFAULT_SETTLE_MS;
     this.perRuleCap = deps.perRuleCap ?? DEFAULT_PER_RULE_CAP;
     this.detailCap = deps.detailCap ?? DEFAULT_DETAIL_CAP;
+    this.maxAttempts = deps.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    this.maxAgeMs = deps.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
+    this.backoffBaseMs = deps.backoffBaseMs ?? BACKOFF_BASE_MS;
   }
 
   private nowFn(): Date {
@@ -153,6 +292,12 @@ export class GrowthDigestPublisher {
   /** Attach the guarded sender after construction (route-registration time). */
   attachSender(send: (text: string) => Promise<DeliveryResult>): void {
     this.sender = send;
+  }
+
+  /** C1: attach the operator-facing attention raiser after construction (needs
+   *  ctx.telegram, available only at route registration). */
+  attachAttention(raise: (item: GrowthDigestAttention) => void): void {
+    this.attentionRaiser = raise;
   }
 
   /** True once the cron task is scheduled (false if refused by the sanity-floor
@@ -214,9 +359,12 @@ export class GrowthDigestPublisher {
     }
   }
 
-  /** Replay a single fire time that elapsed while the box was down/asleep. */
+  /** Replay a single fire time that elapsed while the box was down/asleep, and
+   *  (C1) retry any deferred windows whose backoff has elapsed. */
   private async catchUp(): Promise<void> {
     const now = this.nowFn();
+    // C1: retry due deferred windows first (bounded, backoff-respecting).
+    await this.drainDeferrals(now);
     const missed = this.previousScheduledFire(now);
     if (!missed) return;
     const key = missed.toISOString();
@@ -228,6 +376,15 @@ export class GrowthDigestPublisher {
       recorded = new Set<string>();
     }
     if (recorded.has(key)) return; // this window was already published/decided
+    // C1: if this missed window is a deferral still awaiting its backoff,
+    // drainDeferrals owns it — don't double-publish it here.
+    try {
+      const d = this.deps.deferrals?.get(key);
+      if (d && d.state === 'deferred') return;
+    } catch {
+      /* @silent-fallback-ok — a store read fault here only means we fall through
+       *  to the normal replay (the safe direction — never a lost window). */
+    }
     await this.publishOnce(now, 'catchup', key);
   }
 
@@ -316,23 +473,37 @@ export class GrowthDigestPublisher {
         this.deps.onError?.('send', err);
         result = { ok: false, reason: 'send-threw' };
       }
-      const entry: GrowthDigestAuditEntry = {
-        ts: now.toISOString(),
-        action: result.ok ? 'sent' : 'send-blocked',
-        trigger,
-        window,
-        reason: result.reason,
-        counts: digest.counts,
-      };
-      // §3.5 belt: a SIGNAL (never a mutation) that the old voice is still on.
-      if (result.ok && this.deps.supersededJobStillEnabled) {
-        try {
-          if (this.deps.supersededJobStillEnabled()) entry.supersedeConflict = true;
-        } catch (err) {
-          this.deps.onError?.('supersededJobStillEnabled', err);
+
+      if (result.ok) {
+        const entry: GrowthDigestAuditEntry = {
+          ts: now.toISOString(),
+          action: 'sent',
+          trigger,
+          window,
+          reason: result.reason,
+          counts: digest.counts,
+        };
+        // §3.5 belt: a SIGNAL (never a mutation) that the old voice is still on.
+        if (this.deps.supersededJobStillEnabled) {
+          try {
+            if (this.deps.supersededJobStillEnabled()) entry.supersedeConflict = true;
+          } catch (err) {
+            this.deps.onError?.('supersededJobStillEnabled', err);
+          }
         }
+        this.record(entry);
+        // A successful send decides the window — clear any stale C1 deferral so it
+        // can never retry a window already delivered (shared idempotency).
+        this.clearDeferralOnSuccess(window);
+        return;
       }
-      this.record(entry);
+
+      // A non-send. C1 (maturation-followthrough-fix §C1): a RETRYABLE block no
+      // longer consumes its window — it defers (re-queues, records `send-deferred`
+      // WITHOUT a window so catchUp retries) + raises ONE deduped attention item,
+      // under a bounded retry contract. A TERMINAL non-send (or C1 disabled / not
+      // wired) records `send-blocked` WITH its window exactly as today.
+      this.handleNonSend(window, result.reason, now, trigger, digest.counts);
     } finally {
       this.running = false;
     }
@@ -350,11 +521,188 @@ export class GrowthDigestPublisher {
       ...(e.counts ? { counts: e.counts } : {}),
       ...(e.wouldSend ? { wouldSend: e.wouldSend } : {}),
       ...(e.supersedeConflict ? { supersedeConflict: true } : {}),
+      ...(typeof e.attemptCount === 'number' ? { attemptCount: e.attemptCount } : {}),
     };
     try {
       this.deps.audit?.(entry);
     } catch (err) {
       this.deps.onError?.('audit', err);
+    }
+  }
+
+  // ── C1: un-droppable delivery (maturation-followthrough-fix Standard C) ─────
+
+  /** Is the C1 un-droppable-delivery behavior on? Fails toward LEGACY (consume +
+   *  record 'send-blocked') on any read fault — never crashes, never silently
+   *  drops. */
+  private escalationActive(): boolean {
+    try {
+      return this.deps.blockedDigestEscalationEnabled?.() === true;
+    } catch (err) {
+      this.deps.onError?.('blockedDigestEscalationEnabled', err);
+      return false;
+    }
+  }
+
+  private machineIdFn(): string {
+    try {
+      return this.deps.machineId?.() ?? 'single';
+    } catch {
+      return 'single';
+    }
+  }
+
+  private raise(item: GrowthDigestAttention): void {
+    const fn = this.attentionRaiser ?? this.deps.raiseAttention;
+    try {
+      fn?.(item);
+    } catch (err) {
+      this.deps.onError?.('raiseAttention', err);
+    }
+  }
+
+  /**
+   * Route a non-send. A RETRYABLE reason under active+wired C1 defers the window;
+   * anything else (terminal reason, C1 off, no store/window) records
+   * `send-blocked` and consumes the window exactly as today (never silent).
+   */
+  private handleNonSend(
+    window: string | undefined,
+    reason: string | undefined,
+    now: Date,
+    trigger: GrowthDigestTrigger,
+    counts?: GrowthDigest['counts'],
+  ): void {
+    const retryable = isRetryableSendReason(reason);
+    if (!retryable || !this.escalationActive() || !window || !this.deps.deferrals) {
+      this.record({ action: 'send-blocked', trigger, window, reason, counts });
+      return;
+    }
+    this.deferRetryableBlock(window, reason, now, trigger, counts);
+  }
+
+  /**
+   * Advance the bounded delivery-attempt contract for a retryable block. Increment
+   * the attempt count, and either DEFER (record `send-deferred` WITHOUT a window +
+   * one deduped NORMAL attention item) or, when a ceiling is hit, mark the poison
+   * window `terminal-failed` (record `send-exhausted` WITH its window so it stops
+   * retrying + one HIGH escalated attention item). A store fault falls back to
+   * consuming the window (today's behavior) — never a lost signal.
+   */
+  private deferRetryableBlock(
+    window: string,
+    reason: string | undefined,
+    now: Date,
+    trigger: GrowthDigestTrigger,
+    counts?: GrowthDigest['counts'],
+  ): void {
+    const store = this.deps.deferrals!;
+    let record: GrowthDigestDeferral;
+    try {
+      const existing = store.get(window);
+      const attemptCount = (existing?.attemptCount ?? 0) + 1;
+      const firstDeferredAt = existing?.firstDeferredAt ?? now.toISOString();
+      const ageMs = now.getTime() - new Date(firstDeferredAt).getTime();
+      const attentionDedupeKey =
+        existing?.attentionDedupeKey ?? `${this.machineIdFn()}:growth-digest-defer:${window}`;
+      const exhausted = attemptCount >= this.maxAttempts || ageMs >= this.maxAgeMs;
+      const backoff = Math.min(this.backoffBaseMs * 2 ** (attemptCount - 1), this.maxAgeMs);
+      record = {
+        windowId: window,
+        attemptCount,
+        firstDeferredAt,
+        nextAttemptAt: new Date(now.getTime() + backoff).toISOString(),
+        lastReason: reason ?? 'unknown',
+        attentionDedupeKey,
+        state: exhausted ? 'terminal-failed' : 'deferred',
+      };
+      store.upsert(record);
+    } catch (err) {
+      this.deps.onError?.('deferrals', err);
+      // Fail toward TODAY's behavior (consume + record), never a silent drop.
+      this.record({ action: 'send-blocked', trigger, window, reason, counts });
+      return;
+    }
+
+    if (record.state === 'terminal-failed') {
+      this.record({
+        action: 'send-exhausted',
+        trigger,
+        window,
+        reason,
+        counts,
+        attemptCount: record.attemptCount,
+      });
+      this.raise({
+        id: record.attentionDedupeKey,
+        title: 'Weekly growth check-in could not be delivered',
+        summary:
+          `This week's growth check-in failed to send after ${record.attemptCount} attempts and has ` +
+          'stopped retrying. The findings are safe in your dashboard.',
+        reason: genericSendReason(reason),
+        priority: 'HIGH',
+        windowId: window,
+      });
+      return;
+    }
+
+    this.record({
+      action: 'send-deferred',
+      trigger,
+      reason,
+      counts,
+      attemptCount: record.attemptCount,
+    });
+    this.raise({
+      id: record.attentionDedupeKey,
+      title: "This week's growth check-in couldn't send yet",
+      summary:
+        "The weekly growth check-in couldn't be delivered this time — it will retry automatically. " +
+        'The findings are available in your dashboard.',
+      reason: genericSendReason(reason),
+      priority: 'NORMAL',
+      windowId: window,
+    });
+  }
+
+  /** A successful send decides the window; drop a stale deferral so it can't retry. */
+  private clearDeferralOnSuccess(window: string | undefined): void {
+    if (!window || !this.deps.deferrals) return;
+    try {
+      const existing = this.deps.deferrals.get(window);
+      if (existing) this.deps.deferrals.remove(window);
+    } catch (err) {
+      this.deps.onError?.('deferrals-clear', err);
+    }
+  }
+
+  /** Retry deferred windows whose backoff has elapsed. Bounded by duePending; a
+   *  window already decided (present in recordedWindows) is skipped + cleared. */
+  private async drainDeferrals(now: Date): Promise<void> {
+    if (!this.escalationActive() || !this.deps.deferrals) return;
+    let due: GrowthDigestDeferral[];
+    try {
+      due = this.deps.deferrals.duePending(now);
+    } catch (err) {
+      this.deps.onError?.('deferrals-drain', err);
+      return;
+    }
+    let recorded: Set<string>;
+    try {
+      recorded = this.deps.recordedWindows ? this.deps.recordedWindows() : new Set<string>();
+    } catch {
+      recorded = new Set<string>();
+    }
+    for (const d of due) {
+      if (recorded.has(d.windowId)) {
+        try {
+          this.deps.deferrals.remove(d.windowId);
+        } catch {
+          /* @silent-fallback-ok — clearing a resolved record is best-effort */
+        }
+        continue;
+      }
+      await this.publishOnce(now, 'catchup', d.windowId);
     }
   }
 
@@ -426,7 +774,11 @@ const RULE_HEADER: Record<GrowthRuleId, string> = {
   R6: '🔸 Dev-gated features still dark',
 };
 
-const FOOTER = 'Read the full digest anytime: GET /growth/digest (or the dashboard).';
+// C2 (maturation-followthrough-fix Standard C): the operator-facing footer must
+// NOT carry a raw route path (`GET /growth/digest`). That literal is exactly the
+// pattern the always-on tone gate blocks — it is what cost the 2026-06-29 weekly
+// window (`send-blocked`, reason=tone-gate-blocked). Plain English instead.
+const FOOTER = 'Full digest in your dashboard.';
 
 /**
  * Render a `GrowthDigest` into ONE compact Telegram message. The analyst already
@@ -489,7 +841,7 @@ export function formatDigest(digest: GrowthDigest, opts: FormatDigestOptions = {
   }
 
   if (truncatedBulk) {
-    parts.push('', '…(more findings — full digest at /growth/digest)');
+    parts.push('', '…(more findings — see the full digest in your dashboard)');
   }
   parts.push('', FOOTER);
 
@@ -527,7 +879,7 @@ function formatHeaderDate(iso: string, timezone?: string): string {
  *  set alone somehow exceeds it — bulk is already cap-before-concat'd. */
 function clampToTelegram(text: string): string {
   if (text.length <= TELEGRAM_MAX) return text;
-  const note = '\n…(truncated — full digest at /growth/digest)';
+  const note = '\n…(truncated — see the full digest in your dashboard)';
   return text.slice(0, TELEGRAM_MAX - note.length) + note;
 }
 
@@ -569,6 +921,129 @@ export function createGrowthDigestAuditSink(stateDir: string): {
         }
       }
       return out;
+    },
+  };
+}
+
+// ── C1 helpers (maturation-followthrough-fix Standard C) ──────────────────────
+
+/**
+ * Map a raw internal non-send reason to a GENERIC plain-English string safe for
+ * an operator-facing attention item. It NEVER echoes the raw reason (which can
+ * carry the tone gate's cited offending pattern — the very route path / config
+ * key C2 stripped), so the escalation can never re-introduce the leak C2 fixed or
+ * itself trip the tone gate. The raw detail stays in the local audit only.
+ */
+export function genericSendReason(reason: string | undefined): string {
+  const r = (reason ?? '').toLowerCase();
+  if (r.includes('tone') || r.includes('gate') || r.includes('block') || r.includes('review')) {
+    return 'blocked by the outbound safety filter';
+  }
+  if (
+    r.includes('timeout') ||
+    r.includes('unavailable') ||
+    r.includes('provider') ||
+    r.includes('network') ||
+    r.includes('econn') ||
+    r.includes('etimedout') ||
+    r.includes('rate') ||
+    r.includes('429') ||
+    r.includes('503') ||
+    r.includes('502')
+  ) {
+    return 'the messaging provider was unreachable';
+  }
+  return 'delivery was interrupted';
+}
+
+/**
+ * C2 preflight (maturation-followthrough-fix §C2) — a deterministic regression
+ * guard over FORMATTED digest text. It catches a formatter change that
+ * reintroduces an operator-facing leak the tone gate blocks: a raw route path
+ * (`GET /x`, `/growth/digest`), a dotted config key (`monitoring.foo.enabled`),
+ * or a repo/dot-dir file path (`src/…`, `.instar/config.json`). It is NOT the
+ * tone gate (that stays unchanged) — it is a cheap, LLM-free assertion the C2
+ * test suite runs over representative digest content so a leak is caught at
+ * build time, not by a future live block. `clean:true` ⇒ no leak pattern found.
+ */
+export function scanFormattedDigestForLeaks(text: string): { clean: boolean; matches: string[] } {
+  const matches: string[] = [];
+  const patterns: Array<{ label: string; re: RegExp }> = [
+    // Raw HTTP-verb route mention, e.g. "GET /growth/digest", "POST /attention".
+    { label: 'route-verb-path', re: /\b(?:GET|POST|PUT|PATCH|DELETE)\s+\/[A-Za-z0-9]/g },
+    // A bare route/endpoint path segment, e.g. "/growth/digest", "/attention".
+    { label: 'route-path', re: /(?<![\w.])\/(?:growth|attention|guards|metrics|commitments|sessions|conformance|intent)\b\S*/g },
+    // A dotted config key, e.g. "monitoring.growthAnalyst.watcher.enabled".
+    { label: 'config-key', re: /\b(?:monitoring|multiMachine|messaging|sessions|intelligence|subscriptionPool)\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+/g },
+    // A repo-relative or dot-dir file path, e.g. "src/core/Foo.ts", ".instar/config.json".
+    { label: 'file-path', re: /(?<![\w/])(?:src|tests|scripts|logs|state|docs|\.instar|\.claude)\/[A-Za-z0-9._-]+/g },
+  ];
+  for (const { label, re } of patterns) {
+    const found = text.match(re);
+    if (found) for (const m of found) matches.push(`${label}:${m}`);
+  }
+  return { clean: matches.length === 0, matches };
+}
+
+/**
+ * File-backed store for the C1 delivery-attempt records. Machine-local BY DESIGN
+ * (the digest is emitted only by the awake/serving-lease machine, so its retry
+ * ledger is a fact about that machine — never merged from a peer), matching how
+ * `growth-digest.jsonl` is machine-local. Bounded: one record per deferred
+ * window (window cardinality is tiny), resolved by a send / exhaustion / drain.
+ */
+export function createGrowthDigestDeferralStore(stateDir: string): GrowthDigestDeferralStore {
+  /* state-registry: growth-digest-deferrals */
+  const storePath = path.join(stateDir, 'state', 'growth-digest-deferrals.json');
+
+  function load(): Record<string, GrowthDigestDeferral> {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(storePath, 'utf-8');
+    } catch {
+      return {}; // no store yet
+    }
+    try {
+      const parsed = JSON.parse(raw) as { records?: Record<string, GrowthDigestDeferral> };
+      return parsed && typeof parsed === 'object' && parsed.records ? parsed.records : {};
+    } catch {
+      return {}; // corrupt → empty (SAFE: never retry off garbage)
+    }
+  }
+
+  function persist(records: Record<string, GrowthDigestDeferral>): void {
+    try {
+      fs.mkdirSync(path.dirname(storePath), { recursive: true });
+      fs.writeFileSync(storePath, JSON.stringify({ records }, null, 2) + '\n');
+    } catch {
+      /* never throw from the store — a persist fault degrades to legacy, not a crash */
+    }
+  }
+
+  return {
+    get(windowId: string): GrowthDigestDeferral | undefined {
+      return load()[windowId];
+    },
+    upsert(record: GrowthDigestDeferral): void {
+      const records = load();
+      records[record.windowId] = record;
+      persist(records);
+    },
+    remove(windowId: string): void {
+      const records = load();
+      if (windowId in records) {
+        delete records[windowId];
+        persist(records);
+      }
+    },
+    duePending(now: Date): GrowthDigestDeferral[] {
+      const t = now.getTime();
+      return Object.values(load()).filter(
+        (r) => r.state === 'deferred' && new Date(r.nextAttemptAt).getTime() <= t,
+      );
+    },
+    all(): GrowthDigestDeferral[] {
+      return Object.values(load());
     },
   };
 }

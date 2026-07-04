@@ -1220,6 +1220,24 @@
         "maxOpenItems": 100,
         "note": "One record per known peer machine (peers x 1) - bounded by the machine registry size; a peer's record is overwritten in place on every transition, never appended."
       }
+    },
+    {
+      "category": "growth-digest-deferrals",
+      "description": "C1 (maturation-followthrough-fix Standard C) durable delivery-attempt ledger for the weekly growth digest — one record per window that hit a RETRYABLE block (tone-gate/provider/send-error). Keyed on windowId; {attemptCount,firstDeferredAt,nextAttemptAt,lastReason,attentionDedupeKey,state}. Machine-local BY DESIGN: only the awake/serving-lease machine emits the digest, so its retry state is a fact about THIS machine, never merged from a peer (mirrors growth-digest.jsonl).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/growth-digest-deferrals.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 100,
+        "note": "One record per deferred weekly window (window cardinality is tiny). RESOLVED by a successful send (removed), by exhaustion (terminal-failed, then removed on the next drain once the window is in recordedWindows), or by the drain clearing an already-decided window; never grows unbounded."
+      }
     }
   ]
 }

@@ -6110,6 +6110,16 @@ export interface MonitoringConfig {
     /** Render the "all healthy" line even when calm so the operator knows the
      *  analyst ran — the deliberate reversal of over-silence (default true). */
     digestEvenWhenCalm?: boolean;
+    /** C1 (maturation-followthrough-fix Standard C): un-droppable digest delivery.
+     *  When ON, a RETRYABLE blocked send (tone-gate / provider-down / send-error)
+     *  no longer consumes its weekly window — it re-queues under a bounded retry
+     *  contract and raises ONE deduped attention item, instead of silently dropping
+     *  the window (the 2026-06-29 failure). Dev-gated dark: `enabled` OMITTED ⇒
+     *  resolveDevAgentGate (live-on-dev / dark-fleet); OFF restores the legacy
+     *  consume-and-drop behavior (an explicit, tripwire-caught rollback lever). */
+    blockedDigestEscalation?: {
+      enabled?: boolean;
+    };
   };
   /** Periodic mesh config-vs-live-state coherence check (signal-only log warnings).
    *  Dev-gated dark: `enabled` OMITTED ⇒ resolveDevAgentGate (live-on-dev / dark-fleet).

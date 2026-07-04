@@ -560,11 +560,17 @@ export class GrowthMilestoneAnalyst {
           priority: 'normal',
           subjectId: feature.name,
           title: `Dev-gated feature "${feature.name}" is DARK on this dev agent`,
+          // C2 (maturation-followthrough-fix Standard C): the operator-facing
+          // detail must NOT embed the raw config key (`${feature.configPath}`) —
+          // that dotted config-key literal is exactly the pattern the always-on
+          // tone gate blocks (a sibling of the 2026-06-29 footer block). Name the
+          // feature in plain English; the exact config path stays in the local
+          // audit / dashboard, never in the operator-facing digest line.
           detail:
             `${feature.description} It follows the developmentAgent dark-feature gate, ` +
             `so it should run LIVE on a development agent — but the live config resolves ` +
-            `it DARK at ${feature.configPath}. Likely a hardcoded enabled:false default or ` +
-            `an operator override (the forgot-the-gate / misconfig class the lint can't see).`,
+            `it DARK on this agent. Likely a hardcoded disabled default or an operator ` +
+            `override (the forgot-the-gate / misconfig class the lint can't see).`,
           suggestedAction: 'review',
         });
       }
