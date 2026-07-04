@@ -323,6 +323,36 @@ export function migrateConfigConversationFollowThroughDevGate(config: Record<str
 }
 
 /**
+ * slack-followthrough-generalization §8.5: `messaging.actionClaim.slack.enabled`
+ * is a developmentAgent dark feature — `enabled` must be OMITTED so
+ * resolveDevAgentGate resolves it (live-on-dev, dark fleet). Strip a default-shaped
+ * literal `false` (the #1001 mechanism — it would force-dark even a dev agent); an
+ * explicit `true` (operator fleet-flip) is preserved.
+ *
+ * NOTE — no `dryRun:true` write: on real installs `messaging` is an ARRAY of adapter
+ * configs, so `messaging.actionClaim.slack.enabled` resolves `undefined` (which is
+ * exactly what the dev-gate wants) and the observe route defaults `dryRun` to `true`
+ * when absent. Correct dev-gated-dryRun-first behavior is delivered WITHOUT any config
+ * write; writing a dotted key INTO an array would corrupt it. This strip only acts on
+ * an OBJECT-shaped `messaging.actionClaim.slack` carrying a literal `false` (array
+ * shape → safe no-op). Idempotent + existence-checked.
+ */
+export function migrateConfigActionClaimSlackDevGate(config: Record<string, unknown>): boolean {
+  const messaging = config.messaging;
+  // Real installs use an ARRAY of adapter configs — this feature's config path is
+  // object-shaped; a safe no-op on the array shape.
+  if (!messaging || typeof messaging !== 'object' || Array.isArray(messaging)) return false;
+  const ac = (messaging as Record<string, unknown>).actionClaim as Record<string, unknown> | undefined;
+  if (!ac || typeof ac !== 'object') return false;
+  const slack = ac.slack as Record<string, unknown> | undefined;
+  if (!slack || typeof slack !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(slack, 'enabled')) return false;
+  if (slack.enabled !== false) return false;
+  delete slack.enabled;
+  return true;
+}
+
+/**
  * "Self-Unblock Before Escalating" (docs/specs/self-unblock-before-escalating.md):
  * the two nested blockerLedger sub-features — selfUnblockChecklist + durableVaultSession
  * — are dev-gated dark features resolved via resolveDevAgentGate, so the config must
@@ -4523,7 +4553,7 @@ setTimeout(() => process.exit(0), 2000);
     // Agent Awareness: an agent that doesn't know this exists will be confused when a
     // commitment appears after it says "I'll restart X". Content-sniffed; idempotent.
     if (!content.includes('Action-Claim Follow-Through Sentinel')) {
-      content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with \`messaging.actionClaim.enabled\` (dev-first soak before fleet). Proactive: user asks "why did a commitment appear when I said I'd restart something?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
+      content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with \`messaging.actionClaim.enabled\` (dev-first soak before fleet). It now covers **Slack** conversations too (a promise born in a Slack thread registers a durable commitment bound to the conversation's minted id, delivered back into that exact thread across restarts — dev-gated dark behind \`messaging.actionClaim.slack\`, dryRun-first) and **time-boxed conversational promises** ("I'll post that in about 5 minutes / by EOD / I'll check in"), not just dev-ops verbs. Proactive: user asks "why did a commitment appear when I said I'd restart something / promised to post in 5 min?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
@@ -8721,6 +8751,17 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.skipped.push('config.json: conversationIdentity.followThrough.enabled dev-gate already correct (omitted or operator-set)');
     }
 
+    // slack-followthrough-generalization §8.5: messaging.actionClaim.slack.enabled is a
+    // dev-gated dark feature — strip a default-shaped literal `false` so the gate resolves
+    // it (live-on-dev, dark fleet). Array-shaped messaging → safe no-op (no config write;
+    // the route defaults dryRun:true and the dev-gate resolves undefined enabled).
+    if (migrateConfigActionClaimSlackDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped messaging.actionClaim.slack.enabled=false so the developmentAgent gate resolves it (live-on-dev, dark fleet)');
+    } else {
+      result.skipped.push('config.json: messaging.actionClaim.slack.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
     // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger
     // dev-gated sub-features (selfUnblockChecklist + durableVaultSession) OMIT
     // `enabled`. Strip a default-shaped `false` so the developmentAgent gate resolves
@@ -11879,17 +11920,31 @@ process.stdin.on('end', async () => {
     if (!enabled) process.exit(0);
 
     const input = JSON.parse(data);
-    const message = input.last_assistant_message || '';
-    const topicRaw = process.env.INSTAR_TELEGRAM_TOPIC;
-    if (!message || message.length < 20 || !topicRaw) process.exit(0);
+    const rawMessage = input.last_assistant_message || '';
+    // slack-followthrough-generalization §4.4: key the conversation from
+    // INSTAR_CONVERSATION_ID ONLY — NO INSTAR_TELEGRAM_TOPIC fallback (the fallback
+    // re-introduces the lifeline cross-channel mis-delivery; a shared/lifeline
+    // session never carries this env, so it registers nothing — a safe miss).
+    // Number.isFinite admits a negative (minted Slack) id.
+    const topicRaw = process.env.INSTAR_CONVERSATION_ID;
+    if (!rawMessage || !topicRaw) process.exit(0);
     const topicId = parseInt(topicRaw, 10);
     if (!Number.isFinite(topicId)) process.exit(0);
+    // Clamp the payload (§4.4): a pathological multi-MB reply would exceed the
+    // server body-parser limit → a silent non-registration; the classifiers only
+    // need the first 16KB. NO length floor — the high-precision classifiers are the
+    // semantic filter, so terse promises ("I'll fix it") must not be dropped.
+    const message = rawMessage.slice(0, 16384);
+    const bindToken = process.env.INSTAR_BIND_TOKEN;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       await fetch('http://127.0.0.1:' + serverPort + '/action-claim/observe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        headers: Object.assign(
+          { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+          bindToken ? { 'X-Instar-Bind-Token': bindToken } : {},
+        ),
         body: JSON.stringify({ message, topicId }),
         signal: controller.signal,
       });

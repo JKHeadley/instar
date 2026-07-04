@@ -176,6 +176,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Delivery is externally visible, so the block ships dryRun:true even live-on-dev: the id<0 arm returns typed §5.1 non-deliveries + would-deliver audit lines (never success-shaped) until a deliberate dryRun:false flip for the live proof. Zero consumers ride the funnel in increment 1, so enabling is inert until the §6.1 proof-consumer increment; no spend, no destructive action, no egress while dry.',
   },
   {
+    name: 'actionClaimSlack',
+    configPath: 'messaging.actionClaim.slack.enabled',
+    description: 'Slack follow-through generalization — the /action-claim/observe registration lane for NEGATIVE (minted Slack) conversation ids (spec: slack-followthrough-generalization §8.1). Registration only; follow-through DELIVERY rides the separate conversationIdentity.followThrough gate.',
+    justification: 'SIGNAL-ONLY: registration fires AFTER the Slack reply already went out (the Stop hook runs at turn end) — it can never block/delay/rewrite a message. Ships messaging.actionClaim.slack.dryRun:true even live-on-dev: the observe route runs the full classify + §7 bind-verify + would-register decision and appends a logs/action-claim-observe.jsonl audit line, but performs NO record() until a deliberate dryRun:false for the live proof. A minted-id write is §7 fail-closed (a foreign/unauthenticated caller is refused); the shared per-topic cap + 6h expiry bound the durable surface. The master messaging.actionClaim.enabled must be on for the Stop hook to POST at all. No spend, no destructive action, no egress while dry. Same dogfooding posture as conversationFollowThrough.',
+  },
+  {
     name: 'prHandLease',
     configPath: 'monitoring.prHandLease.enabled',
     description: 'Per-branch PR-push lease so two of the agent’s own concurrent sessions can’t push competing commits to the same branch (spec: parallel-hand-pr-lease).',
