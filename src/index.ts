@@ -204,8 +204,7 @@ export { TrustRecovery } from './core/TrustRecovery.js';
 export type {
   IncidentRecord, RecoverySuggestion, TrustRecoveryConfig,
 } from './core/TrustRecovery.js';
-export { AutonomySkill } from './core/AutonomySkill.js';
-export type { AutonomySkillDeps, AutonomyResponse } from './core/AutonomySkill.js';
+// AutonomySkill removed 2026-07-04 (CMT-1907) — unwired dead-code keyword intent recognizer.
 export { SecretRedactor } from './core/SecretRedactor.js';
 export type {
   SecretType, RedactionEntry, RedactionResult, RestorationResult,

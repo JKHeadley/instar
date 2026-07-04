@@ -1,0 +1,24 @@
+## What Changed
+
+The "Intelligence Infers, Keywords Only Guard" ratchet (`tests/unit/keyword-intent-decision-ratchet.test.ts`) was flipped from report mode to **enforcing** (`ENFORCE = false → true`) after a clean soak cycle — a net-new piece of code that decides what a human meant from a keyword/phrase list now **fails CI** until it is converted to LLM-with-context or justified as an allowlisted survivor. In the same change the three remaining latent offenders were resolved, dropping the baseline `4 → 1`:
+
+- `src/core/TopicClassifier.ts` (`scoreKeywords`) — verified genuinely dead (zero runtime importers; only a test-only consumer) and **removed** (module + its e2e describe block).
+- `src/core/AutonomySkill.ts` (`INTENT_PATTERNS`) — verified unwired (only a barrel re-export + its own unit test) and **removed** (module + barrel export in `src/index.ts` + unit test).
+- `src/core/AgentReadinessScorer.ts` (`scoreText`) — a legitimate **survivor** (it scores a task's coordination-vs-judgment nature for the advisory `/agent-readiness` endpoint, not message intent) and was **allowlisted**, not removed.
+
+Only `topicProfileIngress` remains as the sole baseline offender; its LLM conversion lands separately.
+
+## What to Tell Your User
+
+Nothing user-visible changed — this is internal development-infrastructure hardening. It makes a code-quality rule (never guess what a person meant from a keyword list — let the intelligence read the whole message) a hard build check instead of an advisory one, and deletes two unused internal modules that could have re-introduced that bug if wired up later. No feature, endpoint, or behavior you interact with is affected.
+
+## Summary of New Capabilities
+
+None — internal change (no user-facing surface). The keyword-intent ratchet now enforces (fails CI on a net-new offender) rather than only reporting, and two dead internal modules were removed.
+
+## Evidence
+
+- `npx vitest run tests/unit/keyword-intent-decision-ratchet.test.ts tests/e2e/discovery-round2-final.test.ts` → 17 passed; ratchet reports `[KEYWORD-INTENT] 1 keyword-list intent decisions (baseline 1, mode=ENFORCE)`.
+- `npx tsc --noEmit` → exit 0 (no lingering references to the removed symbols).
+- `npm run lint` → exit 0.
+- Wiring verification recorded in the side-effects artifact: `grep` across `src/` for static imports, dynamic `import()`, `new X`, and function-name imports of the removed symbols → zero runtime consumers.

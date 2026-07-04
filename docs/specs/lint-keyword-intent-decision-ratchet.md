@@ -44,6 +44,33 @@ variable to **make a decision** (classify intent, gate/reroute/swallow a message
 Ship report-mode first (prints the offender set, does not fail CI) for one cycle to confirm zero false
 positives against the allowlist, then flip to failing. Same graduated discipline as other ratchets.
 
+### Flip to ENFORCE + latent-offender resolution — 2026-07-04 (CMT-1907)
+The soak cycle passed (the lint merged 2026-07-03; many PRs landed since with the detector
+clean-by-construction and zero false positives). Two things happened in this change:
+
+1. **`ENFORCE = false → true`** — the `<= BASELINE` guard is now HARD. No net-new keyword-intent
+   offender can merge; a new offender in the five scanned dirs fails CI until it is converted to
+   LLM-with-context or justified as an allowlisted survivor. This is the standard's enforcement teeth.
+   Rollback lever: set `ENFORCE = false` (back to report-only) — no code path outside the test changes.
+
+2. **The three LATENT offenders resolved, `BASELINE 4 → 1`:**
+   - **`core/TopicClassifier.ts` (#4, `scoreKeywords`)** — verified genuinely DEAD: zero runtime importers
+     across `src/` (no static import, no dynamic `import()`, no registry/dynamic reference, no
+     function-name import); the sole consumer was a test-only e2e block. **REMOVED** (module + its
+     `discovery-round2-final.test.ts` describe block). A keyword classifier nothing calls is dead weight —
+     deleted, not converted.
+   - **`core/AutonomySkill.ts` (#5, `INTENT_PATTERNS`)** — verified unwired: only a barrel re-export in
+     `src/index.ts` plus its own unit test; no `new AutonomySkill` anywhere in `src/`. **REMOVED** (module +
+     barrel export + unit test).
+   - **`core/AgentReadinessScorer.ts` (#6, `scoreText`)** — a legitimate **SURVIVOR**: it scores a TASK'S
+     coordination-vs-judgment NATURE for the advisory `/agent-readiness` endpoint (`COORDINATION_SIGNALS` /
+     `JUDGMENT_SIGNALS` density), NOT "what a human MEANT by a message." It never gates/reroutes/swallows a
+     user message. **Moved to the `ALLOWLIST`** (cleared class), not removed or converted.
+
+   Only `#1 topicProfileIngress` (`parseProfileTrigger`) remains the sole baseline offender; its LLM
+   conversion lands separately. `EXPECTED_OFFENDERS` and the detector-alive guard are kept consistent with
+   `BASELINE = 1`.
+
 ## Open questions (resolved at implementation)
 1. Detector as a bespoke AST/regex walker vs an eslint custom rule — **RESOLVED: bespoke Node/vitest
    test**, mirroring `no-silent-fallbacks`. eslint is not wired for custom rules here, and the house style
@@ -65,3 +92,7 @@ inline `@intent-safety-floor-ok` marker (mirroring `@silent-fallback-ok`); the a
 subtracted via an explicit per-file `ALLOWLIST` documented by symbol. Verified clean-by-construction on
 `JKHeadley/main`: exactly the six offenders remain, zero false positives on the enum validators / security
 scrubbers / process-and-error matchers / structured-output parsers.
+
+**Update 2026-07-04 (CMT-1907):** `ENFORCE` is now `true` and `BASELINE` is `1` — see the *Flip to ENFORCE*
+subsection under Rollout. Three original offenders (2 removed as dead code, 1 allowlisted as a task-nature
+survivor) were resolved; only `topicProfileIngress` remains.

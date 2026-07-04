@@ -148,11 +148,19 @@ function getSourceFiles(): string[] {
 // — Conversion #3 under this standard (docs/specs/keyword-intent-conversions-1-and-3.md).
 // It no longer keyword-decides intent, so it is removed from the baseline and BASELINE
 // dropped 5→4. (topicProfileIngress #1 remains — its conversion lands separately.)
+//
+// 2026-07-04 (CMT-1907 — lint-flip-to-enforce): the three LATENT offenders were resolved,
+// dropping BASELINE 4→1:
+//   #4 core/TopicClassifier.ts — verified genuinely DEAD (zero runtime imports; only a
+//      test-only consumer). REMOVED (module + its e2e block). Not converted — deleted.
+//   #5 core/AutonomySkill.ts — verified unwired (only a barrel re-export in src/index.ts +
+//      its own unit test; no runtime consumer). REMOVED (module + barrel export + unit test).
+//   #6 core/AgentReadinessScorer.ts — a legitimate SURVIVOR: scoreText scores a TASK'S
+//      coordination-vs-judgment NATURE for an advisory automation-readiness endpoint, NOT
+//      "what a human MEANT by a message". Moved to the ALLOWLIST (cleared class), not removed.
+// topicProfileIngress #1 remains the sole baseline offender — its conversion lands separately.
 const EXPECTED_OFFENDERS = [
   'core/topicProfileIngress.ts',   // #1 parseProfileTrigger — framework/model/thinking NL regexes (LIVE)
-  'core/TopicClassifier.ts',       // #4 scoreKeywords — TOPIC/INTENT/PROBLEM keyword density (latent)
-  'core/AutonomySkill.ts',         // #5 INTENT_PATTERNS — autonomy phrases (latent, exported/unwired)
-  'core/AgentReadinessScorer.ts',  // #6 scoreText — coordination/judgment lexicon density (advisory)
 ].sort();
 
 // ── Allowlist — cleared classes that the detector's signature trips but that are NOT
@@ -183,19 +191,26 @@ const ALLOWLIST: Record<string, string> = {
   'monitoring/HumanAsDetectorLog.ts': 'SIGNAL_RULES — observe-only signal logging that feeds an LLM distiller; never decides a message\'s fate (cheap-prefilter→LLM template).',
   // A2A reply-warrant heuristic (membership + openers) — decides whether to reply to a PEER agent.
   'threadline/WarrantsReplyGate.ts': 'CONTROL_PHRASES.has(norm) + opener regexes — A2A reply-warrant heuristic (whole-value membership, survivor #1); never swallows operator input.',
+  // Task-NATURE scorer (coordination-vs-judgment), NOT message-intent — advisory readiness endpoint.
+  'core/AgentReadinessScorer.ts': 'scoreText — scores a TASK\'s coordination-vs-judgment nature (COORDINATION_SIGNALS/JUDGMENT_SIGNALS density) for the advisory /agent-readiness endpoint; it grades work-nature for automation-readiness, never gates/reroutes/swallows a user message. Survivor, cleared class (CMT-1907).',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RATCHET BASELINE — only DECREASE, never increase. The count of genuine offenders
 // (per file). Landed at 6 (the audit's six findings). When an offender is converted to
 // LLM-with-context (and thus stops matching), lower this number. 6→5 NicknameCommand
-// (MoveIntentClassifier, #1367); 5→4 hubCommands (HubIntentClassifier, Conversion #3).
+// (MoveIntentClassifier, #1367); 5→4 hubCommands (HubIntentClassifier, Conversion #3);
+// 4→1 the three LATENT offenders resolved (CMT-1907): #4 TopicClassifier + #5 AutonomySkill
+// REMOVED as dead code, #6 AgentReadinessScorer ALLOWLISTED as a task-nature survivor. Only
+// #1 topicProfileIngress remains (its LLM conversion lands separately).
 // ═══════════════════════════════════════════════════════════════════════════════
-const BASELINE = 4;
+const BASELINE = 1;
 
-// Report mode (graduated rollout). While false, the net-new `<= BASELINE` guard only
-// WARNS — it never fails CI. Flip to true after a clean soak to make it hard.
-const ENFORCE = false;
+// Enforcement mode (graduated rollout). Shipped in REPORT mode for one soak cycle (the
+// lint merged 2026-07-03, many PRs since, detector clean-by-construction); flipped to
+// ENFORCE on 2026-07-04 (CMT-1907) so the `<= BASELINE` ratchet is now HARD — no net-new
+// keyword-intent offender can merge. Rollback lever: set back to false (report only).
+const ENFORCE = true;
 
 describe('Keyword-Intent Decision Ratchet ("Intelligence Infers, Keywords Only Guard")', () => {
   const files = getSourceFiles();
@@ -213,7 +228,7 @@ describe('Keyword-Intent Decision Ratchet ("Intelligence Infers, Keywords Only G
     expect(flagged.length).toBeGreaterThan(0);
   });
 
-  it('detects all six known offenders (detector-alive guard)', () => {
+  it('detects every remaining known offender (detector-alive guard)', () => {
     for (const off of EXPECTED_OFFENDERS) {
       expect(flaggedRels.has(off), `detector no longer flags known offender ${off}`).toBe(true);
       expect(offenders, `known offender ${off} must not be allowlisted/floor-exempted`).toContain(off);

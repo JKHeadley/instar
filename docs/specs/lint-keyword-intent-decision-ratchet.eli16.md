@@ -35,3 +35,18 @@ Secondary change: a one-line comment marker, `@intent-safety-floor-ok`, added to
 ## What ships when
 
 All at once, in one small PR: the ratchet test, the one-line safety-floor marker, and the design/audit/standard docs it references. It is enforcement-in-report-mode from day one; the flip to hard enforcement is a later, deliberate one-line change after the soak confirms zero false positives in CI.
+
+## Update — 2026-07-04: the flip to enforcing, and cleaning up the last three (CMT-1907)
+
+The soak is over. The lint has been running in report mode since 2026-07-03 with many PRs landing since, and it stayed clean the whole time. So this change does two things:
+
+**1. It gives the rule teeth.** The one flag flips from report mode to enforcing: `ENFORCE = false → true`. From now on, if anyone adds a NEW piece of code that guesses what a human meant from a keyword list, the build fails until they fix it — either by letting the intelligence read the whole message, or by justifying it as one of the two allowed survivors. If this ever turns out too aggressive, flipping that one flag back to `false` returns it to report-only; nothing else changes.
+
+**2. It clears the last three known offenders**, so the "how many are left" number drops from four to one:
+
+- **Two were dead code.** `TopicClassifier` (a keyword-based topic guesser) and `AutonomySkill` (a keyword-based "did you ask to change autonomy?" guesser) were both real files with real tests — but nothing in the running system actually called them. We checked thoroughly: no imports, no dynamic lookups, no registry wiring. A guesser that nothing calls is just weight sitting on the shelf that could get wired up later and reintroduce the exact bug. So both were **deleted** (the modules, their tests, and one now-empty export line). Nothing converted — nothing was using them to convert.
+- **One is a legitimate keeper.** `AgentReadinessScorer` also matches the pattern's shape, but it isn't doing the forbidden thing. It scores whether a *task* is mostly coordination (good for an agent to automate) or mostly judgment (better left to a human) — it's grading the NATURE of a piece of work for an advisory endpoint, not deciding what a person meant by a message. It never gates, reroutes, or swallows anything a user says. So it was moved to the allowlist with a one-line note, exactly like the other cleared cases.
+
+The only offender left is `topicProfileIngress` (the "pin this topic to model X / framework Y" recognizer), whose conversion to the intelligence-reads-it approach lands in its own separate change.
+
+**What you'd actually decide here:** whether it's the right moment to make the rule hard (yes — the soak passed), and whether deleting two unused files is safe (yes — they were verified dead, the build and the full test run stay green, and if they're ever genuinely wanted the old versions live in git history).
