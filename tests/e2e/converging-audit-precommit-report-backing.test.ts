@@ -36,6 +36,7 @@ const COPY_FILES = [
   'scripts/lib/classify-tier.mjs',
   'scripts/lib/convergence-recognition.mjs',
   'scripts/lib/operator-surface.mjs',
+  'scripts/lib/self-action-detect.mjs',
   'skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs',
   'docs/STANDARDS-REGISTRY.md',
 ];
