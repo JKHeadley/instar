@@ -44,10 +44,20 @@ export interface MultiMachineSyncStatus {
   leaseHolder: string | null;
   leaseEpoch: number;
   holdsLease: boolean;
-  /** 'clear' | 'contested' (more than one awake machine in the registry) | 'self-suspended'. */
+  /** 'clear' | 'contested' (more than one live-awake machine, or a latched pull-contest) | 'self-suspended'. */
   splitBrainState: 'clear' | 'contested' | 'self-suspended';
   protocolVersion: number;
-  awakeMachineCount: number;
+  /**
+   * machine-coherence-guard §5b — the number of machines currently awake. DERIVED
+   * FROM LIVE STATE, not last-written registry symbols: on a lease+pull mesh it is
+   * the lease-live count (self holds + distinct fresh/live/self-claiming peers);
+   * on a git-only mesh it degrades to the registry-role count; on a read failure
+   * it is `null` (honest, never a silent 0). `awakeMachineCountSource` names which
+   * basis spoke — always read the two together.
+   */
+  awakeMachineCount: number | null;
+  /** Which basis produced `awakeMachineCount` (machine-coherence-guard §5b, D5). */
+  awakeMachineCountSource: 'lease-live' | 'registry-roles' | 'unavailable';
   /**
    * multi-machine-lease-self-heal observability (Agent Awareness). F1 tick-watchdog
    * health — answers "did the watchdog fire?" / "is it disarmed?". `lastTickAgeMs`
@@ -958,25 +968,70 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * machine-coherence-guard §5b — the freshness bound for a peer lease observation
+   * to count toward `awakeMachineCount`: 3× the lease-pull interval, floored at
+   * 30s. A pull happens every `leasePullIntervalMs`, so 3 missed pulls (or a peer
+   * that has gone genuinely quiet) ages its last observation out of the count —
+   * the post-failover stale-claim overcount cannot linger past this window.
+   */
+  private leaseObservationStaleMs(): number {
+    const pull = this.config.multiMachine?.leasePullIntervalMs ?? DEFAULT_LEASE_PULL_INTERVAL_MS;
+    return Math.max(30_000, 3 * pull);
+  }
+
+  /**
    * Observability snapshot for /health.multiMachine.syncStatus (spec §11).
-   * Always returns valid fields (never null/throws) — this is the Phase-1
-   * "feature is alive" surface. On a single-machine install it reports the
-   * trivially-held lease.
+   * NEVER throws. Most fields are always valid; `awakeMachineCount` is `number |
+   * null` (source-tagged via `awakeMachineCountSource`) per machine-coherence-guard
+   * §5b — a read failure yields `null`+`'unavailable'`, never a silent 0. On a
+   * single-machine install it reports the trivially-held lease.
    */
   getSyncStatus(): MultiMachineSyncStatus {
-    let awakeMachineCount = 0;
-    try {
-      const reg = this.identityManager.loadRegistry();
-      for (const e of Object.values(reg.machines ?? {})) {
-        if (e.role === 'awake') awakeMachineCount++;
+    // machine-coherence-guard §5b — awakeMachineCount derives from LIVE state.
+    // Preferred basis (lease-live): the fenced lease is the authority for "awake",
+    // so when the lease+pull mesh is active we count self's hold + each distinct
+    // peer whose most-recent lease observation is fresh, live, and a self-claim.
+    // This is the fix for "awakeMachineCount:0 while the Mini holds the lease and
+    // both machines are reachable over Tailscale/LAN" — the old registry-role
+    // count depended on a laggy git-synced symbol that a dead Cloudflare rope or a
+    // slow registry push could leave stale, so it read 0 even though the lease
+    // (leaseHolder) correctly named the holder. The count now tracks the same
+    // authoritative signal leaseHolder does. Legacy git-only mesh (no lease
+    // coordinator, or no pull capability) degrades to the registry-role count,
+    // now HONESTLY tagged rather than silently conflated.
+    let awakeMachineCount: number | null;
+    let awakeMachineCountSource: MultiMachineSyncStatus['awakeMachineCountSource'];
+    if (this.leaseCoordinator && this.leaseCoordinator.canPullPeers()) {
+      try {
+        awakeMachineCount = this.leaseCoordinator.deriveLiveAwakeCount(this.leaseObservationStaleMs());
+        awakeMachineCountSource = 'lease-live';
+      } catch {
+        // @silent-fallback-ok — a read-only /health field: an unreadable lease
+        // view yields null+unavailable (honest), never a fabricated count.
+        awakeMachineCount = null;
+        awakeMachineCountSource = 'unavailable';
       }
-    } catch { /* @silent-fallback-ok — registry unreadable → count 0 */ }
+    } else {
+      try {
+        let n = 0;
+        const reg = this.identityManager.loadRegistry();
+        for (const e of Object.values(reg.machines ?? {})) {
+          if (e.role === 'awake') n++;
+        }
+        awakeMachineCount = n;
+        awakeMachineCountSource = 'registry-roles';
+      } catch {
+        // @silent-fallback-ok — registry unreadable → honest null, never a silent 0.
+        awakeMachineCount = null;
+        awakeMachineCountSource = 'unavailable';
+      }
+    }
 
     const holds = this.holdsLease();
     const selfSuspended = this.leaseCoordinator?.isSuspended ?? false;
     const splitBrainState: MultiMachineSyncStatus['splitBrainState'] = selfSuspended
       ? 'self-suspended'
-      : (awakeMachineCount > 1 || this.leasePullContested)
+      : ((awakeMachineCount != null && awakeMachineCount > 1) || this.leasePullContested)
         ? 'contested'
         : 'clear';
 
@@ -989,6 +1044,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       splitBrainState,
       protocolVersion: SEAMLESSNESS_PROTOCOL_VERSION,
       awakeMachineCount,
+      awakeMachineCountSource,
       leaseTickWatchdog: this.leaseCoordinator
         ? {
             lastTickAgeMs: this.lastTickRunMonoMs > 0 ? this.monoNowMs() - this.lastTickRunMonoMs : -1,

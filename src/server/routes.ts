@@ -13977,6 +13977,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             epoch: sync.leaseEpoch,
             holdsLease: sync.holdsLease,
             awakeMachineCount: sync.awakeMachineCount,
+            awakeMachineCountSource: sync.awakeMachineCountSource,
             splitBrainState: sync.splitBrainState,
           }
         : null,

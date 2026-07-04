@@ -497,6 +497,48 @@ export class LeaseCoordinator {
   }
 
   /**
+   * machine-coherence-guard §5b — the LEASE-LIVE `awakeMachineCount` derivation
+   * (the fix for "awakeMachineCount:0 while both machines are online and a peer
+   * holds the lease"). The count is derived from the AUTHORITATIVE lease signal,
+   * NOT the laggy git-synced registry role field:
+   *
+   *   awakeMachineCount = (self holdsLease() ? 1 : 0)
+   *                     + #{ distinct online peers P whose most-recent observation
+   *                         satisfies ALL of }:
+   *       (i)  FRESHNESS — observed within `staleMs` (a stale claim contributes
+   *            nothing; the post-failover stale-claim overcount dies here);
+   *       (ii) LIVENESS  — the observed lease is NOT expired on OUR clock (an
+   *            expired lease carries no authority — the same rule the supersede
+   *            gate enforces);
+   *       (iii) SELF-CLAIM — `lease.holder === P`. A pulled lease naming a THIRD
+   *            machine is that peer's HEARSAY about someone else and contributes
+   *            nothing (the third machine's own self-claim is counted when IT is
+   *            pulled).
+   *
+   * Duplicate ids are impossible (map keying); observations are keyed on the
+   * machine-auth-verified DIALED peer id (never a response-body holder claim) and
+   * never include self, so `holder === P ≠ self` means self can never be
+   * double-counted. ADVISORY only (L4/SEC-4) — this count NEVER drives an
+   * automatic demotion; it feeds observability + the human-decision flow.
+   *
+   * Clock assumption (R2-N5): lease liveness is judged on the OBSERVER's clock;
+   * the freshness bound caps how long any one misjudged observation can distort
+   * the count, and the pool registry's clock-skew gate is the mesh-wide backstop.
+   */
+  deriveLiveAwakeCount(staleMs: number): number {
+    let count = this.holdsLease() ? 1 : 0;
+    const now = this.now();
+    for (const [peerId, rec] of this.peerLeaseObservations()) {
+      if (!rec.lease) continue; // an honest "no lease" — the peer is not awake
+      if (now - rec.observedAtMs > staleMs) continue; // (i) freshness
+      if (this.fl.isExpired(rec.lease, now)) continue; // (ii) liveness
+      if (rec.lease.holder !== peerId) continue; // (iii) self-claim (no hearsay)
+      count++;
+    }
+    return count;
+  }
+
+  /**
    * Whether the most-recently OBSERVED peer lease genuinely SUPERSEDES ours and
    * may therefore drive a pull-loop demotion. True ONLY when that peer lease is
    * LIVE (not expired) AND at a STRICTLY HIGHER epoch than our own self-issued
