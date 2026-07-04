@@ -116,10 +116,33 @@ veto-only predicate), `tests/unit/external-hog-floor.test.ts` (24 tests).
   root-daemon, launchctl, live-parent, not-sustained, outside-allowlist ×2), and the 8
   zombie-classify cases as floor fixtures (permits only the exthost-kill case). Typecheck clean.
 
+### Slice 4 — CPU-delta signal core (monotonic clock, fail-closed)
+Files: `src/monitoring/ExternalHogCpuDelta.ts` (`monotonicNowMs`, `computeCoreEquivalents`,
+`meetsThreshold`, the `CPU_DELTA_UNKNOWN` sentinel), `tests/unit/external-hog-cpu-delta.test.ts`
+(12 tests).
+- **What it is:** the pure `Δcputime / Δwall` core-equivalents computation feeding the
+  `sustainedHighCpu` floor invariant. Δwall is a MONOTONIC clock (sleep-paused, NTP-immune).
+- **Over/under-block:** it produces a SIGNAL, not a decision — it never kills. Its only
+  safety obligation is to never produce a FALSE "sustained hog" (which the floor would then
+  treat as a passing invariant). It fails CLOSED: non-positive Δwall, implausibly-large Δwall
+  (a sleep slipped through), a decreasing counter (pid reuse), or any non-finite input →
+  `CPU_DELTA_UNKNOWN`, and `meetsThreshold(UNKNOWN, …) === false` — so an unknown reading is
+  NEVER a confirmed hog. It cannot over-report an idle process as sustained.
+- **Signal vs authority:** signal-only; feeds the deterministic floor. Compliant.
+- **Multi-machine:** pure logic, no state — N/A.
+- **External surfaces:** none — no I/O, no subprocess (the actual `ps` sampling is a later
+  slice; this is only the delta math over samples).
+- **Rollback:** delete the module; nothing consumes it yet.
+- **Tests:** 12 — core-equiv math (2 cores / idle / 1 core), fail-closed on every implausible
+  interval (backward/same-instant Δwall, 3h-sleep Δwall, decreasing counter, NaN/Infinity),
+  jitter tolerance within the factor, `meetsThreshold` (UNKNOWN never a hog), monotonicity.
+
 ## Phase 5 — Second-pass review
 
-REQUIRED (touches "sentinel"/"guard"/kill decision logic). The floor slice (3) is the first
-decision-logic slice, so a dedicated reviewer subagent independently audits it below.
+REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
+have landed with independent review: the floor (3) and the CPU-delta signal (4).
+
+### Slice-3 (floor) reviewer verdict
 
 ### Reviewer verdict
 
@@ -147,3 +170,24 @@ step-0 strict-boolean guard runs before every truthiness check and vetoes with
 dropped/undefined field fails CLOSED; valid-boolean cases pass step 0 and still hit their
 specific vetoes (no regression, confirmed by the 30 passing tests incl. the 6 new
 missing-field/non-boolean fixtures). The original fail-open concern is fully closed.
+
+### Slice-4 (CPU-delta) reviewer verdict
+
+**Round 1 — Concern raised (VALID, fixed):** `computeCoreEquivalents` guarded an
+implausibly-LARGE Δwall but had NO symmetric guard for an implausibly-SMALL Δwall — the
+FALSE-HIGH (dangerous) direction. Since `ps time=` is 1-second-quantized, a sub-window
+interval inflates the ratio: `computeCoreEquivalents(s(0,0), s(1,200), {window:30_000})` →
+1/0.2 = 5.0 cores from an IDLE process, and `meetsThreshold(5.0,1.5)===true` — a false
+sustained hog. The reviewer confirmed everything else sound (monotonic clock; large-Δwall,
+non-positive, decreasing-counter, non-finite all fail closed; no other false-high path).
+
+**Resolution:** added the symmetric lower bound — `dWallMs < intendedWindowMs / factor →
+CPU_DELTA_UNKNOWN` — mirroring the large-side guard, so a sub-window interval fails CLOSED.
+Added the reviewer's exact fixture (200ms interval → UNKNOWN, never a hog) + fixed the
+"single core" test to sample a full window. 13 tests pass, typecheck clean.
+
+**Round 2 — Concur.** The reviewer re-checked and CONCURRED: the symmetric lower bound
+`dWallMs < intendedWindowMs / factor` (7500ms for a 30s window) fails the sub-window
+false-high closed (the s(0,0)→s(1,200) fixture returns UNKNOWN); the [0.25×, 4×] accepted
+band still passes the full-window and 90s-jitter cases; both bounds sit inside the
+`intendedWindowMs > 0` block so a zero window disables them together as documented.
