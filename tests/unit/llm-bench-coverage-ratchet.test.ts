@@ -44,6 +44,12 @@ const EXEMPT_BASELINE = [
   // benchmark IS the benchmark; a generic harness task would re-test it less
   // precisely. Argued in src/data/llmBenchCoverage.ts.
   'MoveIntentClassifier',
+  // HubIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
+  // benchmark (tests/unit/hub-intent-discrimination.test.ts — deterministic
+  // corpus + opt-in INSTAR_LIVE_HUB_INTENT real-model accuracy, the graduation
+  // gate). Same rationale as MoveIntentClassifier; argued in
+  // src/data/llmBenchCoverage.ts.
+  'HubIntentClassifier',
   // Wave-2 argued exemptions (2026-07-02) — each argues a real reason in
   // src/data/llmBenchCoverage.ts; evidence trail in the bench harness's
   // tasks-wave2/SKIPPED.md (grep-verified delegation/alias/unwired claims).

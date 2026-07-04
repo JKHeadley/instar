@@ -151,3 +151,20 @@ gate, or update the fleet CLAUDE.md guidance for the dark window) — not a bloc
 `LLM_UNTRUSTED_INPUT` classification. It judges an inbound hub message's bind-intent (untrusted user
 text), so it is classified `true` in `src/data/llmBenchCoverage.ts`. Mechanical consequence of the
 component registration; no behavior change.
+
+---
+
+## Post-rebase addendum (main now carries #1367)
+
+After the move-intent exemplar (PR #1367) merged, `main` gained the keyword-intent classification-ratchet family. Rebasing this branch onto it required registering `HubIntentClassifier` (a new `COMPONENT_CATEGORY` key) across every classification map, exactly mirroring how #1367 registered `MoveIntentClassifier`:
+
+- `src/data/llmBenchCoverage.ts`:
+  - `LLM_BENCH_COVERAGE`: `{ exempt }` — ships its own discrimination benchmark (`tests/unit/hub-intent-discrimination.test.ts` + opt-in `INSTAR_LIVE_HUB_INTENT=1`), the co-located benchmark IS the benchmark (same argument as MoveIntentClassifier / InteractivePoolCanaryJudge).
+  - `LLM_JUDGES_CLAIMS`: bare `false` — classifies a USER's bind-intent, not an agent/session completion/health/credit claim.
+  - `LLM_PARSER_CONTRACT`: `{ pending: 'contract-wave-2' }` — parses a closed intent(open/tie/null) + targetTopicId-enum + confidence verdict.
+  - `LLM_UNTRUSTED_INPUT`: `true` — judges untrusted inbound hub text (landed in the prior fix commit).
+- Pinned shrink-only baselines updated (each a visible, reviewed act): `EXEMPT_BASELINE` (`tests/unit/llm-bench-coverage-ratchet.test.ts`) and `PENDING_BASELINE` (`tests/unit/parser-contract-classification-ratchet.test.ts`) each gain `HubIntentClassifier`.
+- `tests/unit/keyword-intent-decision-ratchet.test.ts`: `threadline/hubCommands.ts` removed from `EXPECTED_OFFENDERS` and `BASELINE` dropped 5→4 (the converted file no longer keyword-decides intent; the detector confirms exactly 4 remaining offenders). `topicProfileIngress` #1 remains for its own conversion.
+- Merge conflicts in `componentCategories.ts`, `devGatedFeatures.ts`, `LLM-ROUTING-REGISTRY.md`, and `lint-dev-agent-dark-gate.test.ts` resolved keeping BOTH #1367's and this change's registrations; the dark-gate line-map recomputed against the merged `ConfigDefaults` (hubIntent +20 lines and moveIntent +18 lines both present, neither adds an attributed path).
+
+No behavior change from this addendum — all registrations are ratchet metadata / test baselines. The classifier, wiring, config, and fail-open contract are unchanged from the reviewed version above.

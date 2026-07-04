@@ -52,6 +52,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
     exempt:
       'ships its OWN dedicated discrimination benchmark — tests/unit/move-intent-discrimination.test.ts, a committed command-vs-discussion corpus run deterministically in CI PLUS an opt-in INSTAR_LIVE_MOVE_INTENT=1 real-model accuracy benchmark (the graduation gate before dryRun:false). A generic bench-harness task would re-test the same judgment less precisely (same rationale as InteractivePoolCanaryJudge: the co-located benchmark IS the benchmark). Spec: docs/specs/nickname-move-intent-llm-rebuild.md §Tests.',
   },
+  HubIntentClassifier: {
+    exempt:
+      'ships its OWN dedicated discrimination benchmark — tests/unit/hub-intent-discrimination.test.ts, a committed command-vs-discussion corpus (open/tie vs question/mention + unknown-target guardrail + fail-open) run deterministically in CI PLUS an opt-in INSTAR_LIVE_HUB_INTENT=1 real-model accuracy benchmark (the graduation gate before dryRun:false). Same rationale as MoveIntentClassifier: the co-located benchmark IS the benchmark; a generic harness task would re-test the same judgment less precisely. Spec: docs/specs/keyword-intent-conversions-1-and-3.md §Tests.',
+  },
 
   // ── Covered by Wave 2 (authored 2026-07-02; tasks-wave2/ in the bench harness) ──
   InputGuard: { task: 'input-guard-coherence' },
@@ -338,6 +342,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   ExternalOperationGate: false, // classifies operation mutability/reversibility, not a completion claim
   WarrantsReplyGate: false, // "should I reply?" — not a completion/health claim
   MoveIntentClassifier: false, // classifies a USER's move/pin intent over a message, not an agent/session claim of completion/health/credit
+  HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
   CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
   MessagingToneGate: false, // reviews outbound tone/leaks
   CoherenceReviewer: false, // reviews outbound coherence
@@ -431,6 +436,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   LLMSanitizer: { pending: 'contract-wave-2' }, // parses a closed sanitize verdict/decision
   WarrantsReplyGate: { pending: 'contract-wave-2' }, // closed should-reply yes/no verdict
   MoveIntentClassifier: { pending: 'contract-wave-2' }, // parses a closed move-intent verdict (isCommand + intent enum + targetNickname enum + confidence)
+  HubIntentClassifier: { pending: 'contract-wave-2' }, // parses a closed hub-intent verdict (intent enum open/tie/null + targetTopicId enum + confidence)
   InputGuard: { pending: 'contract-wave-2' }, // closed input-coherence verdict
   StallTriageNurse: { pending: 'contract-wave-2' }, // closed stall-triage diagnosis label
   CommitmentSentinel: { pending: 'contract-wave-2' }, // closed commitment-detected verdict + structured envelope

@@ -143,9 +143,13 @@ function getSourceFiles(): string[] {
 // — the exemplar under this very standard (docs/specs/nickname-move-intent-llm-rebuild.md).
 // It no longer keyword-decides intent, so the detector no longer flags it: it is
 // removed from the baseline and BASELINE dropped 6→5 (this ratchet only ever DECREASES).
+// #3 threadline/hubCommands.ts (parseHubCommand — open/tie NL regexes that SWALLOWED
+// the message) was CONVERTED to LLM-with-context (HubIntentClassifier) on 2026-07-04
+// — Conversion #3 under this standard (docs/specs/keyword-intent-conversions-1-and-3.md).
+// It no longer keyword-decides intent, so it is removed from the baseline and BASELINE
+// dropped 5→4. (topicProfileIngress #1 remains — its conversion lands separately.)
 const EXPECTED_OFFENDERS = [
   'core/topicProfileIngress.ts',   // #1 parseProfileTrigger — framework/model/thinking NL regexes (LIVE)
-  'threadline/hubCommands.ts',     // #3 parseHubCommand — open/tie NL regexes (LIVE — swallows the message)
   'core/TopicClassifier.ts',       // #4 scoreKeywords — TOPIC/INTENT/PROBLEM keyword density (latent)
   'core/AutonomySkill.ts',         // #5 INTENT_PATTERNS — autonomy phrases (latent, exported/unwired)
   'core/AgentReadinessScorer.ts',  // #6 scoreText — coordination/judgment lexicon density (advisory)
@@ -184,9 +188,10 @@ const ALLOWLIST: Record<string, string> = {
 // ═══════════════════════════════════════════════════════════════════════════════
 // RATCHET BASELINE — only DECREASE, never increase. The count of genuine offenders
 // (per file). Landed at 6 (the audit's six findings). When an offender is converted to
-// LLM-with-context (and thus stops matching), lower this number.
+// LLM-with-context (and thus stops matching), lower this number. 6→5 NicknameCommand
+// (MoveIntentClassifier, #1367); 5→4 hubCommands (HubIntentClassifier, Conversion #3).
 // ═══════════════════════════════════════════════════════════════════════════════
-const BASELINE = 5;
+const BASELINE = 4;
 
 // Report mode (graduated rollout). While false, the net-new `<= BASELINE` guard only
 // WARNS — it never fails CI. Flip to true after a clean soak to make it hard.

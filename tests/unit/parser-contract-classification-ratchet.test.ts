@@ -68,6 +68,7 @@ const PENDING_BASELINE = [
   'LLMSanitizer',
   'WarrantsReplyGate',
   'MoveIntentClassifier', // parses a closed move-intent verdict (isCommand + intent/target enums + confidence); 2026-07-04
+  'HubIntentClassifier', // parses a closed hub-intent verdict (intent open/tie/null + targetTopicId enum + confidence); 2026-07-04
 
   'InputGuard',
   'StallTriageNurse',
