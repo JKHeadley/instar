@@ -194,6 +194,23 @@ Files: `src/monitoring/ExternalHogOwnership.ts` (`isInstarOwned` over a ProcTree
   defeats pid reuse (reused number ≠ owned, matching start-time excludes); unresolvable edge
   / cycle / hop-bound → not owned; invalid inputs → not owned.
 
+### Slice 8 — P17 notice coalescer (notification bounding)
+Files: `src/monitoring/ExternalHogNoticeCoalescer.ts` (`coalesceNotices`),
+`tests/unit/external-hog-notice-coalescer.test.ts` (9 tests).
+- **What it is:** the pure P17 selection logic — one coalescing chokepoint over all notice
+  classes (kill / decider-unavailable / floor-veto-downgrade / hog-left-alive) with
+  per-signature dedup, a per-window budget, severity ordering on exhaustion, and live KILLS
+  always piercing the budget. It NEVER kills — it selects which NOTICES to emit vs drop.
+- **Signal vs authority:** notification bounding, NOT a kill/block decision. The safety-
+  critical second-pass (kill logic) does not apply; the risk is bounded (worst case: a dropped
+  LOW-severity notice — a kill notice can never be dropped, and dedup prevents a flood).
+- **Multi-machine:** pure, machine-local (notices are per-machine). External surfaces: none
+  yet (the actual delivery + window state are the caller's).
+- **Rollback:** delete; nothing consumes it yet.
+- **Tests:** 9 — dedup (in-batch, vs-window, different-class-not-deduped), budget + severity
+  ordering (keeps highest severity, reports dropped-by-class), kills-always-pierce, robustness
+  (zero/negative/NaN budget, malformed notice ignored, empty batch).
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
