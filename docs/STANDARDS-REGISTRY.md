@@ -491,6 +491,20 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 
 ---
 
+### Keep the Doorway/Model Map Current
+
+**Rule.** The set of *doorways* the agent can reach a model through — and the top model(s) (with exact ids) behind each — is knowledge that **rots**, so it must be kept current by a standing *process*, never by anyone remembering to re-check. A stale doorway/model map is a **defect**, not a chore that's overdue.
+
+**In practice.** One machine-readable registry is the single source of truth for what doors exist and what the top model behind each is (canonical/reviewed layer) plus what each machine last actually reached (live/scanned layer); the frontier set that gates routing pins is *derived* from that record, never re-typed. A recurring, dark-by-default, cost-aware scan job re-probes every doorway on a cadence (via a deterministic prober) and surfaces **only changes** — never noise, and never a silent loss *on the notification path* (each machine's finding is a distinct machine-qualified row that cannot silently coalesce away). Per-machine *scan-liveness* monitoring (that the scan keeps firing everywhere) is a named additive follow-up <!-- tracked: 29723 --> whose anti-rot backstop is the independent freshness lint, not this standard's guarantee (§2.9). A freshness lint fails loud when a pin ages out of its review window or drifts off the derived frontier set. Adding an LLM callsite or a new door without updating the registry is caught structurally, not by review vigilance.
+
+**Earned from.** The stale-pin incident (2026-07-03): Instar's cross-model reviewers and several routing pins were still pointing at `gemini-2.5-pro` weeks after the Gemini 3-class models shipped, silently degrading review quality. The freshness lint (#1359) could fail loud on staleness/drift, but it was a tripwire, not an engine — nothing re-probed the doorways or grew the map, so a human had to remember to go find the frontier and update the allowlist, and between manual passes the knowledge rotted invisibly until it degraded output. (Lived corroboration during this very standard's spec review: the cross-model external reviewer itself ran on `gemini-2.5-pro`, the exact stale pin.) The standard is ratified WITH live teeth (rollout increment 5): the flaggedStale rows were operator-confirmed + reconciled into the registry, and the freshness lint was flipped to `strict` (gating) — so it ships enforcing, not ahead of enforcement.
+
+**Traces to the goal.** A coherent agent routes each decision to the best model it can actually reach; a self-evolving agent's *map of what it can reach* must itself evolve, or its coherence quietly degrades as the world moves underneath it. This is *Structure beats Willpower* applied to the frontier: the map stays true because a job re-probes it and a ratchet gates it — not because someone remembers to look.
+
+**Applied through.** The recurring **doorway-scan job** (`src/scaffold/templates/jobs/instar/doorway-scan.md` + the deterministic `scripts/doorway-scan.mjs`) + the strict **freshness lint** (`scripts/lint-model-registry-freshness.mjs`, #1359 — now `enforcement: "strict"`, gating in the `npm run lint` chain) + the enriched **Doorway/Model Knowledge Registry** (`scripts/model-registry-freshness.manifest.json`) + the human routing narrative (`docs/LLM-ROUTING-REGISTRY.md`). Full spec: `docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md`. **Parent principle:** *Structure beats Willpower*.
+
+---
+
 ## Shipping — truthfulness and completeness
 
 ### Bug-Fix Evidence Bar (verify before you claim)

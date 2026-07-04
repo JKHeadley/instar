@@ -250,13 +250,22 @@ describe('frontierSetForDoor (unit — the derivation helper)', () => {
 });
 
 describe('shipped manifest', () => {
-  it('the real manifest is self-consistent (no findings under its own report enforcement)', () => {
+  it('the real manifest is enforcement="strict" AND clean under its own strict enforcement (inc5 activation)', () => {
     // Resolve against the real repo root so pin files exist.
     const repoRoot = path.resolve(__dirname, '..', '..');
     const manifestPath = path.join(repoRoot, 'scripts', 'model-registry-freshness.manifest.json');
+    // forceStrict:false → honor the manifest's own `enforcement` field. Rollout
+    // increment 5 (spec §Rollout step 5, the companion-gated activation) flipped
+    // the shipped manifest to "strict", so the check gates on any finding.
     const r = checkModelRegistryFreshness({ manifestPath, repoRoot, now: NOW, forceStrict: false });
     expect(r.error).toBeNull();
-    // Drift + staleness must be clean on the shipped list; flaggedStale rows are warnings only in report mode.
+    // The flip is LIVE: the shipped manifest gates (strict), not merely reports.
+    // This regression-guards the enforcement value itself — a silent revert to
+    // "report" (or forceStrict env leaking in) would fail here.
+    expect(r.strict, 'shipped manifest must be enforcement="strict" post-inc5').toBe(true);
+    // The strict flip is SAFE: staleness + derived-frontier drift are clean and
+    // flaggedStale is empty, so there are zero gating findings. If the shipped
+    // list ever drifts or ages out (real clock), CI fails by design — the ratchet.
     expect(r.findings, `unexpected findings: ${r.findings.join(' | ')}`).toHaveLength(0);
   });
 });
