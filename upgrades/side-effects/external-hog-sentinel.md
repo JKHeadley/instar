@@ -137,6 +137,24 @@ Files: `src/monitoring/ExternalHogCpuDelta.ts` (`monotonicNowMs`, `computeCoreEq
   interval (backward/same-instant Δwall, 3h-sleep Δwall, decreasing counter, NaN/Infinity),
   jitter tolerance within the factor, `meetsThreshold` (UNKNOWN never a hog), monotonicity.
 
+### Slice 5 — armed-marker gate (the doubly-held "can this kill" logic)
+Files: `src/monitoring/ExternalHogArmMarker.ts` (`classContentHash`, `isMarkerValid`,
+`classIsArmed`, `canKillLive`), `tests/unit/external-hog-arm-marker.test.ts` (16 tests).
+- **What it is:** the second key holding a LIVE kill (beyond enabled && !dryRun) — a valid
+  PIN-written marker with the arm-epoch lifecycle + the per-class content-hash arm-scope.
+- **Signal vs authority:** pure authorization predicate; never kills. Fails CLOSED on any
+  missing/invalid input (no marker, non-finite epoch, dryRun:true, disarmed).
+- **Security properties (round-9 review, now in code):** (1) armEpoch > lastDisarmEpoch — a
+  disarm can never be silently un-done; `disarm→config dryRun:false→restart` boots UNARMED;
+  config.dryRun:false is NEVER a positive arm. (2) per-class content-hash — new/broadened
+  class → not armed → alert-only until PIN re-arm; unrelated class add doesn't disarm others.
+- **External surfaces:** none yet (the arm/disarm ROUTES that write the marker are a later
+  slice); this is the pure predicate they'll consume. Multi-machine: pure logic.
+- **Rollback:** delete the module; nothing consumes it yet.
+- **Tests:** 16 — content-hash determinism/change-sensitivity/order, epoch validity + the
+  disarm-restart-bypass-closed, per-class armed/new/broadened/unrelated, canKillLive doubly-
+  held (dryRun-never-kills, bare-config-flip-never-arms, enabled:false, unarmed class).
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -191,3 +209,15 @@ Added the reviewer's exact fixture (200ms interval → UNKNOWN, never a hog) + f
 false-high closed (the s(0,0)→s(1,200) fixture returns UNKNOWN); the [0.25×, 4×] accepted
 band still passes the full-window and 90s-jitter cases; both bounds sit inside the
 `intendedWindowMs > 0` block so a zero window disables them together as documented.
+
+### Slice-5 (arm-marker) reviewer verdict
+
+**Concur (no bug — carefully written after the slice-3/4 lessons).** The reviewer verified
+all three properties fail CLOSED on every undefined/null/NaN/wrong-type/equal-epoch/proto-key
+input: `isMarkerValid` rejects a falsy marker + non-finite epochs + uses strict `>` (equal
+epochs INVALID, so disarm-at-same-epoch wins and the disarm→config→restart bypass is closed);
+`classContentHash` is deterministic + change-sensitive (any realistic broadening → new hash →
+rejected); `classIsArmed`'s `typeof armedHash === 'string'` guard blocks `undefined===undefined`
+AND neutralizes prototype-chain keys (`__proto__`, `toString`); `canKillLive` requires
+enabled===true + dryRun===false (`!== false` rejects dryRun:undefined/0/missing) + valid marker
++ armed class, with no path letting `config.dryRun:false` alone authorize.
