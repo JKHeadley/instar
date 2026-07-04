@@ -17753,7 +17753,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                         { instarVersion: ProcessIntegrity.getInstance()?.runningVersion ?? 'unknown', beatSeq: _coherenceBeatSeq++ },
                       ),
                     };
-                  } catch { return {}; } // a builder fault must never kill the liveness beat; self degrades to advert-less (loud via version-class after grace), never a dead heartbeat
+                  } catch { return {}; } // @silent-fallback-ok: a builder fault must never kill the liveness beat; self degrades to advert-less (loud via version-class after grace), never a dead heartbeat
                 })(),
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
@@ -20727,46 +20727,40 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.error('  MachineCoherenceGuard wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
           }
 
+          // Drain + execute the machine-coherence episode effects (§4) the last
+          // reconcile produced (raise/append/resolve). Async + best-effort — a
+          // Telegram fault never crashes the shared presence tick (fail toward
+          // silence). Defined OUTSIDE the tick body so the tick stays lean; the
+          // sentinel already gates effects to raiser && live posture.
+          const executeMachineCoherenceEffects = (
+            sentinel: NonNullable<typeof machineCoherenceSentinel>,
+            tg: typeof telegram,
+          ): void => {
+            let effects: ReturnType<typeof sentinel.drainPendingEffects>;
+            try { effects = sentinel.drainPendingEffects(); } catch { return; }
+            for (const eff of effects) {
+              void (async () => {
+                try {
+                  if (eff.kind === 'raise') {
+                    await tg?.createAttentionItem({
+                      id: eff.itemId, title: eff.title, summary: eff.summary, description: eff.description,
+                      category: 'machine-coherence', priority: 'HIGH', sourceContext: 'machine-coherence-guard',
+                    });
+                  } else if (eff.kind === 'append') {
+                    const item = tg?.getAttentionItem(eff.itemId);
+                    if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.text);
+                  } else if (eff.kind === 'resolve') {
+                    const item = tg?.getAttentionItem(eff.itemId);
+                    if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.note);
+                    await tg?.updateAttentionStatus(eff.itemId, 'DONE');
+                  }
+                } catch { /* @silent-fallback-ok: episode effect execution is best-effort; a Telegram send/create fault must never crash the presence tick — the next reconcile re-derives from durable episode state */ }
+              })();
+            }
+          };
+
           const peerPresenceTick = (): void => {
             void peerPresencePuller.pullOnce();
-            // Machine-Coherence Guard rider (machine-coherence-guard §3.3): the
-            // evaluator tick, riding this existing 30s cadence (no new timer). Null
-            // when the guard is dark. tick() fails toward silence internally; the
-            // extra guard here keeps the shared presence tick crash-proof.
-            if (machineCoherenceSentinel) {
-              try { machineCoherenceSentinel.tick(); } catch { /* fail toward silence (§3.3) */ }
-              // Execute the §4 episode effects the reconcile produced (raise/
-              // append/resolve). Async + best-effort — a Telegram fault must
-              // never crash the shared presence tick (fail toward silence). The
-              // sentinel already gates these to raiser && live posture.
-              try {
-                const mcEffects = machineCoherenceSentinel.drainPendingEffects();
-                for (const eff of mcEffects) {
-                  void (async () => {
-                    try {
-                      if (eff.kind === 'raise') {
-                        await telegram?.createAttentionItem({
-                          id: eff.itemId,
-                          title: eff.title,
-                          summary: eff.summary,
-                          description: eff.description,
-                          category: 'machine-coherence',
-                          priority: 'HIGH',
-                          sourceContext: 'machine-coherence-guard',
-                        });
-                      } else if (eff.kind === 'append') {
-                        const item = telegram?.getAttentionItem(eff.itemId);
-                        if (item?.topicId !== undefined) await telegram?.sendToTopic(item.topicId, eff.text);
-                      } else if (eff.kind === 'resolve') {
-                        const item = telegram?.getAttentionItem(eff.itemId);
-                        if (item?.topicId !== undefined) await telegram?.sendToTopic(item.topicId, eff.note);
-                        await telegram?.updateAttentionStatus(eff.itemId, 'DONE');
-                      }
-                    } catch { /* @silent-fallback-ok: episode effect execution is best-effort; a Telegram send/create fault must never crash the presence tick — the next reconcile re-derives from durable episode state */ }
-                  })();
-                }
-              } catch { /* fail toward silence (§3.3) */ }
-            }
             // mesh-coherence-live-state-honesty (Fix (b)): the periodic, signal-only live-vs-config
             // mesh coherence recheck. Dev-gated dark (resolveDevAgentGate on the nested ?.enabled).
             if (resolveDevAgentGate(config.monitoring?.meshCoherenceLiveCheck?.enabled, config)) {
@@ -20822,6 +20816,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                   _meshCoherenceConsecFailures += 1;
                 }
               }
+            }
+            // Machine-Coherence Guard rider (§3.3): evaluator tick + drain/execute
+            // §4 effects, both fail toward silence (helper defined above). Placed
+            // AFTER the mesh recheck so it never grows the mesh block's source-
+            // assertion window (mesh-coherence-wiring.test.ts slices a fixed span).
+            if (machineCoherenceSentinel) {
+              try { machineCoherenceSentinel.tick(); } catch { /* @silent-fallback-ok: §3.3 the evaluator tick fails toward silence by design — a sentinel fault must never crash the shared 30s presence tick; the next reconcile re-derives from durable episode state */ }
+              executeMachineCoherenceEffects(machineCoherenceSentinel, telegram);
             }
           };
           const peerPresenceTimer = setInterval(peerPresenceTick, 30_000);
