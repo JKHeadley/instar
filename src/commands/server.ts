@@ -5346,6 +5346,23 @@ export async function startServer(options: StartOptions): Promise<void> {
       // idle-monitor's rateLimitedAtIdle hand-off. `enabled` OMITTED from defaults ⇒
       // dev-agent live / dark-fleet.
       idleThrottleSettleGate: resolveDevAgentGate(config.monitoring?.idleThrottleSettleGate?.enabled, config),
+      // Idle-zombie veto-backoff (session-respawn-thrash Fix A). `enabled` OMITTED
+      // from ConfigDefaults ⇒ dev-agent live / dark-fleet (mirrors idleThrottleSettleGate).
+      // cooldownMs default 30m; escalateAfterEpisodes default 6. `cooldownMs: 0` is
+      // enabled-but-no-cooldown (R4-5), never a disable — only enabled:false darks it.
+      idleKillVetoBackoff: (() => {
+        const cfg = config.monitoring?.idleKillVetoBackoff;
+        const enabled = resolveDevAgentGate(cfg?.enabled, config);
+        const rawCooldown = cfg?.cooldownMs;
+        const cooldownMs = typeof rawCooldown === 'number' && Number.isFinite(rawCooldown) && rawCooldown >= 0
+          ? Math.floor(rawCooldown)
+          : 1_800_000;
+        const rawEsc = cfg?.escalateAfterEpisodes;
+        const escalateAfterEpisodes = typeof rawEsc === 'number' && Number.isFinite(rawEsc) && rawEsc > 0
+          ? Math.floor(rawEsc)
+          : 6;
+        return { enabled, cooldownMs, escalateAfterEpisodes };
+      })(),
       // Standby-write reconciliation §3.3 (round-2 L3): per-machine
       // SessionBuildContextStore re-key. The id comes from the coordinator/
       // mesh identity via this LATE-RESOLVING getter (the mesh id is assigned
@@ -9641,6 +9658,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
       });
     }
+
+    // Idle-zombie veto P19 breaker (session-respawn-thrash Fix A′). Inject the
+    // best-effort "one per incident" dedupe seam (in-process coalescing + TTL) and
+    // route the breaker's ONE attention item through the existing attention queue
+    // (flood-guarded — never a spawned topic). Signal-only: an idle-zombie kill that
+    // stays permanently vetoed for `escalateAfterEpisodes` cooldowns surfaces once.
+    {
+      const { InProcessIncidentDedupe } = await import('../monitoring/IncidentDedupe.js');
+      sessionManager.setIncidentDedupe(new InProcessIncidentDedupe());
+    }
+    sessionManager.on('idleZombieVetoEscalation', (e: { session: import('../core/types.js').Session; topicId: number | null; reasonKey: string; message: string }) => {
+      if (!telegram) return;
+      void telegram.createAttentionItem({
+        id: `idle-zombie-veto-${e.topicId ?? 'none'}-${e.reasonKey}`,
+        title: 'Session permanently vetoed from idle-zombie cleanup',
+        summary: e.message,
+        category: 'session-lifecycle',
+        priority: 'HIGH',
+        sourceContext: `idle-zombie-veto:${e.topicId ?? 'none'}:${e.reasonKey}`,
+      }).catch((err: Error) => {
+        console.error('[idleZombieVetoEscalation] attention-item failed:', err.message);
+      });
+    });
 
     // G3.4 — Single-writer binding lifecycle: clear a killed session's stale
     // topic→session binding so a dead session can't silently resurrect (the

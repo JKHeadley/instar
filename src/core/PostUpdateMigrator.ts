@@ -383,6 +383,40 @@ export function migrateConfigSelfUnblockChecklistDevGate(config: Record<string, 
 }
 
 /**
+ * Session-respawn-thrash Fix A (docs/specs/session-respawn-thrash-elimination.md,
+ * § Config & rollback + § Dev-agent gate): add the `monitoring.idleKillVetoBackoff`
+ * default block with an EXISTENCE CHECK — only write it when absent, so an operator
+ * override is never clobbered. Deployed agents get the knob on update; new agents get
+ * it via init. The cooldown lives in in-memory maps only, so there is no state-schema
+ * migration. Idempotent — a second run finds the block present and is a no-op.
+ *
+ * CRITICAL — `enabled` is DELIBERATELY OMITTED (enable-path integrity). The construction
+ * boundary resolves `enabled` through `resolveDevAgentGate(cfg.enabled, config)` =
+ * `cfg.enabled ?? !!developmentAgent`, so a block with NO `enabled` runs LIVE on a
+ * development agent (Echo — the § Activation milestone-1 soak) and DARK on the fleet.
+ * Writing an explicit `enabled: false` here would FORCE-DARK the dev agent too
+ * (explicit-false wins the `??`), defeating the soak plan — exactly the trap the
+ * stateSync stores + the tmux-resilience gates avoid by omitting `enabled` in their
+ * defaults. Only the tuning knobs are seeded; the gate owns `enabled`.
+ *
+ * Returns true iff the block was written.
+ */
+export function migrateConfigIdleKillVetoBackoffDefault(config: Record<string, unknown>): boolean {
+  let monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object' || Array.isArray(monitoring)) {
+    monitoring = {};
+    config.monitoring = monitoring;
+  }
+  if (Object.prototype.hasOwnProperty.call(monitoring, 'idleKillVetoBackoff')) return false;
+  monitoring.idleKillVetoBackoff = {
+    // enabled OMITTED — resolveDevAgentGate decides (live-on-dev / dark-on-fleet).
+    cooldownMs: 1_800_000,
+    escalateAfterEpisodes: 6,
+  };
+  return true;
+}
+
+/**
  * tmux Event-Loop Resilience, Increment 1 (tmux-event-loop-resilience-spec): the THREE
  * dev-gated `enabled` flags OMIT `enabled` in ConfigDefaults so resolveDevAgentGate
  * resolves them (live-on-dev, dark fleet). An existing agent that ran an interim build
@@ -8847,6 +8881,15 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: added multiMachine.accountFollowMe.revocationReconnectDeadlineMs default (6h)');
     } else {
       result.skipped.push('config.json: accountFollowMe revocation deadline already present or feature absent');
+    }
+
+    // session-respawn-thrash Fix A: add the monitoring.idleKillVetoBackoff default
+    // block (existence-checked, idempotent, never clobbers an operator override).
+    if (migrateConfigIdleKillVetoBackoffDefault(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added monitoring.idleKillVetoBackoff default (cooldownMs:1800000, escalateAfterEpisodes:6; enabled omitted — dev-agent gate decides)');
+    } else {
+      result.skipped.push('config.json: monitoring.idleKillVetoBackoff already present');
     }
 
     if (patched) {

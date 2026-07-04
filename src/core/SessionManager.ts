@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import { resolveGhTokenFromVault } from './ghToken.js';
-import type { ReapGuard } from './ReapGuard.js';
+import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
@@ -88,6 +88,8 @@ import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { AgeKillBackoff } from './AgeKillBackoff.js';
+import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS } from './VetoedKillBackoff.js';
+import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
 const DEFAULT_MAX_DURATION_MINUTES = 240;
@@ -288,6 +290,13 @@ export interface SessionManagerOptions {
    *  resolveDevAgentGate(monitoring.idleThrottleSettleGate.enabled). Absent ⇒ legacy
    *  immediate emit, unchanged. */
   idleThrottleSettleGate?: boolean;
+  /** Idle-zombie veto-backoff ledger (session-respawn-thrash Fix A). Resolved
+   *  server-side via resolveDevAgentGate(monitoring.idleKillVetoBackoff.enabled).
+   *  DISABLED CONTRACT (C1): when `enabled !== true` the `idleKillBackoff` ledger
+   *  is never constructed and never consulted — the idle-zombie branch falls
+   *  through to its exact prior per-tick behavior. `cooldownMs: 0` is
+   *  enabled-but-no-cooldown (R4-5), NOT a disable. */
+  idleKillVetoBackoff?: { enabled: boolean; cooldownMs: number; escalateAfterEpisodes: number };
   /** Coordinator/mesh identity machine id for the per-machine
    *  SessionBuildContextStore re-key (standby-write-reconciliation §3.3).
    *  A GETTER because the mesh identity resolves after SessionManager
@@ -439,6 +448,19 @@ export class SessionManager extends EventEmitter {
    *  5s tick (the 2026-06-05 17,503-line flood). Constructed in the constructor. */
   private ageKillBackoff!: AgeKillBackoff;
 
+  /** Idle-zombie veto-backoff ledger (session-respawn-thrash Fix A). A SECOND,
+   *  independently-configured VetoedKillBackoff instance for the bound-idle zombie
+   *  killer (the age-gate keeps its own instance above). DISABLED CONTRACT (C1):
+   *  left `undefined` and never consulted when the feature resolves disabled — the
+   *  idle-zombie branch falls through to its exact prior per-tick behavior. */
+  private idleKillBackoff?: VetoedKillBackoff;
+  /** P19 breaker threshold (Fix A′): after this many consecutive veto episodes on
+   *  the SAME session with the keep-reason still active, raise ONE attention item. */
+  private idleKillEscalateAfter = 6;
+  /** Best-effort "one per incident" dedupe seam for the P19 breaker (Fix A′).
+   *  Injected at server boot; when unset the breaker escalation is a no-op. */
+  private incidentDedupe?: IncidentDedupe;
+
   /** Cached count of running sessions, updated asynchronously by the monitor tick.
    *  Used by the health endpoint to avoid synchronous tmux polling. */
   private _cachedRunningCount = 0;
@@ -530,6 +552,14 @@ export class SessionManager extends EventEmitter {
     // (config.ageKillBackoffMinutes; 0 disables → legacy every-tick behavior).
     const backoffMin = typeof config.ageKillBackoffMinutes === 'number' ? config.ageKillBackoffMinutes : 10;
     this.ageKillBackoff = new AgeKillBackoff({ backoffMs: Math.max(0, backoffMin) * 60_000 });
+    // Idle-zombie veto-backoff ledger (session-respawn-thrash Fix A). DISABLED
+    // CONTRACT (C1): only construct when explicitly enabled — otherwise the field
+    // stays undefined and the idle-zombie branch runs its exact prior per-tick
+    // behavior. `cooldownMs: 0` is enabled-but-no-cooldown (R4-5), never a disable.
+    if (opts.idleKillVetoBackoff?.enabled === true) {
+      this.idleKillBackoff = new VetoedKillBackoff({ backoffMs: opts.idleKillVetoBackoff.cooldownMs });
+      this.idleKillEscalateAfter = opts.idleKillVetoBackoff.escalateAfterEpisodes;
+    }
     if (config.respawnBuildContext?.enabled) {
       this.buildContextStore = new SessionBuildContextStore(state, {
         maxAgeMs: config.respawnBuildContext.maxAgeMs,
@@ -853,6 +883,124 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Wire the best-effort "one per incident" dedupe seam for the idle-zombie veto
+   * P19 breaker (session-respawn-thrash Fix A′). Server boot injects the shared
+   * IncidentDedupe so the breaker escalation coalesces across ticks. Unset ⇒ the
+   * breaker never escalates (best-effort, signal-only).
+   */
+  setIncidentDedupe(seam: IncidentDedupe): void {
+    this.incidentDedupe = seam;
+  }
+
+  /**
+   * Evaluate the ReapGuard ONCE for the idle-zombie kill decision (C2/R4-2). Calls
+   * blockedReason with NO bypass flags (the idle-zombie branch never bypasses), and
+   * normalizes the vetoing reason to its STABLE ledger key. The verdict is threaded
+   * through both the backoff gate (shouldRequest) and the terminate call so the
+   * guard is never double-evaluated with a possibly-changed reason between them.
+   */
+  private computeIdleZombieReapVerdict(
+    session: Session,
+    _now: number,
+  ): { blocked: ReapKeepReason | null; reasonKey: string | null } {
+    const blocked = this.reapGuard?.blockedReason(session) ?? null;
+    return { blocked, reasonKey: normalizeReasonKey(blocked) };
+  }
+
+  /**
+   * P19 breaker (Fix A′): after `idleKillEscalateAfter` consecutive veto episodes
+   * on a session whose keep-reason is still active, raise ONE attention item via
+   * the injected dedupe seam so it emits at most once per incident within the
+   * process window. Signal-only — best-effort; if no seam is injected nothing
+   * emits. Never spawns a topic or touches a transport directly.
+   */
+  private maybeEscalateIdleZombieVeto(session: Session, topicId: number | null, reasonKey: string): void {
+    const incidentKey = 'idle-zombie-veto:' + (topicId ?? 'none') + ':' + reasonKey;
+    if (this.incidentDedupe?.shouldEmit(incidentKey, 24 * 60 * 60 * 1000)) {
+      this.emit('idleZombieVetoEscalation', {
+        session,
+        topicId,
+        reasonKey,
+        message: `Session "${session.name}" on topic ${topicId ?? 'n/a'} is permanently vetoed from idle-zombie cleanup (reason: ${reasonKey}) — likely a stuck open-commitment or a resume-loop; investigate.`,
+      });
+    }
+  }
+
+  /**
+   * Idle-zombie kill decision (session-respawn-thrash Fix A). Factored out of
+   * monitorTick so the enabled/disabled split is unit-testable in isolation.
+   *
+   * ENABLED (idleKillBackoff constructed) — veto-backoff path: evaluate the guard
+   * once, honor the reason-key-aware cooldown, attempt the kill through the SAME
+   * verdict, then either drop state on a real kill or record the veto (logging ONCE
+   * per episode + escalating after N episodes). DISABLED (field undefined) — the
+   * exact prior per-tick behavior: attempt terminateSession every tick.
+   *
+   * @returns whether a kill was actually performed (for the caller's WARN wording).
+   */
+  private async handleIdleZombie(
+    session: Session,
+    idleMs: number,
+    binding: string | number | null,
+    now: number,
+    bindingNote: string,
+    killThresholdMinutes: number,
+  ): Promise<void> {
+    void killThresholdMinutes; // threshold already applied by the caller
+    if (this.idleKillBackoff) {
+      // ENABLED — veto-backoff path.
+      const verdict = this.computeIdleZombieReapVerdict(session, now);
+      // Unkeyable fail-open (R4-4): a truthy veto with no usable reason string →
+      // re-evaluate this tick rather than gate on a fabricated key.
+      const unkeyable = verdict.blocked != null && verdict.reasonKey == null;
+      if (!unkeyable && !this.idleKillBackoff.shouldRequest(session.id, now, verdict.reasonKey)) {
+        // Inside the cooldown, same reason → quiet skip: no terminate attempt,
+        // no reap-log write.
+        return;
+      }
+      const result = await this.terminateSessionInternal(
+        session.id,
+        'idle-zombie',
+        { disposition: 'terminal' },
+        { blocked: verdict.blocked },
+      );
+      if (result.terminated) {
+        console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
+        this.idleKillBackoff.recordKilled(session.id);
+      } else {
+        const vetoKey = normalizeReasonKey(result.skipped ? { reason: result.skipped } : null)
+          ?? verdict.reasonKey ?? 'unknown';
+        // Cooldown applies to EVERY skip reason (the flood-stop benefit is
+        // universal — incl. a STANDBY machine's `not-lease-holder` every-tick skip,
+        // itself a documented reap-log flood source).
+        const firstOfEpisode = this.idleKillBackoff.recordVeto(session.id, now, vetoKey);
+        if (firstOfEpisode) {
+          console.warn(`[SessionManager] Session "${session.name}" idle-zombie cleanup vetoed (${vetoKey})${bindingNote} — backing off re-attempts.`);
+        }
+        // Breaker (Fix A′): escalate ONLY when the persisting reason is a genuine
+        // STUCK-session keep-reason (second-pass review point 9). Authority/CAS
+        // skips (`not-lease-holder` on a standby machine, `in-flight`, `protected`,
+        // `already-*`, …) back off above but must NEVER raise the "permanently
+        // vetoed from idle-zombie cleanup" attention item — that wording is false
+        // for them, and a standby machine would otherwise emit misleading HIGH items.
+        if (
+          IDLE_ZOMBIE_ESCALATION_REASONS.has(vetoKey)
+          && this.idleKillBackoff.episodeCount(session.id) >= this.idleKillEscalateAfter
+        ) {
+          const topicId = typeof binding === 'number'
+            ? binding
+            : (binding != null && /^-?\d+$/.test(String(binding)) ? Number(binding) : null);
+          this.maybeEscalateIdleZombieVeto(session, topicId, vetoKey);
+        }
+      }
+      return;
+    }
+    // DISABLED — prior per-tick behavior EXACTLY.
+    console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
+    await this.terminateSession(session.id, 'idle-zombie', { disposition: 'terminal' });
+  }
+
+  /**
    * Wire the SDK-credit reader used by the headless-spawn-reroute 'auto'
    * decision (june15-headless-spawn-reroute, PR2). Server boot passes
    * anthropicRegistration.readSdkCredit — the same TTL-cached reader PR1's
@@ -1056,6 +1204,38 @@ rm()  { "${shimRunner}" rm  "$@"; }
       knownDead?: boolean;
       bypassRecoveryFlag?: boolean;
       bypassActiveProcessKeep?: boolean;
+      bypassRecentUserMessageForConfirmedMove?: boolean;
+      bypassLeaseForTopicMovedCloseout?: boolean;
+      workEvidence?: string[];
+    },
+  ): Promise<{ terminated: boolean; skipped?: string }> {
+    // Public enforcement boundary — re-evaluates the guard itself (no precomputed
+    // verdict). The single-guard-eval precompute is a PRIVATE same-tick optimization
+    // used only by the idle-zombie branch (R3-1/R4-2); it is NEVER a public option.
+    return this.terminateSessionInternal(sessionId, reason, opts);
+  }
+
+  /**
+   * The single-writer termination implementation. `precomputedGuardVerdict`, when
+   * provided (ONLY by the idle-zombie branch, which uses no bypass flags), threads
+   * the already-computed ReapGuard verdict through so the guard is not
+   * double-evaluated in the same tick (C2). Every OTHER caller passes it undefined
+   * and the guard is evaluated here exactly as before.
+   */
+  private async terminateSessionInternal(
+    sessionId: string,
+    reason: string,
+    opts?: {
+      finalStatus?: 'completed' | 'killed';
+      disposition?: 'terminal' | 'recovery-bounce';
+      origin?: 'operator' | 'autonomous';
+      /** UNTRUSTED caller-supplied provenance claim (REMOTE-SESSION-CLOSE-SPEC
+       *  §2.3) — recorded in the reap-log as `viaClaim`, NEVER consulted in any
+       *  authority/bypass decision (signal-vs-authority). */
+      via?: string;
+      knownDead?: boolean;
+      bypassRecoveryFlag?: boolean;
+      bypassActiveProcessKeep?: boolean;
       /**
        * Post-transfer closeout correctness (F1, Part E): a NARROW keep-reason
        * bypass that lifts ONLY the `recent-user-message` keep-reason (mirroring
@@ -1092,6 +1272,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
        */
       workEvidence?: string[];
     },
+    /** Idle-zombie-only same-tick optimization (C2/R4-2): the ReapGuard verdict
+     *  already computed by computeIdleZombieReapVerdict, threaded here so the guard
+     *  is evaluated ONCE. Only the idle-zombie branch (which uses no bypass flags)
+     *  supplies it; every other caller leaves it undefined and the guard is
+     *  re-evaluated below. NEVER exposed on the public terminateSession() signature. */
+    precomputedGuardVerdict?: { blocked: ReapKeepReason | null },
   ): Promise<{ terminated: boolean; skipped?: string }> {
     const session = this.state.getSession(sessionId);
     if (!session) return { terminated: false, skipped: 'not-found' };
@@ -1152,10 +1338,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (opts?.bypassRecoveryFlag) bypassedReasons.push('recovery-in-flight');
         if (opts?.bypassActiveProcessKeep) bypassedReasons.push('active-process');
         if (opts?.bypassRecentUserMessageForConfirmedMove) bypassedReasons.push('recent-user-message');
-        const blocked = this.reapGuard?.blockedReason(
-          session,
-          bypassedReasons.length > 0 ? bypassedReasons : undefined,
-        );
+        // C2/R4-2: the idle-zombie branch precomputes the guard verdict (no bypass
+        // flags) and threads it here so the guard is evaluated ONCE this tick.
+        // Every other caller leaves precomputedGuardVerdict undefined and the guard
+        // is evaluated fresh (today's behavior, honoring any bypass flags).
+        const blocked = precomputedGuardVerdict !== undefined
+          ? precomputedGuardVerdict.blocked
+          : this.reapGuard?.blockedReason(
+              session,
+              bypassedReasons.length > 0 ? bypassedReasons : undefined,
+            );
         // `bypassRecoveryFlag` (UNIFIED-SESSION-LIFECYCLE §P0 #8): the recovery
         // engine itself sets the recovery-in-flight flag synchronously before
         // its kill-to-respawn, so the guard would otherwise refuse the
@@ -1732,6 +1924,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                   console.log(`[SessionManager] Session "${session.name}" has unsubmitted pasted text — resending Enter.`);
                   await this.sendKeyMaybeAsync(session.tmuxSession, 'Enter');
                   this.idlePromptSince.delete(session.id); // Reset idle timer
+                  this.idleKillBackoff?.reset(session.id);
                   continue; // Skip to next session
                 }
               }
@@ -1803,6 +1996,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                     if (this.listenerCount('apiErrorAtIdle') > 0) {
                       this.emit('apiErrorAtIdle', session.tmuxSession);
                       this.idlePromptSince.delete(session.id);
+                      this.idleKillBackoff?.reset(session.id);
                       continue; // Skip to next session — sentinel owns recovery.
                     }
                     // Fallback (no sentinel wired, e.g. bare/test): the re-armable
@@ -1811,6 +2005,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                     console.log(`[SessionManager] Session "${session.name}" idle after API error — nudging to continue (nudge #${nudgeTotal + 1} this session).`);
                     this.sendInput(session.tmuxSession, 'You hit an API error. Please continue your work — skip or work around the action that failed.');
                     this.idlePromptSince.delete(session.id); // Reset idle timer
+                    this.idleKillBackoff?.reset(session.id);
                     continue; // Skip to next session
                   }
                 }
@@ -1832,6 +2027,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 if (this.activeRecoveryChecker && this.activeRecoveryChecker(session)) {
                   console.log(`[SessionManager] Skipping zombie kill for "${session.name}" — compaction recovery in flight.`);
                   this.idlePromptSince.delete(session.id);
+                  this.idleKillBackoff?.reset(session.id); // recovery window → re-evaluate fresh next tick
                   continue;
                 }
                 // Check for unanswered injection before killing
@@ -1847,13 +2043,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
                   });
                 }
                 const bindingNote = binding != null ? ` (topic-bound, threshold ${killThresholdMinutes}m)` : ` (threshold ${killThresholdMinutes}m)`;
-                console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
                 // Funnel through the single-writer path so the reaper and this
-                // idle-kill can never double-kill or double-emit (§3.6). Explicit
-                // terminal disposition → the §P3 notifier surfaces it to the user.
-                await this.terminateSession(session.id, 'idle-zombie', {
-                  disposition: 'terminal',
-                });
+                // idle-kill can never double-kill or double-emit (§3.6). The
+                // veto-backoff ledger (Fix A) suppresses the every-5s re-attempt on
+                // a permanently-vetoed session; the WARN + terminate live in the
+                // helper's enabled/disabled split.
+                await this.handleIdleZombie(session, idleMs, binding ?? null, now, bindingNote, killThresholdMinutes);
                 continue;
               }
             }
@@ -1864,6 +2059,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             // this same long-running session deserves its own nudge. (errorNudgeTotal
             // is NOT cleared here — it's the lifetime runaway cap.)
             this.idlePromptSince.delete(session.id);
+            this.idleKillBackoff?.reset(session.id); // resumed work → re-evaluate next tick, don't stay suppressed
             this.errorNudgedSessions.delete(session.id);
             this.idleErrorClassified.delete(session.id); // CMT-1785: re-arm the once-per-episode classify audit
             this.idleThrottleSettle.delete(session.tmuxSession); // session moved on — reset the settle clock
@@ -2872,6 +3068,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // beforeSessionKill). Preserved to avoid changing listener semantics —
       // the CAS guard + endedReason are the only additions here.
       this.idlePromptSince.delete(session.id);
+      this.idleKillBackoff?.clear(session.id); // session gone → drop veto-backoff state (map-leak eviction)
       this.reapingSessions.delete(session.id);
       // G3 (MESH-SELF-HEAL-SPEC §3.3, FD7): "a topic→session binding exists IFF a
       // live session exists." killSession historically did NOT clear the binding,
@@ -3889,6 +4086,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (age > ttl) {
         if (this.state.removeSession(session.id)) {
           cleaned.push(session.id);
+          this.idleKillBackoff?.clear(session.id); // map-leak eviction (Fix A finding 1)
         }
       } else if (session.status === 'completed') {
         completed.push({ id: session.id, endedAt });
@@ -3903,6 +4101,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       for (const s of excess) {
         if (this.state.removeSession(s.id)) {
           cleaned.push(s.id);
+          this.idleKillBackoff?.clear(s.id); // map-leak eviction (Fix A finding 1)
         }
       }
     }
@@ -5118,6 +5317,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const match = running.find(s => s.tmuxSession === tmuxSession);
     if (match) {
       this.idlePromptSince.delete(match.id);
+      this.idleKillBackoff?.reset(match.id); // new input arriving → re-evaluate fresh, not a zombie
     }
 
     const exactTarget = `=${tmuxSession}:`;

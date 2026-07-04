@@ -4731,6 +4731,24 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * Session-respawn-thrash Fix A (docs/specs/session-respawn-thrash-elimination.md):
+   * the veto-backoff ledger for the SessionManager bound-idle zombie killer. When a
+   * session is idle-at-prompt past its bound-idle threshold but the ReapGuard
+   * permanently vetoes the kill (open-commitment / recent-user-message), the killer
+   * used to re-fire terminateSession every 5s forever (the 132MB reap-log hot-spin).
+   * This ledger backs off re-attempts to one per `cooldownMs`, logs once per veto
+   * episode, and raises ONE attention item after `escalateAfterEpisodes` (P19
+   * breaker). `enabled` resolves via the developmentAgent dark-feature gate
+   * (live-on-dev, dark-fleet); `cooldownMs: 0` is enabled-but-no-cooldown (NOT a
+   * disable — the disable path is `enabled: false`, which never constructs the
+   * ledger). Machine-local by design (never replicated).
+   */
+  idleKillVetoBackoff?: {
+    enabled?: boolean;
+    cooldownMs?: number;
+    escalateAfterEpisodes?: number;
+  };
+  /**
    * honest-session-state-surfaces Finding (b): lift the Tier-3 honest
    * stuck-state classification into PresenceProxy Tier 1 / Tier 2 standby —
    * so a live-but-failing session (rate-limited / policy-wedge / context-wedge /
