@@ -3079,7 +3079,7 @@ async function ensureAgentAttentionTopic(
     const topic = await telegram.createForumTopic(
       `${TOPIC_STYLE.ALERT.emoji} Attention`,
       TOPIC_STYLE.ALERT.color, // Yellow — needs user action
-      { origin: 'system' }, // bounded create-once boot topic
+      { origin: 'system', bounded: true, label: 'boot-attention' }, // bounded create-once boot topic
     );
     state.set('agent-attention-topic', topic.topicId);
     await telegram.sendToTopic(topic.topicId,
@@ -3159,7 +3159,7 @@ async function ensureAgentUpdatesTopic(
     const topic = await telegram.createForumTopic(
       `${TOPIC_STYLE.INFO.emoji} Updates`,
       TOPIC_STYLE.INFO.color, // Blue — informational
-      { origin: 'system' }, // bounded create-once boot topic
+      { origin: 'system', bounded: true, label: 'boot-updates' }, // bounded create-once boot topic
     );
     state.set('agent-updates-topic', topic.topicId);
     await telegram.sendToTopic(topic.topicId,
