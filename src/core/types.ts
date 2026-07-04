@@ -5551,6 +5551,56 @@ export interface MonitoringConfig {
     maxFlagsPerPass?: number;
   };
   /**
+   * ExternalHogSentinel (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md)
+   * — surfaces any sustained EXTERNAL CPU hog (broad observability) and AUTO-KILLS one
+   * narrow class: orphaned Electron editor extension-host WRAPPERS (the 2026-07-03
+   * MongoDB-exthost incident). The intelligence (zombie-classify) decides kill/leave/
+   * alert WITHIN a mechanical veto-only safety floor; a kill executes iff
+   * `floor_pass && classifier === 'kill'`. `enabled` is OMITTED so the runtime resolves
+   * it through the developmentAgent dark-feature gate (resolveDevAgentGate): LIVE on a
+   * dev agent, DARK on the fleet. `dryRun: true` is the canary — live-on-dev scans,
+   * classifies, and LOGS would-kills but kills NOTHING until a deliberate PIN-gated arm.
+   * The numeric kill-gate knobs are read-time CLAMPED to code-defined minimums.
+   * Registered in DEV_GATED_FEATURES; GET /external-hog. Machine-local by design
+   * (hardware-bound-resource — a host OS process is bound to one kernel).
+   */
+  externalHogSentinel?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Read-only scan cadence (default 60s). */
+    scanIntervalMs?: number;
+    /** Sustained-hog threshold in core-equivalents (default 1.5). Read-time clamped. */
+    cpuCoreThreshold?: number;
+    /** N delta windows a candidate must exceed the threshold across (default 3). Clamped. */
+    sustainedSampleCount?: number;
+    /** Length of each rolling delta window (default 30s). Clamped. */
+    sampleWindowMs?: number;
+    /** Poll single-flight budget, sized to the cheap stage-1 scan (default 20s). */
+    singleFlightBudgetMs?: number;
+    /** Kill-time CPU re-confirm micro-window (default 2500ms). */
+    killTimeCpuRecheckWindowMs?: number;
+    /** SIGTERM→SIGKILL grace, widened for mid-write language servers (default 12s). */
+    sigtermGraceMs?: number;
+    /** In-flight-kill-set eviction ceiling (default 3×sigtermGraceMs ≈ 36s). */
+    inFlightKillTtlMs?: number;
+    /** Narrow-fd-skip defer cap before proceeding to SIGKILL (default 3). */
+    maxKillDeferrals?: number;
+    /** P19 kills of the same signature per rolling hour before the breaker (default 3). */
+    killLedgerMaxPerSignaturePerHour?: number;
+    /** Max classifier calls per scan, worst-CPU-first (default 4; < hostSpawnCap). */
+    maxClassificationsPerScan?: number;
+    /** Classifier verdict cache TTL keyed on the full identity tuple (default 300s). */
+    classifierCacheTtlMs?: number;
+    /** Classifier verdict cache max entries (default 256). */
+    classifierCacheMaxEntries?: number;
+    /** In-flight-kill set size cap (default 64). */
+    inFlightKillSetMax?: number;
+    /** P17 coalesced-notice budget per window (default 4). */
+    noticeBudgetPerWindow?: number;
+    /** P17 coalescing window (default 600s). */
+    noticeWindowMs?: number;
+  };
+  /**
    * StrandedTopicSentinel (stranded-inbound-self-heal) — a pure-signal detector
    * that surfaces a Telegram/Slack topic whose owner machine is online-by-
    * heartbeat but unable to serve (quota-walled or adapter-disconnected) while a

@@ -2,6 +2,17 @@
 title: External-Hog Zombie Auto-Kill Sentinel
 status: draft
 tag: review-convergence
+parent-principle: "The Agent Is Always Reachable — A Guaranteed Reachability Floor"
+parent-principle-fit: >
+  The standard's traces-to-goal names this feature's exact scenario — "an agent that
+  can become silently unreachable cannot be the solution to its own resource problems;
+  the one actor with the tools to diagnose and free resources is locked out exactly
+  when it is needed." An orphaned external process pinning the machine's cores starves
+  the agent's own server (the 2026-07-03 ~24h/2.2-core incident). This sentinel is the
+  machinery by which the agent DETECTS and RECLAIMS those resources itself — the
+  observability floor guarantees no external hog is silently invisible, and the narrow,
+  veto-bounded auto-kill reclaims the one provably-dead class — so the agent stays the
+  solution to its own resource starvation instead of being locked out by it.
 commitment: CMT-1901
 author: echo
 date: 2026-07-03
@@ -19,7 +30,7 @@ grounding_caveat: >
   AND — load-bearing — macOS cumulative-CPU-time acquisition: the v1 mechanism is a
   whole-table `ps -o pid=,ppid=,lstart=,time=,comm=` read (cumulative TIME, no new
   dependency); a `proc_pidinfo(PROC_PIDTASKINFO)` / `proc_pid_rusage` native addon
-  is a follow-up. Re-verify `ps time=` granularity + failure behavior empirically
+  is a follow-up. Re-verify `ps time=` granularity + failure behavior empirically <!-- tracked: CMT-1901 -->
   (the CPU-delta design pivots on it); ALSO verify `process.hrtime.bigint()`
   sleep-pause behavior on the target Node version (the monotonic-Δwall fix's
   EFFECTIVENESS — not going blind after wake — depends on it; SAFETY is independent
@@ -127,7 +138,7 @@ discovered (§1, own-euid, ancestry-excluded)
   → Stage-A admission (§4 fresh worker-side CPU micro-check; fail#1 → DEFER, 2 fails → ALERT)
   → in-flight kill (§4 Stage-B instantaneous re-checks twice; SIGTERM → grace → SIGKILL)
   → killed        ── OR at any gate: ABORTED-to-alert (floor veto / disarm / identity change)
-                  ── OR: DEFERRED (fd-skip, capped by maxKillDeferrals)
+                  ── OR: DEFERRED (fd-skip, capped by maxKillDeferrals) <!-- tracked: CMT-1901 -->
 ```
 Every confirmed sustained hog that is NOT killed — model said `leave`, decider
 unavailable, or any floor veto — is ALWAYS surfaced by the §4 observability floor.
@@ -147,7 +158,7 @@ STAGES therefore use a cumulative-CPU-time delta, never `%cpu`:
   read — `time=` is cumulative CPU time (`[dd-]hh:mm:ss`), consistent with the
   stage-1 pass and needing NO new dependency. A `proc_pidinfo(PROC_PIDTASKINFO)` /
   `proc_pid_rusage` native addon (`pti_total_user + pti_total_system`, finer
-  resolution) is an explicit FOLLOW-UP, not v1. NOT a `/proc` read (macOS has none)
+  resolution) is an explicit FOLLOW-UP, not v1. NOT a `/proc` read (macOS has none) <!-- tracked: CMT-1901 -->
   and NOT `ps %cpu`.
   - **`Δwall` MUST be a MONOTONIC clock (round-9 — scalability/gemini; load-bearing
     on THIS machine).** Measure `Δwall` with `process.hrtime.bigint()` /
@@ -168,7 +179,7 @@ STAGES therefore use a cumulative-CPU-time delta, never `%cpu`:
     0.5-core threshold sits at a safe quantization boundary: a 1-CPU-sec reading
     (~0.4 core) → SPARE (safe), ≥2-CPU-sec (~0.8 core) → proceed — the "still pinning
     ~2 cores vs went idle" signal dwarfs 1s quantization and near-boundary errors fail
-    toward spare. The `proc_pidinfo` follow-up removes quantization entirely.
+    toward spare. The `proc_pidinfo` follow-up removes quantization entirely. <!-- tracked: CMT-1901 -->
   - **Failure behavior (fail-closed on data):** a pid that is gone, a zombie,
     permission-denied, or returns an unparseable `time=`/`lstart=` → the field is
     UNKNOWN → alert-never-kill. A process must exceed the core threshold across N
@@ -465,17 +476,17 @@ VSCodium run their extension hosts (`… Helper (Plugin)`), which is the process
 holds the CPU when an extension's in-host work runs away. A **standalone** language
 server that an extension spawns as its OWN child process (a bare `node` / `python` /
 `java` whose editor parent appears only in argv ancestry) is a DIFFERENT class and is
-explicitly a NAMED FOLLOW-UP, out of v1 — the v1 name-regex would not match it, and
+explicitly a NAMED FOLLOW-UP, out of v1 — the v1 name-regex would not match it, and <!-- tracked: CMT-1901 -->
 that is deliberate, not an accidental miss. **Build MUST verify the actual `comm`/
 argv of the 2026-07-03 MongoDB anchor against the v1 regex:** if that incident's hog
 was the shared exthost wrapper, v1 covers its own anchor; if it was a standalone node
 LS child, v1 must either add the standalone-LS class or the anchor is honestly a
-follow-up — this is a build-time grounding gate (a blocker for the coverage CLAIM,
+follow-up — this is a build-time grounding gate (a blocker for the coverage CLAIM, <!-- tracked: CMT-1901 -->
 NOT a spec-convergence blocker — decision-completeness round-10 confirmed the
 frontloaded scope default resolves it either way). **If the historical anchor process
 is no longer capturable at build time** (it ran ~24h and is long gone): ship v1
 as-scoped (the exthost-wrapper class), record anchor coverage as UNVERIFIED in the
-ship notes, and file the standalone-LS class as a P10-tracked follow-up if it ever
+ship notes, and file the standalone-LS class as a P10-tracked follow-up if it ever <!-- tracked: CMT-1901 -->
 recurs — the build never stalls on an uncapturable historical process.
 
 ### 4. The safety floor (VETO-only — bounds the decision, never makes it)
@@ -537,7 +548,7 @@ INTO the floor so a single model misjudgment cannot break them:
     inline (the #1069 lesson applies to the kill lane too). **Dip policy:** a
     "not-idle-now" test at a LOWER threshold (0.5 core) — 1 CPU-sec (~0.4 core) →
     below → DEFER; ≥2 CPU-sec (~0.8 core) → pass. A candidate that fails micro-check
-    #1 is DEFERRED: it holds NO signal, is NOT entered into the in-flight-kill set,
+    #1 is DEFERRED: it holds NO signal, is NOT entered into the in-flight-kill set, <!-- tracked: CMT-1901 -->
     and is re-checked on the NEXT scan (cache-suppressed meanwhile). TWO consecutive
     failed micro-checks → ABORT to alert (a sustained 90s hog is never spared by a
     single momentary dip; an idle orphan is never killed). Only after Stage A passes
@@ -576,7 +587,7 @@ INTO the floor so a single model misjudgment cannot break them:
   has SIGTERM and may still exit on its own), with a hard `maxKillDeferrals` cap
   (default 3): after the cap it PROCEEDS to SIGKILL — the hog is the priority, never an
   unbounded defer. (The in-flight-kill set + `inFlightKillTtlMs`, §6, prevent a
-  re-SIGTERM while a deferred SIGKILL waits.) **Probe-failure/ambiguity direction = DEFER
+  re-SIGTERM while a deferred SIGKILL waits.) **Probe-failure/ambiguity direction = DEFER <!-- tracked: CMT-1901 -->
   within the SAME capped budget (round-10 — reconciling lessons + codex):** if the
   `lsof`-shaped probe errors, times out, or can't classify a path, treat it like a
   match — DEFER the SIGKILL and COUNT it against `maxKillDeferrals` — so an uncertain
@@ -586,7 +597,7 @@ INTO the floor so a single model misjudgment cannot break them:
   bearing (a veto belongs to the floor); the probe is a bounded courtesy that can
   neither permanently spare a hog nor be gamed into shielding one.
   **Placement — the probe gates SIGKILL, NOT SIGTERM (round-11 — adversarial;
-  consistent with §6 + the §Design lifecycle diagram, which both place the deferral in
+  consistent with §6 + the §Design lifecycle diagram, which both place the deferral in <!-- tracked: CMT-1901 -->
   the in-flight-kill stage).** SIGTERM is the graceful "please exit" a well-behaved
   language server catches to flush and exit cleanly — it is NOT the truncation risk;
   SIGKILL (uncatchable, no flush) is. So the courtesy runs in the post-SIGTERM grace
@@ -679,7 +690,7 @@ It holds the kill DECISION authority; the §4 floor holds only VETO authority.
 - **Aggregate small-process storms are OUT OF SCOPE here (round-8 — honest scope
   note).** Per the arithmetic above, a many-small-process storm is invisible to the
   per-pid threshold. An instar-ORIGIN storm is owned by the fork-bomb spawn-cap floor
-  (a separate host-wide guard); an EXTERNAL aggregate storm is a named follow-up (a
+  (a separate host-wide guard); an EXTERNAL aggregate storm is a named follow-up (a <!-- tracked: CMT-1901 -->
   cheap `total-external-Δcputime > X cores` observability-only trigger), not v1.
 - Routed through the rate-limited LlmQueue **BACKGROUND/low-priority lane** with
   feature-metrics attribution (`ExternalHogSentinel/ZombieClassifier`). The
@@ -914,7 +925,7 @@ against real host processes):
   `armed-pending` state — `!dryRun` but no valid marker — is NOT in the current
   `GuardEffectiveState` enum, so v1 MAPS that case to `on-dry-run`; adding a distinct
   `armed-pending` is a cross-cutting enum change — summary counts, dashboard,
-  pool-merge — deliberately DEFERRED, not implied free (round-10 — integration).) Keyed on config alone, the reachable
+  pool-merge — deliberately DEFERRED, not implied free (round-10 — integration).) Keyed on config alone, the reachable <!-- tracked: CMT-1901 -->
   `config.dryRun:false` + marker-absent state would falsely read `on-confirmed` while
   the feature is not actually killing — the exact "config-wish, not verified reality"
   dishonesty `/guards` forbids, on a load-bearing safety surface. The guard wiring
@@ -1024,7 +1035,7 @@ which is NOT acceptable for arming an irreversible KILL scope). So the v1 postur
 **per-machine arm by design**: arming a machine's sentinel requires that machine's
 own PIN surface (the operator reaches a peer machine's dashboard via that machine's
 own tunnel/dashboard URL + PIN). For v1 this is moot — the dev-gate scopes live
-arming to the single dev machine. The named FLEET follow-up (so this does not
+arming to the single dev machine. The named FLEET follow-up (so this does not <!-- tracked: CMT-1901 -->
 silently collide with the "one dashboard, not per-machine" standard) is the WS4.4
 mechanism: PIN validated at the fronting dashboard edge → a short-lived,
 audience-bound (target machine + the exact arm action), single-use, mesh-signed
@@ -1111,7 +1122,7 @@ dashboard-only, stated here rather than left implicit.
   SAME logical exthost collapses to ONE key and trips the breaker (P19 discriminator);
   a `leave` verdict batched-misaligned onto another candidate is impossible because
   each candidate is a separate call (one-call-per-candidate). **Round-9 additions:** a
-  candidate that fails kill-time CPU micro-check #1 is DEFERRED (holds no signal, not
+  candidate that fails kill-time CPU micro-check #1 is DEFERRED (holds no signal, not <!-- tracked: CMT-1901 -->
   in the in-flight set) and only aborts-to-alert after TWO consecutive failures
   (admission-gate cadence); the narrow fd-skip DEFERS on a writable regular file under
   a workspace path but PROCEEDS after `maxKillDeferrals`, and does NOT defer on an
@@ -1159,7 +1170,7 @@ dashboard-only, stated here rather than left implicit.
   class until re-arm.
 - **Guard-posture honesty (round-9 — integration):** the reachable
   `config.dryRun:false` + marker-absent state reports `on-dry-run` (v1 maps the
-  deferred `armed-pending` → `on-dry-run` per §8), never `on-confirmed`.
+  deferred `armed-pending` → `on-dry-run` per §8), never `on-confirmed`. <!-- tracked: CMT-1901 -->
 - **P17 burst-invariant:** a burst of M simultaneous zombie kills produces ≤ the
   notice budget (wire into `notification-flood-burst-invariant.test.ts`); the
   undeliverable-alert surfaces via the idempotent status/guard-posture row only, never
@@ -1189,7 +1200,7 @@ CMT-1901) measures which model best makes the kill|leave|alert call — the DECI
 the intelligence owns (§5). The mechanical safety floor (§4) only vetoes; the model
 this benchmark selects is the actual decider, so the benchmark is load-bearing.
 
-## Out of scope / follow-ups
+## Out of scope / follow-ups <!-- tracked: CMT-1901 -->
 
 - Growing the code-defined allowlist beyond editor exthosts (evidence-gated, source
   PR). The §4 observability alerts double as allowlist-CANDIDATE nominations — a
@@ -1198,10 +1209,10 @@ this benchmark selects is the actual decider, so the benchmark is load-bearing.
   runtime knob.
 - An EXTERNAL aggregate small-process storm (many sub-threshold processes summing to
   a machine-saturating load) — invisible to the per-pid `cpuCoreThreshold`; a named
-  follow-up (a cheap `total-external-Δcputime > X cores` observability-only trigger).
+  follow-up (a cheap `total-external-Δcputime > X cores` observability-only trigger). <!-- tracked: CMT-1901 -->
   instar-ORIGIN storms are already owned by the fork-bomb spawn-cap floor.
 - A finer CPU-time source — a `proc_pidinfo(PROC_PIDTASKINFO)` / `proc_pid_rusage`
-  native addon — as a follow-up to the v1 `ps time=` acquisition.
+  native addon — as a follow-up to the v1 `ps time=` acquisition. <!-- tracked: CMT-1901 -->
 - Cross-machine (fleet-phase) arming via the WS4.4 mesh-signed operator assertion
   (see Multi-machine posture) — until then arm is per-machine-dashboard-only.
 - A wedged root-owned daemon (e.g. fseventsd) — cannot be auto-killed here; belongs
@@ -1209,7 +1220,7 @@ this benchmark selects is the actual decider, so the benchmark is load-bearing.
   grants standing authority for privileged daemon management.
 - Leftover-state cleanup on a full feature revert — the sampler snapshot artifact,
   the durable kill ledger, and `logs/external-hog-kills.jsonl` are inert if the
-  feature is removed (no runtime consumer); a cleanup pass is a follow-up, not a v1
+  feature is removed (no runtime consumer); a cleanup pass is a follow-up, not a v1 <!-- tracked: CMT-1901 -->
   obligation.
 
 ## Open questions

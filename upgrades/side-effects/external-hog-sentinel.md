@@ -69,7 +69,26 @@ _(Filled in progressively as slices land; this baseline commit is the spec + ben
    `GET /external-hog` + pool-scope `/guards`. Confirmed correct by review.
 8. **Rollback cost:** low — disarm route / config flip; no migration.
 
+## Slice log
+
+### Slice 2 — config schema + dev-gate registration
+Files: `src/core/types.ts` (the `externalHogSentinel?` interface), `src/config/ConfigDefaults.ts`
+(defaults — `enabled` OMITTED, `dryRun: true`, all kill-gate knobs), `src/core/devGatedFeatures.ts`
+(DEV_GATED_FEATURES entry with the credentialRepointing-style justification),
+`tests/unit/external-hog-sentinel-config.test.ts`.
+- **Side effects:** NONE at runtime — this slice adds a DORMANT config block + a registry
+  entry. No code consumes it yet, so no behavior changes on any agent. It resolves the
+  §7/§8 obligation that `enabled` be omitted (dev-gate) + registered in DEV_GATED_FEATURES
+  (the #1001 wiring guarantee — auto-covered by `devGatedFeatures-wiring.test.ts`, 151 pass).
+- **Over/under-block:** N/A (no decision logic yet).
+- **Signal vs authority:** N/A (config only).
+- **Multi-machine:** config is machine-local; the feature's posture is `hardware-bound-resource`.
+- **Tests:** 6 focused (dev-gate live/dark, dryRun canary on both, enabled-omitted, all
+  defaults, the `maxClassificationsPerScan < hostSpawnCap` invariant) + the 151-test wiring
+  suite. Typecheck clean.
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel"/"guard"/kill lifecycle). A dedicated reviewer subagent
-audits this artifact once the runtime slices land.
+audits this artifact once the runtime decision-logic slices (floor, classifier hookup,
+kill funnel, arm/disarm) land — the config slice carries no decision logic to audit.

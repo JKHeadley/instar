@@ -354,6 +354,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Signal-only local recorder + ONE deduped attention item; reads git status/diff + lsof read-only; no egress, no spend, no destructive action. The optional preservation is a NON-destructive patch write (git diff → a state-dir file) behind an off-by-default preserveWork sub-flag — it never mutates the worktree, its index, or any ref.',
   },
   {
+    name: 'externalHogSentinel',
+    configPath: 'monitoring.externalHogSentinel.enabled',
+    description:
+      'External-hog zombie auto-kill sentinel (CMT-1901, /external-hog) — surfaces any sustained external CPU hog and auto-kills one narrow class (orphaned Electron editor extension-host wrappers). The intelligence (zombie-classify) decides kill/leave/alert WITHIN a mechanical veto-only safety floor.',
+    justification:
+      "This is a 4th process-killer, and its three siblings (sessionReaper/agentWorktreeReaper/mcpProcessReaper) are DARK_GATE_EXCLUSIONS as destructive — so it is admissible to DEV_GATED_FEATURES ONLY on the credentialRepointing-style ground that the `enabled` gate makes SCAN/CLASSIFY/LOG live while the KILL itself stays doubly-held: `dryRun: true` (the canary — live-on-dev scans, classifies, and LOGS would-kills but kills NOTHING) AND, orthogonally, a PIN-written armed marker (armEpoch > lastDisarmEpoch) that no config write, PATCH, strip-migration, or restart can produce. Live killing needs BOTH a deliberate dryRun:false AND a fresh PIN arm. A kill executes iff floor_pass && classifier==='kill'; the mechanical floor is veto-only (it can only BLOCK a kill, never trigger one) and the numeric kill-gate knobs are read-time clamped to code minimums so they can only ever act inside the owner-dead allowlist envelope. Every failure path fails SAFE (missing/unparseable signal → alert-never-kill; decider unavailable → no kill). Same dogfooding posture as topicProfiles / credentialRepointing.",
+  },
+  {
     name: 'staleOwnerRelease',
     configPath: 'multiMachine.sessionPool.staleOwnerRelease.enabled',
     description:

@@ -1,5 +1,9 @@
 # External-Hog Zombie Auto-Kill Sentinel — plain-English overview
 
+_Why this matters (the principle it serves): an agent that gets silently starved of
+its machine can't be the one to fix its own resource problems — it's locked out
+exactly when it's needed. This keeps the agent able to reclaim its own resources._
+
 ## What problem this solves
 
 Sometimes a program that has nothing to do with the agent goes haywire and eats

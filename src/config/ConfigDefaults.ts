@@ -347,6 +347,34 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       preserveWork: false,
       maxFlagsPerPass: 10,
     },
+    // ExternalHogSentinel (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md):
+    // surfaces any sustained external CPU hog and AUTO-KILLS one narrow class (orphaned
+    // Electron editor extension-host wrappers). Intelligence decides kill/leave/alert
+    // WITHIN a mechanical veto-only floor; kill iff floor_pass && classifier==='kill'.
+    // `enabled` is OMITTED so the runtime resolves it through the developmentAgent
+    // dark-feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet.
+    // `dryRun: true` is the canary — live-on-dev scans/classifies/LOGS would-kills but
+    // kills NOTHING until a deliberate PIN-gated arm. The numeric kill-gate knobs are
+    // read-time clamped to code-defined minimums. Registered in DEV_GATED_FEATURES.
+    externalHogSentinel: {
+      dryRun: true,
+      scanIntervalMs: 60_000,
+      cpuCoreThreshold: 1.5,
+      sustainedSampleCount: 3,
+      sampleWindowMs: 30_000,
+      singleFlightBudgetMs: 20_000,
+      killTimeCpuRecheckWindowMs: 2_500,
+      sigtermGraceMs: 12_000,
+      inFlightKillTtlMs: 36_000,
+      maxKillDeferrals: 3,
+      killLedgerMaxPerSignaturePerHour: 3,
+      maxClassificationsPerScan: 4,
+      classifierCacheTtlMs: 300_000,
+      classifierCacheMaxEntries: 256,
+      inFlightKillSetMax: 64,
+      noticeBudgetPerWindow: 4,
+      noticeWindowMs: 600_000,
+    },
     // Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be
     // Clean", docs/specs/durable-output-hygiene-standard.md): the config-gated
     // DurableOutputScrubber redacts credential SPANS from LLM output at durable-
