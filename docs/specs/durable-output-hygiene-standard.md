@@ -6,6 +6,9 @@ parent-principle: "Structure beats Willpower"
 eli16-overview: "durable-output-hygiene-standard.eli16.md"
 status: "review-convergence (round-3 clean pass 2026-07-02: codex CLEAN; all gemini findings triaged ALREADY-ADDRESSED with section citations; internal reviewer CLEAN)"
 tags: ["review-convergence"]
+review-convergence: "2026-07-02"
+approved: true
+approved-by: "echo (operator-approved defect-class standards program — Justin's standing approval covers the sibling builds; scrub ships dark-first per Graduated Rollout, registry text + fleet posture remain operator-gated per the operator-gate field below)"
 origin: "INSTAR-Bench v2 defect-class review (docs/audits/ib2-defect-class-review-2026-07-02.md), Class 4"
 operator-gate: "Registry text ships ONLY with Justin's explicit sign-off. The persistence-chokepoint scrub + coverage axis ship through the normal instar-dev pipeline (scrub dark-first per Graduated Rollout). The FLEET default posture of the scrub is ALSO an operator decision — see Frontloaded Decisions #4."
 ---
@@ -159,9 +162,10 @@ tagging); an inventory lint flags a tagged-output persistence path absent from t
 inventory, so next month's new store cannot silently bypass the class. **Scope boundary:**
 memory-family stores + doc-tree summaries are in scope now; logs/telemetry are covered by
 the existing telemetry scrubs (cited per entry); caches/vector indexes/eval artifacts are
-enumerated as a tracked follow-up IN the inventory itself — and that follow-up is a gap
-item under the class-closure standard, so it carries the gap machinery's max-age escalation
-(a semantically-durable leak path cannot park as an undated TODO).
+enumerated as a tracked follow-up IN the inventory itself <!-- tracked: src/data/durableOutputChokepoints.ts -->
+— and that inventory entry is a gap item under the class-closure standard, so it carries
+the gap machinery's max-age escalation (a semantically-durable leak path cannot park as an
+undated TODO).
 
 **Multi-machine posture (Cross-Machine Coherence — declared):** the inventory and scrub
 config are git/code-replicated (fine). BUT replicated memory-family stores (learnings, KB,
@@ -246,7 +250,7 @@ that authority by being observable, bounded, and reversible-in-posture — never
    (design §2).
 3. **Private views / published pages** (was Open Q3): out of scope; tracked follow-up item
    filed in the same change and cited in the inventory (different write path, same
-   pattern).
+   pattern). <!-- tracked: src/data/durableOutputChokepoints.ts -->
 4. **Fleet default posture** (was Open Q1 — round-1 REJECTED this as a cheap tag, and the
    rejection is accepted): a false-positive redaction destroys data (the original span is
    unrecoverable by design), so the fleet ON-flip is NOT a tunable default — it is the

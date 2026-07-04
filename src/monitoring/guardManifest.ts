@@ -478,6 +478,29 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     declaredLoadBearingAt: '2026-07-01',
   },
   {
+    // Durable-Output Hygiene Standard §2 Layer B ("What Persists Must Be Clean",
+    // docs/specs/durable-output-hygiene-standard.md). `enabled` is deliberately
+    // OMITTED from ConfigDefaults — the runtime resolves it through the
+    // developmentAgent dark-feature gate (dark on the fleet, live on a dev
+    // agent); defaultEnabled:false reflects the fleet default. NO expectedTickMs:
+    // it is EVENT-DRIVEN (runs inline at each durable-output persistence write,
+    // not on a tick), so a quiet store is not stale. expectRuntime: false — it is
+    // a pure write-path transform constructed at boot, with no guardRegistry
+    // heartbeat. dryRunConfigPath is the canary arm (dryRun:true computes +
+    // records would-redact metrics but persists the ORIGINAL text; the
+    // dryRun:false flip is the operator's endpoint decision — spec Frontloaded
+    // Decision #4).
+    key: 'monitoring.durableOutputScrub.enabled',
+    kind: 'config',
+    configPath: 'monitoring.durableOutputScrub.enabled',
+    dryRunConfigPath: 'monitoring.durableOutputScrub.dryRun',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'DurableOutputScrubber',
+    description: 'Deterministic credential-SPAN scrub over LLM output at durable-output persistence chokepoints (session summaries first) — redacts known token shapes BEFORE the write, with provenance markers + would-redact telemetry (counts/kind/offset only, never bytes). Content-altering safety floor, never blocking; dark-first + dryRun canary.',
+  },
+  {
     // tmux Event-Loop Resilience (C). `enabled` is deliberately OMITTED from
     // ConfigDefaults — the runtime resolves it through the developmentAgent
     // dark-feature gate (dark on the fleet, live on a dev agent). defaultEnabled:false

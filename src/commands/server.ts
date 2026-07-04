@@ -14376,7 +14376,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Feature key `durable-output-scrub` — COUNTS/kind only (the ledger row
         // never carries the matched bytes; the floor's metadata is offset/kind).
         recordEvent: (feature, outcome) => {
-          try { getFeatureMetricsRecorder()?.record({ feature, kind: 'event', outcome }); } catch { /* observability must never throw into the persist path */ }
+          try { getFeatureMetricsRecorder()?.record({ feature, kind: 'event', outcome }); } catch { /* @silent-fallback-ok — observability must never throw into the persist path; the store write still completes */ }
         },
       },
       onPoisoningSuspected: (signal) => {
@@ -14395,7 +14395,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             priority: 'NORMAL',
             sourceContext: 'durable-output-scrub-poisoning',
           });
-        } catch { /* escalation is best-effort — never break the persist path */ }
+        } catch { /* @silent-fallback-ok — escalation is best-effort signal-only; a throw here must never break the persist path */ }
       },
     });
 
