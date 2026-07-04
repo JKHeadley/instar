@@ -104,6 +104,12 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   },
 
   // ── Wave 3 (reflectors + background/job tasks) ──
+  // ProfileIntentClassifier — the offender #1 LLM conversion
+  // (docs/specs/keyword-intent-conversions-1-and-3.md). Its discrimination
+  // corpus (tests/unit/profile-intent-discrimination.test.ts) is already the
+  // de-facto benchmark (deterministic pipeline + opt-in LIVE model-accuracy
+  // harness); the formal INSTAR-Bench v2 task is queued for wave-3 authoring.
+  ProfileIntentClassifier: { pending: 'wave-3' },
   JobReflector: { pending: 'wave-3' },
   crossModelReviewer: { pending: 'wave-3' },
   SelfKnowledgeTree: { pending: 'wave-3' },
@@ -181,6 +187,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   MoveIntentClassifier: true, // classifies an untrusted inbound user message + recent conversation context
   CoherenceReviewer: true,
   LLMSanitizer: true, // definitionally judges untrusted inbound content
+  ProfileIntentClassifier: true, // classifies an untrusted inbound user message (+ recent conversation) — the message is delimited untrusted data in the prompt
   OverrideDetector: true,
   TaskClassifier: true,
   ResumeValidator: true, // matches a resume UUID against the topic — judges session/resume state
@@ -343,6 +350,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   WarrantsReplyGate: false, // "should I reply?" — not a completion/health claim
   MoveIntentClassifier: false, // classifies a USER's move/pin intent over a message, not an agent/session claim of completion/health/credit
   HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
+  ProfileIntentClassifier: false, // classifies a user's profile-change intent, not an agent/session claim of completion/progress/health
   CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
   MessagingToneGate: false, // reviews outbound tone/leaks
   CoherenceReviewer: false, // reviews outbound coherence
@@ -432,6 +440,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   InputClassifier: { pending: 'contract-wave-1' }, // parses a closed auto-approve vs relay decision
 
   // ── WAVE-2: every other enumerated-verdict / decision callsite (rollout §2) ──
+  ProfileIntentClassifier: { pending: 'contract-wave-2' }, // parses a closed {intent∈framework|model|thinking|null, value∈enum} verdict — the value is validated against the closed framework/model/thinking enums, never string-matched
   MessageSentinel: { pending: 'contract-wave-2' }, // closed intent set (pause / emergency / normal)
   LLMSanitizer: { pending: 'contract-wave-2' }, // parses a closed sanitize verdict/decision
   WarrantsReplyGate: { pending: 'contract-wave-2' }, // closed should-reply yes/no verdict

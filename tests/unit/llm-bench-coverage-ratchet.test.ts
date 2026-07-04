@@ -29,7 +29,8 @@ const PENDING_BASELINE = [
   // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
   'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
-  'PreCompactionFlush', 'RelationshipManager', 'SelfKnowledgeTree',
+  'PreCompactionFlush', 'ProfileIntentClassifier', 'RelationshipManager',
+  'SelfKnowledgeTree',
   'StandardsConformanceReviewer', 'StandardsCoverageEnrichment',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
   'crossModelReviewer', 'mentor-stage-b', 'openConversationBrief',

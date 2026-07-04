@@ -34,6 +34,12 @@ import { PrHandLease } from '../core/PrHandLease.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
+import {
+  classifyProfileIntent,
+  toProfilePatch,
+  type ProfileIntentResult,
+  type ConversationTurn as ProfileIntentTurn,
+} from '../core/ProfileIntentClassifier.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
   TopicProfileOrchestrator,
@@ -781,6 +787,20 @@ function appendTopicProfileAudit(stateDir: string, event: Record<string, unknown
 
 let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
+// Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md): the
+// framework/model/thinking WRITE decision is inferred by the ProfileIntentClassifier
+// (LLM + recent conversation), replacing the removed keyword regexes in
+// parseProfileTrigger. Dev-gated dark (resolveDevAgentGate) + dry-run FIRST: while
+// dark or dry-run the message ALWAYS passes through (never actuated); the classifier
+// still runs on a dev agent and LOGS would-actuate vs would-pass to
+// logs/profile-intent.jsonl for the soak. Resolved once in startServer.
+let _profileIntentEnabled = false;
+let _profileIntentDryRun = true;
+let _profileIntentMinConfidence = 0.85;
+let _profileIntentTimeoutMs = 4000;
+let _profileIntentContextTurns = 6;
+let _profileIntentModelTier: 'fast' | 'balanced' | 'capable' = 'fast';
+let _profileIntentStateDir = '';
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
 let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
 // WS1.1 dispatch-to-owner (Slack arm): the owner-side bridge reconstructs a Slack
@@ -1843,6 +1863,45 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
  * a message carrying platform forward metadata falls through as normal
  * conversation regardless of sender.
  */
+/**
+ * Offender #1 conversion soak log: one JSONL line per LLM-engaged
+ * ProfileIntentClassifier decision (docs/specs/keyword-intent-conversions-1-and-3.md).
+ * A prefilter-skip is always a would-pass and the bulk of traffic — skipping it
+ * cuts volume AND the privacy surface to messages that named a profile signal and
+ * actually reached the classifier. Observability only — never gates the message.
+ */
+function logProfileIntent(
+  topicId: number,
+  text: string,
+  result: ProfileIntentResult,
+  acted: boolean,
+): void {
+  try {
+    if (result.source === 'prefilter-skip') return;
+    if (!_profileIntentStateDir) return;
+    const logDir = path.join(_profileIntentStateDir, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const decision = result.isChange ? (acted ? 'actuate' : 'would-actuate') : 'pass';
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      topicId,
+      decision,
+      dryRun: _profileIntentDryRun,
+      source: result.source,
+      intent: result.intent,
+      value: result.value,
+      confidence: result.confidence,
+      reason: result.reason,
+      // NO raw message content: the enum-bounded fields above are what the FP-rate
+      // soak needs, and the resolved `value` is already a closed-enum member. We
+      // record only the message LENGTH (non-content) — mirroring the codebase's
+      // dev-soak convention of never persisting a raw operator quote.
+      textLen: typeof text === 'string' ? text.length : 0,
+    });
+    fs.appendFileSync(path.join(logDir, 'profile-intent.jsonl'), line + '\n');
+  } catch { /* @silent-fallback-ok: the soak audit is observability-only — a log write fault must never gate or throw out of the message path (the classifier decision already stands) */ }
+}
+
 async function handleTopicProfileIngress(
   telegram: TelegramAdapter,
   topicId: number,
@@ -1859,9 +1918,57 @@ async function handleTopicProfileIngress(
   try { authorized = telegram.isAuthorizedSender(telegramUserId); } catch { /* @silent-fallback-ok: a trust-floor read fault fails toward NOT-a-trigger (deny-by-default) — the conversational profile parse never runs for an unauthorized turn (TOPIC-PROFILE-SPEC §10.1) */ }
   if (!authorized) return false;
 
-  const trigger = parseProfileTrigger(text);
-  if (!trigger) return false;
   const forwarded = (msg.metadata?.forwarded as boolean | undefined) === true;
+  const trigger = parseProfileTrigger(text);
+  if (!trigger) {
+    // Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md):
+    // the framework/model/thinking WRITE decision moved OUT of parseProfileTrigger
+    // (keyword regexes) into the ProfileIntentClassifier — an LLM reasoning over
+    // the message + recent conversation with structured-enum output, per the
+    // constitutional standard "Intelligence Infers, Keywords Only Guard".
+    // Dev-gated dark + dry-run FIRST; fail-OPEN on every uncertainty.
+    if (forwarded) return false;             // forwarded content is never a command
+    if (!_profileIntentEnabled) return false; // fleet-dark → pass to the agent
+    let conversationContext: ProfileIntentTurn[] = [];
+    try {
+      // Fetch one extra turn, then drop a trailing turn equal to THIS message —
+      // getTopicHistory (oldest→newest) usually already contains the just-logged
+      // inbound row, so without this the model would see the message twice (once
+      // as MESSAGE, once as the newest CONTEXT turn).
+      const hist = telegram.getTopicHistory?.(topicId, _profileIntentContextTurns + 1) ?? [];
+      conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
+      const trimmed = text.trim();
+      while (conversationContext.length > 0
+        && conversationContext[conversationContext.length - 1].fromUser
+        && conversationContext[conversationContext.length - 1].text.trim() === trimmed) {
+        conversationContext.pop();
+      }
+      conversationContext = conversationContext.slice(-_profileIntentContextTurns);
+    } catch { /* @silent-fallback-ok — context is best-effort; classify on the message alone */ }
+    const result = await classifyProfileIntent({
+      text,
+      conversationContext,
+      intelligence: _sharedIntelligence,
+      minConfidence: _profileIntentMinConfidence,
+      timeoutMs: _profileIntentTimeoutMs,
+      maxContextTurns: _profileIntentContextTurns,
+      modelTier: _profileIntentModelTier,
+    });
+    const willAct = result.isChange && !_profileIntentDryRun;
+    logProfileIntent(topicId, text, result, willAct);
+    // Dry-run (the soak) / fail-open / pass-through: log would-actuate vs
+    // would-pass, but pass the message through untouched. Real actuation needs a
+    // deliberate dryRun:false, AND fail-open means uncertainty never actuates.
+    if (!willAct) return false;
+    const patch = toProfilePatch(result);
+    if (!patch) return false;
+    const applyPrincipal = { kind: 'operator' as const, platform: 'telegram', uid: String(telegramUserId) };
+    const applyResult = await surface.applyWrite({
+      topicKey: String(topicId), patch, principal: applyPrincipal, origin: 'conversational', discloseInReply: true,
+    });
+    try { await telegram.sendToTopic(topicId, applyResult.reply); } catch { /* @silent-fallback-ok: best-effort disclosure send (TOPIC-PROFILE-SPEC §10.1) */ }
+    return true;
+  }
   if (forwarded) return false;
 
   const topicKey = String(topicId);
@@ -5683,8 +5790,32 @@ export async function startServer(options: StartOptions): Promise<void> {
             dryRun?: boolean;
             switchNowConfirmTtlMs?: number;
             defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+            intentClassifier?: {
+              enabled?: boolean;
+              dryRun?: boolean;
+              minConfidence?: number;
+              timeoutMs?: number;
+              contextWindowTurns?: number;
+              modelTier?: 'fast' | 'balanced' | 'capable';
+            };
           };
         }).topicProfiles;
+        // Offender #1 conversion: resolve the ProfileIntentClassifier settings ONCE
+        // (the module-level ingress handler has no config in scope). `enabled` rides
+        // resolveDevAgentGate (dark on the fleet, live on a dev agent — registered in
+        // DEV_GATED_FEATURES, configPath topicProfiles.intentClassifier.enabled);
+        // dryRun ships true (the dry-run canary — actuates only on a deliberate flip).
+        const _intentCfg = topicProfilesCfg?.intentClassifier;
+        _profileIntentEnabled = resolveDevAgentGate(
+          _intentCfg?.enabled,
+          config as { developmentAgent?: boolean },
+        );
+        _profileIntentDryRun = _intentCfg?.dryRun ?? true;
+        _profileIntentMinConfidence = _intentCfg?.minConfidence ?? 0.85;
+        _profileIntentTimeoutMs = _intentCfg?.timeoutMs ?? 4000;
+        _profileIntentContextTurns = _intentCfg?.contextWindowTurns ?? 6;
+        _profileIntentModelTier = _intentCfg?.modelTier ?? 'fast';
+        _profileIntentStateDir = config.stateDir;
         _topicProfileStore = new TopicProfileStore({
           stateFilePath: path.join(config.stateDir, 'state', 'topic-profiles.json'),
           legacyFrameworksPath: path.join(config.stateDir, 'state', 'topic-frameworks.json'),

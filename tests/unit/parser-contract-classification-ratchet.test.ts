@@ -64,6 +64,7 @@ const PENDING_BASELINE = [
   'CompletionEvaluator',
   'InputClassifier',
   // wave-2
+  'ProfileIntentClassifier',
   'MessageSentinel',
   'LLMSanitizer',
   'WarrantsReplyGate',
