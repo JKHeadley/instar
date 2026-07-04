@@ -337,9 +337,12 @@ describe('framework activation history (durable standing-framework baseline)', (
 
 describe('TRUSTED_REVIEWER_FRAMEWORKS (no spec egress to untrusted endpoints)', () => {
   it('trusts exactly the first-party OAuth CLI adapters', () => {
-    expect(TRUSTED_REVIEWER_FRAMEWORKS).toEqual(['codex-cli', 'gemini-cli']);
+    // claude-code added by REVIEWER-DOOR-REWIRING (§2.2), COUPLED with the §5.4
+    // baseline-predicate swap so it can never launder the externals-mandatory check.
+    expect(TRUSTED_REVIEWER_FRAMEWORKS).toEqual(['codex-cli', 'gemini-cli', 'claude-code']);
     expect(isTrustedReviewerFramework('codex-cli')).toBe(true);
     expect(isTrustedReviewerFramework('gemini-cli')).toBe(true);
+    expect(isTrustedReviewerFramework('claude-code')).toBe(true);
   });
 
   it('excludes pi-cli (multi-provider — may be a custom endpoint) and arbitrary ids', () => {
@@ -359,7 +362,9 @@ describe('TRUSTED_REVIEWER_FRAMEWORKS (no spec egress to untrusted endpoints)', 
 
 describe('geminiReviewer registry entry', () => {
   it('is the second registry entry (codex stays the preference leader)', () => {
-    expect(SUPPORTED_REVIEWER_FRAMEWORKS.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli']);
+    // claude-code is the third entry (REVIEWER-DOOR-REWIRING §1), config-gated
+    // out of the ACTIVE set on the fleet.
+    expect(SUPPORTED_REVIEWER_FRAMEWORKS.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'claude-code']);
   });
 
   it('ok: stub provider returns a structured review → status ok, gemini flag', async () => {

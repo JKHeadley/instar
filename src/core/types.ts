@@ -899,6 +899,18 @@ export interface IntelligenceProvider {
 export interface IntelligenceOptions {
   /** Model tier preference (implementations may override based on availability) */
   model?: 'fast' | 'balanced' | 'capable';
+  /**
+   * Reviewer inbound-safety hardening (REVIEWER-DOOR-REWIRING §1.4). When set,
+   * `ClaudeCliIntelligenceProvider` runs the call LOCKED DOWN for reviewing
+   * untrusted spec text: EMPTY allowed-tools (`--allowedTools ''`, an allow-list
+   * — NOT a denylist), `--strict-mcp-config` (no user MCP servers), a NEUTRAL
+   * scratch cwd, the prompt via STDIN (not ps-visible argv), and an env
+   * ALLOWLIST that strips agent secrets (e.g. `INSTAR_AUTH_TOKEN`). `model` is
+   * the CONCRETE resolved pin the review must run on (never a tier word — a tier
+   * word resolves to opus, the penalized pair). Other providers ignore this
+   * field (they are already hardened by their own scratch/stdin/env allowlist).
+   */
+  reviewerHardening?: { model: string };
   /** Maximum tokens for the response */
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */

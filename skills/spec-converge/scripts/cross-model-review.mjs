@@ -125,9 +125,33 @@ function readRepoFile(rel) {
   return fs.readFileSync(abs, 'utf-8');
 }
 
+/**
+ * Read the minimal reviewer config the module needs (REVIEWER-DOOR-REWIRING
+ * §1.5): the developmentAgent gate flag + the `specConverge.reviewers` block, so
+ * the Anthropic clean-door family resolves live-on-dev / dark-fleet. Best-effort:
+ * a missing/unparseable `.instar/config.json` ⇒ `{}` ⇒ fleet-dark (byte-identical
+ * `[codex, gemini]`). `.instar/config.json` is machine-local (no config
+ * replication in instar) — enabling the family is a per-machine edit.
+ */
+function loadReviewerConfig() {
+  try {
+    const cfgPath = path.join(ROOT, '.instar', 'config.json');
+    if (!fs.existsSync(cfgPath)) return {};
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    const out = {};
+    if (typeof cfg.developmentAgent === 'boolean') out.developmentAgent = cfg.developmentAgent;
+    if (cfg.specConverge && typeof cfg.specConverge === 'object') out.specConverge = cfg.specConverge;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 async function main() {
   const { spec, context, detectOnly, hashOnly, family, stateDir, timeoutMs } = parseArgs();
   const mod = await loadModule();
+  // Config-gate the Anthropic clean-door family (§1.5). Absent config ⇒ fleet-dark.
+  const reviewerConfig = loadReviewerConfig();
 
   // ── --hash-only: the delta-gating hash of the spec's reviewable body ──
   if (hashOnly) {
@@ -139,9 +163,9 @@ async function main() {
 
   // ── --detect-only: report ALL available families (Piece 3) ──
   if (detectOnly) {
-    const all = mod.detectAllCrossModelReviewers();
+    const all = mod.detectAllCrossModelReviewers({}, reviewerConfig);
     // Back-compat: keep the old single-framework fields (first-match shape).
-    const first = mod.detectCrossModelReviewer();
+    const first = mod.detectCrossModelReviewer({}, reviewerConfig);
     const report = {
       available: all.length > 0,
       frameworks: all,
@@ -152,10 +176,11 @@ async function main() {
     // Record the activation observation into the durable standing-framework
     // baseline when a state dir was provided. A record failure is surfaced in
     // the JSON (fail-loud), never silently swallowed — a missing baseline
-    // would quietly weaken the externals-mandatory check.
+    // would quietly weaken the externals-mandatory check. Iterate the ACTIVE
+    // set so a config-disabled claude family is not recorded as present.
     if (stateDir) {
       const frameworks = {};
-      for (const entry of mod.SUPPORTED_REVIEWER_FRAMEWORKS) {
+      for (const entry of mod.resolveActiveReviewerFrameworks(reviewerConfig)) {
         frameworks[entry.id] = all.some((d) => d.framework === entry.id);
       }
       try {
@@ -186,7 +211,10 @@ async function main() {
       );
       process.exit(0);
     }
-    familyEntry = mod.SUPPORTED_REVIEWER_FRAMEWORKS.find((f) => f.id === family) ?? null;
+    // Config gate (§1.5): a trusted-but-disabled family (the claude clean-door
+    // family on the fleet) is refused here — trusted-egress ≠ enabled.
+    const active = mod.resolveActiveReviewerFrameworks(reviewerConfig);
+    familyEntry = active.find((f) => f.id === family) ?? null;
     if (!familyEntry) {
       process.stdout.write(
         JSON.stringify({
@@ -199,7 +227,7 @@ async function main() {
     }
   }
 
-  const detection = familyEntry ? familyEntry.detect() : mod.detectCrossModelReviewer();
+  const detection = familyEntry ? familyEntry.detect() : mod.detectCrossModelReviewer({}, reviewerConfig);
 
   // Unavailable → print the unavailable flag, exit 0. Never block.
   if (!detection.available) {
@@ -227,9 +255,11 @@ async function main() {
         promptText: assembled.promptText,
         timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : mod.REVIEW_TIMEOUT_MS,
         detectionOverride: detection,
+        reviewerConfig,
       })
     : await mod.runCrossModelReview({
         assembled,
+        config: reviewerConfig,
         ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
       });
 

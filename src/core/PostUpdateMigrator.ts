@@ -858,6 +858,7 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
     this.migrateThreeStandardsReviewChecks(result);
+    this.migrateSpecConvergeAnthropicReviewerDisclosure(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
@@ -1304,6 +1305,51 @@ export class PostUpdateMigrator {
         rel: ['skills', 'spec-converge', 'templates', 'reviewer-integration.md'],
         fingerprint: '# Reviewer Prompt — Integration',
         label: 'spec-converge integration-reviewer template (Standards A+B review-checks)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Anthropic clean-door reviewer disclosure (REVIEWER-DOOR-REWIRING §Migration
+  // parity, inc1) ──
+  //
+  // The spec-converge SKILL.md gains (a) the `--family claude-code` clean-door
+  // reviewer family + its `clean-door-anthropic-review` disclosure field and (b)
+  // the D7 per-round-model disclosure line. Per Migration Parity case 5b,
+  // installBuiltinSkills() is non-destructive (never overwrites an installed
+  // SKILL.md), so a CONTENT update reaches already-installed agents (the dev agent
+  // included) ONLY through this dedicated idempotent migration. Same shape as
+  // migrateThreeStandardsReviewChecks: re-copy the bundled SKILL.md only when the
+  // installed copy lacks the capability MARKER and still looks stock (fingerprint
+  // guard); a customized file is left untouched and reported. Idempotent: the
+  // marker check short-circuits on every later run. Custom skills are never touched.
+  private migrateSpecConvergeAnthropicReviewerDisclosure(result: MigrationResult): void {
+    const MARKER = 'clean-door-anthropic-review';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (Anthropic clean-door reviewer + D7 model disclosure)',
       },
     ];
     for (const f of files) {
