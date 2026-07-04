@@ -195,6 +195,17 @@ const SLASH_PAUSE: ReadonlySet<string> = new Set([
 /**
  * Regex patterns for fast-path stop detection.
  * Tested before LLM classification.
+ *
+ * @intent-safety-floor-ok — This is the constitutional survivor #2 of the
+ * "Intelligence Infers, Keywords Only Guard" standard: a deterministic
+ * emergency-stop / pause FAST-PATH that runs BEFORE, and WITH, an LLM stage
+ * behind it (MessageSentinel.classify() routes everything that isn't an
+ * unambiguous fast-stop through the injected LLM classifier). The keyword
+ * lists here (FAST_STOP_PATTERNS / FAST_PAUSE_PATTERNS / CONTINUE_PING_TOKENS
+ * / INTENT_B_ADDITIVE / INTENT_C_QUESTION_STARTS) are a safety floor for a
+ * halt-now signal, never the sole decision-maker for natural-language intent.
+ * See docs/specs/standard-intelligence-infers-keywords-only-guard.md and the
+ * keyword-intent-decision ratchet (tests/unit/keyword-intent-decision-ratchet.test.ts).
  */
 const FAST_STOP_PATTERNS: readonly RegExp[] = [
   /^stop\b/i,                         // "stop" at start of message
