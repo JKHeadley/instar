@@ -292,6 +292,26 @@ Files: `src/monitoring/ExternalHogKillFunnel.ts` (`runKillFunnel`),
   SIGNAL; sigterm-exit (SIGTERM only); full kill (SIGTERM+SIGKILL); disarm-mid-grace → aborted
   (SIGTERM only, no SIGKILL); fd-write defer (SIGTERM only); defer-cap-exhausted → SIGKILL.
 
+### Slice 13 — scan-tick orchestrator (composes all modules; the feature is ALIVE)
+Files: `src/monitoring/ExternalHogScanTick.ts` (`runScanTick`),
+`tests/unit/external-hog-scan-tick.test.ts` (6 tests, end-to-end over injected I/O).
+- **What it is:** the orchestrator tying every reviewed module into ONE scan tick: discovery
+  (sampler) → worst-CPU-first classify under the cap → floor → P19 breaker → kill funnel → P17
+  coalesced notices. All I/O injected (read ps, ownership, classify, funnel deps, clock,
+  deliver) → the whole tick is end-to-end testable without a real ps/model/signal.
+- **Dangerous direction:** driving the funnel toward a kill it shouldn't. Guarded: a kill is
+  attempted ONLY when verdict==='kill' && floor.permitted && breaker-not-tripped; and even then
+  the funnel is watch-only unless armed (so the orchestrator can never cause a signal the funnel
+  wouldn't). Every non-killed sustained hog (leave / veto / decider-unavailable / breaker /
+  would-kill / over-cap) is SURFACED (§4 observability floor — the model can't silence a hog).
+- **Watch-only rides through:** in the shipped dryRun state the funnel returns would-kill → no
+  signal → the tick produces would-kill records + observability notices, kills NOTHING.
+- **Signal vs authority:** pure control flow composing the reviewed modules. Multi-machine:
+  machine-local. Rollback: delete; the server wiring (later) consumes it.
+- **Tests:** 6 — watch-only hog→would-kill NO SIGNAL + surfaced; armed hog→killed + kill notice;
+  model-leave→alert-only+surfaced; decider-unavailable→notice; floor-veto→alert-only+notice;
+  idle→nothing.
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
@@ -456,3 +476,25 @@ state — is the correct DI boundary (deps are contracted to read live; the epoc
 safety is proven airtight in ExternalHogArmMarker, which canKillLive ANDs), and the inherent
 re-check→SIGKILL TOCTOU is unavoidable and placed as late as feasible (only the protective
 fd-probe follows, which can only PREVENT a kill).
+
+### Slice-13 (scan-tick orchestrator) reviewer verdict
+
+**Round 1 — Concern raised (VALID observability bug, fixed).** The composition is correct: the
+funnel is reached ONLY after verdict==='kill' && floor.permitted && !breaker-tripped (every
+other branch `continue`s); recordKill fires ONLY on outcome.action==='killed' (would-kill/
+deferred/aborted don't record → watch-only never trips the breaker); over-cap + breaker-tripped
++ leave + veto + decider-unavailable all surface. BUT a candidate with LIVE facts (present hog)
+but a null `identityFor` was filtered out with NO notice + NO kill — the exact invisible-hog
+failure §4 exists to prevent. Since the natural `identityFor` computes classId via
+matchAllowlistClass (null for every non-editor hog), that whole broad-hog class would be silently
+dropped, making the floor's outside-allowlist-surface branch dead code.
+
+**Resolution:** the enrichment loop now SURFACES a present hog with a null identity as a
+`hog-left-alive` notice (signature `pid startTime`) and skips only the VANISHED (factsFor-null)
+case silently. Added a test (present hog + null identity → surfaced, no signal, not in outcomes).
+7 tests pass.
+
+**Round 2 — Concur.** The reviewer re-checked and CONCURRED: a present hog with a null identity
+is now always surfaced as hog-left-alive (never silently dropped); the vanished factsFor-null
+case is still correctly skipped without a notice; and the killed/would-kill/leave/veto/decider
+paths + the funnel gating are unchanged (only fully-identified candidates reach the classify loop).
