@@ -1,34 +1,30 @@
 /**
- * Unit tests for the deterministic Threadline hub commands (CMT-529):
- * parseHubCommand + bindHubConversation + the legacy-ordering fix.
+ * Unit tests for the Threadline hub binder (CMT-529): bindHubConversation + the
+ * legacy-ordering fix. The keyword/regex DECISION (`parseHubCommand`) is GONE —
+ * it moved to the LLM-with-context HubIntentClassifier (Conversion #3,
+ * docs/specs/keyword-intent-conversions-1-and-3.md); see
+ * HubIntentClassifier.test.ts + hub-intent-discrimination.test.ts for the
+ * recognizer. This file covers only the binder, whose behavior is unchanged.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseHubCommand, bindHubConversation, type HubBindDeps } from '../../src/threadline/hubCommands.js';
+import { bindHubConversation, type HubBindDeps } from '../../src/threadline/hubCommands.js';
 import { CollaborationSurfacer, type SurfacerTelegram } from '../../src/threadline/CollaborationSurfacer.js';
 import { ConversationStore } from '../../src/threadline/ConversationStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-describe('parseHubCommand', () => {
-  it('matches "open this" / "open" / "Open This." → open', () => {
-    expect(parseHubCommand('open this')).toEqual({ action: 'open' });
-    expect(parseHubCommand('open')).toEqual({ action: 'open' });
-    expect(parseHubCommand('  Open This. ')).toEqual({ action: 'open' });
-    expect(parseHubCommand('OPEN THIS!')).toEqual({ action: 'open' });
-  });
-  it('matches "tie this to <name>" and "tie this to #id"', () => {
-    expect(parseHubCommand('tie this to my GrowthBook topic')).toEqual({ action: 'tie', targetTopicName: 'my GrowthBook topic' });
-    expect(parseHubCommand('tie this to #1234')).toEqual({ action: 'tie', targetTopicId: 1234 });
-    expect(parseHubCommand('bind this to 1234')).toEqual({ action: 'tie', targetTopicId: 1234 });
-  });
-  it('returns null for ordinary prose (falls through to the agent)', () => {
-    expect(parseHubCommand('can you open this and explain what it is?')).toBeNull();
-    expect(parseHubCommand('open the door for me')).toBeNull();
-    expect(parseHubCommand('what is this thread about?')).toBeNull();
-    expect(parseHubCommand('')).toBeNull();
-    expect(parseHubCommand('I want to tie this to something but not sure which')).toBeNull();
+describe('regression: the keyword hub-command recognizer is gone (the standard)', () => {
+  it('hubCommands.ts no longer ships a parseHubCommand regex decision', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/threadline/hubCommands.ts'), 'utf-8');
+    // The DECLARATION must be gone (the docstring may still narrate the history).
+    expect(src).not.toContain('export function parseHubCommand');
+    // No executable regex decision remains: the `.test(`/`.match(` calls that
+    // classified the message are gone (the docstring narrates the old regexes as
+    // prose, but there is no runtime matcher left).
+    expect(src).not.toMatch(/\.test\(t\)/);
+    expect(src).not.toMatch(/t\.match\(/);
   });
 });
 

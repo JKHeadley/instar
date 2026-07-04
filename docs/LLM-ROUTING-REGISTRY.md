@@ -171,6 +171,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | UnjustifiedStopGate | src/core/UnjustifiedStopGate.ts:416 | is a self-stop justified? | B | OC(fast) | ✅ |
 | WarrantsReplyGate | src/threadline/WarrantsReplyGate.ts:295 | does A2A msg need a reply? | A | OC(fast) | ⚠ small fits |
 | MoveIntentClassifier | src/core/MoveIntentClassifier.ts:303 | is inbound a "move/pin this on <nickname>" command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never hijacks, so a small fast model fits (replaces a keyword verb-list — the 2026-07-03 hijack) |
+| HubIntentClassifier | src/threadline/HubIntentClassifier.ts:classifyHubIntent | is a hub message an "open this"/"tie this to <topic>" bind command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never swallows, so a small fast model fits (replaces the anchored regexes that ate the message before the agent saw it) |
 | TaskClassifier / OverrideDetector / AutoApprover / IntegrationGate / PromptGate | src/providers/uxConfirm/* | classification / approval verdicts | A | OC(fast) | ⚠ mostly nature A |
 | DiscoveryEvaluator | src/core/DiscoveryEvaluator.ts:467 | surface a feature discovery? | A | OC(fast) | ⚠ |
 | IntentLlmJudge / LlmIntentClassifier / AmbientContributionGate | src/core/IntentTestHarness.ts:246; src/permissions/* | intent-vs-org / permission intent / speak? | B·gating (explicit category) | OC(fast) | ✅ explicit-category, correct |

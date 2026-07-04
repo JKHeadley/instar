@@ -739,6 +739,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       dryRun: true,
       credentialShareEnforced: false,
     },
+    // Hub-intent recognizer (Conversion #3, docs/specs/keyword-intent-conversions-1-and-3.md).
+    // The "open this"/"tie this to <topic>" hub-bind DECISION is inferred by an LLM
+    // over the message + recent conversation (HubIntentClassifier), NOT the anchored
+    // regexes it replaced — which SWALLOWED the message before the agent saw it, so a
+    // misread silently EATS a real message (the highest-care conversion). `enabled` is
+    // DELIBERATELY OMITTED (not hardcoded false) so resolveDevAgentGate decides — DARK
+    // on the fleet, LIVE on a development agent (registered in DEV_GATED_FEATURES,
+    // configPath threadline.hubIntent.enabled). Ships dry-run FIRST: on a dev agent the
+    // classifier RUNS and LOGS would-swallow vs would-pass to logs/hub-intent.jsonl, but
+    // the message ALWAYS passes through (never swallowed) until a deliberate dryRun:false
+    // — proving the false-positive rate collapsed before it can eat a message. Fail-OPEN
+    // on any uncertainty. applyDefaults deep-merges this under `threadline` on update
+    // (Migration Parity), so existing agents backfill it without an explicit patch.
+    hubIntent: {
+      dryRun: true,
+      minConfidence: 0.85,
+      timeoutMs: 4000,
+      contextWindowTurns: 6,
+      modelTier: 'fast',
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap

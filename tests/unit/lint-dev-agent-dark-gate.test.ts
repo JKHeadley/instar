@@ -341,14 +341,17 @@ describe('lint-dev-agent-dark-gate', () => {
     const EXPECTED: Record<string, string> = {
       // Line->attributed-path map for every `enabled: false` literal in
       // ConfigDefaults.ts. REGENERATED via attributeEnabledFalsePaths on the
-      // REBASED ConfigDefaults after rebasing onto JKHeadley/main (v1.3.743).
-      // Two independent shifts are reconciled here: (a) main moved on ~10
-      // releases (line drift across the monitoring/multiMachine families); (b)
-      // this branch's monitoring.durableOutputScrub block (18 lines, OMITS
-      // `enabled` — rides the dev-gate, NO new attributed path) inserted above
-      // strandedTopicSentinel shifts every `enabled: false` line below it DOWN
-      // by +18. Same 25 attributed paths as before (no path added or removed);
-      // every entry maps to a real `enabled: false,` line in its named block.
+      // MERGED ConfigDefaults after rebasing echo/hubcommands-llm onto upstream/main
+      // (which now carries #1367's move-intent conversion). Two dev-gated blocks that
+      // OMIT `enabled` (so add NO attributed path, only shift the lines below them):
+      //   (a) threadline.hubIntent (Conversion #3, docs/specs/keyword-intent-conversions-1-and-3.md,
+      //       +20 lines) inserted after threadline.verifiedPairing — shifts everything
+      //       from mentor.enabled onward DOWN;
+      //   (b) multiMachine.sessionPool.moveIntent (#1367,
+      //       docs/specs/nickname-move-intent-llm-rebuild.md, +18 lines) inserted under
+      //       sessionPool — shifts the sessionPool sub-entries + everything after DOWN.
+      // Still 25 attributed paths (none added or removed); every entry maps to a real
+      // `enabled: false,` line in its named block.
       '249': 'monitoring.sessionReaper.enabled',
       '307': 'monitoring.agentWorktreeReaper.enabled',
       '388': 'monitoring.mcpProcessReaper.enabled',
@@ -358,27 +361,27 @@ describe('lint-dev-agent-dark-gate', () => {
       '584': 'monitoring.geminiCapacityEscalation.enabled',
       '608': 'monitoring.greenPrAutoMerge.enabled',
       '658': 'threadline.a2aCheckIn.enabled',
-      '769': 'mentor.enabled',
-      '780': 'mentor.autonomousFix.enabled',
-      '795': 'mentee.enabled',
-      '855': 'prGate.classClosure.enabled',
-      '918': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '922': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '929': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '939': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1176': 'multiMachine.sessionPool.enabled',
-      // +17 lines below: the moveIntent dev-gated sub-block was inserted under
-      // sessionPool (docs/specs/nickname-move-intent-llm-rebuild.md). It OMITS
-      // `enabled` (rides resolveDevAgentGate), so it adds no map row — it only
-      // shifts the subsequent `enabled:` lines. Edited by hand, per this map's
-      // regeneration-forbidden contract.
-      '1220': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1230': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1259': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1447': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1588': 'cartographer.freshnessSweep.enabled',
-      '1633': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1658': 'cartographer.subtreeNav.llmRerank.enabled',
+      '789': 'mentor.enabled',
+      '800': 'mentor.autonomousFix.enabled',
+      '815': 'mentee.enabled',
+      '875': 'prGate.classClosure.enabled',
+      '938': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '942': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '949': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '959': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1196': 'multiMachine.sessionPool.enabled',
+      // +18 lines below: #1367's moveIntent dev-gated sub-block was inserted under
+      // sessionPool (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS
+      // `enabled` (rides resolveDevAgentGate), adds no map row, and shifts the
+      // subsequent `enabled:` lines. Recomputed via attributeEnabledFalsePaths on
+      // the MERGED ConfigDefaults (hubIntent + moveIntent both present).
+      '1240': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1250': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1279': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1467': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1608': 'cartographer.freshnessSweep.enabled',
+      '1653': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1678': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

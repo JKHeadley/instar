@@ -72,6 +72,12 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // discussion (docs/specs/nickname-move-intent-llm-rebuild.md). It gates whether
   // the inbound message is a relocation command vs passed through to the agent.
   MoveIntentClassifier: 'gate',
+  // Hub-intent recognizer — infers "open this"/"tie this to <topic>?" over the
+  // message + recent conversation, replacing the anchored regexes that swallowed
+  // the message before the agent saw it (docs/specs/keyword-intent-conversions-1-and-3.md,
+  // Conversion #3). It gates whether an inbound hub message is a bind command vs
+  // passed through to the agent.
+  HubIntentClassifier: 'gate',
   // Inbound-content sanitizer (token-audit-completeness baseline-zero pass).
   LLMSanitizer: 'gate',
   // uxConfirm pre-routing judgment calls (same pass).

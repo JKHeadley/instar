@@ -2005,6 +2005,50 @@ async function handleProfileConfirm(
   return true;
 }
 
+/**
+ * Resolve the hub-intent classifier deps (Conversion #3,
+ * docs/specs/keyword-intent-conversions-1-and-3.md) from live config + the shared
+ * IntelligenceProvider. `enabled` is DEV-GATED (resolveDevAgentGate): DARK on the
+ * fleet, LIVE on a development agent. `dryRun` defaults true (the soak) so a
+ * dev-agent classifier RUNS but the message ALWAYS passes through until a
+ * deliberate `dryRun:false`. Passed as a late-bound getter so it re-reads config
+ * at message time.
+ */
+export function resolveHubClassifierDeps(
+  config: InstarConfig,
+  intelligence: IntelligenceProvider | null,
+): {
+  intelligence: IntelligenceProvider | null;
+  enabled: boolean;
+  dryRun: boolean;
+  minConfidence: number;
+  timeoutMs: number;
+  contextTurns: number;
+  modelTier: 'fast' | 'balanced' | 'capable';
+  stateDir: string;
+} {
+  const cfg = (config.threadline as {
+    hubIntent?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      minConfidence?: number;
+      timeoutMs?: number;
+      contextWindowTurns?: number;
+      modelTier?: 'fast' | 'balanced' | 'capable';
+    };
+  } | undefined)?.hubIntent;
+  return {
+    intelligence,
+    enabled: resolveDevAgentGate(cfg?.enabled, config),
+    dryRun: cfg?.dryRun ?? true,
+    minConfidence: cfg?.minConfidence ?? 0.85,
+    timeoutMs: cfg?.timeoutMs ?? 4000,
+    contextTurns: cfg?.contextWindowTurns ?? 6,
+    modelTier: cfg?.modelTier ?? 'fast',
+    stateDir: config.stateDir,
+  };
+}
+
 export function wireTelegramRouting(
   telegram: TelegramAdapter,
   sessionManager: SessionManager,
@@ -2025,6 +2069,23 @@ export function wireTelegramRouting(
   // message starting with restart/fix/clean is normal conversation and must
   // route to the session instead of being swallowed.
   getAttentionTopicId?: () => number | null | undefined,
+  // Late-bound (same reason as getHubDeps): the hub-intent classifier deps —
+  // the config-resolved dev-gate/settings + the shared IntelligenceProvider.
+  // Conversion #3 (docs/specs/keyword-intent-conversions-1-and-3.md): the
+  // "open this"/"tie this to <topic>" DECISION is inferred by an LLM over the
+  // message + recent conversation (HubIntentClassifier), NOT a regex — the
+  // regex SWALLOWED the message before the agent saw it, so a misread ATE it.
+  // Resolved at the callsite where config + sharedIntelligence are in scope.
+  getHubClassifierDeps?: () => {
+    intelligence: import('../core/types.js').IntelligenceProvider | null;
+    enabled: boolean;
+    dryRun: boolean;
+    minConfidence: number;
+    timeoutMs: number;
+    contextTurns: number;
+    modelTier: 'fast' | 'balanced' | 'capable';
+    stateDir: string;
+  } | null,
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -2125,10 +2186,19 @@ export function wireTelegramRouting(
     }
 
     // ── Threadline hub commands: "open this" / "tie this to <topic>" (CMT-529) ──
-    // When a message in the Threadline HUB topic is a deterministic hub command,
-    // bind the conversation to a topic STRUCTURALLY — before any agent interprets
-    // it. This onTopicMessage seam is the convergence both inbound paths reach
+    // When a message in the Threadline HUB topic is a bind command, bind the
+    // conversation to a topic STRUCTURALLY — before any agent interprets it. This
+    // onTopicMessage seam is the convergence both inbound paths reach
     // (lifeline-forward AND server-polling), so one intercept covers both modes.
+    //
+    // Conversion #3 (docs/specs/keyword-intent-conversions-1-and-3.md): the
+    // "is this a bind command?" DECISION is inferred by an LLM over the message +
+    // recent conversation (HubIntentClassifier), NOT a regex. The old regex
+    // SWALLOWED the message before the agent saw it, so a misread silently ATE a
+    // real message. Dev-gated dark (resolveDevAgentGate at the callsite) +
+    // dry-run FIRST: while dark or dry-run the message ALWAYS passes through
+    // (never swallowed); the classifier still runs on a dev agent and LOGS
+    // would-swallow vs would-pass for the soak. Fail-OPEN on any uncertainty.
     // FAIL-OPEN: any error falls through to normal routing.
     const hubDeps = getHubDeps?.() ?? null;
     if (hubDeps) {
@@ -2136,17 +2206,75 @@ export function wireTelegramRouting(
         let hubTopicId: number | undefined;
         try { hubTopicId = hubDeps.collaborationSurfacer.getHubTopicId(); } catch { hubTopicId = undefined; }
         if (hubTopicId !== undefined && Number(topicId) === Number(hubTopicId)) {
-          const { parseHubCommand, bindHubConversation } = await import('../threadline/hubCommands.js');
-          const cmd = parseHubCommand(text);
-          if (cmd) {
-            const result = await bindHubConversation(hubDeps, { ...cmd, autoPick: true }); // human "open this" → auto-pick most-recent, never 409
-            if (!result.ok) {
-              await telegram.sendToTopic(topicId, result.status === 404
-                ? 'Nothing waiting in the hub to open right now.'
-                : `Couldn't open that — ${result.error}`).catch(() => { });
+          const clsDeps = getHubClassifierDeps?.() ?? null;
+          // Dark gate: when the classifier isn't enabled (fleet default), never
+          // swallow — pass the message through to the agent (no regex fallback).
+          if (clsDeps?.enabled) {
+            const { bindHubConversation } = await import('../threadline/hubCommands.js');
+            const { classifyHubIntent, toHubCommand } = await import('../threadline/HubIntentClassifier.js');
+            // The enum of bindable topics (real existing topics) — the model can
+            // only tie to one of these (structured-output guardrail).
+            let bindableTopics: import('../threadline/HubIntentClassifier.js').HubTopicCandidate[] = [];
+            try {
+              bindableTopics = telegram.getAllTopicMappings()
+                .map((m) => ({ topicId: m.topicId, topicName: m.topicName ?? `topic ${m.topicId}` }));
+            } catch { /* best-effort — an empty enum simply means only "open" is possible */ }
+            // Bounded window of recent turns so context-dependent commands ("yes,
+            // tie it to that one") can resolve their target. Best-effort.
+            let conversationContext: import('../threadline/HubIntentClassifier.js').ConversationTurn[] = [];
+            try {
+              const hist = telegram.getTopicHistory(topicId, clsDeps.contextTurns) ?? [];
+              conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
+            } catch { /* context is best-effort; classify on the message alone */ }
+            const result = await classifyHubIntent({
+              text,
+              bindableTopics,
+              conversationContext,
+              intelligence: clsDeps.intelligence,
+              minConfidence: clsDeps.minConfidence,
+              timeoutMs: clsDeps.timeoutMs,
+              maxContextTurns: clsDeps.contextTurns,
+              modelTier: clsDeps.modelTier,
+            });
+            const willAct = result.isCommand && !clsDeps.dryRun;
+            // Audit the soak: log LLM-engaged decisions (a prefilter-skip is the
+            // bulk of traffic and always a would-pass — skipping it cuts volume
+            // AND the message-preview privacy surface). Never gates the message.
+            if (result.source !== 'prefilter-skip') {
+              try {
+                const logDir = path.join(clsDeps.stateDir, 'logs');
+                fs.mkdirSync(logDir, { recursive: true });
+                const decision = result.isCommand ? (willAct ? 'swallow' : 'would-swallow') : 'pass';
+                fs.appendFileSync(path.join(logDir, 'hub-intent.jsonl'), JSON.stringify({
+                  ts: new Date().toISOString(),
+                  topicId,
+                  decision,
+                  dryRun: clsDeps.dryRun,
+                  source: result.source,
+                  intent: result.intent,
+                  targetTopicId: result.targetTopicId,
+                  confidence: result.confidence,
+                  reason: result.reason,
+                  textPreview: String(text).replace(/\s+/g, ' ').trim().slice(0, 80),
+                }) + '\n');
+              } catch { /* audit is observability — never gates the message path */ }
             }
-            // On success bindHubConversation already posted the hub confirmation.
-            return; // structural: never inject the command into a session
+            // Dry-run (the soak) OR not-a-command OR fail-open → pass the message
+            // through untouched. Real swallowing needs a deliberate dryRun:false,
+            // AND fail-open means uncertainty never swallows.
+            if (willAct) {
+              const cmd = toHubCommand(result);
+              if (cmd) {
+                const bindResult = await bindHubConversation(hubDeps, { ...cmd, autoPick: true }); // human "open this" → auto-pick most-recent, never 409
+                if (!bindResult.ok) {
+                  await telegram.sendToTopic(topicId, bindResult.status === 404
+                    ? 'Nothing waiting in the hub to open right now.'
+                    : `Couldn't open that — ${bindResult.error}`).catch(() => { });
+                }
+                // On success bindHubConversation already posted the hub confirmation.
+                return; // structural: never inject the command into a session
+              }
+            }
           }
         }
       } catch (err) {
@@ -6584,7 +6712,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
-        () => state.get<number>('agent-attention-topic'));
+        () => state.get<number>('agent-attention-topic'),
+        () => resolveHubClassifierDeps(config, _sharedIntelligence));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -6731,7 +6860,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
-        () => state.get<number>('agent-attention-topic'));
+        () => state.get<number>('agent-attention-topic'),
+        () => resolveHubClassifierDeps(config, _sharedIntelligence));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
