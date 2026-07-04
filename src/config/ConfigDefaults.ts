@@ -29,6 +29,28 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   models: {
     tierEscalation: DEFAULT_TIER_ESCALATION_CONFIG,
   },
+  // Doorway/Model Knowledge Registry — the recurring doorway-scan job's config knob
+  // (docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §D6). Fail-closed defaults:
+  // free-probes (zero metered spend), weekly cadence, no digest topic, and a $0 money
+  // cap so no metered probe can EVER run until an operator sets a positive cap AND opts
+  // into a metered scope by hand. applyDefaults is add-missing-only (seeds `0`/`null`
+  // correctly and never clobbers an operator override), and it runs on BOTH init and
+  // migration — so existing agents get this on update (Migration Parity).
+  //
+  // `enabled` is DELIBERATELY OMITTED. Whether the scan RUNS is governed by the
+  // job-manifest `enabled` flag (seeded false); `maintenance.doorwayScan.enabled` is a
+  // master kill-switch with DENY-WINS semantics (`config.enabled !== false`). A seeded
+  // `false` would make `false !== false` false and PERMANENTLY block the scan even after
+  // the operator enables the job manifest — the round-2/round-5 bug. So seed every field
+  // EXCEPT `enabled` (which stays absent unless the operator sets it).
+  maintenance: {
+    doorwayScan: {
+      scope: 'free-probes',
+      cadence: '0 4 * * 1',
+      digestTopicId: null,
+      budgetCapUsd: 0,
+    },
+  },
   // Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE
   // design, docs/specs/forkbomb-prevention-simple.md §D-CAP). A SAFETY FLOOR:
   // ON by default fleet-wide — a safety floor that ships dark is no floor. The

@@ -133,6 +133,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'doorwayRegistry',
+    prefixes: ['/doorways'],
+    description: 'Doorway/Model Knowledge Registry (DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §D5) — the read-only merged map from each doorway (Claude Code, Codex, Gemini, a paid API key, …) to the top models it can currently reach: canonical topModels (git-tracked, with pricing — authoritative for routing) overlaid with this machine\'s read-validated live reachability. D5 two-state contract: 200 with scanState:"never-run" (registry present, no scan yet — live fields reachable:null/probeStatus:"never-scanned") then 200 merged once a scan runs; 503 code:"registry-unavailable-no-instar-source" (a non-instar-source install carries no manifest) or code:"registry-corrupt" (present but unparseable) — never a fabricated empty map. The recurring doorway-scan job that keeps it current ships OFF by default (job manifest enabled:false; maintenance.doorwayScan tunes it). When asked "what models can I reach?" / "is my model map current?" / "which doorways are live?" → read GET /doorways, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /doorways'],
+    }),
+  },
+  {
     key: 'spawnLimiter',
     prefixes: ['/spawn-limiter'],
     description: 'Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE design, docs/specs/forkbomb-prevention-simple.md). A SAFETY FLOOR that ships ON for every agent (never dark): a host-local counting semaphore bounds how many `claude -p`/`codex exec` subprocesses run AT ONCE across every compliant Instar process on the host (default 8), the chokepoint for the 2026-06-20 OOM fork-bomb. GET /spawn-limiter reports the live holder count, the cap, available slots, saturation, the live concurrent-poller count (P3 bounded ingress), and the acquire budget. Tune via intelligence.spawnCap.* or env (INSTAR_HOST_SPAWN_MAX / INSTAR_SPAWN_ACQUIRE_MS / INSTAR_SPAWN_WAITERS_MAX). When asked "are we capped against a fork-bomb?" / "how many LLM spawns are running right now?" → read this.',

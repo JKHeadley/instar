@@ -352,36 +352,43 @@ describe('lint-dev-agent-dark-gate', () => {
       //       sessionPool — shifts the sessionPool sub-entries + everything after DOWN.
       // Still 25 attributed paths (none added or removed); every entry maps to a real
       // `enabled: false,` line in its named block.
-      '249': 'monitoring.sessionReaper.enabled',
-      '307': 'monitoring.agentWorktreeReaper.enabled',
-      '388': 'monitoring.mcpProcessReaper.enabled',
-      '402': 'monitoring.agentSleep.enabled',
-      '473': 'monitoring.correctionLearning.enabled',
-      '576': 'monitoring.apprenticeshipCycleSla.enabled',
-      '584': 'monitoring.geminiCapacityEscalation.enabled',
-      '608': 'monitoring.greenPrAutoMerge.enabled',
-      '658': 'threadline.a2aCheckIn.enabled',
-      '789': 'mentor.enabled',
-      '800': 'mentor.autonomousFix.enabled',
-      '815': 'mentee.enabled',
-      '875': 'prGate.classClosure.enabled',
-      '938': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '942': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '949': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '959': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1196': 'multiMachine.sessionPool.enabled',
+      // doorway-model-registry inc3 (2026-07-04, PR #1377): the config-knob migration
+      // seeds a `maintenance.doorwayScan` defaults block (~22 lines) near the TOP of
+      // SHARED_DEFAULTS (above monitoring.sessionReaper). Per spec D6 (deny-wins) it
+      // OMITS the `enabled` literal, so it adds NO attributed path — it only shifts
+      // EVERY `enabled: false` line below it DOWN by +22. Path SET unchanged (still 25
+      // entries, same dotted paths); RE-VERIFIED via attributeEnabledFalsePaths on the
+      // edited ConfigDefaults (uniform +22 shift, no new/removed entries).
+      '271': 'monitoring.sessionReaper.enabled',
+      '329': 'monitoring.agentWorktreeReaper.enabled',
+      '410': 'monitoring.mcpProcessReaper.enabled',
+      '424': 'monitoring.agentSleep.enabled',
+      '495': 'monitoring.correctionLearning.enabled',
+      '598': 'monitoring.apprenticeshipCycleSla.enabled',
+      '606': 'monitoring.geminiCapacityEscalation.enabled',
+      '630': 'monitoring.greenPrAutoMerge.enabled',
+      '680': 'threadline.a2aCheckIn.enabled',
+      '811': 'mentor.enabled',
+      '822': 'mentor.autonomousFix.enabled',
+      '837': 'mentee.enabled',
+      '897': 'prGate.classClosure.enabled',
+      '960': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '964': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '971': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '981': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1218': 'multiMachine.sessionPool.enabled',
       // +18 lines below: #1367's moveIntent dev-gated sub-block was inserted under
       // sessionPool (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS
       // `enabled` (rides resolveDevAgentGate), adds no map row, and shifts the
       // subsequent `enabled:` lines. Recomputed via attributeEnabledFalsePaths on
       // the MERGED ConfigDefaults (hubIntent + moveIntent both present).
-      '1240': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1250': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1279': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1467': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1608': 'cartographer.freshnessSweep.enabled',
-      '1653': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1678': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1262': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1272': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1301': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1489': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1630': 'cartographer.freshnessSweep.enabled',
+      '1675': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1700': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

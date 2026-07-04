@@ -23,6 +23,7 @@ import type { TestRunnerHolderRow } from '../core/hostTestRunnerSemaphore.js';
 import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
 import { writeServeProgress } from '../core/serveProgress.js';
+import { readDoorwayRegistry } from '../core/DoorwayRegistryReader.js';
 import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
@@ -10025,6 +10026,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json({ available: true, usage });
+  });
+
+  // ── Doorway/Model Knowledge Registry read surface (read-only) ──
+  // GET /doorways — the merged doorway→model map (canonical topModels overlaid with this
+  // machine's read-validated live reachability). Bearer auth is applied globally by
+  // middleware; this route never gates behaviour. Always-mounted with the D5 two-state
+  // contract: 200 (registry present — never-run until a scan runs, then merged) vs 503 with
+  // a stable machine-readable `code` (registry genuinely unavailable). Spec §D5 / §2.9.
+  router.get('/doorways', (_req, res) => {
+    const result = readDoorwayRegistry({
+      projectDir: ctx.config.projectDir,
+      stateDir: ctx.config.stateDir,
+    });
+    if (result.status === 'no-manifest') {
+      // A pure end-user (non-instar-source) install carries no canonical manifest — there is
+      // no doorway knowledge registry to serve. Honest 503, NOT a fabricated empty payload.
+      res.status(503).json({
+        error: 'doorway/model knowledge registry unavailable — no instar-source manifest on this install',
+        code: 'registry-unavailable-no-instar-source',
+      });
+      return;
+    }
+    if (result.status === 'corrupt') {
+      res.status(503).json({
+        error: 'doorway/model knowledge registry manifest is present but could not be parsed',
+        code: 'registry-corrupt',
+      });
+      return;
+    }
+    res.json(result.body);
   });
 
   // ── Framework-Onboarding Mentor System: issue ledger (read-only) ──
