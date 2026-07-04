@@ -209,6 +209,7 @@ export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
   { configPath: 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
   { configPath: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled', reason: 'lease self-heal reconciler; lease-layer owned + operator latch' },
   { configPath: 'multiMachine.stateSync.threadlinePairing.enabled', reason: 'verified-pairing store; a non-participant fails-closed on credential share (its own gate), not a silent memory-reach loss like the 7 WS2 stores' },
+  { configPath: 'multiMachine.sessionPool.moveIntent.enabled', reason: 'per-machine inbound move-intent recognizer; fail-open + dry-run-first, a non-participant just passes the message through (never hijacks), no cross-machine data-loss guarantee it owns' },
 ];
 
 // ─── Clamp + byte bounds (spec §3.1) ─────────────────────────────────────

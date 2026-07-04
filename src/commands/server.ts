@@ -20952,13 +20952,57 @@ export async function startServer(options: StartOptions): Promise<void> {
           // routed message re-places onto the pinned machine via the already-wired
           // placeAndClaim → spawnOnMachine → owner-side onAccepted resume path.
           // Inert unless the rollout stage is past 'dark' (gated at the call site).
-          const nickMod = await import('../core/NicknameCommand.js');
           const transferMod = await import('../core/TransferByNickname.js');
+          const moveIntentMod = await import('../core/MoveIntentClassifier.js');
           const autonomousSessionsModule = await import('../core/AutonomousSessions.js');
           const pinMod = await import('../core/TopicPlacementPinStore.js');
           const pinMutationMod = await import('../core/TopicPinMutation.js');
           const relocSetMod = await import('../core/RelocationNicknameSet.js');
           const nickAssignMod = await import('../core/NicknameAssigner.js');
+          // §L4 move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md):
+          // the "move/run/pin this on <nickname>" decision is inferred by an LLM
+          // over the message + recent conversation (MoveIntentClassifier), NOT a
+          // keyword verb list (the 2026-07-03 hijack of "keep the work on the
+          // laptop"). Dev-gated dark (resolveDevAgentGate) + dry-run FIRST: while
+          // dark or dry-run, the message ALWAYS passes through (never hijacked);
+          // the classifier still runs on a dev agent and LOGS would-hijack vs
+          // would-pass for the soak. Fail-OPEN on any uncertainty.
+          const _moveIntentCfg = (config.multiMachine?.sessionPool as
+            | { moveIntent?: { enabled?: boolean; dryRun?: boolean; minConfidence?: number; timeoutMs?: number; contextWindowTurns?: number; modelTier?: 'fast' | 'balanced' | 'capable' } }
+            | undefined)?.moveIntent;
+          const _moveIntentEnabled = resolveDevAgentGate(_moveIntentCfg?.enabled, config);
+          const _moveIntentDryRun = _moveIntentCfg?.dryRun ?? true;
+          const _moveIntentMinConfidence = _moveIntentCfg?.minConfidence ?? 0.85;
+          const _moveIntentTimeoutMs = _moveIntentCfg?.timeoutMs ?? 4000;
+          const _moveIntentContextTurns = _moveIntentCfg?.contextWindowTurns ?? 6;
+          const _moveIntentModelTier = _moveIntentCfg?.modelTier ?? 'fast';
+          const _logMoveIntent = (topicId: number, text: string, result: import('../core/MoveIntentClassifier.js').RelocationIntentResult, acted: boolean): void => {
+            try {
+              // Log ONLY LLM-engaged decisions (the soak signal). A prefilter-skip
+              // is always a would-pass and is the bulk of inbound traffic — logging
+              // it would over-collect a message preview for every message. Skipping
+              // it cuts volume AND the privacy surface to messages that named a
+              // machine and actually reached the classifier.
+              if (result.source === 'prefilter-skip') return;
+              const logDir = path.join(config.stateDir, 'logs');
+              fs.mkdirSync(logDir, { recursive: true });
+              const decision = result.isCommand ? (acted ? 'hijack' : 'would-hijack') : 'pass';
+              const line = JSON.stringify({
+                ts: new Date().toISOString(),
+                topicId,
+                decision,
+                dryRun: _moveIntentDryRun,
+                source: result.source,
+                intent: result.intent,
+                target: result.targetNickname,
+                confidence: result.confidence,
+                reason: result.reason,
+                // Truncated, whitespace-collapsed preview for soak inspection.
+                textPreview: String(text).replace(/\s+/g, ' ').trim().slice(0, 80),
+              });
+              fs.appendFileSync(path.join(logDir, 'move-intent.jsonl'), line + '\n');
+            } catch { /* audit is observability — never gates the message path */ }
+          };
           _topicPinStore = new pinMod.TopicPlacementPinStore({
             filePath: path.join(config.stateDir, 'session-pool', 'topic-pins.json'),
             // U4.1 §2C (fixes defect 3): a corrupt pin file quarantines ASIDE +
@@ -21015,7 +21059,34 @@ export async function startServer(options: StartOptions): Promise<void> {
               selfMachineId: meshSelfId,
               selfNickname: resolveSelfNickname(caps),
             });
-            const cmd = nickMod.recognizeNicknameCommand(text, knownNicknames);
+            // Dark gate: when the recognizer isn't enabled (fleet default), never
+            // hijack — pass the message through to the agent.
+            if (!_moveIntentEnabled) return { handled: false };
+            // Bounded window of recent turns so context-dependent commands ("yes,
+            // move it") can resolve their target. Best-effort — the classifier
+            // works on the message alone if history is unavailable.
+            let conversationContext: import('../core/MoveIntentClassifier.js').ConversationTurn[] = [];
+            try {
+              const hist = telegram?.getTopicHistory(topicId, _moveIntentContextTurns) ?? [];
+              conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
+            } catch { /* @silent-fallback-ok — context is best-effort; classify on the message alone */ }
+            const moveResult = await moveIntentMod.classifyRelocationIntent({
+              text,
+              knownNicknames,
+              conversationContext,
+              intelligence: _sharedIntelligence,
+              minConfidence: _moveIntentMinConfidence,
+              timeoutMs: _moveIntentTimeoutMs,
+              maxContextTurns: _moveIntentContextTurns,
+              modelTier: _moveIntentModelTier,
+            });
+            const _willAct = moveResult.isCommand && !_moveIntentDryRun;
+            _logMoveIntent(topicId, text, moveResult, _willAct);
+            // Dry-run (the soak): log would-hijack vs would-pass, but pass the
+            // message through untouched. Real hijacking needs a deliberate
+            // dryRun:false, AND fail-open means uncertainty never hijacks.
+            if (!_willAct) return { handled: false };
+            const cmd = moveIntentMod.toNicknameCommand(moveResult);
             if (!cmd) return { handled: false };
             const plan = transferMod.planTransferByNickname(
               cmd,

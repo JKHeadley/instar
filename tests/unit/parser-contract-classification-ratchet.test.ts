@@ -67,6 +67,8 @@ const PENDING_BASELINE = [
   'MessageSentinel',
   'LLMSanitizer',
   'WarrantsReplyGate',
+  'MoveIntentClassifier', // parses a closed move-intent verdict (isCommand + intent/target enums + confidence); 2026-07-04
+
   'InputGuard',
   'StallTriageNurse',
   'CommitmentSentinel',

@@ -367,13 +367,18 @@ describe('lint-dev-agent-dark-gate', () => {
       '929': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
       '939': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
       '1176': 'multiMachine.sessionPool.enabled',
-      '1202': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1212': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1241': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1429': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1570': 'cartographer.freshnessSweep.enabled',
-      '1615': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1640': 'cartographer.subtreeNav.llmRerank.enabled',
+      // +17 lines below: the moveIntent dev-gated sub-block was inserted under
+      // sessionPool (docs/specs/nickname-move-intent-llm-rebuild.md). It OMITS
+      // `enabled` (rides resolveDevAgentGate), so it adds no map row — it only
+      // shifts the subsequent `enabled:` lines. Edited by hand, per this map's
+      // regeneration-forbidden contract.
+      '1220': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1230': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1259': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1447': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1588': 'cartographer.freshnessSweep.enabled',
+      '1633': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1658': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
