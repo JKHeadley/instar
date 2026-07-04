@@ -341,39 +341,39 @@ describe('lint-dev-agent-dark-gate', () => {
     const EXPECTED: Record<string, string> = {
       // Line->attributed-path map for every `enabled: false` literal in
       // ConfigDefaults.ts. REGENERATED via attributeEnabledFalsePaths on the
-      // MERGED ConfigDefaults after merging JKHeadley/main (v1.3.735) into this
-      // branch. Two independent shifts are reconciled here: (a) this branch's
-      // intelligence.testRunnerCap safety-floor block (enabled:true, NOT an
-      // attributed dark-gate literal) inserted before `monitoring:` shifts every
-      // monitoring.* line DOWN by +13; (b) main #1347 added prGate.classClosure
-      // (a NEW attributed dark gate, below `mentee`) and shifted the multiMachine/
-      // cartographer keys below it. 25 attributed paths (24 prior + classClosure);
+      // REBASED ConfigDefaults after rebasing onto JKHeadley/main (v1.3.743).
+      // Two independent shifts are reconciled here: (a) main moved on ~10
+      // releases (line drift across the monitoring/multiMachine families); (b)
+      // this branch's monitoring.durableOutputScrub block (18 lines, OMITS
+      // `enabled` — rides the dev-gate, NO new attributed path) inserted above
+      // strandedTopicSentinel shifts every `enabled: false` line below it DOWN
+      // by +18. Same 25 attributed paths as before (no path added or removed);
       // every entry maps to a real `enabled: false,` line in its named block.
       '249': 'monitoring.sessionReaper.enabled',
       '307': 'monitoring.agentWorktreeReaper.enabled',
-      '370': 'monitoring.mcpProcessReaper.enabled',
-      '384': 'monitoring.agentSleep.enabled',
-      '455': 'monitoring.correctionLearning.enabled',
-      '558': 'monitoring.apprenticeshipCycleSla.enabled',
-      '566': 'monitoring.geminiCapacityEscalation.enabled',
-      '590': 'monitoring.greenPrAutoMerge.enabled',
-      '640': 'threadline.a2aCheckIn.enabled',
-      '751': 'mentor.enabled',
-      '762': 'mentor.autonomousFix.enabled',
-      '777': 'mentee.enabled',
-      '837': 'prGate.classClosure.enabled',
-      '900': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '904': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '911': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '921': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1158': 'multiMachine.sessionPool.enabled',
-      '1184': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1194': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1223': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1411': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1552': 'cartographer.freshnessSweep.enabled',
-      '1597': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1622': 'cartographer.subtreeNav.llmRerank.enabled',
+      '388': 'monitoring.mcpProcessReaper.enabled',
+      '402': 'monitoring.agentSleep.enabled',
+      '473': 'monitoring.correctionLearning.enabled',
+      '576': 'monitoring.apprenticeshipCycleSla.enabled',
+      '584': 'monitoring.geminiCapacityEscalation.enabled',
+      '608': 'monitoring.greenPrAutoMerge.enabled',
+      '658': 'threadline.a2aCheckIn.enabled',
+      '769': 'mentor.enabled',
+      '780': 'mentor.autonomousFix.enabled',
+      '795': 'mentee.enabled',
+      '855': 'prGate.classClosure.enabled',
+      '918': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '922': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '929': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '939': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1176': 'multiMachine.sessionPool.enabled',
+      '1202': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1212': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1241': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1429': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1570': 'cartographer.freshnessSweep.enabled',
+      '1615': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1640': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
