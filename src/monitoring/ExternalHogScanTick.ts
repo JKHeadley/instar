@@ -58,10 +58,21 @@ export interface ScanOpts {
   readonly killLedgerRetentionMs: number;
 }
 
+/** One per-candidate outcome row (for the audit/soak log AND cross-tick deferral tracking).
+ *  `ledgerKey`/`classId` carry the target IDENTITY so a consumer (the sentinel shell) can
+ *  persist how many times a signature has been deferred without re-deriving it. */
+export interface ScanOutcome {
+  readonly pid: number;
+  readonly ledgerKey: string;
+  readonly classId: string;
+  readonly verdict: ClassifierVerdict | 'decider-unavailable';
+  readonly outcome: KillOutcome | 'alert-only';
+}
+
 export interface ScanResult {
   readonly nextState: ScanState;
   /** Per-candidate outcomes (for the audit/soak log). */
-  readonly outcomes: ReadonlyArray<{ pid: number; verdict: ClassifierVerdict | 'decider-unavailable'; outcome: KillOutcome | 'alert-only' }>;
+  readonly outcomes: ReadonlyArray<ScanOutcome>;
   /** The coalesced notices to deliver. */
   readonly notices: CoalesceResult;
 }
@@ -80,7 +91,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
   const nextSampler = tick.nextState;
 
   // Worst-CPU-first under the per-scan classifier cap.
-  const outcomes: Array<{ pid: number; verdict: ClassifierVerdict | 'decider-unavailable'; outcome: KillOutcome | 'alert-only' }> = [];
+  const outcomes: ScanOutcome[] = [];
   const notices: Notice[] = [];
   let ledger = state.ledger;
 
@@ -116,14 +127,14 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
 
     if (verdict === null) {
       // Decider unavailable → no kill → alert.
-      outcomes.push({ pid: cand.c.pid, verdict: 'decider-unavailable', outcome: 'alert-only' });
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict: 'decider-unavailable', outcome: 'alert-only' });
       notices.push({ cls: 'decider-unavailable', signature: cand.id.ledgerKey, text: `decider unavailable: pid ${cand.c.pid}` });
       continue;
     }
 
     if (verdict !== 'kill' || !floor.permitted) {
       // Model spared it, or the floor vetoes → alert-only (observability floor still surfaces).
-      outcomes.push({ pid: cand.c.pid, verdict, outcome: 'alert-only' });
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only' });
       surfaceLeftAlive();
       if (!floor.permitted) notices.push({ cls: 'floor-veto-downgrade', signature: cand.id.ledgerKey, text: `floor vetoed a kill: pid ${cand.c.pid}` });
       continue;
@@ -132,7 +143,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
     // verdict === 'kill' && floor permits. Check the P19 breaker before acting.
     const tripped = isBreakerTripped(ledger, cand.id.ledgerKey, cand.id.classId, { ...opts.breaker, nowMs: now });
     if (tripped) {
-      outcomes.push({ pid: cand.c.pid, verdict, outcome: 'alert-only' });
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only' });
       surfaceLeftAlive(); // shielded from KILL only, never from surfacing
       continue;
     }
@@ -141,7 +152,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
     const target: KillTarget = { pid: cand.c.pid, startTime: cand.c.startTime, commandHash: cand.id.commandHash, classId: cand.id.classId };
     const funnelOpts: KillFunnelOpts = { ...opts.killFunnel, currentDeferrals: deps.deferralsFor(cand.id.ledgerKey) };
     const outcome = await runKillFunnel(target, funnelOpts, deps.killFunnelDeps);
-    outcomes.push({ pid: cand.c.pid, verdict, outcome });
+    outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome });
 
     if (outcome.action === 'killed') {
       ledger = recordKill(ledger, { key: cand.id.ledgerKey, classId: cand.id.classId, atMs: now }, opts.killLedgerRetentionMs, now);
@@ -154,7 +165,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
 
   // The over-cap remainder degrades to alert-only (observability floor).
   for (const cand of degradedToAlert) {
-    outcomes.push({ pid: cand.c.pid, verdict: 'decider-unavailable', outcome: 'alert-only' });
+    outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict: 'decider-unavailable', outcome: 'alert-only' });
     notices.push({ cls: 'hog-left-alive', signature: cand.id.ledgerKey, text: `sustained hog left alive (over cap): pid ${cand.c.pid}` });
   }
 

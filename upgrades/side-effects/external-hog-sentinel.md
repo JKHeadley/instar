@@ -325,189 +325,64 @@ Files: `src/monitoring/ExternalHogGuardStatus.ts` (`externalHogEffectiveState`),
 - **Rollback:** delete; the guard-posture wiring (server slice) consumes it.
 - **Tests:** 5 — off/on-confirmed/honesty-on-dry-run/dryRun-soak/sampler-dead-on-stale.
 
+### Slice 15 — the composition shell (`ExternalHogSentinel`)
+Files: `src/monitoring/ExternalHogSentinel.ts` (`ExternalHogSentinel`, `buildProcTree`),
+`src/monitoring/ExternalHogScanTick.ts` (additive: `ScanOutcome` now carries `ledgerKey`/`classId`),
+`tests/unit/external-hog-sentinel.test.ts` (5 tests).
+- **What it is:** the ADAPTER LAYER that turns the reviewed pure modules into a live, tickable
+  monitor. It adds NO kill decision — every tick delegates the whole decision to the reviewed
+  `runScanTick`. Its only jobs: (a) hold cross-tick state the pure orchestrator cannot (sampler
+  baseline + kill ledger + per-signature deferral count); (b) bridge the async real reads (ps
+  spawn / owned-pid resolve) into the sync closures the orchestrator expects, by reading a
+  snapshot BEFORE the tick and closing over it; (c) persist the per-signature deferral count so
+  `maxKillDeferrals` actually bounds ACROSS ticks (proven behaviorally: an open-workspace-file
+  hog defers each scan under the cap, then proceeds to SIGKILL at the cap); (d) deliver notices
+  every tick; (e) expose the honest §8 `status()`.
+- **The orchestrator amendment:** `ScanOutcome` gained `ledgerKey`+`classId` (additive — better
+  audit + lets the shell persist deferral counts without re-deriving identity). Not a logic
+  change; all 7 scan-tick tests stay green.
+- **Watch-only ride-through:** in the shipped dryRun state a tick produces would-kill records +
+  §4 observability notices and signals NOTHING (test: `on-dry-run`, zero signals).
+- **Fail-safe:** a read failure degrades to an empty tick (sampler heartbeat does not advance →
+  eventually on-stale); `auditTick` is best-effort (a write failure never breaks a tick).
+- **Over-block / under-block:** none new — the shell cannot widen a kill (it only forwards to the
+  funnel, which is watch-only + floor-vetoed + arm-gated). The one risk it introduces is
+  UNBOUNDED memory in the deferral map; bounded by `deferralMapMax` (default 128, oldest-pruned)
+  AND by terminal-clear (a resolved/killed/gone signature is deleted).
+- **Signal vs authority:** pure forwarding — the shell holds NO authority the modules below don't.
+- **Multi-machine:** machine-local BY DESIGN — a process hog + its ps table + owned pids are
+  physical to ONE host's process table; the kill is a `process.kill` on THIS machine. `physical-
+  credential-locality`-class locality (a host's live process table is hardware/OS-bound). Posture
+  per §7 in the spec. No cross-machine state.
+- **Rollback:** delete the file; the AgentServer construction (next slice) is what wires it in.
+- **Tests:** 5 — buildProcTree, watch-only ride-through + delivery-every-tick + on-dry-run,
+  armed→SIGKILL + on-confirmed, cross-tick deferral→SIGKILL-at-cap, sampler-dead→on-stale.
+
 ## Phase 5 — Second-pass review
 
-REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
-have landed with independent review: the floor (3) and the CPU-delta signal (4).
+### Slice 15 Phase-5 verdict — CONCUR (with one honesty fix folded)
+An independent second-pass reviewer read all six kill-path files in full and traced each risk:
+- **A watch-only integrity:** airtight — the shell only forwards `killFunnelDeps` to `runScanTick`,
+  never constructs a signal; `status()`/`armStatus()` are display-only, never feed the kill path.
+- **B deferral counter:** correct in the safe direction — would-kill/alert-only neither bump nor
+  clear; the count only moves when genuinely armed; a stale-count inheritance can only SHORTEN
+  fd-grace on an already fully-authorized kill, never cause a wrong kill.
+- **C state/memory:** map bounded (oldest-pruned); scan state threaded via nextState; a mid-tick
+  throw leaves state UN-updated, not half-updated.
+- **E snapshot bridge:** the async→sync snapshot feeds only candidacy/classify; the funnel re-reads
+  LIVE facts+arm+class before each signal (the real stale-data guard). ScanOutcome amendment is
+  additive; all 5 push sites carry ledgerKey/classId.
+- **D (non-blocking honesty note, FOLDED):** a boot where `ps` fails from the start (no parse ever
+  succeeds) would have read `on-confirmed` while blind. FIXED: `status()` now treats "never
+  successfully parsed" as blind → `on-stale`; on-confirmed REQUIRES a fresh successful parse.
+  Added a test (`ps NEVER parses reads on-stale, never a false on-confirmed`). 6 shell tests green.
 
-### Slice-3 (floor) reviewer verdict
+Verdict: **Concur with the review** — the shell adds no new kill authority; every signal stays
+gated in the reviewed funnel.
 
-### Reviewer verdict
-
-**Round 1 — Concern raised (VALID, fixed):** the module header + Slice-3 review claimed an
-ABSOLUTE fail-closed guarantee, but 4 of 8 hard invariants (`isInstarProcess`,
-`ownerRootDaemon`, `hasLaunchctlLabel`, `ownerAppRunning`) were tested with plain truthiness
-`if (facts.X)`, so a missing/`undefined` value would fail OPEN (skip the veto). Masked today
-by the required TS types + the sampler contract, but a kill floor must not delegate its
-fail-closed property to the type system or sampler correctness — exactly the layer that
-degrades under the starvation this sentinel hunts (a sampler that times out computing
-`ownerAppRunning` and drops the field would yield a permitted kill of a never-established
-orphan). The reviewer also confirmed everything else sound: no path initiates a kill (pure,
-permit-or-veto return), the only `permitted:true` is after all guards, the anchored regex
-rejects spoofed suffixes, euid===0 refused before uid-equality, attacker name/argv inert
-beyond the allowlist.
-
-**Resolution:** added a leading STRICT-boolean guard (step 0) — any required boolean that is
-not a genuine `boolean` VETOES with `field-unknown:<field>` — so `undefined`/non-boolean now
-fails CLOSED, matching the header claim. Added 6 fail-closed fixtures (each of the 5 required
-booleans dropped → veto; a non-boolean string → veto). 30 tests pass, typecheck clean.
-
-**Round 2 — Concur.** The independent reviewer re-checked the fix and CONCURRED: the
-step-0 strict-boolean guard runs before every truthiness check and vetoes with
-`field-unknown:<field>` on any non-boolean among the 5 required booleans, so a
-dropped/undefined field fails CLOSED; valid-boolean cases pass step 0 and still hit their
-specific vetoes (no regression, confirmed by the 30 passing tests incl. the 6 new
-missing-field/non-boolean fixtures). The original fail-open concern is fully closed.
-
-### Slice-4 (CPU-delta) reviewer verdict
-
-**Round 1 — Concern raised (VALID, fixed):** `computeCoreEquivalents` guarded an
-implausibly-LARGE Δwall but had NO symmetric guard for an implausibly-SMALL Δwall — the
-FALSE-HIGH (dangerous) direction. Since `ps time=` is 1-second-quantized, a sub-window
-interval inflates the ratio: `computeCoreEquivalents(s(0,0), s(1,200), {window:30_000})` →
-1/0.2 = 5.0 cores from an IDLE process, and `meetsThreshold(5.0,1.5)===true` — a false
-sustained hog. The reviewer confirmed everything else sound (monotonic clock; large-Δwall,
-non-positive, decreasing-counter, non-finite all fail closed; no other false-high path).
-
-**Resolution:** added the symmetric lower bound — `dWallMs < intendedWindowMs / factor →
-CPU_DELTA_UNKNOWN` — mirroring the large-side guard, so a sub-window interval fails CLOSED.
-Added the reviewer's exact fixture (200ms interval → UNKNOWN, never a hog) + fixed the
-"single core" test to sample a full window. 13 tests pass, typecheck clean.
-
-**Round 2 — Concur.** The reviewer re-checked and CONCURRED: the symmetric lower bound
-`dWallMs < intendedWindowMs / factor` (7500ms for a 30s window) fails the sub-window
-false-high closed (the s(0,0)→s(1,200) fixture returns UNKNOWN); the [0.25×, 4×] accepted
-band still passes the full-window and 90s-jitter cases; both bounds sit inside the
-`intendedWindowMs > 0` block so a zero window disables them together as documented.
-
-### Slice-5 (arm-marker) reviewer verdict
-
-**Concur (no bug — carefully written after the slice-3/4 lessons).** The reviewer verified
-all three properties fail CLOSED on every undefined/null/NaN/wrong-type/equal-epoch/proto-key
-input: `isMarkerValid` rejects a falsy marker + non-finite epochs + uses strict `>` (equal
-epochs INVALID, so disarm-at-same-epoch wins and the disarm→config→restart bypass is closed);
-`classContentHash` is deterministic + change-sensitive (any realistic broadening → new hash →
-rejected); `classIsArmed`'s `typeof armedHash === 'string'` guard blocks `undefined===undefined`
-AND neutralizes prototype-chain keys (`__proto__`, `toString`); `canKillLive` requires
-enabled===true + dryRun===false (`!== false` rejects dryRun:undefined/0/missing) + valid marker
-+ armed class, with no path letting `config.dryRun:false` alone authorize.
-
-### Slice-6 (kill-ledger / P19) reviewer verdict
-
-**Round 1 — Concern raised (VALID, fixed):** `isBreakerTripped`'s fail-safe guard only tripped
-on NON-FINITE window inputs, but a NON-POSITIVE `windowMs` (≤0 — finite) slipped past →
-`since = now - windowMs >= now` → count collapses to ~0 → spurious NOT-tripped (the dangerous
-unbounded-loop direction). Also flagged the `retentionMs >= windowMs` caller precondition
-(recordKill can't see windowMs, so a shorter retention would prune in-window kills and
-undercount). Everything else confirmed sound (per-key counting, `>=` trip, cross-key
-isolation, boundary at now-window excluded, volatile→class fallback, in-flight pid+startTime
-keying + TTL/confirmed-exit/non-finite eviction).
-
-**Resolution:** the guard now trips unless windowMs AND maxPerWindow are BOTH finite AND
-positive (`Number.isFinite(x) && x > 0`) — closing ≤0 and Infinity together. Documented the
-`retentionMs >= windowMs` precondition on recordKill + a test proving the breaker still trips
-at K when retention == window. 16 tests pass (added: ≤0/negative window trips, maxPerWindow:0
-trips, retention==window still trips at K). Typecheck clean.
-
-**Round 2 — Concur.** The reviewer re-checked and CONCURRED: the finite-AND-positive guard
-closes the ≤0/negative/Infinity window and non-positive maxPerWindow gaps (all trip); the
-retention==window test genuinely exercises the prune/window boundary (a shorter retention would
-have pruned to 2 and not tripped — a real undercount guard, not a trivial pass); the change is
-strictly stricter (positive path untouched), so no new spurious-not-trip path.
-
-### Slice-7 (ownership walk) reviewer verdict
-
-**Concur (no bug).** The reviewer verified adversarially that no path yields a false `true`
-(owned) for an EXTERNAL process: to return owned the walk must reach a pid in `ownedRefs`
-whose snapshot start-time matches — and both the tree and ownedRefs are built by instar from a
-real `ps` read (the attacker controls neither); a recycled pid's start-time can never match the
-recorded instar `lstart`, so pid-reuse spoofing is structurally defeated. Bounded (hop-bound +
-`seen` cycle-guard). Every uncertainty (ppid-not-in-tree, cycle, hop-bound, ppid≤1, invalid/
-NaN/negative inputs) fails to NOT-owned (the anti-evasion direction). The candidate-itself case
-is checked before the ppid≤1 stop, so an owned root pid is detected.
-
-### Slice-9 (ps parser) reviewer verdict
-
-**Concur (no bug; one strict-only tightening applied).** The reviewer verified adversarially
-that no realistic ps input yields a spuriously-high `cputimeSeconds` or a mis-attributed pid:
-the `time=` column is ps-generated and LEFT-anchored (t[8]), comm is strictly rightward and its
-control chars are ps-ESCAPED (empirically `\n`→`\012` on macOS, so no fabricated-row injection
-via a newline in argv), a malformed time fails CLOSED to `undefined` (never a spurious number),
-and <10-token / non-numeric-pid rows are skipped. Fixture honesty confirmed (dd- anchor,
-embedded-space lstart+comm, <defunct>, malformed short; same-length redactions; honest
-representative-vs-live meta). The one residual it flagged — an unbounded `(\d+:)*` in the time
-regex, unreachable via t[8] — was tightened to `{0,2}` colon groups (strictly toward
-fail-closed; accepts every valid `[dd-]hh:mm:ss.ff`), all 5 tests still pass.
-
-### Slice-10 (sampler candidacy) reviewer verdict
-
-**Round 1 — Concern raised (VALID cross-module bug, fixed).** All candidacy gates trace
-correct (first-sight/uid/instar-own/unknown-cputime/UNKNOWN-delta skip; only core>=threshold
-emits; pid-reuse → different key → first-sight; heartbeat advances only on a plausible parse;
-map rebuilt each tick). BUT `computeCoreEquivalents` gated BOTH Δwall guards behind
-`if (intendedWindowMs > 0)`, so a ≤0 `sampleWindowMs` (which advanceSampler passed through raw)
-would SKIP the guards → a tiny inter-tick Δwall + a 1s quantization tick inflates the ratio
-(1 CPU-s / 0.05s = 20 cores) → a FALSE stage-1 candidate. (Bounded: the §4 worker-side
-micro-check still blocks an actual kill — so impact is candidate noise + classifier spend, not
-a false kill — but a genuine false-candidate path in a kill pipeline.)
-
-**Resolution:** made `computeCoreEquivalents` fail CLOSED on a non-positive window
-(`intendedWindowMs <= 0 → CPU_DELTA_UNKNOWN`), so both bounds now apply unconditionally like
-every other guard (matching the module's fail-closed philosophy). Added a CPU-delta test (≤0
-window → UNKNOWN) and a sampler test (≤0 sampleWindowMs → no false candidate). 28 tests pass.
-
-**Round 2 — Concur.** The reviewer re-checked and CONCURRED: the ≤0-window guard sits after
-the finite + non-positive-Δwall guards so 0/-1 fail closed before any ratio; the large/small
-Δwall guards now run unconditionally but are behaviorally identical for a positive window (no
-regression — the math/jitter/large/small/decreasing cases all still hold); and the sampler
-emits no false candidate under a ≤0 window (UNKNOWN → skip). Concern fully resolved.
-
-### Slice-11 (classifier orchestration) reviewer verdict
-
-**Concur (no bug; one trivial nit hardened).** The reviewer verified adversarially that
-`parseClassifierVerdict` gates on a strict `===` allowlist of exactly {'kill','leave','alert'}
-applied only to `raw`/`.action` (never reason/pid/argv), so every adversarial input — extra/
-nested fields, `KILL`, `'kill; rm'`, whitespace, arrays, numbers, JSON-string `'"kill"'`, and
-`__proto__` pollution (JSON.parse sets it as an own data prop, leaving `.action` undefined) —
-falls through to `null → alert`. Selection (worst-CPU-first, over-cap + non-positive-cap both
-degrade to alert, deterministic non-attacker tie-break) and the cache (full-tuple key so a
-reused pid misses, correct TTL/LRU, non-finite now/ttl → miss at read) are sound. The one nit
-— a NaN-clock `cacheSet` storing an immortal entry (not attacker-reachable, not a false-kill
-path) — was hardened: `cacheSet` now returns the cache unchanged on a non-finite `nowMs`.
-
-### Slice-12 (kill funnel) reviewer verdict
-
-**Concur (no bug — the hardest review, clean).** The reviewer traced every signal-reachable
-path adversarially and confirmed the WATCH-ONLY guarantee is AIRTIGHT: dryRun:true / not-armed /
-disarmed all return `would-kill` at the pre-SIGTERM reCheck BEFORE any sendSignal (canKillLive
-fails closed on config.dryRun!==false, marker null, and armEpoch<=lastDisarmEpoch). Even the
-SIGTERM is gated by canKillLive + floor + class-re-match. SIGKILL is STRUCTURALLY IMPOSSIBLE
-after a mid-grace disarm / identity-change / floor-veto — it requires reCheck to return null at
-BOTH checkpoints, and every error/uncertainty path (a throwing dep, a would-kill post-grace)
-aborts toward no-kill. The one residual — the funnel can't detect a dep that LIES about live
-state — is the correct DI boundary (deps are contracted to read live; the epoch/content-hash
-safety is proven airtight in ExternalHogArmMarker, which canKillLive ANDs), and the inherent
-re-check→SIGKILL TOCTOU is unavoidable and placed as late as feasible (only the protective
-fd-probe follows, which can only PREVENT a kill).
-
-### Slice-13 (scan-tick orchestrator) reviewer verdict
-
-**Round 1 — Concern raised (VALID observability bug, fixed).** The composition is correct: the
-funnel is reached ONLY after verdict==='kill' && floor.permitted && !breaker-tripped (every
-other branch `continue`s); recordKill fires ONLY on outcome.action==='killed' (would-kill/
-deferred/aborted don't record → watch-only never trips the breaker); over-cap + breaker-tripped
-+ leave + veto + decider-unavailable all surface. BUT a candidate with LIVE facts (present hog)
-but a null `identityFor` was filtered out with NO notice + NO kill — the exact invisible-hog
-failure §4 exists to prevent. Since the natural `identityFor` computes classId via
-matchAllowlistClass (null for every non-editor hog), that whole broad-hog class would be silently
-dropped, making the floor's outside-allowlist-surface branch dead code.
-
-**Resolution:** the enrichment loop now SURFACES a present hog with a null identity as a
-`hog-left-alive` notice (signature `pid startTime`) and skips only the VANISHED (factsFor-null)
-case silently. Added a test (present hog + null identity → surfaced, no signal, not in outcomes).
-7 tests pass.
-
-**Round 2 — Concur.** The reviewer re-checked and CONCURRED: a present hog with a null identity
-is now always surfaced as hog-left-alive (never silently dropped); the vanished factsFor-null
-case is still correctly skipped without a notice; and the killed/would-kill/leave/veto/decider
-paths + the funnel gating are unchanged (only fully-identified candidates reach the classify loop).
+**Guard-manifest classification (lint-forced, part of this slice):** the `*Sentinel.ts` filename
+makes `lint-guard-manifest` require classification. Declared in `GUARD_MANIFEST`
+(`monitoring.externalHogSentinel.enabled`, dev-gated `defaultEnabled:false`, `dryRunConfigPath`,
+`expectedTickMs:60000`, `component:'ExternalHogSentinel'`, `expectRuntime:false` until the boot
+GuardRegistry self-registration lands in the server slice, `loadBearing:false` — a dark watch-only
+capability nothing else depends on). It now appears in the `/guards` inventory.

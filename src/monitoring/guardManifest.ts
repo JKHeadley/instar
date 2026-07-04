@@ -400,6 +400,29 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Always-on floor that auto-answers a framework approval prompt (the cd-redirection wedge); never silently disableable.',
   },
   {
+    key: 'monitoring.externalHogSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.externalHogSentinel.enabled',
+    // Dev-gated: `enabled` OMITTED from ConfigDefaults (resolveDevAgentGate) —
+    // dark-default on the fleet, live (watch-only dryRun) on a development agent.
+    // dryRun is the kill-safety canary: live-on-dev scans/classifies/LOGS would-kills
+    // but signals NOTHING until a deliberate PIN-gated arm.
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.externalHogSentinel.dryRun',
+    expectedTickMs: 60_000, // scanIntervalMs default
+    // expectRuntime FALSE until the sentinel self-registers a GuardRegistry getter at
+    // boot (the server-construction slice) — an aspirational `true` manufactures a
+    // phantom `missing` row before the registration callsite exists.
+    process: 'server',
+    expectRuntime: false,
+    component: 'ExternalHogSentinel',
+    description: 'External-hog zombie auto-kill sentinel — surfaces any sustained EXTERNAL CPU hog (broad observability) and, within a mechanical veto-only floor + an intelligence kill/leave/alert verdict, auto-kills exactly one narrow class (orphaned Electron editor extension-host wrappers). Ships dev-gated dark-on-fleet, watch-only dryRun; a live kill needs a deliberate PIN-gated arm.',
+    // loadBearing FALSE: a new watch-only capability nothing else depends on — a dark
+    // posture just means zombies persist (the status quo), not a broken critical path.
+    // Re-reviewed at fleet graduation.
+    loadBearing: false,
+  },
+  {
     key: 'monitoring.contextWedgeSentinel.enabled',
     kind: 'config',
     configPath: 'monitoring.contextWedgeSentinel.enabled',
