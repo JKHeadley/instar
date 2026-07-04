@@ -312,6 +312,19 @@ Files: `src/monitoring/ExternalHogScanTick.ts` (`runScanTick`),
   model-leave→alert-only+surfaced; decider-unavailable→notice; floor-veto→alert-only+notice;
   idle→nothing.
 
+### Slice 14 — guard-posture status (pure §8 honesty rule)
+Files: `src/monitoring/ExternalHogGuardStatus.ts` (`externalHogEffectiveState`),
+`tests/unit/external-hog-guard-status.test.ts` (5 tests).
+- **What it is:** the pure mapping of live state → a `GuardEffectiveState`. Enforces the §8
+  honesty rule: `on-confirmed` ONLY when actually kill-capable (enabled && !dryRun &&
+  marker-valid); the reachable config.dryRun:false + marker-absent state reads `on-dry-run`
+  (armed-pending mapped to on-dry-run in v1), never on-confirmed; a dead sampler → `on-stale`.
+- **Signal vs authority:** a STATUS signal — it never kills or gates. Not kill-decision logic,
+  so the safety-critical second-pass does not apply; the honesty risk (a false on-confirmed) is
+  covered by the exhaustive branch tests. Multi-machine: pure (per-machine posture).
+- **Rollback:** delete; the guard-posture wiring (server slice) consumes it.
+- **Tests:** 5 — off/on-confirmed/honesty-on-dry-run/dryRun-soak/sampler-dead-on-stale.
+
 ## Phase 5 — Second-pass review
 
 REQUIRED (touches "sentinel" / kill-adjacent decision logic). Two decision-adjacent slices
