@@ -22390,6 +22390,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (slackDryRun) {
       try {
         const logPath = path.join(ctx.config.stateDir, '..', 'logs', 'action-claim-observe.jsonl');
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
         fs.appendFileSync(
           logPath,
           JSON.stringify({
