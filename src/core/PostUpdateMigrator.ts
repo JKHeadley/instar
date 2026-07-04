@@ -109,6 +109,17 @@ Heavy MCP servers (Playwright's Chromium; Electron bridges) are mostly idle and 
 - **When to use** (PROACTIVE): in an autonomous run, when I need a heavy tool I don't have, I request the load (I'm preapproved → it loads + restarts + continues). When the user asks "free up resources from idle MCP servers" / "why did my session restart to add a tool?" → this feature. Single-server / no-\`.mcp.json\` agents are a no-op.\n`;
 }
 
+export function EXTERNAL_HOG_CLAUDEMD_SECTION(port: number): string {
+  return `\n### External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer
+
+A watcher that surfaces any sustained EXTERNAL CPU hog (broad observability) and AUTO-KILLS exactly one narrow class — orphaned Electron editor extension-host wrappers (the 2026-07-03 VS Code MongoDB-extension zombie that pinned ~2.2 cores for ~24h). Intelligence decides kill/leave/alert WITHIN a mechanical veto-only safety floor; a kill fires iff \`floor_pass && classifier==='kill'\` — the model can only ever SPARE, never widen the target set. Ships **dev-gated dark on the fleet, watch-only dryRun on a dev agent** (\`monitoring.externalHogSentinel.enabled\` OMITTED → resolveDevAgentGate; \`dryRun:true\` is the kill-safety canary). Nothing is killed until a deliberate **PIN-gated arm** — and even then only that one class.
+- **Status** (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/external-hog\` → \`{ status: { effectiveState, samplerDead, recentOutcomes, ... }, arm: { armed, armEpoch, armedClasses, ... } }\`. 503 when dark (fleet).
+- **Arm the live kill (PIN-gated — a Bearer token CANNOT arm a real kill; Know Your Principal):** \`curl -X POST http://localhost:${port}/external-hog/arm -H 'Content-Type: application/json' -d '{"pin":"<dashboard PIN>"}'\`. Writes a durable armed marker binding the operator PIN to the CURRENT allowlist-class content-hashes; a matcher change forces a re-arm. NEVER ask the user to paste the PIN into chat — point them at the dashboard.
+- **Disarm (return to watch-only, Bearer — the safe direction):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/external-hog/disarm\`. A disarm can NEVER be silently un-done (epoch monotonicity — returning to live-kill needs a fresh PIN arm).
+- **When to use** (PROACTIVE): user asks "what's pinning my CPU / is anything a runaway?" → \`GET /external-hog\` (\`recentOutcomes\` lists sustained hogs, killed or left-alive). "why did an editor helper get killed?" → it was an armed, orphaned (owner editor dead), sustained editor-exthost zombie the floor + the model both cleared. "why is it only watching?" → it ships watch-only; a real kill needs your PIN arm. On the fleet the routes 503 (dark) — say so honestly.
+- **Safety:** kill-SAFETY is carried entirely by the deterministic floor (same-uid non-root, orphaned-owner, launchctl-unmanaged, sustained N-window CPU, code-defined allowlist class, kill-time CPU re-confirm); the model carries EFFECTIVENESS. Spec: \`docs/specs/external-hog-zombie-autokill-sentinel.md\`.\n`;
+}
+
 export function SCOPE_ACCRETION_CLAUDEMD_SECTION(port: number): string {
   return `\n### Scope-Accretion Completion Discipline (autonomous runs finish what they start)
 
@@ -4557,6 +4568,16 @@ setTimeout(() => process.exit(0), 2000);
       content += SCOPE_ACCRETION_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Scope-Accretion Completion Discipline section');
+    }
+
+    // External-Hog Zombie Auto-Kill Sentinel (spec: external-hog-zombie-autokill-sentinel,
+    // CMT-1901) — Agent Awareness Standard + Migration Parity: existing agents learn the
+    // GET /external-hog status + the PIN-gated arm / Bearer disarm routes, the two-key
+    // floor+model kill rule, the watch-only/PIN-arm posture, and the proactive triggers.
+    if (!content.includes('External-Hog Zombie Auto-Kill Sentinel')) {
+      content += EXTERNAL_HOG_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added External-Hog Zombie Auto-Kill Sentinel section');
     }
 
     // Permission-Prompt Floor (spec: framework-permission-prompt-robustness) — Agent

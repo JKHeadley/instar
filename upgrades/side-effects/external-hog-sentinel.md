@@ -595,6 +595,26 @@ ExternalHogSentinel.ts` (guardRuntimeStatus getter), `tests/e2e/external-hog-rou
   (a benign tick advanced the sampler → on-dry-run), the arm→disarm→re-arm epoch-2 lifecycle
   end-to-end, dark → 503, and auth (Bearer required, arm needs the PIN not just Bearer).
 
+### Slice 25 — CLAUDE.md agent-awareness (Agent Awareness Standard)
+Files: `src/core/PostUpdateMigrator.ts` (`EXTERNAL_HOG_CLAUDEMD_SECTION` + the migrateClaudeMd
+append), `src/scaffold/templates.ts` (import + concat into generateClaudeMd), the migration test
+(+3 CLAUDE.md tests).
+- **What it is:** the Agent Awareness Standard — an agent that doesn't know about a capability
+  effectively doesn't have it. Adds a CLAUDE.md section teaching the agent the GET /external-hog
+  status route, the PIN-gated arm + Bearer disarm routes, the two-key `floor_pass &&
+  classifier==='kill'` rule, the watch-only/PIN-arm posture, and the proactive triggers ("what's
+  pinning my CPU?", "why did an editor helper get killed?", "why is it only watching?").
+- **Migration parity (existing agents):** migrateClaudeMd appends the section content-sniffed on
+  'External-Hog Zombie Auto-Kill Sentinel' (idempotent, preserves prior content). generateClaudeMd
+  (templates.ts) emits the SAME section so fresh installs get it too (parity between the two sources).
+- **The PIN honesty rule is IN the section:** "NEVER ask the user to paste the PIN into chat — point
+  them at the dashboard" (Operators-act-in-taps).
+- **Not runtime behavior:** documentation/awareness only. **Second-pass not-required** (no decision
+  logic). **Rollback:** the content-sniff guard makes re-running a no-op; removing the section
+  function + the two callsites reverts. **Tests:** +4 — the section is added with the key routes +
+  posture + the two-key rule; idempotent + content-preserving; and the generateClaudeMd template
+  emits it (fresh-install parity).
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
