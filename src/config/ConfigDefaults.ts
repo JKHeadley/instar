@@ -1704,6 +1704,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     spawnFailureBreakerThreshold: 3,      // §10.4 N (attributable failures)
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
+    // Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md).
+    // The "change this topic's framework/model/thinking" decision is inferred by an
+    // LLM over the message + recent conversation (ProfileIntentClassifier), NOT the
+    // keyword regexes that used to live in parseProfileTrigger (the 2026-07-03
+    // keyword-intent audit's offender #1). `enabled` is DELIBERATELY OMITTED (not
+    // hardcoded false) so resolveDevAgentGate decides — DARK on the fleet, LIVE on a
+    // development agent (registered in DEV_GATED_FEATURES, configPath
+    // topicProfiles.intentClassifier.enabled). Ships dry-run FIRST: on a dev agent
+    // the classifier RUNS and LOGS would-actuate vs would-pass to
+    // logs/profile-intent.jsonl, but the message ALWAYS passes through (never
+    // actuated) until a deliberate dryRun:false — proving the false-positive rate
+    // collapsed before it can wrongly respawn a session. Fail-OPEN on any
+    // uncertainty. Enforces "Intelligence Infers, Keywords Only Guard".
+    intentClassifier: {
+      dryRun: true,
+      minConfidence: 0.85,
+      timeoutMs: 4000,
+      contextWindowTurns: 6,
+      modelTier: 'fast',
+    },
   },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
   // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is

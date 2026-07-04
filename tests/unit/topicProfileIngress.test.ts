@@ -15,34 +15,30 @@ import {
 } from '../../src/core/topicProfileIngress.js';
 
 describe('parseProfileTrigger — the closed grammar (§10.1, Tier 0)', () => {
-  it('recognizes framework switches in the documented phrasings', () => {
-    expect(parseProfileTrigger('use codex here')).toEqual({ kind: 'write', patch: { framework: 'codex-cli' } });
-    expect(parseProfileTrigger('Use Claude here.')).toEqual({ kind: 'write', patch: { framework: 'claude-code' } });
-    expect(parseProfileTrigger('switch this topic to codex')).toEqual({ kind: 'write', patch: { framework: 'codex-cli' } });
-    expect(parseProfileTrigger('switch to gemini for this topic')).toEqual({ kind: 'write', patch: { framework: 'gemini-cli' } });
+  // Framework / model / thinking CHANGE recognition NO LONGER lives here — it was
+  // the keyword-intent audit's offender #1 (2026-07-03) and is now inferred by the
+  // ProfileIntentClassifier (LLM over the message + recent conversation), per the
+  // constitutional standard "Intelligence Infers, Keywords Only Guard"
+  // (docs/specs/keyword-intent-conversions-1-and-3.md, conversion #1). The parser
+  // returns null for those phrasings so the server-side ingress routes them to the
+  // classifier instead. Behavior coverage lives in ProfileIntentClassifier.test.ts,
+  // profile-intent-discrimination.test.ts, and profile-intent-ingress-path.test.ts.
+  it('no longer keyword-matches framework switches (moved to the LLM classifier)', () => {
+    expect(parseProfileTrigger('use codex here')).toBeNull();
+    expect(parseProfileTrigger('Use Claude here.')).toBeNull();
+    expect(parseProfileTrigger('switch this topic to codex')).toBeNull();
+    expect(parseProfileTrigger('switch to gemini for this topic')).toBeNull();
   });
 
-  it('recognizes literal model-id pins (names like "Fable" are out-of-grammar)', () => {
-    expect(parseProfileTrigger('pin this topic to claude-opus-4-8')).toEqual({
-      kind: 'write',
-      patch: { model: 'claude-opus-4-8', modelTier: null },
-    });
-    // alias words map to the tier arm
-    expect(parseProfileTrigger('pin this topic to escalated')).toEqual({
-      kind: 'write',
-      patch: { modelTier: 'escalated', model: null },
-    });
-    // a display name is NOT a trigger — it rides propose-confirm
+  it('no longer keyword-matches model pins (moved to the LLM classifier)', () => {
+    expect(parseProfileTrigger('pin this topic to claude-opus-4-8')).toBeNull();
+    expect(parseProfileTrigger('pin this topic to escalated')).toBeNull();
     expect(parseProfileTrigger('pin this topic to Fable 5')).toBeNull();
   });
 
-  it('recognizes thinking-mode pins', () => {
-    expect(parseProfileTrigger('set high thinking on this topic')).toEqual({
-      kind: 'write', patch: { thinkingMode: 'high' },
-    });
-    expect(parseProfileTrigger('set thinking to max')).toEqual({
-      kind: 'write', patch: { thinkingMode: 'max' },
-    });
+  it('no longer keyword-matches thinking-mode pins (moved to the LLM classifier)', () => {
+    expect(parseProfileTrigger('set high thinking on this topic')).toBeNull();
+    expect(parseProfileTrigger('set thinking to max')).toBeNull();
   });
 
   it('suppress requires the explicit instruction; inherit restores', () => {

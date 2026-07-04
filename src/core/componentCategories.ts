@@ -78,6 +78,11 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // Conversion #3). It gates whether an inbound hub message is a bind command vs
   // passed through to the agent.
   HubIntentClassifier: 'gate',
+  // Profile-intent recognizer — infers "change this topic's framework/model/thinking?"
+  // over the message + recent conversation, replacing the keyword regexes removed from
+  // parseProfileTrigger (docs/specs/keyword-intent-conversions-1-and-3.md). It gates
+  // whether the inbound message actuates a topic-profile write vs passing to the agent.
+  ProfileIntentClassifier: 'gate',
   // Inbound-content sanitizer (token-audit-completeness baseline-zero pass).
   LLMSanitizer: 'gate',
   // uxConfirm pre-routing judgment calls (same pass).
