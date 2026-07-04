@@ -547,6 +547,26 @@ Files: `src/server/routes.ts` (RouteContext.externalHogSentinel + GET /external-
   arm-403-without-PIN, arm-403-wrong-PIN, arm-200-mints-epoch-1, and the full arm→disarm→re-arm
   (epoch 2) lifecycle through the routes + the durable marker file.
 
+### Slice 23 — the server primitives (the §4.5 CPU probe + the primitive factory)
+Files: `src/monitoring/ExternalHogServerPrimitives.ts` (`makeCpuCoresOver` + `createExternalHogServerPrimitives`
++ `parseTmuxPanePids`), `tests/unit/external-hog-server-primitives.test.ts` (7 tests).
+- **What it is:** builds the real-OS ExternalHogPrimitives the server injects into the factory —
+  kept OUT of the giant server command so the one non-trivial composed primitive (the §4.5 kill-time
+  CPU micro-probe) is unit-testable. Thin over injected low-level deps (async exec, process.kill,
+  monotonic clock, sleep, intelligence.evaluate, raiseAttention, resolved config, loadArmState).
+- **The §4.5 probe (`makeCpuCoresOver`, kill-GATING):** samples a pid's cumulative cputime TWICE over
+  windowMs (monotonic Δwall) and resolves core-equivalents via the REVIEWED computeCoreEquivalents
+  (whose symmetric small/large-Δwall guards — the slice-4 fix — already block ps-quantization
+  false-highs). Fail-safe to null (→ the reviewed reReadFacts aborts the kill) on: pid gone, ps
+  unreadable/unparseable, pid-REUSED mid-window (startTime changed), or an UNKNOWN delta.
+- **Over-block / under-block:** the false-HIGH direction (a non-hog reading as sustained → wrong
+  kill) is guarded by computeCoreEquivalents + tested (idle → ~0 cores, not high); the false-low
+  direction just spares (safe). **Signal vs authority:** a measurement primitive — no authority.
+  **Multi-machine:** machine-local (samples THIS host's processes). **Rollback:** delete; the
+  construction slice would inline the primitives.
+- **Tests:** 7 — still-pinning → ~2 cores, idle → ~0, vanished → null, pid-reused → null, exec-throw
+  → null, tmux-pane parse, and the factory assembly (config/loadArm/serverPid/tmux pass-through).
+
 ## Phase 5 — Second-pass review
 
 ### Slice 16 Phase-5 verdict — defect found + fixed → CONCUR
@@ -643,3 +663,19 @@ PIN-gated arm route — grep-confirmed) and found no safety defect:
   can't re-authorize.
 
 Verdict: **Concur with the review.**
+
+### Slice 23 Phase-5 verdict — CONCUR
+An independent reviewer traced the false-high direction adversarially and found no exploitable
+false-high on an idle process:
+- **A (false-high/window):** `at = nowMs()` is captured BEFORE each exec, so Δwall = exec-latency +
+  windowMs (always ≥ the real window) → the denominator is if anything INFLATED → cores DEFLATED
+  (safe). prev←a, curr←b order correct. An idle process accrues ~0 cputime between reads regardless
+  of timing skew → cores ~0; reaching ≥0.5 cores needs ≥15 real CPU-seconds — a genuinely idle
+  process cannot. The small-Δwall inflation guard never trips because the real sleep dominates.
+- **B (pid-reuse):** startTime mismatch → null; negative Δcpu → UNKNOWN. Residual (non-blocking):
+  a reused pid in the SAME 1-sec lstart that is ITSELF heavily busy could read high — but that is a
+  real hog on the wrong-but-busy pid, the accepted lstart-granularity limit.
+- **C:** pid-gone / undefined / NaN cputime / throw all → null; no parse path yields a spurious high.
+- **D:** contract order correct; a swap → negative Δwall → UNKNOWN → safe.
+
+Verdict: **Concur with the review** — fails safe in every direction.
