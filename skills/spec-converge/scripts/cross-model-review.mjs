@@ -253,7 +253,12 @@ async function main() {
   const result = familyEntry
     ? await familyEntry.review({
         promptText: assembled.promptText,
-        timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : mod.REVIEW_TIMEOUT_MS,
+        // Per-family timeout (REVIEWER-DOOR-REWIRING §3.2 / D6): an explicit
+        // `--timeout-ms` wins; otherwise resolve this family's budget from the
+        // `specConverge.reviewers.timeoutMs` knob (absent ⇒ today's 120s).
+        timeoutMs: Number.isFinite(timeoutMs)
+          ? timeoutMs
+          : mod.resolveReviewerTimeoutMs(reviewerConfig, familyEntry.id),
         detectionOverride: detection,
         reviewerConfig,
       })

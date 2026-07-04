@@ -72,6 +72,15 @@ import type { IntelligenceOptions } from './types.js';
 export const REVIEW_TIMEOUT_MS = 120_000;
 
 /**
+ * Per-family reviewer-timeout clamp bounds (REVIEWER-DOOR-REWIRING §3.2 / §7 /
+ * D6): a resolved timeout is clamped to [30s, 900s]. A value below the floor
+ * clamps UP to 30s; above the ceiling clamps DOWN to 900s. The 120s default
+ * (`REVIEW_TIMEOUT_MS`) sits inside this range, so an absent knob is unaffected.
+ */
+export const REVIEWER_TIMEOUT_MIN_MS = 30_000;
+export const REVIEWER_TIMEOUT_MAX_MS = 900_000;
+
+/**
  * Total context budget (spec + referenced docs) inlined into the reviewer
  * prompt. codex runs in an empty read-only scratch dir with no repo access,
  * so referenced context MUST be inlined; this bounds the prompt size (spec §2).
@@ -551,6 +560,24 @@ export interface ReviewerConfig {
         /** Optional concrete frontier model override, validated in §1.3. */
         model?: string;
       };
+      /**
+       * Per-family reviewer call timeout (REVIEWER-DOOR-REWIRING §3.2 / D6). EITHER
+       * a single number (milliseconds, applied to ALL families) OR a
+       * `{ default, byFramework }` map for a per-family value. Absent ⇒ today's
+       * 120s default for EVERY family (byte-identical fleet behavior). Each
+       * resolved value is clamped to [30s, 900s]. This knob only adds the
+       * PER-FAMILY budget; it does NOT itself raise any family's default (the
+       * measure-first gemini 600s raise is inc3's dogfood decision). Resolved by
+       * `resolveReviewerTimeoutMs`.
+       */
+      timeoutMs?:
+        | number
+        | {
+            /** Default for any family not named in `byFramework`. */
+            default?: number;
+            /** Per-framework override (milliseconds). */
+            byFramework?: Partial<Record<IntelligenceFramework, number>>;
+          };
     };
   };
 }
@@ -1384,6 +1411,40 @@ export function aggregateRoundOutcomes(
 }
 
 /**
+ * Resolve the per-family reviewer call timeout (REVIEWER-DOOR-REWIRING §3.2 /
+ * §7 / D6) for `frameworkId` from the `specConverge.reviewers.timeoutMs` knob:
+ *
+ *   - absent / non-finite   ⇒ `REVIEW_TIMEOUT_MS` (120s) — today's default for
+ *                             EVERY family (byte-identical fleet behavior).
+ *   - a single number       ⇒ that value applies to ALL families.
+ *   - a `{ default, byFramework }` map ⇒ `byFramework[frameworkId]` if a finite
+ *                             number, else `default` if a finite number, else
+ *                             the 120s default.
+ *
+ * Every non-default resolved value is clamped to [30s, 900s]
+ * (`REVIEWER_TIMEOUT_MIN_MS`..`REVIEWER_TIMEOUT_MAX_MS`). PURE, never throws.
+ * inc2 only ADDS the knob — it changes no family's default value.
+ */
+export function resolveReviewerTimeoutMs(
+  config: ReviewerConfig | undefined,
+  frameworkId: string,
+): number {
+  const knob = config?.specConverge?.reviewers?.timeoutMs;
+  let raw: number | undefined;
+  if (typeof knob === 'number') {
+    raw = knob;
+  } else if (knob && typeof knob === 'object') {
+    const byFw = knob.byFramework?.[frameworkId as IntelligenceFramework];
+    if (typeof byFw === 'number') raw = byFw;
+    else if (typeof knob.default === 'number') raw = knob.default;
+  }
+  // Absent / non-finite ⇒ today's 120s default for EVERY family.
+  if (raw === undefined || !Number.isFinite(raw)) return REVIEW_TIMEOUT_MS;
+  // Clamp 30–900s per family (a below-floor value clamps up; above-ceiling down).
+  return Math.min(REVIEWER_TIMEOUT_MAX_MS, Math.max(REVIEWER_TIMEOUT_MIN_MS, raw));
+}
+
+/**
  * The high-level entry the skill driver calls: detect, and if available run
  * the first available framework's reviewer with the assembled prompt;
  * otherwise return the `unavailable` flag. NEVER throws, NEVER blocks.
@@ -1426,7 +1487,10 @@ export async function runCrossModelReview(args: {
 
   return framework.review({
     promptText: args.assembled.promptText,
-    timeoutMs: args.timeoutMs ?? REVIEW_TIMEOUT_MS,
+    // Per-family timeout (§3.2 / D6): an explicit caller value wins (e.g. the
+    // script's `--timeout-ms` dev override); otherwise resolve the per-family
+    // budget from the `specConverge.reviewers.timeoutMs` knob (absent ⇒ 120s).
+    timeoutMs: args.timeoutMs ?? resolveReviewerTimeoutMs(args.config, framework.id),
     // Hand the already-computed detection down so the entry never re-probes
     // the host (and tests stay hermetic to the injected inputs).
     detectionOverride: detection,

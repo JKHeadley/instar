@@ -1,0 +1,60 @@
+---
+user_announcement:
+  - audience: agent-only
+    maturity: experimental
+---
+
+<!-- bump: minor -->
+
+## What Changed
+
+Added a per-family timeout knob for the spec-converge external reviewers:
+`specConverge.reviewers.timeoutMs`. Previously all three external reviewer families
+(codex-cli, gemini-cli, and the inc1 claude-code clean-door family) shared one hardcoded
+120-second call budget. This is **inc2** of REVIEWER-DOOR-REWIRING (§3.2 / §7 / D6).
+
+The knob accepts EITHER a single number (milliseconds, applied to every family) OR a
+`{ default, byFramework }` map that sets a per-family budget with a default fallback. Each
+resolved value is clamped to the range 30s–900s. A new pure resolver
+(`resolveReviewerTimeoutMs(config, frameworkId)`) computes the per-family value and is
+threaded through both invocation paths: the `runCrossModelReview` driver (resolves per the
+detected `framework.id`) and the `cross-model-review.mjs --family` path (resolves per
+`familyEntry.id`). An explicit `--timeout-ms` dev override still wins over the knob.
+
+**Absent config is byte-identical to today**: with no `timeoutMs` set, every family resolves
+to the existing 120-second default — so fleet behavior does not change. inc2 only adds the
+knob; it does NOT raise any family's default value. The rationale for per-family (rather than
+one shared knob) is that gemini-3.1-pro-preview burns large reasoning budgets and needs more
+headroom, whereas codex latency is ~18.5s — a single shared 600s knob would expand the fast
+families' dead-wait for no benefit. The measure-first decision to actually raise gemini's
+budget is deferred to inc3's dogfood checklist.
+
+## What to Tell Your User
+
+Nothing proactive — this is instar-developing-agent tooling and nothing changes unless an
+operator deliberately turns the knob. If a user asks why a spec-review reviewer keeps timing
+out, or whether one reviewer can be given more time than the others: I can now set a separate
+time budget for each reviewer family (for example, more headroom for the Google reviewer,
+which tends to think for longer) instead of one shared limit for all of them. Any value I set
+is kept within a safe 30-second-to-15-minute range, and if I set nothing the behavior is
+exactly what it is today.
+
+## Summary of New Capabilities
+
+- **Per-family reviewer timeout** — the spec-converge external reviewers (codex, gemini, and
+  the development-agent clean-door Anthropic reviewer) can each carry their own call time
+  budget instead of sharing one 120-second limit.
+- **Two config shapes** — a single number for all families, or a per-family map with a default
+  fallback; every value is clamped to a sane 30s–900s range.
+- **Absent = unchanged** — with no config set, every family keeps today's 120-second default,
+  byte-for-byte, on the fleet.
+
+## Evidence
+
+- `tests/unit/crossModelReviewer-per-family-timeout.test.ts` — 16 unit + wiring tests: single
+  number applies to all families; per-family map overrides with default fallback; absent config
+  resolves to exactly 120s for every family (byte-identical); clamp low/high/in-range and within
+  the map; each family's invocation receives its own resolved timeout through the driver
+  (per-family, not uniform); an explicit caller timeout wins over the knob.
+- Existing `crossModelReviewer` unit + integration suites re-run green (105 unit + 10 integration),
+  confirming no behavior change to the inc1 reviewer families.
