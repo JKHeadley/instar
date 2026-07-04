@@ -183,7 +183,14 @@ pool-wide question is answered by a proxied-on-read merged view." Not abstractio
 
 **REQUIRED whenever this change FIXES a defect in an agent-authored artifact** (an
 LLM prompt, hook, config, skill, or standards text — see
-`docs/specs/class-closure-gate.md`). This section is the human-readable MIRROR of
+`docs/specs/class-closure-gate.md`) **— OR adds/modifies a self-triggered
+controller (the `unbounded-self-action` class: a loop, monitor, sentinel,
+reaper, scheduler, or recovery path that fires a restart / swap / respawn /
+spawn / notify / retry / re-drive / kill on its own — see
+`docs/specs/self-action-convergence.md`).** For the self-action case, author the
+convergence argument (control-loop edge + steady-state bound + settling brake)
+INTO `guardEvidence.howCaught`, and cite the ratchet
+`tests/unit/self-action-convergence.test.ts`. This section is the human-readable MIRROR of
 the machine-readable `classClosure` block in the commit's decision-audit entry
 (the host the CI lint validates). **Display-only:** the lint counts the
 decision-audit host ONLY and NEVER sums this mirror — the two are asserted to

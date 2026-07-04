@@ -33,6 +33,7 @@ import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/veri
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
 import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
+import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -180,10 +181,14 @@ if (bootstrapTrigger) {
 
 let tierSignal = { suggestedTier: 2, sizeTier: 2, riskFloor: 1, reasons: [] };
 let totalChangedLoc = 0;
+// Hoisted to module scope (docs/specs/self-action-convergence.md → E3 impl
+// note): addedDiffText is computed in the Step-3.5 block but consumed later by
+// assertSelfActionDeclared at BOTH the enforceTier1 and Tier-2 pass-through call
+// sites. It must outlive the block.
+let addedDiffText = '';
 {
   let addedLines = 0;
   let deletedLines = 0;
-  let addedDiffText = '';
   try {
     const numstat = execSync(
       `git diff --cached --numstat -- ${inScopeFiles.map((f) => JSON.stringify(f)).join(' ')}`,
@@ -337,6 +342,7 @@ const decisionEntryPath = writeDecisionAudit({
   files: inScopeFiles.length,
   loc: totalChangedLoc,
   causalAutopsy,
+  classClosure: (freshestTrace && typeof freshestTrace.classClosure === 'object' && freshestTrace.classClosure) || null,
 });
 // Malformed autopsy blocks AFTER the audit write — the blocked attempt is
 // recorded (verdict 'blocked' via the exit handler), same as every gate
@@ -886,6 +892,7 @@ if (!promotionGateResult.ok) {
 
 assertFrameworkGenerality(inScopeFiles, validTrace.trace);
 assertOperatorSurfaceQuality(staged, validTrace.trace);
+assertSelfActionDeclared(addedDiffText, inScopeFiles, validTrace.trace);
 
 console.error(
   `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved` +
@@ -1035,6 +1042,90 @@ function assertOperatorSurfaceQuality(stagedFiles, trace) {
   }
 }
 
+// Self-Action Convergence gate (docs/specs/self-action-convergence.md → E3).
+// The light (Tier-1) path is where #1035 (swap-thrash) slipped through with no
+// adversarial reviewer. When an ADDED diff introduces/modifies a self-action
+// emit (restart|swap|respawn|spawn|notify|retry|re-drive|kill) AND a src/ file
+// is touched, the change must declare the `unbounded-self-action` class in the
+// TRACE — either a real classClosure declaration (guard|gap) OR an explicit
+// negative declaration (closure:'n/a' + reason) — the trace-level analog of the
+// D4 lint's allowlist. A genuine one-shot user-driven call costs one attested
+// line, never an unescapable block.
+//
+// FAIL-OPEN on tooling failure (the safe asymmetry): empty addedDiffText, no
+// src/ file, or an unreadable artifact does NOT fire — a false-negative here is
+// backstopped by the E2 CI lint; a false-positive that blocked all commits
+// would sever the developer's ability to ship. Called at BOTH pass-through
+// points (enforceTier1 + the Tier-2 fall-through) — the both-call-sites detail
+// is load-bearing (the light path is where #1035 escaped).
+function assertSelfActionDeclared(addedDiffText, inScopeFilesArg, trace) {
+  const verdict = selfActionDeclarationVerdict({
+    addedDiffText,
+    inScopeFiles: inScopeFilesArg,
+    classClosure: trace && trace.classClosure,
+  });
+  if (!verdict.required) return; // fail-open / not a self-action change
+
+  if (!verdict.satisfied) {
+    blockCommit(
+      inScopeFilesArg,
+      [
+        'Self-Action Convergence gate:',
+        '  This change ADDS or modifies a self-triggered action in src/ (a',
+        '  restart / swap / respawn / spawn / notify / retry / re-drive / kill),',
+        '  but the trace carries no `unbounded-self-action` class declaration.',
+        '',
+        '  A self-triggered action must be proven to CONVERGE under sustained',
+        '  pressure (not just be individually correct). Declare it in your trace:',
+        '',
+        '  • If it is a self-triggered controller — register it in',
+        '    src/testing/selfActionRegistry.ts (so tests/unit/self-action-convergence.test.ts',
+        '    proves it settles) and declare closure:"guard" citing that ratchet:',
+        '      node scripts/class-closure-declare.mjs --to-trace \\',
+        '        --class unbounded-self-action --closure guard \\',
+        '        --citation tests/unit/self-action-convergence.test.ts \\',
+        '        --enforcement ratchet --how-caught "<convergence argument: steady-state bound + settling brake>"',
+        '',
+        '  • If the guard is out of THIS change\'s scope — closure:"gap" with a',
+        '    tracked evolution-action id (--closure gap --gap-item <id>).',
+        '',
+        '  • If it is genuinely a ONE-SHOT / user-driven action (not a',
+        '    self-triggered loop) — an explicit negative declaration:',
+        '      { "defectClass": "unbounded-self-action", "closure": "n/a",',
+        '        "reason": "one-shot user-driven action, not a self-triggered loop" }',
+        '',
+        '  (Standard: docs/STANDARDS-REGISTRY.md → "Capacity Safety — No Unbounded',
+        '  Self-Action". Spec: docs/specs/self-action-convergence.md → Part E3.)',
+      ].join('\n'),
+    );
+  }
+
+  // Mirror check (the display-only human mirror — the two hosts #1347 uses).
+  // Fail-OPEN if the artifact is unreadable.
+  const artifactRel = trace && (trace.sideEffectsPath || trace.artifactPath);
+  if (artifactRel) {
+    const abs = path.resolve(ROOT, artifactRel);
+    if (fs.existsSync(abs)) {
+      const content = fs.readFileSync(abs, 'utf8');
+      if (!/unbounded-self-action/.test(content)) {
+        blockCommit(
+          inScopeFilesArg,
+          [
+            'Self-Action Convergence gate (mirror):',
+            '  The trace declares the unbounded-self-action class, but the staged',
+            `  side-effects artifact (${artifactRel}) never mentions it — the`,
+            '  display-only human mirror must AGREE with the machine-readable trace',
+            '  declaration (the two hosts #1347 uses).',
+            '',
+            '  Add the class-closure declaration to the side-effects artifact\'s',
+            '  "## Class-Closure Declaration" section.',
+          ].join('\n'),
+        );
+      }
+    }
+  }
+}
+
 function blockCommit(files, reason) {
   console.error('');
   console.error('╔════════════════════════════════════════════════════════════════════╗');
@@ -1065,7 +1156,7 @@ function blockCommit(files, reason) {
 // fire, the line just evaporated with the worktree). If the commit is later
 // blocked by the gate, the staged line simply rides the retry commit — both
 // lines describe real gate evaluations.
-function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, causalAutopsy = null }) {
+function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, causalAutopsy = null, classClosure = null }) {
   try {
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     const ts = new Date().toISOString();
@@ -1097,6 +1188,12 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       // This is THE meta-analysis substrate: convergence vs whack-a-mole is
       // a query over these entries, not archaeology.
       causalAutopsy,
+      // Class-closure declaration (docs/specs/class-closure-gate.md +
+      // self-action-convergence.md → E3): persisted from the instar-dev TRACE
+      // into the machine-readable decision-audit host the CI class-closure lint
+      // reads — closing the chicken-and-egg (the trace is authored before the
+      // commit; the entry is written by this hook). null = not declared.
+      classClosure,
       // Finalized by the process exit handler below: 'pass' when the gate
       // allowed the commit, 'blocked' otherwise. The riding-the-retry design
       // (a blocked evaluation's entry rides the next successful commit, see
@@ -1231,6 +1328,7 @@ function enforceTier1(trace, traceFile) {
 
   assertFrameworkGenerality(inScopeFiles, trace);
   assertOperatorSurfaceQuality(staged, trace);
+  assertSelfActionDeclared(addedDiffText, inScopeFiles, trace);
 
   console.error(
     `[instar-dev-precommit] OK (Tier 1) — trace ${traceName} covers ${inScopeFiles.length} in-scope file(s), ` +

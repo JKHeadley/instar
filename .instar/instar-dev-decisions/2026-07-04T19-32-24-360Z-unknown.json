@@ -1,0 +1,35 @@
+{
+  "ts": "2026-07-04T19:32:24.360Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 909,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1035,
+      1347
+    ],
+    "notes": "The unbounded-self-action class recurred because each self-triggered action shipped with only a semantic correctness check and no chokepoint-enforced convergence ceiling — the pattern (Bounded Blast Radius / P17) was applied per-domain, one incident at a time, never unified. The smoking gun is #1035 (SubscriptionPool proactive pre-limit swap, ~72 quota-positive kill+respawn swaps/day) which shipped the LIGHT dev-path with zero spec-converge rounds past a feedback-loop question no gate forced the review to answer. #1347 (the Class-Closure Gate) landed the same day and is the enforcement substrate this composes on — this registers the class as its first product-code member and builds the guard that ends it."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the ratchet drives every registered self-action controller N ticks under a pinned sustained-pressure fixture and asserts the action count settles to a small bound that does NOT scale with the horizon — steady-state convergence via each controller's settling brake (all-hot / projected-load / exponential-backoff+breaker / suppress-unchanged); a per-tick cap would not satisfy this"
+    },
+    "prNumber": 0,
+    "component": "self-action-convergence"
+  },
+  "verdict": "pass"
+}

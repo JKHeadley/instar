@@ -1,0 +1,230 @@
+/**
+ * self-action-convergence.test.ts — THE live guard that ENDS the
+ * `unbounded-self-action` defect class (docs/specs/self-action-convergence.md
+ * → Part D3). This is the class's `closure: guard` target: #1347's grader
+ * classifies a `.test.ts` file as a `ratchet` (the strongest enforcement type).
+ *
+ * The missing "does-it-SETTLE" invariant, alongside the three existing
+ * "does-it-WORK" Testing-Integrity invariants. For every controller in the
+ * SELF_ACTION_CONTROLLERS registry, it drives N ticks under a PINNED
+ * sustained-pressure fixture (the exact worst case that never clears on its
+ * own) and proves the action count settles to a small bound — AND does NOT
+ * scale with the horizon (a converged loop's action count is horizon-
+ * independent; a ping-pong's is not).
+ *
+ * Constitution: "Capacity Safety — No Unbounded Self-Action" (BBR's temporal
+ * twin — BBR bounds instantaneous MASS; this bounds steady-state FREQUENCY
+ * under feedback).
+ */
+
+import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  SELF_ACTION_CONTROLLERS,
+  makeActionSink,
+  type PressureFixture,
+  type VirtualClock,
+} from '../../src/testing/selfActionRegistry.js';
+import {
+  SELF_ACTION_VERB_TOKENS,
+  SELF_ACTION_EMIT,
+} from '../../scripts/lib/self-action-detect.mjs';
+import { classifyFileGuard } from '../../scripts/lib/class-closure-grader.mjs';
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+/** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
+function makeClock(): VirtualClock {
+  let now = 0;
+  return {
+    nowMs: () => now,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
+}
+
+/**
+ * The PINNED sustained-pressure fixture: EVERY predicate at its worst, forever.
+ * This is the condition swap-thrash ran under (every account hot; a polled
+ * quota reading that lags real usage) generalized so ONE fixture pressures every
+ * controller kind at once.
+ */
+function makePressureFixture(overrides: Partial<PressureFixture> = {}): PressureFixture {
+  const clock = overrides.clock ?? makeClock();
+  return {
+    clock,
+    everyAccountHot: () => true,
+    everySessionBusy: () => true,
+    targetAlwaysRejects: () => true,
+    // A lagging poll: every account reads 85% — hot in truth, and even the
+    // stalest read + a swap's own re-hydration burst never dips below threshold.
+    staleQuotaReading: () => 85,
+    ...overrides,
+  };
+}
+
+/** Drive a controller `ticks` times, advancing the clock `tickMs` each tick. */
+function driveController(
+  controller: (typeof SELF_ACTION_CONTROLLERS)[number],
+  ticks: number,
+): ReturnType<typeof makeActionSink> {
+  const fixture = makePressureFixture();
+  const sink = makeActionSink();
+  const instance = controller.makeUnderPressure(fixture, sink);
+  for (let i = 0; i < ticks; i++) {
+    instance.tick();
+    fixture.clock.advance(controller.tickMs);
+  }
+  return sink;
+}
+
+describe('self-action convergence ratchet — every registered controller SETTLES under sustained pressure', () => {
+  for (const controller of SELF_ACTION_CONTROLLERS) {
+    describe(`controller: ${controller.id}`, () => {
+      it('was genuinely pressured (considered > 0 — not inertly idle)', () => {
+        const sink = driveController(controller, controller.ticks);
+        expect(sink.considered).toBeGreaterThan(0);
+      });
+
+      if (controller.eternalSentinel) {
+        // A declared Eternal Sentinel (P19 exemption): NO total-count bound.
+        // Assert the two P19 conditions instead — a constant per-attempt cost
+        // (one fixed line per emit) + a rate FLOOR that prevents accumulation
+        // (emits never exceed elapsed / rateFloorMs).
+        it('honors its P19 rate floor (emits never accumulate past elapsed / rateFloorMs)', () => {
+          const sink = driveController(controller, controller.ticks);
+          const rateFloorMs = controller.eternalSentinel!.rateFloorMs;
+          const elapsedMs = controller.ticks * controller.tickMs;
+          const maxAllowed = Math.ceil(elapsedMs / rateFloorMs) + 1;
+          expect(sink.count).toBeLessThanOrEqual(maxAllowed);
+          // Every inter-emit gap respects the floor (no burst inside the window).
+          for (let i = 1; i < sink.emitTimesMs.length; i++) {
+            expect(sink.emitTimesMs[i] - sink.emitTimesMs[i - 1]).toBeGreaterThanOrEqual(rateFloorMs);
+          }
+        });
+
+        it('does not accelerate at 2x the horizon (rate stays floored)', () => {
+          const sink = driveController(controller, controller.ticks * 2);
+          const rateFloorMs = controller.eternalSentinel!.rateFloorMs;
+          const elapsedMs = controller.ticks * 2 * controller.tickMs;
+          const maxAllowed = Math.ceil(elapsedMs / rateFloorMs) + 1;
+          expect(sink.count).toBeLessThanOrEqual(maxAllowed);
+        });
+      } else {
+        it(`settles to <= boundK (${controller.boundK}) under sustained pressure`, () => {
+          const sink = driveController(controller, controller.ticks);
+          expect(sink.count).toBeLessThanOrEqual(controller.boundK);
+        });
+
+        it('settle-is-real: count does NOT scale with the horizon (2x ticks, same bound)', () => {
+          const sinkN = driveController(controller, controller.ticks);
+          const sink2N = driveController(controller, controller.ticks * 2);
+          // A converged loop's action count is horizon-independent; a ping-pong's
+          // doubles. The load-bearing anti-oscillation check R3 §2.2 named as
+          // never having existed.
+          expect(sink2N.count).toBeLessThanOrEqual(controller.boundK);
+          expect(sink2N.count).toBe(sinkN.count);
+        });
+
+        it('no single target thrashed (anti-ping-pong)', () => {
+          const sink = driveController(controller, controller.ticks * 2);
+          const maxPerTarget = Math.max(0, ...sink.perTarget.values());
+          expect(maxPerTarget).toBeLessThanOrEqual(controller.perTargetBoundK);
+        });
+      }
+    });
+  }
+
+  // ── Semantic-correctness: the swap monitor's SECOND brake (projected load) ──
+  it('proactive-swap-monitor: the projected-post-swap-load brake also converges (accounts not all-hot but a swap would push the target hot)', () => {
+    const controller = SELF_ACTION_CONTROLLERS.find((c) => c.id === 'proactive-swap-monitor')!;
+    // everyAccountHot() FALSE (so brake 1 does not fire) but staleQuotaReading
+    // is high enough that current + the swap's own re-hydration burst >= 80 for
+    // every candidate — so brake 2 (projected load) refuses every swap.
+    const fixture = makePressureFixture({ everyAccountHot: () => false, staleQuotaReading: () => 70 });
+    const sink = makeActionSink();
+    const instance = controller.makeUnderPressure(fixture, sink);
+    for (let i = 0; i < controller.ticks; i++) {
+      instance.tick();
+      fixture.clock.advance(controller.tickMs);
+    }
+    expect(sink.considered).toBe(controller.ticks); // pressured every tick
+    expect(sink.count).toBeLessThanOrEqual(controller.boundK); // still converges
+  });
+});
+
+describe('self-action registry — wiring integrity (Testing Integrity)', () => {
+  it('SELF_ACTION_CONTROLLERS is non-empty', () => {
+    expect(SELF_ACTION_CONTROLLERS.length).toBeGreaterThan(0);
+  });
+
+  it('every controller returns a LIVE tick (no null/no-op controllers smuggled in to pass vacuously)', () => {
+    const fixture = makePressureFixture();
+    const sink = makeActionSink();
+    for (const controller of SELF_ACTION_CONTROLLERS) {
+      const instance = controller.makeUnderPressure(fixture, sink);
+      expect(instance).toBeTruthy();
+      expect(typeof instance.tick).toBe('function');
+      // A tick must not throw and must actually run the controller's body.
+      const before = sink.considered;
+      instance.tick();
+      expect(sink.considered).toBe(before + 1);
+    }
+  });
+
+  it('every controller declares a positive ticks horizon and tickMs', () => {
+    for (const controller of SELF_ACTION_CONTROLLERS) {
+      expect(controller.ticks).toBeGreaterThan(0);
+      expect(controller.tickMs).toBeGreaterThan(0);
+    }
+  });
+
+  it('controller ids are unique (the forcing lint cross-checks marker ids against these)', () => {
+    const ids = SELF_ACTION_CONTROLLERS.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('verb-superset coherence (shared with the detector, Part D5/E5)', () => {
+  it('SELF_ACTION_VERB_TOKENS contains a token matching every registry actionVerb', () => {
+    for (const controller of SELF_ACTION_CONTROLLERS) {
+      const matched = SELF_ACTION_VERB_TOKENS.some((tok) =>
+        controller.actionVerb.toLowerCase().includes(tok.toLowerCase()),
+      );
+      expect(matched, `actionVerb "${controller.actionVerb}" has no detector token`).toBe(true);
+    }
+  });
+
+  it('SELF_ACTION_EMIT is a real, usable RegExp', () => {
+    expect(SELF_ACTION_EMIT).toBeInstanceOf(RegExp);
+    expect(SELF_ACTION_EMIT.test('foo.swap(')).toBe(true);
+    expect(SELF_ACTION_EMIT.test('a plain sentence about a swap')).toBe(false);
+  });
+});
+
+describe("grader parity — #1347's grader classifies the three new guards truthfully", () => {
+  it('self-action-convergence.test.ts grades `ratchet`', () => {
+    expect(classifyFileGuard('tests/unit/self-action-convergence.test.ts')).toBe('ratchet');
+  });
+
+  it('lint-no-unregistered-self-action.js grades `lint`', () => {
+    expect(classifyFileGuard('scripts/lint-no-unregistered-self-action.js')).toBe('lint');
+  });
+
+  it('the precommit arm (scripts/instar-dev-precommit.js) grades `gate`', () => {
+    expect(classifyFileGuard('scripts/instar-dev-precommit.js')).toBe('gate');
+  });
+
+  it('the three cited guard files all exist on disk (a citation must resolve to a LIVE guard)', () => {
+    for (const rel of [
+      'tests/unit/self-action-convergence.test.ts',
+      'scripts/lint-no-unregistered-self-action.js',
+      'scripts/instar-dev-precommit.js',
+      'src/testing/selfActionRegistry.ts',
+    ]) {
+      expect(fs.existsSync(path.join(REPO_ROOT, rel)), `${rel} missing`).toBe(true);
+    }
+  });
+});

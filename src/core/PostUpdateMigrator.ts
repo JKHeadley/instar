@@ -782,6 +782,7 @@ export class PostUpdateMigrator {
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
     this.migrateInstarDevInternalOnlyReleaseNoteLane(result);
+    this.migrateClassClosureTemplateSelfActionClause(result);
     this.migrateSpecConvergeFoundationAudit(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
@@ -2985,6 +2986,46 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Extend the deployed instar-dev side-effects template's "Class-Closure
+   * Declaration" trigger note with the self-action clause (docs/specs/
+   * self-action-convergence.md → E5): the declaration is REQUIRED not only when
+   * FIXING an agent-authored-artifact defect but also when ADDING/modifying a
+   * self-triggered controller (the `unbounded-self-action` class). New agents get
+   * it via installBuiltinSkills (install-if-missing); EXISTING agents only get
+   * updated CONTENT here (Migration Parity → "updating existing skill content").
+   *
+   * Same shape as migrateMultiMachinePostureReviewDimension: re-copy the bundled
+   * template only when the installed copy lacks the self-action MARKER and still
+   * looks stock (fingerprint guard). A customized template is left untouched.
+   * Idempotent: the marker check short-circuits on every later run.
+   */
+  private migrateClassClosureTemplateSelfActionClause(result: MigrationResult): void {
+    const MARKER = 'unbounded-self-action';
+    const FINGERPRINT = 'Class-Closure Declaration';
+    const rel = ['skills', 'instar-dev', 'templates', 'side-effects-artifact.md'];
+    const label = 'instar-dev side-effects template (Class-Closure self-action clause)';
+    try {
+      const installed = path.join(this.config.projectDir, '.claude', ...rel);
+      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
+      const current = fs.readFileSync(installed, 'utf8');
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes(FINGERPRINT)) {
+        result.skipped.push(`${label}: no Class-Closure section (older template) — left untouched`);
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', ...rel);
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(installed, next);
+        result.upgraded.push(label);
+      }
+    } catch (err) {
+      result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

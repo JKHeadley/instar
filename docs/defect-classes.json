@@ -101,6 +101,36 @@
       "escalatedAt": "seeded-closed",
       "evidenceCountAtLastAck": 2,
       "proposalId": null
+    },
+    {
+      "id": "unbounded-self-action",
+      "description": "A self-triggered controller — a loop, monitor tick, sentinel, reaper, scheduler, or recovery path — fires a cost-or-disruption-bearing action (restart, swap, respawn, spawn, notify, retry, re-drive, re-pin, kill/reap) with no chokepoint-enforced ceiling that makes it CONVERGE under sustained pressure, so under a condition that never clears on its own the action count is unbounded (a flood) or the action feeds the pressure that re-triggers it (a spiral).",
+      "includes": [
+        "a monitor/tick/sweep whose corrective action, under sustained worst-case pressure, does not settle to a small bound",
+        "a self-triggered action whose effect re-enters its own trigger input (positive feedback: swap-thrash, live-tail spiral, ack-echo)",
+        "a per-tick cap or single-tick guard mistaken for a loop-convergence guarantee",
+        "a recovery/self-heal path that re-fires against the same failing condition without dwell/hysteresis/breaker"
+      ],
+      "excludes": [
+        "a one-shot action fired in DIRECT response to a distinct user action (not self-triggered)",
+        "a declared Eternal Sentinel meeting the P19 four conditions (constant per-attempt cost + a rate floor that prevents accumulation)",
+        "instantaneous concurrency/mass (that is the Bounded Blast Radius class — the spawn cap); this class is about steady-state FREQUENCY under feedback",
+        "a repeating behavior already proven to converge by a registered self-action controller test"
+      ],
+      "canonicalExamples": [
+        "swap-thrash (#1035): proactive pre-limit account swap self-triggered ~72 swaps/day via a quota-positive kill+respawn",
+        "2026-06-05 reaper age-gate: 17,503 identical kill requests/day (request->veto->re-request every 5s)",
+        "2026-06-05 live-tail streamer spiral: the loop's own cost froze the event loop, staling the timestamps that caused the rejections it retried against",
+        "topic-flood #1/#2 and the fork-bomb OOM are mass/emit siblings; this class is the FREQUENCY-under-feedback core"
+      ],
+      "status": "confirmed",
+      "severity": "critical",
+      "closureStandard": "capacity-safety-no-unbounded-self-action",
+      "closureStandardEnforcement": null,
+      "instanceCount": 20,
+      "escalatedAt": "seeded-closed",
+      "evidenceCountAtLastAck": 20,
+      "proposalId": null
     }
   ]
 }
