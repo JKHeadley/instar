@@ -109,6 +109,19 @@ export class HttpLeaseTransport implements LeaseTransport {
   private readonly d: HttpLeaseTransportDeps;
   private lastObserved: LeaseRecord | null = null;
   private lastNonceByHolder: Record<string, number> = {};
+  /**
+   * Per-peer lease observations (machine-coherence-guard §5b — NEW retained
+   * state): the pull loop's single `lastObserved` slot keeps only the most
+   * recent record ACROSS peers, so no per-peer "who claims to hold a lease"
+   * view exists — the root cause of awakeMachineCount counting stale registry
+   * roles. Recorded inside pullPeer() from the SAME dials it already makes
+   * (zero new network traffic), keyed on the DIALED peer's registry machine id
+   * (the identity machine-auth verified — NEVER the response body's holder
+   * claim: a pulled lease naming a third machine is that peer's hearsay).
+   * Pruned when a peer leaves the peer set. Advisory data only (L4/SEC-4) —
+   * consumed by the §5b counting rule, never by demotion authority.
+   */
+  private lastPulledByPeer = new Map<string, { lease: LeaseRecord | null; observedAtMs: number }>();
   private lastBroadcastOkAt = 0;
   private lastPullOkAt = 0;
   private readonly windowMs: number;
@@ -425,11 +438,26 @@ export class HttpLeaseTransport implements LeaseTransport {
     // A confirmed pull (verified reachability) proves the medium is live.
     this.lastPullOkAt = this.now();
     const lease = outcome.lease;
-    if (lease && typeof lease.epoch === 'number') {
-      this.recordObserved(lease);
-      return lease;
+    const valid = lease && typeof lease.epoch === 'number' ? lease : null;
+    // §5b per-peer observation: a CONFIRMED pull records what THIS peer just
+    // disclosed (including "no lease" — an honest null), keyed on the dialed
+    // registry id. An unconfirmed dial records nothing (the stale entry ages
+    // out via the counting rule's freshness bound, never a fake refresh).
+    this.lastPulledByPeer.set(peer.machineId, { lease: valid, observedAtMs: this.now() });
+    if (valid) {
+      this.recordObserved(valid);
+      return valid;
     }
     return null;
+  }
+
+  /**
+   * The per-peer lease-observation view (machine-coherence-guard §5b): what
+   * each peer most recently disclosed as its lease view, with the receiver-side
+   * observation time. A COPY — callers can't mutate transport state.
+   */
+  observedByPeer(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }> {
+    return new Map(this.lastPulledByPeer);
   }
 
   /**
@@ -439,6 +467,12 @@ export class HttpLeaseTransport implements LeaseTransport {
    */
   async pullAllPeers(): Promise<void> {
     const peers = this.d.peers();
+    // §5b: prune per-peer observations for machines no longer in the peer set
+    // (a de-paired machine must not linger as a countable lease claimant).
+    const current = new Set(peers.map((p) => p.machineId));
+    for (const id of this.lastPulledByPeer.keys()) {
+      if (!current.has(id)) this.lastPulledByPeer.delete(id);
+    }
     if (peers.length === 0) return;
     await Promise.all(peers.map((p) => this.pullPeer(p).catch(() => null)));
   }

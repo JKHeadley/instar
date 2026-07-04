@@ -70,6 +70,13 @@ export interface LeaseTransport {
   pullPeer?(peer: { machineId: string; url: string }): Promise<LeaseRecord | null>;
   /** Best-effort fan-out pull of every peer's lease. Optional (see pullPeer). */
   pullAllPeers?(): Promise<void>;
+  /**
+   * Per-peer lease-observation view (machine-coherence-guard §5b): what each
+   * peer most recently disclosed as its lease view + when it was observed.
+   * Optional — a git-only mesh has no pull-capable transport. Advisory data
+   * (L4/SEC-4): feeds the awakeMachineCount counting rule, never demotion.
+   */
+  observedByPeer?(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }>;
 }
 
 export interface LeaseCoordinatorDeps {
@@ -475,6 +482,18 @@ export class LeaseCoordinator {
    */
   observedPeerLease(): LeaseRecord | null {
     return this.d.tunnel?.observed().lease ?? null;
+  }
+
+  /**
+   * Per-peer lease observations (machine-coherence-guard §5b): the map behind
+   * the lease-live awakeMachineCount derivation — each online peer's most
+   * recently disclosed lease view with its observation time, keyed on the
+   * machine-auth-verified peer id. Empty map when the transport has no pull
+   * capability (a git-only mesh — the counting rule degrades to the legacy
+   * 'registry-roles' source there).
+   */
+  peerLeaseObservations(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }> {
+    return this.d.tunnel?.observedByPeer?.() ?? new Map();
   }
 
   /**

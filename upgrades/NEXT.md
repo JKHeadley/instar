@@ -1,0 +1,38 @@
+---
+user_announcement:
+  - audience: agent-only
+    maturity: experimental
+---
+
+# Instar — Machine-Coherence Guard (detection + episode machinery, ⚗️ dev-gated dark)
+
+## What Changed
+
+A new multi-machine safety guard that answers "are my machines running as the same me?". When an agent runs across more than one machine, the guard compares — across its OWN online machines, riding the existing 30-second presence-pull (no new timer) — the coherence-critical dimensions: instar version, resolved safety-flags, mesh protocol version, and manifest generation. When the pool DIVERGES on something that halves a cross-machine guarantee (for example, the conversation-move pair enabled on one machine and dark on the other), exactly ONE elected machine opens a deduped, episode-scoped attention item.
+
+The guard is pure signal — it never blocks, equalizes, or restarts anything on its own. This increment lands the full detection + episode lifecycle:
+
+- Manifest-driven skew detection across the four dimensions, with confirmation counters (a flapping reading never accumulates) and update-wave suppression (a rolling version update is grace-gated so it does not cry wolf).
+- The episode state machine: open, join, suspend/resume (a machine that goes offline or unreadable holds the episode open honestly), and a close taxonomy where only a genuine restoration is ever reported as restored.
+- Bounded notification surface: a per-day item cap and a shared per-episode append budget so a flapping pool can never flood the operator, giving up loudly rather than going silent.
+- The proposed-remedy lifecycle: the item names a concrete change the agent performs on the operator's one-word approval, or holds the episode open without nagging when the operator declines — gated on the topic's verified operator (an unverified sender can never approve).
+- A read-only status surface at `GET /pool/machine-coherence`.
+
+Rollout posture: dev-gated dark on the fleet (`monitoring.machineCoherence.enabled` is omitted so the dev-agent gate decides), dry-run FIRST even on a development agent (the detector runs and records would-raise, but raises no item until a deliberate `dryRun:false`), and a strict no-op on a single-machine agent.
+
+## Evidence
+
+Not reproducible in dev — this is a NEW capability (a multi-machine coherence detector + its episode/alarm machinery), not a bug fix, so there is no prior broken behavior to reproduce. It ships dev-gated dark on the fleet and dry-run FIRST on a development agent, so it changes no existing behavior. Verification is by the layered test suite: unit tests over the manifest, advert transport, evaluator, confirmation engine, episode state machine (open/join/suspend/resume/close taxonomy), the shared append-budget burst invariant, and the pendingFix approval lifecycle; a Tier-2 "feature-alive" integration test over `GET /pool/machine-coherence` (503 when dark, 200 with a live sentinel that has opened an episode); and a migration-parity test for the CLAUDE.md awareness backfill.
+
+## What to Tell Your User
+
+- **Multi-machine coherence**: "When I run on more than one of your machines, I now watch whether they are running as the same me — same version, same safety settings. If they drift apart in a way that would silently break moving a conversation between them, I raise one clear heads-up and offer to fix it, rather than letting the two quietly disagree."
+- **No noise by default**: "This is experimental and off on your fleet — it only runs on a development agent, in observe-only mode, until it has soaked."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Machine-coherence status | `GET /pool/machine-coherence` (503 when the guard is dark on this agent) |
+| Skew alarm + proposed fix | Automatic — one elected machine raises one HIGH episode item naming the fix; reply "fix it" / "leave it" |
+| Transition log | `logs/machine-coherence.jsonl` (transition-only) |

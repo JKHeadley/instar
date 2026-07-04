@@ -179,6 +179,7 @@ import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { LiveConfig } from '../config/LiveConfig.js';
 import { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
+import { buildCoherenceAdvert } from '../core/machineCoherenceAdvert.js';
 import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
@@ -538,6 +539,10 @@ let _sessionPoolStage: () => string = () => 'dark';
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
+// Module-level handle for the machine-coherence guard (machine-coherence-guard
+// §6) so `GET /pool/machine-coherence` can read the sentinel constructed deep in
+// the mesh peer-presence wiring. Null when the guard is dark (route 503s).
+let _machineCoherenceSentinel: import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null = null;
 // The store the unconditional boot sweep opened when the queue will run this
 // boot — adopted by the engine construction (one open handle, single-writer).
 let _sweptInboundStore: import('../core/PendingInboundStore.js').PendingInboundStore | null = null;
@@ -17645,7 +17650,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
         if (poolSelfId) {
           try {
-            poolIdMgr.recordSelfHardware(poolSelfId, poolMod.captureHardware());
+            // §5a (machine-coherence-guard): stamp the RUNNING version into
+            // hardware self-attest so peers can see it (activates the already-
+            // written consumer at routes.ts:6645/6671). When ProcessIntegrity is
+            // unavailable the argument is OMITTED so the field stays honestly
+            // absent (L1) — never a possibly-stale config.version.
+            poolIdMgr.recordSelfHardware(
+              poolSelfId,
+              poolMod.captureHardware(ProcessIntegrity.getInstance()?.runningVersion),
+            );
           } catch { /* best-effort hardware self-attest */ }
           // Quota-aware placement (2026-06-05): self-report whether a NEW
           // session on THIS machine could work right now. Blocked = a provider
@@ -17731,6 +17744,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               return undefined;
             }
           };
+          // Machine-coherence advert beat counter (machine-coherence-guard §3.2
+          // M5): sender-side monotonic advert generation. FORENSIC-ONLY —
+          // resets on restart; receivers NEVER use it as a freshness check
+          // (freshness is the receiver-stamped advert receipt time; R2-L1).
+          let _coherenceBeatSeq = 0;
           const refreshPool = (): void => {
             try {
               machinePoolRegistry!.recordHeartbeat({
@@ -17755,6 +17773,27 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
                 seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive() },
+                // Machine-coherence advert (machine-coherence-guard §3.2).
+                // Emission is UNCONDITIONAL (M3, normative): it ships live with
+                // the code, regardless of the sentinel's dev-gate/enabled/dryRun
+                // — only the evaluator + alarm are dev-gated (§7). A gated
+                // advert would make the guard misdiagnose the exact F4 topology
+                // (dark side advert-less → false "peer predates the guard").
+                // Recomputed each beat: boot-read entries re-advertise within
+                // one beat of a restart; live-read entries (readSource:'live',
+                // M8) within one beat of the PATCH /config. Alarm marker is the
+                // episode machinery's to attach (increment C) — absent until an
+                // open, successfully-raised local item exists.
+                ...(() => {
+                  try {
+                    return {
+                      coherenceAdvert: buildCoherenceAdvert(
+                        { boot: config as unknown as Record<string, unknown>, liveGet: (path, fallback) => liveConfig.get(path, fallback) },
+                        { instarVersion: ProcessIntegrity.getInstance()?.runningVersion ?? 'unknown', beatSeq: _coherenceBeatSeq++ },
+                      ),
+                    };
+                  } catch { return {}; } // @silent-fallback-ok: a builder fault must never kill the liveness beat; self degrades to advert-less (loud via version-class after grace), never a dead heartbeat
+                })(),
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -20671,6 +20710,94 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           });
           void peerPresencePuller.pullOnce();
+
+          // ── Machine-Coherence Guard (machine-coherence-guard §3.3/§3.4/§6/§7,
+          // roadmap 4.1 F4/P0-1) — PURE SIGNAL, rides THIS 30s peerPresenceTick ──
+          // Compares version/resolved-flag/protocol/manifest across the agent's OWN
+          // ONLINE machines (the F4 skew class) and — Session B — will raise ONE
+          // episode-scoped attention item from exactly ONE elected machine. Dev-gate
+          // dark on the fleet (`enabled` OMITTED → resolveMachineCoherenceConfig), dry-
+          // run FIRST even on dev. Constructed ONLY when the gate resolves enabled — a
+          // dark guard is never constructed (route 503s, no tick); single-machine is a
+          // strict no-op inside tick(). MUTATES NOTHING. Own try/catch: a wiring
+          // failure is logged non-fatal and the server runs without the evaluator.
+          let machineCoherenceSentinel:
+            import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null = null;
+          try {
+            const mcMod = await import('../monitoring/MachineCoherenceSentinel.js');
+            const mcCfg = mcMod.resolveMachineCoherenceConfig(config as unknown as Record<string, unknown>);
+            if (mcCfg.enabled) {
+              machineCoherenceSentinel = new mcMod.MachineCoherenceSentinel(
+                {
+                  listCapacities: () => machinePoolRegistry?.getCapacities() ?? [],
+                  selfMachineId: () => meshSelfId ?? null,
+                  // Election lease view: the holder id when a lease coordinator is
+                  // attached; null otherwise (a git-only mesh has no live holder for
+                  // election — electRaiser then falls to the lowest machineId).
+                  leaseHolderMachineId: () => (leaseCoordinatorRef ? leaseCoordinatorRef.currentHolder() : null),
+                  now: () => Date.now(),
+                  // §4 episode machinery: the per-agent state root + the nickname
+                  // resolver (registry display label). With these the sentinel
+                  // owns a durable EpisodeManager and emits raise/append/resolve
+                  // effects the peerPresenceTick drains + executes below.
+                  stateDir: () => config.stateDir ?? null,
+                  nicknameOf: (m: string) =>
+                    machinePoolRegistry?.getCapacities().find((c) => c.machineId === m)?.nickname ?? m,
+                },
+                mcCfg,
+              );
+              // expectRuntime:true on the GUARD_MANIFEST entry — register the
+              // synchronous runtime getter so /guards grades the guard's posture.
+              guardRegistry.register('monitoring.machineCoherence.enabled', () => machineCoherenceSentinel!.guardStatus());
+              _machineCoherenceSentinel = machineCoherenceSentinel; // expose to GET /pool/machine-coherence
+              try {
+                const mfMod = await import('../core/machineCoherenceManifest.js');
+                console.log(pc.dim(
+                  `  MachineCoherenceGuard: enabled dryRun=${mcCfg.dryRun} ` +
+                  `manifestHash=${mfMod.selfManifestHash().slice(0, 12)} flags=${mfMod.COHERENCE_CRITICAL_FLAGS.length} ` +
+                  `(pool-skew evaluator — pure signal)`,
+                ));
+              } catch { /* boot log line only — never fatal */ }
+            }
+          } catch (e) {
+            // @silent-fallback-ok — optional dev-gated, pure-signal feature: a wiring
+            // failure is logged (console.error, NOT silent) and is non-fatal BY DESIGN
+            // — the monitoring sentinel must never crash server boot.
+            console.error('  MachineCoherenceGuard wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
+          }
+
+          // Drain + execute the machine-coherence episode effects (§4) the last
+          // reconcile produced (raise/append/resolve). Async + best-effort — a
+          // Telegram fault never crashes the shared presence tick (fail toward
+          // silence). Defined OUTSIDE the tick body so the tick stays lean; the
+          // sentinel already gates effects to raiser && live posture.
+          const executeMachineCoherenceEffects = (
+            sentinel: NonNullable<typeof machineCoherenceSentinel>,
+            tg: typeof telegram,
+          ): void => {
+            let effects: ReturnType<typeof sentinel.drainPendingEffects>;
+            try { effects = sentinel.drainPendingEffects(); } catch { return; }
+            for (const eff of effects) {
+              void (async () => {
+                try {
+                  if (eff.kind === 'raise') {
+                    await tg?.createAttentionItem({
+                      id: eff.itemId, title: eff.title, summary: eff.summary, description: eff.description,
+                      category: 'machine-coherence', priority: 'HIGH', sourceContext: 'machine-coherence-guard',
+                    });
+                  } else if (eff.kind === 'append') {
+                    const item = tg?.getAttentionItem(eff.itemId);
+                    if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.text);
+                  } else if (eff.kind === 'resolve') {
+                    const item = tg?.getAttentionItem(eff.itemId);
+                    if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.note);
+                    await tg?.updateAttentionStatus(eff.itemId, 'DONE');
+                  }
+                } catch { /* @silent-fallback-ok: episode effect execution is best-effort; a Telegram send/create fault must never crash the presence tick — the next reconcile re-derives from durable episode state */ }
+              })();
+            }
+          };
+
           const peerPresenceTick = (): void => {
             void peerPresencePuller.pullOnce();
             // mesh-coherence-live-state-honesty (Fix (b)): the periodic, signal-only live-vs-config
@@ -20728,6 +20855,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                   _meshCoherenceConsecFailures += 1;
                 }
               }
+            }
+            // Machine-Coherence Guard rider (§3.3): evaluator tick + drain/execute
+            // §4 effects, both fail toward silence (helper defined above). Placed
+            // AFTER the mesh recheck so it never grows the mesh block's source-
+            // assertion window (mesh-coherence-wiring.test.ts slices a fixed span).
+            if (machineCoherenceSentinel) {
+              try { machineCoherenceSentinel.tick(); } catch { /* @silent-fallback-ok: §3.3 the evaluator tick fails toward silence by design — a sentinel fault must never crash the shared 30s presence tick; the next reconcile re-derives from durable episode state */ }
+              executeMachineCoherenceEffects(machineCoherenceSentinel, telegram);
             }
           };
           const peerPresenceTimer = setInterval(peerPresenceTick, 30_000);
@@ -21279,7 +21414,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
