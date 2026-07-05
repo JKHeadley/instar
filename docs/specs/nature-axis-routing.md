@@ -112,9 +112,13 @@ gameable by injected input; the static map is deterministic, auditable, ratchet-
   `CompletionEvaluator/judge` = `{B,JUDGE}` while `CompletionEvaluator/classify` = `{A,SORT}`. A unit
   test asserts a critical operation **cannot inherit** a low-stakes sibling's default.
 - **Precedence for a caller-declared `attribution.nature`** (opt-in, tightening-only): the resolver
-  takes the **stricter** of map-vs-declared by the full ordering **`E, B ≥ D ≥ A`** (E and B are both
-  JUDGE-tier; the safe direction — a judgment call never silently downgrades to a sorter). Nature `E`
-  is explicitly included (closes the Sec3 gap).
+  takes the **stricter** of map-vs-declared by the full ordering **`E, B ≥ D ≥ A`** (the safe direction —
+  a judgment call never silently downgrades to a sorter). Nature `E` is explicitly included (closes Sec3).
+  **E vs B are EQUIVALENT (both JUDGE-tier); a map-vs-declared tie between two same-tier natures resolves
+  to the MAP value** (codex CR2-2) — the override can only *raise* the tier, never swap within a tier and
+  never widen. **The override tightens the NATURE only; the CHAIN always follows the map row for the
+  resolved nature** — a caller cannot declare a chain directly (E and B both map to JUDGE, so the
+  resolved chain is JUDGE either way). A declared value outside `{A,B,D,E}` is ignored (map wins).
 - **Trust boundary (Sec4).** `attribution.*` MUST originate from **callsite code**, never from a
   field derived from model/user content. A `nature` value **outside `{A,B,D,E}`** is ignored — the
   static map wins (fail-safe); an override can only ever *tighten*, never widen.
@@ -137,11 +141,16 @@ door") with the merged S2 clamp (which clamps to Sonnet-CLI, not removal) — is
 
 Enforcement in **THREE** independent places (a single lint is insufficient — Sec1/Adv2/Adv3):
 
-1. **Resolve model→concrete-id→FAMILY first, then ban by family (never tier-token).** Every position's
-   label is resolved to a concrete id, then mapped to a model *family*; an Opus-family id on
-   `claude-code` in FAST/SORT/JUDGE is rejected. A `{door:'claude-code', model:'claude-opus-4-8'}`
-   concrete-id position can no longer slip past a `=== 'capable'` string check (closes Adv3/Sec1). The
-   merged `clampClaudeCliSwapModel` is **extended** to this family predicate.
+1. **Resolve model→concrete-id, then ALLOWLIST (deny-by-default), never a denylist.** Every position's
+   label is resolved to a concrete id; on the `claude-code` door in FAST/SORT/JUDGE the resolved id must
+   equal the **single sanctioned reserve id** (the Sonnet-4.6-CLI `balanced` id) — **anything else is
+   rejected**. This is deliberately an allowlist, not "ban Opus-family": a denylist fails OPEN on a
+   *future or unrecognized* capable Claude id the family-map hasn't seen (a new Opus rev, a renamed max
+   tier) — the exact Adv3 class, just moved from tier-token to family-token (sec-r2-1). Deny-by-default
+   closes it: an id is permitted on that door/chain only if it IS the sanctioned reserve. A
+   `{door:'claude-code', model:'claude-opus-4-8'}` (or any non-reserve id) can no longer slip past. The
+   merged `clampClaudeCliSwapModel` is **extended** to this allowlist predicate (clamp any non-reserve
+   claude-code FAST/SORT/JUDGE selection to the reserve id).
 2. **Build-time lint** (`lint-nature-chains.mjs` + ratchet test): the build FAILS if any FAST/SORT/JUDGE
    chain default carries an Opus-family `claude-code` position; WRITE exempt by name. Also encodes the
    R3–R8 bans (FD5c).
@@ -154,8 +163,17 @@ Enforcement in **THREE** independent places (a single lint is insufficient — S
 Plus the **runtime clamp is applied at every model-selection exit**, including the **degrade-to-default
 path** (`evaluate()` lines 406–421) that the reused router currently leaves **UNCLAMPED** (LA4 —
 a genuine fail-open in `main`: a binary-missing degrade with `defaultFramework==='claude-code'` +
-`capable` lands Opus-via-CLI). S4 fixes that hole: the clamp fires on the degrade path and the
-`resolveRoute` terminal, not only inside the swap loop.
+`capable` lands Opus-via-CLI). **This degrade-path clamp is UNCONDITIONAL — it does NOT depend on
+`natureRouting.enabled`** (LA4-r2). The fail-open exists in `main` independent of nature routing, and
+nature routing ships **dark on the fleet**, so a clamp scoped behind the feature would leave the real
+fail-open LIVE on the fleet in the default state. It is therefore shipped as a **standalone safety
+narrowing in Increment A**, active even when nature-routing is unset. **Honest consequence:** the
+unconfigured degrade path is NOT byte-identical (a binary-missing bounded/gating `capable` degrade to a
+`claude-code` default changes Opus-CLI → Sonnet-4.6-CLI). This is the **one intentional deviation** from
+"byte-identical when unset", it is strictly the safe direction (a measured-worse route → the sanctioned
+reserve), and the byte-identical claim elsewhere in this spec is explicitly scoped to *exclude* this
+safety clamp. A test asserts the degrade clamp fires with `natureRouting` UNSET, for BOTH
+`defaultFramework` values.
 
 - **Critical gates may never carry nature D / chain WRITE (Adv1).** A ratchet asserts every FD6
   critical-gate component resolves nature **B / chain JUDGE** — so a gate cannot be *authored* as
@@ -164,12 +182,16 @@ a genuine fail-open in `main`: a binary-missing degrade with `defaultFramework==
   nature entry, never a 40-char filler exemption.
 
 ### FD5 — Door-availability walk, injection-exposure gate, and the R-rules
-**(a) Availability walk.** Resolution walks the nature's chain positions in order. A position is
-**available** iff its door is reachable (CLI binary present / metered key present AND money-gate budget
-> 0 — FD12) AND its circuit breaker is closed AND (FD5b) it is injection-eligible for this call. The
-**first available** position is the PRIMARY `(door, model)`; the remaining available positions become
-the ordered **failureSwap tail** fed to the existing swap loop. An unavailable position is **skipped**
-(logged), never a hard error. Concrete Echo walks (no OpenAI key):
+**(a) Availability walk, with structured reason codes.** Resolution walks the nature's chain positions in
+order. A position is **available** iff its door is reachable (CLI binary present / metered key present AND
+money-gate budget > 0 — FD12) AND its circuit breaker is closed AND (FD5b) it is injection-eligible for
+this call. The **first available** position is the PRIMARY `(door, model)`; the remaining available
+positions become the ordered **failureSwap tail** fed to the existing swap loop. An unavailable position
+is **skipped**, never a hard error — and every skip carries a **structured reason code** (codex CR2-4)
+separating static capability from transient health: `unsupported` (no such door) / `notConfigured`
+(binary/key absent) / `budgetClosed` (metered cap ≤ 0) / `breakerOpen` (circuit) / `policySkipped`
+(R-rule/allowlist ban) / `injectionUnsafe` (FD5b). Reason codes appear in `logs/nature-routing.jsonl` and
+`GET /intelligence/routing` so "why did this route change?" is answerable without guessing. Concrete Echo walks (no OpenAI key):
 
 - FAST → `gemini-api/flash-lite` (Increment B) then `pi-cli/gpt-5.5`.
 - SORT → `codex-cli/gpt-5.4-mini` → `pi-cli/gpt-5.5` → `gemini-api/flash-lite` → `claude-code/balanced`.
@@ -223,6 +245,16 @@ A **call FAILURE** served by a fallback is *self-healed* (the fallback IS the re
 a notice. Dedupe/audit are per-machine (consistent with the attention-queue local posture); **pool-level
 coalescing** is a tracked follow-up (§Close-the-Loop, Int5).
 
+**Baseline lifecycle (codex CR2-3).** The "operator-reviewed baseline" is a durable per-component record
+`{ component, door, model, reviewedAt }` in `state/nature-routing-baseline.json` (machine-local
+observability, versioned by `schemaVersion`). It is **initialized at first-enable** from the resolved
+route the dryRun plan computes for each critical-gate component (the dryRun plan the operator reads
+before flipping `dryRun:false` IS the proposed baseline). It **updates only on an explicit PIN-approved
+operator acceptance** of a routing change (the same agent-proposes-operator-approves surface as FD12,
+reused) — a fallback landing or an S6 reslot never mutates the baseline silently; it triggers the FD6
+drift notice against the unchanged baseline. Migration carries the baseline forward; a component with no
+baseline row yet (newly benched) is treated as "no drift" until its first review.
+
 ### FD7 — Exhaustive nature map + ratchet
 `LLM_ROUTING_NATURE` is extended to cover **every** `COMPONENT_CATEGORY` key (resolving the multi-nature
 A/B, B/D callsites S1 deferred, using per-operation keys — FD3). A ratchet
@@ -253,7 +285,9 @@ reserved for deliberate escalation (`models.tierEscalation`), never a routing de
   live.
 
 Both increments are covered here; each is independently dark-shippable and byte-identical to today when
-`sessions.natureRouting` is unset.
+`sessions.natureRouting` is unset — **with the single, deliberate exception of the LA4 unconditional
+degrade-path clamp** (FD4), which is a standalone safety narrowing (Opus-CLI → Sonnet-CLI on the
+binary-missing bounded/gating degrade) that fires even when nature routing is off.
 
 ### FD10 — Cheap-to-change-after (narrowed after contest — DC1)
 `cheap-to-change-after` applies **ONLY** to reordering **CLI-only positions within a nature-A/D,
@@ -291,23 +325,33 @@ Decision-Completeness reviewer's contest is accepted and the tag is narrowed acc
 Metered doors (Increment B) are **money-spending on the hot path** (FAST's primary is a paid door
 running continuously). Therefore:
 
-- **Explicit operator go-live gate.** Metered doors stay **unavailable (skipped)** until the operator (a)
-  sets a **production spend cap** in `metered-caps.json` and (b) flips `sessions.natureRouting.metered.goLive: true`.
-  Until both hold, Increment B is inert and the walk uses CLI doors only. The *authorization mechanism* is
-  frontloaded here; the specific cap *value* is operator runtime config (a threshold, not a spec-hardcoded
-  number) — so no build-stop decision is parked.
+- **PIN-gated go-live (agent proposes, operator approves — gate GR2-1/GR2-2, sec-r2-2).** Live paid
+  routing is a money authorization, so it must clear the **operator PIN surface**, NOT a config bool the
+  agent can flip via `PATCH /config` (a Bearer token is structurally insufficient — capability ≠
+  authority). The flow: the **agent PRE-FILLS a structured proposal** (a suggested per-window cap derived
+  from projected metered spend at current call volume) surfaced on the dashboard Subscriptions/Metered
+  panel; the **operator approves it with the dashboard PIN**, which writes the cap into `metered-caps.json`
+  and sets `metered.goLive:true` server-side. Until that PIN-approved authorization exists, Increment B is
+  inert and the walk uses CLI doors only. The *authorization mechanism* is fully frontloaded (agent-
+  proposes-operator-PIN-approves, mobile-complete); the specific cap *value* is the operator's approval-time
+  choice (the agent proposes a default) — so no build-stop decision is parked.
 - **Money semantics (C6).** "Fail-closed" means: a metered door is available **only while remaining budget
   > 0**; when the cap is exhausted (remaining ≤ $0) the door is skipped and the walk continues to a CLI
   door (a JUDGE call still lands on a CLI door, never silently drops). Caps are **USD**; an **unknown
   per-call price → refuse** (skip the position). This is the existing bench metered-funnel discipline,
   reused verbatim.
-- **Multi-machine money safety (Int1/Ge2/gate-G2).** The spend ledger must be **unified** to keep the cap
-  meaningful across the fleet. Metered doors are **DISABLED (fail-closed) on any N>1-machine deployment
-  until a shared/replicated spend ledger exists** — so the ledger is never a divergent machine-local
-  surface (when it *would* diverge, the doors that write it are off). On a **single machine** the ledger is
-  trivially unified (N=1) and exact. The shared cross-machine ledger is a **same-PR-tracked Close-the-Loop
-  prerequisite** (§Close-the-Loop) — a hard precondition, not a deferral: the feature is safe without it
-  because multi-machine metered routing is simply unavailable until it lands.
+- **Multi-machine money safety (Int1/Ge2/gate-G2), with FAIL-CLOSED N-detection (M2/sec-r2-3).** The
+  spend ledger must be **unified** to keep the cap meaningful across the fleet. Metered doors are
+  **DISABLED (fail-closed) on any multi-machine deployment until a shared/replicated spend ledger exists**.
+  The "is this a single machine?" test is keyed on whether **multi-machine is CONFIGURED** — the session
+  pool is enabled OR any peer has EVER been registered (a durable fact) — **NOT on live peer
+  reachability**. Keying on reachable peers would fail OPEN: a partitioned/transiently-dark machine reads
+  N=1, enables paid routing, and both machines double-spend against their local counters when the peer
+  returns (the exact $X→$X×N exposure). Under any uncertainty about pool membership (unknown / transient /
+  degraded), the machine assumes **N>1 (metered OFF)** — fail-safe. Only a machine that is durably,
+  configuredly single is metered-eligible (its ledger is then trivially unified and exact). The shared
+  cross-machine ledger is a **same-PR-tracked Close-the-Loop prerequisite** (§Close-the-Loop) — a hard
+  precondition, not a deferral: multi-machine metered routing is simply unavailable until it lands.
 
 ## Proposed design (mechanics)
 
@@ -345,11 +389,23 @@ S4 does not invent a new health/retry/load-shed engine; it maps the nature walk 
 - **Herd control** = the existing per-target breakers PLUS the new sticky-primary / jittered admission
   (Performance §, S3) so a whole tier does not reslot off one transient blip.
 
+**Evaluator boundary (codex CR2-5 — this is not a mini rule-engine).** `resolveRoute` is a **pure,
+side-effect-free evaluator** over three declarative inputs — `{ chains, per-position availability,
+static bans }` — returning `{ primary, swapTail } | 'fall-through'`. It owns NO stateful policy
+machinery: retry, backoff, circuit-breaking, budget accounting, and the swap execution all remain in the
+existing `IntelligenceRouter` primitives (unchanged). The only new *stateful* pieces are the in-memory
+spend counter (Performance §S1) and the short-TTL availability cache (§S4), both read-through caches over
+existing state, not a new engine. This bounded surface is the deliberate answer to "don't grow a service-
+mesh policy layer": the schema is small (a chain is an ordered list of `{door,model,flags}`), the
+evaluator is a fold, and everything durable/stateful is reused.
+
 ### Performance / hot-path (scalability S1–S5)
 This resolver runs on **every** internal LLM call, so:
-- **S1 — money-gate budget is an in-memory running counter**, updated on each metered call and reconciled
-  from `state/metered-ledger.*.jsonl` only at boot. `isAvailable` reads the counter — **never** scans the
-  growing JSONL per call.
+- **S1 — money-gate budget is an in-memory running counter** (single-writer: all metered `.evaluate()`
+  calls run in the server process), updated on each metered call and reconciled from
+  `state/metered-ledger.*.jsonl` at boot AND on a short cadence (M3 backstop — not boot-only, so a
+  concurrent out-of-process metered writer cannot silently breach the USD cap between restarts).
+  `isAvailable` reads the counter — **never** scans the growing JSONL per call.
 - **S2 — the audit is async/buffered (or sampled), never a blocking `appendFileSync` in `evaluate`**; the
   dryRun log records the decision, not a re-serialized full chain per call.
 - **S3 — sticky-primary + jittered admission:** when a primary door transitions to unavailable, the whole
@@ -377,11 +433,15 @@ Default posture is **`unified`**; each surface classified:
 - **Metered-door key availability: `unified` *iff* secret-sync is enabled AND pushing (Int3).** A machine
   lacking the key skips that metered position (FD5, graceful). Stated conditionally, not as unconditional
   unification.
-- **Money-gate spend ledger: `unified` (enforced by precondition).** On a single machine the ledger is
-  trivially the whole fleet's spend. On N>1 machines the metered doors that write it are **disabled** until
-  a shared/replicated ledger exists (FD12) — so the ledger is **never** a divergent machine-local surface.
-  No machine-local-justification key is required because the surface is never allowed to be machine-local
-  while active.
+- **Money-gate spend ledger: `unified` (enforced by fail-closed precondition).** On a durably-single
+  machine the ledger is trivially the whole fleet's spend. On any multi-machine (or membership-uncertain)
+  deployment the metered doors that write it are **disabled** until a shared/replicated ledger exists
+  (FD12, fail-closed N-detection) — so the ledger is **never** a divergent machine-local surface. No
+  machine-local-justification key is required because the surface is never allowed to be machine-local
+  while active. **Single-writer invariant (M3):** all metered internal `.evaluate()` calls run in the
+  **server process** (the router funnel), so the in-memory spend counter (Performance §S1) is the sole
+  writer on a machine; it reconciles from the durable ledger at boot AND on a short cadence (a backstop
+  against any out-of-process metered writer) so a same-machine cap is honored between restarts.
 - **Routing audit (`logs/nature-routing.jsonl`): machine-local observability, NOT a coherence surface.**
   Records `(door, model)` decisions that physically occurred on that machine's process — the established
   `logs/*.jsonl` local-by-nature pattern (append-only, no cross-machine read, strands nothing on transfer;
@@ -415,10 +475,14 @@ self-heal**:
 ## Testing plan (Testing Integrity Standard — all three tiers)
 
 - **Unit** (`tests/unit/`): `resolveNature` (map hit / per-op key / `E,B≥D≥A` tighten / non-enum-ignored /
-  unmapped fall-through); `resolveRoute` walk (skip-unavailable, injection-exposed skip + fail-closed-on-
-  unknown, empty-set fall-through, primary+tail); the FD4 family clamp on primary AND tail AND
-  degrade-to-default (the LA4 foundation fix — both `defaultFramework` values); the resolve-time live-chain
-  validator (rejects a hot-config Opus-family `claude-code` JUDGE position → defaults + notice); the R6
+  unmapped fall-through; `E,B` tie → map value; non-enum ignored); `resolveRoute` walk (skip-unavailable
+  with the correct reason code, injection-exposed skip + fail-closed-on-unknown, empty-set fall-through,
+  primary+tail); the FD4 **allowlist** clamp on primary AND tail AND degrade-to-default — including the
+  **LA4 unconditional degrade clamp firing with `natureRouting` UNSET, for BOTH `defaultFramework`
+  values** (the standalone fleet-safety fix); a non-reserve concrete-id `claude-code` position rejected in
+  FAST/SORT/JUDGE (allowlist, not denylist); the resolve-time live-chain validator (rejects a hot-config
+  non-reserve `claude-code` JUDGE position → defaults + notice); fail-closed N-detection (membership-
+  uncertain → metered off); the R6
   doc-tree Claude-ban; the R8 Flash-Lite pin; the FD4-critical-gate-must-be-B/JUDGE ratchet; the
   benchmark-label→adapter-id lint; FD7 exhaustiveness; FD8 no-Fable; dark/dryRun byte-identical. **Both
   sides of every boundary.**
@@ -437,7 +501,16 @@ self-heal**:
 
 - **Config defaults** (`migrateConfig`): add versioned `sessions.natureRouting` (`schemaVersion`,
   `enabled` omitted for the dev-gate ladder, `dryRun:true`, the FD2 default chains, `metered.goLive:false`)
-  if missing; **migrate chain defaults forward on version bump** (Int2), preserving operator overrides.
+  if missing; **migrate chain defaults forward on version bump** (Int2) with a concrete **override
+  discriminator (M4):** the migrator ships the **prior version's shipped default chains** and overwrites a
+  live position **only if it is byte-equal to that prior default** — an operator-edited (divergent)
+  position is left untouched. So a v4 reslot reaches un-overridden agents without ever clobbering a hand-
+  tuned chain (and without needing to guess intent from the current value alone).
+- **Fable→Opus reconciliation** (`migrateConfig`, FD8/M1/gate-GR2-3): a content-sniffed step — **if
+  `frameworkDefaultModels.claude-code === 'claude-fable-5'` AND that equals the prior shipped default**,
+  move it to the account default (unset / Opus). Idempotent, override-preserving (an operator who
+  deliberately set Fable is not touched — only the stale shipped default is). Without this, the Fable→Opus
+  change would reach only NEW agents via `init` (the Migration Parity violation the gate flagged).
 - **CLAUDE.md template** (`generateClaudeMd` + `migrateClaudeMd`, content-sniffed): a "Nature-Axis Routing"
   capability blurb — what it is, `GET /intelligence/routing` (incl. dryRun plan/diff), the enable/dryRun/
   goLive/kill knobs, the authority split, the harness-door ban.
@@ -462,7 +535,9 @@ self-heal**:
   tier-token → model-FAMILY (fixes the LA4 fail-open in `main`). Strictly narrows a dangerous fallback.
 - **Adds** a critical-gate routing notice — downstream of self-heal, HIGH, deduped, with an immediate
   reserve-landing carve-out.
-- **Removes** nothing from the unconfigured path (untouched) and removes the phantom `openai-api` door.
+- **Unconfigured path** is byte-identical EXCEPT the LA4 unconditional degrade-path clamp (a standalone
+  safety narrowing, Opus-CLI → Sonnet-CLI on the binary-missing bounded/gating degrade — the one
+  intentional deviation, strictly the safe direction). Removes the phantom `openai-api` door.
 
 ## Open questions
 *(none — every operator decision and reviewer-surfaced decision is frontloaded in FD1–FD12; no unresolved

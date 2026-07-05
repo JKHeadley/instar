@@ -30,10 +30,18 @@ first choice is unavailable (no key, rate-limited, out of budget), the agent wal
 ## What we decided (operator's calls, baked in)
 1. **GPT-5.5 work goes through `pi` first** (it won the benchmark: 100% and fastest), with codex and
    OpenRouter as backups. We do **not** have — and will **not** require — a direct OpenAI key.
-2. **Gemini work uses the metered Gemini key** we already hold, with the existing "stop at $0" money
-   guard so it can never overspend.
-3. **Judgment/safety work only ever uses clean doors** — never the coding-assistant door (that's the
-   82%-vs-99% trap). This reuses a safety clamp we already shipped.
+2. **Gemini work uses the metered Gemini key** we already hold, with the existing "stop when the budget
+   runs out" money guard so it can never overspend. Turning on paid routing is not something the agent
+   can do to itself — the agent proposes a spending cap, and you approve it with your dashboard PIN. On a
+   multi-machine setup, paid routing stays off until there's a shared spend counter, so two machines can
+   never each spend a full budget.
+3. **Judgment/safety work never rides the *gullible* coding-assistant route** — specifically, the big
+   Opus model through the Claude Code door (that's the 82%-vs-99% trap). Clean doors are always tried
+   first. There is ONE permitted Claude-door position for judgment work: the Sonnet-4.6 CLI as a
+   last-resort reserve (it scored 99.5% — it does NOT have the gullibility problem), used only when every
+   cleaner door is down at once, because a safety gate limping on the sanctioned reserve beats failing
+   the gate entirely. The precise rule is "never the *Opus* model via the Claude door for bounded
+   judgment," enforced by an allowlist in code, not just documentation.
 4. **The everyday Claude model is Opus, not Fable.** Fable is only for deliberate high-level escalation.
 5. **Auto vs ask:** the agent may auto-apply better routing for *low-stakes* parts, but any change to a
    *critical safety gate* raises exactly one "please review" notice to the operator — never silent.
