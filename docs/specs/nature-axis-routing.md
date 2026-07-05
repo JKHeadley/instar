@@ -2,8 +2,17 @@
 title: "Nature-Axis Routing — resolve (door, model) by task nature + chain + door-availability"
 slug: "nature-axis-routing"
 author: "echo (spec-converge hand, 24h autonomous run, topic 29723)"
-eli16-overview: "docs/specs/nature-axis-routing.eli16.md"
-status: "draft — pre-convergence"
+eli16-overview: "nature-axis-routing.eli16.md"
+status: "converged — pending operator approval"
+review-convergence: "2026-07-05T04:54:47.170Z"
+review-iterations: 10
+review-completed-at: "2026-07-05T04:54:47.170Z"
+review-report: "docs/specs/reports/nature-axis-routing-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 12
+cheap-to-change-tags: 1
+contested-then-cleared: 1
 ---
 
 # Nature-Axis Routing (Task-4 S4)
@@ -818,5 +827,4 @@ enabled). The concrete cases:
   intentional deviation, strictly the safe direction). Removes the phantom `openai-api` door.
 
 ## Open questions
-*(none — every operator decision and reviewer-surfaced decision is frontloaded in FD1–FD12; no unresolved
-user-decision remains.)*
+*(none)*
