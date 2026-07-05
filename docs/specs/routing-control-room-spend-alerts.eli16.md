@@ -73,8 +73,11 @@ Being honest, the three paid doors report very different things:
   token counts, which is better than our estimate. Gemini's dollar figures only exist in
   a heavy, slow billing export, so that's a later add-on.
 
-A background **reconciliation** check compares "what we thought we spent" against "what
-the provider says we spent," per door, and flags any meaningful gap. If the provider
+Every paid call gets one internal receipt number, and the provider's report is matched
+to exactly that call by it — so a late-arriving provider figure updates the right call
+and can never be double-counted. A background **reconciliation** check compares "what
+we thought we spent" against "what the provider says we spent," per door, and flags
+any meaningful gap. If the provider
 says a call was *cheaper*, the report shows the cheaper number — but it never loosens
 your cap (that would re-open spending you'd committed). If the provider says it was
 *more expensive*, that's a signal your price list is stale — it raises an alert and
@@ -107,8 +110,12 @@ so it doesn't leak onto other machines.
   stale, or the provider's own numbers disagreeing with ours all land in that same one
   place. The topic is found by a saved id (not by guessing at its name), and created
   only if it doesn't already exist — with a guard so two machines can never
-  accidentally make two copies of it (only the one "money machine" ever creates it, and
-  it makes it exactly once). It's built so Slack can be added later without redoing the
+  accidentally make two copies of it: only the one machine currently "in charge" ever
+  creates it, it makes it exactly once, and the saved id is shared to the other
+  machines, so even a later handover of which machine is in charge reuses the same
+  topic instead of minting a new one. Money-critical alerts are also sent the durable
+  way (retried until they actually arrive), so a network blip can't swallow a "you hit
+  your cap" message. It's built so Slack can be added later without redoing the
   alerts. Alerts are polite: a door that dies but is instantly covered by a backup
   doesn't cry wolf — you only hear about a door when its whole backup chain is
   exhausted, and routine "the backup stepped in" churn is just logged, never pinged. And
@@ -143,8 +150,11 @@ per-door money tracking depends on that other work landing.
 - **First (dev-agent on, dark on the fleet, read-only):** the spend view and price book
   — shows "$0, no paid door live yet" honestly.
 - **Then (PIN-gated, the documented money exception):** the caps you can adjust and the
-  switch that turns paid doors on — single-machine money only.
-- **Then (dry-run first):** the alerts.
+  switch that turns paid doors on — single-machine money only. This step also brings
+  the first two alerts (a stale price / a price drifting from reality, since those
+  affect what the gate charges) and, with them, the machinery that finds-or-creates
+  the one alerts topic.
+- **Then (dry-run first):** the rest of the alerts.
 - **Last (dark until proven):** sharing the budget across machines.
 
 Each part is reversible and independently switched, and nothing about the money can

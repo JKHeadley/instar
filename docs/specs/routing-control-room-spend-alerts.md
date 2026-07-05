@@ -2,14 +2,14 @@
 title: "Routing Control Room — Spend Tracking, Caps & Alerts (Surfaces 1 & 2)"
 slug: "routing-control-room-spend-alerts"
 author: "echo"
-status: "revising"
-review-convergence: "2026-07-05T21:56:35.595Z"
-review-iterations: 5
-review-completed-at: "2026-07-05T21:56:35.595Z"
+status: "converged"
+review-convergence: "2026-07-05T23:00:03.564Z"
+review-iterations: 7
+review-completed-at: "2026-07-05T23:00:03.564Z"
 review-report: "docs/specs/reports/routing-control-room-spend-alerts-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
 single-run-completable: true
-frontloaded-decisions: 20
+frontloaded-decisions: 21
 cheap-to-change-tags: 1
 contested-then-cleared: 1
 ---
@@ -97,7 +97,11 @@ The operator's explicit requirements (verbatim intent), all addressed below:
    usage, price-drift, provider-reconciliation drift) deliver to ONE dedicated,
    clearly-named Telegram topic — **"💰 Routing & Spend Alerts"** — located via a
    DURABLE persisted topic-id record and CREATED once only if genuinely absent, with a
-   concurrency-safe guard so a duplicate topic can never be race-created. Fallback usage
+   concurrency-safe guard so a duplicate topic can never be race-created. (Honest
+   statement of the invariant: steady-state, one topic receives everything; the
+   lifeline/system topic is the single NAMED emergency exception, used only when the
+   dedicated topic is unresolvable or a money-critical delivery failed — a money alert
+   is never dropped waiting on topic plumbing.) Fallback usage
    is spike-gated per Near-Silent Notifications (every fallback is durably logged, but
    routine self-healed churn never pings — only a rate-spike or chain exhaustion does),
    and all alerts respect the existing dedup/coalescing (one coalesced message per
@@ -118,7 +122,7 @@ The operator's explicit requirements (verbatim intent), all addressed below:
   (operator directive: "ground our cost usage on actual reporting from the provider").**
   Where a provider reports the call's cost/usage, that figure — captured as its own
   immutable append-only record — is what the view PREFERS to display and the basis the
-  reconciliation sweep cross-checks the internal-derived figure against. It flows DOWN
+  provider-reconciliation sweep cross-checks the internal-derived figure against. It flows DOWN
   the REPORTING side exactly like a price correction: it can refine a REPORTED figure
   retroactively but NEVER re-opens gate headroom and NEVER moves the money gate (the
   same one-way safety as the re-pricing rule). The fail-closed gate cannot block on a
@@ -139,6 +143,25 @@ The operator's explicit requirements (verbatim intent), all addressed below:
   cap slicing) — independently gated and reversible; the first live money release is
   deliberately a one-machine system.
 
+### Vocabulary (implementer's glossary — wire the RIGHT lease into the RIGHT job)
+
+- **Serving-lease holder** — the fenced, epoch-stamped "one awake machine" of the
+  multi-machine foundation; ALWAYS exists (single-machine = itself). Owns: alert-topic
+  CREATION (Amendment 2). Never owns money.
+- **Metered-lease holder** — the ONE machine the go-live PIN designates as money
+  authority (Increment B+); exists ONLY after a go-live. Owns: the
+  `MeteredSpendLedger`, the gate, cap reads, unified cap alerts. Never the topic
+  creator.
+- **`meteredCallId`** — the per-call id minted at reserve time (=== `reserveId`);
+  joins `feature_metrics.callId` ↔ booking rows ↔ `provider_cost_report`.
+- **Reserve-expiry sweep** (Layer 3) — money-side; takes the per-key lock; expires
+  stale reserves. **Provider-reconciliation sweep** (Layer 1c) — reporting-side;
+  never takes the money lock; computes booked-vs-reported drift.
+- **Dedicated topic** — the ONE "💰 Routing & Spend Alerts" Telegram topic.
+  **Lifeline** — the always-existing system topic; the single named emergency
+  fallback. **Durable relay** — `PendingRelayStore` + `DeliveryFailureSentinel`,
+  the retry-until-delivered Telegram path money-critical alerts ride.
+
 ---
 
 ## Proposed design
@@ -156,7 +179,7 @@ the **accounting split**:
   under-count on a dropped observability write — which is why it never gates money.
 - **MONEY** truth (authoritative, protective): a NEW booking-priced
   `MeteredSpendLedger` (Layer 3) that the O(1) gate reads and writes, fail-closed,
-  non-swallowing, with reserve/settle + a reconciliation sweep. This side answers
+  non-swallowing, with reserve/settle + a reserve-expiry sweep. This side answers
   "may this call spend?" and NEVER recomputes — it protects real dollars committed at
   the moment of the call.
 
@@ -321,8 +344,10 @@ manifest.
   observed-drift alerts ship WITH Increment B, not C** — stale pricing changes money
   ADMISSION behavior, so its alarm belongs to the money increment; silent staleness
   until costs diverge is exactly the failure this closes. (These two alert kinds ride
-  the same `/attention` + lifeline-fallback rails; the full channel abstraction still
-  arrives in C.)
+  the dedicated-topic + lifeline-fallback rails — Increment B therefore ships the
+  MINIMAL topic-resolver foundation (§Surface 2 Alerts: the resolution ladder +
+  durable delivery + lifeline fallback), and the full channel abstraction/emitters
+  still arrive in C. `/attention` is never used for spend alerts — Amendment 2.)
 - **Machine-local read index (NOT authoritative), refreshed on running machines
   (X-G3).** Each machine builds a read-only SQLite index of the canonical points for
   fast as-of joins — a regenerable materialized view, rebuilt on boot AND when the
@@ -383,7 +408,7 @@ compatible response shape each door uses):**
 
 | Door (key) | Per-call USD cost? | Authoritative usage (tokens)? | Granularity / latency | Basis this spec uses |
 |---|---|---|---|---|
-| **`openrouter-api`** (`metered_openrouter_bench`) | **YES** — every chat-completion response now carries `usage.cost` (total USD) + `usage.cost_details` (incl. `upstream_inference_cost`) and `prompt_tokens_details.cached_tokens`/`cache_write_tokens`; the `GET /api/v1/generation?id=<id>` endpoint returns the authoritative `total_cost` + native token counts + `cache_discount` a few seconds after the call; `GET /api/v1/credits` gives the account balance. (Historically gated behind a request `usage:{include:true}`; now returned automatically.) | YES (native tokenizer) | **Per-call, in-response (immediate) for `usage.cost`; ~seconds for `/generation`; account-level for `/credits`** | **provider-reported** cost is the preferred anchor |
+| **`openrouter-api`** (`metered_openrouter_bench`) | **YES** — every chat-completion response now carries `usage.cost` (total USD) + `usage.cost_details` (incl. `upstream_inference_cost`) and `prompt_tokens_details.cached_tokens`/`cache_write_tokens`; the `GET /api/v1/generation?id=<id>` endpoint returns the authoritative `total_cost` + native token counts + `cache_discount` a few seconds after the call; `GET /api/v1/credits` gives the account balance. **The metered request MUST set `usage: {include: true}`** (the same MUST-set posture as the required `max_tokens`): the field has historically been opt-in, and relying on "now returned automatically" would let every OpenRouter row silently degrade to internal-derived if the default regresses — mandated explicitly, harmless if redundant. | YES (native tokenizer) | **Per-call, in-response (immediate) for `usage.cost`; ~seconds for `/generation`; account-level for `/credits`** | **provider-reported** cost is the preferred anchor |
 | **`groq-api`** (`metered_groq_bench`) | **NO** per-call USD cost field. OpenAI-compatible `usage` block only: `prompt_tokens`/`completion_tokens`/`total_tokens` (+ Groq timing `prompt_time`/`completion_time`/`queue_time`/`total_time`). No cheap per-call cost API; cost is only in the dashboard/usage export. | YES (in-response `usage`) | Per-call token usage in-response; **cost export is dashboard-grade, not programmatic per-call** | **internal-derived** cost (token×price); provider tokens replace our estimated token counts |
 | **`gemini-api`** (`metered_gemini_bench`) | **NO** per-call USD cost field. `usageMetadata` (native path) / OpenAI-compat `usage` (the funnel's path) reports `promptTokenCount`/`candidatesTokenCount`/`totalTokenCount` (+ `cachedContentTokenCount`, `thoughtsTokenCount`). USD only via **Google Cloud Billing / BigQuery export** (label-attributable, but heavyweight and lagging hours→a day). (Known caveat: `candidatesTokenCount` can under-report vs billed output on some models when thinking tokens are excluded — itself a real drift signal, below.) | YES (in-response usage metadata) | Per-call token usage in-response; **USD export is heavyweight + lagged** | **internal-derived** cost; provider tokens replace our estimated token counts; billing export is a FUTURE reconciliation input (registered follow-up, alongside FD-11's invoice-drift REPORTING) |
 
@@ -393,19 +418,53 @@ no cheap per-call cost. So "ground on the provider" means, precisely: **prefer t
 provider's cost when it reports one (OpenRouter), and ALWAYS prefer the provider's
 reported TOKEN counts over our chars/token estimate when it reports them (all three) —
 recomputing our internal cost from the truer token counts.** This is a genuine
-improvement even where no cost figure exists.
+improvement even where no cost figure exists. **Token-source disambiguation (the
+gate-exclusion invariant made wiring-precise):** this preference statement is about
+the REPORTING side. The money gate's settle also uses provider-returned usage — but
+ONLY from the **in-hand live response object** of the call it is settling (the
+vendored `settleCost` formula, fed by the per-door billed-token mapping — §Layer 3),
+NEVER by reading the `provider_cost_report` store; the settle module has NO
+dependency on the store (wiring test). The store is written FROM the same response,
+downstream — data flows response → {settle, capture} independently (capture strictly
+after the settle books — §the seam), never store → settle. **Hedging honesty
+(provider APIs drift):** the per-provider capabilities above were verified against
+the providers' live docs + the bench funnel as of 2026-07; they are treated as
+DEGRADABLE facts, not axioms — a provider field that is absent, renamed, or reshaped
+simply degrades that row to `internal-derived` (a first-class, NORMAL `costBasis`,
+never an error path), and the reconciliation/drift surface is what makes such a
+regression visible.
 
 - **The provider-report store — a NEW immutable, append-only, timestamped record set
-  (same discipline as Layer 0).** Per metered call the seam (below) appends a
-  `provider_cost_report` row `{ ts, keyRef, door, modelId, generationId?, source
-  ('openrouter-usage'|'openrouter-generation'|'groq-usage'|'gemini-usage-metadata'|
-  'gemini-billing-export'), providerCostUsd? (null when the provider reports none),
-  providerTokensIn?, providerTokensOut?, providerTokensCached?, capturedAt }`. Rows
-  are **APPENDED, never mutated** — a later, more-authoritative report (e.g. the
-  `/generation` cost arriving after the in-response `usage.cost`) is a NEW row that
-  supersedes by `(door, modelId, generationId, greatest capturedAt)`, exactly like a
-  price `corrects` row supersedes. It lives on the REPORTING side (a small SQLite
-  table beside the rollup, regenerable) — NEVER the money ledger.
+  (same discipline as Layer 0), joined on a per-call id.** Every metered call mints
+  ONE durable **`meteredCallId`** (=== the money ledger's `reserveId` — one id, minted
+  at reserve time, stamped through `IntelligenceOptions.attribution`), which is the
+  STABLE JOIN KEY across the three records of the same call: the `feature_metrics` row
+  (a new nullable `callId` column riding the same `ensureAddedColumns()` +
+  type/writer/INSERT discipline as `door`), the `MeteredSpendLedger` booking rows, and
+  every `provider_cost_report` row. Per metered call the seam (below) appends a
+  `provider_cost_report` row `{ ts, meteredCallId, keyRef, door, modelId,
+  generationId?, source ('openrouter-usage'|'openrouter-generation'|'groq-usage'|
+  'gemini-usage-metadata'|'gemini-billing-export'), providerCostUsd? (null when the
+  provider reports none), providerTokensIn?, providerTokensOut?,
+  providerTokensCached?, capturedAt }`. Rows are **APPENDED, never mutated** — a
+  later, more-authoritative report (e.g. the `/generation` cost arriving after the
+  in-response `usage.cost`) is a NEW row that supersedes by
+  **`(meteredCallId, greatest capturedAt)`** (provider `generationId` is stored for
+  audit, never trusted as the join key), exactly like a price `corrects` row
+  supersedes — so per-call matching can never double-count or misattribute.
+  **Receive-time validation (the replicated-store receive-clamp discipline):** every
+  captured field is clamped before append — numerics must be finite and ≥ 0 (a
+  NaN/Infinity/negative cost or token count is dropped with the row marked
+  `invalid-provider-report`, never stored raw), `generationId`/`source` are
+  length/charset-clamped, and any provider-authored string is HTML-escaped at render
+  time. The poisoned-provider-body test extends to this capture + render path (not
+  just the alert scrub). It lives on the REPORTING side (a small SQLite table beside
+  the rollup) — NEVER the money ledger. **Retention (declared, NOT regenerable):** a
+  pruned provider report is NOT re-derivable (unlike the token rollup), so the store
+  keeps `routingSpend.providerReportRetentionDays` (default **400**, matching the
+  reporting horizon) with the batched-delete prune idiom (scal-F4); volume is bounded
+  by metered calls only (a small fraction of `feature_metrics`), which is why 400d of
+  raw rows is affordable here where it was not for all internal calls.
 - **The reporting join PREFERS the provider figure, labeled.** Layer 2's on-read cost
   for a row is: **(1)** the provider-reported cost when a `provider_cost_report` with a
   non-null `providerCostUsd` exists for that call/day+door+model
@@ -414,13 +473,22 @@ improvement even where no cost figure exists.
   (`costBasis: "internal-derived"` / `"internal-derived-provider-tokens"`). The view
   states the basis per row so "grounded on the provider" is never an unverifiable
   claim.
-- **Reconciliation sweep (the cross-check the directive asks for).** A cadenced,
-  REPORTING-side sweep compares, per `(keyRef, door)` over a window, the
-  internal-derived spend against the provider-reported spend (and, for the money
-  increment, against the ledger's committed figure — the booked-vs-reported/
-  booked-vs-billed comparison FD-11 already requires, here made per-call and faster
-  than a monthly invoice). It stores each comparison as its own timestamped
-  append-only record and computes a signed `driftPct` per key/door. **Direction +
+- **The PROVIDER-RECONCILIATION sweep (the cross-check the directive asks for) —
+  named distinctly from the money layer's RESERVE-EXPIRY sweep, because they must
+  never be conflated.** A cadenced (`routingSpend.reconciliation.sweepIntervalHours`,
+  default 6 — an inert config knob), REPORTING-side sweep compares, per
+  `(keyRef, door)` over a window, the internal-derived spend against the
+  provider-reported spend (and, for the money increment, against the ledger's
+  committed figure — the booked-vs-reported/booked-vs-billed comparison FD-11 already
+  requires, here made per-call and faster than a monthly invoice). **Isolation from
+  the money layer:** it only ever READS the committed totals (the same read surface as
+  the caps view) — it NEVER takes the per-key money lock, never touches ledger rows,
+  and runs entirely on the reporting side. **Event-loop safety (scal-F1/F7 applied):**
+  it streams its bounded window with `.iterate()` (never `.all()`), and a
+  larger-than-threshold pass rides the worker-thread-snapshot pattern like the Layer-2
+  composer. It stores each comparison as its own timestamped append-only record
+  (retention: the same `providerReportRetentionDays` horizon + batched prune) and
+  computes a signed `driftPct` per key/door. **Direction +
   safety (one-way, matching the re-pricing rule):**
   - Drift where the provider reports **LOWER** than internally booked → the REPORT
     shows the lower provider figure; the money ledger's committed counter is **NEVER
@@ -541,7 +609,9 @@ metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.
   substrate and thereby closes the deferred `drift-spend-cross-machine` child. The two
   ledgers never overlap in domain.
 - **Two-phase reserve/settle with IDEMPOTENT TERMINAL STATES and a locked
-  reconciliation sweep (A-B2 / A2-1 / scal-F5).**
+  RESERVE-EXPIRY sweep (A-B2 / A2-1 / scal-F5).** (This money-layer sweep is named
+  the **reserve-expiry sweep** everywhere — distinct from Layer 1c's
+  provider-reconciliation sweep, which never takes the money lock.)
   - **Reserve sizing (A2-4):** the metered call path MUST set a hard `max_tokens` on
     the provider request. `reserve = inputTokens/1e6 × inPerMtok + max_tokens/1e6 ×
     outPerMtok` (cached tokens reserved as full input — never under-books). **A
@@ -556,10 +626,10 @@ metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.
     funnel through the single server process (in-process async mutex); if
     multi-process issuance ever appears, the same `proper-lockfile` advisory lock
     applies.
-  - **The reconciliation sweep TAKES THE PER-KEY LOCK (A2-1)** and expires only
+  - **The reserve-expiry sweep TAKES THE PER-KEY LOCK (A2-1)** and expires only
     reserves older than the TTL that are still in `reserved` state. **A settle that
     arrives after its reserve was expired books the ACTUAL cost as a fresh ABSOLUTE
-    row** (reconciliation-aware settle) — never a delta against a vanished reserve, so
+    row** (expiry-aware settle) — never a delta against a vanished reserve, so
     the late-settle race cannot under-count committed spend. The TTL is pinned
     comfortably above the maximum metered-call latency (default 15 min vs a 5-min
     call ceiling). Sweep runs at boot + on a cadence.
@@ -567,6 +637,21 @@ metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.
     connection-error settle $0 UNLESS tokens were demonstrably returned; keyed on the
     REAL HTTP status/outcome. A 200 books actual (`settleCost` on returned usage,
     cached billed per the reviewed cache rate or as full input) or worst-case.
+  - **The settle books BILLED tokens per a per-door mapping, erring HIGH (the Gemini
+    thinking-token trap).** Providers' "output tokens" fields do not all mean "billed
+    output": Gemini bills thinking tokens as output while `candidatesTokenCount` can
+    EXCLUDE them — a settle that naively books `candidatesTokenCount` under-books
+    committed spend and the cap under-protects (and the reconciliation that would
+    notice is forbidden from moving the gate). Each metered door therefore carries a
+    CODE-DEFINED billed-token mapping the settle MUST use — Gemini output =
+    `candidatesTokenCount + thoughtsTokenCount` on the native path, or
+    `completion_tokens` + the reasoning-token detail on the OpenAI-compat path (the
+    funnel's path — the mapping names BOTH response shapes); OpenRouter/Groq =
+    `completion_tokens` — and a response whose billed-token basis cannot be confirmed
+    from the mapping settles at the WORST-CASE estimate (the existing safe direction),
+    never at a lower unverified field. **Honesty on "vendored, unchanged": the
+    `settleCost` FORMULA is unchanged; the billed-output FIELD SELECTION feeding it is
+    this new per-door mapping.** Unit test per door mapping and per shape.
 - **O(1) never-cached, fail-closed, lease-fenced read at the gate.** Before a metered
   call the gate reads the committed total FRESH, reads the door's CANONICAL, VALIDATED
   price (never the observed cache, never the overlay), computes `estCost` at BASE
@@ -636,11 +721,16 @@ recorded row — this spec is HONEST about the dependency:
   provider-reported figures are captured: on a 200 the dispatch reads the door's
   provider-reported fields (`usage.cost`/`cost_details` and cached-token details for
   OpenRouter; the `usage`/`usageMetadata` token counts for all three) and appends a
-  `provider_cost_report` row keyed to the same resolved `(keyRef, door, modelId)` and,
-  where the provider returns one, the `generationId` (so the later OpenRouter
-  `/generation` cost supersedes the in-response `usage.cost` by a fresh appended row).
-  This capture is REPORTING-side and best-effort (a failed append is swallowed like a
-  `feature_metrics` write) — it NEVER blocks the call and NEVER feeds the settle/gate.
+  `provider_cost_report` row keyed on the call's **`meteredCallId`** (=== the ledger
+  `reserveId`, stamped through `attribution` — the same single-source thread as
+  `door`) plus the resolved `(keyRef, door, modelId)`; a later OpenRouter
+  `/generation` cost supersedes the in-response `usage.cost` by a fresh appended row
+  under the same `meteredCallId`. This capture is REPORTING-side and best-effort (a
+  failed append is swallowed like a `feature_metrics` write) — it NEVER blocks the
+  call and NEVER feeds the settle/gate. **Ordering:** the capture runs strictly AFTER
+  the settle's terminal transition has been durably booked (or on a fully isolated
+  post-call path), so a swallowed capture error can never mask — or share a failure
+  domain with — the fail-closed, non-swallowing settle at the same seam.
   It shares the door-attribution dependency: until real metered dispatch lands, no
   `provider_cost_report` rows exist and the view shows honest `$0` / no-provider-data.
 
@@ -651,8 +741,8 @@ recorded row — this spec is HONEST about the dependency:
   tokensOut, tokensCached, grossUsd, subsidyUsd, creditUsd, netUsd, committedUsd,
   priceBasis, costBasis, providerReportedUsd, providerDriftPct, priceStale,
   notLiveYet }` — `costBasis` and `providerReportedUsd` surface the Layer-1c
-  provider-grounded figure (and `providerDriftPct` where the reconciliation sweep has
-  run) — plus `totals`, `horizonNote`, `adjustmentsSource`, and loud `unpricedTokens`
+  provider-grounded figure (and `providerDriftPct` where the provider-reconciliation
+  sweep has run) — plus `totals`, `horizonNote`, `adjustmentsSource`, and loud `unpricedTokens`
   rows. A companion `GET /routing-spend/reconciliation?scope=pool` returns the
   per-`(keyRef, door)` internal-vs-provider (and, post-B, vs-committed) drift records.
   **Best-effort labeling rides
@@ -758,45 +848,86 @@ recorded row — this spec is HONEST about the dependency:
   is a registry entry + `alerts.channels: ["telegram","slack"]` — no emitter rework
   (channel-neutral `SpendAlert`s; dispatcher-level dedup/aggregation/coalescing runs
   BEFORE any channel send, so one coalesced message per episode reaches the topic).
+- **The invariant, stated honestly (steady-state one topic + ONE named emergency
+  exception).** Steady-state, EVERY spend alert lands in the one dedicated topic. The
+  lifeline/system topic is the single named EMERGENCY exception — used only when the
+  dedicated topic is unresolvable or a money-critical delivery has failed (below) —
+  so a money alert can never be silently dropped waiting on topic plumbing. This is
+  "one single topic" as the operating rule, with the exception explicit rather than
+  smuggled.
 - **Idempotent find-or-create of the ONE dedicated topic — no duplicate, ever (the
-  duplicate-topic guard the directive requires).** Resolution order:
-  1. **Operator-configured id wins (zero-race primary path).** If
-     `routingSpend.alerts.telegramTopicId` is set, that id IS the topic — nothing is
-     ever created, no race exists (mirrors `burnDetection.alertTopicId`).
-  2. **Else auto find-or-create via a DURABLE persisted record, not name-matching** —
-     the **`ensureLifelineTopic()` precedent** (`TelegramAdapter.ts`): a persisted
-     topic-id is the single source of truth; on first alert it is created ONCE as a
-     **bounded create-once SYSTEM topic** — `createForumTopic("💰 Routing & Spend Alerts",
-     …, { origin: 'system', bounded: true, label: 'routing-spend-alerts' })`, which is
-     **EXEMPT from the bounded-notification-surface budget** (the create-once system
-     exemption at `TelegramAdapter.createForumTopic`) — and the returned id is persisted
-     atomically (tmp+rename into the telegram messaging config block, exactly like
-     `persistLifelineTopicId`). On every later boot/alert the id is verified (a
-     `sendChatAction` typing probe) and only RE-created if the topic was deleted — never
-     duplicated. Name-matching is never used to "find" the topic (topic names are
-     mutable and duplicable); the persisted id is authoritative.
-- **Concurrency-safe against a duplicate race (single-writer, matching the money
-  model).** Two guards compose so two machines / two processes can never race-create
-  two topics:
-  - **Cross-machine: creation is HOLDER-ONLY.** Only the single metered-lease holder
-    (the same single-writer that owns money authority and emits the unified
-    cap/holder-dead alerts) may create + persist the dedicated topic. This reuses the
-    converged single-writer money-holder model rather than inventing a new claim.
-  - **In-process: single-flight.** The holder serializes creation through the existing
-    `TelegramAdapter` in-flight-`createForumTopic`-promise map (the same guard that
-    stops concurrent coalesced attention items from double-creating a topic), so even a
-    burst of first-alerts yields exactly one `createForumTopic` call. The persisted-id
-    write is atomic (tmp+rename) — last-writer-wins over an identical id, never two ids.
-  - **A NON-holder machine that must emit a machine-specific alert (door-dark/fallback
-    key on `<machineId>` by nature) before the holder has published the id** does NOT
-    race to create — it delivers to the **lifeline fallback** (below) and re-resolves
-    the holder-published id on its next tick. This keeps "exactly one topic" true even
-    while alerts can originate on more than one machine.
-- **Money-critical alerts are never dropped for a missing/unresolvable topic (G5).**
-  If the dedicated topic id is unset AND cannot be resolved/created yet (no holder, or
-  a creation failure), cap-hit, holder-dead, and chain-exhausted door-dark alerts FALL
-  BACK to the lifeline/system topic — never silently dropped. The dedicated topic is a
-  create-once system topic; once it exists, all alert kinds converge to it.
+  duplicate-topic guard the directive requires).** The resolution LADDER (first hit
+  wins; only the last rung creates):
+  1. **Operator-configured id wins.** If `routingSpend.alerts.telegramTopicId` is set,
+     that id IS the topic — nothing is ever created (mirrors
+     `burnDetection.alertTopicId`). On a multi-machine pool the operator should set it
+     identically in each machine's (machine-local) config; a machine whose configured
+     id disagrees with the pool-published record (rung 2) logs ONE warning line and
+     follows its local config — creation stays fenced below, so a mismatch can never
+     mint a second topic.
+  2. **The POOL-PUBLISHED durable record.** The auto-created id is persisted
+     machine-locally (atomic tmp+rename into the telegram messaging config block,
+     exactly like `persistLifelineTopicId`) AND published pool-wide as a
+     content-free field on the existing machine-registry/heartbeat surface — so every
+     peer, and any FUTURE serving-lease holder, resolves the SAME id from local disk
+     or the pool record. This is what makes the record durable across a lease
+     handoff: a new holder inherits the id instead of re-creating (the
+     machine-local-only persistence would otherwise guarantee a duplicate on any
+     holder change — Telegram mints a fresh id per `createForumTopic`, so
+     "last-writer-wins" can never merge two creations).
+  3. **Create, ONCE — the `ensureLifelineTopic()` precedent** (`TelegramAdapter.ts`):
+     created as a **bounded create-once SYSTEM topic** —
+     `createForumTopic("💰 Routing & Spend Alerts", …, { origin: 'system',
+     bounded: true, label: 'routing-spend-alerts' })`, which is **EXEMPT from the
+     bounded-notification-surface budget** (the `bounded: true` create-once exemption
+     at `TelegramAdapter.createForumTopic`) — then persisted locally + published
+     pool-wide (rung 2). On every later boot/alert the id is verified (a
+     `sendChatAction` typing probe) and only RE-created if the topic was genuinely
+     deleted — never duplicated. Name-matching is never used to "find" the topic
+     (topic names are mutable and duplicable); the persisted id is authoritative.
+- **Concurrency-safe against a duplicate race (fenced single-writer creation).**
+  Guards compose so two machines / two processes can never race-create two topics:
+  - **Cross-machine: creation is SERVING-LEASE-HOLDER-ONLY — deliberately NOT the
+    metered-lease holder.** The creator must exist in every increment and topology:
+    the metered-lease holder exists only after Increment B's go-live PIN designates
+    one, but alerts (door-dark/fallback in C; stale-price in B) can flow with no door
+    ever armed. The SERVING-lease holder — the fenced, epoch-stamped "one awake
+    machine" that always exists on a pool (and is trivially the machine itself on a
+    single-machine install) — is the single topic-creator. Before creating (ladder
+    rung 3) it MUST have re-confirmed its lease within the same bounded staleness
+    window the money gate uses for self-fencing, so a just-deposed holder cannot
+    race the new one; the fenced lease guarantees at most one machine is eligible at
+    a time, and rung 2 guarantees the next holder REUSES the id rather than minting
+    another.
+  - **In-process: single-flight.** The creator serializes creation through its OWN
+    in-flight-creation promise field, mirroring the existing per-lane
+    `createForumTopic` single-flight pattern in `TelegramAdapter` (the
+    `floodNoticePending` map that stops concurrent coalesced items double-creating;
+    the routing-spend channel adds its own field — it does not literally reuse that
+    map), so even a burst of first-alerts yields exactly one `createForumTopic` call.
+  - **A machine that is not the serving-lease holder** (or a holder that cannot
+    confirm its lease, or cannot verify no existing id because peers are unreachable)
+    does NOT create — it delivers to the **lifeline fallback** and re-resolves the
+    ladder on its next tick. Fail toward the lifeline, never toward a possible
+    duplicate.
+- **Money-critical alerts are DURABLE, and fall back on ANY failure — not only
+  "unset" (G5 hardened).** Cap-hit, holder-dead, and chain-exhausted door-dark alerts:
+  - ride the existing **durable relay path** (`PendingRelayStore` +
+    `DeliveryFailureSentinel` — delivery-robustness Layers 2/3), never a
+    fire-and-forget `sendToTopic`; their edge-trigger dedup latches only on CONFIRMED
+    delivery, so a transient Telegram failure leaves the alert eligible for re-send
+    instead of permanently suppressed;
+  - fall back to the lifeline when the dedicated id is unset, fails its verification
+    probe, OR delivery through the relay is exhausted — a set-but-wrong id is a
+    fallback case, not a black hole;
+  - and a change to `alerts.telegramTopicId` (a Bearer-`PATCH`able knob) is made
+    AUDIBLE: on repoint the channel posts a one-line "spend alerts now route to
+    <topic>" confirmation into BOTH the old topic (if still resolvable) and the new
+    one, and the change is audited — so a Bearer-level actor cannot SILENTLY redirect
+    the operator's money alerts (the knob still cannot touch money admission;
+    informational kinds simply follow it).
+  The dedicated topic is a create-once system topic; once it exists, all alert kinds
+  converge to it.
 - **Money-critical alerts ride a DISTINCT dedup lane (S-F8)** — now enforced at the
   dispatcher (before `sendToTopic`), since delivery no longer goes through
   `/attention`. Cap-hit/holder-dead carry a distinct `dedupeLane` from
@@ -848,12 +979,19 @@ recorded row — this spec is HONEST about the dependency:
   an unplanned death rebases it. The daily `dayEpoch` is stamped by the (new) holder.
   **The attested figure is an EMERGENCY estimate, biased conservative (C4-3):** in
   Increment B the surviving fold is structurally near-empty (the dead holder held the
-  ledger), so the rebase honesty is: `rebasedCommitted = max(surviving fold,
-  operator-attested last-known figure)` — the maximum, never the minimum, so a rebase
-  can never UNDER-count and re-open spent headroom. A rebase that lands at/above the
+  ledger), so the holder's capacity heartbeat (the surface that already carries
+  quota state pool-wide) ALSO carries the committed counter per key as a MONOTONE
+  content-free observability value; every peer retains the last-seen figure. The
+  rebase honesty is then: `rebasedCommitted = max(surviving fold, last
+  heartbeat-carried committed, operator-attested last-known figure)` — the maximum,
+  never the minimum, so a rebase can never UNDER-count and re-open spent headroom,
+  and the operator's attestation is no longer the only defense against a holder that
+  died mid-burst (the heartbeat figure trails real spend by at most one heartbeat
+  interval, disclosed with its age in the reclaim plan). The heartbeat figure is
+  observability INTO the rebase max() only — never a gate input on a live holder. A rebase that lands at/above the
   cap simply leaves the gate refusing until the operator raises the cap or the daily
   resets — the safe direction. The reclaim plan labels the attested figure as an
-  estimate with its age; the audit row records both inputs and which won.
+  estimate with its age; the audit row records all three inputs and which won.
   **Reclaim safety against a FALSE death (N-2):** the rendered reclaim plan displays
   the last-known committed figure's AGE, and when the alive-but-partitioned signal is
   present (the old holder's git-synced heartbeat still ADVANCING while its mesh ropes
@@ -890,10 +1028,11 @@ recorded row — this spec is HONEST about the dependency:
   chain kill), refuses unbounded reservations, and fails CLOSED on every uncertainty.
 - **Adds** an alert-emission path (Increment C) that delivers ALL alerts into EXACTLY
   ONE dedicated Telegram topic ("💰 Routing & Spend Alerts") via `sendToTopic`
-  (idempotent find-or-create from a durable persisted id; holder-only creation +
-  single-flight duplicate guard; bounded create-once system topic) — NOT `POST /attention`
-  (topic-per-item) — downstream of self-heal, with a lifeline fallback and one named
-  surviving-voice exception (holder-dead).
+  (idempotent find-or-create from a durable pool-published id;
+  serving-lease-holder-only creation + single-flight duplicate guard; bounded
+  create-once system topic; durable relay for money-critical kinds) — NOT
+  `POST /attention` (topic-per-item) — downstream of self-heal, with a lifeline
+  fallback and one named surviving-voice exception (holder-dead).
 - **Adds** a nullable `door` column (+ type + writer + INSERT), a maintained
   `spend_token_rollup` table, the canonical/observed price stores, and the
   machine-local overlay/credits reporting stores.
@@ -931,19 +1070,30 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
 - **FD-5 — Reporting rollups pre-aggregate IMMUTABLE daily token sums and apply
   price/subsidy on read.** *Not cheap* (retroactive-recompute + event-loop-safety +
   disk), frontloaded.
-- **FD-6 — ALL alerts deliver to EXACTLY ONE dedicated Telegram topic ("💰 Routing &
-  Spend Alerts") via a channel abstraction — message-INTO the topic (the
+- **FD-6 — ALL alerts deliver to ONE dedicated Telegram topic ("💰 Routing & Spend
+  Alerts") via a channel abstraction — message-INTO the topic (the
   `burnDetection.alertTopicId` `sendToTopic` precedent), NOT `POST /attention`
-  (topic-per-item, the flood the operator forbids). Idempotent find-or-create via a
-  DURABLE persisted topic-id (operator-configured id wins; else a bounded create-once
-  SYSTEM topic exempt from the notification budget, persisted atomically like
-  `persistLifelineTopicId`), with a concurrency-safe duplicate guard (HOLDER-ONLY
-  creation + in-process single-flight + non-holder-falls-back-to-lifeline). Slack a
-  later config-add; money-critical alerts fall back to the lifeline when the topic is
-  unresolvable; ONE named surviving-voice exception (holder-dead); dispatcher-level
+  (topic-per-item, the flood the operator forbids); the lifeline is the single NAMED
+  emergency exception (unresolvable topic / failed money-critical delivery), never a
+  second routine destination. Idempotent find-or-create via the resolution LADDER:
+  operator-configured id → the POOL-PUBLISHED durable record (machine-local persist
+  + a content-free field on the machine-registry/heartbeat surface, so peers and
+  future lease holders inherit the id) → create ONCE as a bounded create-once SYSTEM
+  topic (budget-exempt, persisted like `persistLifelineTopicId`). Duplicate guard:
+  creation is SERVING-lease-holder-only (fenced, lease-confirmed within the
+  staleness window; exists in every increment/topology — deliberately NOT the
+  metered-lease holder, which exists only after a B go-live) + in-process
+  single-flight + everyone-else-falls-back-to-lifeline (fail toward the lifeline,
+  never toward a possible duplicate). Money-critical alerts ride the durable relay
+  (PendingRelayStore/DeliveryFailureSentinel), dedup-latch on CONFIRMED delivery,
+  fall back to the lifeline on ANY failure (unset/probe-failed/exhausted), and a
+  repoint of `alerts.telegramTopicId` is audible (confirmation into old + new topic,
+  audited). The minimal resolver foundation ships WITH the first alert-emitting
+  increment (B); the full channel abstraction/emitters are C. Slack a later
+  config-add; ONE named surviving-voice exception (holder-dead); dispatcher-level
   dedup/coalescing (one message per episode, money-critical on a distinct lane);
-  routine self-healed fallback churn is jsonl-only (a digest line ONLY on a rate-spike
-  — Near-Silent Notifications).** *Not cheap*, frontloaded.
+  routine self-healed fallback churn is jsonl-only (a digest line ONLY on a
+  rate-spike — Near-Silent Notifications).** *Not cheap*, frontloaded.
 - **FD-7 — Amortized subscription-cost estimation is OUT OF SCOPE (the DEFERRAL is
   cheap-to-change-after); the `$0 (subscription — not per-token billed)` DISPLAY ships
   now and is frontloaded.** Deferral tag survives contest.
@@ -1024,9 +1174,13 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
   receiver-verifiable operator signature (never bare replication).
 - **FD-21 — Provider-reported cost/usage is the PREFERRED REPORTING anchor (operator
   directive), captured as immutable append-only `provider_cost_report` records at the
-  metered-call seam, PREFERRED on read (per-row `costBasis`), and cross-checked by a
-  cadenced reconciliation sweep that surfaces internal-vs-provider (and post-B
-  vs-committed) drift. It flows DOWN the reporting side like a price correction:
+  metered-call seam — joined per call on ONE durable `meteredCallId` (=== the ledger
+  `reserveId`, stamped through `attribution` into `feature_metrics.callId`, the
+  booking rows, and every provider report, so matching/supersession is exact and can
+  never double-count) — PREFERRED on read (per-row `costBasis`), receive-clamped on
+  capture, retention-declared (default 400d, not regenerable), and cross-checked by
+  the cadenced provider-reconciliation sweep that surfaces internal-vs-provider (and
+  post-B vs-committed) drift. It flows DOWN the reporting side like a price correction:
   provider-LOWER never lowers the committed counter (no re-opened headroom);
   provider-HIGHER is a drift signal feeding the price-drift alert + the PIN price-
   promotion path, never the gate. Per-provider truth is honest and asymmetric:
@@ -1096,10 +1250,13 @@ This is a multi-machine agent. Default posture is `unified`. Every surface is de
   emitted by a surviving machine (A2-2). Door-dark/fallback alerts key on
   `<machineId>:<chain>` (machine-specific by nature). **The ONE dedicated
   "💰 Routing & Spend Alerts" topic is a `unified` create-once system topic: the
-  metered-lease holder is its sole CREATOR (the duplicate-topic guard), the persisted
-  id is the single source of truth, and a non-holder that must emit a machine-specific
-  alert before the id is published falls back to the lifeline rather than creating a
-  second topic** (Amendment 2). A single-machine agent is trivially its own holder.
+  SERVING-lease holder is its sole CREATOR (fenced + lease-confirmed — the
+  duplicate-topic guard; deliberately not the metered-lease holder, which may not
+  exist yet), the persisted id is published pool-wide on the machine-registry/
+  heartbeat surface (so peers and every future lease holder inherit the SAME id
+  instead of re-creating), and any machine that is not the confirmed creator falls
+  back to the lifeline rather than risk creating a second topic** (Amendment 2). A
+  single-machine agent is trivially its own serving-lease holder.
 - **Fresh single-machine agent = clean no-op.** Dark → routes 503; no peers →
   `scope=pool` degrades to self; nothing armed → gate inert.
 
@@ -1115,7 +1272,7 @@ Only the **alert layer (Increment C)** introduces monitor/notice sources:
 |---|---|---|---|---|
 | Door dark (`RouterFailClosedError`) | recoverable | swap-tail (incl. a cap-refused door advancing like a dark one) falls to the next; escalate ONLY on whole-chain exhaustion (incl. free tails) | downstream of chain-exhaustion | `max-attempts` = chain length; `dedupe-key` = `spend-door-dark:<machine>:<chain>:<episodeBucket>`; widening backoff; flapping breaker (N/window → critical, bypasses coalescing); `max-notification-latency: 120s`; scrubbed jsonl |
 | Fallback used (swapTail served) | recoverable | the fallback succeeding IS the heal | jsonl-only; a digest line ONLY on a rate-spike (vs trailing baseline / absolute ceiling) — routine churn never notifies | spike-threshold gate; `dedupe-key` per chain |
-| Cap hit (reservation would cross) | recoverable (protective) | none needed — blocking spend is the safe direction | one edge-triggered notice ("reservation would exceed", actual-vs-reserved) | edge-trigger dedup; DISTINCT source; `dedupe-key` = `spend-cap:<keyRef>:<capKind>:<dayEpoch>` |
+| Cap hit (reservation would cross) | recoverable (protective) | none needed — blocking spend is the safe direction | one edge-triggered notice ("reservation would exceed", actual-vs-reserved) | edge-trigger dedup latched on CONFIRMED delivery (durable relay); DISTINCT money-critical lane; `dedupe-key` = `spend-cap:<keyRef>:<capKind>:<dayEpoch>` |
 | Approaching 50%/80% (daily AND lifetime) | recoverable | n/a informational | one edge-triggered notice per (capKind, threshold, window) | edge-trigger dedup; digest-coalesced |
 | Metered-lease holder dead | critical (money frozen) | the freeze itself IS the safe state; recovery = operator PIN reclaim | mesh-death threshold confirmed; emitted by a SURVIVING machine (named single-voice exception) | ONE per episode, stable pool-wide id `spend-holder-dead:<keyEpoch>`; never per-heartbeat |
 | Provider-reconciliation drift (Layer 1c) | recoverable (informational) | n/a — observability of a booked-vs-reported gap; the fix is a human price promotion | one edge-triggered digest line above `driftAlertPct`; below it, jsonl-only (Near-Silent) | edge-trigger dedup; `dedupe-key` = `spend-recon-drift:<keyRef>:<door>:<driftBucket>`; shares the informational (non-money-critical) lane; NEVER moves the gate |
@@ -1143,11 +1300,18 @@ Loop).
   metadata-only scrub vs a poisoned provider error body; NULL-door uncosted composer;
   refresh-job-writes-observed-only; `cachedInPerMtok ≤ inPerMtok` lint;
   **provider-report PREFER-on-read (provider-reported cost wins; provider tokens
-  replace the estimate; append-only supersede by `(door,model,generationId,capturedAt)`);
-  reconciliation drift math (signed `driftPct`, LOWER-never-lowers-committed,
-  HIGHER→alert+promotion-hint) + the never-reaches-gate invariant (the gate read set
-  excludes the `provider_cost_report`/reconciliation store — twin of the
-  `feature_metrics` + subsidy/credit gate-exclusion tests)**.
+  replace the estimate; append-only supersede by `(meteredCallId, capturedAt)` — a
+  same-call `/generation` row supersedes the in-response row, two different calls
+  never cross-match); the per-door BILLED-token mapping at the settle (Gemini
+  candidates+thoughts; unconfirmable basis → worst-case); receive-time clamp
+  (NaN/Infinity/negative dropped as `invalid-provider-report`; poisoned provider body
+  through capture + render); reconciliation drift math (signed `driftPct`,
+  LOWER-never-lowers-committed, HIGHER→alert+promotion-hint) + the never-reaches-gate
+  invariant (the gate/settle read set excludes the `provider_cost_report`/
+  reconciliation store — twin of the `feature_metrics` + subsidy/credit
+  gate-exclusion tests — and the settle takes tokens ONLY from the in-hand response);
+  corrupt/stale/missing totals-checkpoint → full re-fold recovery (fail-closed while
+  folding)**.
 - **Integration** — routes 200 / 503 (dark) / 403 (Bearer-without-PIN); **Bearer
   `PATCH /config` can neither arm/unfreeze/raise NOR influence any gate-consumed price
   value** (S-F2 + A2-3 regression); a payload field absent from the rendered plan
@@ -1162,11 +1326,15 @@ Loop).
 - **Alerts — ONE dedicated topic (Amendment 2)** — every alert kind (cap /
   approaching / door-dark / fallback / price-drift / reconciliation-drift) delivers to
   the SAME resolved topic id via `sendToTopic`, NEVER `POST /attention` (asserted: no
-  per-item topic is created); idempotent find-or-create resolves an operator-configured
-  id without creating; auto-create makes EXACTLY ONE topic and a second first-alert
-  (concurrent + a simulated non-holder) creates NO second topic (single-flight +
-  holder-only guard); a deleted-topic re-create does not duplicate; money-critical
-  alerts fall back to the lifeline when the id is unresolvable.
+  per-item topic is created); the resolution LADDER resolves an operator-configured id
+  without creating, and inherits a pool-published id without creating; auto-create
+  makes EXACTLY ONE topic — a concurrent burst (single-flight), a non-serving-lease
+  machine, an unconfirmed lease, AND a post-handoff NEW serving-lease holder (which
+  must inherit the pool-published id) each create NO second topic; a deleted-topic
+  re-create does not duplicate; money-critical alerts ride the durable relay with
+  dedup latched on CONFIRMED delivery (a failed send stays eligible) and fall back to
+  the lifeline on unset/probe-failed/exhausted; a `telegramTopicId` repoint posts the
+  audible confirmation into old + new topics.
 - **E2E** — feature-alive through the production init path (`GET /routing-spend/summary`
   200 when enabled); PIN-gated write refused without PIN; fresh-single-machine no-op.
 - **Burst-invariant** — the `SpendAlert` dispatcher's own dedup/coalescing under burst,
@@ -1175,9 +1343,10 @@ Loop).
 
 ## Migration parity & Agent Awareness (I-3 / I-4)
 
-- **Schema:** `door` rides `ensureAddedColumns()` (every DB open); the type + writer +
-  INSERT all gain `door`. `spend_token_rollup` is created idempotently at open;
-  boot-reconcile backfills it.
+- **Schema:** `door` AND `callId` (the `meteredCallId` join key — FD-21) ride
+  `ensureAddedColumns()` (every DB open); the type + writer + INSERT all gain both.
+  `spend_token_rollup` and the `provider_cost_report` + reconciliation tables are
+  created idempotently at open; boot-reconcile backfills the rollup.
 - **Config:** `migrateConfigRoutingSpendDark` (mirroring `migrateConfigNatureRoutingDark`,
   `PostUpdateMigrator.ts:440`) with existence checks, or `?? default` reads
   everywhere. The retention/prune edit point is `AgentServer.ts:1113`.
@@ -1248,42 +1417,62 @@ math is unchanged.
   unbounded — the fold-on-boot reads the current day + the totals checkpoint, not
   all history; and the build phase includes a short failure-injection comparison
   (torn append / torn rename / stale lock, JSONL-vs-SQLite-WAL) as a documented
-  design proof rather than an assertion.
+  design proof rather than an assertion. **Checkpoint ≠ authority across rotation
+  (the lifetime-cap corollary of C4-2):** with rotation, the LIFETIME total's fast
+  path necessarily reads the checkpoint for pre-rotation history — so the checkpoint
+  must be VERIFIABLE, not trusted: it records, per folded segment (day-file/archive),
+  that segment's row-count + last-row high-water marker; a checkpoint that is
+  missing, unparseable, or disagrees with any on-disk segment's markers triggers a
+  FULL re-fold from all retained segments (which remain the complete rebuild source
+  and are never pruned below the lifetime-cap accounting horizon), and the gate fails
+  CLOSED for the key until the re-fold lands. Unit tests cover corrupt/stale/missing
+  checkpoint → full-fold recovery.
 
 ## Increment split (FD-style — what ships when, and behind what gate)
 
 - **Increment A — Read-only spend VIEW (dev-agent ENABLED, dark on fleet; no money
   authority).** Layer 0 `door` column; Layer 1 canonical manifest + observed cache +
   index + as-of join + validation + freshness; Layer 1b reporting subsidy/credit +
-  overlay; **Layer 1c the `provider_cost_report` store + capture seam + PREFER-on-read
-  `costBasis` (empty until real metered dispatch lands — display notes + the honest
-  no-provider-data state ship now)**; Layer 2 daily token rollup + on-read pricing +
+  overlay; **Layer 1c as SCHEMA + DISPLAY + INTERFACE CONTRACT: the
+  `provider_cost_report` store, the PREFER-on-read `costBasis`, and the capture seam
+  declared as an explicit interface (stamped `meteredCallId` + per-door capture
+  fields) exercised by STUB-ONLY tests — the LIVE capture wiring lands with the
+  out-of-scope metered dispatch itself (exactly like `door` attribution, FD-11), so A
+  ships honestly empty provider data (display notes + the no-provider-data state),
+  never a claimed-but-unwired capture**; Layer 2 daily token rollup + on-read pricing +
   boot reconcile + `GET /routing-spend/summary` + `GET /routing-spend/caps` (read); the
   Spend tab; the refresh job (OFF). Via `resolveDevAgentGate` on `routingSpend.enabled`;
   routes 503 when off. Honest `$0` / `not-live-yet`. Reversible by revert; persistent
-  state is additive/regenerable.
+  state is additive (and regenerable except the `provider_cost_report` store — which
+  is empty in A and retention-governed thereafter).
 - **Increment B — Money authority, SINGLE-WRITER (`DARK_GATE_EXCLUSIONS`,
   PIN-gated).** `MeteredSpendLedger` + the O(1) fail-closed gate (stub-testable
   against a fake metered dispatch until A2.2 + providers land — FD-11); whole-cap
   single-machine (FD-20); PIN routes + rendered-plan commit + phone-complete controls +
   the durable PIN-attempt counter + the cap-change audit log + the PIN-only state
   store; the stale-price + observed-drift alerts (C5-5 — they change money admission,
-  so they ship with the money, riding the dedicated alerts topic + the lifeline
-  fallback directly); **the authoritative booked-vs-provider-reported reconciliation
-  sweep (Layer 1c) — this is the per-call, faster form of FD-11's booked-vs-billed
-  invoice-drift REPORTING, observability-only, never gate authority**. Go-live
-  additionally requires FD-11's release gate (live wiring proof + holder-death drill +
-  invoice/provider-report drift reporting). Inert until the operator arms a door.
+  so they ship with the money) **together with the MINIMAL dedicated-topic resolver
+  foundation they deliver through** (the §Surface 2 resolution ladder + duplicate
+  guard + durable money-critical delivery + lifeline fallback — B is the first
+  alert-emitting increment, so the foundation ships here, keeping "B never depends on
+  C" true); **the authoritative provider-reconciliation sweep (Layer 1c,
+  booked-vs-provider-reported) — the per-call, faster form of FD-11's
+  booked-vs-billed invoice-drift REPORTING, observability-only, never gate
+  authority**. Go-live additionally requires
+  FD-11's release gate (live wiring proof + holder-death drill + invoice/
+  provider-report drift reporting). Inert until the operator arms a door.
 - **Increment C — Alerts to ONE dedicated topic (dryRun-first live-on-dev).**
   `AlertChannel` + `TelegramSpendTopicChannel` delivering ALL alert kinds (cap /
   approaching / door-dark / fallback / price-drift / provider-reconciliation-drift)
-  into the single **"💰 Routing & Spend Alerts"** topic via `sendToTopic` — idempotent
-  find-or-create from a durable persisted id (operator-configured id wins; else a
-  bounded create-once system topic), holder-only creation + single-flight duplicate
-  guard, NOT `POST /attention`; the emitters + Self-Heal gates + lifeline fallback +
-  the surviving-voice holder-dead alert; the fan-out + scrubbed sink; dispatcher-level
-  dedup/coalescing. Inert until nature-routing observation is enabled (I-9). Slack is a
-  later config-add (`SlackSpendChannel` registry entry).
+  into the single **"💰 Routing & Spend Alerts"** topic via `sendToTopic`, EXTENDING
+  the resolver foundation Increment B ships (the resolution ladder — operator id →
+  pool-published record → serving-lease-holder create-once — + duplicate guard +
+  durable money-critical delivery; on an agent with no Increment B the same
+  foundation code ships with C itself, so C-without-B remains fully independent),
+  NOT `POST /attention`; the emitters + Self-Heal gates + lifeline fallback + the
+  surviving-voice holder-dead alert; the fan-out + scrubbed sink; dispatcher-level
+  dedup/coalescing. Inert until nature-routing observation is enabled (I-9). Slack is
+  a later config-add (`SlackSpendChannel` registry entry).
 - **Increment D — Multi-machine cap slicing (dark until built;
   `DARK_GATE_EXCLUSIONS`).** FD-10's cumulative-committed lease slicing; per-call
   epoch fencing at every gate; the operator-signed cross-machine arming mechanism;
