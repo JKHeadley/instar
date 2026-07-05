@@ -5674,6 +5674,17 @@ export interface MonitoringConfig {
     noticeWindowMs?: number;
   };
   /**
+   * Turn-End Self-Deferral Guard (Phase A / shadow; docs/specs/turn-end-self-
+   * deferral-guard.md §3.4, FD8). The UnjustifiedStopGate authority offers an
+   * allow-class U_SELF_DEFERRAL classification and RECORDS it as shadow
+   * telemetry — Phase A blocks NOTHING. `enabled` is OMITTED from ConfigDefaults
+   * so the developmentAgent dark-feature gate decides (LIVE on dev, DARK on the
+   * fleet). Registered in DEV_GATED_FEATURES.
+   */
+  selfDeferralGuard?: {
+    enabled?: boolean;
+  };
+  /**
    * StrandedTopicSentinel (stranded-inbound-self-heal) — a pure-signal detector
    * that surfaces a Telegram/Slack topic whose owner machine is online-by-
    * heartbeat but unable to serve (quota-walled or adapter-disconnected) while a

@@ -57,6 +57,27 @@ export interface EvalEvent {
   latencyMs: number;
   reasonPreview: string; // first ~200 chars of stop_reason
   agentId: string;
+  // ── Turn-End Self-Deferral Guard (Phase A / shadow) — all NULLABLE.
+  // Widened columns (spec docs/specs/turn-end-self-deferral-guard.md §3.4);
+  // populated ONLY when the dev-gated `monitoring.selfDeferralGuard` guard is on
+  // AND the authority emitted an allow-class U_SELF_DEFERRAL classification. No
+  // raw message/user-turn text is ever added here — structured fields only.
+  /** 1 = the turn-ending message hands the operator agent-ownable work; 0/null otherwise. */
+  selfDeferral?: number | null;
+  /** 'high' | 'medium' | 'low' — the classifier's confidence. */
+  confidence?: string | null;
+  /** 1 = the deferred work is something the agent could do within its own means. */
+  agentOwnable?: number | null;
+  /** 1 = the message ends the turn (vs a mid-turn continuation). */
+  turnEnding?: number | null;
+  /** The allow-class rule id the authority cited (e.g. U_SELF_DEFERRAL). */
+  allowClassRule?: string | null;
+  /** sha256 of the STABLE authority SYSTEM_PROMPT template (edit-detection). */
+  promptHash?: string | null;
+  /** 'autonomous' | 'non-autonomous' — derived from getHotPathState. */
+  surface?: string | null;
+  /** Count of user turns fed to the judge (0 = judged context-blind). */
+  contextTurns?: number | null;
 }
 
 export interface Annotation {
@@ -102,7 +123,15 @@ const SCHEMA = [
      invalid_kind          TEXT,
      evidence_pointer_json TEXT,
      latency_ms            INTEGER NOT NULL,
-     reason_preview        TEXT NOT NULL
+     reason_preview        TEXT NOT NULL,
+     self_deferral         INTEGER,
+     confidence            TEXT,
+     agent_ownable         INTEGER,
+     turn_ending           INTEGER,
+     allow_class_rule      TEXT,
+     prompt_hash           TEXT,
+     surface               TEXT,
+     context_turns         INTEGER
    )`,
   `CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, ts DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC)`,
@@ -126,10 +155,36 @@ const SCHEMA = [
      allow_count     INTEGER NOT NULL DEFAULT 0,
      escalate_count  INTEGER NOT NULL DEFAULT 0,
      failure_count   INTEGER NOT NULL DEFAULT 0,
+     self_deferral_count INTEGER NOT NULL DEFAULT 0,
      updated_at      INTEGER NOT NULL,
      PRIMARY KEY (agent_id, day_key)
    )`,
 ];
+
+// ── Turn-End Self-Deferral Guard (Phase A) — additive schema migration ─────
+//
+// StopGateDb historically had NO migration path: `CREATE TABLE IF NOT EXISTS`
+// is a NO-OP on an already-existing on-disk DB, so new columns would silently
+// never appear on a deployed agent (spec §3.4, FD7). We run an idempotent
+// post-CREATE migration: for each new column, `PRAGMA table_info` → `ALTER
+// TABLE ADD COLUMN` only if absent. Safe to run twice. Migration Parity
+// Standard obligation (existing agents gain the columns on update).
+const EVENTS_MIGRATION_COLUMNS: ReadonlyArray<readonly [string, string]> = [
+  ['self_deferral', 'INTEGER'],
+  ['confidence', 'TEXT'],
+  ['agent_ownable', 'INTEGER'],
+  ['turn_ending', 'INTEGER'],
+  ['allow_class_rule', 'TEXT'],
+  ['prompt_hash', 'TEXT'],
+  ['surface', 'TEXT'],
+  ['context_turns', 'INTEGER'],
+];
+
+// Age-based retention: prune `events` rows older than this many days. There is
+// NO other bound on the events table (it grows one row per turn-end forever, and
+// FD2 — the judge on every surface incl. long autonomous runs — is the highest-
+// volume writer). Run cheaply on init (spec §3.4, FD7).
+const RETENTION_DAYS = 30;
 
 // ── StopGateDb class ──────────────────────────────────────────────────
 
@@ -168,6 +223,8 @@ export class StopGateDb {
     this.db.pragma('foreign_keys = ON');
 
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    this.migrateSchema();
+    this.pruneOldEvents();
     this.prepareStatements();
     // Close-on-exit registry — see SqliteRegistry.ts. Registered AFTER the db is
     // fully open so closeAllSqlite() never targets a half-constructed handle.
@@ -179,15 +236,57 @@ export class StopGateDb {
   private _unregisterSqlite?: () => void;
   private _closed = false;
 
+  /**
+   * Idempotent additive migration for the Phase-A self-deferral columns.
+   * `CREATE TABLE IF NOT EXISTS` does NOT add columns to an existing table, so
+   * we PRAGMA-check + ALTER each missing column. Safe to run twice.
+   */
+  private migrateSchema(): void {
+    const columnExists = (table: string, col: string): boolean => {
+      const rows = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some(r => r.name === col);
+    };
+    for (const [col, type] of EVENTS_MIGRATION_COLUMNS) {
+      if (!columnExists('events', col)) {
+        this.db.exec(`ALTER TABLE events ADD COLUMN ${col} ${type}`);
+      }
+    }
+    if (!columnExists('agent_eval_aggregate', 'self_deferral_count')) {
+      this.db.exec('ALTER TABLE agent_eval_aggregate ADD COLUMN self_deferral_count INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  /**
+   * Delete `events` rows older than `maxAgeDays` days. Cheap age-based
+   * retention (spec §3.4) — the only bound on the otherwise unbounded events
+   * table. Called on init; also invokable directly. Never throws (retention is
+   * best-effort; a failure must not block the gate).
+   */
+  pruneOldEvents(maxAgeDays = RETENTION_DAYS, now = Date.now()): number {
+    try {
+      const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000;
+      const info = this.db.prepare('DELETE FROM events WHERE ts < ?').run(cutoff);
+      return Number(info.changes) || 0;
+    } catch {
+      // @silent-fallback-ok: retention is best-effort (spec §3.4) — a prune failure (locked db,
+      // transient IO) must NEVER block the stop-gate; the rows are simply pruned on a later call.
+      return 0;
+    }
+  }
+
   private prepareStatements(): void {
     this.stmts = {
       insertEvent: this.db.prepare(`
         INSERT OR REPLACE INTO events
           (event_id, session_id, agent_id, ts, mode, decision, rule,
-           invalid_kind, evidence_pointer_json, latency_ms, reason_preview)
+           invalid_kind, evidence_pointer_json, latency_ms, reason_preview,
+           self_deferral, confidence, agent_ownable, turn_ending,
+           allow_class_rule, prompt_hash, surface, context_turns)
         VALUES
           (@eventId, @sessionId, @agentId, @ts, @mode, @decision, @rule,
-           @invalidKind, @evidencePointerJson, @latencyMs, @reasonPreview)
+           @invalidKind, @evidencePointerJson, @latencyMs, @reasonPreview,
+           @selfDeferral, @confidence, @agentOwnable, @turnEnding,
+           @allowClassRule, @promptHash, @surface, @contextTurns)
       `),
       insertAnnotation: this.db.prepare(`
         INSERT INTO annotations
@@ -234,10 +333,10 @@ export class StopGateDb {
       upsertAggregate: this.db.prepare(`
         INSERT INTO agent_eval_aggregate
           (agent_id, day_key, triggered_count, shadow_count, continue_count,
-           allow_count, escalate_count, failure_count, updated_at)
+           allow_count, escalate_count, failure_count, self_deferral_count, updated_at)
         VALUES
           (@agentId, @dayKey, @triggeredCount, @shadowCount, @continueCount,
-           @allowCount, @escalateCount, @failureCount, @updatedAt)
+           @allowCount, @escalateCount, @failureCount, @selfDeferralCount, @updatedAt)
         ON CONFLICT(agent_id, day_key) DO UPDATE SET
           triggered_count = triggered_count + excluded.triggered_count,
           shadow_count    = shadow_count + excluded.shadow_count,
@@ -245,6 +344,7 @@ export class StopGateDb {
           allow_count     = allow_count + excluded.allow_count,
           escalate_count  = escalate_count + excluded.escalate_count,
           failure_count   = failure_count + excluded.failure_count,
+          self_deferral_count = self_deferral_count + excluded.self_deferral_count,
           updated_at      = excluded.updated_at
       `),
       aggregateFor: this.db.prepare(
@@ -266,6 +366,18 @@ export class StopGateDb {
       evidencePointerJson: event.evidencePointerJson,
       latencyMs: event.latencyMs,
       reasonPreview: event.reasonPreview,
+      // Phase-A self-deferral columns — NULL unless the guard is on + the
+      // authority emitted the classification. `?? null` keeps every existing
+      // caller (force_allow, fail-open) valid without a change (better-sqlite3
+      // requires every named param present).
+      selfDeferral: event.selfDeferral ?? null,
+      confidence: event.confidence ?? null,
+      agentOwnable: event.agentOwnable ?? null,
+      turnEnding: event.turnEnding ?? null,
+      allowClassRule: event.allowClassRule ?? null,
+      promptHash: event.promptHash ?? null,
+      surface: event.surface ?? null,
+      contextTurns: event.contextTurns ?? null,
     });
   }
 
@@ -338,6 +450,7 @@ export class StopGateDb {
     allowDelta?: number;
     escalateDelta?: number;
     failureDelta?: number;
+    selfDeferralDelta?: number;
   }): void {
     this.stmts.upsertAggregate.run({
       agentId: opts.agentId,
@@ -348,6 +461,7 @@ export class StopGateDb {
       allowCount: opts.allowDelta ?? 0,
       escalateCount: opts.escalateDelta ?? 0,
       failureCount: opts.failureDelta ?? 0,
+      selfDeferralCount: opts.selfDeferralDelta ?? 0,
       updatedAt: Date.now(),
     });
   }
@@ -362,6 +476,7 @@ export class StopGateDb {
     allowCount: number;
     escalateCount: number;
     failureCount: number;
+    selfDeferralCount: number;
   } | null {
     const row = this.stmts.aggregateFor.get(agentId, dayKey) as Record<string, unknown> | undefined;
     if (!row) return null;
@@ -372,6 +487,7 @@ export class StopGateDb {
       allowCount: Number(row.allow_count),
       escalateCount: Number(row.escalate_count),
       failureCount: Number(row.failure_count),
+      selfDeferralCount: Number(row.self_deferral_count ?? 0),
     };
   }
 
@@ -400,6 +516,14 @@ function toEvalEvent(row: Record<string, unknown>): EvalEvent {
     evidencePointerJson: (row.evidence_pointer_json ?? null) as string | null,
     latencyMs: Number(row.latency_ms),
     reasonPreview: String(row.reason_preview),
+    selfDeferral: (row.self_deferral ?? null) as number | null,
+    confidence: (row.confidence ?? null) as string | null,
+    agentOwnable: (row.agent_ownable ?? null) as number | null,
+    turnEnding: (row.turn_ending ?? null) as number | null,
+    allowClassRule: (row.allow_class_rule ?? null) as string | null,
+    promptHash: (row.prompt_hash ?? null) as string | null,
+    surface: (row.surface ?? null) as string | null,
+    contextTurns: (row.context_turns ?? null) as number | null,
   };
 }
 

@@ -375,6 +375,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       noticeBudgetPerWindow: 4,
       noticeWindowMs: 600_000,
     },
+    // Turn-End Self-Deferral Guard (Phase A / shadow; docs/specs/turn-end-self-
+    // deferral-guard.md): the UnjustifiedStopGate authority OFFERS an allow-class
+    // U_SELF_DEFERRAL classification on every turn-end and RECORDS it as shadow
+    // telemetry (widened StopGateDb columns). Phase A blocks NOTHING. `enabled`
+    // is OMITTED so the runtime resolves it through the developmentAgent dark-
+    // feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet.
+    // OFF-state = the base stop-gate runs unchanged, no U_SELF_DEFERRAL rule in
+    // the prompt, no self-deferral columns recorded. Registered in
+    // DEV_GATED_FEATURES. Empty block = the gate decides at runtime.
+    selfDeferralGuard: {},
     // Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be
     // Clean", docs/specs/durable-output-hygiene-standard.md): the config-gated
     // DurableOutputScrubber redacts credential SPANS from LLM output at durable-

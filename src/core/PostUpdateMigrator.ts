@@ -350,6 +350,28 @@ export function migrateConfigExternalHogSentinelDevGate(config: Record<string, u
 }
 
 /**
+ * The Turn-End Self-Deferral Guard (Phase A; docs/specs/turn-end-self-deferral-guard.md
+ * §3.4/FD8) is a developmentAgent dark feature: `monitoring.selfDeferralGuard.enabled`
+ * is OMITTED from ConfigDefaults so resolveDevAgentGate resolves it (LIVE on a dev
+ * agent, DARK on the fleet). The empty block arrives via applyDefaults add-missing.
+ * An existing agent that somehow carries a default-shaped literal `enabled: false`
+ * would force-dark even a dev agent (the #1001 mechanism) — strip it so the gate
+ * resolves. An explicit `true` (an operator fleet-flip) is PRESERVED. Idempotent +
+ * existence-checked; never writes `enabled`.
+ */
+export function migrateConfigSelfDeferralGuardDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const sd = monitoring.selfDeferralGuard as Record<string, unknown> | undefined;
+  if (!sd || typeof sd !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(sd, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (sd.enabled !== false) return false;
+  delete sd.enabled;
+  return true;
+}
+
+/**
  * Durable conversation identity (durable-conversation-identity §9):
  * `conversationIdentity.followThrough` is a developmentAgent dark feature —
  * `enabled` must be OMITTED so resolveDevAgentGate resolves it (live-on-dev,
@@ -9042,6 +9064,16 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.skipped.push('config.json: monitoring.externalHogSentinel.enabled dev-gate already correct (omitted or operator-set)');
     }
 
+    // Turn-End Self-Deferral Guard (Phase A) dev-gate: strip a default-shaped
+    // enabled:false so it resolves live-on-dev (observe-only) / dark-fleet. The
+    // empty selfDeferralGuard block arrives via applyDefaults add-missing.
+    if (migrateConfigSelfDeferralGuardDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.selfDeferralGuard.enabled=false so the developmentAgent gate resolves it (live-on-dev observe-only, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.selfDeferralGuard.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
     // Durable conversation identity (durable-conversation-identity §9): the
     // followThrough delivery gate is dev-gated — strip a default-shaped
     // enabled:false so it resolves live-on-dev / dark-fleet. recording.enabled
@@ -14044,6 +14076,71 @@ if (!reviewEnabled) {
     };
   }
 
+  // ── Turn-End Self-Deferral Guard (Phase A / shadow) — bounded, fail-open
+  // reverse tail-read of the transcript for the last <=3 user turns. Faithful
+  // plain-JS port of src/core/stopGateTranscriptTail.ts (a deployed hook cannot
+  // import project modules at runtime). Spec: turn-end-self-deferral-guard.md
+  // §3.2(b)/(b-bis). NEVER throws, never delays turn-end: any missing/unreadable/
+  // malformed/oversize transcript -> [] (contextTurns:0, judged context-blind).
+  function extractUserProse(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    if (entry.type !== 'user') return '';
+    const message = entry.message;
+    if (!message || typeof message !== 'object') return '';
+    const content = message.content;
+    if (typeof content === 'string') return content.trim();
+    if (Array.isArray(content)) {
+      const parts = [];
+      for (let j = 0; j < content.length; j++) {
+        const b = content[j];
+        // Only text blocks carry user prose; tool_result blocks are skipped.
+        if (b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
+      }
+      return parts.join('\\n').trim();
+    }
+    return '';
+  }
+
+  function readRecentUserTurns(transcriptPath) {
+    const MAX_TURNS = 3;
+    const MAX_BYTES = 256 * 1024;
+    const PER_TURN_CHARS = 2000;
+    try {
+      if (!transcriptPath || typeof transcriptPath !== 'string') return [];
+      const stat = fs.statSync(transcriptPath);
+      const size = stat.size;
+      if (!size) return [];
+      const readBytes = Math.min(size, MAX_BYTES);
+      const fd = fs.openSync(transcriptPath, 'r');
+      let text;
+      try {
+        const buf = Buffer.alloc(readBytes);
+        fs.readSync(fd, buf, 0, readBytes, size - readBytes);
+        text = buf.toString('utf-8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      if (readBytes < size) {
+        const nl = text.indexOf('\\n');
+        if (nl !== -1) text = text.slice(nl + 1);
+      }
+      const lines = text.split(/\\r?\\n/).filter(Boolean);
+      const turns = [];
+      for (let i = lines.length - 1; i >= 0 && turns.length < MAX_TURNS; i--) {
+        let entry;
+        try { entry = JSON.parse(lines[i]); } catch { continue; }
+        let prose = extractUserProse(entry);
+        if (!prose) continue;
+        if (prose.length > PER_TURN_CHARS) prose = prose.slice(0, PER_TURN_CHARS);
+        turns.push({ source: 'user', text: prose });
+      }
+      turns.reverse();
+      return turns;
+    } catch {
+      return [];
+    }
+  }
+
   function exitOpen() {
     process.exit(0);
   }
@@ -14164,12 +14261,22 @@ if (!reviewEnabled) {
       sessionStartTs: hot.sessionStartTs || null,
     };
 
+    // Turn-End Self-Deferral Guard context: prepend the last <=3 user turns
+    // (chronological) before the agent's final message. Bounded + fail-open —
+    // an empty array (contextTurns:0) on any transcript problem, never a throw.
+    // GATED on hot.selfDeferralGuardOn (the dev-gate): when the guard is OFF we
+    // do NOT read the transcript at all (no wasted work) AND send no user turns,
+    // so the drift-death classifier's input is unchanged. (The authority also
+    // strips user turns when the guard is off — this avoids the wasted read.)
+    const userTurns = (hot && hot.selfDeferralGuardOn) ? readRecentUserTurns(input.transcript_path) : [];
+    const recentTurns = userTurns.concat(message ? [{ source: 'agent', text: message }] : []);
+
     const result = await postJson('/internal/stop-gate/evaluate', {
       sessionId: sessionId,
       evidenceMetadata: evidenceMetadata,
       untrustedContent: {
         stopReason: stopReason,
-        recentTurns: message ? [{ source: 'agent', text: message }] : [],
+        recentTurns: recentTurns,
       },
     }, 2500);
 

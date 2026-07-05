@@ -16054,7 +16054,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (sharedIntelligence && stopGateDb) {
         try {
           const { UnjustifiedStopGate } = await import('../core/UnjustifiedStopGate.js');
-          unjustifiedStopGate = new UnjustifiedStopGate({ intelligence: sharedIntelligence });
+          const { resolveDevAgentGate } = await import('../core/devAgentGate.js');
+          // Turn-End Self-Deferral Guard (Phase A / shadow) — dev-gated dark:
+          // `monitoring.selfDeferralGuard` OMITS `enabled` so resolveDevAgentGate
+          // decides (LIVE on a dev agent, DARK on the fleet). When on, the
+          // authority OFFERS the U_SELF_DEFERRAL rule + its four shadow fields.
+          const selfDeferralGuardEnabled = resolveDevAgentGate(
+            (config.monitoring?.selfDeferralGuard as { enabled?: boolean } | undefined)?.enabled,
+            config,
+          );
+          unjustifiedStopGate = new UnjustifiedStopGate({
+            intelligence: sharedIntelligence,
+            selfDeferralGuardEnabled,
+          });
         } catch (err) {
           DegradationReporter.getInstance().report({
             feature: 'unjustifiedStopGate.authority',

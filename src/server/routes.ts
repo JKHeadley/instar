@@ -3105,6 +3105,13 @@ export function createRoutes(ctx: RouteContext): Router {
       topicId: resolveTopicForStopGate(sessionId),
       stateRoot: path.dirname(ctx.config.stateDir),
     });
+    // Turn-End Self-Deferral Guard (Phase A) — resolve the dev-gate the SAME way
+    // the evaluate route does, and surface it so the hook only reads the
+    // transcript (for user-turn context) when the guard is actually on.
+    state.selfDeferralGuardOn = resolveDevAgentGate(
+      (ctx.config.monitoring?.selfDeferralGuard as { enabled?: boolean } | undefined)?.enabled,
+      ctx.config,
+    );
     // green-pr-automerge Layer 2: compute greenPrBlock LAZILY — only when the
     // watcher has snapshot candidates (the common zero-candidate stop costs
     // nothing). Branch resolution reads .git/HEAD (fail-open).
@@ -3205,6 +3212,52 @@ export function createRoutes(ctx: RouteContext): Router {
       topicId: resolveTopicForStopGate(sessionId),
       stateRoot: path.dirname(ctx.config.stateDir),
     }).autonomousActive;
+
+    // Turn-End Self-Deferral Guard (Phase A / shadow). Dev-gated dark:
+    // `monitoring.selfDeferralGuard` OMITS `enabled` so resolveDevAgentGate
+    // decides (LIVE on a dev agent, DARK on the fleet). When OFF the base
+    // stop-gate still runs but no self-deferral columns are recorded (FD8).
+    const selfDeferralGuardOn = resolveDevAgentGate(
+      (ctx.config.monitoring?.selfDeferralGuard as { enabled?: boolean } | undefined)?.enabled,
+      ctx.config,
+    );
+    // Count of user turns fed to the judge (0 = judged context-blind). Derived
+    // from the transcript-parsed recentTurns the hook sends (§3.4 contextTurns).
+    // Server-side clamp (defense-in-depth) — a direct authed caller must not be
+    // able to send an oversized recentTurns. Bound to the SAME K/char limits the
+    // hook uses BEFORE it reaches the authority: at most K=3 USER turns (the
+    // hook's context depth) and each entry's text ≤2000 chars, with a hard total
+    // ceiling so agent-turn spam can't blow up the prompt either. Applied in
+    // place so both the authority call and the contextTurns count see the clamp.
+    // (User turns are kept newest-first-preserving order; the historical single
+    // agent turn is preserved.)
+    const RECENT_USER_TURNS_MAX = 3;
+    const RECENT_TURNS_TOTAL_MAX = 8;
+    const RECENT_TURN_CHARS = 2000;
+    if (Array.isArray(body.untrustedContent.recentTurns)) {
+      let turns = body.untrustedContent.recentTurns;
+      // Drop all but the last K user turns; keep every non-user (agent) turn.
+      let userSeen = turns.filter(t => t && t.source === 'user').length;
+      const excessUser = Math.max(0, userSeen - RECENT_USER_TURNS_MAX);
+      if (excessUser > 0) {
+        let toDrop = excessUser;
+        turns = turns.filter(t => {
+          if (toDrop > 0 && t && t.source === 'user') { toDrop--; return false; }
+          return true;
+        });
+      }
+      if (turns.length > RECENT_TURNS_TOTAL_MAX) turns = turns.slice(-RECENT_TURNS_TOTAL_MAX);
+      turns = turns.map(t =>
+        t && typeof t.text === 'string' && t.text.length > RECENT_TURN_CHARS
+          ? { ...t, text: t.text.slice(0, RECENT_TURN_CHARS) }
+          : t,
+      );
+      body.untrustedContent.recentTurns = turns;
+    }
+    const contextTurns = Array.isArray(body.untrustedContent.recentTurns)
+      ? body.untrustedContent.recentTurns.filter(t => t && t.source === 'user').length
+      : 0;
+    const surface = autonomousActive ? 'autonomous' : 'non-autonomous';
 
     // Kill-switch or mode=off: short-circuit to allow, no authority
     // call, no event logged (caller already knows not to call us here,
@@ -3354,6 +3407,21 @@ export function createRoutes(ctx: RouteContext): Router {
       }
 
       const reminder = r.decision === 'continue' ? assembleReminder(r.rule, r.evidencePointer) : '';
+      // Turn-End Self-Deferral Guard (Phase A) — widen the row with the shadow
+      // classification, ONLY when the dev-gated guard is on (FD8). No raw
+      // message/user-turn text is added (§3.4 S4) — structured fields only.
+      const selfDeferralColumns = selfDeferralGuardOn
+        ? {
+            selfDeferral: r.selfDeferral === undefined ? null : r.selfDeferral ? 1 : 0,
+            confidence: r.confidence ?? null,
+            agentOwnable: r.deferredWorkIsAgentOwnable === undefined ? null : r.deferredWorkIsAgentOwnable ? 1 : 0,
+            turnEnding: r.turnEnding === undefined ? null : r.turnEnding ? 1 : 0,
+            allowClassRule: r.decision === 'allow' ? r.rule : null,
+            promptHash: r.promptHash ?? null,
+            surface,
+            contextTurns,
+          }
+        : {};
       if (db) {
         db.recordEvent({
           eventId,
@@ -3367,6 +3435,7 @@ export function createRoutes(ctx: RouteContext): Router {
           evidencePointerJson: JSON.stringify(r.evidencePointer),
           latencyMs: r.latencyMs,
           reasonPreview,
+          ...selfDeferralColumns,
         });
         db.rollupAggregate({
           agentId,
@@ -3376,6 +3445,7 @@ export function createRoutes(ctx: RouteContext): Router {
           continueDelta: r.decision === 'continue' ? 1 : 0,
           allowDelta: r.decision === 'allow' ? 1 : 0,
           escalateDelta: r.decision === 'escalate' ? 1 : 0,
+          selfDeferralDelta: selfDeferralGuardOn && r.selfDeferral === true ? 1 : 0,
         });
       }
       res.json({

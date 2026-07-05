@@ -370,6 +370,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Ships dryRun:true (the dry-run canary): on a dev agent the evidence pass, probes, decision trace (logs/stale-owner-release.jsonl) and GET /pool/stale-owner-release all run LIVE, but the engine logs would-claims and NEVER lands a force-claim CAS while dryRun holds — zero authority moves; graduation past dry-run is gated on the spec §5 quantified soak (≥5 operator-corroborated would-claims, zero wrong) PLUS the emission-fence + observer-staleness prerequisites. Additionally subordinate to multiMachine.sessionPool being live AND ≥2 registered machines (strict no-op otherwise). Probes are read-only authenticated handshakes to the operator\'s OWN machines — no external egress, no spend, no destructive action while the canary holds. Same dogfooding posture as topicProfiles / credentialRepointing.',
   },
   {
+    name: 'selfDeferralGuard',
+    configPath: 'monitoring.selfDeferralGuard.enabled',
+    description:
+      'Turn-End Self-Deferral Guard (Phase A / shadow; docs/specs/turn-end-self-deferral-guard.md) — the UnjustifiedStopGate authority offers an allow-class U_SELF_DEFERRAL classification on every turn-end (B17 "within your own means") and RECORDS it as shadow telemetry in widened StopGateDb columns, with the last ≤3 user turns as bounded, fail-open conversational context.',
+    justification:
+      'OBSERVE-ONLY by construction — Phase A blocks NOTHING (no continue, no exit 2, no block path; §3.2 makes U_SELF_DEFERRAL an ALLOW-class verdict that can never produce a block, and §3.5 leaves the router block gate untouched). The `enabled` gate only switches whether the authority OFFERS the rule + four output fields in its prompt and whether the route records the self-deferral columns; OFF = the base stop-gate runs byte-identical (no U_SELF_DEFERRAL in the prompt, no columns recorded). ZERO new LLM calls (one added allow-rule label + four fields on the SINGLE existing evaluate() call), zero destructive action, zero egress. The transcript tail-read is bounded (reverse read, ≤256KB, ≤3 user turns, per-turn char clamp) and fail-open (any missing/unreadable/malformed transcript → empty context, contextTurns:0, never throws, never delays turn-end). Same dogfooding posture as topicProfiles.',
+  },
+  {
     name: 'strandedTopicSentinel',
     configPath: 'monitoring.strandedTopicSentinel.enabled',
     description:
