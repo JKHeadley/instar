@@ -1202,6 +1202,11 @@ export interface RouteContext {
    *  Null/absent while the working-set layer is dark (rides the explicit
    *  replication gate). */
   workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator | null;
+  /** Seamless LLM orchestrator poller (llm-seamlessness-orchestrator.md §Component3).
+   *  Backs POST /intelligence/seamless-orchestrator/tick (a manual soak tick) + GET
+   *  /intelligence/seamless-orchestrator/audit. Null/absent while the orchestrator is
+   *  dark (the dev-agent gate resolves it off on the fleet). */
+  orchestratorPoller?: import('../monitoring/OrchestratorPoller.js').OrchestratorPoller | null;
   /** Interactive working-set artifact manager (intelligent-working-set-lazy-sync
    *  §Component5) — backs POST /coherence/working-set/record (the built-in
    *  PostToolUse Write/Edit recorder hook) + GET /coherence/working-set. This is
@@ -9930,7 +9935,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── Per-component framework routing (docs/specs/per-component-framework-routing.md) ──
   // Read-only: what framework each known component resolves to right now (live config),
   // whether that framework is available, and the per-framework breaker isolation. 503
-  // when no IntelligenceRouter is wired (e.g. no LLM CLI available).
+  // ── Seamless LLM orchestrator (llm-seamlessness-orchestrator.md §Component3) ──
+  // POST tick = a manual soak tick (drives one poller.tick(); in dryRun it logs
+  // would-actuate + audits and actuates NOTHING). GET audit = the bounded tail of
+  // logs/orchestrator-actions.jsonl + the last-tick summary. Both 503 when the
+  // orchestrator is dark (dev-agent gate resolves it off on the fleet).
+  router.post('/intelligence/seamless-orchestrator/tick', async (_req, res) => {
+    if (!ctx.orchestratorPoller) { res.status(503).json({ error: 'seamless orchestrator not enabled' }); return; }
+    try {
+      const result = await ctx.orchestratorPoller.tick();
+      res.json({ ran: result !== null, tick: result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/intelligence/seamless-orchestrator/audit', (req, res) => {
+    if (!ctx.orchestratorPoller) { res.status(503).json({ error: 'seamless orchestrator not enabled' }); return; }
+    const rawLimit = parseInt(String(req.query.limit ?? '50'), 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 500) : 50;
+    let entries: unknown[] = [];
+    try {
+      const logPath = path.join(ctx.config.stateDir, '..', 'logs', 'orchestrator-actions.jsonl');
+      if (fs.existsSync(logPath)) {
+        const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+        entries = lines.slice(-limit).reverse().map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } });
+      }
+    } catch {
+      // @silent-fallback-ok — a missing/unreadable audit log yields an empty tail (read-only
+      // observability); the last-tick summary below is still returned. Never a hard error.
+      entries = [];
+    }
+    res.json({
+      entries,
+      lastTick: ctx.orchestratorPoller.getLastTick(),
+      lastTickAt: ctx.orchestratorPoller.getLastTickAt(),
+      breakerOpen: ctx.orchestratorPoller.isBreakerOpen(),
+    });
+  });
+
+  // Returns a 503 when no IntelligenceRouter is wired (e.g. no LLM CLI available).
   router.get('/intelligence/routing', (_req, res) => {
     const intel = ctx.intelligence;
     if (!intel || !(intel instanceof IntelligenceRouter)) {

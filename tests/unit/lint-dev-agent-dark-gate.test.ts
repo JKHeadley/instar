@@ -382,23 +382,25 @@ describe('lint-dev-agent-dark-gate', () => {
       '850': 'mentor.autonomousFix.enabled',
       '865': 'mentee.enabled',
       '925': 'prGate.classClosure.enabled',
-      '988': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '992': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '999': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1009': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1246': 'multiMachine.sessionPool.enabled',
-      // +18 lines below: #1367's moveIntent dev-gated sub-block was inserted under
-      // sessionPool (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS
-      // `enabled` (rides resolveDevAgentGate), adds no map row, and shifts the
-      // subsequent `enabled:` lines. Recomputed via attributeEnabledFalsePaths on
-      // the MERGED ConfigDefaults (hubIntent + moveIntent both present).
-      '1290': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1300': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1329': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1524': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1665': 'cartographer.freshnessSweep.enabled',
-      '1710': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1735': 'cartographer.subtreeNav.llmRerank.enabled',
+      // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
+      // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
+      // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
+      // adds no map row, and shifts every subsequent `enabled:` line by +21.
+      '1009': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1013': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1020': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1030': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1267': 'multiMachine.sessionPool.enabled',
+      // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
+      // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
+      // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
+      '1311': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1321': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1350': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1545': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1686': 'cartographer.freshnessSweep.enabled',
+      '1731': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1756': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

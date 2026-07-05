@@ -955,6 +955,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Seamless LLM Orchestrator (docs/specs/llm-seamlessness-orchestrator.md).
+    // A lease-gated tier-1 LLM loop for ANTICIPATORY working-set preload — PROPOSE-
+    // ONLY / SIGNAL-ONLY (it never moves a conversation; placement stays with the
+    // deterministic RebalancePlanner/PlacementExecutor). `enabled` is deliberately
+    // OMITTED — the dev-agent dark-feature gate (resolveDevAgentGate) resolves it:
+    // LIVE on a development agent, DARK on the fleet. `dryRun` ships TRUE (FD-7
+    // telemetry pattern): the loop logs would-actuate + audits, and actuates
+    // NOTHING, until a deliberate operator flip to dryRun:false. applyDefaults()
+    // deep-merges this under an existing multiMachine block WITHOUT clobbering an
+    // operator-set value (Migration Parity). Numeric knobs are range-validated at
+    // startup.
+    seamlessOrchestrator: {
+      dryRun: true,
+      cadenceMs: 900000,        // 15 min full cadence
+      idleCadenceMs: 1800000,   // 30 min while idle (no proposals)
+      maxProposalsPerTick: 3,   // F6 proposal cap
+      llmLiftThreshold: 0.15,   // F4 deterministic-first: skip the LLM on a clear winner
+      perTopicCooldownMs: 1800000, // 30 min per-topic cooldown between actuations
+      maxDailyCents: 100,       // F7 LLM daily spend cap (background lane)
+      prefetchWindowByteBudget: 33554432, // 32MB per-window auto-prefetch disk budget
+    },
     // Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §7).
     // `enabled` is deliberately OMITTED — the dev-agent dark-feature gate
     // (resolveDevAgentGate) resolves it: LIVE on a development agent, DARK on

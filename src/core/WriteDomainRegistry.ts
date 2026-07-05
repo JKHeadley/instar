@@ -270,6 +270,27 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   };
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/coherence/working-set/record', domain: 'machine-local', story: workingSetArtifactStory });
 
+  // ── Seamless orchestrator manual soak tick (llm-seamlessness-orchestrator.md §Component3) ──
+  // Machine-local by construction: POST /intelligence/seamless-orchestrator/tick drives THIS
+  // machine's lease-gated orchestrator pass once. In dryRun (the shipped default) it actuates
+  // NOTHING; its only durable writes are the append-only audit trail (logs/orchestrator-actions.jsonl)
+  // + placement-signal log — per-machine soak EVIDENCE, never converged across machines, fully
+  // rebuildable (the next tick regenerates them). The in-process oscillation-blacklist is machine-
+  // local memory; its WS2 cross-machine replication is a tracked P4-live follow-up. The audit logs
+  // live under the agent-home `logs/` dir (a sibling of .instar/), outside any git repo — never a
+  // git-synced/shared mesh path.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/intelligence/seamless-orchestrator/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: false,
+      note: 'the orchestrator audit + placement-signal logs are per-machine soak evidence under agent-home logs/ (outside git); the oscillation-blacklist is in-process memory (WS2 replication is a tracked P4-live follow-up); dryRun actuates nothing',
+    },
+  });
+
   // ── Review canary battery trigger (context-aware-outbound-review §D9.4b) ──
   // Machine-local by construction: the Bearer-gated soak trigger runs THIS
   // machine's review pipeline against booby-trapped fixtures. Its only writes

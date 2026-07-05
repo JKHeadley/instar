@@ -14457,6 +14457,121 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     void cartographerSweepPoller;
 
+    // ── Seamless LLM orchestrator (llm-seamlessness-orchestrator.md §Component3) ──
+    // A lease-gated tier-1 LLM loop for ANTICIPATORY working-set preload — PROPOSE-ONLY /
+    // SIGNAL-ONLY (it never moves a conversation; placement stays with the deterministic
+    // RebalancePlanner/PlacementExecutor). Modeled on the Cartographer sweep wiring above.
+    // Dev-gated DARK (resolveDevAgentGate) + dryRun-FIRST: on the fleet it is never
+    // constructed; on a dev agent it runs but actuates NOTHING (logs would-actuate + audits)
+    // until an operator flips seamlessOrchestrator.dryRun:false. Readers/deps are tick-time
+    // closures over the function-scoped lets (the first tick is cadenceMs out — long after
+    // boot assigns leaseCoordinatorRef / workingSet* — so the closures are safe).
+    let orchestratorPoller: import('../monitoring/OrchestratorPoller.js').OrchestratorPoller | null = null;
+    {
+      const soCfg = ((config.multiMachine as { seamlessOrchestrator?: Record<string, unknown> } | undefined)?.seamlessOrchestrator) ?? {};
+      const soEnabled = resolveDevAgentGate(soCfg.enabled as boolean | undefined, config);
+      if (soEnabled) {
+        try {
+          const soNum = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+          const { SeamlessOrchestratorEngine } = await import('../core/SeamlessOrchestratorEngine.js');
+          const { OrchestratorActuator } = await import('../core/OrchestratorActuator.js');
+          const { OrchestratorPoller } = await import('../monitoring/OrchestratorPoller.js');
+          const { OscillationBreaker } = await import('../core/OscillationBreaker.js');
+          const { ParallelActivityIndex: SOActivityIndex } = await import('../core/ParallelActivityIndex.js');
+          const soActivityIndex = new SOActivityIndex({ stateDir: config.stateDir });
+          const soBreaker = new OscillationBreaker({
+            oscillationWindowMs: soNum(soCfg.oscillationWindowMs, 3_600_000),
+            blacklistTtlMs: soNum(soCfg.blacklistTtlMs, 86_400_000),
+          });
+          const soDryRun = soCfg.dryRun !== false; // default true (dryRun-first)
+          const soAuditPath = path.join(config.stateDir, '..', 'logs', 'orchestrator-actions.jsonl');
+          const soSignalsPath = path.join(config.stateDir, '..', 'logs', 'orchestrator-placement-signals.jsonl');
+          const soWindowMs = soNum(soCfg.prefetchWindowMs, 3_600_000);
+          const soWindowBudget = soNum(soCfg.prefetchWindowByteBudget, 33_554_432);
+          let soWindowStart = Date.now();
+          const soWindowSpent = 0;
+          const soCooldowns = new Map<number, number>();
+          const engine = new SeamlessOrchestratorEngine({
+            reads: {
+              activeTopicsOnThisMachine: () => soActivityIndex.activities(Date.now()).map((a) => ({
+                topic: a.topicId, focus: a.focus ?? '', lastActivityMs: a.updatedAt ?? 0, running: a.running,
+              })),
+              workingSetRecords: (topic) => (workingSetArtifactManager?.getReadyRows(topic) ?? []).map((r) => ({
+                relPath: r.relPath, producerMachineId: r.producerMachineId, state: r.state,
+              })),
+            },
+            llmQueue: sharedLlmQueue,
+            holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+            pressure: () => ({ tier: sharedPressureTier() }),
+            lastActuatedAt: (topic) => soCooldowns.get(topic) ?? null,
+            isBlacklisted: (topic) => soBreaker.isBlacklisted(topic), // F6 oscillation breaker
+
+            config: {
+              maxProposalsPerTick: soNum(soCfg.maxProposalsPerTick, 3),
+              llmLiftThreshold: typeof soCfg.llmLiftThreshold === 'number' ? soCfg.llmLiftThreshold : 0.15,
+              perTopicCooldownMs: soNum(soCfg.perTopicCooldownMs, 1_800_000),
+              suspendPressureTiers: ['moderate', 'critical'],
+              dryRun: soDryRun,
+            },
+            log: (m) => console.log(pc.gray(m)),
+          });
+          const actuator = new OrchestratorActuator({
+            // Dark-first conservative placement reader: exercised ONLY for dryRun AUDIT rows
+            // (actuate() never fetches/moves while dryRun). Precise pin/provenance/episode
+            // sourcing (pool placement + stale-owner/lease-handback episode state) is the
+            // TRACKED prerequisite before any operator flip to dryRun:false (spec P4). [C3d gap]
+            revalidate: () => ({ pinned: false, recentlyUserMoved: false, inFailureEpisode: false }),
+            budgetRemainingBytes: () => {
+              const nowT = Date.now();
+              if (nowT - soWindowStart >= soWindowMs) { soWindowStart = nowT; }
+              return Math.max(0, soWindowBudget - soWindowSpent);
+            },
+            estimatedBytes: (p) => {
+              try { return fs.statSync(path.join(config.stateDir, p.detail)).size; }
+              catch { return 65_536; /* @silent-fallback-ok: an un-stat-able candidate uses a nominal estimate; the budget check is soak-only under dryRun. */ }
+            },
+            fetchWorkingSet: async (topic) => {
+              if (!workingSetPullCoordinator) return { ok: false, skipReason: 'coordinator-unwired' };
+              const o = await workingSetPullCoordinator.fetchWorkingSet(topic);
+              return { ok: o.scheduled === true, skipReason: o.skipReason };
+            },
+            recordPlacementSignal: (p) => {
+              try { fs.mkdirSync(path.dirname(soSignalsPath), { recursive: true }); fs.appendFileSync(soSignalsPath, JSON.stringify({ ts: new Date().toISOString(), topic: p.targetTopic, detail: p.detail }) + '\n'); }
+              catch { /* @silent-fallback-ok: best-effort placement-signal record; a write failure never blocks the loop (the planner re-reads on its own cadence). */ }
+            },
+            audit: (e) => {
+              try { fs.mkdirSync(path.dirname(soAuditPath), { recursive: true }); fs.appendFileSync(soAuditPath, JSON.stringify(e) + '\n'); }
+              catch { /* @silent-fallback-ok: best-effort audit append (read-only observability); a write failure never blocks actuation. */ }
+            },
+            now: () => new Date().toISOString(),
+            log: (m) => console.log(pc.gray(m)),
+            config: { dryRun: soDryRun },
+          });
+          orchestratorPoller = new OrchestratorPoller({
+            engine,
+            actuator,
+            cadenceMs: soNum(soCfg.cadenceMs, 900_000),
+            idleCadenceMs: soNum(soCfg.idleCadenceMs, 1_800_000),
+            recordActuated: (topic, nowT) => {
+              soCooldowns.set(topic, nowT);
+              // F6 oscillation breaker: record the actuation; a one-shot `true` = the topic just
+              // tripped the blacklist. In dryRun nothing actuates so this is inert; the deduped
+              // attention-item raise + WS2 blacklist replication ride the same P4-live prerequisite
+              // bundle as the revalidate-precision sourcing. [C4 tracked gap]
+              if (soBreaker.recordActuation(topic, nowT)) {
+                console.warn(`  Seamless orchestrator: topic ${topic} tripped the oscillation blacklist (suppressed).`);
+              }
+            },
+            log: (m) => console.log(pc.gray(m)),
+          });
+          orchestratorPoller.start();
+          console.log(pc.green(`  Seamless LLM orchestrator enabled (lease-gated, ${soDryRun ? 'dry-run' : 'LIVE'})`));
+        } catch (err) {
+          console.warn('  Seamless LLM orchestrator: construction failed —', err instanceof Error ? err.message : err);
+        }
+      }
+    }
+
     // Self-Knowledge Tree — tree-based agent self-knowledge with LLM triage
     let selfKnowledgeTree: SelfKnowledgeTree | undefined;
     let coverageAuditor: CoverageAuditor | undefined;
@@ -22035,7 +22150,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, workingSetArtifactManager, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
