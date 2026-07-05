@@ -1003,3 +1003,44 @@ export const NATURE_ROUTING_CRITICAL_GATES: ReadonlySet<string> = new Set([
   'ProjectDriftChecker',
   'MessageSentinel', // nature A, R2-critical
 ]);
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * S4 FD4.2 / FD5c — the R-rule STRUCTURAL-EXCLUSION component sets (R6, R8).
+ * Spec: docs/specs/nature-axis-routing.md FD5(c) §296-314.
+ *
+ * The R-rule lints split into two kinds. R3/R4/R5/R7 are POSITION bans over the
+ * authored chains (a banned door/model must never appear in a given chain) —
+ * they live as pure predicates in IntelligenceRouter.ts + the build-lint. R6/R8
+ * are COMPONENT-scoped structural pins — they guard the per-component maps
+ * (nature, injection-exposure) that live config can NEVER override, so they are
+ * BUILD-LINT-only (a source edit is the only way to break them, and the lint
+ * catches it). These two sets are the data those two lints assert over.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * R6 (spec §298-307, absolute) — doc-tree / cartographer components carry
+ * `claudeBanned`: NO chain position may route them to any `claude-code` door.
+ * Nature routing must NOT re-open the Claude route `CartographerSweepEngine.
+ * probeRouting()` already forbids (their authoring uses off-Claude doors only:
+ * codex → groq). This set is the structural pin: the FD4.2 R6 lint FAILS the
+ * build if any member is ever given a nature/chain whose positions include a
+ * `claude-code` door — so a future edit can't silently re-open the Claude route.
+ */
+export const NATURE_ROUTING_CLAUDE_BANNED_COMPONENTS: ReadonlySet<string> = new Set([
+  'CartographerSweep', // authors doc-tree summaries over untrusted CODE — Claude-banned (R6)
+]);
+
+/**
+ * R8 (spec §308-310) — the input-classifier-nature components. They are marked
+ * `injectionExposed` (so the FD5b injection gate skips any non-injection-safe
+ * door for them) AND pinned OFF the `gemini-api/flash-lite` position (Flash-Lite's
+ * one reproduced trap-fall is exactly the input-classifier slot). The FD4.2 R8
+ * lint asserts (a) each member is `exposed: true` in LLM_ROUTING_INJECTION_EXPOSURE,
+ * and (b) the `flash-lite` position is behind the metered gate (structurally
+ * unreachable in Increment A) — so no input-classifier can land on Flash-Lite.
+ */
+export const NATURE_ROUTING_INPUT_CLASSIFIER_COMPONENTS: ReadonlySet<string> = new Set([
+  'InputClassifier',
+  'MessageSentinel',
+  'TaskClassifier',
+]);

@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-05T19:55:37.761Z",
+  "slug": "nature-axis-routing-fd42-rrule-lints",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 387,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "FD4.2 planned increment of the S4 nature-axis routing feature; R8 unblocked by FD5b (#1393) landing the injection-exposure map."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
