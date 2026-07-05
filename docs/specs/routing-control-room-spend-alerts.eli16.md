@@ -75,11 +75,12 @@ so it doesn't leak onto other machines.
   can't do any of it, and it deliberately can't be done by quietly patching a config
   file either.
 - **Alerts** go to a dedicated Telegram topic when a cap is hit (or at 50% / 80% of the
-  daily AND lifetime cap), a door goes fully dark, or a fallback door had to step in.
+  daily AND lifetime cap), a door goes fully dark, or fallback usage suddenly spikes.
   It's built so Slack can be added later without redoing the alerts. Alerts are polite:
   a door that dies but is instantly covered by a backup doesn't cry wolf — you only hear
-  about a door when its whole backup chain is exhausted. And a money alert is never
-  dropped just because no topic was configured — it falls back to your lifeline.
+  about a door when its whole backup chain is exhausted, and routine "the backup stepped
+  in" churn is just logged, never pinged. And a money alert is never dropped just
+  because no topic was configured — it falls back to your lifeline.
 
 ## Multi-machine safety
 
