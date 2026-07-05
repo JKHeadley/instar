@@ -319,10 +319,14 @@ ever reaches Layer 3** (G3 + S-F1 reconciled). A subsidy/credit can only make th
   path (a merge of one). This keeps pool-wide `netUsd` consistent and explained; if
   the serving machine lacks a deal another machine knows, the view shows the serving
   machine's adjustments — labeled, never silently mixed.
-- **Write authority (S-F3).** Credits/subsidies are written either by hand-editing the
-  overlay (machine-local file, reporting-only) or via a PIN-gated append-only audited
-  route mirroring `caps/adjust`. The refresh job is FORBIDDEN from writing
-  credit/subsidy rows anywhere.
+- **Write authority (S-F3) — phone-complete primary path (Mobile-Complete).** The
+  OPERATOR path for recording a credit/subsidy is a PIN-gated append-only audited
+  route mirroring `caps/adjust`, surfaced as a dashboard Spend-tab form (works at
+  phone width; rendered-plan rule does not apply since these are reporting-only
+  values, but the write is still PIN + audited). Hand-editing the overlay file
+  remains possible as a power-user/file escape hatch — it is never the documented
+  operator path. The refresh job is FORBIDDEN from writing credit/subsidy rows
+  anywhere.
 
 ### Layer 2 — Derived REPORTING views & rollups (immutable token pre-aggregate + price on read)
 
