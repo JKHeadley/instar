@@ -337,7 +337,13 @@ explicit `{ chainExempt: <reason ≥40 chars> }` marker — **except** FD6 criti
 component's callsite can change (its prompt starts carrying untrusted content, or its verdict shifts from
 bounded to judgment) while its `nature`/`injectionExposure` row stays *syntactically* valid but
 *semantically* stale. Two structural mitigations: (i) each `LLM_ROUTING_NATURE` /
-`LLM_ROUTING_INJECTION_EXPOSURE` row carries a **prompt/callsite fingerprint**, and a lint FAILS when a
+`LLM_ROUTING_INJECTION_EXPOSURE` row carries a fingerprint over **more than the prompt TEXT (codex CR9-2)**
+— the prompt anchor PLUS an **input-shape declaration** (can user / model / tool content enter this call?).
+This closes the staleness case a prompt-only fingerprint misses: a caller that begins forwarding
+user-controlled metadata (or an upstream sanitization change) **without touching the prompt builder** flips
+the input-shape declaration and so re-touches the row; the lint FAILS if input-shape changed without the
+injection-exposure row being re-confirmed (representative upstream-input-change review tests accompany it).
+A lint FAILS when a
 component's prompt source changes without its row being re-touched. **Fingerprint scope is concrete, not
 "any file changed" (codex CR5-2)** — to avoid both false positives and ritual compliance, each row names
 its **prompt-source anchor**: the exported prompt-builder function (or template id / prompt-constant) the
@@ -385,6 +391,21 @@ Both increments are covered here; each is independently dark-shippable and byte-
 `sessions.natureRouting` is unset — **with the single, deliberate exception of the LA4 unconditional
 degrade-path clamp** (FD4), which is a standalone safety narrowing (Opus-CLI → Sonnet-CLI on the
 binary-missing bounded/gating degrade) that fires even when nature routing is off.
+
+**Increment A — exact deliverables / non-deliverables (codex CR9-1, the concrete implementation boundary):**
+- DELIVERS: `LLM_ROUTING_NATURE` extended exhaustive + `LLM_ROUTING_INJECTION_EXPOSURE` map + their
+  ratchets (`src/data/llmBenchCoverage.ts` + `tests/unit/*ratchet*`); `resolveNatureAndChain` +
+  `resolveRoute` + the failure-swap reuse (`src/core/IntelligenceRouter.ts`); the FD4 three-place ban
+  (extend `clampClaudeCliSwapModel` to the allowlist + degrade path; `scripts/lint-nature-chains.mjs`;
+  the resolve-time validator); `ROUTING_LABEL_TO_MODEL_ID` + its adapter-id lint; the `sessions.natureRouting`
+  config schema + v3 CLI-only chain defaults + `migrateConfig` (versioned) + the FD8 Fable→Opus migration;
+  the `GET /intelligence/routing` dryRun plan/diff/`?trace`; the `logs/nature-routing.jsonl` async audit;
+  the FD6 aggregated critical-gate notice; CLAUDE.md template blurb.
+- DOES NOT DELIVER (Increment B / deferred): the three metered-API door adapters + FD12 money gate/PIN
+  go-live/spend counter; the sticky-primary damper (`sessions.natureRouting.stickyPrimary`, default-off);
+  the cross-machine shared spend ledger (Close-the-Loop prerequisite); the continuous door-penalty canary.
+- The Increment-A router contract, in one line: `component → resolvedNature → ordered eligible positions →
+  { selected (door,model), swapTail } | 'fall-through' | 'no-route' | throw`.
 
 **Maturation ladder (Maturation Path standard — "ships enabled on developer agents"): "dark first" here
 means DARK ON THE FLEET, LIVE-IN-`dryRun` ON A DEVELOPMENT AGENT — NOT flat-off everywhere.** Per FD11 the

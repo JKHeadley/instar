@@ -1,0 +1,5 @@
+# Round 9 findings — nature-axis-routing
+## Gate: 0 (clean, 3rd clean gate).
+## codex r9 MINOR (down from SERIOUS): CR9-1 over-specified/obscures core contract → added Increment-A exact deliverables/non-deliverables checklist + one-line router contract. CR9-2 static-nature staleness after input-shape change w/o prompt-builder touch → fingerprint now covers input-shape declaration (user/model/tool content entry), lint fails on input-shape change. CR9-3 policy-engine framing = recurring taste (non-material).
+## gemini r9 MINOR: Ge9-1 bespoke-tooling dependency / "fix Anthropic's harness instead" = out-of-scope opinion (non-material; the harness penalty is a given, not instar-fixable). Ge9-2 3-layer enforcement complexity / centralize-in-adapter = enhancement suggestion (the 3 layers ARE intentional defense-in-depth; non-material).
+## ASSESSMENT: both externals MINOR; only material item (CR9-2) FIXED; CR9-1 doc-org FIXED; rest = architectural taste / out-of-scope (non-material per skill). decision-completeness + lessons-aware already CONVERGED. → round 10 final external check.
