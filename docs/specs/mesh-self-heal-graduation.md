@@ -2,140 +2,235 @@
 kind: "spec"
 id: "mesh-self-heal-graduation"
 title: "Mesh Self-Heal Graduation"
-summary: "Operationalize multi-machine self-healing: move U4.2/U4.4 (stale-owner release + lease hand-back) and the liveness-reconciler from dark into production."
+summary: "Graduate the already-built-dark multi-machine self-heal subsystems (U4.2 stale-owner release, U4.4 lease hand-back, autonomous-liveness reconciler) plus a lease-tick flap MEASUREMENT surface from dark → live, on EVIDENCE-gated (not timer-gated) soak criteria, with the operator holding the dark→live authority. This is a LIVE-ENABLE + tuning + prerequisite-verification effort layered ON TOP OF three already-converged foundation specs — it re-grounds every config key against real code, re-asserts the foundations' fail-closed safety gates as binding graduation preconditions, and honestly gates its own headline live-verify on the Laptop being online (currently offline)."
+status: draft
+author: Echo
+date: 2026-07-03
+risk-class: "real-cross-machine-authority — this spec graduates features that MOVE live user conversations between machines (force-claim), HAND BACK serving leases, and RESPAWN sessions. The dark→live flip IS the deliverable and is NOT cheap despite the features 'shipping dark'; it is the operator's action alone, gated on a measured, quantified clean soak. Every layer stays dry-run-first; no layer reaches live without its foundation's evidence gate AND the named prerequisite code fixes being verified live."
+parent-principle: "Close the Loop / graduation discipline (a dark feature that never graduates guards nothing) + Signal vs Authority (measurement/detection is signal; force-claim/hand-back authority is narrow and lease-held) + Self-Heal Before Notify + No Unbounded Loops (P19) + Live-User/Live-Pair-Proof (a multi-machine claim is only proven on the real pair) + Distrust Temporary Success (a recovered machine may flap again)."
+lessons-engaged:
+  - "Live-verify multi-machine (memory live-verify-multimachine): synthetic tests with symmetric/complete state gave false confidence on THIS exact subsystem. The recognizer fix passed 26 tests but the live test caught it was still broken. Graduation to live REQUIRES the real Mini+Laptop pair — and the Laptop is CURRENTLY OFFLINE, so the live-verify phase is a named BLOCKER, not a schedulable step."
+  - "Zombie lease-holder (memory mesh-zombie-lease-holder, 2026-06-19): the incident this spec cites as motivation had a heartbeat that was still LEAKING (advancing) while the machine was non-serving + unreachable. A 'heartbeat STOPPED' death predicate would NOT have fired on it — so the spec needs a DISTINCT zombie predicate (heartbeat-advancing + unreachable-all-transports + awakeCount=0), or it fails to address its own headline case."
+  - "Timer-gated graduation is false confidence (Distrust Temporary Success): 'monitor for 1 week' with zero episodes proves nothing. The foundation specs (u4-2-stale-owner-release §5, u4-4-lease-handback §5) mandate QUANTIFIED evidence gates (≥N would-claims, each operator-corroborated, zero would-claim-wrong resets the soak). This spec MUST read those gates off the real audit surfaces, not a calendar."
+  - "Foundation audit (spec-converge lessons-aware mandate): this spec graduates three foundations. Taking them 'as given' is how a flaw ships. U4.2 requires the §2.3 emission-fence + R-r2-5a observer-stamped-staleness rewire live; U4.4 REFUSES dryRun:false at the config chokepoint until pollFollowsLease (B1) is live (else the lease moves while the old machine keeps polling = the silent-loss class this whole project exists to kill); the autonomous-liveness reconciler MUST co-ship its root-cause edge fix (getTopicForSession null at reap instant) or it masks a deterministic bug (the Phase-2 anti-pattern). These prerequisites are BINDING."
+  - "Config-key drift (verified 2026-07-03 against main): the draft's `multiMachine.staleOwnerRelease.enabled` / `leasHandback.enabled` / `leaseFlaps` do NOT exist. Real: `multiMachine.sessionPool.staleOwnerRelease.{enabled,dryRun}`, U4.4 rides `preferredCaptainHandback` in `DARK_GATE_EXCLUSIONS` (policy + latch, not a plain boolean), flap surface is `multiMachine.syncStatus.leaseTickWatchdog.reArmCount`. A builder copying the draft's keys would silently no-op."
+  - "132MB reaper-log flood (memory self-inflicted-loops-rca): a per-tick always-on JSONL is the exact flood pattern. `logs/lease-tick.jsonl` at a 2–5s tick = tens of thousands of lines/day. Log on DECISION-CHANGE only (the reaper-audit transition pattern) + rotation."
+review-convergence: "2026-07-04T01:06:47.055Z"
+review-iterations: 6
+review-completed-at: "2026-07-04T01:06:47.055Z"
+review-report: "docs/specs/reports/mesh-self-heal-graduation-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 16
+cheap-to-change-tags: 2
+contested-then-cleared: 1
 ---
 
 # Mesh Self-Heal Graduation
 
 **Status:** DRAFT
-**Owner:** Echo  
-**Created:** 2026-07-03  
-**Goal Alignment:** Goal B (Seamless agent across machines), M5 (session-respawn fix)
+**Owner:** Echo
+**Created:** 2026-07-03
+**Goal Alignment:** Goal B (Seamless agent across machines), M5 (session-respawn reduction)
 
 ## Problem
 
-Multi-machine failover is currently **reactive + manual**:
-- If Laptop (lease-holder) goes silent, Mini cannot take over conversations automatically
-- Lease-tick flapping means frequent avoidable restarts
-- Liveness reconciliation (detecting dead sessions and respawning them) is dark + not production-ready
-- **Zombie machines** can hold leases even when unreachable (the 2026-06-19 incident)
+Multi-machine failover is currently **reactive + manual**, and three self-heal subsystems that would fix it are **built but shipping dark**:
+- **U4.2 stale-owner release** — force-claim a provably-dead machine's conversations. Dark (`multiMachine.sessionPool.staleOwnerRelease`).
+- **U4.4 lease hand-back** — return the serving lease to the preferred captain after it recovers. Hard-dark (action-bearing, in `DARK_GATE_EXCLUSIONS`, driven by `preferredCaptainHandback` policy + latch).
+- **autonomous-liveness reconciler** — respawn a run whose state says ACTIVE but has no live tmux process. Dark (`monitoring.autonomousLivenessReconciler`).
+- Plus **lease-tick flapping** — a slow-but-completing tick was mis-read as stalled and re-armed, causing brief election churn (root-caused and largely fixed at the wire layer by `multi-transport-mesh-comms`; this spec adds the MEASUREMENT + escalation surface, not a re-fix).
 
-M5 (session-respawn elimination) depends on self-healing to work: if a session dies due to an infra blip, self-healing must revive it WITHOUT a full respawn cycle.
+M5 (session-respawn reduction) depends on these working: an infra-blip session death should self-heal WITHOUT a full respawn cycle. But a dark self-heal subsystem guards nothing (Close the Loop). This spec graduates them — **carefully, evidence-gated, operator-authorized, and honestly blocked where the real pair is required and unavailable.**
+
+**This spec is a GRADUATION + TUNING + PREREQUISITE-VERIFICATION effort, NOT a from-scratch build.** Per `verify-claim`, the on-disk inventory (Frontloaded Decision F11) reconciles what already exists dark vs. what this spec still builds (chiefly the co-shipped root-cause fixes + the flap-measurement surface).
+
+## Non-negotiable foundations (binding, not re-summarized)
+
+This spec does NOT restate the foundations' internal designs — it BINDS to them. The building agent MUST treat these as gates, reading each foundation spec's §5:
+- `docs/specs/u4-2-stale-owner-release.md` — evidence gate + the §2.3 emission-fence and R-r2-5a observer-stamped-staleness rewire as live prerequisites; claim authority lives ONLY with the serving-lease holder; detection+escalation may run on any quorum member; the per-topic claim budget rides the **replicated** `topic-claim-annotation` kind (a machine-local budget would reset on every lease move — exactly under the flapping it must bound).
+- `docs/specs/u4-4-lease-handback.md` — `preferredCaptainHandback` REFUSES `dryRun:false` at the config chokepoint until `pollFollowsLease` (B1) is live; offers AND completed hand-backs both count toward the episode cap; the churn-breaker + `splitBrainState` suppression + operator-flip 24h latch compose.
+- `docs/specs/autonomous-liveness-reconciler.md` — the reconciler MUST co-ship the `server.ts` reap-injection null-fallback root-cause fix (getTopicForSession returning null at the reap instant) and its named test; the reconciler is a BACKSTOP, and a backstop that masks a deterministic bug is forbidden.
+
+A graduation that weakens any foundation gate is a defect.
+
+## Glossary & dependency status (what's built vs assumed vs aspirational)
+
+Round-3 (codex #5): a reader outside the local ecosystem cannot otherwise tell which guarantees exist. Terse glossary: **epoch** = monotonic lease-version integer used as the fencing token; **fence/fenced** = reject any op stamped `epoch ≤ mine`; **holder** = the machine currently holding the serving lease; **quiesce** = stop polling + refuse sends for a topic; **synced store** = the git-replicated coherence store (heartbeats/epochs/claims); **P19** = the standard set of loop brakes (max-attempts/backoff/breaker/dedupe); **U4.2/U4.4** = the stale-owner-release / lease-hand-back foundation features.
+
+| Prerequisite / mechanism | Current evidence surface | Status | Blocking failure if absent | Verification owner |
+|---|---|---|---|---|
+| U4.2 stale-owner engine | `GET /pool/stale-owner-release`, `logs/stale-owner-release.jsonl` | BUILT-dark | force-claim can't run | build agent (verify-claim) |
+| U4.2 emission-fence + observer-stamped rewire (§2.3, R-r2-5a) | foundation spec §5 + code | MUST verify live | claim on stale staleness = wrong claim | build agent |
+| U4.4 hand-back policy + latch | `preferredCaptainHandback`, `/pool/lease-handback/latch` | BUILT-dark (action-bearing) | no hand-back | build agent |
+| U4.4 `pollFollowsLease` (B1) live | config chokepoint refusal | HARD gate (verify live) | lease moves while old machine still polls = silent loss | build agent |
+| Liveness reconciler | `monitoring.autonomousLivenessReconciler`, `logs/autonomous-liveness.jsonl` | BUILT-dark | no auto-respawn | build agent |
+| Reconciler root-cause edge fix (getTopicForSession null at reap) | `server.ts` + named test | MUST co-ship (this spec) | reconciler masks a deterministic bug | build agent |
+| Runtime double-serve detector (send-chokepoint epoch check) | new metric `double-serve-refusals` | MUST build (verify present) | double-serve undetected in prod | build agent |
+| Holder-serialized minting + sync-confirm-before-act | this spec's consistency model | ASPIRATIONAL rule (build enforces) | partitioned double-mint = split authority | build agent + adversarial test |
+| Flap-rate health field | `leaseTickWatchdog.reArmCount` (exists); derived field (new) | partial (derive + expose) | Layer-4 unmeasurable | build agent |
+| Cloud epoch arbiter (F18a) | — | FUTURE (not built) | residual double-mint risk remains until then | operator decision |
+| Live-pair E2E | real Mini+Laptop | BLOCKED (Laptop offline) | can't prove failover | operator (bring Laptop online) |
+
+## Lease authority & shared-store consistency model (the distributed-systems core)
+
+Everything below rests on ONE authority: the **git-synced coherence store** already used by the mesh (heartbeats, epochs, claim annotations). This spec does NOT invent a new consensus substrate; it states the guarantees it relies on and the fail-closed behavior when they don't hold:
+
+- **Ordering / fencing:** the lease **epoch** is a strictly-monotonic integer; every state mutation (claim, hand-back, demotion, serve) is **fenced** — a receiver rejects any operation stamped with `epoch ≤` its current epoch. **Correctness caveat (round-3, codex): Git does NOT serialize epoch minting by itself — two partitioned writers CAN both commit descendants of the same tip and locally assign the same-or-higher epoch, creating divergent histories.** So local monotonicity is NOT authority. The rule that closes this:
+  - **Minting is holder-serialized:** only the current verified lease-holder mints the next epoch. A non-holder seeking takeover mints a *candidate* epoch that is NOT authoritative on creation.
+  - **Sync-confirm-before-act:** an authority action (claim / hand-back / demote / serve) may execute ONLY after the actor observes its own epoch **reflected in the synced shared tip it can read** AND no divergent-or-higher epoch is present after a bounded reconciliation wait (`F17` window). A locally-created-but-unsynced candidate epoch grants NO authority — this is what closes codex's "window between local divergent epoch creation and fork recognition": there is no such window, because acting is gated on positive sync-confirmation, not on local mint.
+  - If two candidates race (both minted while partitioned), the fork/divergence is DETECTED at sync-confirm time and **fails closed** (below); the preferred-captain (F12) is the deterministic tie-break once reconciled.
+- **Authority SCOPE — the honest Git-lock limit (round-4, codex #2):** a 2-node Git-synced store CANNOT provide a provably-safe autonomous distributed lock — "my epoch is visible on the tip I can read" proves visibility to ONE path, not GLOBAL convergence, under an asymmetric partition. We therefore do NOT rely on it to autonomously move authority AWAY from a possibly-live machine. **The ONLY autonomous authority action is claiming a PROVABLY-DEAD peer** (heartbeat stopped for longer than the max-replication-lag window, `F17` — a dead peer is not serving, so no double-serve is possible and no consensus is needed). **Every case where global convergence cannot be proven** — advancing heartbeat (alive-partitioned), zombie (advancing but non-serving), a detected fork, or an asymmetric transport partition where sync-confirm is ambiguous — **is OPERATOR-MEDIATED** (raise the item, act only on the operator's epoch-fenced promote/demote) until the cloud epoch arbiter (F18a) provides real serialization. Sync-confirm-before-act is thus a NECESSARY guard on the dead-peer epoch increment, not a claimed sufficient distributed-lock; the sufficient safety is the dead-peer restriction + operator-mediation-otherwise.
+- **Freshness:** staleness is judged by **observed non-advance of the heartbeat SEQUENCE** (clock-free), never a wall-clock delta — with a declared **max replication-lag assumption** (`F17`): the death/zombie windows are set to ≥ `k ×` the worst-case git-sync round-trip so a merely-lagging sync is never mistaken for a stopped heartbeat.
+- **Write-conflict / fork behavior:** if the git sync itself **partitions or forks** (both machines commit to the same branch tip independently), the reconcile is **last-writer-by-epoch with NO clobber of a divergent claim** — a genuine concurrent divergence is preserved and surfaced (the existing replicated-store conflict path), never silently merged. **A fork state FAILS CLOSED: while the store is known-forked/unreconciled, force-claim and hand-back are SUSPENDED** (measurement + escalation continue) — a destructive authority action never runs on an unreconciled lease store.
+- **Why not etcd / Consul / SQLite-raft / a cloud arbiter (F18):** evaluated against operational cost + failure impact:
+  - *etcd/Consul/raft:* stronger linearizable leases, but need a co-located quorum (≥3 nodes) this 2-machine mesh doesn't have, and a network dependency that fails exactly during the home/laptop partitions we must survive. Rejected: it would make the common case (one peer asleep) UNAVAILABLE.
+  - *Tiny always-on cloud epoch arbiter (a single serialized epoch-minting endpoint):* the cleanest fix for finding #1 — it removes the partitioned-double-mint entirely. Deferred, NOT dismissed: it adds a hard external dependency + a new operational surface + a cloud cost, and it becomes a single point of failure for ALL failover. It is the RIGHT upgrade IF/when a cloud node already exists (the agent's tunnel/relay infra is a candidate host). Tracked as the preferred future authority (`F18a`); until then the holder-serialized-mint + sync-confirm-before-act + fail-closed-on-fork rules above are the accepted substitute.
+  - *Durable queue / external lease service:* similar external-dependency tradeoff; no advantage over the cloud arbiter for our access pattern.
+  - **Accepted for now:** the git-synced store the agent ALREADY replicates over any-of-N transports, survives a fully-offline peer, and is audit-native. We compensate for its weaker freshness with (a) holder-serialized minting, (b) sync-confirm-before-act, (c) fencing every mutation on epoch, (d) failing closed on fork/uncertainty, (e) never claiming a machine whose synced heartbeat still advances, (f) self-quiesce-on-sync-loss. Documented CONSISTENCY-over-availability choice; the cloud arbiter (F18a) is the named path to close the residual double-mint risk when a 3rd always-on node exists.
+  - **Complexity budget + F18a promotion trigger (round-5, codex #3):** this bespoke protocol (fencing + sync-confirm + zombie predicate + signed self-reports + operator latches + pruned nonce ledger + soak adjudication) carries real IMPLEMENTATION + AUDIT burden vs. a small hosted epoch service. We accept it ONLY while ambiguous (operator-mediated) cases are RARE — i.e. while the pair is usually both-online or cleanly-one-offline. **Promotion trigger: if the U4.2 soak shows ambiguous/operator-mediated episodes are COMMON (>X% of episodes), F18a (a tiny hosted epoch arbiter) becomes a PHASE-0 PREREQUISITE for live autonomous authority** — at that point the bespoke complexity is no longer justified over a serialized arbiter. The soak's UNKNOWN/ambiguous rate (F4) is the objective metric that fires this trigger. The exact ref-acceptance rule (what "the synced tip" is across remotes/fetch-push races) is the existing FencedLease / LeaseCoordinator §L−1 self-fence contract in the foundation — this spec BINDS to it rather than re-specifying it (round-5, codex #1).
 
 ## Design
 
-### Layer 1: Stale-Owner Release (U4.2 — already shipped dark)
+### Layer 1 — Stale-Owner Release (U4.2): claim on POSITIVE proof of death, never mere unreachability
 
-**Problem it solves:** Laptop goes offline but its heartbeat process dies too slowly. Mini can't claim conversations because Laptop's lease is still "valid."
+**The load-bearing correction (round-1 CRITICAL, 4 reviewers):** "unreachable from the claimant" is NOT death. A machine that is ALIVE and actively serving but network-partitioned from the claimant satisfies "unreachable on all transports" while still answering its users → force-claim → **double-serving** (duplicate replies, duplicate tool side-effects: double git push, double deploy). The claim predicate is therefore:
 
-**Solution:** Force-claim conversations from a provably-dead machine by verifying:
-1. The machine's heartbeat has STOPPED (>5m no update)
-2. The machine is UNREACHABLE on every transport (Tailscale + LAN + Cloudflare)
-3. There are no active jobs/processes on the machine (via QuotaTracker)
+A machine is claim-eligible ONLY when ALL hold:
+1. Its **git-synced heartbeat sequence has STOPPED advancing** (observed via the partition-proof shared store, not a live probe). **A synced heartbeat that keeps ADVANCING ⇒ the machine is ALIVE ⇒ NEVER claim** — instead raise the single `urgent` "alive but partitioned" attention item (the existing episode-deduped one) and leave it to the operator. This is the distinction between *unreachable* and *dead*.
+2. It is **unreachable on every transport** (Tailscale + LAN + Cloudflare), probed off the hot path, in parallel, bounded per-transport timeout, and ONLY after gate (1) already failed.
+3. **No in-flight work** per the LAST-SYNCED authoritative state before silence (NOT a live read from the suspect machine — that channel is down by definition). In-flight-work evidence **vetoes** the claim (bias to not-claim).
+4. The **claimant proves its OWN health/connectivity** first — a partitioned claimant must NOT claim.
+5. The claimant **holds the serving lease** — claim authority is single-claimer by construction. (Detection + escalation may run on any quorum member so a dead-captain mesh still reaches the operator; only the HOLDER actuates.)
 
-Then Mini reclaims Laptop's topics with a claim record and a one-time offer to Laptop to take them back if it recovers.
+**Zombie predicate (the 2026-06-19 case, distinct from death) — the RISKIEST path, so it carries DEATH-GRADE proof:** the machine is demonstrably alive (heartbeat advancing), so demotion here needs a higher bar than death, not a lower one. All must hold, sustained across a **minimum corroboration window** (`F19`, ≥ the same replication-lag-aware multiple as the death window): heartbeat-**advancing** + unreachable-on-every-transport + `awakeMachineCount==0` AND the machine has **NEVER asserted serving** (a positive "cannot currently serve" signal, not merely a low count). Because `awakeMachineCount` is itself published through the possibly-stale synced store, it is treated as **corroborating, not sufficient**: the verdict requires the count to read 0 CONSISTENTLY across the whole corroboration window (a single stale/delayed sample never triggers demotion), and if the zombie asserts serving at any point in the window the verdict resets. On a confirmed zombie: because ALL the evidence is absence-style (unreachable, count==0, never-asserted) and the machine is DEMONSTRABLY ALIVE (heartbeat advancing), autonomous forced demotion is NOT justified — "death-grade proof" was an overclaim (round-3, codex #3). **Zombie demotion is therefore OPERATOR-CONFIRMED ONLY:** the mesh raises ONE deduped attention item ("machine X looks like a zombie holder — advancing heartbeat but unreachable + never serving for the whole window; demote it so another machine can serve?") and demotes ONLY on the operator's explicit epoch-fenced confirm. **Even a signed "cannot currently serve" self-report from the suspected holder does NOT auto-demote** (round-6, codex #3 — eliminating the second autonomous path): it is treated as strong CORROBORATION that upgrades the attention item's confidence, but the demotion still requires the operator's confirm until F18a exists. (A signed self-report that could auto-demote is a second high-authority autonomous path whose signer/epoch freshness is hard to guarantee under partition; simplest-safe is one autonomous authority path only — the dead-peer claim.) If retained as auto in a future revision, the self-report MUST carry the current epoch observed via a recent sync-confirm AND a positive local serving-path-down check — but the default is operator-mediated. Never a silent topic theft. Fails CLOSED on any ambiguity. Tests MUST include a **stale-`awakeMachineCount`** case (a delayed 0 that must NOT trigger the item) and a flapping-count case.
 
-**Graduation:** Enable U4.2 and log all force-claims to `logs/stale-owner-release.jsonl`. Monitor false positives for 1 week. Graduate to dry-run → live.
+**Fencing (claim ≠ exclusive serve — round-1 CRITICAL):** a claim record alone does not stop the old owner serving. Serving a topic is gated at the **send/inject chokepoint** on holding the current lease **epoch**. Ordering on takeover: **quiesce-old (stop polling + refuse sends for those topics) → confirm-quiesced → authorize-new**. A machine that discovers its epoch is stale immediately quiesces.
 
-### Layer 2: Lease Hand-Back (U4.4 — already shipped dark)
+**Self-quiesce-on-sync-loss (round-5, codex #2 — closes the "serving while sync-wedged" double-serve vector):** the epoch fence only protects if the old machine can still READ the synced store. A machine can keep serving Telegram users over its DIRECT internet path while its mesh-sync / heartbeat publisher is wedged — so "heartbeat stopped" is NOT by itself proof of "not serving." Rule (a HARD RUNTIME INVARIANT, not a soft rule — round-6, codex #1): **serving is IMPOSSIBLE unless a recent sync-confirm succeeded.** Concretely, the send/inject chokepoint refuses to serve when `now - lastSuccessfulSyncConfirm > T_quiesce` — so a machine that cannot CONFIRM its lease epoch is current against the synced store within `T_quiesce` is structurally unable to serve (it SELF-QUIESCES: stops polling + refuses sends for its topics). This is enforced at the chokepoint + backed by a watchdog, NOT left to a cooperating loop. A named test drives the exact adversarial case: **inbound/Telegram path kept live while sync is BLOCKED → the machine must refuse to serve past `T_quiesce`.** And **the autonomous death-claim window is set strictly greater than `T_quiesce + F17`**, so by the time a peer is eligible for an autonomous dead-claim, a still-alive-but-unsynced holder has ALREADY self-quiesced. This converts "heartbeat stopped" into a safe proxy for "not serving": either the machine can sync (and will self-fence on the new epoch) or it cannot sync (and self-quiesces). A machine whose serving path AND sync are both truly dead is the clean case. Where even this cannot be guaranteed (a pathological host that serves but neither syncs nor self-quiesces), the residual is the documented 2-node-no-arbiter limit closed only by F18a. A **runtime double-serve detector** lives at the send chokepoint: a send attempted without the current epoch is REFUSED and logged as a would-be double-serve; `double-serve-refusals` is an observable metric (target 0), not just a one-time E2E check.
 
-**Problem it solves:** After Laptop recovers, conversations are still on Mini. Mini keeps serving them even though Laptop is the "preferred" captain.
+**Fail-CLOSED:** on any uncertainty (probe timeout, unreadable state, epoch ambiguity) the claim does NOTHING and logs. (Opposite of the reachability/notify paths — a destructive action fails closed.)
 
-**Solution:** After Laptop is healthy again (heartbeat active + reachable on 2+ transports for 10m), Mini **hands back** the lease to Laptop with a single-use, signed consent token. Laptop accepts and resumes its topics.
+### Layer 2 — Lease Hand-Back (U4.4): epoch-bound, single-use, hysteresis-guarded
 
-**Graduation:** Same as U4.2 — enable, observe, verify no thrashing.
+**Prerequisite (BINDING):** `preferredCaptainHandback` may NOT leave dry-run until `pollFollowsLease` is live — enforced at the config chokepoint (dryRun:false is REFUSED otherwise). The graduation build VERIFIES this live status before any flip.
 
-### Layer 3: Liveness Reconciler (autonomous-liveness-reconciler)
+**Consent token:** Ed25519-signed (reuse the existing holder-signed scheme — do NOT invent a new primitive), bound to `{recipientMachineId, leaseEpoch, issuedAt, short-expiry, single-use nonce}`, verified against the EXPECTED current epoch, nonce recorded in a durable consumed-nonce ledger that survives restart (replay across restart must fail). A token whose epoch < current or whose expiry passed is rejected — **and the expiry check runs BEFORE the nonce lookup**, so an expired token fails on expiry grounds regardless of the nonce record. **Nonce-ledger retention bound (round-5, scalability):** a consumed-nonce entry is load-bearing ONLY until its token's `short-expiry` passes (after that, any replay is already rejected on expiry). So the ledger is PRUNED — a consumed-nonce entry is dropped once `now > issuedAt + short-expiry + F17 max-replication-lag margin` (the lag margin ensures both replicas have converged before either drops it). This keeps the one replicated durable structure bounded, consistent with the F14 "no unbounded state" discipline; the prune is decision-change-logged.
 
-**Problem it solves:** A session is marked ACTIVE in the autonomous-run state file, but no tmux process exists to run it (crashed, killed, orphaned). The run just... hangs.
+**Hysteresis / anti-thrash (round-1 HIGH, multiple):** hand-back is eligible only after the destination is healthy on ≥2 transports for ≥10m AND passes the SAME placement guards as initial placement (quota headroom — not just liveness). A minimum tenure-on-current-holder gates hand-back. Layer-1 claim and Layer-2 hand-back are **mutually exclusive per topic**: a topic in stale-claim cooldown is not hand-back-eligible and vice-versa. A **claim↔hand-back flap detector** counts BOTH transitions per topic in a rolling window; after K oscillations it PINS the topic and raises ONE attention item instead of migrating further. Hand-back never leaves zero holders (claim-before-release).
 
-**Solution:** Background reconciler (2m cadence) scans all active autonomous runs:
-- For each run, check: does a live tmux session exist?
-- If NO: has the run expired? If no, respawn it.
-- If YES: is it actually working? (check for output changes). If stuck, nudge it.
+### Layer 3 — Autonomous-Liveness Reconciler: lease-gated, fresh-respawn, operator-stop-vetoed
 
-Audited to `logs/autonomous-liveness.jsonl`.
+**Co-ship the root-cause fix (BINDING):** the `server.ts` reap-injection null-fallback fix (getTopicForSession returning null at the reap instant) ships in the SAME effort with its named test. The reconciler is a backstop; masking the deterministic bug is forbidden.
 
-**Graduation:** Already partially implemented; needs:
-- Dead-session detection (tmux check)
-- Respawn trigger (existing resume-queue logic)
-- Quota + breaker gating (avoid thrashing)
-- Live-verification (test on the real pair with intentional kills)
+- **Lease-gated:** ONLY the serving-lease holder reconciles (round-1 CRITICAL — else both machines respawn the same run → double-serve). If ownership is per-run, a per-run claim-CAS gates respawn so a losing machine no-ops.
+- **Authority is the unambiguous case only:** `state==active AND no tmux process at all`. "Stuck-but-alive" (output-diff) nudging is NOT re-implemented here — it defers to the existing corroborated `ActiveWorkSilenceSentinel` (round-1 MEDIUM: output-diff mirrors the known false-freeze problem).
+- **Poison-safe respawn:** respawns route through the fresh-respawn / poison-detection path (never a blind `--resume` of a wedged/AUP/context-wall transcript), and NEVER respawn a session another recovery owner (wedge/AUP sentinel) is already handling.
+- **Operator-stop veto (round-1 HIGH):** consult the operator-stop / emergency-stop ledger, per-topic stop records, protected-session flags, and the resume-queue pause as HARD preconditions. Require a positive "genuinely incomplete" signal (remaining time > 0 AND no completion/deliver marker), not merely a stale state file.
+- **Idempotent enqueue:** keyed on runId — a 2m reconciler must not pile duplicate resume-queue entries faster than the single-at-a-time queue drains; back off cadence for runs already pending.
+- **Shared action budget:** one per-run/per-topic lifecycle-action budget SHARED across reconciler-respawn AND claim-migration AND the ResumeQueue resurrection count (round-1 MEDIUM: independent per-layer breakers let the two self-heal layers amplify each other). Exhaustion → give up LOUDLY, one attention item.
 
-### Layer 4: Lease-Tick Flap Fix
+### Layer 4 — Lease-Tick Flap MEASUREMENT + Self-Heal-gated escalation (not a timeout re-fix)
 
-**Root cause (M1 finding):** The lease-tick ran but occasionally was slow, so the watchdog thought it stalled and re-armed it. This caused brief election chaos.
+The lease-tick wedge was already root-caused + largely fixed at the wire layer by `multi-transport-mesh-comms`. Layer 4 does NOT re-fix by bumping a single-rope timeout (treating a symptom of an already-fixed cause). It **measures** and, if a residual flap persists, distinguishes *slow-but-completing* from *stalled* by raising the **watchdog's stall threshold** (so a slow tick does not re-arm at all), NOT the tick timeout.
 
-**Fix:** 
-- Increase lease-tick timeout (currently 2s, try 5s)
-- Log every tick result (latency, decision)
-- Measure flap rate: `GET /health → multiMachine.syncStatus.leaseFlaps` (count + rate)
-- When flap rate > threshold, escalate (log + attention item, never auto-act)
+- **Flap-rate metric:** derived from the REAL surface `multiMachine.syncStatus.leaseTickWatchdog.reArmCount` as `(re-arms / ticks)` over a NAMED rolling window (F8), exposed as a new spec'd health field (there is no `leaseFlaps` today).
+- **Self-Heal Before Notify (mandatory structure):** the re-arm IS the self-heal action. The operator escalation sits DOWNSTREAM of `selfHealAttempted && selfHealExhausted` — it does NOT fire on mere threshold crossing while self-heal is still running. Full **P19 brake declaration** for this monitor:
+  - `remediation-actions`: the watchdog re-arm (idempotent; rollback = revert to the prior tick handler) — declared, not a no-op that merely flips a flag.
+  - `max-attempts` = the existing `maxReArmsPerHour`; `max-wall-clock`; `backoff` schedule; `dedupe-key` = per-episode (matching the existing once-per-episode surface); `breaker` with **flapping auto-escalation** (N heals of the same break within a window → reclassify critical → escalate, un-waivable by a `recoverable` label); `max-notification-latency` = an explicit duration WITH units (e.g. `120s`) ≤ the constitutional ceiling `standards.selfHealBeforeNotify.recoverableLatencyCeiling` (a recoverable watcher still tells the operator once the ceiling passes even while healing); `audit-location` = `logs/lease-tick.jsonl` (metadata-only).
+  - `severity class`: `recoverable` (heal-first) for the flap itself; the zombie/jammed-election case is `irreversible-adjacent` → escalates immediately (same tick) AND heals concurrently.
+
+## Multi-machine posture
+
+Per-surface posture (default `unified`; a machine-local surface carries a closed-taxonomy justification key):
+- **Claim records** (`logs/stale-owner-release.jsonl` + `TopicClaimAnnotationStore`) — **unified / replicated** on the `topic-claim-annotation` kind: an episode claim decided on one machine is authoritative pool-wide and REVALIDATED by the owner on return; the per-topic claim budget MUST ride this replicated kind (survives lease movement).
+- **Consent-token consumed-nonce ledger** — **unified / replicated**: a machine-local "used" marker is a replay hole (a token could re-consume on the peer). The single-use marker is pool-authoritative.
+- **Flap counters** (`leaseTickWatchdog.reArmCount`, lease-tick log) — **machine-local-by-design**, `machine-local-justification: hardware-bound-resource` (each machine observes its OWN tick loop); the pool-scope read merges + tags by machine.
+- **Reconciler audit** (`logs/autonomous-liveness.jsonl`) — **machine-local-by-design**, `machine-local-justification: hardware-bound-resource` (records THIS machine's respawns of runs it holds); pool-scope read merges by machine.
+- **Lease-tick log** (`logs/lease-tick.jsonl`) — **machine-local-by-design**, `machine-local-justification: hardware-bound-resource`; decision-change-only writes + rotation (no per-tick line — the 132MB flood pattern).
+
+## Frontloaded Decisions
+
+1. **F1 — Dark→live flip authority = OPERATOR ONLY.** The agent builds + soaks in dry-run; the `enabled:true` / `dryRun:false` flip on every real-authority layer (U4.2, U4.4, reconciler) is the operator's action alone (dashboard-PIN / explicit go-ahead), never self-graduated. (Contested-and-rejected any "ships dark ⇒ cheap": the flip IS the deliverable and moves live conversations.)
+2. **F2 — Exact config keys (verified):** `multiMachine.sessionPool.staleOwnerRelease.{enabled,dryRun}`; U4.4 = `multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled` in `DARK_GATE_EXCLUSIONS` (policy + latch, action-bearing; `dryRun:false` refused at the config chokepoint until `pollFollowsLease` live); `monitoring.autonomousLivenessReconciler.{enabled,dryRun}`. Rollout order: each layer dry-run FIRST, then U4.2 → reconciler → U4.4 (U4.4 last, after pollFollowsLease live-verified), each with its own soak. Phase 1 does NOT flip both U4.2 and U4.4 together.
+3. **F3 — Graduation reviewer + metrics:** the operator reviews each soak against QUANTIFIED thresholds (below); the agent NEVER self-graduates. A false positive resets the soak and raises an attention item (hold, not auto-rollback unless F5).
+4. **F4 — U4.2 soak gate (from foundation §5), with an OBJECTIVE evidence bundle (not bare human judgment):** ≥5 would-claims over ≥3 days, EACH operator-corroborated correct, ZERO would-claim-wrong (a would-claim against an owner later shown alive RESETS the soak), read off `GET /pool/stale-owner-release` + the decision trace. Plus the §2.3 emission-fence + R-r2-5a observer-stamped-staleness rewire verified live. **The operator does not eyeball a log — each would-claim record carries a fixed evidence bundle** {target machineId, the synced-heartbeat sequence + whether it advanced during the window, per-transport reachability results, last-synced in-flight-work state + age, claimant self-health proof, epoch}, and an **objective correctness label**: a would-claim is `CORRECT` iff the target was in fact non-serving for the whole window (independently confirmable — the target itself later reports it was down / produced no output / its reap-log shows no activity), and `WRONG` iff the target later shows it was serving during the window (any inbound handled, any output produced, heartbeat advanced). The label is thus reproducible from records, and the operator's role is to spot-audit the label, not to invent it. **Canonical adjudication + an UNKNOWN label (round-3, codex #4):** "the target later reports it was down" is NOT independent proof (that report can be missing, delayed, or itself corrupted by the failure). The canonical adjudication source is the **claimant-side, tamper-evident evidence captured AT claim time** (the synced-heartbeat sequence trace + per-transport probe results + last-synced state, all in the append-only claim record) CROSS-CHECKED against the target's independently-synced reap-log / output record once available. When those two sources AGREE → `CORRECT`/`WRONG`. When the target's independent record is missing/delayed/contradictory → the label is **`UNKNOWN`**, and an `UNKNOWN` **does NOT count toward the clean-soak numerator** (it neither passes nor resets, but a soak with **> 20% `UNKNOWN`** is itself a hold — you cannot graduate on evidence you couldn't adjudicate). `F4a`: the same bundle + {CORRECT/WRONG/UNKNOWN} label pattern defines the U4.4 and reconciler soak gates. **Fault-injection substitute (round-4, codex #4):** because real would-claims may be RARE (a low-incident system could block graduation indefinitely on "≥5 over ≥3 days"), **controlled, clearly-LABELED fault-injection episodes COUNT toward the soak** when they exercise the exact same detection→claim→audit path (e.g. an intentional heartbeat-freeze on a throwaway peer). Injected episodes are tagged `synthetic:true` in the claim record, must show the same CORRECT adjudication, and are **capped at ≤ 40% of the counted episodes** (so a graduation is never mostly-synthetic), with **≥ 1 REAL (non-injected) would-claim episode required** in the soak — and the real-pair E2E (Phase 4) remains a separate hard gate on top.
+5. **F5 — Force-claim rollback lever:** a kill-switch that disarms U4.2 AND releases in-flight claims in-line (mirrors green-pr-automerge/rollback), independent of Laptop recovery; disabling raises the guard-posture tripwire (a disabled load-bearing guard surfaces, never goes silently inert).
+6. **F6 — Lease-tick: no timeout bump.** Ship the multi-transport wire fix as the cause fix; Layer 4 measures. If a residual flap persists, raise the WATCHDOG STALL THRESHOLD (config, tunable), not the tick timeout. Shipped default documented.
+7. **F7 — Caps + cooldowns (numbers):** U4.2 stale-claim cooldown per topic; reconciler max-respawns per run per rolling window; claim↔hand-back flap K; hand-back episode cap (offers + completions). Concrete values set in the build against the foundations' existing P19 numbers; give-up is LOUD (one attention item).
+8. **F8 — Flap-rate definition:** `(reArmCount delta / ticks)` over a named **in-memory rolling window of the last 100 lease ticks** (the tick loop already runs ~every 5s; `ticks` is the count of tick iterations in the window, from the same in-memory telemetry that owns `leaseTickWatchdog.reArmCount` — NOT a new persisted counter). **Restart behavior:** the window is in-memory and RESETS on restart — the safe direction (a fresh post-restart window can only UNDER-report a flap, never fabricate one), so a restart never triggers a false flap escalation. Escalation threshold set DISTINCT from the `<1%` success target; escalation deduped per episode (never per tick).
+9. **F9 — Stale-detection constants:** heartbeat-dead = no synced-sequence advance for a window that is a MULTIPLE of the heartbeat cadence (clock-free, monotonic — not wall-clock delta); transport set = {Tailscale, LAN, Cloudflare}; hand-back health = ≥2 transports for ≥10m; "active work" predicate = last-synced state shows an active build/run/commitment/subagent.
+10. **F10 — Consent-token crypto:** reuse the existing holder-signed single-use Ed25519 scheme (identity crypto is never cheap-because-dark); do not mint a new primitive.
+11. **F11 — On-disk inventory (verify-claim):** an explicit table of what exists dark today (U4.2 engine, U4.4 policy+latch, reconciler) vs. what this spec BUILDS (the co-shipped root-cause edge fix, the flap-measurement health field + log, the runtime double-serve detector if absent, the shared action budget). Resolves "already shipped" vs "needs implementing."
+12. **F12 — Split-brain N=2 tiebreak (a CONSISTENCY-over-availability tradeoff, chosen deliberately):** the deterministic **preferred captain (Mini)** wins a symmetric partition; the non-preferred machine REFUSES to self-elect during a partition and degrades to read-only rather than serve. Epoch numbers come from the shared git-synced monotonic store (a partition cannot manufacture a higher epoch). "Quorum" for N=2 = the fenced-lease epoch authority, not a majority vote. **This is not a free correctness property — it can strand a user actively talking to the NON-preferred machine while the preferred captain is isolated.** We accept it because a double-serve (both machines answering, duplicate irreversible tool side-effects) is worse than a bounded stall. **Operator override:** for the specific "preferred captain unreachable but the non-preferred machine is user-facing AND healthy" case, the non-preferred machine raises ONE attention item ("promote me to serve topic X during this partition?") and serves ONLY on the operator's explicit promote (an epoch-fenced operator-authorized captain-flip, the existing latch path) — never self-promotes. So availability is recoverable by an operator decision, not silently sacrificed. **Quantified stall + first-class mode (round-3, codex #2):** the expected user-facing topology is that the preferred captain (Mini, the always-on box) serves; the Laptop is the intermittent peer. The tolerated stall for the non-preferred-machine-user-facing case is bounded by **the attention-item notification latency** — the non-preferred machine raises the promote request IMMEDIATELY on detecting (preferred-unreachable + self-user-facing-healthy), so the stall is `≤ max-notification-latency` + operator response time, NOT an open-ended wait. And the **operator-promoted epoch is a FIRST-CLASS authority mode**, not an exception bolt-on: it is the same epoch-fenced captain-flip latch used everywhere, so a promoted non-preferred machine holds a fully-valid lease epoch (and the reconciler honors the 24h latch afterward). This also keeps Self-Heal-Before-Notify honest: the self-heal (auto-failover to preferred) is attempted first; the operator notify is the EXHAUSTION path when the preferred captain is itself the unreachable one.
+13. **F13 — Reconciler cadence + wiring:** 2m cadence (cheap, dry-run-first); respawn wired to the resume-queue (idempotent enqueue keyed on runId). Stated so the run does not stop; enable authority is F1.
+14. **F14 — Log discipline:** all three JSONL logs write on DECISION-CHANGE only (reaper-audit transition pattern) with rotation/size caps.
+15. **F15 — Reachable-but-not-serving vs dead:** an advancing synced heartbeat ⇒ ALIVE ⇒ never autonomous claim (raise the urgent partition item, operator-mediated); zombie (advancing + unreachable + awakeCount==0 across the window) ⇒ **operator-CONFIRMED demotion only** (auto only on a signed positive "cannot serve" self-report — never autonomous forced demotion of a live-heartbeat machine); heartbeat stopped beyond the max-lag window ⇒ the death path (the ONLY autonomous authority case). These three are distinct and each independently tested.
+16. **F16 — Migration parity:** `migrateConfig()` (existence-checked, idempotent) delivers the new `monitoring.autonomousLivenessReconciler` subtree + lease-tick tuning + flap threshold to deployed agents; all dev-gated so a fleet flip stays deliberate. CLAUDE.md proactive triggers for the graduated surfaces confirmed present.
+
+## Open questions
+
+*(none)*
+
+## Blocking dependency (honest)
+
+**Phase 4 (live-verify on the real pair) is BLOCKED: the Laptop is currently offline** (only the Mini is online). Phases 1–3 may proceed to **dry-run + soak**, but NO `dryRun:false` / live graduation of U4.2 or U4.4 until the live pair drive passes (per `live-verify-multimachine` and each foundation's live-pair §5 gate). This blocker is tracked as a registered commitment; the operator is the one who brings the Laptop online.
+
+## Availability posture (SLO — round-4, codex #3)
+
+This system **deliberately favors avoiding double-serve over transparent availability**, so the M5/session-respawn-reduction claim is scoped accordingly:
+- **Dead-peer failover (the common case):** autonomous, transparent, target `< 2×` the death-detection window (heartbeat-stop threshold + probe + claim). This is where M5's "self-heal without a full respawn" applies.
+- **Alive-but-partitioned / zombie / fork (the ambiguous cases):** availability is INTENTIONALLY sacrificed for safety — the affected topics stall until the operator responds to the raised item. **Worst case when the operator is absent: the topics remain stalled (read-only, not served) indefinitely** rather than risk a double-serve. **User-visible degraded behavior (round-5, codex #4):** a user messaging a stalled topic gets the existing cold-start lifeline reply ("I couldn't start/serve this right now — your message isn't lost, resend once settled") pointing to the always-reachable lifeline — NOT silence and NOT a double-answer. Inbound is QUEUED (durable inbound queue), not dropped; the dashboard shows the topic as `awaiting-operator (partition)`. So the degraded state is honest and visible, not a mysterious hang. This is an explicit, accepted tradeoff, NOT a bug; it is the correct behavior for a 2-node no-arbiter mesh and is the concrete motivation for the F18a cloud arbiter (which would convert these from operator-mediated to autonomous-safe). The M5 swap-reduction success metric is measured on the dead-peer path only; the ambiguous-case stall is not counted as a failed self-heal.
 
 ## Implementation Strategy
 
-### Phase 1: U4.2 + U4.4 Graduated to Live
-- Flip `multiMachine.staleOwnerRelease.enabled: true` and `leasHandback.enabled: true`
-- Monitor for 1 week: watch `/pool/stale-owner-release` and `/pool/lease-handback` for anomalies
-- No frequent re-claims = success
-
-### Phase 2: Liveness Reconciler Wiring
-- Implement dead-session detection (tmux exists check)
-- Wire respawn trigger to resume-queue
-- Add quota + breaker guards
-- Dry-run for 1 week
-
-### Phase 3: Lease-Tick Tuning
-- Increase timeout, measure flap rate
-- Log every tick decision to `logs/lease-tick.jsonl`
-- Verify flap rate drops
-
-### Phase 4: Live-Verify Failover Scenario
-- **Scenario A:** Laptop is lease-holder. Kill Laptop's processes (simulating a crash).
-  - Expect: Mini detects dead Laptop, force-claims conversations, serves transparently
-  - Verify: No topic-orphans, no double-serving
-  
-- **Scenario B:** Laptop recovers. Health checks confirm it's alive.
-  - Expect: Mini hands back lease to Laptop, Laptop resumes its topics
-  - Verify: Smooth hand-back, no thrashing
-
-- **Scenario C:** Autonomous run on Laptop. Kill the tmux session.
-  - Expect: Liveness reconciler detects dead session, respawns it
-  - Verify: Run resumes without manual intervention
+- **Phase 0 — verify inventory (F11)** + confirm foundation prerequisites live (U4.2 emission-fence + observer-stamped rewire; U4.4 pollFollowsLease; reconciler edge fix co-shipped).
+- **Phase 1 — U4.2 dry-run soak** against F4 evidence gate; build the runtime double-serve detector + fail-closed paths + zombie/death/alive predicates (F15).
+- **Phase 2 — reconciler dry-run soak**: co-ship the root-cause edge fix; lease-gated, operator-stop-vetoed, poison-safe, idempotent-enqueue, shared budget.
+- **Phase 3 — lease-tick measurement**: flap-rate health field, decision-change logging, self-heal-gated escalation with the full P19 brake set; raise watchdog stall threshold if residual flap.
+- **Phase 4 — live-verify on the real pair (BLOCKED on Laptop)**: Scenario A (kill lease-holder → takeover, no orphan, no double-serve), B (recovery → hand-back, no thrash), C (kill autonomous tmux → reconciler respawn), plus the foundations' named fail-closed suites re-asserted.
+- **Operator flip (F1)** per layer only after its evidence gate passes.
 
 ## Test Plan
 
-**Tier 1 (Unit):**
-- Stale detection: is-machine-dead logic
-- Hand-back: consent token generation + validation
-- Liveness check: tmux process detection
-
-**Tier 2 (Integration):**
-- State-read correctly reflects machine status
-- Lease operations succeed (claim + hand-back)
-- Respawn trigger fires when needed
-
-**Tier 3 (E2E):**
-- Intentional machine kill on the real pair
-- Verify failover is smooth + transparent
-- Verify hand-back happens when machine recovers
-- Verify no session orphans or double-serving
+**Tier 1 (Unit):** the three predicates (death / zombie / alive-partitioned) each isolated; consent-token expiry/replay/reuse/epoch-mismatch REFUSAL; double-serve-refusal at the send chokepoint; idempotent reconciler enqueue; shared action-budget exhaustion → loud give-up; flap-rate derivation from reArmCount; self-heal-gate (escalation unreachable before exhaustion).
+**Tier 2 (Integration):** config-chokepoint refuses U4.4 dryRun:false while pollFollowsLease dry-run; force-claim fails CLOSED on unreadable/ambiguous state; claim↔hand-back mutual exclusion; operator-stop vetoes respawn; guard-posture tripwire fires on a disabled load-bearing layer.
+**Tier 3 (E2E, real pair — BLOCKED on Laptop):** intentional lease-holder kill → smooth transparent takeover; recovery → hand-back, no thrash; autonomous-run tmux kill → reconciler respawn; zero orphans / zero double-serving (asserted by the runtime detector, not eyeballed). **PLUS** the foundations' full named safety suites (forged-advert-set rejection, evidence-bound-below-self-fence-ttl config rejection, failed-handback-never-strands-zero-holders, ambiguous-binding→attention, claimant-restart-does-not-strand-failover) must still pass as a graduation precondition — a thinner set is not acceptable.
 
 ## Success Criteria
 
-- [ ] U4.2 + U4.4 enabled in production, flap-free for 1 week
-- [ ] Lease-tick flap rate < 1% (currently ~5%)
-- [ ] Liveness reconciler detects + respawns dead autonomous sessions
-- [ ] Failover scenario tested on real pair: Laptop kill → Mini takeover → Laptop recovery → hand-back
-- [ ] Zero topic orphans or double-serving
-- [ ] Session-respawn count drops measurably (M5 dependency)
+- [ ] Each layer passes its QUANTIFIED foundation soak gate (F4 for U4.2; the analogous §5 gates for U4.4 + reconciler) — evidence-read, not timer.
+- [ ] `double-serve-refusals == 0` in production (runtime detector), and zero topic orphans.
+- [ ] Flap rate < 1% measured off `leaseTickWatchdog.reArmCount` over the named window; residual handled by watchdog stall-threshold, not tick-timeout.
+- [ ] Reconciler respawns a killed autonomous session on the real pair without reviving an operator-stopped one.
+- [ ] Live-pair failover (kill → takeover → recovery → hand-back) verified — GATED on the Laptop online.
+- [ ] Foundations' named fail-closed suites still green.
+- [ ] Session-respawn count drops measurably (M5 dependency), read off the reap-log / swap-count.
 
 ## Failure Modes
 
-- **Thrashing:** U4.2 keeps claiming the same topics from Laptop. Mitigated by: cooldown + one-time hand-back offer.
-- **Split-brain:** Both machines think they hold the lease. Mitigated by: numbered epochs + quorum requirement.
-- **Zombie respawn loop:** Liveness reconciler keeps respawning a broken session. Mitigated by: breaker + max-respawn-cap.
+- **Alive-but-partitioned double-serve** → mitigated by the positive-death predicate (advancing synced heartbeat ⇒ never claim) + send-chokepoint epoch fence + runtime double-serve detector.
+- **Zombie lease-holder** → distinct predicate + **operator-confirmed** epoch-fenced demotion (auto only on a signed self-report) — the 2026-06-19 headline case, addressed WITHOUT autonomously demoting a live-heartbeat machine.
+- **Release↔hand-back ping-pong** → mutual-exclusion + claim↔hand-back flap detector → PIN + one attention item.
+- **Split-brain (N=2)** → preferred-captain (Mini) wins; non-preferred refuses self-elect; git-synced monotonic epoch fencing.
+- **Zombie respawn loop** → shared per-run action budget across reconciler + migration + resume-queue; poison-safe fresh-respawn; operator-stop veto.
+- **Timer-graduation false confidence** → evidence gates read off real audit surfaces; a would-claim-wrong resets the soak.
+- **Log flood** → decision-change-only writes + rotation on all three logs.
 
 ---
 
-**Related specs:** intelligent-working-set-lazy-sync, session-respawn-thrash-elimination
+**Related specs:** u4-2-stale-owner-release, u4-4-lease-handback, autonomous-liveness-reconciler (foundations, binding), intelligent-working-set-lazy-sync, session-respawn-thrash-elimination, multi-transport-mesh-comms.
+
+## Appendix — named gates & tests (behavioral purpose)
+
+Compact map of the local-lore identifiers so this spec is legible standalone (round-4, codex #5):
+- **F17** (max-replication-lag window) — the death/zombie detection windows are set to a multiple of the worst-case git-sync round-trip, so a merely-lagging sync is never read as a stopped heartbeat.
+- **F18a** (cloud epoch arbiter) — the FUTURE single serialized epoch-minter that would make the ambiguous cases autonomous-safe; not built.
+- **§2.3 emission-fence** (U4.2) — a claim is emitted only behind a fence that prevents a stale-detection from firing a claim before the observer-stamped staleness is authoritative.
+- **R-r2-5a observer-stamped-staleness rewire** (U4.2) — staleness is stamped by the OBSERVER at observation time (not recomputed later), so a claim can't be justified by staleness that has since been superseded.
+- **B1 / `pollFollowsLease`** (U4.4) — Telegram polling follows the lease: the machine that loses the lease STOPS polling, so a hand-back can't leave the old machine still ingesting (the silent-loss class). U4.4 refuses `dryRun:false` until this is live.
+- **`forged-advert-set` test** — rejects a claim justified by a forged/spoofed transport-advertisement set (a peer can't fake "I'm reachable nowhere" to get itself claimed, or fake reachability to block a legitimate claim).
+- **`evidence-bound-below-self-fence-ttl` test** — config validation rejects an evidence-freshness bound set below the self-fence TTL (which would let a claim act on evidence older than the fence tolerates).
+- **`ambiguous-binding→attention` test** — an unresolvable ownership ambiguity raises ONE operator attention item rather than being silently resolved.
+- **`failed-handback-never-strands-zero-holders` test** — a hand-back that fails mid-transfer leaves the ORIGINAL holder holding (claim-before-release), never zero holders.
+- **`claimant-restart-does-not-strand-auto-failover` test** — a claimant crashing mid-claim doesn't strand the failover (the durable claim record + idempotent replay complete it).

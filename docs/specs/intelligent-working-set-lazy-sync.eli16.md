@@ -2,45 +2,24 @@
 
 ## What's the problem?
 
-Say you're working on a document on your Laptop. You create a spec file, add a test, commit it. Now you want to switch to working on Mini for a bit. But that spec file you just made? It's still on the Laptop. Mini has no idea it exists.
+When I run across two machines (an always-on Mac Mini and a Laptop that comes and goes) and a conversation moves from one to the other, the **files I produced during that conversation** — a report, an analysis, a summary I wrote for you — don't come with it. On the new machine I can't see them, and I don't even know they exist somewhere else. So you hear "that's on the other machine." That's not seamless.
 
-So you either:
-1. Have to manually copy it over (annoying)
-2. Go back to Laptop to access it (defeats the purpose of switching machines)
-3. Recreate it on Mini (defeats the purpose of saving it on Laptop)
+There's already an engine that moves such files between machines — but it only "sees" files produced by a scheduled/autonomous job. A file I write **interactively** (just chatting with you, no job running) is invisible to it. Closing that one gap is what this spec does.
 
-This is broken. When you move your work to a different machine, your **files should come with you**.
+## What it does (and, honestly, what it deliberately does NOT)
 
-## What does this fix?
+**Does:** when I write an artifact into my own working area (`.instar/…` — reports, analyses, notes I generate for a conversation), I record it, and when the conversation moves machines that file follows automatically and I'm reminded at startup that it exists. It reuses the existing, already-hardened transfer engine (chunked, integrity-checked, never overwrites your local copy, refuses anything that looks like a secret, and doesn't block the move if the other machine is asleep — it just catches up later).
 
-This spec makes files follow the conversation automatically. When you're working on a topic on Laptop and you move that conversation to Mini, the files you created **automatically sync to Mini**. No manual copy. No asking for it. Just there.
+**Deliberately does NOT (yet):** sync your actual **project source files** (the `docs/`, `src/`, `tests/` in a git repo). That sounds tempting, but doing it safely would mean widening a security boundary to your whole repo and fighting git (which is *already* how project files sync between machines). So that bigger version is called out as a **separate decision for you to make** — with its own security review — not something I quietly turned on. This spec ships the safe, useful slice now.
 
-The agent remembers what files you touched on Laptop, and when you switch machines, it fetches those files to the new machine before you need them.
+## How it works, briefly
 
-## How does it work?
+Each file I produce gets one durable record (which file, which machine made it, a fingerprint). Those records replicate between machines over the same trusted channel my other shared memory uses. If the same file was changed on both machines while they were apart, I keep **both** versions and flag it for you rather than silently picking one. A deleted file stays deleted (it doesn't resurrect). Everything I show you at startup is clearly "here's what may exist where, as of last sync" — advisory, and I re-check the real disk before acting.
 
-Every time you create or edit a file in a conversation, the agent writes it down: "The user edited spec.md in this conversation on Laptop at 3:15 PM." It's like a filing system.
+## Why it went through six-plus review passes
 
-When the conversation moves to Mini, the agent looks at that list and goes: "The user has spec.md from Laptop. Let me fetch it." It pulls the file over in chunks (so it works even if the file is big), verifies it's not corrupt, and puts it in the same place on Mini.
+The first draft confidently described the existing engine — and got it **wrong** (wrong size limits, wrong storage location, wrong security boundary). Independent reviewers who actually read the code caught it, and one deep issue: my records carry a file *path*, but the sharing layer is built to *reject* paths (a safety feature). The fix was to store an unreadable fingerprint as the identity and validate the path strictly on arrival. The lesson: verify what the code actually does before building on it.
 
-If you edited the file on BOTH machines while you were offline, the agent detects the conflict and keeps both versions (you decide which one to use later).
+## What it means for you
 
-## What does the user experience?
-
-**Before:** Files stay on the machine where you created them. Moving to a different machine means losing access to your work.
-
-**After:** Your files follow you. Create on Laptop, move to Mini, the file is already there waiting.
-
-Example:
-- You write a spec on Laptop.
-- You move the conversation to Mini for some reason.
-- The spec is **already on Mini**, in the exact same place it was on Laptop.
-- You continue editing without interruption.
-
-It's seamless because it's automatic.
-
-## Why does this matter?
-
-Goal B is "the agent spans multiple machines seamlessly." But seamless means your work goes with you, not that you have to manually manage files across machines.
-
-This is the difference between "I run on multiple machines" and "you can work on multiple machines without thinking about it."
+A report I wrote for you 20 minutes ago on one machine is there, and known to me, when the conversation continues on the other — without you asking. Your git-tracked project files keep syncing through git as they always have. And the tempting-but-risky "sync everything" option is a decision I put in front of you rather than making for you.

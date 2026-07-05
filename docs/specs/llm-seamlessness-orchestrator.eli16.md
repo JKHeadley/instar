@@ -2,47 +2,26 @@
 
 ## What's the problem?
 
-When an agent runs on multiple machines, it has to make smart decisions about **where work should happen** and **when to move things around**. Right now, those decisions are purely mechanical:
-- "This machine is 10% loaded, that one is 20%, so move the conversation to the less-loaded machine."
-- "This file was last touched 2 hours ago, so maybe I should fetch it before the user needs it."
+When I run across two machines, it'd be nice if a file you're about to need was *already fetched* to the machine you're on — before you ask. A background loop could "think ahead" and preload the right thing. The draft of this went further: it would also let an AI decide *when to move your whole conversation to another machine*. Review pushed back hard on that — for good reasons — so this is the trimmed-down, safe version.
 
-But mechanical rules break down. A conversation might *seem* like it should move, but actually the user is actively typing. A file might *seem* worth fetching, but the network is slow right now. The agent acts dumb because it has no real intelligence backing these decisions.
+## What it does (and what it deliberately does NOT)
 
-## What does this fix?
+**Does:** a small background loop (running only on the machine currently "in charge") looks at what a conversation is about and **preloads the artifact it'll likely need next** — a report, an analysis — so it's already there. That's a cache warmer, mostly solved by simple rules; an AI is only asked the *one* hard question those rules are bad at: "given what this thread just pivoted to, which of several files does it actually need?" And even then, the AI is only kept on if it measurably beats the simple rules (otherwise I just use the rules — no point paying for an AI that doesn't help).
 
-This spec adds a **background LLM brain** that wakes up every 5 minutes and thinks about the agent's situation. It reads:
-- "Which conversations are running and where?"
-- "What machines are online and how loaded are they?"
-- "What projects is the agent working with and where do they live?"
+**Deliberately does NOT:** decide where your conversation runs or move it. Deciding which machine serves a conversation stays with the existing **deterministic** system (plain, testable rules — not an AI's judgment), because letting an AI move your live conversation on a hunch is exactly the kind of "the AI took an action it shouldn't have" risk we avoid. The most this loop does about placement is hand the deterministic system a *fact* ("this conversation's files live on machine A") — it never makes the call itself.
 
-Then it **proposes** smart moves:
-- "Move this conversation to the Mini because both the user and the project live there now."
-- "Pre-fetch this project to the Laptop because the user is about to work from the Laptop."
-- "Suggest the user continue on Machine A because there's less churn happening there."
+## Why the review changed it so much
 
-The key insight: the agent's brain (LLM) is way smarter about these decisions than a formula. It understands *context*.
+The first draft: made up an API endpoint that doesn't exist; would have run on both machines at once (so they'd give each other conflicting orders); let the AI *auto-confirm* moving a conversation you were actively typing in by calling it "load-shedding"; and re-invented a placement system that already exists as careful deterministic code. Reviewers who read the actual code caught all of it. The rewrite: runs on one machine only, the AI proposes nothing it can execute on its own except a safe preload, all real move-decisions stay with the deterministic system, and there are hard brakes so it can't thrash your conversations back and forth.
 
-## How does it work?
+## The safety rules, briefly
 
-A background job runs every 5 minutes (configurable). It's tier-1 supervised, which means it's **not expensive** — just a Haiku call to think through the situation. It proposes up to 3 moves.
+- **One machine runs it** (the one in charge), so no two-machines-fighting.
+- **The AI can't move your conversation** — ever. It can only preload a file (a safe, bounded copy) or hand a fact to the deterministic mover.
+- **It stays quiet when there's nothing to do** — a calm, balanced setup should produce zero suggestions. "Silence" is the goal, not "look busy."
+- **Hard brakes**: it can't propose the same thing repeatedly, can't fight the failover system, and if it keeps getting things reversed it gives up loudly and stops.
+- **It backs off under load** — a system meant to make things smoother must not pile on when the machine is already struggling.
 
-Most proposals are "safe" — like "pre-fetch this file in the background." Some need confirmation — like "move your conversation to a different machine."
+## What it means for you
 
-All proposals are **logged and visible** so you know what it's thinking.
-
-## What does the user experience?
-
-**Before:** The agent moves your conversation randomly or pre-loads files at weird times. It feels reactive and dumb.
-
-**After:** Files you need are *already there* before you ask. Conversations move to the *right* machine at the *right* time based on what you're actually doing. The agent feels *smart* and *proactive*.
-
-Example:
-- You're working on a spec on your Laptop.
-- The orchestrator notices: "User's been on Laptop all day, and the spec they're editing lives there. But they also have an open conversation on Mini that's idle. Suggest moving the conversation to Laptop to consolidate."
-- Without you asking, your work is consolidated where you're actually working.
-
-## Why does this matter?
-
-Goal B is "one coherent agent across many machines." But coherence doesn't just happen — it requires intelligence. Right now, the agent is reactive ("oh, you need this file? let me fetch it NOW"). With the orchestrator, the agent is **proactive** ("I noticed you're doing X, so I got Y ready for you in advance").
-
-That's the difference between a tool and an assistant.
+A file you're about to need is often already there. Nothing moves your conversation on an AI's whim — that stays with plain, predictable rules. And if the "smart" preloading isn't actually smarter than simple rules, it quietly turns itself off. (The real cross-machine test waits until the Laptop is back online.)
