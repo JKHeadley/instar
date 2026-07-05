@@ -67,7 +67,13 @@ A **RoutingDoor** is a concrete access path to a model, in two classes:
 
 **Operator decision #1 (authoritative):** GPT-5.5-tier work routes via **`pi-cli` as PRIMARY**
 (bench: 100% adversarial, 5.7s — the fastest GPT-5.5 door), with `codex-cli` and `openrouter-api`
-as fallbacks. **There is NO OpenAI direct-API key and one MUST NOT be required.** Consequently
+as fallbacks. **There is NO OpenAI direct-API key and one MUST NOT be required.** *Why pi-cli over a
+direct `openai-api` door (gemini Ge3-1):* the bench measured pi's wrapper at ~1k tokens of framing vs
+codex's ~10k — pi is the *cleanest* GPT-5.5 door short of a raw API key, and it rides the existing
+ChatGPT subscription (no new billed key, no ToS-fenced backend). The **dependency risk** of a bespoke CLI
+is real and acknowledged: it is mitigated by the two subscription fallbacks (`codex-cli`) and the clean
+metered `openrouter-api` GPT-5.5 position immediately behind it in JUDGE, so a pi-cli outage degrades to a
+measured-equivalent door, not a wall. Consequently
 **there is no `openai-api` door** — every chain (FD2) is authored using only the doors above; a
 position needing an OpenAI-direct key does not exist in any chain. (This removes the phantom
 `openai-api/*` positions the seed draft carried.)
@@ -175,9 +181,13 @@ reserve), and the byte-identical claim elsewhere in this spec is explicitly scop
 safety clamp. A test asserts the degrade clamp fires with `natureRouting` UNSET, for BOTH
 `defaultFramework` values.
 
-- **Critical gates may never carry nature D / chain WRITE (Adv1).** A ratchet asserts every FD6
-  critical-gate component resolves nature **B / chain JUDGE** — so a gate cannot be *authored* as
-  `{D,WRITE}` in the static map to sneak onto the WRITE-exempt Opus-CLI lane.
+- **Critical gates may never resolve chain WRITE / nature D (Adv1).** A ratchet asserts **no** FD6
+  critical-gate component resolves **chain WRITE** — critical gates are nature **B (JUDGE)** OR nature **A
+  (FAST/SORT)** (e.g. `MessageSentinel`, the R2 emergency-stop classifier, is nature A / injection-exposed
+  / Flash-Lite-pinned — a legitimate FAST/SORT critical gate), but **never D/WRITE**. This is the precise
+  invariant: WRITE is the sole Opus-CLI-exempt lane, so the hazard is a gate *authored* as `{D,WRITE}` to
+  sneak onto it — not "a gate that isn't JUDGE." (An earlier draft over-stated this as "must be B/JUDGE",
+  which would have wrongly failed on the nature-A `MessageSentinel`; the correct rule is chain ≠ WRITE.)
 - **`chainExempt` is forbidden for FD6 critical gates (Adv5)** — a critical gate must carry a real
   nature entry, never a 40-char filler exemption.
 
@@ -199,12 +209,18 @@ separating static capability from transient health: `unsupported` (no such door)
   → `claude-code/balanced`.
 - WRITE → `codex-cli/gpt-5.4-mini` → `groq-api/gpt-oss-120B` → `claude-code/fast` → `claude-code/capable`.
 
-**(b) Injection-exposure gate (Sec2/LA1 — `injectionSafe` is enforced, not decorative).** A callsite
-declares `attribution.injectionExposed: true` when its prompt carries untrusted content (message text,
-tool output, doc bodies). `isAvailable` **skips** any position marked `injectionSafe: false` (e.g.
-`groq-api/gpt-oss-120B`) when the call is injection-exposed, and **fails closed (skips)** when exposure
-is *unknown* for an injection-sensitive position. So an injection-exposed WRITE call can never land on
-the non-injection Groq door.
+**(b) Injection-exposure gate (Sec2/LA1/codex CR3-2 — `injectionSafe` is enforced STATICALLY, not a
+per-call caller flag).** Injection exposure is a **static per-component / per-operation property** — a
+parallel exhaustive map (`LLM_ROUTING_INJECTION_EXPOSURE`, ratchet-enforced over `COMPONENT_CATEGORY`
+like the nature map) that **defaults to `exposed: true` (fail-safe)**; a component is `exposed: false`
+ONLY when explicitly audited as carrying no untrusted content. This closes the exact failure class the
+static-nature decision (FD3) closes: relying on a per-call `attribution.injectionExposed` flag means one
+forgotten callsite silently enables a non-injection-safe door. A per-call `attribution.injectionExposed:
+true` may only **tighten** (mark an otherwise-trusted call exposed), never relax a statically-exposed
+component. `isAvailable` **skips** any position marked `injectionSafe: false` (e.g. `groq-api/gpt-oss-120B`)
+whenever the component is exposed (static OR per-call), and treats **missing/unknown exposure as
+exposed** (fail-closed skip). So an injection-exposed WRITE call can never land on the non-injection Groq
+door — enforced by the exhaustive static map, not caller diligence.
 
 **(c) The R-rule lints (LA2/LA3, R3–R8).** The FD4.2 lint additionally asserts, over the chain
 defaults AND live config:
@@ -235,7 +251,15 @@ defaults AND live config:
 1. **Route-DRIFT** (not a call failure): a critical-gate's resolved **primary `(door, model)` differs
    from the operator-reviewed baseline** AND that divergence **persists ≥ N=3 resolution ticks within
    10 min** (self-heal exhausted — a transient blip that recovers before N ticks is silent). → **ONE
-   deduped `HIGH` attention item** (HIGH so the topic-flood guard never coalesces it — Adv6).
+   AGGREGATED `HIGH` attention item PER MACHINE PER DRIFT EPISODE** — when several critical gates drift
+   in the same window from a **common cause** (e.g. `pi-cli` down drifts every JUDGE gate at once), they
+   collapse into **one** item that enumerates the affected gates + the shared cause + each new resolved
+   route, NOT one item per gate (Bounded Notification Surface — a fleet-wide door outage must not fan out
+   ~10 HIGH items). It is **HIGH so the topic-flood guard never coalesces it away** (Adv6) — aggregation,
+   not suppression, is how HIGH visibility and the no-flood bound are both honored (the standard instar
+   aggregate-per-collection pattern). Per-machine still (dedupe-key `nature-route-episode:<machineId>`);
+   pool-level coalescing across machines remains the tracked follow-up (§Close-the-Loop, Int5) — bounded,
+   because per-machine aggregation already caps it at one-per-machine.
 2. **Critical-gate on the terminal `claude-code/balanced` reserve → IMMEDIATE escalation** (Adv4),
    bypassing the N=3 debounce: a safety gate running on the harness-penalized reserve door (even the
    sanctioned Sonnet reserve) in the CLI-miss regime must be surfaced at once, never silently for up to
@@ -314,9 +338,12 @@ Decision-Completeness reviewer's contest is accepted and the tag is narrowed acc
   per-version, idempotent) — so a future v4 chain reslot reaches EXISTING agents, not just new ones. An
   operator who has hand-overridden a chain keeps their override (migration only touches un-overridden
   defaults).
-- **Kill switch:** unset `sessions.natureRouting` → instant revert. Routing config is read **live per
-  call** (`resolveConfig()`); no restart. (FD8's session-default companion is the one restart-gated
-  piece.)
+- **Kill switch:** unset `sessions.natureRouting` → instant revert of all nature *routing*. Routing config
+  is read **live per call** (`resolveConfig()`); no restart. Two deliberate carve-outs from "revert to
+  exactly today": (i) the **LA4 unconditional degrade-path clamp** (FD4) is a standalone safety narrowing
+  that stays active regardless — unsetting the feature does NOT restore the Opus-CLI degrade fail-open;
+  (ii) FD8's session-default (Fable→Opus) is a boot-read companion, restart-gated. Everything else reverts
+  live.
 - **Audit:** every resolved route, fallback landing, and clamp is recorded via the existing `onDegrade` /
   `DegradationReporter` + `/metrics/features`, plus one append-only `logs/nature-routing.jsonl`
   (observability only — see Performance §).
@@ -366,8 +393,20 @@ which `evaluate()` calls when `cfg.natureRouting?.enabled`. Steps:
    live chain → built-in defaults + FD6 notice.
 4. `available = positions.filter(p => isAvailable(p, options))` — FD5 (door reachable, breaker closed,
    metered budget>0, injection-eligible, R-rule-eligible). Verdicts cached behind a short TTL (Performance §).
-5. **Empty `available` (LA5) ⇒ return `'fall-through'`** → `evaluate()` uses today's category routing
-   (byte-identical safe default); never `available[0]` on an empty array.
+5. **Empty `available` — nature-aware, NEVER a blanket legacy fall-through (codex CR3-1).** A blanket
+   fall-through to today's category routing is unsafe for a mapped gate: legacy category routing does not
+   respect the R-rules, the allowlist ban, the injection gate, the doc-tree Claude-ban, or the baseline —
+   it could route a safety gate onto `claude-code`+opus, re-opening the banned route the whole spec closes.
+   So the empty-set branch splits by whether the component carries static routing constraints:
+   - **Unmapped / non-benched component** (no `LLM_ROUTING_NATURE` entry, no static bans) ⇒ return
+     `'fall-through'` → today's category routing (the LA5 byte-identical safe default). This is the ONLY
+     fall-through case.
+   - **Mapped FD6 critical gate, or ANY component with a static ban** (`claudeBanned`/R6, injection-exposed,
+     R-rule-constrained) ⇒ **FAIL CLOSED**: return no route so `evaluate()` uses the **caller's existing
+     gating fail-closed semantics** (a safety gate fails closed, never open) — NEVER legacy category
+     routing. (In practice a JUDGE gate's terminal `claude-code/balanced` reserve is a keyless CLI door,
+     so "all unavailable" only occurs if even the `claude-code` binary is missing — the exact case where
+     failing the gate closed is correct.) `never available[0]` on an empty array.
 6. Apply the FD4 family clamp to each available position (primary + tail; WRITE exempt).
 7. `primary = available[0]`, `swapTail = available[1..]`.
 8. `dryRun` → log the plan (FD11 readable canary), return `'fall-through'`; else return
@@ -483,9 +522,11 @@ self-heal**:
   FAST/SORT/JUDGE (allowlist, not denylist); the resolve-time live-chain validator (rejects a hot-config
   non-reserve `claude-code` JUDGE position → defaults + notice); fail-closed N-detection (membership-
   uncertain → metered off); the R6
-  doc-tree Claude-ban; the R8 Flash-Lite pin; the FD4-critical-gate-must-be-B/JUDGE ratchet; the
-  benchmark-label→adapter-id lint; FD7 exhaustiveness; FD8 no-Fable; dark/dryRun byte-identical. **Both
-  sides of every boundary.**
+  doc-tree Claude-ban; the R8 Flash-Lite pin; the FD4 critical-gate-never-WRITE ratchet (accepts nature-A
+  `MessageSentinel`, rejects a `{D,WRITE}` gate); the static injection-exposure map exhaustiveness ratchet;
+  the empty-set nature-aware branch (unmapped→fall-through, critical-gate/banned→fail-closed, NEVER legacy);
+  the benchmark-label→adapter-id lint; FD7 exhaustiveness; FD8 no-Fable; dark/dryRun byte-identical (except
+  the LA4 clamp). **Both sides of every boundary.**
 - **Integration** (`tests/integration/`): `/intelligence/routing` reports the resolved `(door, model)` +
   the dryRun plan/diff per component; the money-gate skip (metered cap reached → walk continues to a CLI
   door) over the real HTTP pipeline; a runtime `PATCH /config` chain edit that violates the ban is rejected
@@ -524,9 +565,14 @@ self-heal**:
    item and the code enforces the precondition.
 2. **Pool-level coalescing of the FD6 critical-gate notice** (Int5) — per-machine dedupe today (consistent
    with attention-queue posture); a fleet-wide door outage multi-firing is the follow-up.
-3. **Dynamic-adaptation drift closure** (gemini Ge1) — static bench maps drift as the model landscape
-   moves; the closure is the S5 `bench-refresh` cadence + the S6 reslot/diff gate (already the designed
-   mechanism), not an in-S4 bandit. Acknowledged as an explicit accepted tradeoff, tracked to S5/S6.
+3. **Dynamic-adaptation / harness-penalty drift closure** (gemini Ge1/Ge3-2) — the static bench maps (and
+   the whole harness-penalty premise the FD4 ban rests on) drift as the model landscape moves; a provider
+   update could in principle alter the `(claude-code, Opus)` penalty. The primary closure is the S5
+   `bench-refresh` cadence + the S6 reslot/diff gate (the designed mechanism). To make that less *reactive*
+   (Ge3-2), a **lightweight continuous door-penalty canary** — a tiny periodic bounded-verdict probe of the
+   `(claude-code, Opus)` route vs a clean door, reusing the merged `doorway-scan` substrate — is a tracked
+   follow-up that would flag a penalty shift before the next full re-bench. Acknowledged as an explicit
+   accepted tradeoff (S4 does not add an in-line bandit); tracked to S5/S6 + the canary.
 
 ## Decision points touched
 - **Adds** a route-resolution gate (nature → chain → `(door, model)`) — dev-gated dark, dryRun-first,

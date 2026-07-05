@@ -47,8 +47,10 @@ first choice is unavailable (no key, rate-limited, out of budget), the agent wal
    *critical safety gate* raises exactly one "please review" notice to the operator — never silent.
 
 ## Safety and reversibility
-This ships **dark**: with the config unset, nothing changes — the agent behaves byte-for-byte like
-today. When you first turn it on, it runs in **dry-run** (it logs what it *would* do without doing it).
+This ships **dark**: with the config unset, the agent behaves like today — with **one deliberate
+exception**, a standalone safety fix that closes a pre-existing hole where a fallback could send a safety
+judgment to the gullible Opus route; that fix is always on, because it makes things safer even before the
+feature is enabled. When you first turn it on, it runs in **dry-run** (it logs what it *would* do without doing it).
 A single config removal reverts everything instantly, no restart. A build-time lint makes it
 *structurally impossible* to accidentally route a safety judgment onto the banned gullible door. Every
 routing decision is logged. The only new operator notice fires *after* the agent has already self-healed
