@@ -264,6 +264,56 @@ export interface SessionManagerConfig {
    * absent-equals-unchanged guarantee). Consumed only by the claude-code spawn
    * path; other frameworks ignore it. */
   dynamicMcp?: import('./dynamicMcpConfig.js').DynamicMcpConfig;
+  /**
+   * S4 — Nature-Axis Routing (docs/specs/nature-axis-routing.md). Resolves the internal
+   * LLM router's `(door, model)` selection by a call's TASK NATURE + a door-availability
+   * chain, instead of only its category. TYPE-ONLY and intentionally NOT in ConfigDefaults
+   * (a default here would deep-merge into every config and break absent-equals-unchanged);
+   * `migrateConfig` seeds it DARK on update.
+   *
+   * MATURATION LADDER (FD11): `enabled` is OMITTED from the shipped config so it rides
+   * `resolveDevAgentGate` — LIVE (in dryRun) on a development agent, DARK on the fleet.
+   * Absent OR `enabled:false` ⇒ the nature router is inert and routing is BYTE-IDENTICAL
+   * to today. `dryRun` (default true on first enable) observes + logs the resolved plan
+   * without re-routing. `metered.goLive` is Increment B (metered doors + PIN money gate)
+   * — DEFERRED; it stays false and does nothing in this increment.
+   */
+  natureRouting?: {
+    /** Config schema version for versioned chain-forward migration (Int2). */
+    schemaVersion?: number;
+    /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
+    enabled?: boolean;
+    /** Observe-only (default true): compute + log the plan; do NOT re-route. */
+    dryRun?: boolean;
+    /**
+     * Optional per-chain wholesale override of the built-in v3 defaults. A chain left
+     * unset keeps its default. (The FD4 resolve-time validation of an override is a
+     * tracked A2.2 remainder; the FD4 runtime allowlist clamp already keeps the banned
+     * harness-door route closed on every resolved position regardless.)
+     */
+    chains?: Partial<
+      Record<
+        'FAST' | 'SORT' | 'JUDGE' | 'WRITE',
+        Array<{
+          door:
+            | 'pi-cli'
+            | 'codex-cli'
+            | 'gemini-cli'
+            | 'claude-code'
+            | 'gemini-api'
+            | 'openrouter-api'
+            | 'groq-api';
+          model: string;
+          keyRef?: string;
+          moneyGated?: boolean;
+          injectionSafe?: boolean;
+          claudeBanned?: boolean;
+        }>
+      >
+    >;
+    /** Increment B — metered-door money/PIN go-live. DEFERRED; stays false in A2. */
+    metered?: { goLive?: boolean };
+  };
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */
@@ -959,6 +1009,17 @@ export interface IntelligenceOptions {
      * (today's behavior: no backoff/queue rung).
      */
     deferrable?: boolean;
+    /**
+     * S4 A2 — OPT-IN, TIGHTENING-ONLY task nature (docs/specs/nature-axis-routing.md FD3).
+     * When the nature router is enabled, a caller MAY declare the call's nature to RAISE
+     * its routing tier (the safe direction, `E,B ≥ D ≥ A`): a same-tier or lower value is
+     * ignored (the static `LLM_ROUTING_NATURE` map wins) and a value outside {A,B,D,E} is
+     * ignored. It can only ever tighten (route a call onto the more-careful JUDGE ladder),
+     * never widen. MUST originate from callsite CODE, never from model/user content (Sec4
+     * trust boundary). Omitted ⇒ the static map is authoritative. Inert unless nature
+     * routing is enabled.
+     */
+    nature?: 'A' | 'B' | 'D' | 'E';
     /**
      * F5 RESERVATION LANE (docs/specs/spawn-cap-interactive-priority.md).
      * `interactive` requests the user-facing reserved headroom in the host spawn cap

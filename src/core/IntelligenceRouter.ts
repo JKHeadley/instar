@@ -31,7 +31,20 @@ import {
   isComponentCategory,
   categoryForComponent,
 } from './componentCategories.js';
-import { LLM_ROUTING_NATURE, type RoutingNature } from '../data/llmBenchCoverage.js';
+import {
+  LLM_ROUTING_NATURE,
+  type RoutingNature,
+  type TaskNature,
+  type RoutingChain,
+  type RoutingDoor,
+  type ChainPosition,
+  type NatureRoutingChains,
+  NATURE_ROUTING_DEFAULT_CHAINS,
+  ROUTING_LABEL_TO_MODEL_ID,
+  CLAUDE_CODE_RESERVE_MODEL_ID,
+  METERED_ROUTING_DOORS,
+  NATURE_ROUTING_CRITICAL_GATES,
+} from '../data/llmBenchCoverage.js';
 
 export interface ComponentFrameworksConfig {
   /** Framework for anything not otherwise specified. Defaults to the router's defaultFramework. */
@@ -165,6 +178,23 @@ export interface IntelligenceRouterOptions {
     /** Bound (ms) for a single enqueued deferrable call so a stuck/abandoned one self-terminates. */
     queueAttemptTimeoutMs?: number;
   };
+  /**
+   * S4 A2 — the live, dev-gate-RESOLVED view of `sessions.natureRouting` (read on EVERY
+   * call so the kill switch is hot). `enabled` is already the gate-resolved boolean
+   * (resolved at the construction boundary, like `ladder`). Absent OR `enabled:false`
+   * ⇒ the nature router is inert and routing is BYTE-IDENTICAL to today. When enabled +
+   * dryRun (the dev-agent default) the resolver OBSERVES (computes + logs the plan via
+   * `onNatureRoutePlan`) and still passes through to today's selection. Enforcing
+   * selection (dryRun:false) is a tracked A2.2 remainder.
+   */
+  resolveNatureRouting?: () => NatureRoutingRuntime | undefined;
+  /**
+   * S4 A2 — the dryRun observation sink (FD11 readable canary). Invoked with the resolved
+   * plan when nature routing is enabled + dryRun. No-op downstream by default; the router
+   * calls it freely. The durable `logs/nature-routing.jsonl` + `GET /intelligence/routing`
+   * surfaces that consume this are a tracked A2.2 remainder.
+   */
+  onNatureRoutePlan?: (plan: NatureRoutePlan) => void;
 }
 
 interface CachedFramework {
@@ -336,6 +366,233 @@ export function isBoundedGatingDegrade(
   return row.chain !== 'WRITE'; // WRITE is the sanctioned Opus-CLI lane; everything else is bounded/gating
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * S4 Increment A2 — the nature-axis routing RESOLVER (dark/dryRun mechanism).
+ *
+ * `resolveRoute` is a PURE, side-effect-free evaluator (spec CR2-5): a stateless
+ * fold `component → resolvedNature → ordered eligible positions → { primary, swapTail }
+ * | 'fall-through' | 'no-route' | throw`. It owns no retry/backoff/breaker/budget
+ * machinery — those stay in the existing IntelligenceRouter primitives. Wired into
+ * `evaluate()` ONLY when `sessions.natureRouting.enabled` (dev-gated dark). In dryRun
+ * (the dev-agent default) it OBSERVES: computes + logs the plan, then passes through to
+ * today's routing (byte-identical selection). Enforcing selection (dryRun:false) is a
+ * tracked A2.2 remainder — see the honest guard in `evaluate()`.
+ * Spec: docs/specs/nature-axis-routing.md §Resolver / FD3 / FD4 / FD9.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The critical-gate fail-closed outcome (spec CR10-3/CR8-4): a DISTINCT typed error
+ * so a caller can never mistake it for an ordinary model failure. A mapped FD6
+ * critical gate whose chain has NO available door throws this; the caller applies its
+ * existing gating fail-closed semantics (block/deny). The low-stakes empty-set case is
+ * deliberately the ordinary non-gating error instead ('no-route'), typed apart on purpose.
+ */
+export class RouterFailClosedError extends Error {
+  constructor(
+    public readonly component: string | undefined,
+    public readonly resolvedChain: RoutingChain,
+  ) {
+    super(
+      `RouterFailClosedError: critical gate '${component ?? '(none)'}' has no available door on ` +
+        `chain ${resolvedChain} — failing closed (never legacy category routing, never the harness door)`,
+    );
+    this.name = 'RouterFailClosedError';
+  }
+}
+
+/** A chain position resolved to a concrete model id, after the FD4 allowlist clamp. */
+export interface ResolvedRoutePosition {
+  readonly door: RoutingDoor;
+  /** The original benchmark label / tier hint from the chain position. */
+  readonly label: string;
+  /** The concrete model id the door should be asked for (post-registry, post-clamp). */
+  readonly modelId: string;
+  /** Whether the FD4 harness-door allowlist clamp rewrote this position to the reserve id. */
+  readonly clamped: boolean;
+}
+
+/** The four load-bearing `resolveRoute` outcomes (verifier r7 — never collapse them). */
+export type RouteResolution =
+  | {
+      outcome: 'route';
+      resolvedNature: TaskNature;
+      resolvedChain: RoutingChain;
+      primary: ResolvedRoutePosition;
+      swapTail: ResolvedRoutePosition[];
+    }
+  | { outcome: 'fall-through' } // unmapped → legacy category routing (the byte-identical safe default)
+  | { outcome: 'no-route' }; // low-stakes mapped, all doors down → caller's own heuristic
+
+/**
+ * Tier ordering for the FD3 nature tighten rule `E, B ≥ D ≥ A`. E and B are
+ * EQUIVALENT (both JUDGE-tier). A caller-declared nature may only ever RAISE the tier
+ * (tighten, the safe direction); a same-tier or lower declared nature is ignored (map
+ * wins), and a value outside {A,B,D,E} is ignored.
+ */
+const NATURE_TIER_RANK: Readonly<Record<TaskNature, number>> = { A: 0, D: 1, B: 2, E: 2 };
+
+function isTaskNature(v: unknown): v is TaskNature {
+  return v === 'A' || v === 'B' || v === 'D' || v === 'E';
+}
+
+/**
+ * FD3 — resolve `{ resolvedNature, resolvedChain }` from the component's static map row
+ * and an optional caller-declared `attribution.nature`. The component's OWN map row
+ * `{nature, chain}` is authoritative by default (preserving a per-component A/FAST vs
+ * A/SORT choice a pure nature→chain function could not). A caller-declared nature that
+ * TIGHTENS (strictly raises the tier) replaces the chain with the deterministically
+ * safe `JUDGE`; anything else is ignored. Returns `undefined` for an unmapped component.
+ * Pure — always available, independent of `sessions.natureRouting`.
+ */
+export function resolveNatureAndChain(
+  component: string | undefined,
+  declaredNature?: unknown,
+): { resolvedNature: TaskNature; resolvedChain: RoutingChain } | undefined {
+  const row = routingNatureFor(component);
+  if (!row) return undefined;
+  const tightened =
+    isTaskNature(declaredNature) && NATURE_TIER_RANK[declaredNature] > NATURE_TIER_RANK[row.nature];
+  if (tightened) {
+    // A tightened nature is always B or E (you only tighten UP a tier) → JUDGE ladder.
+    return { resolvedNature: declaredNature as TaskNature, resolvedChain: 'JUDGE' };
+  }
+  return { resolvedNature: row.nature, resolvedChain: row.chain };
+}
+
+/**
+ * FD-LABEL / FD4.1 — resolve a chain position's `model` label to a concrete model id via
+ * `ROUTING_LABEL_TO_MODEL_ID`. A label absent from the registry (a tier hint like `fast`
+ * / `capable`) passes through unchanged and is resolved downstream by the existing
+ * per-adapter tier map. Pure.
+ */
+export function resolvePositionModelId(pos: ChainPosition): string {
+  return ROUTING_LABEL_TO_MODEL_ID[pos.door]?.[pos.model] ?? pos.model;
+}
+
+/**
+ * FD4 place 3 — the harness-door ALLOWLIST clamp (deny-by-default), the nature-routing
+ * RUNTIME safety guarantee. For a bounded/gating (FAST/SORT/JUDGE) chain, the ONLY
+ * permitted `claude-code` position is the single sanctioned CONCRETE reserve id
+ * (`CLAUDE_CODE_RESERVE_MODEL_ID`); any OTHER claude-code id is clamped down to it. This
+ * is an allowlist, NOT a denylist — a future/unrecognized capable Claude id can never
+ * slip past. `WRITE` is exempt (its Opus-via-CLI quality lane is legitimate), and every
+ * non-claude-code door passes through.
+ *
+ * DELIBERATELY SEPARATE from A1's `clampClaudeCliSwapModel` (which returns the `balanced`
+ * TIER token and fires UNCONDITIONALLY on the always-on degrade/swap path): touching that
+ * function would change A1's shipped, byte-identical-when-off behavior. This clamp is
+ * nature-routing-scoped and concrete-id-based (FD4.1), applied only inside `resolveRoute`.
+ */
+export function clampToReserveOnCleanDoor(
+  pos: ResolvedRoutePosition,
+  resolvedChain: RoutingChain,
+): ResolvedRoutePosition {
+  if (resolvedChain === 'WRITE') return pos; // WRITE is the sole Opus-via-CLI-exempt lane
+  if (pos.door !== 'claude-code') return pos; // the ban applies only to the harness door
+  if (pos.modelId === CLAUDE_CODE_RESERVE_MODEL_ID) return pos; // allowlisted — the sanctioned reserve
+  return { ...pos, modelId: CLAUDE_CODE_RESERVE_MODEL_ID, clamped: true }; // deny-by-default → reserve
+}
+
+/** The base component key (strip a "/segment" operation suffix + a `server:` prefix). */
+function baseComponentKey(component: string | undefined): string | undefined {
+  if (!component) return undefined;
+  return component.split('/')[0].replace(/^server:/, '').trim();
+}
+
+/**
+ * The PURE nature-routing fold (spec §Resolver, steps 1–7). Deps are injected so the
+ * function is side-effect-free + trivially testable: `isDoorReachable` reports CLI-door
+ * reachability (the class wraps its provider cache). Metered doors are ALWAYS skipped in
+ * Increment A. The empty-`available` branch splits by authority class (CR6-2/CR3-1):
+ * unmapped → 'fall-through'; low-stakes mapped → 'no-route'; FD6 critical gate → throw
+ * RouterFailClosedError. (The R6 doc-tree refuse-to-author branch is a tracked A2.2
+ * remainder; until it lands a `claudeBanned` component falls into the low-stakes 'no-route'
+ * path — never onto Claude, since resolveRoute never emits a claude-code position for it
+ * unless its chain contains one, and R6 chains are authored off-Claude.)
+ */
+export function resolveRoute(
+  component: string | undefined,
+  declaredNature: unknown,
+  chains: NatureRoutingChains,
+  deps: { isDoorReachable: (door: RoutingDoor) => boolean },
+): RouteResolution {
+  const nc = resolveNatureAndChain(component, declaredNature);
+  if (!nc) return { outcome: 'fall-through' }; // unmapped ⇒ legacy category routing (LA5 byte-identical)
+
+  const positions = chains[nc.resolvedChain] ?? NATURE_ROUTING_DEFAULT_CHAINS[nc.resolvedChain];
+  const available: ResolvedRoutePosition[] = [];
+  for (const p of positions) {
+    // Increment A: metered-API doors are DEFINED but always unavailable (skipped) until Increment B.
+    if (METERED_ROUTING_DOORS.has(p.door)) continue;
+    if (!deps.isDoorReachable(p.door)) continue;
+    const resolved: ResolvedRoutePosition = {
+      door: p.door,
+      label: p.model,
+      modelId: resolvePositionModelId(p),
+      clamped: false,
+    };
+    available.push(clampToReserveOnCleanDoor(resolved, nc.resolvedChain));
+  }
+
+  if (available.length === 0) {
+    // FD6 critical gate with no door ⇒ FAIL CLOSED (distinct typed error). NEVER legacy routing.
+    if (NATURE_ROUTING_CRITICAL_GATES.has(baseComponentKey(component) ?? '')) {
+      throw new RouterFailClosedError(component, nc.resolvedChain);
+    }
+    // Low-stakes mapped ⇒ the caller's own non-gating heuristic (the ordinary provider-down contract).
+    return { outcome: 'no-route' };
+  }
+
+  return {
+    outcome: 'route',
+    resolvedNature: nc.resolvedNature,
+    resolvedChain: nc.resolvedChain,
+    primary: available[0],
+    swapTail: available.slice(1),
+  };
+}
+
+/**
+ * Merge an operator's partial `chains` override (config) over the built-in v3 defaults,
+ * per-chain. A chain the operator did not override keeps its default. (The FD4.3
+ * resolve-time validation that REJECTS a harness-door-violating override → defaults +
+ * notice is a tracked A2.2 remainder; the FD4 place-3 runtime clamp above already keeps
+ * the banned route closed on every resolved position regardless.)
+ */
+export function mergeNatureRoutingChains(
+  override: Partial<Record<RoutingChain, ReadonlyArray<ChainPosition>>> | undefined,
+): NatureRoutingChains {
+  if (!override) return NATURE_ROUTING_DEFAULT_CHAINS;
+  return {
+    FAST: override.FAST ?? NATURE_ROUTING_DEFAULT_CHAINS.FAST,
+    SORT: override.SORT ?? NATURE_ROUTING_DEFAULT_CHAINS.SORT,
+    JUDGE: override.JUDGE ?? NATURE_ROUTING_DEFAULT_CHAINS.JUDGE,
+    WRITE: override.WRITE ?? NATURE_ROUTING_DEFAULT_CHAINS.WRITE,
+  };
+}
+
+/**
+ * The dev-gate-resolved live view of `sessions.natureRouting` the router reads per call.
+ * `enabled` is ALREADY gate-resolved at the construction boundary (like `ladder`), so the
+ * router just reads the boolean. Absent ⇒ feature off ⇒ byte-identical routing.
+ */
+export interface NatureRoutingRuntime {
+  enabled: boolean;
+  /** Observe-only (default true on first enable): compute + log the plan, do NOT re-route. */
+  dryRun: boolean;
+  chains?: Partial<Record<RoutingChain, ReadonlyArray<ChainPosition>>>;
+}
+
+/** The dryRun observation record handed to `onNatureRoutePlan` (FD11 readable canary). */
+export interface NatureRoutePlan {
+  component: string | undefined;
+  category: ComponentCategory;
+  dryRun: boolean;
+  resolution?: RouteResolution;
+  /** Set when the resolver would FAIL CLOSED (critical-gate empty set). */
+  failClosed?: boolean;
+}
+
 export class IntelligenceRouter implements IntelligenceProvider {
   private readonly cache = new Map<IntelligenceFramework, CachedFramework>();
 
@@ -427,6 +684,36 @@ export class IntelligenceRouter implements IntelligenceProvider {
     return framework === this.opts.defaultFramework ? this.opts.defaultProvider : this.providerFor(framework);
   }
 
+  /** Already warned that nature-routing enforcing mode is not yet wired (warn ONCE). */
+  private warnedNatureEnforceNotWired = false;
+
+  /**
+   * S4 A2 — CLI-door reachability probe for the nature router (FD5 availability walk).
+   * CLI doors coincide 1:1 with `IntelligenceFramework`. `resolveRoute` skips metered
+   * doors before ever calling this, so `door` is always a CLI door. The default framework
+   * is always reachable (shared provider); a non-default door is reachable iff its provider
+   * builds (binary present). Result is cached by `providerFor`.
+   */
+  private isCliDoorReachable(door: RoutingDoor): boolean {
+    return this.resolveProvider(door as IntelligenceFramework) !== null;
+  }
+
+  /**
+   * S4 A2 — enforcing-mode honesty guard. Flipping `dryRun:false` in A2.1 does NOT re-route
+   * (the selection integration is a tracked A2.2 remainder); routing stays byte-identical.
+   * Warn ONCE so the flip is an honest no-op rather than a silent dead switch.
+   */
+  private warnNatureEnforceNotWired(): void {
+    if (this.warnedNatureEnforceNotWired) return;
+    this.warnedNatureEnforceNotWired = true;
+    console.warn(
+      'IntelligenceRouter: sessions.natureRouting.dryRun is false, but nature-routing ENFORCING ' +
+        'selection is not wired in this build (Increment A2.1 ships the dark/dryRun observation ' +
+        'mechanism; enforcing selection is the tracked A2.2 remainder). Routing stays byte-identical — ' +
+        'the resolver plan is logged but not applied.',
+    );
+  }
+
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const component = options?.attribution?.component;
     const explicitCategory = (options?.attribution as { category?: unknown } | undefined)?.category;
@@ -435,6 +722,35 @@ export class IntelligenceRouter implements IntelligenceProvider {
       : categoryForComponent(component);
 
     const cfg = this.opts.resolveConfig();
+
+    // ── S4 A2 — nature-axis routing OBSERVATION (dev-gated dark; dryRun-first). ──
+    // Byte-identical when unset/off: when the feature is absent OR `enabled:false` this
+    // whole block is skipped and NOTHING about selection changes. In dryRun (the dev-agent
+    // default) it OBSERVES only — computes + logs the plan via `onNatureRoutePlan` — and
+    // still falls through to today's selection below. Enforcing SELECTION (dryRun:false) is
+    // a tracked A2.2 remainder; guarded here so a flip is an HONEST no-op, never a silent
+    // dead switch and never a mis-route. A resolver error can never break routing here.
+    const natureRt = this.opts.resolveNatureRouting?.();
+    if (natureRt?.enabled) {
+      const dryRun = natureRt.dryRun !== false; // default true on first enable
+      try {
+        const resolution = resolveRoute(
+          component,
+          options?.attribution?.nature,
+          mergeNatureRoutingChains(natureRt.chains),
+          { isDoorReachable: (d) => this.isCliDoorReachable(d) },
+        );
+        this.opts.onNatureRoutePlan?.({ component, category, dryRun, resolution });
+      } catch (e) {
+        if (e instanceof RouterFailClosedError) {
+          this.opts.onNatureRoutePlan?.({ component, category, dryRun, failClosed: true });
+        } else {
+          this.opts.onNatureRoutePlan?.({ component, category, dryRun });
+        }
+      }
+      if (!dryRun) this.warnNatureEnforceNotWired();
+    }
+
     // Unconfigured ⇒ exactly today's behavior.
     if (!cfg) return this.opts.defaultProvider.evaluate(prompt, options);
 

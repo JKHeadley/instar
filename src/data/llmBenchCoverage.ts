@@ -684,3 +684,148 @@ export const LLM_ROUTING_NATURE: Readonly<Record<string, RoutingNature>> = {
   SessionSummarySentinel: { nature: 'D', chain: 'SORT' },
   'correction-learning': { nature: 'D', chain: 'SORT' },
 };
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * S4 Increment A2 — nature-axis routing: door taxonomy, label registry, chains.
+ *
+ * These are the DATA half of the nature router (the resolver logic + wiring lives
+ * in src/core/IntelligenceRouter.ts). Everything here is pure, read-only config
+ * data — importing it changes NO behavior; it is actuated only when
+ * `sessions.natureRouting` is enabled (dev-gated dark; dryRun-first).
+ * Spec: docs/specs/nature-axis-routing.md — FD1 (doors), FD2 (chains), FD-LABEL/
+ * FD4.1 (label→id registry), FD4 (harness-door allowlist), FD6 (critical gates).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * A RoutingDoor is a concrete access path to a model (FD1), in two classes:
+ *  - CLI doors — 1:1 with `IntelligenceFramework` (already wired).
+ *  - Metered-API doors — NEW, wired in Increment B behind the FD12 money/PIN
+ *    go-live. In Increment A they are DEFINED but always resolve as unavailable
+ *    (skipped) — so no metered/paid door ever routes in this increment.
+ */
+export type RoutingDoor =
+  | 'pi-cli'
+  | 'codex-cli'
+  | 'gemini-cli'
+  | 'claude-code'
+  | 'gemini-api'
+  | 'openrouter-api'
+  | 'groq-api';
+
+/** CLI doors — coincide exactly with the `IntelligenceFramework` id set. */
+export const CLI_ROUTING_DOORS: ReadonlySet<RoutingDoor> = new Set([
+  'pi-cli',
+  'codex-cli',
+  'gemini-cli',
+  'claude-code',
+]);
+
+/** Metered-API doors — Increment B; ALWAYS skipped (unavailable) in Increment A. */
+export const METERED_ROUTING_DOORS: ReadonlySet<RoutingDoor> = new Set([
+  'gemini-api',
+  'openrouter-api',
+  'groq-api',
+]);
+
+/**
+ * A chain position (FD2): `{ door, model }` plus static flags. `model` is a
+ * benchmark LABEL (`flash-lite`, `gpt-5.5`, `opus-4.8`) or a tier hint
+ * (`fast|balanced|capable`); FD-LABEL resolves it to a concrete model id.
+ */
+export interface ChainPosition {
+  readonly door: RoutingDoor;
+  readonly model: string;
+  /** Vault secret name backing a metered door (Increment B). */
+  readonly keyRef?: string;
+  /** Real-spend door — money-gated (Increment B). */
+  readonly moneyGated?: boolean;
+  /** `false` ⇒ this door must not take an injection-exposed call (FD5b; e.g. Groq). */
+  readonly injectionSafe?: boolean;
+  /** doc-tree / cartographer components may never route to any claude-code door (R6). */
+  readonly claudeBanned?: boolean;
+}
+
+export type NatureRoutingChains = Readonly<Record<RoutingChain, ReadonlyArray<ChainPosition>>>;
+
+/**
+ * FD2 — the four v3 CLI-only chain defaults (config default). Authored using ONLY
+ * Echo's real doors (no `openai-api`). Metered positions are present but resolve
+ * unavailable until Increment B. An operator MAY override a chain wholesale
+ * (subject to the FD4 resolve-time validation — a tracked A2.2 remainder).
+ */
+export const NATURE_ROUTING_DEFAULT_CHAINS: NatureRoutingChains = {
+  // Latency-sensitive quick-sort.
+  FAST: [
+    { door: 'gemini-api', model: 'flash-lite', keyRef: 'metered_gemini_bench', moneyGated: true },
+    { door: 'pi-cli', model: 'gpt-5.5' },
+  ],
+  // Background quick-sort.
+  SORT: [
+    { door: 'codex-cli', model: 'gpt-5.4-mini' },
+    { door: 'pi-cli', model: 'gpt-5.5' },
+    { door: 'gemini-api', model: 'flash-lite', keyRef: 'metered_gemini_bench', moneyGated: true },
+    { door: 'claude-code', model: 'balanced' }, // Sonnet-4.6 reserve
+  ],
+  // Careful judgment.
+  JUDGE: [
+    { door: 'pi-cli', model: 'gpt-5.5' },
+    { door: 'codex-cli', model: 'gpt-5.5' },
+    { door: 'openrouter-api', model: 'gpt-5.5', keyRef: 'metered_openrouter_bench', moneyGated: true },
+    { door: 'openrouter-api', model: 'opus-4.8', keyRef: 'metered_openrouter_bench', moneyGated: true }, // clean API, NEVER CLI
+    { door: 'claude-code', model: 'balanced' }, // Sonnet-4.6 reserve
+  ],
+  // Open-ended writing (WRITE is the sole Opus-via-CLI-exempt lane — FD4).
+  WRITE: [
+    { door: 'codex-cli', model: 'gpt-5.4-mini' },
+    { door: 'groq-api', model: 'gpt-oss-120B', keyRef: 'metered_groq_bench', moneyGated: true, injectionSafe: false },
+    { door: 'claude-code', model: 'fast' }, // Haiku-4.5
+    { door: 'claude-code', model: 'capable' }, // Opus-4.8 quality lane — allowed on WRITE (FD4)
+  ],
+};
+
+/**
+ * FD-LABEL / FD4.1 — the explicit per-door registry mapping a benchmark LABEL to a
+ * concrete model id. This is the boundary A1 deliberately deferred: A1 clamps to the
+ * `balanced` tier TOKEN; A2 pins the reserve to a CONCRETE id. The `claude-code`
+ * `balanced` reserve pins to the versioned manifest id `claude-sonnet-4-6` (FD4 place
+ * 1 — a tier label could resolve differently under a future CLI alias/remap; the
+ * pinned concrete id can't). A tier hint NOT present here (`fast`, `capable`) is left
+ * as-is and resolves downstream through the existing per-adapter tier map.
+ */
+export const ROUTING_LABEL_TO_MODEL_ID: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  'gemini-api': { 'flash-lite': 'gemini-3.1-flash-lite' },
+  'openrouter-api': { 'opus-4.8': 'anthropic/claude-opus-4-8', 'gpt-5.5': 'openai/gpt-5.5' },
+  'claude-code': { balanced: 'claude-sonnet-4-6' },
+  'codex-cli': { 'gpt-5.5': 'gpt-5.5', 'gpt-5.4-mini': 'gpt-5.4-mini' },
+  'pi-cli': { 'gpt-5.5': 'gpt-5.5' },
+  'groq-api': { 'gpt-oss-120B': 'openai/gpt-oss-120b' },
+};
+
+/**
+ * The SINGLE sanctioned `claude-code` reserve model id for a bounded/gating
+ * (FAST/SORT/JUDGE) chain (FD4 place 1). The allowlist clamp permits ONLY this id on
+ * the claude-code door in those chains — deny-by-default — and clamps any other
+ * claude-code selection down to it. Pinned to the concrete manifest id (NOT the
+ * `balanced` tier label). Kept in sync with
+ * scripts/model-registry-freshness.manifest.json (role `balanced-anthropic`).
+ */
+export const CLAUDE_CODE_RESERVE_MODEL_ID = ROUTING_LABEL_TO_MODEL_ID['claude-code'].balanced;
+
+/**
+ * FD6 — the critical-gate components (nature-B JUDGE safety gates + `MessageSentinel`,
+ * a nature-A / R2-critical gate). Load-bearing for the resolver's empty-set branch: a
+ * critical gate with no available door FAILS CLOSED (throw), never `no-route`. A gate
+ * must carry a real nature entry (never a `chainExempt` filler — FD4 Adv5).
+ */
+export const NATURE_ROUTING_CRITICAL_GATES: ReadonlySet<string> = new Set([
+  'MessagingToneGate',
+  'CompletionEvaluator',
+  'ExternalOperationGate',
+  'LLMSanitizer',
+  'CoherenceReviewer',
+  'UnjustifiedStopGate',
+  'SessionWatchdog',
+  'StallTriageNurse',
+  'ProjectDriftChecker',
+  'MessageSentinel', // nature A, R2-critical
+]);

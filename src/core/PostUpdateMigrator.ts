@@ -403,6 +403,32 @@ export function migrateConfigActionClaimSlackDevGate(config: Record<string, unkn
 }
 
 /**
+ * S4 Nature-Axis Routing (docs/specs/nature-axis-routing.md, § Migration Parity): SEED
+ * `sessions.natureRouting` DARK on existing agents so the update path reaches deployed
+ * agents (not only new agents via init). Adds the block ONLY when ABSENT — an operator/agent
+ * that already configured it is never clobbered (existence-checked, idempotent).
+ *
+ * CRITICAL — `enabled` is DELIBERATELY OMITTED (enable-path integrity, the #1001 pattern):
+ * the construction boundary resolves it via `resolveDevAgentGate(cfg.enabled, config)`, so a
+ * seeded `enabled:false` would force-dark even a development agent. `dryRun:true` is the
+ * observe-only canary; `metered.goLive:false` keeps Increment B inert. Chain defaults live in
+ * CODE (`NATURE_ROUTING_DEFAULT_CHAINS`) — the seed stays small and a future chain reslot
+ * reaches agents on a `schemaVersion` bump, not by writing a chain blob into every config.
+ */
+export function migrateConfigNatureRoutingDark(config: Record<string, unknown>): boolean {
+  const sessions = config.sessions as Record<string, unknown> | undefined;
+  if (!sessions || typeof sessions !== 'object' || Array.isArray(sessions)) return false;
+  if (Object.prototype.hasOwnProperty.call(sessions, 'natureRouting')) return false; // already present
+  sessions.natureRouting = {
+    schemaVersion: 3,
+    // `enabled` OMITTED so resolveDevAgentGate decides (live-in-dryRun on a dev agent, dark fleet).
+    dryRun: true,
+    metered: { goLive: false },
+  };
+  return true;
+}
+
+/**
  * "Self-Unblock Before Escalating" (docs/specs/self-unblock-before-escalating.md):
  * the two nested blockerLedger sub-features — selfUnblockChecklist + durableVaultSession
  * — are dev-gated dark features resolved via resolveDevAgentGate, so the config must
@@ -9004,6 +9030,16 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: stripped default-shaped messaging.actionClaim.slack.enabled=false so the developmentAgent gate resolves it (live-on-dev, dark fleet)');
     } else {
       result.skipped.push('config.json: messaging.actionClaim.slack.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // S4 Nature-Axis Routing: SEED sessions.natureRouting DARK (schemaVersion+dryRun+metered.goLive
+    // false; `enabled` OMITTED so the developmentAgent gate resolves it live-on-dev / dark-fleet).
+    // Existence-checked — never clobbers an operator/agent that already configured it.
+    if (migrateConfigNatureRoutingDark(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded dark sessions.natureRouting (schemaVersion:3, dryRun:true, metered.goLive:false; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: sessions.natureRouting already present or no sessions block (no seed)');
     }
 
     // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger

@@ -6166,6 +6166,42 @@ export async function startServer(options: StartOptions): Promise<void> {
             try { DegradationReporter.getInstance().resolveDegradation(component, framework); }
             catch { /* @silent-fallback-ok: a never-silent tracking hook must NEVER throw into the LLM call path; a failed resolve just leaves the open degradation for the next success/sweep. */ }
           },
+          // S4 A2 — Nature-Axis Routing (docs/specs/nature-axis-routing.md). Read LIVE per call
+          // so the kill switch is hot: `enabled` is DEV-GATED (resolveDevAgentGate — `enabled`
+          // OMITTED in shipped config ⇒ live-in-dryRun on a dev agent, dark on the fleet). When
+          // disabled this returns undefined ⇒ the router's nature block is skipped ⇒ routing is
+          // BYTE-IDENTICAL to today. dryRun defaults true (observe-only). A2.1 ships the dark/
+          // dryRun OBSERVATION mechanism; enforcing selection + the durable audit surface are
+          // tracked A2.2 remainders.
+          resolveNatureRouting: () => {
+            const nrCfg = config.sessions?.natureRouting;
+            if (!resolveDevAgentGate(nrCfg?.enabled, config)) return undefined;
+            return {
+              enabled: true,
+              dryRun: nrCfg?.dryRun !== false, // default true on first enable
+              chains: nrCfg?.chains,
+            };
+          },
+          onNatureRoutePlan: (plan) => {
+            // A2.1 observe-only breadcrumb (env-gated so a dev agent's hot path stays quiet;
+            // the durable logs/nature-routing.jsonl + GET /intelligence/routing dryRun plan
+            // surface are the tracked A2.2 remainder). Never breaks the LLM call path.
+            try {
+              if (process.env.INSTAR_NATURE_ROUTING_LOG !== '1') return;
+              const r = plan.resolution;
+              const detail =
+                r && r.outcome === 'route'
+                  ? `chain=${r.resolvedChain} primary=${r.primary.door}/${r.primary.modelId}` +
+                    `${r.primary.clamped ? ' (clamped)' : ''} tail=${r.swapTail.length}`
+                  : plan.failClosed
+                    ? 'FAIL-CLOSED (critical gate, no door)'
+                    : `outcome=${r?.outcome ?? 'n/a'}`;
+              console.log(
+                `[nature-routing] ${plan.component ?? '(none)'} (${plan.category}) ${detail} ` +
+                  `dryRun=${plan.dryRun}`,
+              );
+            } catch { /* never break the LLM path on an observation */ }
+          },
         });
       } catch (err) {
         console.warn(`[server] IntelligenceRouter failed to initialize, using unrouted provider: ${err}`);
