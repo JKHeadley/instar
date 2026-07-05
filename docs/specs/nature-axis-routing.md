@@ -17,324 +17,453 @@ separate axis — the caller's `options.model` size hint (`fast | balanced | cap
 mapped to a model id per-adapter (`TIER_TO_MODEL`). Nature never enters the decision.
 
 The INSTAR-Bench v3 corrected-battery re-rank (2026-07-03; `research/llm-pathway-bench/results/instar-bench-v2/MATRIX-RERANK.md`,
-`FULL-REPORT-ELI16.md`) proved that the *right* route is a function of **task nature**,
-not category and not model. The load-bearing evidence:
+`FULL-REPORT-ELI16.md`) proved the *right* route is a function of **task nature**, not category
+and not model:
 
-- **The door penalty.** Identical Opus 4.8 scores **99.1% via a clean API** but **81.7% via
-  the Claude Code CLI** — a 17.4-pt penalty. On the completion judge: **100% API vs 35% CLI**.
-  On emergency-stop: Opus-CLI **73%** (missed canonical STOP commands). The Claude Code
-  harness wraps every prompt in ~20k tokens of "helpful coding agent" framing that turns a
-  skeptical judge into a credulous assistant.
-- **The paradox (ELI16 §7.12).** Opus-via-Claude-Code-CLI is *simultaneously* the **WORST**
-  route for bounded verdicts (completion-judge 35%) and the **BEST** for open-ended writing
-  (9.1/10 blind). Same route, opposite verdict — which is *why* routing must be per-nature.
+- **The door penalty.** Identical Opus 4.8 scores **99.1% via a clean API** but **81.7% via the
+  Claude Code CLI** (17.4-pt penalty). On the completion judge: **100% API vs 35% CLI**. On
+  emergency-stop: Opus-CLI **73%** (missed canonical STOP commands). The Claude Code harness wraps
+  every prompt in ~20k tokens of "helpful coding agent" framing.
+- **The paradox (ELI16 §7.12).** Opus-via-Claude-Code-CLI is *simultaneously* the **WORST** route
+  for bounded verdicts (completion-judge 35%) and the **BEST** for open-ended writing (9.1/10) —
+  which is *why* routing must be per-nature.
 
-Two prerequisite pieces are already **merged on `JKHeadley/main`** (PR #1352):
+Two prerequisites are already **merged on `JKHeadley/main`** (PR #1352):
 
 - **S1 — the nature map.** `src/data/llmBenchCoverage.ts` exports `TaskNature` (`A|B|D|E`),
-  `RoutingChain` (`FAST|SORT|JUDGE|WRITE`), `RoutingNature`, and `LLM_ROUTING_NATURE` (a
-  read-only, bench-cited component→`{nature,chain}` map), plus the
-  `llm-routing-nature-ratchet.test.ts` guard (nature∈{A,B,D,E}, chain∈{FAST,SORT,JUDGE,WRITE},
-  A→FAST|SORT, B→JUDGE, D→SORT|WRITE, E→JUDGE; every key exists in `COMPONENT_CATEGORY` and is
-  bench-covered). It is **advisory metadata only** and deliberately **non-exhaustive** — it
-  "changes NO routing today", explicitly leaving actuation to S4.
-- **S2 — the safety clamp.** `clampClaudeCliSwapModel(target, requested)` in
-  `src/core/IntelligenceRouter.ts` clamps a failure-swap that lands on `claude-code`
-  requesting `capable` down to `balanced` (Sonnet CLI) — never Opus-via-CLI for a bounded/gating
-  verdict (R1/R2). It is invoked **only** inside the failure-swap loop today.
+  `RoutingChain` (`FAST|SORT|JUDGE|WRITE`), `RoutingNature`, `LLM_ROUTING_NATURE` (read-only,
+  bench-cited component→`{nature,chain}` map), and `llm-routing-nature-ratchet.test.ts`. It is
+  **advisory metadata only** and deliberately **non-exhaustive** — it "changes NO routing today",
+  leaving actuation to S4.
+- **S2 — the safety clamp.** `clampClaudeCliSwapModel(target, requested)` in `IntelligenceRouter.ts`
+  clamps a failure-swap landing on `claude-code` requesting `capable` down to `balanced`
+  (Sonnet CLI). It is invoked **only** inside the failure-swap loop today (see FD4 for the reach
+  gaps this spec closes).
 
 **S4 is the actuation.** Make the router resolve a concrete **(door, model)** by
-**nature → chain → door-availability**, apply the v3 chains as **config defaults**, and
-compose with the merged S2 clamp — shipped **dark and reversible first** (fleet behavior
+**nature → chain → door-availability**, apply the v3 chains as **config defaults**, compose with
+(and structurally harden) the merged S2 clamp, and ship **dark & reversible first** (fleet behavior
 byte-identical when the nature-routing config is unset).
 
 ## Frontloaded Decisions
 
-Every decision below is **resolved** (operator-authoritative where marked). None are parked
-on the user; `## Open questions` is empty by construction.
+Every decision below is **resolved**; `## Open questions` is empty by construction.
 
 ### FD1 — Door taxonomy (operator-authoritative)
-A **RoutingDoor** is a concrete access path to a model. Two classes:
+A **RoutingDoor** is a concrete access path to a model, in two classes:
 
 - **CLI doors** — already `IntelligenceFramework`, already wired: `pi-cli`, `codex-cli`,
   `gemini-cli`, `claude-code`.
-- **Metered-API doors** — NEW, backed by the existing bench metered funnel + its
-  `$0-fail-closed` money gate; wired in **Increment B** (FD9). Each is keyed to a vault secret
-  Echo already holds (verified via `secret-get.mjs --names`, 2026-07-04):
-  - `gemini-api` → `metered_gemini_bench` — Gemini 3.1 Flash-Lite (CHAIN FAST winner) + Gemini 3.x.
+- **Metered-API doors** — NEW, backed by the existing bench metered funnel + its money gate; wired
+  in **Increment B** (FD9), gated by an explicit operator go-live authorization (FD12). Each is keyed
+  to a vault secret Echo already holds (verified `secret-get.mjs --names`, 2026-07-04):
+  - `gemini-api` → `metered_gemini_bench` — Gemini 3.1 Flash-Lite (FAST winner) + Gemini 3.x.
     **Operator decision #2:** use the metered Gemini key for LIVE Gemini-tier routing; keep the
-    existing $0-fail-closed money gate; never exceed the cap.
-  - `openrouter-api` → `metered_openrouter_bench` — GPT-5.5 API + **Opus-4.8 clean API** (the
-    JUDGE "never-CLI" reserve).
-  - `groq-api` → `metered_groq_bench` — gpt-oss-120B (CHAIN WRITE, **non-injection only**).
+    existing money gate; never exceed the cap.
+  - `openrouter-api` → `metered_openrouter_bench` — GPT-5.5 API + **Opus-4.8 clean API** (the JUDGE
+    "never-CLI" reserve).
+  - `groq-api` → `metered_groq_bench` — gpt-oss-120B (WRITE, **non-injection only** — enforced by
+    FD5b, not a doc label).
 
 **Operator decision #1 (authoritative):** GPT-5.5-tier work routes via **`pi-cli` as PRIMARY**
-(the bench crowned pi-gpt-5.5 = 100% adversarial, 5.7s — the fastest GPT-5.5 door), with
-`codex-cli` and `openrouter-api` as fallbacks. **There is NO OpenAI direct API key and one MUST
-NOT be required** — any chain position that needs an OpenAI-direct key is treated as *unavailable*
-and skipped by the door-availability walk (FD5). This is not a gap to close; it is a fixed
-constraint of Echo's inventory.
+(bench: 100% adversarial, 5.7s — the fastest GPT-5.5 door), with `codex-cli` and `openrouter-api`
+as fallbacks. **There is NO OpenAI direct-API key and one MUST NOT be required.** Consequently
+**there is no `openai-api` door** — every chain (FD2) is authored using only the doors above; a
+position needing an OpenAI-direct key does not exist in any chain. (This removes the phantom
+`openai-api/*` positions the seed draft carried.)
 
 ### FD2 — Chain-position model
-A **chain position** is `{ door, model, keyRef?, moneyGated?, injectionSafe? }` where `model` is a
-tier (`fast|balanced|capable`) or a concrete id. A **chain** is an ordered
-default→fallback ladder of positions. The four chains (ELI16 §11), authored as config defaults:
+A **chain position** = `{ door, model, keyRef?, moneyGated?, injectionSafe?, claudeBanned? }` where
+`model` is a **benchmark label** that resolves to a concrete adapter model id (FD-LABEL). A **chain**
+is an ordered default→fallback ladder. The four chains (ELI16 §11), authored as config defaults,
+using ONLY Echo's real doors (no `openai-api`):
 
-- **FAST** (latency-sensitive quick-sort): `gemini-api/flash-lite` → `openai-api/gpt-5.4` *(no key → skip)*
-  → `openai-api/gpt-5.4-mini` *(no key → skip)* → `pi-cli/gpt-5.5`.
+- **FAST** (latency-sensitive quick-sort): `gemini-api/flash-lite` → `pi-cli/gpt-5.5`.
 - **SORT** (background quick-sort): `codex-cli/gpt-5.4-mini` → `pi-cli/gpt-5.5` → `gemini-api/flash-lite`
-  → `openai-api/gpt-5.4-mini` *(no key → skip)* → `claude-code/balanced` *(Sonnet-4.6 reserve)*.
+  → `claude-code/balanced` *(Sonnet-4.6 reserve)*.
 - **JUDGE** (careful judgment): `pi-cli/gpt-5.5` → `codex-cli/gpt-5.5` → `openrouter-api/gpt-5.5`
   → `openrouter-api/opus-4.8` *(clean API, **NEVER CLI**)* → `claude-code/balanced` *(Sonnet-4.6 reserve)*.
 - **WRITE** (open-ended writing): `codex-cli/gpt-5.4-mini` → `groq-api/gpt-oss-120B` *(non-injection only)*
-  → `claude-code/fast` *(Haiku-4.5)* → `claude-code/capable` *(Opus-4.8 quality lane — allowed, see FD4)*.
+  → `claude-code/fast` *(Haiku-4.5)* → `claude-code/capable` *(Opus-4.8 quality lane — allowed, FD4)*.
 
-The chain table lives at `sessions.natureRouting.chains` (config default = the four above);
-an operator MAY override a chain wholesale. The model per position resolves through the existing
+The chain table lives at `sessions.natureRouting.chains` (config default = the four above); an
+operator MAY override a chain wholesale — subject to the **resolve-time validation** in FD4 (an
+override is not exempt from the harness-door ban). Per-position models resolve through the existing
 per-adapter maps (`resolveModelForFramework` / `TIER_TO_MODEL`); metered-door model ids resolve in
 the metered adapter (Increment B).
 
-### FD3 — Nature signal origin: **static per-component map** (design-decided; grounding-aligned)
-Nature is resolved from `LLM_ROUTING_NATURE` (extended to be **exhaustive** over
-`COMPONENT_CATEGORY` — FD7), NOT a per-call classifier and NOT bare caller-declaration.
-Rationale: nature is a **stable property of the callsite**, not of the input; a classifier would
-add an LLM call to route an LLM call (cost + recursion) and could be gamed by injected input; the
-static map is deterministic, auditable, and already enforced by the cite-the-bench ratchet
-(Structure > Willpower). **Opt-in override:** a caller MAY pass `attribution.nature` for a
-genuinely multi-nature (A/B) callsite; the resolver takes the **stricter** of map-vs-declared
-(B > D > A precedence for gates; the safe direction — a judgment call never silently downgrades to
-a sorter). A component with **no** map entry falls through to **today's category routing**
-(byte-identical safe default) — but the FD7 ratchet forbids that state for any benched component,
-so the fall-through only ever covers genuinely un-benched/exempt callsites.
+### FD-LABEL — benchmark label vs resolved model id (codex C5)
+A position's `model` is a **benchmark label** (`flash-lite`, `gpt-5.5`, `opus-4.8`, `balanced`), NOT
+a raw provider id. Resolution to a concrete id goes through the per-adapter maps + the merged
+model-registry-freshness manifest (`scripts/model-registry-freshness.manifest.json`, S6 substrate).
+A lint (`lint-nature-chains.mjs`, FD4.2) validates that **every** chain position's label resolves to
+an **adapter-supported id** (reusing `frontierSetForDoor()` / the freshness lint) — so a re-slot
+(GPT-5.6 lands) is a manifest edit, never a chain rewrite, and a typo'd label fails the build.
 
-### FD4 — Composition with the harness-door ban (operator decision #3, R1/R2/S2)
-**Judge / gate / any BOUNDED-JUDGING work routes through CLEAN doors ONLY, never the
-`claude-code` agent-harness door.** The measured penalty is the **harness framing, not the
-model**. Enforcement, composing with the merged S2 clamp (reused, not re-implemented):
+### FD3 — Nature signal origin: **static per-component map**, with per-operation keys
+Nature is resolved from `LLM_ROUTING_NATURE` (extended exhaustive over `COMPONENT_CATEGORY` — FD7),
+NOT a per-call classifier and NOT bare caller-declaration. Rationale: nature is a **stable property
+of the callsite**; a classifier would add an LLM call to route an LLM call (cost + recursion) and be
+gameable by injected input; the static map is deterministic, auditable, ratchet-enforced
+(Structure > Willpower).
 
-1. **Reuse `clampClaudeCliSwapModel`** at BOTH the primary-route resolution AND every swap
-   position (today it fires only in the swap loop). Any FAST/SORT/JUDGE position landing on
-   `claude-code` with `capable`/opus is clamped to `balanced` (Sonnet-4.6 CLI reserve).
-2. **Chain-validation lint** (`scripts/lint-nature-chains.mjs` + a ratchet test): the build
-   FAILS if any **FAST/SORT/JUDGE** chain position is `(claude-code, capable|opus)`. This makes
-   R1/R2 a structural guarantee at config-authoring time, not a runtime hope.
-3. **WRITE is the sole exemption.** R1 scopes explicitly to *bounded verdicts*; open-ended
-   writing is where Opus-via-CLI is the **best** route (9.1/10). WRITE's `claude-code/capable`
-   (Opus quality lane) is therefore allowed — and the lint exempts WRITE by name.
+- **Per-operation route keys (codex C3).** A multi-mode component keys nature on the already-supported
+  `attribution.component` **"/segment" suffix** (`categoryForComponent` strips it today). E.g.
+  `CompletionEvaluator/judge` = `{B,JUDGE}` while `CompletionEvaluator/classify` = `{A,SORT}`. A unit
+  test asserts a critical operation **cannot inherit** a low-stakes sibling's default.
+- **Precedence for a caller-declared `attribution.nature`** (opt-in, tightening-only): the resolver
+  takes the **stricter** of map-vs-declared by the full ordering **`E, B ≥ D ≥ A`** (E and B are both
+  JUDGE-tier; the safe direction — a judgment call never silently downgrades to a sorter). Nature `E`
+  is explicitly included (closes the Sec3 gap).
+- **Trust boundary (Sec4).** `attribution.*` MUST originate from **callsite code**, never from a
+  field derived from model/user content. A `nature` value **outside `{A,B,D,E}`** is ignored — the
+  static map wins (fail-safe); an override can only ever *tighten*, never widen.
+- A component with **no** map entry falls through to **today's category routing** (byte-identical safe
+  default), but the FD7 ratchet forbids that state for any benched component.
 
-Net effect: no bounded/gating call can ever resolve to Opus-via-Claude-CLI, at the primary
-position OR any fallback landing — the banned 17.4-pt route is unreachable by construction for
-nature A/B/D-sort work.
+### FD4 — The harness-door ban (operator decision #3, R1/R2/S2) — structurally unbreakable
+**The measured-banned route is `(claude-code door, Opus/capable-FAMILY model)` for any bounded/gating
+(FAST/SORT/JUDGE) call.** The penalty is the harness framing on a *credulous* model; it is severe for
+Opus and negligible for Sonnet-4.6-CLI (bench: 99.5%, 28/28 traps — it *beats* Sonnet-5-API on bounded
+gates). So the precise invariant — reconciling operator decision #3 ("clean doors, never the harness
+door") with the merged S2 clamp (which clamps to Sonnet-CLI, not removal) — is:
 
-### FD5 — Door-availability / key-inventory walk
-Resolution walks the nature's chain positions in order. A position is **available** iff: its door
-binary/CLI is present (CLI doors) OR its vault key exists AND the door's money-gate has budget
-(metered doors), AND the door's circuit breaker is closed. The **first available** position is the
-PRIMARY `(door, model)`; the remaining available positions, in order, become the **failureSwap
-tail** fed to the existing swap loop. An unavailable position is **skipped** (logged), never a
-hard error. Concretely, with Echo's inventory (no OpenAI-direct key):
+> **INVARIANT:** No FAST/SORT/JUDGE call may resolve to an **Opus-family** model on the `claude-code`
+> door, at ANY exit (primary, swap tail, OR degrade-to-default). The **only** permitted `claude-code`
+> position in a bounded/gating chain is the terminal **`balanced` (Sonnet-4.6-CLI) last-resort
+> reserve**, reached only when every cleaner door is simultaneously unavailable (failing a safety gate
+> fully closed is worse than serving it on the sanctioned 99.5% reserve). **WRITE is exempt** — R1
+> scopes to *bounded verdicts*; open-ended writing is where Opus-via-CLI is the *best* route.
+
+Enforcement in **THREE** independent places (a single lint is insufficient — Sec1/Adv2/Adv3):
+
+1. **Resolve model→concrete-id→FAMILY first, then ban by family (never tier-token).** Every position's
+   label is resolved to a concrete id, then mapped to a model *family*; an Opus-family id on
+   `claude-code` in FAST/SORT/JUDGE is rejected. A `{door:'claude-code', model:'claude-opus-4-8'}`
+   concrete-id position can no longer slip past a `=== 'capable'` string check (closes Adv3/Sec1). The
+   merged `clampClaudeCliSwapModel` is **extended** to this family predicate.
+2. **Build-time lint** (`lint-nature-chains.mjs` + ratchet test): the build FAILS if any FAST/SORT/JUDGE
+   chain default carries an Opus-family `claude-code` position; WRITE exempt by name. Also encodes the
+   R3–R8 bans (FD5c).
+3. **Resolve-time assertion over LIVE/hot config** (Adv2/Sec1): because chains are read live per call
+   and an operator may `PATCH /config` a chain wholesale, the same validator runs on **config load and
+   on each hot-read** (cheaply, cached by config-hash). An invalid live chain is **rejected → falls back
+   to the built-in defaults** and raises the FD6 attention item — a runtime chain edit can never open the
+   banned route.
+
+Plus the **runtime clamp is applied at every model-selection exit**, including the **degrade-to-default
+path** (`evaluate()` lines 406–421) that the reused router currently leaves **UNCLAMPED** (LA4 —
+a genuine fail-open in `main`: a binary-missing degrade with `defaultFramework==='claude-code'` +
+`capable` lands Opus-via-CLI). S4 fixes that hole: the clamp fires on the degrade path and the
+`resolveRoute` terminal, not only inside the swap loop.
+
+- **Critical gates may never carry nature D / chain WRITE (Adv1).** A ratchet asserts every FD6
+  critical-gate component resolves nature **B / chain JUDGE** — so a gate cannot be *authored* as
+  `{D,WRITE}` in the static map to sneak onto the WRITE-exempt Opus-CLI lane.
+- **`chainExempt` is forbidden for FD6 critical gates (Adv5)** — a critical gate must carry a real
+  nature entry, never a 40-char filler exemption.
+
+### FD5 — Door-availability walk, injection-exposure gate, and the R-rules
+**(a) Availability walk.** Resolution walks the nature's chain positions in order. A position is
+**available** iff its door is reachable (CLI binary present / metered key present AND money-gate budget
+> 0 — FD12) AND its circuit breaker is closed AND (FD5b) it is injection-eligible for this call. The
+**first available** position is the PRIMARY `(door, model)`; the remaining available positions become
+the ordered **failureSwap tail** fed to the existing swap loop. An unavailable position is **skipped**
+(logged), never a hard error. Concrete Echo walks (no OpenAI key):
 
 - FAST → `gemini-api/flash-lite` (Increment B) then `pi-cli/gpt-5.5`.
 - SORT → `codex-cli/gpt-5.4-mini` → `pi-cli/gpt-5.5` → `gemini-api/flash-lite` → `claude-code/balanced`.
-- JUDGE → `pi-cli/gpt-5.5` → `codex-cli/gpt-5.5` → `openrouter-api/gpt-5.5` → `openrouter-api/opus-4.8` → `claude-code/balanced`.
+- JUDGE → `pi-cli/gpt-5.5` → `codex-cli/gpt-5.5` → `openrouter-api/gpt-5.5` → `openrouter-api/opus-4.8`
+  → `claude-code/balanced`.
 - WRITE → `codex-cli/gpt-5.4-mini` → `groq-api/gpt-oss-120B` → `claude-code/fast` → `claude-code/capable`.
 
-The walk **can never** violate FD4: the only `claude-code` position in FAST/SORT/JUDGE is the
-terminal `balanced` reserve, and the lint (FD4.2) guarantees no capable/opus position exists there.
+**(b) Injection-exposure gate (Sec2/LA1 — `injectionSafe` is enforced, not decorative).** A callsite
+declares `attribution.injectionExposed: true` when its prompt carries untrusted content (message text,
+tool output, doc bodies). `isAvailable` **skips** any position marked `injectionSafe: false` (e.g.
+`groq-api/gpt-oss-120B`) when the call is injection-exposed, and **fails closed (skips)** when exposure
+is *unknown* for an injection-sensitive position. So an injection-exposed WRITE call can never land on
+the non-injection Groq door.
 
-### FD6 — Authority split: what auto-applies vs what the operator must review (operator decision #5)
-- **LOW-STAKES (auto-apply).** Nature **A** (FAST/SORT bounded sorters) and nature **D**
-  (background digests) that are **not** safety gates — e.g. `CommitmentSentinel`,
-  `TemporalCoherenceChecker`, `PresenceProxy`, `TaskClassifier`, `TopicIntentExtractor`,
-  `SessionActivitySentinel`, `SessionSummarySentinel`, `correction-learning`. Their bench-
-  recommended chain is the config default and takes effect the moment nature-routing is enabled;
-  a future S6 re-bench reslot for these MAY auto-apply.
+**(c) The R-rule lints (LA2/LA3, R3–R8).** The FD4.2 lint additionally asserts, over the chain
+defaults AND live config:
+- **R6 (absolute):** doc-tree / cartographer components carry `claudeBanned: true` and **no chain
+  position may route them to any `claude-code` door** — nature routing must NOT re-open the Claude route
+  that `CartographerSweepEngine.probeRouting()` already forbids. Their WRITE chain uses off-Claude doors
+  only (codex → groq); if all are down the call **fails closed to the caller's heuristic**, never Claude.
+- **R8:** input-classifier-nature components (`InputClassifier`, `MessageSentinel`, `TaskClassifier`) are
+  marked `injectionExposed` and **pinned off the `gemini-api/flash-lite` position** (Flash-Lite's one
+  reproduced trap-fall is exactly the input-classifier slot) — their FAST/SORT walk skips Flash-Lite.
+- **R4/R7:** `gemini-cli` (consumer Flash 2.5) and any DeepSeek door never take an injection-exposed
+  JUDGE position. **R5:** gpt-oss-20B / Llama-4-Scout never take a gate (JUDGE) position. **R3:**
+  Qwen-tier-on-Groq never takes a strict-format position. (The chains as authored already exclude these
+  doors; the lint makes their exclusion *structural* so a future edit can't reintroduce them.)
+
+### FD6 — Authority split + the critical-gate routing notice (operator decision #5)
+- **LOW-STAKES (auto-apply).** Nature **A** (FAST/SORT bounded sorters) and nature **D** (background
+  digests) that are **not** safety gates — `CommitmentSentinel`, `TemporalCoherenceChecker`,
+  `PresenceProxy`, `TaskClassifier`, `TopicIntentExtractor`, `SessionActivitySentinel`,
+  `SessionSummarySentinel`, `correction-learning`. Bench-recommended chain = config default, active the
+  moment nature-routing is enabled; a future S6 reslot for these MAY auto-apply.
 - **CRITICAL-GATE (operator review, NEVER auto-ship).** Nature **B** JUDGE safety gates —
   `MessagingToneGate`, `CompletionEvaluator`, `ExternalOperationGate`, `LLMSanitizer`,
   `CoherenceReviewer`, `UnjustifiedStopGate`, `SessionWatchdog`, `StallTriageNurse`,
-  `ProjectDriftChecker` — **plus** the emergency-stop classifier `MessageSentinel` (nature A but
-  R2-critical). The chain-default table carries a per-component `autoApply: boolean`; critical-gate
-  = `false`. ANY change to a critical-gate's resolved `(door, model)` — an operator config edit, a
-  **durable** fallback landing, or an S6 reslot — raises **ONE deduped operator attention item** and
-  is never auto-shipped. Because S4 ships dark, *enabling* nature-routing is itself a deliberate
-  operator act, and the critical-gate defaults it activates are exactly the operator-reviewed v3
-  chains; the attention item covers post-enable drift.
+  `ProjectDriftChecker` — **plus** `MessageSentinel` (nature A, R2-critical). `autoApply:false`.
+
+**The routing notice — precise trigger (codex C2/Adv4/Adv6).** Two distinct events:
+1. **Route-DRIFT** (not a call failure): a critical-gate's resolved **primary `(door, model)` differs
+   from the operator-reviewed baseline** AND that divergence **persists ≥ N=3 resolution ticks within
+   10 min** (self-heal exhausted — a transient blip that recovers before N ticks is silent). → **ONE
+   deduped `HIGH` attention item** (HIGH so the topic-flood guard never coalesces it — Adv6).
+2. **Critical-gate on the terminal `claude-code/balanced` reserve → IMMEDIATE escalation** (Adv4),
+   bypassing the N=3 debounce: a safety gate running on the harness-penalized reserve door (even the
+   sanctioned Sonnet reserve) in the CLI-miss regime must be surfaced at once, never silently for up to
+   10 min. This is the notify-and-heal path (the reserve still serves the call).
+
+A **call FAILURE** served by a fallback is *self-healed* (the fallback IS the remediation) and is **not**
+a notice. Dedupe/audit are per-machine (consistent with the attention-queue local posture); **pool-level
+coalescing** is a tracked follow-up (§Close-the-Loop, Int5).
 
 ### FD7 — Exhaustive nature map + ratchet
-`LLM_ROUTING_NATURE` is extended to cover **every** `COMPONENT_CATEGORY` key, resolving the
-multi-nature (A/B, B/D) callsites S1 deferred (grounding lists them). A new ratchet
-(`nature-routing-exhaustiveness`) asserts: every `COMPONENT_CATEGORY` key either has a nature
-entry OR an explicit `{ chainExempt: <reason ≥40 chars> }` marker (mirrors the bench-coverage
-shrink-only ratchet). This is the only structural guarantee that a component cannot *silently*
-miss nature routing.
+`LLM_ROUTING_NATURE` is extended to cover **every** `COMPONENT_CATEGORY` key (resolving the multi-nature
+A/B, B/D callsites S1 deferred, using per-operation keys — FD3). A ratchet
+(`nature-routing-exhaustiveness`) asserts: every `COMPONENT_CATEGORY` key has a nature entry OR an
+explicit `{ chainExempt: <reason ≥40 chars> }` marker — **except** FD6 critical gates, for which
+`chainExempt` is forbidden (Adv5). Doc-tree/cartographer components carry `claudeBanned` (FD5c/R6).
 
-### FD8 — Fable reconciliation (operator decision #4)
-No nature chain emits `claude-fable-5` (Fable is in no chain). A companion config change moves
-`frameworkDefaultModels.claude-code` off `claude-fable-5` to the account default (Opus),
-reconciling the Δ4 disagreement (spawned-session default `fable-5` vs escalation config
-`opus-4-8`). A chain-validation lint assertion (FD4.2, extended) FAILS the build if any chain
-position resolves to a Fable model. Fable stays reserved for deliberate escalation / high-level
-consult (`models.tierEscalation`), never a routing default.
+### FD8 — Fable reconciliation (operator decision #4) — **requires a session restart**
+No nature chain emits `claude-fable-5`; the FD4.2 lint FAILS the build if any chain position resolves to
+a Fable model. A **companion config change** moves `frameworkDefaultModels.claude-code` off
+`claude-fable-5` to the account default (Opus), reconciling the Δ4 disagreement (spawned-session default
+`fable-5` vs escalation `opus-4-8`). **Honesty (LA6):** `frameworkDefaultModels` is read at **session
+spawn (boot)**, NOT per-call like the routing config — so this companion change does **nothing to
+running sessions until they restart** (`POST /sessions/restart-all`). It is therefore **scoped OUT of the
+per-call hot-config / dark-toggle claim**: the per-call *routing* is hot and reversible; the spawned-
+session default reconciliation is a boot-read change requiring a restart to take effect. Fable stays
+reserved for deliberate escalation (`models.tierEscalation`), never a routing default.
 
 ### FD9 — Increment split (dark, reversible, byte-identical when unset)
-- **Increment A (first ship, DARK).** Exhaustive nature map + ratchet (FD7); the `chains` config
-  schema + v3 defaults (FD2); the route resolver + S2 composition on the primary path (FD4);
-  chains restricted to already-wired CLI doors — **metered-API positions are defined but resolve
-  as unavailable (skipped)** until Increment B. Consequence stated honestly: CHAIN FAST's winner
-  (Flash-Lite) is not reachable in A, so `MessageSentinel`'s latency lane stays on `pi-cli/gpt-5.5`
-  (5.7s, 100%, subsidized) — the **Δ5 interim latency gap**, named, not hidden.
-- **Increment B.** Wire the three metered-API doors (FD1) as first-class routing doors, reusing
-  the bench metered funnel provider + the $0-fail-closed money gate. This makes the
-  Flash-Lite / OpenRouter / Groq positions live.
+- **Increment A (first ship).** Exhaustive nature map + ratchet (FD7); the `chains` config schema + v3
+  defaults (FD2); the route resolver + the FD4 three-place ban enforcement (incl. the LA4 degrade-path
+  clamp fix); the FD5 walk + injection gate + R-rule lints. **Metered-API positions are defined but
+  resolve as unavailable (skipped)** until Increment B. Consequence stated honestly: FAST's winner
+  (Flash-Lite) is unreachable in A, so `MessageSentinel`'s latency lane stays on `pi-cli/gpt-5.5` (5.7s,
+  100%, subsidized) — the **Δ5 interim latency gap**, named.
+- **Increment B.** Wire the three metered-API doors (FD1) reusing the bench metered funnel provider +
+  money gate, behind the FD12 go-live authorization. This makes Flash-Lite / OpenRouter / Groq positions
+  live.
 
-Both increments are covered by THIS spec; the build sequences them. Each increment is independently
-dark-shippable and byte-identical to today when `sessions.natureRouting` is unset.
+Both increments are covered here; each is independently dark-shippable and byte-identical to today when
+`sessions.natureRouting` is unset.
 
-### FD10 — Cheap-to-change-after (contested-and-cleared)
-The **exact ordering of positions *within* a nature's chain** (e.g. whether SORT tries pi before
-gemini-api) is `cheap-to-change-after`: it lives entirely behind the dark `sessions.natureRouting`
-config gate, ships in `dryRun` first (FD11), touches **no** durable external side-effect / money /
-identity / published interface, and a re-order is a one-line config edit reverted live. It is NOT
-the door taxonomy, the safety composition, or the authority split — all of which touch safety-gate
-routing and are frontloaded (FD1/FD4/FD6), never cheap-tagged.
+### FD10 — Cheap-to-change-after (narrowed after contest — DC1)
+`cheap-to-change-after` applies **ONLY** to reordering **CLI-only positions within a nature-A/D,
+non-critical-gate FAST or SORT chain** — no metered position (money) and no JUDGE/critical-gate position
+(routing of a safety gate) is ever cheap. Reordering the position of a `gemini-api`/`openrouter-api`/
+`groq-api` position (real spend) or any JUDGE position (the resolved door of `MessagingToneGate` et al.,
+`autoApply:false` per FD6) is **NOT cheap** — it is frontloaded / critical-gate-reviewed. The
+Decision-Completeness reviewer's contest is accepted and the tag is narrowed accordingly.
 
-### FD11 — Rollout & kill switch
-- **Gate:** `sessions.natureRouting.enabled` (default false / omitted → byte-identical:
-  `resolveFramework` returns today's category door, `options.model` unchanged).
-- **dryRun:** `sessions.natureRouting.dryRun` (default **true** on first enable) — the resolver
-  computes and LOGS the intended `(door, model)` + would-be swap tail to the routing audit, but
-  passes through to today's behavior (no actual re-route). The observe-first canary.
-- **Kill switch:** unset `sessions.natureRouting` → instant revert. Config is read **live per call**
-  (reuse the existing hot-config `resolveConfig()` property — no restart, no session-start staleness).
-- **Audit:** every resolved route, fallback landing, and S2 clamp is recorded through the existing
-  `onDegrade` / `DegradationReporter` + `/metrics/features` surfaces, plus one append-only
-  `logs/nature-routing.jsonl` (observability only — FD12).
+### FD11 — Rollout, maturation ladder, migration, kill switch
+- **Maturation ladder (gate G1 — ships enabled on dev agents).** `sessions.natureRouting.enabled` is
+  **omitted from the shipped config** so it rides the **`resolveDevAgentGate`** ladder: **LIVE (in
+  `dryRun`) on a development agent, DARK on the fleet** — the standard instar maturation path, not a flat
+  default-false. On the fleet an explicit operator enable is required.
+- **dryRun** (default **true** on first enable): the resolver computes and LOGS the intended
+  `(door, model)` + would-be swap tail + clamp landings, but passes through to today's behavior (no actual
+  re-route). The observe-first canary.
+- **Readable canary (Int4/Ge3).** `GET /intelligence/routing` exposes, per component, the **dryRun
+  resolved plan** — primary `(door, model)`, available vs skipped positions (with skip reason), clamp
+  landings, and a **diff against the current enforced routing** — so an operator can read the full impact
+  before flipping `dryRun:false`. This is the read-surface that S6's routing-defaults-diff gate builds on.
+- **Versioned migration (Int2).** `sessions.natureRouting` carries a `schemaVersion`. `migrateConfig`
+  adds the block if missing AND **migrates chain defaults forward on a version bump** (existence-checked
+  per-version, idempotent) — so a future v4 chain reslot reaches EXISTING agents, not just new ones. An
+  operator who has hand-overridden a chain keeps their override (migration only touches un-overridden
+  defaults).
+- **Kill switch:** unset `sessions.natureRouting` → instant revert. Routing config is read **live per
+  call** (`resolveConfig()`); no restart. (FD8's session-default companion is the one restart-gated
+  piece.)
+- **Audit:** every resolved route, fallback landing, and clamp is recorded via the existing `onDegrade` /
+  `DegradationReporter` + `/metrics/features`, plus one append-only `logs/nature-routing.jsonl`
+  (observability only — see Performance §).
+
+### FD12 — Metered go-live authorization + money semantics (DC2/C6)
+Metered doors (Increment B) are **money-spending on the hot path** (FAST's primary is a paid door
+running continuously). Therefore:
+
+- **Explicit operator go-live gate.** Metered doors stay **unavailable (skipped)** until the operator (a)
+  sets a **production spend cap** in `metered-caps.json` and (b) flips `sessions.natureRouting.metered.goLive: true`.
+  Until both hold, Increment B is inert and the walk uses CLI doors only. The *authorization mechanism* is
+  frontloaded here; the specific cap *value* is operator runtime config (a threshold, not a spec-hardcoded
+  number) — so no build-stop decision is parked.
+- **Money semantics (C6).** "Fail-closed" means: a metered door is available **only while remaining budget
+  > 0**; when the cap is exhausted (remaining ≤ $0) the door is skipped and the walk continues to a CLI
+  door (a JUDGE call still lands on a CLI door, never silently drops). Caps are **USD**; an **unknown
+  per-call price → refuse** (skip the position). This is the existing bench metered-funnel discipline,
+  reused verbatim.
+- **Multi-machine money safety (Int1/Ge2/gate-G2).** The spend ledger must be **unified** to keep the cap
+  meaningful across the fleet. Metered doors are **DISABLED (fail-closed) on any N>1-machine deployment
+  until a shared/replicated spend ledger exists** — so the ledger is never a divergent machine-local
+  surface (when it *would* diverge, the doors that write it are off). On a **single machine** the ledger is
+  trivially unified (N=1) and exact. The shared cross-machine ledger is a **same-PR-tracked Close-the-Loop
+  prerequisite** (§Close-the-Loop) — a hard precondition, not a deferral: the feature is safe without it
+  because multi-machine metered routing is simply unavailable until it lands.
 
 ## Proposed design (mechanics)
 
 ### Resolver
-Introduce `resolveRoute(component, category, options, cfg): { door, model, swapTail }`, which
-`evaluate()` calls when `cfg.natureRouting?.enabled`. Steps:
+Introduce `resolveRoute(component, category, options, cfg): { door, model, swapTail } | 'fall-through'`,
+which `evaluate()` calls when `cfg.natureRouting?.enabled`. Steps:
 
-1. `nature = resolveNature(component, options.attribution?.nature)` (FD3).
-2. `chain = chainForNature(nature)` (A→FAST unless the map row says SORT; B→JUDGE; D→SORT|WRITE;
-   E→JUDGE — the exact chain is the map row's `chain`, already S1-validated).
-3. `positions = cfg.natureRouting.chains[chain]` (config default = FD2).
-4. `available = positions.filter(isAvailable)` (FD5: binary/key present, money-gate budget,
-   circuit closed).
-5. Apply FD4 clamp to each available position (primary + tail); WRITE exempt.
-6. `primary = available[0]`, `swapTail = available[1..]`.
-7. `dryRun` → log the plan, return today's route; else return `{ primary, swapTail }`.
+1. `nature = resolveNature(component, options.attribution?.nature)` (FD3: map + per-op key + `E,B≥D≥A`
+   tighten; non-enum ignored).
+2. `chain = chainForNature(nature)` (the map row's `chain`, S1-validated).
+3. `positions = validated(cfg.natureRouting.chains[chain])` — FD4.3 resolve-time assertion; an invalid
+   live chain → built-in defaults + FD6 notice.
+4. `available = positions.filter(p => isAvailable(p, options))` — FD5 (door reachable, breaker closed,
+   metered budget>0, injection-eligible, R-rule-eligible). Verdicts cached behind a short TTL (Performance §).
+5. **Empty `available` (LA5) ⇒ return `'fall-through'`** → `evaluate()` uses today's category routing
+   (byte-identical safe default); never `available[0]` on an empty array.
+6. Apply the FD4 family clamp to each available position (primary + tail; WRITE exempt).
+7. `primary = available[0]`, `swapTail = available[1..]`.
+8. `dryRun` → log the plan (FD11 readable canary), return `'fall-through'`; else return
+   `{ primary, swapTail }`.
 
-`evaluate()` then sets `options.model = primary.model`, routes to `primary.door`, and — crucially —
-**reuses the existing failure-swap loop verbatim** by feeding `swapTail` as the effective
-`failureSwap` targets. The loop already applies `clampClaudeCliSwapModel`, per-target timeouts, the
-total budget, and the degrade/resolve notes. S4 does **not** re-implement the swap loop; it only
-supplies a nature-derived, per-position `(door, model)` sequence instead of the static
-`cfg.failureSwap` framework list.
+`evaluate()` then sets `options.model = primary.model`, routes to `primary.door`, and **reuses the
+existing failure-swap loop verbatim** by feeding `swapTail` as the effective swap targets — the loop
+already applies the (now family-extended) clamp, per-target timeouts, the total budget, the rate-limit
+backoff rung, and the degrade/resolve notes. S4 does **not** re-implement the swap loop.
 
-### Composition with the current signatures
-`resolveFramework` keeps its signature and byte-identical unconfigured behavior. When
-`natureRouting.enabled`, `evaluate()` delegates door+model selection to `resolveRoute`; when off,
-the existing `resolveFramework` + caller `options.model` path is untouched. Metered doors introduce
-a `RoutingDoor` superset of `IntelligenceFramework`; the swap loop's `resolveProvider` is extended
-to build a metered-door provider (Increment B) exactly as it builds a CLI framework provider
-(cached, never-throws, unavailable→skip).
+### Routing policy model (codex C4) — reuse, don't reinvent
+S4 does not invent a new health/retry/load-shed engine; it maps the nature walk onto the router's
+**existing** primitives:
+- **Eligibility predicate** = `isAvailable` (FD5).  **Priority** = chain order (FD2).
+- **Health** = the existing per-framework **circuit breaker** state (a metered door gets its own breaker,
+  built like a CLI framework) + a **short-TTL availability cache** (Performance §).
+- **Retry budget** = the existing `gatingLadderBudgetMs` / `swapAttemptTimeoutMs` / `swapTotalBudgetMs`.
+- **Never-silent** = the existing `onHeuristicFallthrough` / `DegradationReporter` (No-Silent-Degradation).
+- **Herd control** = the existing per-target breakers PLUS the new sticky-primary / jittered admission
+  (Performance §, S3) so a whole tier does not reslot off one transient blip.
+
+### Performance / hot-path (scalability S1–S5)
+This resolver runs on **every** internal LLM call, so:
+- **S1 — money-gate budget is an in-memory running counter**, updated on each metered call and reconciled
+  from `state/metered-ledger.*.jsonl` only at boot. `isAvailable` reads the counter — **never** scans the
+  growing JSONL per call.
+- **S2 — the audit is async/buffered (or sampled), never a blocking `appendFileSync` in `evaluate`**; the
+  dryRun log records the decision, not a re-serialized full chain per call.
+- **S3 — sticky-primary + jittered admission:** when a primary door transitions to unavailable, the whole
+  tier does not reslot instantly onto the next door; admission to the new primary is jittered/staggered so
+  the fallback door isn't thundered. A transient blip within the sticky window keeps the current primary.
+- **S4 — per-door `isAvailable` verdict cached behind a 1–2 s TTL** (breaker/budget freshness within a
+  couple seconds is fine) so a hot funnel is a cache hit, not O(chain) recompute per call.
+- **S5 — metered-door providers ride the SAME `this.cache.get(framework)` memoization** as CLI frameworks
+  (build-once, non-blocking, never-throws) — a fallback landing never pays construction cost inside the
+  awaited gate path.
 
 ### The money-gate for metered doors (Increment B)
-Metered doors reuse the bench metered funnel's provider + its `$0-fail-closed` cap logic and its
-durable `state/metered-ledger.*.jsonl`. A metered position is unavailable when the cap is reached
-(fail-closed → the walk continues to the next door; a JUDGE call still lands on a CLI door, never
-silently drops). The cap is enforced **per-machine** (matching the existing bench ledger); a
-cross-machine spend aggregation is a NOTED follow-up (not S4 scope) — worst case is per-machine cap,
-never unbounded, because each machine's gate independently fails closed at $0.
+Metered doors reuse the bench metered funnel's provider + its money-cap logic (FD12) + its durable
+`state/metered-ledger.*.jsonl`. A metered position is unavailable when the cap is exhausted (fail-closed
+→ walk continues to a CLI door) or the price is unknown (refuse). Enforced per FD12's unified-ledger
+precondition.
 
 ## Multi-machine posture
 
-Default posture is **`unified`**; each surface is classified explicitly.
+Default posture is **`unified`**; each surface classified:
 
-- **Route resolution (the feature itself): `unified`.** It is a **pure function** of
-  `LLM_ROUTING_NATURE` (git-tracked code, identical on every machine) + `sessions.natureRouting.chains`
-  (config, replicated by the operator like all config) + live door-availability. Same inputs → same
-  `(door, model)` on any machine. No per-machine divergence by construction.
-- **Metered-door key availability: `unified`** where the vault secret is present. Cross-machine
-  secret sync (`multiMachine.secretSync`) already makes `metered_*` keys usable on every paired
-  machine; a machine lacking the key simply skips that metered position (FD5) — graceful, not a
-  coherence bug.
-- **Money-gate spend ledger (`state/metered-ledger.*.jsonl`): machine-local, and it need not be
-  unified.** Not a machine-local-justification-key case — a *cross-machine* posture would be
-  *stricter* (shared cap), and its absence is a **documented, bounded follow-up**, not a silent
-  single-machine assumption: each machine's gate fails closed at $0 independently, so the only cost
-  of machine-local ledgers is that the *aggregate* cap can be up to N× the per-machine cap — a
-  bounded over-spend, explicitly surfaced here, never an unbounded one.
-- **Routing audit (`logs/nature-routing.jsonl`): machine-local observability, NOT a coherence
-  surface.** It records `(door, model)` decisions that physically occurred *on that machine's
-  process* — identical posture to `logs/server.log`, `logs/reaper-audit.jsonl`, and every existing
-  `logs/*.jsonl`, which the multi-machine spec already treats as local-by-nature observability. It
-  is append-only, has no cross-machine read, and strands nothing on topic transfer (a moved topic's
-  future calls are audited on the new machine). No taxonomy key is required because it is **not a
-  durable coherence-bearing state surface** — it is the established local-log pattern.
+- **Route resolution (the feature): `unified`.** A **pure function** of `LLM_ROUTING_NATURE` (git-tracked
+  code) + `sessions.natureRouting.chains` (config) + live door-availability. Same inputs → same
+  `(door, model)` on any machine.
+- **Metered-door key availability: `unified` *iff* secret-sync is enabled AND pushing (Int3).** A machine
+  lacking the key skips that metered position (FD5, graceful). Stated conditionally, not as unconditional
+  unification.
+- **Money-gate spend ledger: `unified` (enforced by precondition).** On a single machine the ledger is
+  trivially the whole fleet's spend. On N>1 machines the metered doors that write it are **disabled** until
+  a shared/replicated ledger exists (FD12) — so the ledger is **never** a divergent machine-local surface.
+  No machine-local-justification key is required because the surface is never allowed to be machine-local
+  while active.
+- **Routing audit (`logs/nature-routing.jsonl`): machine-local observability, NOT a coherence surface.**
+  Records `(door, model)` decisions that physically occurred on that machine's process — the established
+  `logs/*.jsonl` local-by-nature pattern (append-only, no cross-machine read, strands nothing on transfer;
+  a moved topic's future calls are audited on the new machine). Not a durable coherence-bearing state
+  surface, so the closed taxonomy does not apply (integration reviewer confirmed this is defensible).
 
 ## Self-Heal Before Notify
 
-The only operator-facing notice S4 adds is the **critical-gate routing-change** attention item
-(FD6). It is placed strictly **downstream of self-heal**:
-
-- **Self-heal is the fallback walk itself.** When a critical-gate's primary door fails, the walk
-  lands on the next bench-sanctioned door and **serves the call correctly** — that IS the remediation
-  (`remediation-actions`: re-resolve the chain onto the next available door; the call succeeds). The
-  first-detection escalation path is **unreachable** — a single transient door blip never notifies.
-- **Escalation only on durable degradation.** ONE deduped attention item surfaces only when a
-  critical-gate route is degraded across **N=3** resolution ticks within a **10-minute** window
-  (self-heal exhausted). `class: recoverable` (a door outage is recoverable — the call is still
-  served). Brakes (P19, reusing the existing `DegradationReporter` + breaker primitives — NO new
-  engine): `max-attempts: 3`, `backoff: exponential`, `dedupe-key: nature-route:<component>`,
-  `breaker: 5-heals-in-30m → auto-reclassify critical → escalate immediately`,
+The only operator-facing notice S4 adds is the FD6 critical-gate routing notice, placed **downstream of
+self-heal**:
+- **Self-heal is the fallback walk itself** (`remediation-actions`: re-resolve onto the next bench-
+  sanctioned door; the call succeeds — the fallback IS the heal). First-detection escalation is
+  **unreachable** for a transient blip.
+- **Route-DRIFT escalation** only after N=3 ticks / 10 min of a critical gate's primary differing from its
+  reviewed baseline (self-heal exhausted). `class: recoverable`. P19 brakes (reusing `DegradationReporter`
+  + existing breaker primitives — **no new engine**): `max-attempts:3`, `backoff:exponential`,
+  `dedupe-key: nature-route:<component>`, `breaker: 5-heals-in-30m → auto-reclassify → escalate`,
   `max-notification-latency: 300s` (≤ `standards.selfHealBeforeNotify.recoverableLatencyCeiling`),
-  `audit-location: logs/nature-routing.jsonl` (scrubbed, metadata-only — door ids + component names,
-  never prompt content or secrets).
-- **No irreversible/data-loss/security class here.** A routing degradation is recoverable by
-  definition (a sanctioned fallback serves the call), so the recoverable heal-first path is correct,
-  not a mislabel. `onResolved` (existing) auto-clears the degradation when the primary door recovers.
-- **Reuses the `SelfHealGate` pattern** over Instar's existing in-process breaker primitives
-  (`CrashLoopPauser` + the DegradationReporter breakers already threaded through the router), never a
-  new external workflow engine.
+  `audit-location: logs/nature-routing.jsonl` (scrubbed metadata: door ids + component names, never prompt
+  content or secrets).
+- **Reserve-landing escalation (Adv4) is the notify-and-heal exception:** a critical gate landing on the
+  terminal `claude-code/balanced` reserve escalates on the SAME detection tick (the reserve serves the
+  call concurrently — notify-and-heal), because a safety gate on the penalized door in the CLI-miss regime
+  must not be silent for up to 10 min. It is treated as a same-tick surfaced event, not a `recoverable`
+  heal-gate delay.
+- **No irreversible/data-loss/security class** — a routing degradation is recoverable (a sanctioned
+  fallback serves the call). `onResolved` (existing) auto-clears when the primary door recovers.
+- **Reuses the `SelfHealGate` pattern** over Instar's in-process breaker primitives (`CrashLoopPauser` +
+  the DegradationReporter breakers already threaded through the router).
 
 ## Testing plan (Testing Integrity Standard — all three tiers)
 
-- **Unit** (`tests/unit/`): `resolveNature` (map hit / caller-override-stricter / unmapped
-  fall-through); `resolveRoute` walk (skip-unavailable, primary+tail, FD4 clamp on primary AND tail,
-  WRITE-exempt); the FD4 chain-validation lint (rejects `(claude-code, capable)` in FAST/SORT/JUDGE,
-  accepts it in WRITE); FD7 exhaustiveness ratchet; FD8 no-Fable assertion; dark/dryRun pass-through
-  (byte-identical when unset). Both sides of every boundary.
-- **Integration** (`tests/integration/`): the `/intelligence/routing` surface reports the resolved
-  `(door, model)` per component with nature-routing enabled; the money-gate skip (metered cap
-  reached → walk continues to a CLI door) over the real HTTP pipeline.
-- **E2E** (`tests/e2e/`): production init path — with `natureRouting.enabled`, a benched critical-gate
-  component resolves its JUDGE chain end-to-end and NEVER lands opus-via-CLI; the critical-gate
-  attention item fires only after durable degradation, never on a transient blip; unset config →
-  the feature is inert (byte-identical), route returns today's behavior (alive, not 503).
-- **Wiring integrity:** the resolver's deps (nature map, chain config, money-gate, DegradationReporter)
-  are non-null and delegate to real implementations — not no-ops.
+- **Unit** (`tests/unit/`): `resolveNature` (map hit / per-op key / `E,B≥D≥A` tighten / non-enum-ignored /
+  unmapped fall-through); `resolveRoute` walk (skip-unavailable, injection-exposed skip + fail-closed-on-
+  unknown, empty-set fall-through, primary+tail); the FD4 family clamp on primary AND tail AND
+  degrade-to-default (the LA4 foundation fix — both `defaultFramework` values); the resolve-time live-chain
+  validator (rejects a hot-config Opus-family `claude-code` JUDGE position → defaults + notice); the R6
+  doc-tree Claude-ban; the R8 Flash-Lite pin; the FD4-critical-gate-must-be-B/JUDGE ratchet; the
+  benchmark-label→adapter-id lint; FD7 exhaustiveness; FD8 no-Fable; dark/dryRun byte-identical. **Both
+  sides of every boundary.**
+- **Integration** (`tests/integration/`): `/intelligence/routing` reports the resolved `(door, model)` +
+  the dryRun plan/diff per component; the money-gate skip (metered cap reached → walk continues to a CLI
+  door) over the real HTTP pipeline; a runtime `PATCH /config` chain edit that violates the ban is rejected
+  → defaults + a HIGH attention item.
+- **E2E** (`tests/e2e/`): production init — with `natureRouting.enabled`, a benched critical-gate resolves
+  its JUDGE chain end-to-end and NEVER lands Opus-via-CLI (primary, swap, OR degrade path); the route-drift
+  notice fires only after durable degradation; the reserve-landing notice fires immediately; unset config →
+  feature inert (byte-identical), route alive (200, not 503).
+- **Wiring integrity:** resolver deps (nature map, chain config, money-gate counter, DegradationReporter)
+  non-null, delegate to real implementations — not no-ops.
 
 ## Migration Parity
 
-- **Config defaults** (`migrateConfig`): add `sessions.natureRouting` with `enabled:false` +
-  `dryRun:true` + the FD2 default chains, only if missing (existence-checked, idempotent). Existing
-  agents get the (dark) schema on update; behavior is byte-identical until an operator flips it.
-- **CLAUDE.md template** (`generateClaudeMd` + `migrateClaudeMd`): add a "Nature-Axis Routing"
-  capability blurb (what it is, the `GET /intelligence/routing` read, the enable/dryRun/kill knobs,
-  the authority split) so the capability is discoverable — content-sniffed guard.
+- **Config defaults** (`migrateConfig`): add versioned `sessions.natureRouting` (`schemaVersion`,
+  `enabled` omitted for the dev-gate ladder, `dryRun:true`, the FD2 default chains, `metered.goLive:false`)
+  if missing; **migrate chain defaults forward on version bump** (Int2), preserving operator overrides.
+- **CLAUDE.md template** (`generateClaudeMd` + `migrateClaudeMd`, content-sniffed): a "Nature-Axis Routing"
+  capability blurb — what it is, `GET /intelligence/routing` (incl. dryRun plan/diff), the enable/dryRun/
+  goLive/kill knobs, the authority split, the harness-door ban.
 - **No hook/skill changes.** Pure `src/` + config + docs.
 
+## Close the Loop — tracked follow-ups (registered same-PR, not deferred)
+
+1. **Shared cross-machine spend ledger** — a HARD PRECONDITION for multi-machine metered doors (FD12);
+   until it lands, multi-machine metered routing is disabled (fail-closed), so this is a gated capability
+   expansion, not a safety deferral. Registered as a same-PR commitment; the build hand opens the tracking
+   item and the code enforces the precondition.
+2. **Pool-level coalescing of the FD6 critical-gate notice** (Int5) — per-machine dedupe today (consistent
+   with attention-queue posture); a fleet-wide door outage multi-firing is the follow-up.
+3. **Dynamic-adaptation drift closure** (gemini Ge1) — static bench maps drift as the model landscape
+   moves; the closure is the S5 `bench-refresh` cadence + the S6 reslot/diff gate (already the designed
+   mechanism), not an in-S4 bandit. Acknowledged as an explicit accepted tradeoff, tracked to S5/S6.
+
 ## Decision points touched
-- **Adds** a route-resolution gate (nature → chain → `(door, model)`) — dark by default, reversible,
-  byte-identical when unset.
-- **Extends** the S2 clamp's reach (swap-loop-only → primary path too) — strictly narrows a
-  dangerous fallback, never upgrades/blocks.
-- **Adds** a critical-gate routing-change attention item — downstream of self-heal, deduped,
-  recoverable-class.
-- **Removes** nothing; the unconfigured path is untouched.
+- **Adds** a route-resolution gate (nature → chain → `(door, model)`) — dev-gated dark, dryRun-first,
+  reversible, byte-identical when unset.
+- **Extends & hardens** the S2 clamp: swap-loop-only → primary + swap + degrade-to-default, and
+  tier-token → model-FAMILY (fixes the LA4 fail-open in `main`). Strictly narrows a dangerous fallback.
+- **Adds** a critical-gate routing notice — downstream of self-heal, HIGH, deduped, with an immediate
+  reserve-landing carve-out.
+- **Removes** nothing from the unconfigured path (untouched) and removes the phantom `openai-api` door.
 
 ## Open questions
-*(none — all operator decisions are frontloaded in FD1–FD11; there are no unresolved user-decisions.)*
+*(none — every operator decision and reviewer-surfaced decision is frontloaded in FD1–FD12; no unresolved
+user-decision remains.)*
