@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-05T23:44:50.324Z",
+  "slug": "nature-routing-a2.2-enforcing",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 192,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Planned increment A2.2 of FD9; not a fix — it lands the enforcing half the A2.1 ship deliberately deferred (the retired warnNatureEnforceNotWired no-op)."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

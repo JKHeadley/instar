@@ -185,15 +185,18 @@ export interface IntelligenceRouterOptions {
    * (resolved at the construction boundary, like `ladder`). Absent OR `enabled:false`
    * ⇒ the nature router is inert and routing is BYTE-IDENTICAL to today. When enabled +
    * dryRun (the dev-agent default) the resolver OBSERVES (computes + logs the plan via
-   * `onNatureRoutePlan`) and still passes through to today's selection. Enforcing
-   * selection (dryRun:false) is a tracked A2.2 remainder.
+   * `onNatureRoutePlan`) and still passes through to today's selection. When enabled +
+   * `dryRun:false` (the operator's deliberate post-soak flip — A2.2) the resolved plan
+   * REPLACES today's selection: the primary `(door, model)` is used and the swapTail feeds
+   * the existing failure-swap loop.
    */
   resolveNatureRouting?: () => NatureRoutingRuntime | undefined;
   /**
-   * S4 A2 — the dryRun observation sink (FD11 readable canary). Invoked with the resolved
-   * plan when nature routing is enabled + dryRun. No-op downstream by default; the router
-   * calls it freely. The durable `logs/nature-routing.jsonl` + `GET /intelligence/routing`
-   * surfaces that consume this are a tracked A2.2 remainder.
+   * S4 A2 — the resolved-plan observation sink (FD11 readable canary). Invoked with the
+   * resolved plan on EVERY nature-routing call (dryRun AND enforcing) so the plan is always
+   * observable. No-op downstream by default; the router calls it freely. The durable
+   * `logs/nature-routing.jsonl` + `GET /intelligence/routing` surfaces that consume this,
+   * and the FD6 critical-gate drift notice / baseline, are tracked follow-ups.
    */
   onNatureRoutePlan?: (plan: NatureRoutePlan) => void;
 }
@@ -368,16 +371,17 @@ export function isBoundedGatingDegrade(
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
- * S4 Increment A2 — the nature-axis routing RESOLVER (dark/dryRun mechanism).
+ * S4 Increment A2 — the nature-axis routing RESOLVER.
  *
  * `resolveRoute` is a PURE, side-effect-free evaluator (spec CR2-5): a stateless
  * fold `component → resolvedNature → ordered eligible positions → { primary, swapTail }
  * | 'fall-through' | 'no-route' | throw`. It owns no retry/backoff/breaker/budget
  * machinery — those stay in the existing IntelligenceRouter primitives. Wired into
  * `evaluate()` ONLY when `sessions.natureRouting.enabled` (dev-gated dark). In dryRun
- * (the dev-agent default) it OBSERVES: computes + logs the plan, then passes through to
- * today's routing (byte-identical selection). Enforcing selection (dryRun:false) is a
- * tracked A2.2 remainder — see the honest guard in `evaluate()`.
+ * (the dev-agent default, A2.1) it OBSERVES: computes + logs the plan, then passes through
+ * to today's routing (byte-identical selection). When `dryRun:false` (A2.2, the operator's
+ * deliberate post-soak flip) the resolved plan REPLACES today's selection — the primary
+ * `(door, model)` is used and the swapTail feeds the existing failure-swap loop verbatim.
  * Spec: docs/specs/nature-axis-routing.md §Resolver / FD3 / FD4 / FD9.
  * ──────────────────────────────────────────────────────────────────────────── */
 
@@ -1002,9 +1006,6 @@ export class IntelligenceRouter implements IntelligenceProvider {
     return framework === this.opts.defaultFramework ? this.opts.defaultProvider : this.providerFor(framework);
   }
 
-  /** Already warned that nature-routing enforcing mode is not yet wired (warn ONCE). */
-  private warnedNatureEnforceNotWired = false;
-
   /**
    * S4 A2 — CLI-door reachability probe for the nature router (FD5 availability walk).
    * CLI doors coincide 1:1 with `IntelligenceFramework`. `resolveRoute` skips metered
@@ -1014,22 +1015,6 @@ export class IntelligenceRouter implements IntelligenceProvider {
    */
   private isCliDoorReachable(door: RoutingDoor): boolean {
     return this.resolveProvider(door as IntelligenceFramework) !== null;
-  }
-
-  /**
-   * S4 A2 — enforcing-mode honesty guard. Flipping `dryRun:false` in A2.1 does NOT re-route
-   * (the selection integration is a tracked A2.2 remainder); routing stays byte-identical.
-   * Warn ONCE so the flip is an honest no-op rather than a silent dead switch.
-   */
-  private warnNatureEnforceNotWired(): void {
-    if (this.warnedNatureEnforceNotWired) return;
-    this.warnedNatureEnforceNotWired = true;
-    console.warn(
-      'IntelligenceRouter: sessions.natureRouting.dryRun is false, but nature-routing ENFORCING ' +
-        'selection is not wired in this build (Increment A2.1 ships the dark/dryRun observation ' +
-        'mechanism; enforcing selection is the tracked A2.2 remainder). Routing stays byte-identical — ' +
-        'the resolver plan is logged but not applied.',
-    );
   }
 
   /** Chains already warned about as rejected (warn ONCE per chain, never per call). */
@@ -1062,13 +1047,21 @@ export class IntelligenceRouter implements IntelligenceProvider {
 
     const cfg = this.opts.resolveConfig();
 
-    // ── S4 A2 — nature-axis routing OBSERVATION (dev-gated dark; dryRun-first). ──
+    // ── S4 A2 — nature-axis routing (dev-gated dark; dryRun-first). ──
     // Byte-identical when unset/off: when the feature is absent OR `enabled:false` this
     // whole block is skipped and NOTHING about selection changes. In dryRun (the dev-agent
     // default) it OBSERVES only — computes + logs the plan via `onNatureRoutePlan` — and
-    // still falls through to today's selection below. Enforcing SELECTION (dryRun:false) is
-    // a tracked A2.2 remainder; guarded here so a flip is an HONEST no-op, never a silent
-    // dead switch and never a mis-route. A resolver error can never break routing here.
+    // still falls through to today's selection below. When ENFORCING (`dryRun:false`, the
+    // operator's deliberate flip after the dryRun soak — A2.2) the resolved plan REPLACES
+    // today's selection (spec §Resolver steps 8-9): the primary `(door, model)` becomes the
+    // selection and the `swapTail` feeds the EXISTING failure-swap loop verbatim. A resolver
+    // error can never break routing here — the DESIGNED critical-gate fail-closed throw
+    // (`RouterFailClosedError`) propagates on the real path so the gate caller applies its
+    // own fail-closed semantics; any UNEXPECTED resolver error falls through to today's
+    // selection (fail-safe). In dryRun EVERY outcome (route / no-route / throw) is recorded
+    // only — nothing is ever withheld or re-routed.
+    let enforced: { primary: ResolvedRoutePosition; swapTail: ResolvedRoutePosition[] } | undefined;
+    let enforcedNoRoute = false;
     const natureRt = this.opts.resolveNatureRouting?.();
     if (natureRt?.enabled) {
       const dryRun = natureRt.dryRun !== false; // default true on first enable
@@ -1089,25 +1082,68 @@ export class IntelligenceRouter implements IntelligenceProvider {
           },
         );
         this.opts.onNatureRoutePlan?.({ component, category, dryRun, resolution });
+        if (!dryRun) {
+          // ENFORCE (A2.2): the resolved plan becomes the actual selection.
+          if (resolution.outcome === 'route') {
+            enforced = { primary: resolution.primary, swapTail: resolution.swapTail };
+          } else if (resolution.outcome === 'no-route') {
+            // Low-stakes mapped, all chain doors down ⇒ the caller's OWN non-gating heuristic
+            // (the ordinary provider-down contract) — NEVER legacy category routing, so the
+            // harness door can't re-open for a nature-routed component (spec §573-581).
+            enforcedNoRoute = true;
+          }
+          // 'fall-through' (unmapped) ⇒ leave enforcement unset → today's category routing below.
+        }
       } catch (e) {
         if (e instanceof RouterFailClosedError) {
           this.opts.onNatureRoutePlan?.({ component, category, dryRun, failClosed: true });
+          // ENFORCE (A2.2): a mapped FD6 critical gate with no available door FAILS CLOSED on
+          // the real path — the caller applies its gating fail-closed semantics (block/deny),
+          // never legacy routing and never the harness door. In dryRun the throw is swallowed
+          // (observe-and-record only), never surfaced to the call path.
+          if (!dryRun) throw e;
         } else {
+          // An UNEXPECTED resolver error (the pure fold only THROWS `RouterFailClosedError` by
+          // design). Record it and fall through to today's selection — an unexpected error must
+          // never break routing (fail-safe); a real empty-set critical gate is the typed error
+          // above, never this branch.
           this.opts.onNatureRoutePlan?.({ component, category, dryRun });
         }
       }
-      if (!dryRun) this.warnNatureEnforceNotWired();
     }
 
-    // Unconfigured ⇒ exactly today's behavior.
-    if (!cfg) return this.opts.defaultProvider.evaluate(prompt, options);
+    // ENFORCE 'no-route': raise the ordinary non-gating error the caller already catches into
+    // its heuristic (tracked never-silent). NEVER legacy category routing (harness-door re-open).
+    if (enforcedNoRoute) {
+      this.opts.onHeuristicFallthrough?.(component ?? '(none)', this.opts.defaultFramework);
+      throw new Error(
+        `IntelligenceRouter: nature-routing 'no-route' — no available door for low-stakes ` +
+          `'${component ?? '(none)'}' (all chain doors unreachable); caller uses its heuristic.`,
+      );
+    }
 
-    const framework = this.resolveFramework(component, category, cfg);
+    // Selection: an enforced nature plan supersedes category routing (its primary door is
+    // guaranteed reachable — the resolver only emits reachable CLI doors). Otherwise today's
+    // behavior: unconfigured componentFrameworks ⇒ the default provider verbatim.
+    let framework: IntelligenceFramework;
+    let evalOptions = options;
+    if (enforced) {
+      framework = enforced.primary.door as IntelligenceFramework; // resolver emits CLI doors only
+      // The resolved primary's CONCRETE model id REPLACES the caller's tier hint (spec step 8).
+      // It is already reserve-clamped by the resolver (clampToReserveOnCleanDoor); a concrete id
+      // rides `options.model` verbatim to the provider (the adapters resolve tier-or-id).
+      evalOptions = { ...(options ?? {}), model: enforced.primary.modelId as IntelligenceOptions['model'] };
+    } else {
+      if (!cfg) return this.opts.defaultProvider.evaluate(prompt, options);
+      framework = this.resolveFramework(component, category, cfg);
+    }
     const primary = this.resolveProvider(framework);
 
     // Provider unavailable (binary missing / not built) — unchanged: degrade or error.
+    // (`cfg?.` because an enforced nature plan may have superseded category routing with a
+    // null `cfg`; an enforced primary door is always reachable, so this branch stays legacy.)
     if (!primary) {
-      if ((cfg.fallback ?? 'default') === 'none') {
+      if ((cfg?.fallback ?? 'default') === 'none') {
         throw new Error(
           `IntelligenceRouter: framework '${framework}' for component '${component ?? '(none)'}' ` +
             `is unavailable and fallback is 'none'.`,
@@ -1167,14 +1203,23 @@ export class IntelligenceRouter implements IntelligenceProvider {
     const deferrable = !gating && options?.attribution?.deferrable === true;
     const ladder = this.opts.ladder;
     // Framework-swap applies to a gating OR a deferrable call (both ladder paths include it).
-    const swapTargets = (gating || deferrable) && cfg.failureSwap ? cfg.failureSwap : [];
+    // An enforced nature plan supplies the resolved `swapTail` (each a door + concrete model,
+    // already reserve-clamped); the legacy path supplies the config `failureSwap` frameworks
+    // (each taking the caller's tier, clamped per-door in the loop). BOTH ride the SAME
+    // gating||deferrable gate and the SAME loop below — the spec's "reuse verbatim".
+    const swapPositions: ReadonlyArray<{ door: IntelligenceFramework; model?: string }> =
+      gating || deferrable
+        ? enforced
+          ? enforced.swapTail.map((p) => ({ door: p.door as IntelligenceFramework, model: p.modelId }))
+          : (cfg?.failureSwap ?? []).map((fw) => ({ door: fw }))
+        : [];
     // GATING budget: a single hard wall-clock deadline over the whole gating failure path so an
     // awaited gate stays responsive (no stacking rungs). Deferrable calls are not budgeted this way.
     const gatingDeadlineAt = gating && ladder ? Date.now() + ladder.gatingLadderBudgetMs : undefined;
 
     let err: unknown;
     try {
-      const mainResult = await primary.evaluate(prompt, options);
+      const mainResult = await primary.evaluate(prompt, evalOptions);
       this.opts.onResolved?.(component ?? '(none)', framework); // a real answer → auto-resolve any open degradation
       return mainResult;
     } catch (firstErr) {
@@ -1189,7 +1234,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
           const delay = Math.min(b.baseMs * Math.pow(b.factor, attempt), b.ceilingMs);
           const jittered = Math.min(Math.floor(delay * (0.5 + Math.random() * 0.5)), b.maxWaitMs);
           try {
-            const boResult = await primary.evaluate(prompt, { ...(options ?? {}), rateLimitWaitMs: jittered });
+            const boResult = await primary.evaluate(prompt, { ...(evalOptions ?? {}), rateLimitWaitMs: jittered });
             this.opts.onResolved?.(component ?? '(none)', framework); // recovered on backoff → auto-resolve
             return boResult;
           } catch (retryErr) {
@@ -1198,12 +1243,12 @@ export class IntelligenceRouter implements IntelligenceProvider {
           }
         }
       }
-      if (swapTargets.length === 0) {
+      if (swapPositions.length === 0) {
         // RUNG (c) — DEFERRABLE queue: no swap configured, but a deferrable call can WAIT for capacity
         // in the LlmQueue before dropping to its heuristic. gating can never reach here (deferrable =
         // !gating && …) — the D5 queue-skip invariant is structural.
         if (deferrable) {
-          const q = await this.tryDeferrableQueue(primary, prompt, options, component ?? '(none)', framework, category);
+          const q = await this.tryDeferrableQueue(primary, prompt, evalOptions, component ?? '(none)', framework, category);
           if (q.ok) return q.result;
         }
         // Non-gating ⇒ the caller will swallow this into its heuristic — track it (never-silent).
@@ -1228,7 +1273,8 @@ export class IntelligenceRouter implements IntelligenceProvider {
       const budgetMs = isValidMs(this.opts.swapTotalBudgetMs) ? this.opts.swapTotalBudgetMs : undefined;
       const monotonicNow = this.opts.monotonicNow ?? (() => performance.now());
       const swapStartedAt = monotonicNow();
-      for (const target of swapTargets) {
+      for (const t of swapPositions) {
+        const target = t.door;
         // GATING budget: if the awaited gate's total wall-clock budget is consumed, stop swapping
         // and fail closed now (responsiveness over completeness — spec §3a). Deferrable calls have
         // no such deadline (gatingDeadlineAt is undefined for them).
@@ -1247,35 +1293,47 @@ export class IntelligenceRouter implements IntelligenceProvider {
           // otherwise-UNcapped attempt (no per-target cap, global ≤0/unset).
           cap = cap === undefined ? remaining : Math.min(cap, remaining);
         }
-        // SAFETY (S2, R1/R2): a bounded/gating swap onto claude-code that requests
-        // the `capable` tier would resolve to Opus-via-Claude-CLI — the measured-banned
-        // door (81.7% vs 99.1% API). Clamp it down to `balanced` (Sonnet CLI reserve).
-        // Only ever narrows a dangerous fallback; never upgrades/blocks a call.
-        const { model: clampedModel, clamped: modelClamped } = clampClaudeCliSwapModel(
-          target,
-          options?.model,
-        );
-        if (modelClamped) {
-          this.opts.onDegrade?.({
-            component: component ?? '(none)',
-            category,
-            from: framework,
-            to: target,
-            reason:
-              `failure-swap-model-clamp: '${target}' capable→balanced ` +
-              `(Opus-via-Claude-CLI is banned for bounded/gating verdicts — R1/R2)`,
-          });
+        // Model for this swap attempt:
+        //  - NATURE-enforced position (`t.model` set): its OWN concrete model id, already
+        //    reserve-clamped by the resolver (`clampToReserveOnCleanDoor`) — so it always
+        //    overrides the base options.model, and the A1 tier-clamp below is a no-op on it.
+        //  - LEGACY position (`t.model` undefined): the caller's tier, clamped per SAFETY
+        //    (S2, R1/R2) — a bounded/gating swap onto claude-code requesting `capable` would
+        //    resolve to Opus-via-Claude-CLI (the measured-banned door, 81.7% vs 99.1%); clamp
+        //    it down to `balanced` (Sonnet CLI reserve). Only ever narrows; never upgrades.
+        let attemptModel: IntelligenceOptions['model'] | undefined;
+        let overrideModel: boolean;
+        if (t.model !== undefined) {
+          attemptModel = t.model as IntelligenceOptions['model'];
+          overrideModel = true;
+        } else {
+          const clamp = clampClaudeCliSwapModel(target, options?.model);
+          attemptModel = clamp.model;
+          overrideModel = clamp.clamped;
+          if (clamp.clamped) {
+            this.opts.onDegrade?.({
+              component: component ?? '(none)',
+              category,
+              from: framework,
+              to: target,
+              reason:
+                `failure-swap-model-clamp: '${target}' capable→balanced ` +
+                `(Opus-via-Claude-CLI is banned for bounded/gating verdicts — R1/R2)`,
+            });
+          }
         }
         // Pass the cap through as the provider's per-call timeout so the subprocess
         // self-terminates at the bound (no AbortSignal exists on IntelligenceOptions).
+        // Base is `evalOptions` (byte-identical to `options` on the legacy path); an enforced
+        // position's model always overrides it below.
         const attemptOptions: IntelligenceOptions | undefined =
-          cap !== undefined || modelClamped
+          cap !== undefined || overrideModel
             ? {
-                ...(options ?? {}),
+                ...(evalOptions ?? {}),
                 ...(cap !== undefined ? { timeoutMs: cap } : {}),
-                ...(modelClamped ? { model: clampedModel } : {}),
+                ...(overrideModel ? { model: attemptModel } : {}),
               }
-            : options;
+            : evalOptions;
         try {
           // withSwapTimeout keeps the shipped, crash-safe Promise.race pattern
           // (InputGuard precedent): it attaches a settlement handler to EACH input,
@@ -1319,7 +1377,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
       // for capacity in the LlmQueue before dropping to its heuristic (the gentle order, §3b.3). A
       // gating call NEVER reaches here (deferrable = !gating && …) — D5 queue-skip is structural.
       if (deferrable) {
-        const q = await this.tryDeferrableQueue(primary, prompt, options, component ?? '(none)', framework, category);
+        const q = await this.tryDeferrableQueue(primary, prompt, evalOptions, component ?? '(none)', framework, category);
         if (q.ok) return q.result;
       }
       // Every swap target is also down → re-throw so the (gating) caller fails CLOSED,
