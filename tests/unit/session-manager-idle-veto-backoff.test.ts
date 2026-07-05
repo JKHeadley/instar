@@ -62,6 +62,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { ReapGuard, type ReapGuardDeps } from '../../src/core/ReapGuard.js';
 import type { SessionManagerConfig, Session } from '../../src/core/types.js';
 import type { IncidentDedupe } from '../../src/monitoring/IncidentDedupe.js';
+import { normalizeReasonKey } from '../../src/core/VetoedKillBackoff.js';
 
 const MIN = 60_000;
 
@@ -344,6 +345,106 @@ describe('SessionManager idle-zombie veto-backoff (Fix A)', () => {
     const ledger = (m as unknown as { idleKillBackoff: { trackedCount: number; episodeCount(id: string): number } }).idleKillBackoff;
     expect(ledger.trackedCount).toBe(1);
     expect(ledger.episodeCount(s.id)).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ── KEY CONSISTENCY (fix-the-fix: idle-zombie-veto-key-consistency.md) ───────────
+// The merged Fix A keyed shouldRequest on the reapGuard reason but recorded the
+// TERMINATE-path reason (not-lease-holder on a standby). When a standby session ALSO
+// has a reapGuard keep-reason, the two keys DIFFER every tick → the stale-reprieve
+// deletes the ledger entry → the cooldown never holds → a 5s spin (2523 live WARNs).
+describe('SessionManager idle-zombie veto-backoff — KEY CONSISTENCY (fix-the-fix)', () => {
+  let tmpDir: string;
+  let manager: SessionManager;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-idle-veto-kc-'));
+    mockTmuxSessions.clear();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    manager?.stopMonitoring();
+    warnSpy.mockRestore();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'idle-veto-kc cleanup' });
+  });
+  const spawn = (m: SessionManager, name: string) => m.spawnSession({ name, prompt: 'p' });
+
+  // THE LOAD-BEARING REPRO — fails on the buggy code (attempt every tick), passes on the fix.
+  // Standby machine + a concurrent reapGuard keep-reason + a REAL cooldown window.
+  it('standby + a reapGuard keep-reason: the cooldown HOLDS — exactly ONE terminate ATTEMPT across many ticks', async () => {
+    const { manager: m } = makeManager(tmpDir, { enabled: true, cooldownMs: 30 * MIN, escalateAfterEpisodes: 6 });
+    manager = m;
+    // reapGuard returns a NON-null keep-reason (recent-user-message) — differs from the
+    // terminate-path skip (not-lease-holder) that a standby machine actually stores.
+    m.setReapGuard(guardWith({ topicBinding: () => 1, recentUserMessage: () => true }));
+    m.setAwakeChecker(() => false); // STANDBY → terminate short-circuits at the lease gate
+    let reapBlocked = 0;
+    m.on('reapBlocked', () => { reapBlocked++; }); // the reap-log-write / terminate-ATTEMPT proxy
+    const s = await spawn(m, 'kc-standby-keep');
+    let now = 20_000_000;
+    for (let i = 0; i < 12; i++) { await tickIdleZombie(m, s, 300 * MIN, now); now += 5_000; }
+    // The bug fired an attempt on ALL 12 ticks; the fix holds the cooldown → exactly ONE.
+    expect(reapBlocked).toBe(1);
+    const ledger = (m as unknown as { idleKillBackoff: { trackedCount: number } }).idleKillBackoff;
+    expect(ledger.trackedCount).toBe(1);
+  });
+
+  // EQUIVALENCE PROPERTY TEST (the Structure>Willpower guard) — the ORACLE is the REAL
+  // terminateSessionInternal; the pre-check reasonKey MUST equal the reason it stores.
+  it('property: computeIdleZombieReapVerdict().reasonKey equals the REAL terminate skip reason for every mirrored cell', async () => {
+    type Priv = {
+      computeIdleZombieReapVerdict(s: Session, now: number): { blocked: unknown; reasonKey: string | null };
+      terminateSessionInternal(id: string, reason: string, opts: { disposition: string }): Promise<{ terminated: boolean; skipped?: string }>;
+    };
+    // Each cell: [label, reapGuard deps (before protected wiring), awake?, protected?].
+    // Only SKIP cells (terminate returns terminated:false) are in the equality matrix;
+    // in-flight/already-* residuals are excluded by design (see spec §4).
+    const cells: Array<[string, Partial<ReapGuardDeps>, boolean, boolean]> = [
+      ['protected+standby', {}, false, true],
+      ['protected+awake', {}, true, true],
+      ['standby+keep', { topicBinding: () => 1, recentUserMessage: () => true }, false, false],
+      ['standby+nokeep', { topicBinding: () => 1 }, false, false],
+      ['awake+keep', { topicBinding: () => 1, recentUserMessage: () => true }, true, false],
+    ];
+    let cellIdx = 0;
+    for (const [label, deps, awake, isProtected] of cells) {
+      mockTmuxSessions.clear(); // each cell is an independent SessionManager + spawn
+      const { manager: m } = makeManager(tmpDir, { enabled: true, cooldownMs: 30 * MIN, escalateAfterEpisodes: 6 });
+      m.setAwakeChecker(() => awake);
+      const s = await spawn(m, `kc-cell-${cellIdx++}`);
+      // For a PROTECTED cell, protect the session's ACTUAL tmuxSession on BOTH paths:
+      // the reapGuard's protectedSessions() AND terminate's config.protectedSessions
+      // (both test `config.protectedSessions.includes(session.tmuxSession)` semantics).
+      if (isProtected) {
+        (m as unknown as { config: { protectedSessions: string[] } }).config.protectedSessions = [s.tmuxSession];
+        m.setReapGuard(guardWith({ ...deps, protectedSessions: () => [s.tmuxSession] }));
+      } else {
+        m.setReapGuard(guardWith(deps));
+      }
+      const priv = m as unknown as Priv;
+      const verdict = priv.computeIdleZombieReapVerdict(s, 21_000_000);
+      const result = await priv.terminateSessionInternal(s.id, 'idle-zombie', { disposition: 'terminal' });
+      // Only assert equality when terminate SKIPPED (a kill has no stored veto reason).
+      if (!result.terminated) {
+        expect(normalizeReasonKey(result.skipped ? { reason: result.skipped } : null), label)
+          .toBe(verdict.reasonKey);
+      }
+      m.stopMonitoring();
+    }
+  });
+
+  // isAwakeMachine UNSET (never wired) → the presence-guard short-circuits, falls through
+  // to the reapGuard reason, no TypeError.
+  it('isAwakeMachine UNSET: falls through to the reapGuard reason (no throw)', async () => {
+    const { manager: m } = makeManager(tmpDir, { enabled: true, cooldownMs: 30 * MIN, escalateAfterEpisodes: 6 });
+    manager = m;
+    m.setReapGuard(guardWith({ topicBinding: () => 1, recentUserMessage: () => true }));
+    // deliberately DO NOT call setAwakeChecker → isAwakeMachine stays undefined
+    const s = await spawn(m, 'kc-unset');
+    const priv = m as unknown as { computeIdleZombieReapVerdict(s: Session, now: number): { reasonKey: string | null } };
+    expect(() => priv.computeIdleZombieReapVerdict(s, 22_000_000)).not.toThrow();
+    expect(priv.computeIdleZombieReapVerdict(s, 22_000_000).reasonKey).toBe('recent-user-message');
   });
 });
 

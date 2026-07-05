@@ -1,0 +1,34 @@
+## What Changed
+
+Fixed a retention bug in the idle-zombie veto-backoff (the follow-up to the
+session-respawn-thrash-elimination work). On a standby machine, the pre-check that decides
+"have I already backed off cleaning up this session?" keyed the cooldown on the reap-guard's
+reason, while the record step stored the terminate path's reason (`not-lease-holder`). The two
+never matched, so the ledger entry was deleted and rebuilt every tick and the 30-minute cooldown
+never held — the cleanup re-fired every 5 seconds (2,523 consecutive warnings observed live). The
+pre-check now mirrors the terminate path's skip-reason precedence (`protected` → lease gate →
+reap-guard), so both halves key on the same reason and the cooldown actually holds.
+
+## Summary of New Capabilities
+
+None — this is a correctness fix to existing behavior (the idle-zombie veto-backoff introduced in
+`session-respawn-thrash-elimination`). It ships behind the same `monitoring.idleKillVetoBackoff`
+config knob and is a strict no-op on a single-machine agent.
+
+## What to Tell Your User
+
+Nothing user-facing. This is an internal reliability fix — it stops a wasteful background loop on
+multi-machine setups. No behavior a user interacts with changes.
+
+## Evidence
+
+- Root cause confirmed against source (`SessionManager.computeIdleZombieReapVerdict` keyed on the
+  reap-guard reason; `terminateSessionInternal` stores `not-lease-holder` on standby) and proven by
+  a live 5-second-cadence WARN flood (2,523 lines).
+- 3 new Tier-1 tests in `tests/unit/session-manager-idle-veto-backoff.test.ts`: a load-bearing
+  standby-spin repro (fails on the buggy code, passes on the fix — cooldown holds, one terminate
+  attempt across 12 ticks), an equivalence PROPERTY test using the REAL `terminateSessionInternal`
+  as the oracle (the structural guard against future drift), and an `isAwakeMachine`-unset guard.
+- Full suite: 18/18 in the veto-backoff file, 31/31 across the reaper/veto family, `tsc --noEmit`
+  clean. Review-converged (5 internal reviewers + a codex GPT-5.5 external pass) — see
+  `docs/specs/reports/idle-zombie-veto-key-consistency-convergence.md`.

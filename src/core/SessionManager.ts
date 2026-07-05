@@ -901,9 +901,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   private computeIdleZombieReapVerdict(
     session: Session,
-    _now: number,
+    _now: number,   // stays UNUSED — the reasonKey MUST be time-independent (same key every tick)
   ): { blocked: ReapKeepReason | null; reasonKey: string | null } {
+    // KEY CONSISTENCY (idle-zombie-veto-key-consistency.md): the veto-backoff ledger keys
+    // its cooldown on this reasonKey, but recordVeto stores the reason terminateSessionInternal
+    // ACTUALLY returns. That method's skip precedence is `protected` → the lease gate
+    // (`not-lease-holder`) → the reapGuard cascade. On a STANDBY machine it short-circuits at
+    // the lease gate and stores `not-lease-holder` (NOT a reapGuard reason). If this pre-check
+    // key differs from the stored key, the reason-key stale-reprieve deletes the ledger entry
+    // every tick and the 30m cooldown never holds (the observed 5s spin). Mirror that precedence
+    // here so the pre-check key == the key recordVeto will store. `blocked` stays the RAW reapGuard
+    // verdict (only reasonKey is overridden) so the C2/R4-2 single-guard-eval threading to
+    // terminateSessionInternal is preserved. Equivalence with terminateSessionInternal is enforced
+    // by a CI property test, NOT by discipline (Structure > Willpower).
     const blocked = this.reapGuard?.blockedReason(session) ?? null;
+    if (blocked?.reason === 'protected') return { blocked, reasonKey: 'protected' };
+    if (this.isAwakeMachine && !this.isAwakeMachine()) return { blocked, reasonKey: 'not-lease-holder' };
     return { blocked, reasonKey: normalizeReasonKey(blocked) };
   }
 
