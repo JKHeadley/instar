@@ -775,7 +775,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.
 - Conversational replies are unaffected by the jargon/path/link checks — those only run for scheduler-stamped automated job sends.
 - **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)
-- Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).
+- Off-switch: \`outboundAdvisory.enabled: false\` (TOP-LEVEL) in \`.instar/config.json\` (read live — no restart; the block is top-level, NOT nested under \`messaging\` — which is an array of adapters, so a nested key there is unreachable).
 
 **Quota Tracking** — Monitor Claude API usage when configured.
 - Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/quota\`
