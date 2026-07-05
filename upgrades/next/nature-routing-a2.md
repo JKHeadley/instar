@@ -1,0 +1,64 @@
+---
+user_announcement:
+  - audience: agent-only
+    maturity: experimental
+---
+
+## What Changed
+
+Shipped the dark/dryRun mechanism for Nature-Axis Routing (S4 Increment A2.1) — the internal LLM
+router can now, in principle, choose which model and which access door a background check runs on
+based on the KIND of task it is (a quick sort vs a careful judgment vs open-ended writing), instead
+of only its category. This increment lands the pure resolver + its safety enforcement, wired dark:
+DARK on the fleet, and LIVE-in-dryRun on a development agent (it computes and logs the route it WOULD
+pick, then still does exactly today's thing — it never re-routes yet).
+
+The resolver is a small, side-effect-free fold with four honest outcomes: a resolved route; fall
+through to today's routing (for a component with no nature mapping); no route, use your own heuristic
+(for a low-stakes sorter when every door is down); or a distinct fail-closed error (for a safety gate
+when every door is down — a gate must fail shut, never open). It also finishes the concrete-id pinning
+A1 deferred (FD4.1): the sanctioned Claude reserve now pins to the concrete model id claude-sonnet-4-6,
+and a deny-by-default allowlist clamp keeps a bounded or judgment call on the Claude door pinned to that
+one reserve id — the measured-banned Opus-via-the-Claude-CLI route can never open, even if someone
+hand-edits a chain. Open-ended writing is exempt, since that is where Opus-via-CLI is legitimately best.
+
+The load-bearing safety property is asserted by a named test: when the feature is unset or off, the
+router is bit-for-bit identical to today. A1's always-on clamp is untouched — the new clamp is a
+separate, nature-routing-scoped function.
+
+Deferred and tracked (not dropped): the actual re-routing (enforcing mode), the injection map, the
+build-time lint and live-config validator (FD4 places 1-2; place 3, the runtime clamp, ships here),
+the durable audit log and dashboard read surface, the critical-gate drift notice, and the Fable-to-Opus
+migration. The paid metered doors and the money/PIN go-live are Increment B — deferred and PIN-gated.
+
+## What to Tell Your User
+
+Nothing proactive — this is an internal, turned-off-by-default plumbing change with no user-facing
+surface. If a user ever asks why a background check might one day run on a different model than the one
+they talk to, the plain answer is: the agent measured which model is best at each kind of internal
+check, and this lets it eventually pick the right one for each job — but it is currently just watching
+and learning what it would choose, not changing anything, and turning it fully on is a separate,
+deliberate step the operator takes. Nothing they do changes today, and no setting is required.
+
+## Summary of New Capabilities
+
+- A nature-aware route resolver picks a model and access door by task kind — shipped dark on the fleet,
+  live in dryRun-observe mode on a development agent.
+- A deny-by-default allowlist keeps every bounded or judgment call on the Claude door pinned to the one
+  sanctioned Sonnet reserve id, so the measured-banned Opus-via-CLI route cannot open.
+- The sanctioned reserve is now pinned to a concrete model id, not a tier nickname that could drift.
+- A new config block, seeded dark on update, with the enable flag omitted so it rides the development-
+  agent gate. When off, routing is byte-identical to today.
+
+## Evidence
+
+- tests/unit/nature-routing-resolver.test.ts — 29 cases: the FD3 tighten rule (both sides of every
+  boundary), the four resolveRoute outcomes, the FD4.1 concrete-id pin, the FD4 allowlist clamp
+  (accepts the reserve id, rejects every other Claude id, WRITE exempt), the proof the new clamp is a
+  SEPARATE function from A1's, and the named byte-identical-when-off assertion plus dryRun-observes-but-
+  does-not-re-route.
+- tests/unit/migrate-nature-routing-dark.test.ts — 4 cases: the dark seed omits enabled, never clobbers
+  a configured block, no-ops without a sessions block, and is idempotent.
+- Regression: la4-degrade-path-clamp (13) + intelligence-router (17) + opus-claude-cli-gating-guardrail
+  (14) + llm-routing-nature-ratchet (6) stay green; tsc --noEmit clean.
+- Spec: docs/specs/nature-axis-routing.md — FD3, FD4/FD4.1, FD9 (the A1/A2 increment split).
