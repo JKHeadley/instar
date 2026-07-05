@@ -18,3 +18,9 @@
 - lessons+security: ONE finding — LS3-1 MED FD4/FD6 self-contradiction (ratchet "every crit-gate B/JUDGE" vs FD6-listed nature-A MessageSentinel) → reword ratchet to "no crit-gate resolves chain WRITE" (crit gates are A or B, never D/WRITE). [FIXED]. All round-2 HIGH fixes verified captured.
 
 ## ROUND-3 STATUS: fixes applied — FD6 aggregation, empty-set nature-aware fail-closed (CR3-1), static injection-exposure map (CR3-2), byte-identical sweep (CR3-3), pi-cli justification (Ge3-1), drift canary (Ge3-2), FD4-ratchet-never-WRITE (LS3-1). → round 4 convergence check.
+
+## lessons+security r3 (1 finding)
+- LS3-1 MED FD4/FD6 self-contradiction: Adv1 ratchet "every crit-gate=B/JUDGE" contradicts FD6 listing nature-A MessageSentinel as crit-gate → reword ratchet to real invariant "no crit-gate resolves chain WRITE" (WRITE = sole Opus-CLI-exempt lane). [FIXED]
+- Confirms all 5 round-2 HIGH fixes + migration + CR2 + sec-r2 correctly captured.
+
+## ROUND-3 STATUS: all material (GR3-1 flood, CR3-1 empty-set-fail-closed, CR3-2 static-injection-map, CR3-3 byte-identical-sweep, Ge3-1 pi rationale, Ge3-2 drift-canary, LS3-1 ratchet-contradiction) FIXED. → round 4 convergence check.
