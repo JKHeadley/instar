@@ -511,11 +511,15 @@ export function clampToReserveOnCleanDoor(
  * tests: `evaluate() — nature routing is BYTE-IDENTICAL when unset/off`).
  * ──────────────────────────────────────────────────────────────────────────── */
 
-/** The three FD4 static-ban rules a chain position can violate. */
+/** The FD4 static-ban rules + the FD4.2 R-rule position bans a chain position can violate. */
 export type NatureChainBanRule =
   | 'claude-code-non-reserve' // claude-code FAST/SORT/JUDGE resolves to a NON-reserve concrete id (e.g. Opus-family)
   | 'claude-code-tier-label' // claude-code FAST/SORT/JUDGE is an UNPINNED tier label (must be the PINNED concrete reserve id)
-  | 'fable-banned'; // ANY chain position (incl. WRITE) resolves to a Fable model (FD8 §393)
+  | 'fable-banned' // ANY chain position (incl. WRITE) resolves to a Fable model (FD8 §393)
+  | 'rrule-r3-qwen-strict-format' // R3: qwen-tier in a strict-format (FAST/SORT) position — chronic reason-burn self-clipping
+  | 'rrule-r4-gemini-cli-judge' // R4: gemini-cli (consumer Flash 2.5) in an injection-exposed JUDGE position
+  | 'rrule-r5-weak-model-judge' // R5: gpt-oss-20b / llama-4-scout in a gate (JUDGE) position
+  | 'rrule-r7-deepseek-judge'; // R7: any DeepSeek door/model in an injection-exposed JUDGE position
 
 /** One authored chain position that violates the FD4 harness-door ban. */
 export interface NatureChainViolation {
@@ -630,6 +634,119 @@ export function isNatureRoutingChainsValid(chains: NatureRoutingChains): boolean
   return validateNatureRoutingChains(chains).length === 0;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * FD4.2 — the R-rule POSITION bans (R3/R4/R5/R7), enforced as pure predicates
+ * exactly like the FD4 ban above and mirrored by the build-lint
+ * (scripts/lint-nature-chains.mjs). These are STRUCTURAL exclusions over the
+ * authored chains: a bench-condemned door/model must never appear in the chain
+ * whose consumers it is unsafe for. They change NO runtime selection — the
+ * shipped defaults are clean, so the rejection branch is never taken; the point
+ * is that a future chain edit (source OR an operator `PATCH /config` override)
+ * that reintroduced a banned placement is rejected → built-in defaults + notice.
+ * Spec: docs/specs/nature-axis-routing.md FD5(c) §296-314; LLM-ROUTING-REGISTRY
+ * hard rules #3/#5/#6. (R6/R8 are COMPONENT-scoped map pins — build-lint-only,
+ * since the maps they guard are never operator-overridable.)
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Strict-format positions (R3): the bounded strict-JSON/verdict chains. */
+const RRULE_STRICT_FORMAT_CHAINS: ReadonlySet<RoutingChain> = new Set(['FAST', 'SORT']);
+/** R3 — qwen-tier is bench-condemned for bounded contract work (0.116/0.028 reason-burn self-clip). */
+const RRULE_R3_QWEN = /qwen/i;
+/** R4 — the consumer-Flash-2.5 CLI door (fell for a judge-directed injection). */
+const RRULE_R4_GEMINI_CLI_DOOR: RoutingDoor = 'gemini-cli';
+/** R5 — models bench-condemned for gate verdicts (injection-credulous / over-conservative contract-breakers). */
+const RRULE_R5_WEAK_GATE = /gpt-oss-20b|llama-4-scout/i;
+/** R7 — any DeepSeek door/model in an injection-exposed JUDGE slot. */
+const RRULE_R7_DEEPSEEK = /deepseek/i;
+
+/**
+ * Validate ONE chain position against the FD4.2 R-rule position bans (R3/R4/R5/R7).
+ * Returns the first violation or null. Pure. Both the authored LABEL (`pos.model`)
+ * and the REGISTRY-RESOLVED concrete id are checked, so a banned model authored as a
+ * label that resolves to it cannot slip past.
+ */
+export function validateChainPositionRRule(
+  chain: RoutingChain,
+  pos: ChainPosition,
+  index: number,
+): NatureChainViolation | null {
+  const resolvedModelId = ROUTING_LABEL_TO_MODEL_ID[pos.door]?.[pos.model] ?? pos.model;
+  const modelText = `${pos.model} ${resolvedModelId}`;
+  const base = (rule: NatureChainBanRule, detail: string): NatureChainViolation => ({
+    chain,
+    index,
+    door: pos.door,
+    model: pos.model,
+    resolvedModelId,
+    rule,
+    detail,
+  });
+
+  // R3 — qwen-tier never in a strict-format (FAST/SORT) bounded-contract position.
+  if (RRULE_STRICT_FORMAT_CHAINS.has(chain) && RRULE_R3_QWEN.test(modelText)) {
+    return base(
+      'rrule-r3-qwen-strict-format',
+      `chain ${chain}[${index}] (${pos.door}/'${pos.model}') is a qwen-tier model in a strict-format ` +
+        `(FAST/SORT) position — R3: qwen-tier chronically reason-burns and self-clips its own JSON on bounded ` +
+        `contract work (0.116/0.028). Route bounded verdicts to gpt-5.4-mini / flash-lite / the reserve instead.`,
+    );
+  }
+
+  // R4/R5/R7 apply ONLY to the JUDGE (gate) chain — its consumers are the injection-exposed safety gates.
+  if (chain !== 'JUDGE') return null;
+
+  // R4 — gemini-cli (consumer Flash 2.5) never in an injection-exposed JUDGE position.
+  if (pos.door === RRULE_R4_GEMINI_CLI_DOOR) {
+    return base(
+      'rrule-r4-gemini-cli-judge',
+      `chain JUDGE[${index}] is the '${RRULE_R4_GEMINI_CLI_DOOR}' door — R4: consumer Flash 2.5 fell for a ` +
+        `judge-directed injection; it may never take an injection-exposed JUDGE (safety-gate) position.`,
+    );
+  }
+  // R5 — gpt-oss-20b / llama-4-scout never take a gate (JUDGE) verdict position.
+  if (RRULE_R5_WEAK_GATE.test(modelText)) {
+    return base(
+      'rrule-r5-weak-model-judge',
+      `chain JUDGE[${index}] (${pos.door}/'${pos.model}') — R5: gpt-oss-20b (injection-credulous, fabricates ` +
+        `evidence wording) and llama-4-scout (systematic over-conservatism + contract-breaking prose) may never ` +
+        `take a gate (JUDGE) verdict position.`,
+    );
+  }
+  // R7 — any DeepSeek door/model never in an injection-exposed JUDGE position.
+  if (RRULE_R7_DEEPSEEK.test(modelText) || RRULE_R7_DEEPSEEK.test(pos.door)) {
+    return base(
+      'rrule-r7-deepseek-judge',
+      `chain JUDGE[${index}] (${pos.door}/'${pos.model}') is a DeepSeek door/model — R7: DeepSeek may never take ` +
+        `an injection-exposed JUDGE (safety-gate) position.`,
+    );
+  }
+  return null;
+}
+
+/** Validate ONE chain's positions against the FD4.2 R-rule position bans (pure). */
+export function validateNatureRoutingChainRRules(
+  chain: RoutingChain,
+  positions: ReadonlyArray<ChainPosition>,
+): NatureChainViolation[] {
+  const out: NatureChainViolation[] = [];
+  positions.forEach((p, i) => {
+    const v = validateChainPositionRRule(chain, p, i);
+    if (v) out.push(v);
+  });
+  return out;
+}
+
+/** Validate ALL four chains against BOTH the FD4 ban AND the FD4.2 R-rule position bans (pure). */
+export function validateNatureRoutingChainAll(
+  chain: RoutingChain,
+  positions: ReadonlyArray<ChainPosition>,
+): NatureChainViolation[] {
+  return [
+    ...validateNatureRoutingChain(chain, positions),
+    ...validateNatureRoutingChainRRules(chain, positions),
+  ];
+}
+
 /** The base component key (strip a "/segment" operation suffix + a `server:` prefix). */
 function baseComponentKey(component: string | undefined): string | undefined {
   if (!component) return undefined;
@@ -690,7 +807,9 @@ export function resolveRoute(
   // a runtime chain edit can never open the banned route. The per-position clamp below is a
   // belt-and-suspenders third place; this rejection keeps the whole banned chain out.
   let positions = chains[nc.resolvedChain] ?? NATURE_ROUTING_DEFAULT_CHAINS[nc.resolvedChain];
-  const chainViolations = validateNatureRoutingChain(nc.resolvedChain, positions);
+  // FD4 harness-door ban + FD4.2 R-rule position bans (R3/R4/R5/R7) — same predicate
+  // the config-load merge + the build-lint use. Clean defaults ⇒ empty ⇒ byte-identical.
+  const chainViolations = validateNatureRoutingChainAll(nc.resolvedChain, positions);
   if (chainViolations.length > 0) {
     deps.onInvalidChain?.(nc.resolvedChain, chainViolations);
     positions = NATURE_ROUTING_DEFAULT_CHAINS[nc.resolvedChain];
@@ -754,7 +873,8 @@ export function mergeNatureRoutingChains(
   const pick = (c: RoutingChain): ReadonlyArray<ChainPosition> => {
     const ov = override[c];
     if (!ov) return NATURE_ROUTING_DEFAULT_CHAINS[c];
-    const violations = validateNatureRoutingChain(c, ov);
+    // FD4 harness-door ban + FD4.2 R-rule position bans — reject a violating override → default.
+    const violations = validateNatureRoutingChainAll(c, ov);
     if (violations.length > 0) {
       onReject?.(c, violations);
       return NATURE_ROUTING_DEFAULT_CHAINS[c]; // reject the banned override → built-in default
