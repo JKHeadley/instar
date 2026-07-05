@@ -335,8 +335,9 @@ and WITHOUT hoarding raw rows (scal-F1/F2/F3):
   price/subsidy/credit correction. Price/subsidy apply on READ over the daily buckets;
   credits at rollup time. Because every canonical `effectiveAt` is UTC-day-aligned
   (FD-18), **each daily bucket maps to exactly one price regime — the daily rollup is
-  EXACT under as-of pricing across the full 400-day horizon**, and retroactive
-  recompute (a price fix instantly reflows) holds with no raw-row splitting.
+  EXACT under Instar's day-aligned reporting policy across the full 400-day horizon**
+  (never claimed exact to provider invoices — C3-1/C4-1), and retroactive recompute
+  (a price fix instantly reflows) holds with no raw-row splitting.
 - **Hourly grain (the finest requirement)** is computed on read over the raw
   `feature_metrics` rows within the SHORT (30d) raw-retention window (bounded, indexed
   on `ts`) — hourly detail beyond 30d is not offered (stated honestly in the view).
@@ -388,7 +389,18 @@ it SINGLE-WRITER: the whole cap lives on ONE PIN-designated metered-lease machin
   booking that cannot be durably persisted refuses the call. Adopts
   `DriftSpendLedger`'s discipline (append-only rows, `proper-lockfile`,
   malformed-row-skip) with an O(1) MAINTAINED total instead of its O(rows-in-day)
-  tally.
+  tally. **Torn-write recovery invariants (C4-2 — the fold is canon, the totals file
+  is a cache):** the append-only rows are the SOLE authority; the maintained totals
+  file is a regenerable cache of the fold. On EVERY boot the ledger folds the rows
+  and REWRITES the totals file (so a torn totals rename, or a totals write that
+  landed without its append, is always corrected from row truth); between boots the
+  totals are trusted only because every mutation appends the row FIRST (fsync'd)
+  and updates the totals second — a crash between the two leaves totals STALE-LOW at
+  most one booking, and the very next gate read is preceded by a cheap
+  row-count/high-water check that triggers an incremental re-fold when they disagree.
+  A torn trailing append (partial last line) is the malformed-row-skip case. Unit
+  tests cover both torn directions (append-without-totals; totals-without-append is
+  impossible by ordering, asserted).
 - **Build-vs-reuse vs DriftSpendLedger (I-2/LF-F5, FD-17).** A NEW ledger (distinct
   domain) reusing the write-discipline, because the gate needs O(1) never-cached
   reads. A registered follow-up (Close the Loop) migrates drift-checks onto the same
@@ -547,7 +559,12 @@ recorded row — this spec is HONEST about the dependency:
   separable "approved-plan token" outlives the single commit — a captured approval is
   worthless. **Scope: this rule governs EVERY PIN action that writes ANY gate-consumed
   value** — caps/adjust, go-live, reclaim/re-designate, AND the price-promotion action
-  (N-1, §Layer 1).
+  (N-1, §Layer 1). **Defense-in-depth below the plan path (C4-4):** every committed
+  money-authority record ADDITIONALLY passes a schema-level validator that is
+  independent of the rendered-plan machinery (types, ranges, day-alignment, the
+  cached≤input rule, cap ≥ 0, known keyRef/door) — so a plan-renderer bug can never
+  become the sole authority boundary — and every cap/go-live/promotion audit row
+  stores the canonical BEFORE and AFTER state, not just the delta.
 - **Cap-LOWERING is fenced/acknowledged (A-M9):** bumps the lease epoch, forces slice
   re-derivation; the local gate re-reads the cap on its next O(1) read and clamps.
   Raising is monotonic-safe. All changes append to an audited cap-change log
@@ -619,6 +636,14 @@ recorded row — this spec is HONEST about the dependency:
   plan). Reconstruction is authoritative-fold-only and EXCLUSIVE with counter transfer
   (never additive — the double-count guard); a planned handoff transfers the counter,
   an unplanned death rebases it. The daily `dayEpoch` is stamped by the (new) holder.
+  **The attested figure is an EMERGENCY estimate, biased conservative (C4-3):** in
+  Increment B the surviving fold is structurally near-empty (the dead holder held the
+  ledger), so the rebase honesty is: `rebasedCommitted = max(surviving fold,
+  operator-attested last-known figure)` — the maximum, never the minimum, so a rebase
+  can never UNDER-count and re-open spent headroom. A rebase that lands at/above the
+  cap simply leaves the gate refusing until the operator raises the cap or the daily
+  resets — the safe direction. The reclaim plan labels the attested figure as an
+  estimate with its age; the audit row records both inputs and which won.
   **Reclaim safety against a FALSE death (N-2):** the rendered reclaim plan displays
   the last-known committed figure's AGE, and when the alive-but-partitioned signal is
   present (the old holder's git-synced heartbeat still ADVANCING while its mesh ropes
@@ -716,7 +741,11 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
 - **FD-11 — Real per-door attribution + live money-gating DEPEND on out-of-scope
   A2.2 + metered provider impls; Increment A ships metered `door` NULL and honest $0;
   the door is single-sourced with the gate when they land; Increment B is
-  stub-testable meanwhile.** *Not cheap*, frontloaded (declared dependency).
+  stub-testable meanwhile. RELEASE GATE (C4-5): a production go-live (arming a real
+  paid door) is REFUSED until one end-to-end LIVE metered call has proven
+  `door === ledger door === priced door` on this agent — the wiring invariant as a
+  gate precondition, not merely a test target (the Live-User-Channel-Proof posture
+  applied to money).** *Not cheap*, frontloaded (declared dependency).
 - **FD-12 — Subsidies and credits are REPORTING-ONLY and NEVER reach the money gate;
   operator-specific deals live in the machine-local overlay/credits stores (declared
   machine-local BY DESIGN), applied exactly once at the pool-merge point by the
@@ -748,8 +777,9 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
 - **FD-18 — Every canonical price point's `effectiveAt` is UTC-day-aligned
   (`T00:00:00Z`), including corrections and backdated fixes (manifest-lint enforced).
   Every daily token bucket therefore maps to exactly ONE price regime — the daily
-  rollup is exact under as-of pricing for the full horizon, and no raw-row splitting
-  path exists. The ≤24h mid-day approximation is disclosed and reporting-only.** *Not
+  rollup is exact under Instar's day-aligned reporting policy for the full horizon
+  (never a claim of exactness to provider invoices), and no raw-row splitting path
+  exists. The ≤24h mid-day approximation is disclosed and reporting-only.** *Not
   cheap* (accounting-correctness policy), frontloaded.
 - **FD-19 — Cached-token pricing: an optional per-point `cachedInPerMtok` (reviewed
   like any price); absent ⇒ cached reads bill as FULL input (the over-booking safe
