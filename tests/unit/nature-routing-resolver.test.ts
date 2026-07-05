@@ -24,6 +24,9 @@ import {
   clampToReserveOnCleanDoor,
   clampClaudeCliSwapModel,
   mergeNatureRoutingChains,
+  validateNatureRoutingChains,
+  validateChainPosition,
+  isNatureRoutingChainsValid,
   RouterFailClosedError,
   type NatureRoutingRuntime,
   type NatureRoutePlan,
@@ -36,6 +39,8 @@ import {
   CLAUDE_CODE_RESERVE_MODEL_ID,
   NATURE_ROUTING_DEFAULT_CHAINS,
   type RoutingDoor,
+  type ChainPosition,
+  type NatureRoutingChains,
 } from '../../src/data/llmBenchCoverage.js';
 
 // All CLI doors reachable, all metered doors unreachable (Increment A default).
@@ -319,5 +324,129 @@ describe('evaluate() — nature routing is BYTE-IDENTICAL when unset/off', () =>
     const plan = onPlan.mock.calls[0][0] as NatureRoutePlan;
     // claude-code default is reachable ⇒ the JUDGE terminal reserve is available ⇒ a route plan.
     expect(plan.resolution?.outcome).toBe('route');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FD4.3 — the resolve-time + config-load CHAIN VALIDATOR (the pure predicate that
+// rejects a banned chain at config LOAD and at RESOLVE time). Spec §221-225 / §Resolver
+// step 3 / FD8 §393. The runtime companion to the build-lint; dev-gated / byte-identical
+// when nature-routing is unset/off (the load-bearing safety property, asserted below).
+// ─────────────────────────────────────────────────────────────────────────────
+const CLEAN_FAST: ReadonlyArray<ChainPosition> = [{ door: 'pi-cli', model: 'gpt-5.5' }];
+
+/** A full chains object with a BANNED JUDGE chain (Opus on claude-code) and clean others. */
+function bannedJudgeChains(): NatureRoutingChains {
+  return {
+    FAST: NATURE_ROUTING_DEFAULT_CHAINS.FAST,
+    SORT: NATURE_ROUTING_DEFAULT_CHAINS.SORT,
+    JUDGE: [{ door: 'claude-code', model: 'claude-opus-4-8' }],
+    WRITE: NATURE_ROUTING_DEFAULT_CHAINS.WRITE,
+  };
+}
+
+describe('FD4.3 validateNatureRoutingChains (the pure predicate)', () => {
+  it('the v3 default chains are CLEAN — zero violations, isValid true', () => {
+    expect(validateNatureRoutingChains(NATURE_ROUTING_DEFAULT_CHAINS)).toEqual([]);
+    expect(isNatureRoutingChainsValid(NATURE_ROUTING_DEFAULT_CHAINS)).toBe(true);
+  });
+
+  it('an Opus-family claude-code position in FAST/SORT/JUDGE is a violation (non-reserve)', () => {
+    for (const chain of ['FAST', 'SORT', 'JUDGE'] as const) {
+      const v = validateChainPosition(chain, { door: 'claude-code', model: 'claude-opus-4-8' }, 0);
+      expect(v?.rule).toBe('claude-code-non-reserve');
+    }
+  });
+
+  it('a claude-code TIER LABEL (capable) in a bounded/gating chain is a violation (must be the pinned reserve id)', () => {
+    const v = validateChainPosition('SORT', { door: 'claude-code', model: 'capable' }, 0);
+    expect(v?.rule).toBe('claude-code-tier-label');
+  });
+
+  it('the registry-pinned `balanced` label (→ concrete reserve id) on claude-code is ACCEPTED in FAST/SORT/JUDGE', () => {
+    for (const chain of ['FAST', 'SORT', 'JUDGE'] as const) {
+      expect(validateChainPosition(chain, { door: 'claude-code', model: 'balanced' }, 0)).toBeNull();
+    }
+    // …and the literal concrete reserve id is equally accepted.
+    expect(validateChainPosition('JUDGE', { door: 'claude-code', model: CLAUDE_CODE_RESERVE_MODEL_ID }, 0)).toBeNull();
+  });
+
+  it('WRITE is EXEMPT — claude-code/capable (Opus) passes (open-ended writing is the legitimate Opus-CLI lane)', () => {
+    expect(validateChainPosition('WRITE', { door: 'claude-code', model: 'capable' }, 0)).toBeNull();
+  });
+
+  it('a NON-claude-code door is never a harness-door violation (openrouter opus API door is clean)', () => {
+    expect(validateChainPosition('JUDGE', { door: 'openrouter-api', model: 'opus-4.8' }, 0)).toBeNull();
+  });
+
+  it('a Fable model is banned on EVERY chain, including WRITE (FD8 §393)', () => {
+    for (const chain of ['FAST', 'SORT', 'JUDGE', 'WRITE'] as const) {
+      const v = validateChainPosition(chain, { door: 'claude-code', model: 'claude-fable-5' }, 0);
+      expect(v?.rule).toBe('fable-banned');
+    }
+  });
+});
+
+describe('FD4.3 config-load rejection (mergeNatureRoutingChains)', () => {
+  it('a banned override chain is REJECTED at load → the built-in default; onReject fires with the violations', () => {
+    const onReject = vi.fn();
+    const merged = mergeNatureRoutingChains({ JUDGE: bannedJudgeChains().JUDGE }, onReject);
+    // The banned JUDGE override was dropped for the default (the banned route never reaches config).
+    expect(merged.JUDGE).toBe(NATURE_ROUTING_DEFAULT_CHAINS.JUDGE);
+    expect(onReject).toHaveBeenCalledTimes(1);
+    expect(onReject.mock.calls[0][0]).toBe('JUDGE');
+    expect((onReject.mock.calls[0][1] as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it('a CLEAN override is passed through verbatim (no rejection)', () => {
+    const onReject = vi.fn();
+    const merged = mergeNatureRoutingChains({ FAST: CLEAN_FAST }, onReject);
+    expect(merged.FAST).toEqual(CLEAN_FAST);
+    expect(merged.JUDGE).toBe(NATURE_ROUTING_DEFAULT_CHAINS.JUDGE);
+    expect(onReject).not.toHaveBeenCalled();
+  });
+});
+
+describe('FD4.3 resolve-time rejection (resolveRoute)', () => {
+  it('a live banned JUDGE chain is REJECTED → built-in defaults; onInvalidChain fires; the banned Opus route never resolves', () => {
+    const onInvalidChain = vi.fn();
+    const onlyClaude = { isDoorReachable: (d: RoutingDoor) => d === 'claude-code', onInvalidChain };
+    // MessagingToneGate is JUDGE; pass a banned JUDGE chain (claude-code opus). The validator must
+    // reject it → fall back to the DEFAULT JUDGE chain, whose only reachable position is the pinned
+    // reserve — NEVER the banned Opus id.
+    const res = resolveRoute('MessagingToneGate', undefined, bannedJudgeChains(), onlyClaude);
+    expect(res.outcome).toBe('route');
+    if (res.outcome !== 'route') return;
+    expect(res.primary).toMatchObject({ door: 'claude-code', modelId: CLAUDE_CODE_RESERVE_MODEL_ID });
+    expect(res.primary.modelId).not.toBe('claude-opus-4-8');
+    expect(onInvalidChain).toHaveBeenCalledTimes(1);
+    expect(onInvalidChain.mock.calls[0][0]).toBe('JUDGE');
+  });
+
+  it('a clean chain resolves WITHOUT invoking the rejection notice', () => {
+    const onInvalidChain = vi.fn();
+    const res = resolveRoute('CommitmentSentinel', undefined, NATURE_ROUTING_DEFAULT_CHAINS, {
+      isDoorReachable: () => true,
+      onInvalidChain,
+    });
+    expect(res.outcome).toBe('route');
+    expect(onInvalidChain).not.toHaveBeenCalled();
+  });
+});
+
+describe('FD4.3 is BYTE-IDENTICAL when nature-routing is OFF (the validator never runs)', () => {
+  it('enabled:false + a BANNED chains override ⇒ selection unchanged, no plan, no validation side-effect', async () => {
+    const onPlan = vi.fn();
+    // Even with a banned JUDGE override present, an OFF feature never merges/validates/resolves —
+    // the default provider is called with the SAME options object (bit-for-bit today's behavior).
+    const { router, defaultProvider } = makeRouterWithNature(
+      { enabled: false, dryRun: true, chains: { JUDGE: bannedJudgeChains().JUDGE } },
+      onPlan,
+    );
+    const opts: IntelligenceOptions = { model: 'capable', attribution: { component: 'MessagingToneGate' } };
+    const out = await router.evaluate('p', opts);
+    expect(out).toBe('claude');
+    expect(defaultProvider.calls[0]).toBe(opts); // SAME object — nothing merged, validated, or rewritten
+    expect(onPlan).not.toHaveBeenCalled();
   });
 });

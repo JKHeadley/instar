@@ -1,0 +1,24 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Completes two of the three enforcement places for the FD4 "harness-door ban" in the (still-dark) nature-axis router (spec: docs/specs/nature-axis-routing.md). The third place — the always-on runtime clamp — already shipped in A1 (#1386) and A2.1 (#1387).
+
+- **Build-time lint** (scripts/lint-nature-chains.mjs, wired into `npm run lint`): fails the build if any FAST/SORT/JUDGE chain position resolves to a non-reserve model on the claude-code harness door, if the one permitted claude-code position is an unpinned tier label instead of the pinned concrete reserve id, or if any chain (including WRITE) resolves to a Fable model. Deny-by-default allowlist; the reserve id and label map are derived from src/data/llmBenchCoverage.ts, so nothing is hard-coded.
+- **Resolve-time + config-load validator** (validateNatureRoutingChains, a pure predicate in src/core/IntelligenceRouter.ts): the same rule run on live config. It rejects a banned chain both when config is loaded (mergeNatureRoutingChains) and when a route is resolved (resolveRoute), falling back to the built-in defaults and warning once — so an operator config edit can never open the banned route.
+
+Dev-gated / dark: both new checks only run when sessions.natureRouting is enabled; when it is unset/off the resolve path is byte-identical to before (asserted in tests). This is enforcement hardening only — NOT the metered-door Increment B, and NOT the go-live flip.
+
+## What to Tell Your User
+
+This is internal safety plumbing for how I pick which model answers my own background checks — there is nothing for you to turn on or change, and nothing about our conversations changes. In plain terms: I added two guards that make it structurally impossible for one of my quick safety checks to be routed to an expensive model in a way that a bench found makes it easier to fool. One guard runs when my code is built; the other runs if the routing feature is ever switched on. The routing feature itself is still off by default, so today this is invisible — it just means that when it does get turned on, the unsafe route is already sealed shut in two more places.
+
+## Summary of New Capabilities
+
+- **FD4 harness-door ban — build-lint**: a new build check refuses any routing chain that would send a bounded safety check to a non-reserve model on the Claude CLI, or emit a Fable model.
+- **FD4 harness-door ban — runtime validator**: a live config/resolve-time guard rejects a banned routing chain and falls back to the safe built-in defaults, so a config edit can never re-open the banned route.
+
+## Evidence
+
+- scripts/lint-nature-chains.mjs runs clean over the real chain map; full `npm run lint` is green.
+- tests/unit/llm-routing-nature-ratchet.test.ts and tests/unit/nature-routing-resolver.test.ts (54 tests) green, covering positive/negative lint cases, config-load and resolve-time rejection, the build-lint/validator drift guard, and byte-identical-when-off with a banned override present.
