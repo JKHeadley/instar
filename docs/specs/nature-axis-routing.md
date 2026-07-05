@@ -173,10 +173,14 @@ door") with the merged S2 clamp (which clamps to Sonnet-CLI, not removal) — is
 
 Enforcement in **THREE** independent places (a single lint is insufficient — Sec1/Adv2/Adv3):
 
-1. **Resolve model→concrete-id, then ALLOWLIST (deny-by-default), never a denylist.** Every position's
-   label is resolved to a concrete id; on the `claude-code` door in FAST/SORT/JUDGE the resolved id must
-   equal the **single sanctioned reserve id** (the Sonnet-4.6-CLI `balanced` id) — **anything else is
-   rejected**. This is deliberately an allowlist, not "ban Opus-family": a denylist fails OPEN on a
+1. **Resolve model→concrete-id, then ALLOWLIST (deny-by-default), never a denylist — and the reserve is a
+   PINNED CONCRETE ID, not a tier label (codex CR8-3).** The one permitted `claude-code` FAST/SORT/JUDGE
+   position pins the **concrete Sonnet-4.6 model id from the versioned model-registry-freshness manifest**
+   (via `ROUTING_LABEL_TO_MODEL_ID['claude-code']`), NOT the `balanced` tier label — a tier label could
+   resolve differently under a future CLI alias / tier remap. A **deploy-time check** asserts the CLI
+   actually resolves that position to the pinned id and **fails the deploy if it cannot prove it**. Every
+   position's label is resolved to a concrete id; on `claude-code` in FAST/SORT/JUDGE the resolved id must
+   equal that **single sanctioned reserve id** — **anything else is rejected**. This is deliberately an allowlist, not "ban Opus-family": a denylist fails OPEN on a
    *future or unrecognized* capable Claude id the family-map hasn't seen (a new Opus rev, a renamed max
    tier) — the exact Adv3 class, just moved from tier-token to family-token (sec-r2-1). Deny-by-default
    closes it: an id is permitted on that door/chain only if it IS the sanctioned reserve. A
@@ -342,7 +346,12 @@ anchor (and its directly-referenced template/constant), not every helper in the 
 the anchor forces re-confirmation ("does this change the nature / injection exposure?") while unrelated
 edits in the same file don't. (ii) The `/instar-dev` review checklist gains one line: *"touched an LLM
 callsite's prompt anchor? re-verify its nature + injection-exposure row."* This ties the static maps to
-the code they classify so a refactor can't silently invalidate a routing decision.
+the code they classify so a refactor can't silently invalidate a routing decision. **The "discover every
+`.evaluate()` callsite and fail CI if it lacks a registered route key" guard codex CR8-2 asks for ALREADY
+EXISTS as a composed chain:** the merged attribution-ratchet (every `.evaluate()` must carry
+`attribution.component`) + the `COMPONENT_CATEGORY` coverage test + the FD7 exhaustiveness ratchet together
+fail CI on any callsite lacking a registered route classification. The runtime `?trace` (FD11) emits the
+**resolved map row + prompt-anchor id**, so a live route is auditable to its exact static source.
 
 ### FD8 — Fable reconciliation (operator decision #4) — **requires a session restart**
 No nature chain emits `claude-fable-5`; the FD4.2 lint FAILS the build if any chain position resolves to
@@ -356,10 +365,16 @@ session default reconciliation is a boot-read change requiring a restart to take
 reserved for deliberate escalation (`models.tierEscalation`), never a routing default.
 
 ### FD9 — Increment split (dark, reversible, byte-identical when unset)
-- **Increment A (first ship).** Exhaustive nature map + ratchet (FD7); the `chains` config schema + v3
-  defaults (FD2); the route resolver + the FD4 three-place ban enforcement (incl. the LA4 degrade-path
-  clamp fix); the FD5 walk + injection gate + R-rule lints. **Metered-API positions are defined but
-  resolve as unavailable (skipped)** until Increment B. Consequence stated honestly: FAST's winner
+- **Increment A (first ship) — the minimal router contract (codex CR8-1).** Its core contract is exactly
+  `component → resolvedNature → ordered candidate positions → selected (door, model) + swap tail` — a
+  stateless fold. The safety/injection/allowlist/R-rule checks are **candidate-eligibility FILTERS**
+  (validators the fold consults, each a pure predicate), NOT extra machinery inside the router; money
+  governance (FD12), the drift notice (FD6), migration, and dry-run diffing are **orthogonal surfaces
+  AROUND** the fold (Increment B / separate concerns), not part of the selection contract. Increment A
+  ships: the exhaustive nature map + ratchet (FD7); the `chains` config schema + v3 defaults (FD2); the
+  route resolver + the FD4 three-place ban enforcement (incl. the LA4 degrade-path clamp fix); the FD5
+  walk + injection gate + R-rule lints. **Metered-API positions are defined but resolve as unavailable
+  (skipped)** until Increment B. Consequence stated honestly: FAST's winner
   (Flash-Lite) is unreachable in A, so `MessageSentinel`'s latency lane stays on `pi-cli/gpt-5.5` (5.7s,
   100%, subsidized) — the **Δ5 interim latency gap**, named.
 - **Increment B.** Wire the three metered-API doors (FD1) reusing the bench metered funnel provider +
@@ -370,6 +385,15 @@ Both increments are covered here; each is independently dark-shippable and byte-
 `sessions.natureRouting` is unset — **with the single, deliberate exception of the LA4 unconditional
 degrade-path clamp** (FD4), which is a standalone safety narrowing (Opus-CLI → Sonnet-CLI on the
 binary-missing bounded/gating degrade) that fires even when nature routing is off.
+
+**Maturation ladder (Maturation Path standard — "ships enabled on developer agents"): "dark first" here
+means DARK ON THE FLEET, LIVE-IN-`dryRun` ON A DEVELOPMENT AGENT — NOT flat-off everywhere.** Per FD11 the
+`enabled` flag is OMITTED from shipped config so it rides `resolveDevAgentGate`: a development agent
+resolves it LIVE (in `dryRun` — observing + logging the resolved plan without re-routing), the fleet
+resolves it dark. This IS the required enabled-on-developer-agents maturation path (not a
+`DARK_GATE_EXCLUSIONS` exception); graduation to enforcing (`dryRun:false`) and then to the fleet is the
+operator's staged step after the dev-agent soak. Every "ship dark / reversible first" phrase in this spec
+refers to THIS ladder.
 
 ### FD10 — Cheap-to-change-after (narrowed after contest — DC1)
 `cheap-to-change-after` applies **ONLY** to reordering **CLI-only positions within a nature-A/D,
@@ -478,11 +502,15 @@ routing, so the harness door can't re-open); a **throw** → the critical-gate f
      today's category routing (the LA5 byte-identical safe default).
    - **Doc-tree / R6 (`claudeBanned`) component** ⇒ deferrable ladder then **refuse-to-author** (FD5c) —
      never Claude, never a heuristic pretending to be a summary.
-   - **Low-stakes mapped component (nature A/D, NOT an FD6 critical gate)** ⇒ return a **typed `'no-route'`**
-     so the caller uses its **own non-gating heuristic** (the existing degrade behavior, tracked never-
-     silent via `onHeuristicFallthrough`) — NOT legacy category routing (which could land the harness
-     door) and NOT a hard fail-closed "denial" (it is not a safety gate). A momentary all-doors-down for a
-     background sorter degrades gracefully, exactly as a non-gating call does today.
+   - **Low-stakes mapped component (nature A/D, NOT an FD6 critical gate)** ⇒ `'no-route'`, which
+     `evaluate()` turns into the **EXACT SAME outcome a non-gating call already produces when its LLM
+     provider errors**: it throws the ordinary non-gating error the caller ALREADY catches to run its
+     heuristic (tracked never-silent via `onHeuristicFallthrough`). **This is NOT a new per-caller
+     interface (codex CR8-4)** — every non-gating caller today already implements "LLM unavailable → use my
+     heuristic"; `'no-route'` reuses that existing, uniform contract verbatim. It is NOT legacy category
+     routing (which could land the harness door) and NOT a hard fail-closed "denial" (it is not a safety
+     gate). A momentary all-doors-down for a background sorter degrades gracefully, exactly as a non-gating
+     call does today.
    - **Mapped FD6 critical gate** ⇒ **FAIL CLOSED**: the resolver raises the same error a provider-down
      produces, so
      `evaluate()` propagates it and the **caller applies its existing gating fail-closed semantics** (a
@@ -628,7 +656,16 @@ self-heal**:
 - **Reuses the `SelfHealGate` pattern** over Instar's in-process breaker primitives (`CrashLoopPauser` +
   the DegradationReporter breakers already threaded through the router).
 
-## Testing plan (Testing Integrity Standard — all three tiers)
+## Testing plan (Testing Integrity Standard — ALL five required kinds)
+
+This feature ships with **all five** required test kinds (no exceptions): **(1) Unit**, **(2) Integration
+(full HTTP pipeline)**, **(3) E2E lifecycle (production-init "feature is alive", returns 200 not 503)**,
+**(4) Wiring-integrity** (every DI'd dep — nature map, chain config, spend counter, DegradationReporter,
+label registry — is non-null, not a no-op, delegates to the real implementation), and **(5) Semantic
+correctness on BOTH sides of every decision boundary** (each of the four `resolveRoute` outcomes; the
+allowlist ban accepts the reserve id and rejects every other claude-code id; injection-exposed vs not;
+mapped vs unmapped; budget>0 vs exhausted; tightened vs untightened nature; dryRun vs enforce; unset vs
+enabled). The concrete cases:
 
 - **Unit** (`tests/unit/`): `resolveNature` (map hit / per-op key / `E,B≥D≥A` tighten / non-enum-ignored /
   unmapped fall-through; `E,B` tie → map value; non-enum ignored); `resolveRoute` walk (skip-unavailable

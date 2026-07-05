@@ -1,0 +1,5 @@
+# Round 8 findings — nature-axis-routing
+## Gate (2, FIXED): Maturation Path (dark-first re-flagged) → made dev-agent-gate ladder PROMINENT in FD9 (dark fleet / live-dryRun dev). Testing Integrity → testing plan now explicitly commits to all 5 kinds (unit/integration/E2E-lifecycle/wiring/semantic-both-sides).
+## codex r8 SERIOUS (4): CR8-1 "too much policy" complexity PREFERENCE (recurring; addressed via increment split + fold + external-validator framing — Increment A = minimal router contract nature→candidates→selected). CR8-2 callsite-drift CI → clarified the composed attribution+coverage+exhaustiveness ratchets ARE that CI; trace emits map-row+anchor. CR8-3 GENUINE: pin claude-code reserve to CONCRETE manifest id (not 'balanced' tier label) + deploy-time proof. CR8-4 GENUINE: 'no-route' contract = reuses EXISTING non-gating error→heuristic path (not a new per-caller interface). [CR8-3/4 FIXED; CR8-1/2 addressed/clarified]
+## gemini r8: DEGRADED (timeout). codex r8 RAN → spec-level flag stays codex-cli:gpt-5.5.
+## → round 9 (target convergence).
