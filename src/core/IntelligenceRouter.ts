@@ -493,6 +493,142 @@ export function clampToReserveOnCleanDoor(
   return { ...pos, modelId: CLAUDE_CODE_RESERVE_MODEL_ID, clamped: true }; // deny-by-default → reserve
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * FD4.3 — the resolve-time + config-load CHAIN VALIDATOR (the static harness-door
+ * ban as a PURE PREDICATE). This is the SAME rule the build-lint
+ * (`scripts/lint-nature-chains.mjs`) enforces at compile time over the authored
+ * defaults, run AGAIN on LIVE config: because an operator may `PATCH /config` a chain
+ * wholesale (Adv2/Sec1), a banned chain must be rejected at config LOAD and at RESOLVE
+ * time — not merely clamped per-position. Deny-by-default ALLOWLIST, never a denylist:
+ * a future/unrecognized capable Claude id can never slip past (the Adv3 class).
+ * Spec: docs/specs/nature-axis-routing.md FD4 (§202-225), FD4.2 (§296), FD8 (§393).
+ *
+ * DEV-GATED / BYTE-IDENTICAL WHEN OFF (the load-bearing safety property): this
+ * predicate is consulted ONLY inside `mergeNatureRoutingChains` + `resolveRoute`, both
+ * of which run ONLY when `sessions.natureRouting.enabled`. With the feature unset/off the
+ * resolve path never reaches here, so routing is byte-identical to today (asserted in
+ * tests: `evaluate() — nature routing is BYTE-IDENTICAL when unset/off`).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The three FD4 static-ban rules a chain position can violate. */
+export type NatureChainBanRule =
+  | 'claude-code-non-reserve' // claude-code FAST/SORT/JUDGE resolves to a NON-reserve concrete id (e.g. Opus-family)
+  | 'claude-code-tier-label' // claude-code FAST/SORT/JUDGE is an UNPINNED tier label (must be the PINNED concrete reserve id)
+  | 'fable-banned'; // ANY chain position (incl. WRITE) resolves to a Fable model (FD8 §393)
+
+/** One authored chain position that violates the FD4 harness-door ban. */
+export interface NatureChainViolation {
+  chain: RoutingChain;
+  index: number;
+  door: RoutingDoor;
+  model: string;
+  resolvedModelId: string;
+  rule: NatureChainBanRule;
+  detail: string;
+}
+
+/** Tier LABELS (as opposed to concrete model ids) — for message classification only; not load-bearing. */
+const KNOWN_TIER_LABELS: ReadonlySet<string> = new Set([
+  'fast',
+  'balanced',
+  'capable',
+  'ultra',
+  'reasoning',
+]);
+
+/** A model label/id names a Fable model — FD8 §393, never emitted by any nature chain. Pure. */
+export function isFableModel(s: string): boolean {
+  return /fable/i.test(s);
+}
+
+/**
+ * Validate ONE chain position against the FD4 static ban (pure). Returns a violation or
+ * null. The claude-code allowlist test compares the REGISTRY-RESOLVED concrete id against
+ * the single sanctioned reserve id (FD4.1 — a tier label is permitted ONLY because/if it
+ * pins through `ROUTING_LABEL_TO_MODEL_ID` to that concrete id; an unpinned label fails).
+ */
+export function validateChainPosition(
+  chain: RoutingChain,
+  pos: ChainPosition,
+  index: number,
+): NatureChainViolation | null {
+  const resolvedModelId = ROUTING_LABEL_TO_MODEL_ID[pos.door]?.[pos.model] ?? pos.model;
+  // FD8 §393 — no chain (incl. the Opus-CLI-exempt WRITE lane) may resolve to a Fable model.
+  if (isFableModel(resolvedModelId) || isFableModel(pos.model)) {
+    return {
+      chain,
+      index,
+      door: pos.door,
+      model: pos.model,
+      resolvedModelId,
+      rule: 'fable-banned',
+      detail:
+        `chain ${chain}[${index}] (${pos.door}/'${pos.model}') resolves to a Fable model ` +
+        `('${resolvedModelId}') — no nature chain may emit Fable (FD8 §393).`,
+    };
+  }
+  // The FD4 harness-door ban is scoped to bounded/gating chains; WRITE is the sole
+  // Opus-via-CLI-exempt lane (open-ended writing is where Opus-via-CLI is the best route).
+  if (chain === 'WRITE') return null;
+  if (pos.door !== 'claude-code') return null; // the ban targets ONLY the harness door
+  if (resolvedModelId === CLAUDE_CODE_RESERVE_MODEL_ID) return null; // allowlisted — the sanctioned pinned reserve
+  const pinnedInRegistry = ROUTING_LABEL_TO_MODEL_ID['claude-code']?.[pos.model] !== undefined;
+  if (!pinnedInRegistry && KNOWN_TIER_LABELS.has(pos.model)) {
+    return {
+      chain,
+      index,
+      door: pos.door,
+      model: pos.model,
+      resolvedModelId,
+      rule: 'claude-code-tier-label',
+      detail:
+        `chain ${chain}[${index}] is claude-code/'${pos.model}' — an UNPINNED tier label. The one ` +
+        `permitted claude-code position in a bounded/gating (FAST/SORT/JUDGE) chain must be the PINNED ` +
+        `concrete reserve id '${CLAUDE_CODE_RESERVE_MODEL_ID}', not a tier label (FD4 §205: a label could ` +
+        `resolve differently under a future CLI alias/tier remap).`,
+    };
+  }
+  return {
+    chain,
+    index,
+    door: pos.door,
+    model: pos.model,
+    resolvedModelId,
+    rule: 'claude-code-non-reserve',
+    detail:
+      `chain ${chain}[${index}] resolves claude-code → '${resolvedModelId}', which is NOT the sanctioned ` +
+      `reserve '${CLAUDE_CODE_RESERVE_MODEL_ID}'. Deny-by-default allowlist ban — the only permitted ` +
+      `claude-code FAST/SORT/JUDGE position is that single reserve id (FD4 §202-217).`,
+  };
+}
+
+/** Validate ONE chain's positions against the FD4 ban (pure). */
+export function validateNatureRoutingChain(
+  chain: RoutingChain,
+  positions: ReadonlyArray<ChainPosition>,
+): NatureChainViolation[] {
+  const out: NatureChainViolation[] = [];
+  positions.forEach((p, i) => {
+    const v = validateChainPosition(chain, p, i);
+    if (v) out.push(v);
+  });
+  return out;
+}
+
+/** Validate ALL four chains against the FD4 ban (pure). Empty array ⇒ the chain map is clean. */
+export function validateNatureRoutingChains(chains: NatureRoutingChains): NatureChainViolation[] {
+  const out: NatureChainViolation[] = [];
+  for (const c of ['FAST', 'SORT', 'JUDGE', 'WRITE'] as RoutingChain[]) {
+    out.push(...validateNatureRoutingChain(c, chains[c] ?? []));
+  }
+  return out;
+}
+
+/** True iff every chain passes the FD4 static harness-door ban. Pure. */
+export function isNatureRoutingChainsValid(chains: NatureRoutingChains): boolean {
+  return validateNatureRoutingChains(chains).length === 0;
+}
+
 /** The base component key (strip a "/segment" operation suffix + a `server:` prefix). */
 function baseComponentKey(component: string | undefined): string | undefined {
   if (!component) return undefined;
@@ -514,12 +650,27 @@ export function resolveRoute(
   component: string | undefined,
   declaredNature: unknown,
   chains: NatureRoutingChains,
-  deps: { isDoorReachable: (door: RoutingDoor) => boolean },
+  deps: {
+    isDoorReachable: (door: RoutingDoor) => boolean;
+    /** FD4.3 — called when a live chain is rejected for a harness-door-ban violation (→ defaults). */
+    onInvalidChain?: (chain: RoutingChain, violations: NatureChainViolation[]) => void;
+  },
 ): RouteResolution {
   const nc = resolveNatureAndChain(component, declaredNature);
   if (!nc) return { outcome: 'fall-through' }; // unmapped ⇒ legacy category routing (LA5 byte-identical)
 
-  const positions = chains[nc.resolvedChain] ?? NATURE_ROUTING_DEFAULT_CHAINS[nc.resolvedChain];
+  // FD4.3 resolve-time assertion (spec §221-225 / §Resolver step 3): a live chain that
+  // violates the static harness-door ban is REJECTED → built-in defaults + notice. Because
+  // chains are read live per call and an operator may `PATCH /config` a chain wholesale, this
+  // runs on EVERY resolution (the same predicate the config-load merge + the build-lint use) —
+  // a runtime chain edit can never open the banned route. The per-position clamp below is a
+  // belt-and-suspenders third place; this rejection keeps the whole banned chain out.
+  let positions = chains[nc.resolvedChain] ?? NATURE_ROUTING_DEFAULT_CHAINS[nc.resolvedChain];
+  const chainViolations = validateNatureRoutingChain(nc.resolvedChain, positions);
+  if (chainViolations.length > 0) {
+    deps.onInvalidChain?.(nc.resolvedChain, chainViolations);
+    positions = NATURE_ROUTING_DEFAULT_CHAINS[nc.resolvedChain];
+  }
   const available: ResolvedRoutePosition[] = [];
   for (const p of positions) {
     // Increment A: metered-API doors are DEFINED but always unavailable (skipped) until Increment B.
@@ -561,13 +712,29 @@ export function resolveRoute(
  */
 export function mergeNatureRoutingChains(
   override: Partial<Record<RoutingChain, ReadonlyArray<ChainPosition>>> | undefined,
+  onReject?: (chain: RoutingChain, violations: NatureChainViolation[]) => void,
 ): NatureRoutingChains {
   if (!override) return NATURE_ROUTING_DEFAULT_CHAINS;
+  // FD4.3 config-load assertion (spec §221-225): an operator override chain that violates the
+  // static harness-door ban is REJECTED at LOAD → the built-in default for that chain (never the
+  // banned override). Same predicate as the build-lint + the resolve-time assertion. A valid
+  // override is passed through verbatim; an un-overridden chain keeps its default (unvalidated —
+  // the shipped defaults are lint-verified clean).
+  const pick = (c: RoutingChain): ReadonlyArray<ChainPosition> => {
+    const ov = override[c];
+    if (!ov) return NATURE_ROUTING_DEFAULT_CHAINS[c];
+    const violations = validateNatureRoutingChain(c, ov);
+    if (violations.length > 0) {
+      onReject?.(c, violations);
+      return NATURE_ROUTING_DEFAULT_CHAINS[c]; // reject the banned override → built-in default
+    }
+    return ov;
+  };
   return {
-    FAST: override.FAST ?? NATURE_ROUTING_DEFAULT_CHAINS.FAST,
-    SORT: override.SORT ?? NATURE_ROUTING_DEFAULT_CHAINS.SORT,
-    JUDGE: override.JUDGE ?? NATURE_ROUTING_DEFAULT_CHAINS.JUDGE,
-    WRITE: override.WRITE ?? NATURE_ROUTING_DEFAULT_CHAINS.WRITE,
+    FAST: pick('FAST'),
+    SORT: pick('SORT'),
+    JUDGE: pick('JUDGE'),
+    WRITE: pick('WRITE'),
   };
 }
 
@@ -714,6 +881,27 @@ export class IntelligenceRouter implements IntelligenceProvider {
     );
   }
 
+  /** Chains already warned about as rejected (warn ONCE per chain, never per call). */
+  private warnedRejectedChains?: Set<RoutingChain>;
+
+  /**
+   * FD4.3 — a live/hot chain (an operator `PATCH /config` override, or a resolved chain)
+   * violated the static harness-door ban and was REJECTED → built-in defaults. Warn ONCE
+   * per chain so the rejection is visible (the banned route is never opened; the built-in
+   * default is used instead). The full FD6 aggregated critical-gate attention item is a
+   * tracked A2.2 remainder; this is the honest, non-silent minimum.
+   */
+  private warnNatureChainRejected(chain: RoutingChain, violations: NatureChainViolation[]): void {
+    if (!this.warnedRejectedChains) this.warnedRejectedChains = new Set();
+    if (this.warnedRejectedChains.has(chain)) return;
+    this.warnedRejectedChains.add(chain);
+    console.warn(
+      `IntelligenceRouter: nature-routing chain '${chain}' REJECTED — it violates the FD4 harness-door ` +
+        `ban and was replaced with the built-in default (the banned route is never opened). ` +
+        violations.map((v) => v.detail).join(' | '),
+    );
+  }
+
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const component = options?.attribution?.component;
     const explicitCategory = (options?.attribution as { category?: unknown } | undefined)?.category;
@@ -737,8 +925,11 @@ export class IntelligenceRouter implements IntelligenceProvider {
         const resolution = resolveRoute(
           component,
           options?.attribution?.nature,
-          mergeNatureRoutingChains(natureRt.chains),
-          { isDoorReachable: (d) => this.isCliDoorReachable(d) },
+          mergeNatureRoutingChains(natureRt.chains, (c, v) => this.warnNatureChainRejected(c, v)),
+          {
+            isDoorReachable: (d) => this.isCliDoorReachable(d),
+            onInvalidChain: (c, v) => this.warnNatureChainRejected(c, v),
+          },
         );
         this.opts.onNatureRoutePlan?.({ component, category, dryRun, resolution });
       } catch (e) {
