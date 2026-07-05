@@ -122,7 +122,7 @@ The operator's explicit requirements (verbatim intent), all addressed below:
   (operator directive: "ground our cost usage on actual reporting from the provider").**
   Where a provider reports the call's cost/usage, that figure — captured as its own
   immutable append-only record — is what the view PREFERS to display and the basis the
-  reconciliation sweep cross-checks the internal-derived figure against. It flows DOWN
+  provider-reconciliation sweep cross-checks the internal-derived figure against. It flows DOWN
   the REPORTING side exactly like a price correction: it can refine a REPORTED figure
   retroactively but NEVER re-opens gate headroom and NEVER moves the money gate (the
   same one-way safety as the re-pricing rule). The fail-closed gate cannot block on a
@@ -143,6 +143,25 @@ The operator's explicit requirements (verbatim intent), all addressed below:
   cap slicing) — independently gated and reversible; the first live money release is
   deliberately a one-machine system.
 
+### Vocabulary (implementer's glossary — wire the RIGHT lease into the RIGHT job)
+
+- **Serving-lease holder** — the fenced, epoch-stamped "one awake machine" of the
+  multi-machine foundation; ALWAYS exists (single-machine = itself). Owns: alert-topic
+  CREATION (Amendment 2). Never owns money.
+- **Metered-lease holder** — the ONE machine the go-live PIN designates as money
+  authority (Increment B+); exists ONLY after a go-live. Owns: the
+  `MeteredSpendLedger`, the gate, cap reads, unified cap alerts. Never the topic
+  creator.
+- **`meteredCallId`** — the per-call id minted at reserve time (=== `reserveId`);
+  joins `feature_metrics.callId` ↔ booking rows ↔ `provider_cost_report`.
+- **Reserve-expiry sweep** (Layer 3) — money-side; takes the per-key lock; expires
+  stale reserves. **Provider-reconciliation sweep** (Layer 1c) — reporting-side;
+  never takes the money lock; computes booked-vs-reported drift.
+- **Dedicated topic** — the ONE "💰 Routing & Spend Alerts" Telegram topic.
+  **Lifeline** — the always-existing system topic; the single named emergency
+  fallback. **Durable relay** — `PendingRelayStore` + `DeliveryFailureSentinel`,
+  the retry-until-delivered Telegram path money-critical alerts ride.
+
 ---
 
 ## Proposed design
@@ -160,7 +179,7 @@ the **accounting split**:
   under-count on a dropped observability write — which is why it never gates money.
 - **MONEY** truth (authoritative, protective): a NEW booking-priced
   `MeteredSpendLedger` (Layer 3) that the O(1) gate reads and writes, fail-closed,
-  non-swallowing, with reserve/settle + a reconciliation sweep. This side answers
+  non-swallowing, with reserve/settle + a reserve-expiry sweep. This side answers
   "may this call spend?" and NEVER recomputes — it protects real dollars committed at
   the moment of the call.
 
@@ -403,10 +422,17 @@ improvement even where no cost figure exists. **Token-source disambiguation (the
 gate-exclusion invariant made wiring-precise):** this preference statement is about
 the REPORTING side. The money gate's settle also uses provider-returned usage — but
 ONLY from the **in-hand live response object** of the call it is settling (the
-vendored `settleCost` path, unchanged), NEVER by reading the `provider_cost_report`
-store; the settle module has NO dependency on the store (wiring test). The store is
-written FROM the same response, downstream — data flows response → {settle, capture}
-in parallel, never store → settle.
+vendored `settleCost` formula, fed by the per-door billed-token mapping — §Layer 3),
+NEVER by reading the `provider_cost_report` store; the settle module has NO
+dependency on the store (wiring test). The store is written FROM the same response,
+downstream — data flows response → {settle, capture} independently (capture strictly
+after the settle books — §the seam), never store → settle. **Hedging honesty
+(provider APIs drift):** the per-provider capabilities above were verified against
+the providers' live docs + the bench funnel as of 2026-07; they are treated as
+DEGRADABLE facts, not axioms — a provider field that is absent, renamed, or reshaped
+simply degrades that row to `internal-derived` (a first-class, NORMAL `costBasis`,
+never an error path), and the reconciliation/drift surface is what makes such a
+regression visible.
 
 - **The provider-report store — a NEW immutable, append-only, timestamped record set
   (same discipline as Layer 0), joined on a per-call id.** Every metered call mints
@@ -583,7 +609,9 @@ metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.
   substrate and thereby closes the deferred `drift-spend-cross-machine` child. The two
   ledgers never overlap in domain.
 - **Two-phase reserve/settle with IDEMPOTENT TERMINAL STATES and a locked
-  reconciliation sweep (A-B2 / A2-1 / scal-F5).**
+  RESERVE-EXPIRY sweep (A-B2 / A2-1 / scal-F5).** (This money-layer sweep is named
+  the **reserve-expiry sweep** everywhere — distinct from Layer 1c's
+  provider-reconciliation sweep, which never takes the money lock.)
   - **Reserve sizing (A2-4):** the metered call path MUST set a hard `max_tokens` on
     the provider request. `reserve = inputTokens/1e6 × inPerMtok + max_tokens/1e6 ×
     outPerMtok` (cached tokens reserved as full input — never under-books). **A
@@ -598,10 +626,10 @@ metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.
     funnel through the single server process (in-process async mutex); if
     multi-process issuance ever appears, the same `proper-lockfile` advisory lock
     applies.
-  - **The reconciliation sweep TAKES THE PER-KEY LOCK (A2-1)** and expires only
+  - **The reserve-expiry sweep TAKES THE PER-KEY LOCK (A2-1)** and expires only
     reserves older than the TTL that are still in `reserved` state. **A settle that
     arrives after its reserve was expired books the ACTUAL cost as a fresh ABSOLUTE
-    row** (reconciliation-aware settle) — never a delta against a vanished reserve, so
+    row** (expiry-aware settle) — never a delta against a vanished reserve, so
     the late-settle race cannot under-count committed spend. The TTL is pinned
     comfortably above the maximum metered-call latency (default 15 min vs a 5-min
     call ceiling). Sweep runs at boot + on a cadence.
@@ -616,10 +644,14 @@ metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.
     committed spend and the cap under-protects (and the reconciliation that would
     notice is forbidden from moving the gate). Each metered door therefore carries a
     CODE-DEFINED billed-token mapping the settle MUST use — Gemini output =
-    `candidatesTokenCount + thoughtsTokenCount`; OpenRouter/Groq =
+    `candidatesTokenCount + thoughtsTokenCount` on the native path, or
+    `completion_tokens` + the reasoning-token detail on the OpenAI-compat path (the
+    funnel's path — the mapping names BOTH response shapes); OpenRouter/Groq =
     `completion_tokens` — and a response whose billed-token basis cannot be confirmed
     from the mapping settles at the WORST-CASE estimate (the existing safe direction),
-    never at a lower unverified field. Unit test per door mapping.
+    never at a lower unverified field. **Honesty on "vendored, unchanged": the
+    `settleCost` FORMULA is unchanged; the billed-output FIELD SELECTION feeding it is
+    this new per-door mapping.** Unit test per door mapping and per shape.
 - **O(1) never-cached, fail-closed, lease-fenced read at the gate.** Before a metered
   call the gate reads the committed total FRESH, reads the door's CANONICAL, VALIDATED
   price (never the observed cache, never the overlay), computes `estCost` at BASE
@@ -709,8 +741,8 @@ recorded row — this spec is HONEST about the dependency:
   tokensOut, tokensCached, grossUsd, subsidyUsd, creditUsd, netUsd, committedUsd,
   priceBasis, costBasis, providerReportedUsd, providerDriftPct, priceStale,
   notLiveYet }` — `costBasis` and `providerReportedUsd` surface the Layer-1c
-  provider-grounded figure (and `providerDriftPct` where the reconciliation sweep has
-  run) — plus `totals`, `horizonNote`, `adjustmentsSource`, and loud `unpricedTokens`
+  provider-grounded figure (and `providerDriftPct` where the provider-reconciliation
+  sweep has run) — plus `totals`, `horizonNote`, `adjustmentsSource`, and loud `unpricedTokens`
   rows. A companion `GET /routing-spend/reconciliation?scope=pool` returns the
   per-`(keyRef, door)` internal-vs-provider (and, post-B, vs-committed) drift records.
   **Best-effort labeling rides
@@ -959,7 +991,7 @@ recorded row — this spec is HONEST about the dependency:
   observability INTO the rebase max() only — never a gate input on a live holder. A rebase that lands at/above the
   cap simply leaves the gate refusing until the operator raises the cap or the daily
   resets — the safe direction. The reclaim plan labels the attested figure as an
-  estimate with its age; the audit row records both inputs and which won.
+  estimate with its age; the audit row records all three inputs and which won.
   **Reclaim safety against a FALSE death (N-2):** the rendered reclaim plan displays
   the last-known committed figure's AGE, and when the alive-but-partitioned signal is
   present (the old holder's git-synced heartbeat still ADVANCING while its mesh ropes
@@ -1401,13 +1433,18 @@ math is unchanged.
 - **Increment A — Read-only spend VIEW (dev-agent ENABLED, dark on fleet; no money
   authority).** Layer 0 `door` column; Layer 1 canonical manifest + observed cache +
   index + as-of join + validation + freshness; Layer 1b reporting subsidy/credit +
-  overlay; **Layer 1c the `provider_cost_report` store + capture seam + PREFER-on-read
-  `costBasis` (empty until real metered dispatch lands — display notes + the honest
-  no-provider-data state ship now)**; Layer 2 daily token rollup + on-read pricing +
+  overlay; **Layer 1c as SCHEMA + DISPLAY + INTERFACE CONTRACT: the
+  `provider_cost_report` store, the PREFER-on-read `costBasis`, and the capture seam
+  declared as an explicit interface (stamped `meteredCallId` + per-door capture
+  fields) exercised by STUB-ONLY tests — the LIVE capture wiring lands with the
+  out-of-scope metered dispatch itself (exactly like `door` attribution, FD-11), so A
+  ships honestly empty provider data (display notes + the no-provider-data state),
+  never a claimed-but-unwired capture**; Layer 2 daily token rollup + on-read pricing +
   boot reconcile + `GET /routing-spend/summary` + `GET /routing-spend/caps` (read); the
   Spend tab; the refresh job (OFF). Via `resolveDevAgentGate` on `routingSpend.enabled`;
   routes 503 when off. Honest `$0` / `not-live-yet`. Reversible by revert; persistent
-  state is additive/regenerable.
+  state is additive (and regenerable except the `provider_cost_report` store — which
+  is empty in A and retention-governed thereafter).
 - **Increment B — Money authority, SINGLE-WRITER (`DARK_GATE_EXCLUSIONS`,
   PIN-gated).** `MeteredSpendLedger` + the O(1) fail-closed gate (stub-testable
   against a fake metered dispatch until A2.2 + providers land — FD-11); whole-cap
@@ -1418,9 +1455,10 @@ math is unchanged.
   foundation they deliver through** (the §Surface 2 resolution ladder + duplicate
   guard + durable money-critical delivery + lifeline fallback — B is the first
   alert-emitting increment, so the foundation ships here, keeping "B never depends on
-  C" true); **the authoritative booked-vs-provider-reported reconciliation sweep
-  (Layer 1c) — the per-call, faster form of FD-11's booked-vs-billed invoice-drift
-  REPORTING, observability-only, never gate authority**. Go-live additionally requires
+  C" true); **the authoritative provider-reconciliation sweep (Layer 1c,
+  booked-vs-provider-reported) — the per-call, faster form of FD-11's
+  booked-vs-billed invoice-drift REPORTING, observability-only, never gate
+  authority**. Go-live additionally requires
   FD-11's release gate (live wiring proof + holder-death drill + invoice/
   provider-report drift reporting). Inert until the operator arms a door.
 - **Increment C — Alerts to ONE dedicated topic (dryRun-first live-on-dev).**

@@ -150,8 +150,11 @@ per-door money tracking depends on that other work landing.
 - **First (dev-agent on, dark on the fleet, read-only):** the spend view and price book
   — shows "$0, no paid door live yet" honestly.
 - **Then (PIN-gated, the documented money exception):** the caps you can adjust and the
-  switch that turns paid doors on — single-machine money only.
-- **Then (dry-run first):** the alerts.
+  switch that turns paid doors on — single-machine money only. This step also brings
+  the first two alerts (a stale price / a price drifting from reality, since those
+  affect what the gate charges) and, with them, the machinery that finds-or-creates
+  the one alerts topic.
+- **Then (dry-run first):** the rest of the alerts.
 - **Last (dark until proven):** sharing the budget across machines.
 
 Each part is reversible and independently switched, and nothing about the money can
