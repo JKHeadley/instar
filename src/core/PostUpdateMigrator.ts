@@ -4792,7 +4792,7 @@ setTimeout(() => process.exit(0), 2000);
     // "NOT SENT — advisory" transcript line means will treat it as an error
     // and improvise; this section is the awareness (Agent Awareness Standard).
     if (!content.includes('Outbound advisory for automated messages')) {
-      content += `\n**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.\n- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).\n- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.\n- Conversational replies are unaffected by the jargon/path/link checks — those only run for scheduler-stamped automated job sends.\n- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n- Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).\n`;
+      content += `\n**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.\n- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).\n- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.\n- Conversational replies are unaffected by the jargon/path/link checks — those only run for scheduler-stamped automated job sends.\n- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n- Off-switch: \`outboundAdvisory.enabled: false\` (TOP-LEVEL) in \`.instar/config.json\` (read live — no restart; the block is top-level, NOT nested under \`messaging\` — which is an array of adapters, so a nested key there is unreachable).\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Outbound advisory for automated messages section');
     }
@@ -4804,13 +4804,32 @@ setTimeout(() => process.exit(0), 2000);
     // line. Content-sniff on 'TIME_CLAIM' keeps it idempotent.
     if (content.includes('Outbound advisory for automated messages') && !content.includes('TIME_CLAIM')) {
       const timeClaimBullet = `- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n`;
-      const offSwitchMarker = '- Off-switch: `messaging.outboundAdvisory.enabled: false`';
+      // Match on the stable prefix (not the config key) so the anchor still finds
+      // the off-switch line whether CLAUDE.md carries the legacy nested key or the
+      // new top-level `outboundAdvisory.enabled` key (off-switch-config-shape fix).
+      const offSwitchMarker = '- Off-switch: `';
       const idx = content.indexOf(offSwitchMarker);
       content = idx !== -1
         ? content.slice(0, idx) + timeClaimBullet + content.slice(idx)
         : content + '\n' + timeClaimBullet;
       patched = true;
       result.upgraded.push('CLAUDE.md: added TIME_CLAIM bullet to Outbound advisory section');
+    }
+
+    // off-switch-config-shape fix (Migration Parity): existing agents' CLAUDE.md
+    // documents the outbound-advisory off-switch at the LEGACY nested key
+    // `messaging.outboundAdvisory.enabled`, which is UNREACHABLE on a real install
+    // (`messaging` is an array) — so the documented off-switch never worked. Swap it
+    // for the reachable TOP-LEVEL `outboundAdvisory.enabled` key. Content-sniff on the
+    // old literal keeps it idempotent (a CLAUDE.md already carrying the new key is
+    // untouched).
+    if (content.includes('Off-switch: `messaging.outboundAdvisory.enabled: false`')) {
+      content = content.replace(
+        /- Off-switch: `messaging\.outboundAdvisory\.enabled: false`[^\n]*/,
+        '- Off-switch: `outboundAdvisory.enabled: false` (TOP-LEVEL) in `.instar/config.json` (read live — no restart; the block is top-level, NOT nested under `messaging` — which is an array of adapters, so a nested key there is unreachable).',
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: moved outbound-advisory off-switch to the reachable top-level key');
     }
 
     // Durable Inbound Message Queue (spec durable-inbound-message-queue, CMT-1118)

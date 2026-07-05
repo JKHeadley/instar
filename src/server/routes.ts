@@ -2301,10 +2301,14 @@ export function createRoutes(ctx: RouteContext): Router {
   // Thresholds are live-config reads — tuning needs no restart.
   const outboundAdvisoryAudit = new OutboundAdvisoryAudit({
     logPath: path.join(ctx.config.stateDir, '..', 'logs', 'outbound-advisory.jsonl'),
+    // Top-level `outboundAdvisory` is the reachable home (messaging is an array);
+    // legacy `messaging.outboundAdvisory` honored as fallback.
     getIgnoreThreshold: () =>
-      ctx.liveConfig?.get<number>('messaging.outboundAdvisory.ignoreEscalationThreshold', 3) ?? 3,
+      (ctx.liveConfig?.get<number | undefined>('outboundAdvisory.ignoreEscalationThreshold', undefined) ??
+        ctx.liveConfig?.get<number>('messaging.outboundAdvisory.ignoreEscalationThreshold', 3)) ?? 3,
     getSlugThreshold: () =>
-      ctx.liveConfig?.get<number>('messaging.outboundAdvisory.ignoreEscalationSlugThreshold', 5) ?? 5,
+      (ctx.liveConfig?.get<number | undefined>('outboundAdvisory.ignoreEscalationSlugThreshold', undefined) ??
+        ctx.liveConfig?.get<number>('messaging.outboundAdvisory.ignoreEscalationSlugThreshold', 5)) ?? 5,
     raiseAttention: (item) =>
       ctx.telegram
         ? ctx.telegram.createAttentionItem({
@@ -11469,7 +11473,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const kind = coerceMessageKind((req.body ?? {}).messageKind) ?? 'reply';
-    const enabled = ctx.liveConfig?.get<boolean>('messaging.outboundAdvisory.enabled', true) ?? true;
+    // Config home: on a real install `messaging` is an ARRAY of adapter configs,
+    // so `messaging.outboundAdvisory.*` is UNREACHABLE (getNestedValue → undefined
+    // → the default) — which made the documented off-switch a no-op (an operator
+    // could not disable the advisory). Read the reachable TOP-LEVEL `outboundAdvisory`
+    // block; honor the legacy `messaging.outboundAdvisory` as a back-compat fallback.
+    // (Same config-unreachable-on-shape class as PR #1379 — the un-DISABLABLE
+    // sub-class: a default-ON gate whose off-switch is at an unreachable path. The
+    // lint-no-unreachable-messaging-gate guard covers the default-OFF sub-class.)
+    const enabled =
+      (ctx.liveConfig?.get<boolean | undefined>('outboundAdvisory.enabled', undefined) ??
+        ctx.liveConfig?.get<boolean>('messaging.outboundAdvisory.enabled', true)) ??
+      true;
     if (!enabled) {
       // Rollback lever (live config, no restart): behave exactly like a clean
       // preflight so the script proceeds straight to the send.
@@ -11493,7 +11508,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // (standard_development_agent_dark_feature_gate); resolution failure
     // degrades to "no clocks" — fail-open like every detector.
     const timeClaimEnabled = resolveDevAgentGate(
-      ctx.liveConfig?.get<boolean | undefined>('messaging.outboundAdvisory.timeClaim.enabled', undefined),
+      ctx.liveConfig?.get<boolean | undefined>('outboundAdvisory.timeClaim.enabled', undefined) ??
+        ctx.liveConfig?.get<boolean | undefined>('messaging.outboundAdvisory.timeClaim.enabled', undefined),
       ctx.config,
     );
     let activeClocks: ReturnType<typeof readSessionClocks> = [];
