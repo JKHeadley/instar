@@ -27,6 +27,7 @@ import {
   validateNatureRoutingChains,
   validateChainPosition,
   isNatureRoutingChainsValid,
+  isComponentInjectionExposed,
   RouterFailClosedError,
   type NatureRoutingRuntime,
   type NatureRoutePlan,
@@ -38,6 +39,7 @@ import {
   ROUTING_LABEL_TO_MODEL_ID,
   CLAUDE_CODE_RESERVE_MODEL_ID,
   NATURE_ROUTING_DEFAULT_CHAINS,
+  resolveInjectionExposure,
   type RoutingDoor,
   type ChainPosition,
   type NatureRoutingChains,
@@ -448,5 +450,145 @@ describe('FD4.3 is BYTE-IDENTICAL when nature-routing is OFF (the validator neve
     expect(out).toBe('claude');
     expect(defaultProvider.calls[0]).toBe(opts); // SAME object — nothing merged, validated, or rewritten
     expect(onPlan).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FD5b — the injection-exposure gate in resolveRoute (spec §283-294). An
+// injection-EXPOSED component may never land on a NON-injection-safe door
+// (`injectionSafe: false`). NO-OP in Increment A over the real defaults (the only
+// such door, groq-api, is ALSO metered → already skipped), so these tests use a
+// SYNTHETIC chain with a non-injection-safe CLI door to exercise the gate in
+// isolation from the metered dimension.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A SORT chain whose FIRST position is a reachable CLI door marked injectionSafe:false. */
+const UNSAFE_FIRST_SORT: NatureRoutingChains = {
+  FAST: NATURE_ROUTING_DEFAULT_CHAINS.FAST,
+  SORT: [
+    { door: 'pi-cli', model: 'gpt-5.5', injectionSafe: false }, // non-injection-safe CLI door (synthetic)
+    { door: 'codex-cli', model: 'gpt-5.4-mini' },
+  ],
+  JUDGE: NATURE_ROUTING_DEFAULT_CHAINS.JUDGE,
+  WRITE: NATURE_ROUTING_DEFAULT_CHAINS.WRITE,
+};
+
+describe('FD5b injection gate (resolveRoute)', () => {
+  it('an EXPOSED component SKIPS the non-injection-safe door; a NON-exposed component keeps it', () => {
+    // CommitmentSentinel is SORT + statically exposed:true.
+    const asExposed = resolveRoute('CommitmentSentinel', undefined, UNSAFE_FIRST_SORT, {
+      isDoorReachable: () => true,
+      isInjectionExposed: () => true,
+    });
+    expect(asExposed.outcome).toBe('route');
+    if (asExposed.outcome !== 'route') return;
+    // pi-cli (injectionSafe:false) is skipped ⇒ primary is codex-cli.
+    expect(asExposed.primary.door).toBe('codex-cli');
+    expect(asExposed.swapTail.map((p) => p.door)).not.toContain('pi-cli');
+
+    // Same chain + same reachability, but NOT exposed ⇒ the non-injection door is eligible.
+    const asTrusted = resolveRoute('CommitmentSentinel', undefined, UNSAFE_FIRST_SORT, {
+      isDoorReachable: () => true,
+      isInjectionExposed: () => false,
+    });
+    expect(asTrusted.outcome).toBe('route');
+    if (asTrusted.outcome !== 'route') return;
+    expect(asTrusted.primary.door).toBe('pi-cli'); // kept — no injection risk
+  });
+
+  it('defaults to the STATIC map when isInjectionExposed is omitted (CommitmentSentinel is exposed ⇒ skipped)', () => {
+    const res = resolveRoute('CommitmentSentinel', undefined, UNSAFE_FIRST_SORT, {
+      isDoorReachable: () => true,
+    });
+    expect(res.outcome).toBe('route');
+    if (res.outcome !== 'route') return;
+    // No isInjectionExposed dep ⇒ resolveInjectionExposure (static) ⇒ CommitmentSentinel exposed ⇒ pi-cli skipped.
+    expect(res.primary.door).toBe('codex-cli');
+    expect(resolveInjectionExposure('CommitmentSentinel')).toBe(true);
+  });
+
+  it('a critical gate that would land ONLY on a non-injection door when exposed FAILS CLOSED (never routes there)', () => {
+    // Chain: the ONLY reachable position is a non-injection-safe door. MessagingToneGate is a critical
+    // gate ⇒ an exposed call skips it and, with no other door, throws (fail-closed) rather than route unsafe.
+    const unsafeOnlyJudge: NatureRoutingChains = {
+      FAST: NATURE_ROUTING_DEFAULT_CHAINS.FAST,
+      SORT: NATURE_ROUTING_DEFAULT_CHAINS.SORT,
+      JUDGE: [{ door: 'pi-cli', model: 'gpt-5.5', injectionSafe: false }],
+      WRITE: NATURE_ROUTING_DEFAULT_CHAINS.WRITE,
+    };
+    expect(() =>
+      resolveRoute('MessagingToneGate', undefined, unsafeOnlyJudge, {
+        isDoorReachable: () => true,
+        isInjectionExposed: () => true,
+      }),
+    ).toThrow(RouterFailClosedError);
+    // …but a NON-exposed call on the same chain routes onto that door (no injection risk).
+    const trusted = resolveRoute('MessagingToneGate', undefined, unsafeOnlyJudge, {
+      isDoorReachable: () => true,
+      isInjectionExposed: () => false,
+    });
+    expect(trusted.outcome).toBe('route');
+  });
+
+  it('the real default chains are UNAFFECTED by the gate for an exposed component (Increment A no-op)', () => {
+    // groq-api (the only injectionSafe:false default door) is metered ⇒ already skipped; the gate changes nothing.
+    const res = resolveRoute('CommitmentSentinel', undefined, NATURE_ROUTING_DEFAULT_CHAINS, {
+      isDoorReachable: () => true,
+      isInjectionExposed: () => true, // exposed
+    });
+    const resTrusted = resolveRoute('CommitmentSentinel', undefined, NATURE_ROUTING_DEFAULT_CHAINS, {
+      isDoorReachable: () => true,
+      isInjectionExposed: () => false, // trusted
+    });
+    expect(res).toEqual(resTrusted); // identical — no default door is a non-metered injection door
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FD5b — injection-cache isolation (spec §764-766, combined-safety r5). Door
+// HEALTH may be cached; the injection POLICY skip is re-evaluated FRESH per call.
+// resolveRoute recomputes exposure every call from the injected predicate, so the
+// SAME cached door-health verdict yields DIFFERENT eligibility for a trusted vs an
+// exposed call — proving the policy is never baked into a cached full verdict.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('FD5b injection-cache isolation', () => {
+  it('the SAME cached door health yields a DIFFERENT injection verdict per call (policy is fresh, not cached)', () => {
+    // One shared isDoorReachable closure = a single cached door-health source, reused by both calls.
+    let doorHealthQueries = 0;
+    const cachedHealth = {
+      isDoorReachable: (_d: RoutingDoor) => {
+        doorHealthQueries++;
+        return true; // pi-cli + codex-cli both "healthy" (cached)
+      },
+    };
+
+    // Call 1 — a NON-exposed call: pi-cli (injectionSafe:false) is HEALTHY and ELIGIBLE.
+    const trusted = resolveRoute('CommitmentSentinel', undefined, UNSAFE_FIRST_SORT, {
+      ...cachedHealth,
+      isInjectionExposed: () => false,
+    });
+    expect(trusted.outcome === 'route' && trusted.primary.door).toBe('pi-cli');
+
+    // Call 2 — an EXPOSED call within the same "TTL" (same cached health source): pi-cli is STILL healthy
+    // but is skipped by a FRESHLY-evaluated injection policy — NOT served from call 1's full verdict.
+    const exposedCall = resolveRoute('CommitmentSentinel', undefined, UNSAFE_FIRST_SORT, {
+      ...cachedHealth,
+      isInjectionExposed: () => true,
+    });
+    expect(exposedCall.outcome === 'route' && exposedCall.primary.door).toBe('codex-cli');
+    expect(doorHealthQueries).toBeGreaterThan(0); // door health WAS consulted (cached source), yet the verdict diverged
+  });
+
+  it('isComponentInjectionExposed — static exposure OR the per-call tighten (never relaxes static)', () => {
+    // Statically exposed:false — the per-call flag may TIGHTEN it to exposed.
+    expect(isComponentInjectionExposed('InteractivePoolCanaryJudge')).toBe(false);
+    expect(isComponentInjectionExposed('InteractivePoolCanaryJudge', true)).toBe(true); // tightened
+    expect(isComponentInjectionExposed('InteractivePoolCanaryJudge', false)).toBe(false);
+    // Statically exposed:true — the per-call flag can NEVER relax it (fail-safe).
+    expect(isComponentInjectionExposed('MessagingToneGate')).toBe(true);
+    expect(isComponentInjectionExposed('MessagingToneGate', false)).toBe(true); // still exposed
+    // Unknown component — fail-closed exposed regardless of the flag.
+    expect(isComponentInjectionExposed('UnknownThing')).toBe(true);
+    expect(isComponentInjectionExposed(undefined)).toBe(true);
   });
 });

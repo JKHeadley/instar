@@ -1021,6 +1021,18 @@ export interface IntelligenceOptions {
      */
     nature?: 'A' | 'B' | 'D' | 'E';
     /**
+     * S4 FD5b — OPT-IN, TIGHTENING-ONLY injection-exposure flag
+     * (docs/specs/nature-axis-routing.md §289). When the nature router is enabled,
+     * a caller MAY declare `true` to mark an otherwise-statically-trusted call as
+     * carrying untrusted / injection-bearing content — so the door-availability walk
+     * SKIPS any non-injection-safe door (`injectionSafe: false`) for this call. It can
+     * only ever TIGHTEN: `true` raises exposure; it can NEVER relax a component that is
+     * statically `exposed: true` in LLM_ROUTING_INJECTION_EXPOSURE (fail-safe). MUST
+     * originate from callsite CODE, never from model/user content (Sec4 trust boundary).
+     * Omitted ⇒ the static exposure map is authoritative. Inert unless nature routing is enabled.
+     */
+    injectionExposed?: boolean;
+    /**
      * F5 RESERVATION LANE (docs/specs/spawn-cap-interactive-priority.md).
      * `interactive` requests the user-facing reserved headroom in the host spawn cap
      * — set ONLY by a synchronous, user-blocking seam (the operator-facing tone gate /

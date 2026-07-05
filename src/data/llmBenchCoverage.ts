@@ -685,6 +685,180 @@ export const LLM_ROUTING_NATURE: Readonly<Record<string, RoutingNature>> = {
   'correction-learning': { nature: 'D', chain: 'SORT' },
 };
 
+// ───────────────────────────────────────────────────────────────────────────
+// S4 FD5b — INJECTION-EXPOSURE static map (docs/specs/nature-axis-routing.md
+// FD5(b) §283-294, semantic-drift row detail §370-384).
+//
+// The `injectionExposure` axis of the per-component routing classification — the
+// PARALLEL exhaustive map the FD5 door-availability walk consults to decide
+// whether a candidate position on a NON-injection-safe door (a door whose
+// ChainPosition carries `injectionSafe: false`, e.g. groq-api/gpt-oss-120B) is
+// eligible for THIS component. It is enforced STATICALLY (not a per-call caller
+// flag) exactly like the nature map: one forgotten callsite must not be able to
+// silently route an injection-exposed call onto a non-injection door.
+//
+// POLARITY — FAIL-SAFE (spec §286): the map DEFAULTS to `exposed: true`. A
+// component is `exposed: false` ONLY when explicitly audited as carrying NO
+// untrusted / injection-bearing content, and that argument is required in the row
+// (`reason`, pinned shrink-only in the ratchet). `resolveInjectionExposure`
+// treats a missing/unknown component as EXPOSED (fail-closed skip) — the safe
+// direction. A per-call `attribution.injectionExposed: true` may only TIGHTEN
+// (mark an otherwise-trusted call exposed), never relax a statically-exposed
+// component (composed in IntelligenceRouter.isComponentInjectionExposed).
+//
+// THE CLASSIFICATION IS THE SAME PREDICATE AS `LLM_UNTRUSTED_INPUT` above — a
+// component carries injection-bearing content iff it judges untrusted content —
+// so this map's `exposed` is authored to MIRROR that reviewed axis, and the
+// ratchet (tests/unit/nature-routing-injection-exposure-ratchet.test.ts)
+// CROSS-CHECKS the two so they can never silently diverge (a callsite that
+// becomes `untrustedInput: true` must also become `exposed: true`, or CI fails).
+// This is the FD5b arm of the FD7 semantic-drift guard that is honoured TODAY;
+// the prompt-anchor fingerprint LINT (spec §376-384) is the separate FD7
+// semantic-drift increment.
+//
+// R8 (spec §308-310): the input-classifier-nature components (InputClassifier,
+// MessageSentinel, TaskClassifier) are injection-exposed and MUST be
+// `exposed: true` — the ratchet pins this so a future edit can't relax them.
+//
+// EACH ROW carries the spec's INPUT-SHAPE DECLARATION (§371: "can user / model /
+// tool content enter this call?"). It is load-bearing here: the ratchet enforces
+// `exposed ⟺ (userContent || modelContent || toolContent)` — an exposed:false row
+// declares all three false (nothing untrusted can enter), an exposed:true row
+// declares at least the channel(s) through which untrusted content arrives.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Can content of each provenance enter this LLM call (spec §371 input-shape declaration)?
+ *  - userContent  → the prompt embeds human/user-authored content (inbound messages, conversation);
+ *  - modelContent → the prompt embeds model/agent-generated content (assistant turns, session output, summaries);
+ *  - toolContent  → the prompt embeds tool output / file / peer-agent / process content. */
+export interface InjectionInputShape {
+  readonly userContent: boolean;
+  readonly modelContent: boolean;
+  readonly toolContent: boolean;
+}
+
+/** One component's static injection-exposure classification (FD5b).
+ *  `exposed` DEFAULTS true (fail-safe); `exposed:false` REQUIRES an argued `reason`
+ *  and an all-false `inputShape` (audited: no untrusted content can enter). */
+export interface InjectionExposure {
+  readonly exposed: boolean;
+  readonly inputShape: InjectionInputShape;
+  /** Required argument WHY the component carries no untrusted content (exposed:false only). */
+  readonly reason?: string;
+}
+
+const EXPOSED_USER: InjectionInputShape = { userContent: true, modelContent: false, toolContent: false };
+const EXPOSED_MODEL: InjectionInputShape = { userContent: false, modelContent: true, toolContent: false };
+const EXPOSED_TOOL: InjectionInputShape = { userContent: false, modelContent: false, toolContent: true };
+const EXPOSED_USER_MODEL: InjectionInputShape = { userContent: true, modelContent: true, toolContent: false };
+const EXPOSED_USER_TOOL: InjectionInputShape = { userContent: true, modelContent: false, toolContent: true };
+const EXPOSED_MODEL_TOOL: InjectionInputShape = { userContent: false, modelContent: true, toolContent: true };
+const EXPOSED_ALL: InjectionInputShape = { userContent: true, modelContent: true, toolContent: true };
+const NOT_EXPOSED: InjectionInputShape = { userContent: false, modelContent: false, toolContent: false };
+
+/** Sugar for the fail-safe default: an exposed row carrying its untrusted input-shape. */
+const exposed = (inputShape: InjectionInputShape): InjectionExposure => ({ exposed: true, inputShape });
+/** Sugar for the audited safe row: not exposed, all channels closed, with the argued reason. */
+const notExposed = (reason: string): InjectionExposure => ({ exposed: false, inputShape: NOT_EXPOSED, reason });
+
+export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionExposure>> = {
+  // ── Sentinels ──
+  ExternalHogClassifier: exposed(EXPOSED_TOOL), // attacker-controllable process name + argv
+  InputGuard: exposed(EXPOSED_USER),
+  SessionActivitySentinel: exposed(EXPOSED_MODEL), // session tmux output
+  StallTriageNurse: exposed(EXPOSED_MODEL), // session output
+  CommitmentSentinel: exposed(EXPOSED_USER_MODEL), // both sides of a conversation
+  PresenceProxy: exposed(EXPOSED_MODEL), // session-stall over session output
+  MessageSentinel: exposed(EXPOSED_USER), // inbound user message (R8 input-classifier — must stay exposed)
+  ProjectDriftChecker: exposed(EXPOSED_MODEL_TOOL), // session work + files
+  TemporalCoherenceChecker: exposed(EXPOSED_USER_MODEL),
+  CompletionEvaluator: exposed(EXPOSED_MODEL_TOOL), // asserted work over session output/transcript
+  SessionWatchdog: exposed(EXPOSED_MODEL), // stuck-judge over session output
+  ResumeQueueDrainer: exposed(EXPOSED_MODEL_TOOL), // session state before a resume
+  TopicIntentArcCheck: exposed(EXPOSED_USER_MODEL),
+  SlackAdapter: exposed(EXPOSED_MODEL), // stall-confirm over session output
+  InputClassifier: exposed(EXPOSED_USER), // inbound user message (R8 input-classifier — must stay exposed)
+  SessionSummarySentinel: exposed(EXPOSED_MODEL), // summarizes tmux output
+  TelegramAdapter: exposed(EXPOSED_MODEL), // stall-confirm over session output
+
+  // ── Gates ──
+  PromptGate: exposed(EXPOSED_USER_TOOL), // injection detection over inbound content
+  ExternalOperationGate: exposed(EXPOSED_USER_TOOL), // in-content "user already approved" claims
+  WarrantsReplyGate: exposed(EXPOSED_USER),
+  UnjustifiedStopGate: exposed(EXPOSED_MODEL), // stop justification over session state
+  MessagingToneGate: exposed(EXPOSED_ALL), // reviews an outbound draft quoting user/tool content
+  MoveIntentClassifier: exposed(EXPOSED_USER), // inbound user message + conversation
+  HubIntentClassifier: exposed(EXPOSED_USER), // inbound hub message
+  ProfileIntentClassifier: exposed(EXPOSED_USER), // inbound user message + conversation
+  CoherenceReviewer: exposed(EXPOSED_ALL), // reviews outbound coherence (draft + context)
+  LLMSanitizer: exposed(EXPOSED_USER_TOOL), // definitionally judges untrusted inbound content
+  OverrideDetector: exposed(EXPOSED_USER),
+  TaskClassifier: exposed(EXPOSED_USER), // classifies a user task (R8 input-classifier — must stay exposed)
+
+  // ── Reflectors ──
+  JobReflector: exposed(EXPOSED_MODEL_TOOL),
+  crossModelReviewer: exposed(EXPOSED_TOOL), // reviews a spec document (file)
+  SelfKnowledgeTree: exposed(EXPOSED_MODEL_TOOL), // extracts over transcripts
+  TreeTriage: exposed(EXPOSED_TOOL),
+  TopicSummarizer: exposed(EXPOSED_USER_MODEL),
+  ContextualEvaluator: exposed(EXPOSED_USER_MODEL),
+  RelationshipManager: exposed(EXPOSED_USER_MODEL), // extracts relationship facts from conversation
+  StandardsConformanceReviewer: exposed(EXPOSED_TOOL), // artifact-vs-standard over files
+  DiscoveryEvaluator: exposed(EXPOSED_MODEL_TOOL), // subagent output
+  Usher: exposed(EXPOSED_USER), // routes an inbound turn
+  TopicIntentExtractor: exposed(EXPOSED_USER),
+  PreCompactionFlush: exposed(EXPOSED_MODEL_TOOL), // durable facts from a transcript
+  TreeSynthesis: exposed(EXPOSED_TOOL),
+  LLMConflictResolver: exposed(EXPOSED_TOOL), // divergent peer state = untrusted peer data
+  openConversationBrief: exposed(EXPOSED_TOOL), // A2A peer content
+  'a2a-checkin': exposed(EXPOSED_TOOL), // A2A peer-authored threads
+  'correction-learning': exposed(EXPOSED_USER_MODEL),
+  'mentor-stage-b': exposed(EXPOSED_MODEL_TOOL), // mentor signals over mentee output
+  ResumeValidator: exposed(EXPOSED_TOOL), // matches a resume UUID against topic/session state
+
+  // ── Jobs ──
+  PipeSessionSpawner: exposed(EXPOSED_USER_TOOL), // spawns from (possibly user-authored) task descriptions
+  CartographerSweep: exposed(EXPOSED_TOOL), // authors summaries over untrusted CODE
+  StandardsCoverageEnrichment: exposed(EXPOSED_TOOL),
+
+  // ── Argued NOT-EXPOSED (pinned shrink-only) — no live LLM callsite carrying untrusted content.
+  //    This set mirrors LLM_UNTRUSTED_INPUT's argued-false set exactly (cross-checked by the ratchet). ──
+  PromiseBeacon: notExposed(
+    'no live LLM prompt — generateStatusLine/classifyProgress hooks are unwired at the construction site; no untrusted content can enter (matches its untrustedInput/bench-coverage exemption)',
+  ),
+  InteractivePoolCanaryJudge: notExposed(
+    'judges a FIXED known-answer canary probe — the input is a constant, not external content; a planted instruction cannot reach it',
+  ),
+  AutoApprover: notExposed(
+    'mechanical key injection + audit logging, no LLM prompt of its own; the upstream untrusted-judging callsite is InputClassifier.classify()',
+  ),
+  IntegrationGate: notExposed(
+    'no LLM prompt of its own — delegates to JobReflector.reflect(); zero LLM-provider callsites of its own that see untrusted content',
+  ),
+  CoherenceGate: notExposed(
+    'no callsite carries attribution CoherenceGate — all LLM calls flow through CoherenceReviewer.callApi(), classified exposed there',
+  ),
+  InputDetector: notExposed(
+    'attribution-manifest alias only (a legacy prompt-pattern matcher); the live matcher calls with attribution PromptGate, classified exposed there',
+  ),
+};
+
+/**
+ * FD5b — resolve a component's STATIC injection exposure (fail-safe). Strips a
+ * trailing "/segment" operation suffix + a leading "server:" prefix (mirroring
+ * componentCategories.categoryForComponent) then looks the base up in the
+ * exhaustive map. A missing/unknown component resolves EXPOSED (fail-closed): the
+ * safe direction — an unclassified call is treated as if it could carry an
+ * injection, so it is never routed onto a non-injection-safe door. Pure.
+ */
+export function resolveInjectionExposure(component: string | undefined): boolean {
+  if (!component) return true; // fail-closed: no attribution ⇒ assume exposed
+  const base = component.split('/')[0].replace(/^server:/, '').trim();
+  const row = LLM_ROUTING_INJECTION_EXPOSURE[base];
+  if (!row) return true; // unknown component ⇒ exposed (fail-safe skip)
+  return row.exposed;
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
  * S4 Increment A2 — nature-axis routing: door taxonomy, label registry, chains.
  *

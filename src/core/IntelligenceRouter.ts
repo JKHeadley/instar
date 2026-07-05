@@ -44,6 +44,7 @@ import {
   CLAUDE_CODE_RESERVE_MODEL_ID,
   METERED_ROUTING_DOORS,
   NATURE_ROUTING_CRITICAL_GATES,
+  resolveInjectionExposure,
 } from '../data/llmBenchCoverage.js';
 
 export interface ComponentFrameworksConfig {
@@ -636,6 +637,21 @@ function baseComponentKey(component: string | undefined): string | undefined {
 }
 
 /**
+ * FD5b — is THIS call injection-exposed? Composes the STATIC per-component
+ * classification (`resolveInjectionExposure`, fail-safe) with an OPTIONAL per-call
+ * `attribution.injectionExposed` that may only TIGHTEN (mark an otherwise-trusted
+ * call exposed), never relax a statically-exposed component. The static map is
+ * authoritative for the exposed direction; the per-call flag can only raise it.
+ * Pure — the resolver reads only the static data map.
+ */
+export function isComponentInjectionExposed(
+  component: string | undefined,
+  perCallExposed?: boolean,
+): boolean {
+  return resolveInjectionExposure(component) || perCallExposed === true;
+}
+
+/**
  * The PURE nature-routing fold (spec §Resolver, steps 1–7). Deps are injected so the
  * function is side-effect-free + trivially testable: `isDoorReachable` reports CLI-door
  * reachability (the class wraps its provider cache). Metered doors are ALWAYS skipped in
@@ -654,6 +670,14 @@ export function resolveRoute(
     isDoorReachable: (door: RoutingDoor) => boolean;
     /** FD4.3 — called when a live chain is rejected for a harness-door-ban violation (→ defaults). */
     onInvalidChain?: (chain: RoutingChain, violations: NatureChainViolation[]) => void;
+    /**
+     * FD5b — is this call injection-exposed? Injected so the exposure verdict is
+     * evaluated FRESH per call (never served from a cached door-health verdict —
+     * the injection-cache isolation contract, spec §764-766). Defaults to the
+     * STATIC fail-safe classification; the class caller composes in the per-call
+     * `attribution.injectionExposed` tighten via `isComponentInjectionExposed`.
+     */
+    isInjectionExposed?: (component: string | undefined) => boolean;
   },
 ): RouteResolution {
   const nc = resolveNatureAndChain(component, declaredNature);
@@ -671,10 +695,17 @@ export function resolveRoute(
     deps.onInvalidChain?.(nc.resolvedChain, chainViolations);
     positions = NATURE_ROUTING_DEFAULT_CHAINS[nc.resolvedChain];
   }
+  // FD5b — evaluate injection exposure ONCE per call, fresh (never cached with door health).
+  const exposed = (deps.isInjectionExposed ?? resolveInjectionExposure)(component);
   const available: ResolvedRoutePosition[] = [];
   for (const p of positions) {
     // Increment A: metered-API doors are DEFINED but always unavailable (skipped) until Increment B.
     if (METERED_ROUTING_DOORS.has(p.door)) continue;
+    // FD5b injection gate (spec §283-294): an injection-exposed component may never land on a
+    // non-injection-safe door (`injectionSafe: false`, e.g. groq-api/gpt-oss-120B). NO-OP in
+    // Increment A — the only such door is ALSO metered, so it is already skipped above; this
+    // preserves byte-identical behavior while sealing the route structurally for Increment B.
+    if (exposed && p.injectionSafe === false) continue; // reason: injectionUnsafe
     if (!deps.isDoorReachable(p.door)) continue;
     const resolved: ResolvedRoutePosition = {
       door: p.door,
@@ -929,6 +960,12 @@ export class IntelligenceRouter implements IntelligenceProvider {
           {
             isDoorReachable: (d) => this.isCliDoorReachable(d),
             onInvalidChain: (c, v) => this.warnNatureChainRejected(c, v),
+            // FD5b — static exposure OR the per-call tightening flag (never relaxes static).
+            isInjectionExposed: (comp) =>
+              isComponentInjectionExposed(
+                comp,
+                (options?.attribution as { injectionExposed?: unknown } | undefined)?.injectionExposed === true,
+              ),
           },
         );
         this.opts.onNatureRoutePlan?.({ component, category, dryRun, resolution });
