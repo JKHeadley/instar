@@ -45,7 +45,8 @@ Grounding confirms the gap is real and total:
   ledger with a strict `spent + est > cap → reject` gate and a per-machine cap whose
   atomic cross-machine variant is an explicitly-deferred child
   (`drift-spend-cross-machine`, `DriftSpendLedger.ts:26-31`). This spec's money layer
-  REUSES its earned write-discipline and CLOSES that deferred child (§Money layer).
+  REUSES its earned write-discipline, and the follow-up registered under FD-17
+  closes that deferred child (§Money layer).
 - **USD/cap/alert *routing* patterns exist ONLY bench-side.** The metered-funnel
   research code (`metered-funnel.mjs` + `metered-caps.json` + `metered-prices.json`)
   has a mature pattern — `settleCost` (tokens×price/1e6), a lifetime+daily rollup,
@@ -90,8 +91,9 @@ The operator's explicit requirements (verbatim intent), all addressed below:
   usage record — it recomputes derived cost in the REPORTING layer only. The money
   GATE books at time-of-use price and is NEVER retroactively rewritten.
 - **Deny-by-default for money authority (The Operator Channel Is Sacred / Know Your
-  Principal).** Changing a cap or arming a paid door requires the dashboard PIN; a
-  Bearer token — including via `PATCH /config` — is structurally insufficient.
+  Principal).** Changing a cap, arming a paid door, or influencing ANY gate-consumed
+  price value requires the dashboard PIN (or a reviewed git commit); a Bearer token —
+  including via `PATCH /config` — is structurally insufficient.
 - **Signal vs Authority.** The money gate's blocking authority is NARROW: a
   cap-refusal is a per-door SKIP (advance the swap-tail to the next, often free, door)
   — it never wedges the whole LLM path.
@@ -99,14 +101,16 @@ The operator's explicit requirements (verbatim intent), all addressed below:
   swap-tail self-heal; the operator hears about it only when self-heal is exhausted.
 - **Maturation Path.** The read-only view ships ENABLED on developer agents (dark on
   fleet); the money-authority controls are the documented action-bearing exclusion.
-- **Everything dark/reversible.** Increment A (read view) → B (money authority) → C
-  (alerts) are independently gated and reversible.
+- **Everything dark/reversible + smallest live money system first.** Increments:
+  A (read view) → B (money authority, SINGLE-WRITER) → C (alerts) → D (multi-machine
+  cap slicing) — independently gated and reversible; the first live money release is
+  deliberately a one-machine system.
 
 ---
 
 ## Proposed design
 
-The design has FIVE durable layers and three read/write surfaces, split across three
+The design has FIVE durable layers and three read/write surfaces, split across four
 increments. The **layering is the safety architecture** and its load-bearing move is
 the **accounting split**:
 
@@ -137,8 +141,7 @@ non-destructive change:
   (`FeatureMetricsLedger.ts:281-285`) must ALL gain `door`, or the ALTER lands and the
   writer never populates it. This is a wiring-integrity test target.
 - Records remain **append-only and never mutated**. No USD column is ever added to
-  this table — cost is always a read-time join (Layer 2). This is the structural
-  guarantee behind "re-calculate as needed later" for reporting.
+  this table — cost is always a read-time join (Layer 2).
 - **`door` is DERIVED at the funnel, single-sourced with the gate (I-1/S-F6/A-M8).**
   See §"Door attribution — scope + single-source" below. In Increment A the metered
   doors do not route yet, so metered rows do not exist and `door` is NULL/`unknown` on
@@ -148,117 +151,153 @@ non-destructive change:
   keeps its short default horizon (30d) for raw rows; the long spend history lives in
   the small maintained daily token rollup, NOT in 400 days of raw per-call rows.
 
-### Layer 1 — Price authority (versioned, timestamped, git-tracked = `unified`)
+### Layer 1 — Price authority (versioned, timestamped; canonical reviewed manifest + local observed cache)
 
-Requirement 2 needs a price *history* joined as-of each usage record. The
-authoritative price record is a **git-tracked canonical manifest**
-`scripts/routing-prices.manifest.json` — the same convention as
-`scripts/model-registry-freshness.manifest.json` — with **embedded effective-dated
-history**:
+Requirement 2 needs a price *history* joined as-of each usage record. Price authority
+is split into TWO stores with an explicit promotion flow (X-C1/X-G1/C2-2/S2-2):
+
+**(a) The CANONICAL reviewed manifest** — git-tracked
+`scripts/routing-prices.manifest.json` (the `scripts/model-registry-freshness.manifest.json`
+convention) with embedded effective-dated history. It is written ONLY by a human path:
+a reviewed git commit, or the PIN-gated promotion action below. Every point in it is
+gate-eligible by construction.
+
+**(b) The LOCAL observed price cache** — machine-local
+`.instar/routing-prices.observed.json`, the ONLY file the cadenced refresh job (FD-8)
+ever writes. Observed points feed REPORTING (labeled `priceBasis: "observed"`) and the
+dashboard's "price drift" hints; they are **structurally incapable of reaching the
+money gate** because the gate reads only the canonical manifest. **Promotion flow:**
+the dashboard Spend tab surfaces observed-vs-canonical drift ("openrouter gpt-5.5
+observed $4.50 in / canonical $5.00 — promote?"); promotion is a PIN action (or a
+reviewed git commit) that appends the point to the canonical manifest. A lint + unit
+test assert the refresh job's writer NEVER writes the canonical manifest file at all
+(the structural form of "no job-authored point is ever gate-eligible" — S2-2).
 
 ```jsonc
+// scripts/routing-prices.manifest.json (canonical, human-written)
 {
   "schemaVersion": 1,
-  "_doc": "USD per MILLION tokens, per door+model, effective-dated. Append-only: a change/correction ADDS a point; points are never edited in place. GENERIC PUBLISHED prices only — operator-specific deals live in the machine-local overlay, not here.",
+  "_doc": "USD per MILLION tokens, per door+model, effective-dated. Append-only: a change/correction ADDS a point; points are never edited in place. GENERIC PUBLISHED prices only — operator-specific deals live in the machine-local overlay. effectiveAt MUST be UTC-day-aligned (T00:00:00Z).",
+  "doors": {
+    "openrouter-api": {                          // per-door meta (ALL gate-consumed → lives HERE, never config)
+      "freshnessSlaDays": 45,
+      "staleMode": "book-conservative-max",      // or "fail-closed"
+      "conservativeMax": { "inPerMtok": 10.0, "outPerMtok": 60.0 }
+    }
+  },
   "points": [
     {
       "door": "openrouter-api",
-      "modelId": "openai/gpt-5.5",              // MUST equal resolvePositionModelId() output, normalized (see key-canonicalization)
+      "modelId": "openai/gpt-5.5",              // MUST equal canonical(resolvePositionModelId()) — see key-canonicalization
       "inPerMtok": 5.0,
       "outPerMtok": 30.0,
-      "effectiveAt": "2026-07-01T00:00:00Z",    // price in effect FROM this instant
-      "recordedAt": "2026-07-01T18:00:00Z",      // when we learned it
-      "reviewed": true,                          // TRUE only for a git-committed / operator-confirmed point (gate-eligible)
-      "source": "openrouter-models-api",         // provenance
-      "corrects": null                           // a prior effectiveAt this row FIXES; only a PIN/human action may set it (A-M7)
+      "cachedInPerMtok": 0.5,                    // OPTIONAL cache-read rate; absent ⇒ cached bills as full input (C2-4)
+      "effectiveAt": "2026-07-01T00:00:00Z",    // UTC-day-aligned, ALWAYS (FD-18)
+      "recordedAt": "2026-07-01T18:00:00Z",
+      "source": "openrouter-models-api",
+      "corrects": null                           // only a PIN/human commit may set (A-M7)
     }
   ]
 }
 ```
 
-- **Key canonicalization (I-5 — the casing/model-string bug).** THREE model strings
-  are in play: the chain LABEL (`flash-lite`, `gpt-5.5`), the resolved id via
-  `ROUTING_LABEL_TO_MODEL_ID` (`gemini-3.1-flash-lite`, `openai/gpt-5.5`,
-  `openai/gpt-oss-120b` — lowercase), and what `onModel` reports into
-  `feature_metrics.model`. The join key is **`(door, canonical(modelId))`** where
-  `canonical()` is a single normalizer (lowercase, provider-prefix rules) applied
-  identically to the manifest point, the recorded `model`, and `resolvePositionModelId()`.
-  It is a **wiring contract** that a metered provider reports
-  `onModel.model === resolvePositionModelId(pos)`; a test asserts manifest points
-  round-trip through `canonical()`. (The round-0 example's `openai/gpt-oss-120B` was a
-  case mismatch against the resolver's lowercase id — normalization removes the class.)
-- **As-of join (core of Requirement 2).** For a usage record at time `ts` for
-  `(door, canonical(modelId))`, cost uses the price point with the greatest
-  `effectiveAt ≤ ts` (and, among rows sharing an `effectiveAt`, the greatest
-  `recordedAt` — so a `corrects` row supersedes the wrong one). Deterministic:
-  `cost = tokensIn/1e6 * inPerMtok + tokensOut/1e6 * outPerMtok` (the vendored
-  `settleCost`).
-- **A join-MISS is loud, never $0 (I-5/A-Min15).** A recorded `(door, model)` with no
-  matching price point renders a distinct `priceBasis: "no-matching-point"` row with
-  `unpricedTokensIn/Out` in the Layer-2 view — never silently costed at $0 (which
-  would under-report real spend on precisely the paid doors that matter). The money
-  GATE treats an unknown/unpriced door as `unknown-price → fail closed`.
+- **`effectiveAt` is UTC-day-aligned for EVERY point — including corrections and
+  backdated fixes (FD-18 / SD2-1 / C2-1).** Enforced by the manifest-lint. A price
+  change "takes effect" at a UTC day boundary by policy. Consequence: **every daily
+  token bucket maps to exactly ONE price regime**, so the daily rollup (Layer 2) is
+  exact under as-of pricing for the FULL 400-day horizon — no raw-row splitting is
+  ever needed, and the round-1 "mid-day price-boundary day" complexity is DELETED.
+  (A provider that changes a price mid-day is represented from the next UTC day; the
+  ≤24h approximation is disclosed, bounded, and applies to REPORTING only — the gate
+  books whatever reviewed point is effective at call time.)
+- **Key canonicalization (I-5).** THREE model strings are in play: the chain LABEL
+  (`flash-lite`), the resolved id via `ROUTING_LABEL_TO_MODEL_ID` (lowercase, e.g.
+  `openai/gpt-oss-120b`), and what `onModel` reports into `feature_metrics.model`.
+  The join key is **`(door, canonical(modelId))`** where `canonical()` is a single
+  normalizer (lowercase + provider-prefix rules) applied identically to manifest
+  points, recorded `model`, and `resolvePositionModelId()`. Wiring contract: a metered
+  provider reports `onModel.model === resolvePositionModelId(pos)`; a test asserts
+  manifest points round-trip through `canonical()`.
+- **As-of join.** For a usage record at `ts` for `(door, canonical(modelId))`, cost
+  uses the point with the greatest `effectiveAt ≤ ts` (ties on `effectiveAt` → the
+  greatest `recordedAt`, so a `corrects` row supersedes). Cost formula (C2-4):
+  `cost = (tokensIn − tokensCached)/1e6 × inPerMtok + tokensCached/1e6 ×
+  (cachedInPerMtok ?? inPerMtok) + tokensOut/1e6 × outPerMtok` — cached reads bill at
+  the door's cache rate when a REVIEWED rate exists, else honestly as full input
+  (matching the vendored bench behavior, which over-books — the safe direction).
+- **A join-MISS is loud, never $0 — for metered doors (I-5/A-Min15).** A recorded
+  metered `(door, model)` with no matching point renders a distinct
+  `priceBasis: "no-matching-point"` row with `unpricedTokensIn/Out` — never silently
+  $0. The money GATE treats it as `unknown-price → fail closed`. **Subscription doors
+  get a door-level `$0` default** (doorClass-based) so benign CLI/subscription volume
+  never floods the view with "unpriced" rows; metered doors NEVER have a wildcard.
 - **A correction never mutates ground truth or a prior price row.** A wrong past price
-  is fixed by APPENDING a point with the same/covering `effectiveAt`, a later
-  `recordedAt`, and `corrects` set. Reporting views recompute automatically. **Only a
+  is fixed by APPENDING a point with the same/covering (day-aligned) `effectiveAt`, a
+  later `recordedAt`, and `corrects` set. Reporting recomputes automatically. **Only a
   human/PIN action may write a `corrects` row or a backdated `effectiveAt`** — the
-  cadenced refresh job is forward-only (FD-8/FD-14/A-M7).
+  refresh job is forward-only AND writes only the observed cache (FD-8/A-M7/S2-2).
 - **Subscription/CLI doors are honestly $0-per-token.** `claude-code`, `codex-cli`,
-  `pi-cli`, `gemini-cli` are subscription/OAuth doors — points are
-  `inPerMtok: 0, outPerMtok: 0, source: "subscription-not-per-token"`. The view shows
-  their TOKEN volume with a `$0 (subscription)` cost and a note that reads "not
-  per-token billed" — never a fabricated dollar figure, and the note is worded so an
-  operator cannot misread `$0` as "barely spending" (FD-7; the subscription IS their
-  biggest real cost, just not per-token).
-- **Only REVIEWED, gate-eligible points reach the money gate (S-F1).** The manifest
-  carries `reviewed: true` only on git-committed / operator-confirmed points. The
-  money gate (Layer 3) consumes ONLY reviewed points; an auto-appended refresh point
-  (FD-8) feeds REPORTING until an operator confirms it. Git-tracking is an AUDIT
-  trail, not an admission gate — an unattended probe can never move the gate.
-- **Price validation, fail-closed (A-M5/S-F1 plausibility floor).** At load AND at the
-  gate: `inPerMtok, outPerMtok ≥ 0`, effective price `≥ 0`, and (for the gate) at or
-  above a per-provider sane MINIMUM. Any violation → `unknown-price` → fail closed
-  (never "assume cheap," never "assume negative"). A manifest-lint CI check enforces
-  the ranges at commit time.
-- **Freshness SLA + stale-price behavior (X-C1/X-G1).** Each door declares a max price
-  age. When the newest reviewed point for a door is older than its SLA, the REPORTING
-  view flags `priceStale: true`, and the money GATE either fails closed or books at a
-  configured conservative-MAX price for that door (operator choice; default =
-  conservative-max so spend continues but never under-books). Staleness is surfaced,
-  never silent.
+  `pi-cli`, `gemini-cli` points are `inPerMtok: 0, outPerMtok: 0,
+  source: "subscription-not-per-token"`. The view shows their TOKEN volume as
+  `$0 (subscription — not per-token billed)`, worded so `$0` is never misread as
+  "barely spending" (FD-7).
+- **Price validation, fail-closed (A-M5/S-F1).** At load AND at the gate:
+  `inPerMtok, outPerMtok, cachedInPerMtok ≥ 0`, effective price `≥ 0`, and (for the
+  gate) at or above a per-provider sane MINIMUM (the plausibility floor). Any
+  violation → `unknown-price` → fail closed. The manifest-lint enforces ranges AND
+  day-alignment at commit time.
+- **Freshness SLA + stale-price behavior — authority home pinned (X-C1/A2-3).** Each
+  door's `freshnessSlaDays`, its `staleMode` (`fail-closed` | `book-conservative-max`),
+  and its `conservativeMax` prices live **in the canonical reviewed manifest's per-door
+  meta** (or, equivalently, the PIN-only caps store) — **NEVER in `.instar/config.json`**,
+  because they are gate-consumed money values and config is Bearer-`PATCH`able. A door
+  with no declared SLA gets the safe global default (45 days). When the newest
+  canonical point for a door is older than its SLA: REPORTING flags
+  `priceStale: true`; the GATE applies the door's `staleMode` (default
+  `book-conservative-max` — spend continues but never under-books). The S-F2
+  regression test extends to: **a Bearer `PATCH /config` cannot influence ANY
+  gate-consumed price value** (base, cached, conservative-max, staleMode, floor).
 - **Machine-local read index (NOT authoritative), refreshed on running machines
-  (X-G3).** On load, each machine builds a read-only SQLite index of the manifest's
-  points for fast as-of joins. This index is a **regenerable materialized view of the
-  `unified` git source** — no authoritative state. It rebuilds on boot AND when the
-  manifest mtime/hash changes, detected by a lightweight periodic poll of the manifest
-  file (same cadence class as other file-watch reloads) — so a `git pull` that updates
-  the manifest reaches a RUNNING machine without a restart.
+  (X-G3).** Each machine builds a read-only SQLite index of the canonical points for
+  fast as-of joins — a regenerable materialized view, rebuilt on boot AND when the
+  manifest file's mtime/hash changes (lightweight periodic poll), so a `git pull`
+  reaches a RUNNING machine without a restart.
 
 #### Layer 1b — Subsidy / credit model (REPORTING-ONLY; never reaches the gate)
 
 Requirement 3's subsidies/credits are a **reporting-layer** concept. **The money gate
 applies NO downward adjustment — neither a per-token subsidy NOR a lump-sum credit
-ever reaches Layer 3** (reconciles decision-completeness G3 with security S-F1). This
-is the safe direction: a subsidy/credit can only make the *report* rosier, never
-loosen the cap.
+ever reaches Layer 3** (G3 + S-F1 reconciled). A subsidy/credit can only make the
+*report* rosier, never loosen the cap.
 
 - **Per-token subsidy / discount** (REPORTING): a price point's optional `subsidy`
-  field — `{ kind: "discount-frac", value }` with `value ∈ [0,1)` (multiply price by
-  `1−value`), or `{ kind: "flat-per-mtok", inPerMtok≥0, outPerMtok≥0 }`. Validated at
-  load; an out-of-range subsidy is rejected (A-M5). Applied ONLY in the read-time
-  reporting join, never in the gate.
-- **Lump-sum credit** (REPORTING): a separate append-only `credits` ledger
-  `{ keyRef, amountUsd, grantedAt, expiresAt, note }`. Applied at ROLLUP time as a
-  *net* line (gross / credit applied / net shown). `expiresAt` is REQUIRED
-  (A-Min12) — an expired/exhausted credit stops offsetting; GROSS is always shown
-  prominently next to net so a credit can never read as headroom against the cap.
-- **Operator-specific deals live in a machine/agent-local overlay (G7).** The git
-  manifest carries GENERIC published prices only. An operator-specific subsidy/credit
-  ("this model is 20% off for us", "$50 free credits") lives in a machine/agent-local
-  overlay `.instar/routing-prices.overlay.json` that layers over the manifest at
-  as-of-join time — REPORTING only, so it never reaches the gate and never
-  misapplies to another agent that pulls the repo. Both are append-only and reversible
-  (a mistake is corrected by an offsetting/superseding row, never by editing history).
+  field — `{ kind: "discount-frac", value }` with `value ∈ [0,1)`, or
+  `{ kind: "flat-per-mtok", inPerMtok≥0, outPerMtok≥0 }`. Validated at load (A-M5);
+  applied ONLY in the reporting join.
+- **Lump-sum credit** (REPORTING): an append-only `credits` ledger
+  `{ keyRef, amountUsd, grantedAt, expiresAt (REQUIRED), note }`. Applied at rollup
+  time as a *net* line; GROSS is always shown prominently next to net (A-Min12).
+- **Operator-specific deals live in a machine-local overlay (G7).** The canonical
+  manifest carries GENERIC published prices only. Operator-specific
+  subsidies/credits live in `.instar/routing-prices.overlay.json` + the credits
+  ledger, layered over the manifest at reporting-join time.
+- **Machine-local BY DESIGN — declared (IL2-2).** The overlay and the credits ledger
+  are machine-local operator-authored REPORTING state.
+  `machine-local-justification`: they never reach the gate (money enforcement cannot
+  diverge across machines because of them); they are operator-authored adjustments
+  whose blast radius is display-only; and replicating them would put third-party deal
+  terms on every pooled disk for zero enforcement benefit. **Pool-merge composition:**
+  adjustments are keyRef/door-scoped (not machine-scoped), so under `scope=pool` they
+  are applied **exactly once, at the merge point, by the serving machine from ITS
+  overlay/credits** over the merged gross; the response labels
+  `adjustmentsSource: "<serving machineId>"`. A single-machine read is the same code
+  path (a merge of one). This keeps pool-wide `netUsd` consistent and explained; if
+  the serving machine lacks a deal another machine knows, the view shows the serving
+  machine's adjustments — labeled, never silently mixed.
+- **Write authority (S-F3).** Credits/subsidies are written either by hand-editing the
+  overlay (machine-local file, reporting-only) or via a PIN-gated append-only audited
+  route mirroring `caps/adjust`. The refresh job is FORBIDDEN from writing
+  credit/subsidy rows anywhere.
 
 ### Layer 2 — Derived REPORTING views & rollups (immutable token pre-aggregate + price on read)
 
@@ -267,558 +306,557 @@ and WITHOUT hoarding raw rows (scal-F1/F2/F3):
 
 - **Pre-aggregate the IMMUTABLE fact, join the MUTABLE dimension on read.** A
   maintained rollup table `spend_token_rollup(day, door, modelId, tokensIn, tokensOut,
-  tokensCached)` holds ONLY token sums per UTC day — which are provably untouched by
-  any price/subsidy/credit correction (the immutability centerpiece). Price and
-  subsidy are applied on READ over these daily buckets; credits at rollup time. This
-  fully preserves retroactive-recompute (a price fix instantly reflows) while
-  collapsing a report from potentially tens of millions of raw rows to
-  `days × doors × models` (hundreds–low-thousands). The round-0 "no stored rollup"
-  reasoning was correct only for a stored COST rollup; a stored TOKEN rollup never
-  goes stale.
-- **Hourly grain (the finest requirement).** Hourly rollups are computed on read over
-  the raw `feature_metrics` rows within the SHORT (30d) raw-retention window (bounded,
-  indexed on `ts`) — hourly detail beyond 30d is not offered (surfaced honestly in the
-  view). Daily/monthly/total are served from the daily token rollup and thus survive
-  400 days.
-- **Retention decoupled (scal-F3).** Raw `feature_metrics` rows stay at 30d;
-  `spend_token_rollup` is retained `routingSpend.tokenRollupRetentionDays` (default
-  **400**). "Total" is honestly "total within the 400-day rollup horizon"
-  (`horizonNote` in the view). This keeps the raw table small on laptop-class machines
-  (the disk/OOM-incident hardware) while lifetime/monthly spend survives.
+  tokensCached)` holds ONLY token sums per UTC day — provably untouched by any
+  price/subsidy/credit correction. Price/subsidy apply on READ over the daily buckets;
+  credits at rollup time. Because every canonical `effectiveAt` is UTC-day-aligned
+  (FD-18), **each daily bucket maps to exactly one price regime — the daily rollup is
+  EXACT under as-of pricing across the full 400-day horizon**, and retroactive
+  recompute (a price fix instantly reflows) holds with no raw-row splitting.
+- **Hourly grain (the finest requirement)** is computed on read over the raw
+  `feature_metrics` rows within the SHORT (30d) raw-retention window (bounded, indexed
+  on `ts`) — hourly detail beyond 30d is not offered (stated honestly in the view).
+  Daily/monthly/total are served from the daily token rollup and survive 400 days.
+- **Retention decoupled (scal-F3).** Raw rows stay at 30d; `spend_token_rollup` is
+  retained `routingSpend.tokenRollupRetentionDays` (default **400**). "Total" is
+  honestly "total within the 400-day rollup horizon" (`horizonNote`).
 - **Never freeze the event loop (scal-F1/F7).** The daily-bucket read is small and
-  synchronous-safe. Any genuinely large detect (e.g. a full 400-day monthly report
-  recomputed live) runs in a **worker thread serving a cached snapshot** — the exact
-  cartographer #1069 pattern already in the tree — above a concrete row/window
-  threshold. The rare price-boundary day (a price change mid-day) is the only day that
-  needs raw-row splitting; it is computed streaming with `.iterate()`, never `.all()`.
+  synchronous-safe. A genuinely large detect runs in a **worker thread serving a
+  cached snapshot** (the cartographer #1069 pattern) above a concrete threshold
+  (default: >250k raw rows in the queried window — only reachable on the hourly
+  grain). Any raw-row pass streams with `.iterate()`, never `.all()`.
 - **The daily token rollup is maintained cheaply.** On each `feature_metrics` insert
-  the day's bucket is upserted (`INSERT … ON CONFLICT(day,door,modelId) DO UPDATE`);
-  the `door` for pre-attribution/CLI rows follows §Door attribution. A boot-time
-  backfill (bounded, batched) reconstructs the rollup from raw rows if it is missing.
-- **The retention prune is batched (scal-F4).** `feature_metrics.pruneOlderThan` today
-  is a single unbounded `DELETE`; on a transition/backlog it is a multi-million-row
-  synchronous DELETE holding the WAL lock. Change it to a bounded `DELETE … LIMIT N`
-  loop with a per-tick ceiling and yields between batches.
-- **Honesty when not-yet-live.** Before go-live, metered doors are skipped so their
-  token volume is zero and their cost is `$0`; subscription doors show volume at
-  `$0 (subscription)`. The view states plainly "no paid door is live yet — metered
-  spend is $0" so the operator never mistakes an empty view for a broken one.
+  the day's bucket is upserted (`INSERT … ON CONFLICT(day,door,modelId) DO UPDATE`) —
+  off the LLM-latency path (post-call fire-and-forget, scal-F8). A **bounded boot-time
+  reconcile** recomputes the LAST 30 DAYS of buckets from raw rows (batched), so an
+  upsert dropped by a crash is repaired from raw truth before the raw rows prune; a
+  missing rollup table is backfilled the same way.
+- **The retention prune is batched (scal-F4).** Replace the unbounded `DELETE` with
+  the SQLite-portable batch idiom — `DELETE FROM feature_metrics WHERE rowid IN
+  (SELECT rowid FROM feature_metrics WHERE ts < ? LIMIT 5000)` — looped with a
+  per-tick ceiling and yields between batches.
+- **Honesty when not-yet-live.** Before go-live, metered doors are skipped: token
+  volume zero, cost `$0`, and the view states plainly "no paid door is live yet —
+  metered spend is $0."
 - **Two spend numbers, both labeled (A-M10/X-C2).** The REPORTING net (recomputed at
-  CURRENT price/subsidy/credit) and the GATE's committed figure (booked at time-of-use
-  price) are DESIGNED to differ after any correction/credit. The view labels them
-  explicitly — "recomputed at current price, net of credits" vs "committed at time of
-  use (what the cap enforces)" — plus a one-line note that the cap enforces the
-  committed figure. An unexplained discrepancy on a money surface is a trust failure.
+  CURRENT price/subsidy/credit) and the GATE's committed figure (booked at
+  time-of-use) are DESIGNED to differ after a correction/credit. The view labels both
+  — "recomputed at current price, net of credits" vs "committed at time of use (what
+  the cap enforces)" — with a one-line note that the cap enforces the committed figure.
 
 ### Layer 3 — MONEY layer: authoritative booking-priced ledger + O(1) fail-closed gate (Increment B)
 
 This is the ONLY layer that gates real money. It is deliberately SEPARATE from the
-recomputable reporting views and does NOT read `feature_metrics`.
+recomputable reporting views and does NOT read `feature_metrics`. **Increment B ships
+it SINGLE-WRITER: the whole cap lives on ONE PIN-designated metered-lease machine
+(C2-5); the multi-machine slice mechanics are Increment D.**
 
 - **A NEW authoritative append-only booking ledger, `MeteredSpendLedger` (LF-F1 /
   A-B1 / I-2).** Per metered vault key, a durable append-only ledger records each
-  booking row `{ ts, keyRef, door, modelId, kind: 'reserve'|'settle', costUsd (at
-  BOOKING price), leaseEpoch }` PLUS a maintained O(1) running total
-  `{ keyRef, committedLifetimeUsd, committedDayUsd, dayEpoch, updatedAt }`. This ledger
-  — not `feature_metrics` — is the AUTHORITATIVE money truth and the ONLY rebuild
-  source: `committed*` is a fold of the ledger rows. **Rebuild-from-Layer-0-joined-to-
-  current-prices is explicitly FORBIDDEN at the gate** (it would apply corrected
-  prices in the dangerous direction — a downward `corrects` row would lower the
-  counter and re-open capped headroom). The ledger's writes are **fail-closed and
-  non-swallowing** (unlike `feature_metrics.record()`): a write that cannot be durably
-  persisted refuses the call. It adopts `DriftSpendLedger`'s earned discipline
-  (append-only rows, `proper-lockfile`, crash-leaves-a-reservation, malformed-row-skip)
-  with an O(1) MAINTAINED total instead of DriftSpendLedger's O(rows-in-day) full-file
+  booking row `{ ts, keyRef, door, modelId, kind: 'reserve'|'settle'|'expire',
+  reserveId, costUsd (at BOOKING price), leaseEpoch }` PLUS a maintained O(1) running
+  total `{ keyRef, committedLifetimeUsd, committedDayUsd, dayEpoch, updatedAt }`. This
+  ledger — not `feature_metrics` — is the AUTHORITATIVE money truth and the ONLY
+  rebuild source: `committed*` is a fold of the ledger rows.
+  **Rebuild-from-Layer-0-joined-to-current-prices is explicitly FORBIDDEN at the
+  gate** (a downward `corrects` would lower the counter and re-open capped headroom).
+  Writes are **fail-closed and non-swallowing** (unlike `feature_metrics.record()`): a
+  booking that cannot be durably persisted refuses the call. Adopts
+  `DriftSpendLedger`'s discipline (append-only rows, `proper-lockfile`,
+  malformed-row-skip) with an O(1) MAINTAINED total instead of its O(rows-in-day)
   tally.
-- **Build-vs-reuse decision vs DriftSpendLedger (I-2/LF-F5, FD-17).** We build a NEW
-  ledger (distinct spend domain: metered routing vs drift-checks) that REUSES
-  DriftSpendLedger's write-discipline, because Layer 3 needs an **O(1) never-cached**
-  read at the gate while `DriftSpendLedger.tallySpent` is O(rows-in-day). The shared
-  pool-lease (below) CLOSES DriftSpendLedger's deferred `drift-spend-cross-machine`
-  child; a follow-up (Close the Loop, registered) migrates drift-checks onto the same
-  substrate. The two ledgers never overlap in domain.
-- **Two-phase reserve/settle with a reconciliation sweep (A-B2 / scal-F5).** Reserve
-  the worst-case (`maxTokens × BASE price`) up front UNDER the per-key lock, make the
-  provider call OUTSIDE the lock, settle the delta UNDER the lock after. **Lock scope
-  is pinned:** held ONLY for the two short booking critical sections, RELEASED during
-  the LLM round-trip (so metered throughput is not serialized). **Process scope is
-  pinned:** metered calls funnel through the single server process, so an in-process
-  async mutex is correct; if multi-process issuance ever becomes possible the ledger
-  uses the same `proper-lockfile` advisory lock DriftSpendLedger uses. A
-  **reconciliation sweep** at boot + on a cadence folds any `reserve` row with no
-  matching `settle` after a TTL back to actual (via the paired settle if present, else
-  expires the phantom) — so a crash between reserve and settle cannot permanently leak
-  worst-case headroom.
-- **ALL no-charge outcomes force-settle to $0 (A-B2).** Not just 402/429: a
-  5xx / timeout / abort / connection error settles to $0 UNLESS tokens were
-  demonstrably returned. Force-settle keys on the REAL fetch HTTP status / outcome
-  only (a 200 always books actual-or-worst-case). This closes the flapping-door
-  phantom-spend that would otherwise monotonically consume headroom on zero real spend.
-- **O(1) never-cached, fail-closed, lease-fenced read at the gate (A-B4).** Before a
-  metered call the gate reads the committed total FRESH (never cached), reads the
-  door's REVIEWED, VALIDATED price, computes `estCost = tokens × BASE price` (NO
-  subsidy/credit — Layer 1b never reaches here), and refuses when
-  `committed + estCost > cap` (strict `>`, the DriftSpendLedger boundary). It **fails
-  closed on EVERY uncertainty** — unreadable ledger, unknown/unpriced/implausible
-  price, invalid cap, `frozen` key, OR a stale lease epoch. **Every call re-validates
-  the slice's lease epoch** (`localSliceEpoch < currentLeaseEpoch → fail closed`; the
-  epoch is cached and invalidated on lease-pull) so a partitioned/reclaimed
-  metered-lease holder cannot keep spending against a stale local counter.
-- **The counter is booked at time-of-use BASE price and is NOT retroactively
-  rewritten** by a later price correction (FD-3). This is deliberate: cap enforcement
-  protects real dollars committed at the moment of the call; a later re-interpretation
-  of price is a REPORTING concern (Layer 2), never a reason to retroactively unblock a
-  call that already happened.
+- **Build-vs-reuse vs DriftSpendLedger (I-2/LF-F5, FD-17).** A NEW ledger (distinct
+  domain) reusing the write-discipline, because the gate needs O(1) never-cached
+  reads. A registered follow-up (Close the Loop) migrates drift-checks onto the same
+  substrate and thereby closes the deferred `drift-spend-cross-machine` child. The two
+  ledgers never overlap in domain.
+- **Two-phase reserve/settle with IDEMPOTENT TERMINAL STATES and a locked
+  reconciliation sweep (A-B2 / A2-1 / scal-F5).**
+  - **Reserve sizing (A2-4):** the metered call path MUST set a hard `max_tokens` on
+    the provider request. `reserve = inputTokens/1e6 × inPerMtok + max_tokens/1e6 ×
+    outPerMtok` (cached tokens reserved as full input — never under-books). **A
+    metered call with no bounded output ceiling is REFUSED** (`unbounded-reservation`
+    → fail closed): an unknown reservation is an unknown cost, and an under-sized
+    reserve would defeat the concurrent-call protection the lock exists to provide.
+  - **Lifecycle:** every reserve row carries a unique `reserveId` and moves through a
+    terminal, idempotent state machine `reserved → settled | expired` — the FIRST
+    terminal transition wins; the loser becomes a no-op. Lock scope: the per-key lock
+    is held ONLY for the two short booking critical sections (reserve; terminal
+    transition), RELEASED during the LLM round-trip. Process scope: metered calls
+    funnel through the single server process (in-process async mutex); if
+    multi-process issuance ever appears, the same `proper-lockfile` advisory lock
+    applies.
+  - **The reconciliation sweep TAKES THE PER-KEY LOCK (A2-1)** and expires only
+    reserves older than the TTL that are still in `reserved` state. **A settle that
+    arrives after its reserve was expired books the ACTUAL cost as a fresh ABSOLUTE
+    row** (reconciliation-aware settle) — never a delta against a vanished reserve, so
+    the late-settle race cannot under-count committed spend. The TTL is pinned
+    comfortably above the maximum metered-call latency (default 15 min vs a 5-min
+    call ceiling). Sweep runs at boot + on a cadence.
+  - **ALL no-charge outcomes force-settle to $0 (A-B2):** 402/429/5xx/timeout/abort/
+    connection-error settle $0 UNLESS tokens were demonstrably returned; keyed on the
+    REAL HTTP status/outcome. A 200 books actual (`settleCost` on returned usage,
+    cached billed per the reviewed cache rate or as full input) or worst-case.
+- **O(1) never-cached, fail-closed, lease-fenced read at the gate.** Before a metered
+  call the gate reads the committed total FRESH, reads the door's CANONICAL, VALIDATED
+  price (never the observed cache, never the overlay), computes `estCost` at BASE
+  price (NO subsidy/credit), and refuses when `committed + estCost > cap` (strict `>`).
+  It **fails closed on EVERY uncertainty** — unreadable ledger, unknown/unpriced/
+  implausible/negative price, unbounded reservation, invalid cap, `frozen`, or a stale
+  lease epoch (`localSliceEpoch < currentLeaseEpoch` — re-validated on EVERY call,
+  epoch cached + invalidated on lease-pull; A-B4).
+- **Booked at time-of-use BASE price, never retroactively rewritten (FD-3).** Cap
+  enforcement protects real dollars committed at the moment of the call; later price
+  re-interpretation is a Layer-2 REPORTING concern.
 - **A money-gate refusal is a SWAP-TAIL ADVANCE, not a chain kill (LF-A2 — Signal vs
-  Authority).** When the gate refuses a metered door at cap, the router treats it
-  identically to a DARK door: it advances the `swapTail` to the next position (often a
-  free CLI/subscription door). The chain fails closed with `RouterFailClosedError`
-  ONLY when every door — including the free tails — is unavailable. Hitting a dollar
-  cap never takes down a job-kind that has a free fallback; the money gate's blocking
-  authority is narrow by construction.
-- **`frozen` kill switch per key** — an instant per-key stop that fails the gate closed
-  with reason `frozen`. Freeze halts NEW admissions only; an in-flight reserved call
+  Authority).** A cap-refused metered door advances the `swapTail` exactly like a dark
+  door (often to a free CLI/subscription door). `RouterFailClosedError` fires ONLY
+  when every door including the free tails is unavailable. Hitting a dollar cap never
+  takes down a job-kind that has a free fallback.
+- **`frozen` kill switch per key** — instant per-key stop, fails the gate closed with
+  reason `frozen`. Freeze halts NEW admissions only; an in-flight reserved call
   settles its real cost (A-Min11). Cap/freeze writes are atomic (tmp+rename); a
-  caps-read failure fails CLOSED (refuse), never crashes the gate.
-- **STOP is Bearer; ARM is PIN (the green-PR asymmetry) — with scoped STOP (S-F5 /
-  X-C5).** Following `POST /green-pr-automerge/rollback` (anyone STOPs) vs `/enable`
-  (PIN RELEASE): FREEZING a key and disarming a paid door are Bearer-accessible (any
-  hand halts spend instantly); UNFREEZING, RAISING a cap, and going live are PIN-gated.
-  The Bearer freeze route is **set-true-only** (accepts no cap numbers, cannot toggle
-  to false), and every STOP records the actor for audit. Halting money is always
+  caps-read failure fails CLOSED.
+- **STOP is Bearer; ARM is PIN (the green-PR asymmetry), with scoped STOP (S-F5 /
+  X-C5).** FREEZING a key and disarming a paid door are Bearer-accessible (any hand
+  halts spend instantly; the freeze route is **set-true-only** and records the actor);
+  UNFREEZING, RAISING a cap, and going live are PIN-gated. Halting money is always
   cheap; releasing money is always the operator's.
 
 ### Door attribution — scope + single-source (I-1 / LF-F3 / A-M8 / GF1)
 
 The `door` join key is load-bearing, and grounding shows it does NOT yet reach a
-recorded row — this spec is HONEST about the dependency rather than asserting it done:
+recorded row — this spec is HONEST about the dependency:
 
 - **Today's reality (verified against `JKHeadley/main` v1.3.780):** the metrics tap
   `CircuitBreakingIntelligenceProvider.recordMetric` writes `model`/`framework` from
-  the inner framework provider's `onModel` — which has **no notion of a door**;
-  `resolveRoute` runs observe-only/dryRun and falls through to the LEGACY category
-  path (nature-routing ENFORCEMENT — dispatching to the resolved door — is the unbuilt
-  "A2.2 remainder", `warnNatureEnforceNotWired()`); and the metered doors have **no
-  provider implementation at all** (the router `continue`s past them at
-  `IntelligenceRouter.ts:821`).
-- **Therefore, honestly:** real per-door money attribution and the money GATE's
-  wiring into the metered call path DEPEND on separate, in-flight S4 work — the
-  nature-routing enforcement dispatch (A2.2) and the metered provider implementations —
-  which are **OUT OF THIS SPEC'S SCOPE**. This spec designs the surfaces, the
+  the inner provider's `onModel` — no notion of a door; `resolveRoute` runs
+  observe-only and falls through to the LEGACY category path (nature-routing
+  ENFORCEMENT is the unbuilt "A2.2 remainder"); and the metered doors have **no
+  provider implementation** (`IntelligenceRouter.ts:821` `continue`s past them).
+- **Therefore, honestly:** real per-door money attribution and the money GATE's wiring
+  into the metered call path DEPEND on separate, in-flight S4 work — the
+  nature-routing enforcement dispatch (A2.2) and the metered provider implementations
+  — which are **OUT OF THIS SPEC'S SCOPE**. This spec designs the surfaces, the
   reporting/pricing/rollup layers, and the money-ledger + gate; it declares the
   integration SEAM they plug into. **Increment A ships with metered `door` NULL and
-  honest `$0`** precisely because metered doors do not route yet (the safe, truthful
-  display).
-- **The seam (single-source contract, A-M8).** When metered dispatch lands, the door
-  is resolved ONCE at the point of the metered call and stamped into
+  honest `$0`.** Increment B's ledger/gate/pool logic is fully unit-testable against a
+  stub metered dispatch; only the live end-to-end proof waits for the real path.
+- **The seam (single-source contract, A-M8).** When metered dispatch lands: the door
+  is resolved ONCE at the metered call and stamped into
   `IntelligenceOptions.attribution.door`; the router passes it to `primary.evaluate`;
-  `recordMetric` reads `options.attribution.door` into `extra.door`; and the money
-  gate books against the SAME resolved `(keyRef → door → price)` tuple. Invariant +
-  wiring test: `feature_metrics.door === gate.keyRef.door` for every metered call, and
-  a metered `keyRef` can NEVER resolve to a `$0`/subscription price (S-F6). Interim:
-  CLI-door rows may derive `door = framework` (they coincide 1:1); only metered doors
-  (where door ≠ framework — the motivating case) require the stamped thread.
+  `recordMetric` reads it into `extra.door`; and the money gate books against the SAME
+  resolved `(keyRef → door → price)` tuple. Invariant + wiring test:
+  `feature_metrics.door === gate.keyRef.door` for every metered call, and a metered
+  `keyRef` can NEVER resolve to a `$0`/subscription price (S-F6). Interim: CLI-door
+  rows may derive `door = framework` (1:1); only metered doors need the stamped thread.
 
 ### Surface 1 — Spend view (read-only; Increment A)
 
 - `GET /routing-spend/summary?grain=day&sinceHours=…&scope=pool` → per door/model and
   aggregate rollups (Layer 2), each row `{ door, modelId, doorClass, tokensIn,
   tokensOut, tokensCached, grossUsd, subsidyUsd, creditUsd, netUsd, committedUsd,
-  priceBasis, priceStale, notLiveYet }`, plus `totals`, a `horizonNote`, and any
-  `unpricedTokens`/`no-matching-point` rows surfaced loudly.
-- `GET /routing-spend/caps` → each metered key's `{ keyRef, provider, lifetimeCapUsd,
-  dailyCapUsd, frozen, committedLifetimeUsd, committedDayUsd, pctLifetime, pctDaily,
-  goLiveState, coverageOk }` — spend-vs-cap from the AUTHORITATIVE ledger (LF-F2);
-  before Increment B committed is $0 and `goLiveState: "not-live"`. `coverageOk`
-  surfaces any reporting-vs-ledger divergence so an under-count is visible.
-- Both are **Bearer-auth reads** (like `/metrics/features`), 503 when dark. Dashboard
-  **"Spend" tab** mirrors the read-only "LLM Activity" / "Routing Map" tab convention.
+  priceBasis, priceStale, notLiveYet }`, plus `totals`, `horizonNote`,
+  `adjustmentsSource`, and loud `unpricedTokens` rows.
+- `GET /routing-spend/caps?scope=pool` → each metered key's `{ keyRef, provider,
+  lifetimeCapUsd, dailyCapUsd, frozen, committedLifetimeUsd, committedDayUsd,
+  pctLifetime, pctDaily, goLiveState, meteredLeaseHolder, coverageOk }`.
+  **Multi-machine posture (IL2-1): proxied-to-holder.** The committed aggregate is
+  holder-known (the metered-lease machine's ledger is the authority), so the caps
+  read RESOLVES AGAINST THE HOLDER: a non-holder machine proxies the money numbers to
+  the metered-lease holder (the WS4.4 dumb-relay pattern) and tags the response
+  `source: <holder machineId>`; if the holder is unreachable the response says so
+  honestly (`holderUnreachable: true`, last-known values + age) — it NEVER renders its
+  own empty local ledger as `$0 spent`. `coverageOk` (reporting-vs-ledger
+  reconciliation) is computed ON the holder for the same reason. Before Increment B,
+  committed is $0 and `goLiveState: "not-live"` everywhere — no proxy needed.
+- Both are **Bearer-auth reads**, 503 when dark. Dashboard **"Spend" tab** mirrors the
+  read-only "LLM Activity" / "Routing Map" tab convention.
 
 ### Surface 2 — Caps adjust + go-live (PIN-gated writes; phone-complete; Increment B)
 
-- **State lives in a DEDICATED PIN-only store, never in config (S-F2).** Caps + go-live
-  records live in `state/routing-spend-caps.json` (or a dedicated table), written ONLY
-  by the PIN routes below. They are NEVER stored under any key in
-  `PATCHABLE_CONFIG_KEYS`, so `PATCH /config` (Bearer, deep-merge) can never arm a
-  door, unfreeze a key, or raise a cap. A regression test asserts a Bearer
-  `PATCH /config` cannot arm/unfreeze/raise. Only inert knobs
-  (`routingSpend.enabled` dark-toggle, retention days, `alerts.telegramTopicId`,
-  `alerts.channels`) live in config.
-- `POST /routing-spend/caps/adjust` `{ pin, keyRef, lifetimeCapUsd?, dailyCapUsd?,
-  frozen? }` — **PIN-gated** via `checkMandatePin` (`routes.ts:9044`; sha256 +
-  `timingSafeEqual` + per-IP rate-limit; the counter is backed durably so a restart
-  does not reset brute-force protection, and XFF is not honored on `/routing-spend/*`
-  PIN routes — S-F9). **Cap-LOWERING is fenced/acknowledged (A-M9):** it bumps the
-  lease epoch and forces slice re-derivation; the local gate re-reads the cap on its
-  next O(1) read and clamps immediately. Raising is monotonic-safe. Appends to an
-  audited cap-change log.
-- `POST /routing-spend/go-live` `{ pin, door, enabled }` — **PIN-gated** — arms/disarms
-  a paid door for THIS agent and DESIGNATES the metered-lease machine (default: the
-  current serving-lease holder — FD-13). Deny-by-default: with no go-live record every
-  metered door stays skipped.
-- **Server-authored proposal, not raw data entry (CG3 / B2 — Agent Proposes, Operator
-  Approves).** The dashboard renders a server-authored plain-language plan ("Arm
-  openrouter-api at daily $X / lifetime $Y — approve?") from a prefilled structured
-  request; the PIN AUTHORIZES the plan. The operator approves; they do not author raw
-  fields.
-- **Phone-complete dashboard controls (CG2 / B1 — Mobile-Complete + surface quality).**
-  The Spend tab gains a PIN-gated controls section (the Mandates-tab grant-form shape):
-  leads with the primary action, exposes zero raw internals (no JSON bounds / no vault
-  key values), de-emphasizes destructive actions, works at phone width. Freeze/disarm
-  are Bearer-accessible buttons; adjust/unfreeze/go-live require the dashboard PIN.
-- `GET /routing-spend/caps/log` → the audited cap/go-live change history (who, when,
-  old→new), Bearer-read.
-- **Credit/subsidy WRITE authority (S-F3).** Credits/subsidies are either
-  (a) git-manifest / machine-local-overlay only (no runtime write route; FD-8 is
-  FORBIDDEN from writing credit/subsidy rows), or (b) written via a PIN-gated
-  append-only audited route mirroring `caps/adjust`. Either way they are REPORTING-only
-  and never reach Layer 3.
+- **State lives in a DEDICATED PIN-only store, never in config (S-F2).** Caps +
+  go-live + metered-lease designation live in `state/routing-spend-caps.json`, written
+  ONLY by the PIN routes. NEVER under any `PATCHABLE_CONFIG_KEYS` key — so
+  `PATCH /config` (Bearer, deep-merge) can never arm a door, unfreeze a key, raise a
+  cap, **or influence any gate-consumed price value** (A2-3). Regression tests assert
+  both. Only inert knobs (`routingSpend.enabled` dark-toggle, retention days,
+  `alerts.telegramTopicId`, `alerts.channels`) live in config.
+- `POST /routing-spend/caps/adjust` and `POST /routing-spend/go-live` — **PIN-gated**
+  via `checkMandatePin` (`routes.ts:9044`; sha256 + `timingSafeEqual` + per-IP
+  rate-limit). **Honest hardening note (S2-1):** `checkMandatePin`'s attempt counter
+  is today an in-memory `Map` (`routes.ts:9038`) — there is NO durable attempt store
+  in the tree. This spec adds one as an explicit build item: a small durable
+  `state/pin-attempts.json` write-through behind the existing Map, shared by the PIN
+  routes, so a restart does not reset brute-force lockout. (Express `trust proxy` is
+  off fleet-wide, so `req.ip` already ignores `X-Forwarded-For` everywhere — no
+  per-route XFF special-case exists or is needed.)
+- **The PIN authorizes a CANONICAL server-rendered plan — nothing else applies
+  (S2-3).** Flow: the agent (or the dashboard form) submits a structured request →
+  the server renders a plain-language plan enumerating EVERY field it will change
+  ("Arm openrouter-api; set daily cap $5.00; lifetime cap unchanged ($60)") → the
+  operator PIN-approves THAT plan → **the commit derives solely from the rendered
+  plan**. Any request field absent from the render is REJECTED (not silently
+  applied); every caps/go-live dimension must appear in the render or the request is
+  refused. Test: a payload field not present in the rendered plan cannot be committed
+  under the PIN. This closes the smuggled-field gap in agent-proposes/operator-approves.
+- **Cap-LOWERING is fenced/acknowledged (A-M9):** bumps the lease epoch, forces slice
+  re-derivation; the local gate re-reads the cap on its next O(1) read and clamps.
+  Raising is monotonic-safe. All changes append to an audited cap-change log
+  (`GET /routing-spend/caps/log`, Bearer-read).
+- `POST /routing-spend/go-live` `{ pin, door, enabled }` arms/disarms a paid door for
+  THIS agent and DESIGNATES the metered-lease machine (default: the current
+  serving-lease holder — FD-13). Deny-by-default: with no go-live record every metered
+  door stays skipped.
+- **Phone-complete dashboard controls (CG2/B1).** The Spend tab gains a PIN-gated
+  controls section (the Mandates-tab grant-form shape): leads with the primary action,
+  zero raw internals, destructive actions de-emphasized, phone-width. Freeze/disarm
+  are Bearer buttons; adjust/unfreeze/go-live require the PIN.
+- **Credit/subsidy write authority (S-F3):** per Layer 1b — overlay/manifest edits or
+  a PIN-gated append-only audited route; the refresh job is forbidden from either.
 
 ### Surface 2 — Alerts (channel-abstracted; Increment C)
 
-- **`AlertChannel` abstraction.** A thin interface `dispatch(alert: SpendAlert):
-  Promise<DispatchResult>` with a `kind` discriminator. Increment C ships ONE
-  implementation, `TelegramAttentionChannel`, routing through `POST /attention` (so it
-  inherits the topic-flood guard, the bounded-notification budget, and dedup) into a
-  dedicated **"Routing Spend"** topic (`routingSpend.alerts.telegramTopicId`). A future
-  `SlackAlertChannel` is a new registry entry + `alerts.channels: ["telegram","slack"]`
-  — no emitter rework, because emitters produce a channel-neutral `SpendAlert` and the
-  dispatcher fans out. The flood guard (`AttentionTopicGuard.decide()`) is already
-  channel-agnostic (source key + priority), so its dedup/coalescing carries to Slack.
-- **Money-critical alerts are never dropped for a missing topic (G5 — Always
-  Reachable).** If `telegramTopicId` is unset, cap-hit and chain-exhausted door-dark
-  alerts FALL BACK to the lifeline/system topic (a money alert is never dropped for
-  lack of a configured topic). The "Routing Spend" topic is created once via
-  `createForumTopic` under the bounded-notification budget on first alert, or is
-  operator-configured; the fallback covers the gap either way.
-- **Cap-hit and cap-approaching use a DISTINCT attention `source` (S-F8)** from
+- **`AlertChannel` abstraction.** `dispatch(alert: SpendAlert): Promise<DispatchResult>`
+  with a `kind` discriminator. Increment C ships `TelegramAttentionChannel`, routing
+  through `POST /attention` (inheriting the topic-flood guard, the
+  bounded-notification budget, and dedup) into a dedicated **"Routing Spend"** topic
+  (`routingSpend.alerts.telegramTopicId`). A future `SlackAlertChannel` is a registry
+  entry + `alerts.channels: ["telegram","slack"]` — no emitter rework
+  (channel-neutral `SpendAlert`s; dispatcher-level dedup/aggregation BEFORE any
+  channel send). `AttentionTopicGuard.decide()` is already channel-agnostic.
+- **Money-critical alerts are never dropped for a missing topic (G5).** If
+  `telegramTopicId` is unset, cap-hit and chain-exhausted door-dark alerts FALL BACK
+  to the lifeline/system topic. The "Routing Spend" topic is created once under the
+  bounded-notification budget on first alert, or operator-configured.
+- **Cap-hit/approaching use a DISTINCT attention `source` (S-F8)** from
   door-dark/fallback, so a flapping door's volume can never coalesce a money-critical
-  cap alert into a digest and delay operator awareness.
-- **Triggers, each mapped to its severity class (Self-Heal Before Notify):**
-  - **Cap hit** (a reservation would cross a cap → the gate is now refusing): class
-    `recoverable` but protective — blocking spend IS the safe direction. ONE
-    edge-triggered alert, worded honestly ("a reservation would exceed key X's daily
-    cap; metered calls on X are paused until reset/adjust", showing actual-vs-reserved
-    — A-Min13). The adjust action is the operator's, PIN-gated.
-  - **Approaching cap** (50% / 80%) fires on **BOTH the daily AND the lifetime cap
-    (G4)**, edge-triggered independently per (cap-kind, threshold, window); dedupe-key
-    `spend-approach:<keyRef>:<capKind>:<threshold>:<window>`. Coalesced into the digest.
-  - **Door dark** (`RouterFailClosedError` — a critical gate has no available door):
-    placed DOWNSTREAM of the router's own swap-tail self-heal. Escalates only when the
-    WHOLE chain fails closed (`selfHealExhausted`). P19 brakes: `max-attempts` = chain
-    length; `dedupe-key` = `spend-door-dark:<machineId>:<chain>:<episodeBucket>` (the
-    coarse episode/time bucket lets a post-heal re-dark re-alert while intra-episode
-    retries dedup — A-Min14); widening `backoff`; a flapping breaker (N exhaustions/
-    window → reclassify critical, which bypasses coalescing); `max-notification-latency:
-    120s`; scrubbed jsonl audit.
-  - **Fallback used** (`onNatureRoutePlan` reports a `swapTail` position served): by
-    definition already self-healed → **digest-only** ("N fallbacks used over the last
-    hour"), never a per-event escalation.
-- **Alert/audit scrub is metadata-ONLY (S-F7).** The record carries door, chain,
-  threshold, machineId, reason-code, counts — NEVER a provider response/error body (the
-  bench slices an 800-char `errorDetail` that can echo a `Bearer`/`sk-` fragment) and
-  never any key-shaped substring. A redaction pass at the sink is tested against a
-  poisoned provider error body. The alert-dispatch auth token is never serialized.
-- **Grounding — the router signal needs a fan-out sink (this spec adds it), and it is
-  a DEPENDENCY (I-9).** `IntelligenceRouter` exposes ONE optional callback
-  `onNatureRoutePlan` (not an EventEmitter), whose only consumer is a dev-gated
-  `console.log`. Increment C (a) routes it through a small fan-out so the spend-alert
-  watcher consumes the same `NatureRoutePlan`/`RouterFailClosedError` without
-  displacing the existing observer (preserving its throw-swallow isolation — one
-  subscriber throwing must never break the LLM path or double-fire the other), and
-  (b) adds a durable scrubbed `logs/routing-spend-alerts.jsonl` sink. **The plan is
-  only emitted when `sessions.natureRouting.enabled` resolves truthy**, so Increment
-  C's door-dark/fallback alerts are INERT until nature-routing observation is enabled —
-  stated as an explicit cross-increment dependency.
-- **Emitters produce channel-neutral `SpendAlert`s**; the dispatcher applies dedup +
-  aggregation BEFORE any channel send, so adding Slack later cannot reintroduce flood
-  risk. The new dispatcher's OWN dedup/coalescing gets a burst-invariant test (in
-  addition to the `/attention` path's existing burst test — B5).
+  cap alert into a digest.
+- **Triggers (Self-Heal Before Notify):**
+  - **Cap hit**: ONE edge-triggered alert, worded honestly — "a reservation would
+    exceed key X's daily cap" with actual-vs-reserved shown (A-Min13). Protective;
+    the adjust action is the operator's.
+  - **Approaching cap** (50%/80%) fires on **BOTH daily AND lifetime** (G4),
+    edge-triggered per (capKind, threshold, window); dedupe-key
+    `spend-approach:<keyRef>:<capKind>:<threshold>:<window>`; coalesced into the digest.
+  - **Door dark** (`RouterFailClosedError`): downstream of swap-tail self-heal;
+    escalates only on whole-chain exhaustion. P19 brakes: `max-attempts` = chain
+    length; `dedupe-key` = `spend-door-dark:<machineId>:<chain>:<episodeBucket>`
+    (episode/time bucket lets a post-heal re-dark re-alert — A-Min14); widening
+    backoff; flapping breaker (N exhaustions/window → critical, bypasses coalescing);
+    `max-notification-latency: 120s`; scrubbed jsonl audit.
+  - **Fallback used** (`onNatureRoutePlan` swapTail served): already self-healed →
+    digest-only ("N fallbacks over the last hour").
+  - **Metered-lease holder dead (A2-2 — the named exception to holder-single-voice):**
+    when the pool observes the metered-lease holder offline past the mesh-death
+    threshold while any door is live, a SURVIVING machine emits ONE money-critical
+    alert ("paid routing is frozen — the metered-lease machine <nickname> is
+    offline; free doors still serve; reclaim from the dashboard") with a stable
+    pool-wide id (`spend-holder-dead:<keyEpoch>`). Without this exception the freeze
+    alert would be emitted by the corpse and the operator would never learn.
+- **Holder-death recovery is operator-PIN reclaim, never auto-grab (A2-2/FD-13).**
+  The Spend tab offers a PIN-gated **reclaim/re-designate**: the operator confirms the
+  old holder is gone; the new holder REBASES the committed counter from an
+  authoritative fold of the surviving pooled booking ledgers PLUS the operator's
+  acknowledgment of the dead machine's last-known committed figure (shown in the
+  plan). Reconstruction is authoritative-fold-only and EXCLUSIVE with counter transfer
+  (never additive — the double-count guard); a planned handoff transfers the counter,
+  an unplanned death rebases it. The daily `dayEpoch` is stamped by the (new) holder.
+- **Alert/audit scrub is metadata-ONLY (S-F7).** door / chain / threshold / machineId /
+  reason-code / counts — NEVER a provider response/error body, never a key-shaped
+  substring. Redaction pass tested against a poisoned provider error body; the
+  dispatch auth token is never serialized.
+- **Router-signal fan-out is a dependency (I-9).** `onNatureRoutePlan` is a SINGLE
+  optional callback (only consumer today: a dev-gated `console.log`). Increment C
+  (a) routes it through a small fan-out preserving observer isolation (throw-swallow;
+  one subscriber throwing never breaks the LLM path or double-fires the other), and
+  (b) adds the durable scrubbed `logs/routing-spend-alerts.jsonl` sink. The plan is
+  only emitted when `sessions.natureRouting.enabled` resolves truthy — so door-dark/
+  fallback alerts are INERT until nature-routing observation is enabled (an explicit
+  cross-increment dependency).
 
 ---
 
 ## Decision points touched
 
-- **Adds** a NEW authoritative `MeteredSpendLedger` (booking-priced, fail-closed) as
-  the money-gate ground truth — SEPARATE from `feature_metrics` (which stays
-  reporting-only).
-- **Adds** two PIN-gated money-authority write routes (`/routing-spend/caps/adjust`,
-  `/routing-spend/go-live`) whose state lives in a dedicated store OUTSIDE
-  `PATCHABLE_CONFIG_KEYS` — deny-by-default, Bearer (incl. `PATCH /config`)
-  structurally insufficient.
+- **Adds** a NEW authoritative `MeteredSpendLedger` (booking-priced, fail-closed,
+  idempotent-terminal reserve/settle) as the money-gate ground truth — SEPARATE from
+  `feature_metrics` (reporting-only).
+- **Adds** two PIN-gated money-authority write routes plus a PIN-gated
+  reclaim/re-designate, all committing ONLY a canonical server-rendered plan, with
+  state in a dedicated store OUTSIDE `PATCHABLE_CONFIG_KEYS`.
 - **Adds** an O(1) fail-closed, lease-fenced money gate on the metered call path
-  (Increment B) that REFUSES a metered call at cap — and does so as a swap-tail ADVANCE
-  (never a chain kill). Fails CLOSED on every uncertainty; composes with, never
-  bypasses, the router fail-closed / spawn-cap gates.
-- **Adds** an alert-emission path (Increment C) routed through the flood-guarded
-  `/attention` surface, downstream of self-heal, with a lifeline fallback for
-  money-critical alerts.
-- **Adds** a nullable `door` column to `feature_metrics` (+ `FeatureMetricRecord` +
-  `record()` + INSERT) and a maintained `spend_token_rollup` table.
-- **Modifies** the token-prune to a batched delete; adds the daily-token-rollup
-  retention (extends spend history without extending raw-row retention).
+  (Increment B, single-writer) that refuses at cap as a swap-tail ADVANCE (never a
+  chain kill), refuses unbounded reservations, and fails CLOSED on every uncertainty.
+- **Adds** an alert-emission path (Increment C) through the flood-guarded `/attention`
+  surface, downstream of self-heal, with a lifeline fallback and one named
+  surviving-voice exception (holder-dead).
+- **Adds** a nullable `door` column (+ type + writer + INSERT), a maintained
+  `spend_token_rollup` table, the canonical/observed price stores, and the
+  machine-local overlay/credits reporting stores.
+- **Modifies** the token-prune to a batched delete; adds the rollup retention knob.
 - **Depends on (out of scope):** nature-routing enforcement (A2.2) + metered provider
-  implementations for real per-door attribution + live money-gating; nature-routing
-  observation enablement for Increment C alerts.
-- **Does NOT modify** the router's selection logic, the Routing Map (Surface 3), or
-  the existing `/metrics/features` / `/tokens/*` routes.
+  implementations (real attribution + live gating); nature-routing observation
+  enablement (Increment C alerts).
+- **Does NOT modify** the router's selection logic, the Routing Map, or the existing
+  `/metrics/features` / `/tokens/*` routes.
 
 ## Frontloaded Decisions
 
-Each is tagged with its reversibility; the closed non-cheap taxonomy (durable external
+Each tagged with reversibility; the closed non-cheap taxonomy (durable external
 side-effects, money, identity, published interface) overrides any "cheap" tag.
 
 - **FD-1 — REPORTING ground truth is `feature_metrics` + a nullable `door` column; no
-  USD stored there.** *Not cheap* (durable schema + immutability), frontloaded.
-- **FD-2 — Prices live in a git-tracked canonical manifest with effective-dated
-  history, joined as-of; corrections/backdated points are PIN/human-only; the cadenced
-  job is forward-only.** *Not cheap* (money accounting correctness), frontloaded.
+  USD stored there.** *Not cheap*, frontloaded.
+- **FD-2 — Prices: a git-tracked CANONICAL reviewed manifest (human-written only) with
+  effective-dated history + a machine-local OBSERVED cache (the only file the refresh
+  job writes) + an explicit PIN/git promotion flow; corrections/backdated points are
+  PIN/human-only.** *Not cheap*, frontloaded.
 - **FD-3 — Cap enforcement uses cost booked at time-of-use BASE price in the
-  authoritative `MeteredSpendLedger`, is NOT retroactively rewritten, and is NEVER
-  rebuilt by joining Layer 0 to current prices; reporting views DO recompute.** *Not
-  cheap* (money-gate semantics), frontloaded. The deliberate split between real-time
-  protection (immutable booking) and analytical truth (recomputable).
-- **FD-4 — Caps are enforced as a pool-leased slice using CUMULATIVE-COMMITTED
-  accounting (not outstanding-allocation), fenced per call; the conservative go-live
-  default assigns the whole cap to one authoritative metered-lease machine.** *Not
-  cheap* (money blast radius across machines), frontloaded. (See §Multi-machine.)
-- **FD-5 — Reporting rollups pre-aggregate the IMMUTABLE token sums (a maintained
-  daily rollup) and apply price/subsidy on read.** *Not cheap* (driven by the
-  retroactive-recompute + event-loop-safety + disk requirements), frontloaded. (The
-  round-0 cheap-to-change hedge is removed — it was self-cancelling.)
+  authoritative `MeteredSpendLedger`, never retroactively rewritten, never rebuilt by
+  joining Layer 0 to current prices; reporting views DO recompute.** *Not cheap*,
+  frontloaded.
+- **FD-4 — Cross-machine caps are enforced via a FENCED pool lease with
+  CUMULATIVE-COMMITTED accounting; Increment B ships SINGLE-WRITER (whole cap on one
+  PIN-designated machine); slicing is Increment D.** *Not cheap*, frontloaded.
+- **FD-5 — Reporting rollups pre-aggregate IMMUTABLE daily token sums and apply
+  price/subsidy on read.** *Not cheap* (retroactive-recompute + event-loop-safety +
+  disk), frontloaded.
 - **FD-6 — Alerts route through the flood-guarded `/attention` surface via a channel
   abstraction; Telegram in Increment C, Slack a later config-add; money-critical
-  alerts fall back to the lifeline if no topic is configured.** *Not cheap*
-  (published interface + notify source), frontloaded.
+  alerts fall back to the lifeline; ONE named surviving-voice exception
+  (holder-dead).** *Not cheap*, frontloaded.
 - **FD-7 — Amortized subscription-cost estimation is OUT OF SCOPE (the DEFERRAL is
-  cheap-to-change-after — a pure additive later view); the `$0 (subscription)` DISPLAY
-  ships now and is frontloaded (a published interface, never cheap), worded so `$0` is
-  never misread as "barely spending".** The deferral tag survives contest; the display
-  is separately frontloaded.
-- **FD-8 — The price-refresh job ships OFF by default** (like `doorway-scan`),
-  free-probe first, metered/web-verify probes manual-only + budget-capped, refuses to
-  record an unknown/out-of-range price, is **FORWARD-ONLY** (`effectiveAt ≥ now`,
-  `corrects: null`, never a credit/subsidy row — A-M7/S-F1), declares a `supervision`
-  tier (Tier 1 — validate a price is sane before recording, B3) and P19 brakes (B4).
-  Its points feed REPORTING only until an operator confirms them (`reviewed: true`).
-  *Not cheap* (a recurring automated source feeding money accounting), frontloaded.
-- **FD-9 — The MONEY gate reads a NEW authoritative booking-priced `MeteredSpendLedger`
-  (fail-closed, non-swallowing), NOT the best-effort `feature_metrics` observability
-  table.** *Not cheap* (the central money-safety split), frontloaded. Resolves the
-  observability-side-channel-as-money-ground-truth foundation hole.
-- **FD-10 — Cross-machine cap accounting is CUMULATIVE-COMMITTED-DOLLARS (remainder =
-  globalCap − Σcommitted − Σoutstanding; a slice is remaining spendable dollars,
-  decremented by real bookings, NEVER re-credited on release for a lifetime cap; only
-  a daily cap resets, on a pool-agreed day boundary). The FencedLease MECHANISM is
-  reused; the WS5.2 outstanding-allocation ACCOUNTING is NOT.** *Not cheap* (money
-  blast radius), frontloaded. Corrects the round-0 "same sum-of-leases as WS5.2" claim.
-- **FD-11 — Real per-door money attribution and live money-gating DEPEND on the
-  out-of-scope nature-routing enforcement (A2.2) + metered provider implementations;
-  Increment A ships with metered `door` NULL and honest `$0` until they land; the door
-  is single-sourced with the gate when they do.** *Not cheap* (published interface +
-  cross-spec dependency), frontloaded (as a declared dependency, not a build-time stop).
-- **FD-12 — Subsidies and credits are REPORTING-ONLY and NEVER reach the money gate
-  (the gate books BASE price); operator-specific deals live in a machine-local overlay,
-  not the fleet-shared manifest.** *Not cheap* (money-gate semantics), frontloaded.
-- **FD-13 — The go-live PIN action designates the metered-lease machine (default: the
-  serving-lease holder); a metered call on a machine holding no cap slice fails closed
-  `no-cap-slice`; on holder-death the safe default is FREEZE fleet-wide (never
-  auto-grab).** *Not cheap* (money blast radius under partition), frontloaded.
-- **FD-14 — The money gate consumes ONLY reviewed, validated, non-stale price points
-  (git-committed / operator-confirmed); on a stale price it fails closed or books a
-  conservative-MAX (operator choice; default conservative-max).** *Not cheap*
-  (money-gate correctness), frontloaded.
-- **FD-15 — The reporting NET figure (recomputed at current price) and the gate's
-  COMMITTED figure (booked at time-of-use) are both surfaced with explicit labels; the
-  cap enforces the committed figure.** *Not cheap* (money surface honesty),
+  cheap-to-change-after); the `$0 (subscription — not per-token billed)` DISPLAY ships
+  now and is frontloaded.** Deferral tag survives contest.
+- **FD-8 — The price-refresh job ships OFF by default, free-probe first,
+  metered/web-verify probes manual-only + budget-capped, FORWARD-ONLY
+  (`effectiveAt ≥ now`, day-aligned, `corrects: null`, never credit/subsidy rows),
+  Tier-1 supervised (sane-price validation) with P19 brakes, and writes ONLY the
+  machine-local observed cache — structurally never the canonical manifest (lint +
+  test).** *Not cheap*, frontloaded.
+- **FD-9 — The MONEY gate reads the NEW authoritative booking-priced
+  `MeteredSpendLedger` (fail-closed, non-swallowing), NOT `feature_metrics`.** *Not
+  cheap*, frontloaded.
+- **FD-10 — Cross-machine cap accounting (Increment D) is CUMULATIVE-COMMITTED-DOLLARS
+  (remainder = globalCap − Σcommitted − Σoutstanding; a slice is remaining spendable
+  dollars, decremented by real bookings, NEVER re-credited on release for a lifetime
+  cap; only the daily cap resets, on the holder-stamped pool dayEpoch; pool committed
+  reports are ABSOLUTE folded values, never deltas). The FencedLease MECHANISM is
+  reused; the WS5.2 outstanding-allocation ACCOUNTING is NOT.** *Not cheap*,
+  frontloaded (rules now; shipped in D).
+- **FD-11 — Real per-door attribution + live money-gating DEPEND on out-of-scope
+  A2.2 + metered provider impls; Increment A ships metered `door` NULL and honest $0;
+  the door is single-sourced with the gate when they land; Increment B is
+  stub-testable meanwhile.** *Not cheap*, frontloaded (declared dependency).
+- **FD-12 — Subsidies and credits are REPORTING-ONLY and NEVER reach the money gate;
+  operator-specific deals live in the machine-local overlay/credits stores (declared
+  machine-local BY DESIGN), applied exactly once at the pool-merge point by the
+  serving machine.** *Not cheap*, frontloaded.
+- **FD-13 — The go-live PIN designates the metered-lease machine (default: the
+  serving-lease holder); a metered call on a machine holding no cap authority fails
+  closed `no-cap-slice`; holder-death = FREEZE fleet-wide + a surviving-machine alert +
+  a PIN-gated operator reclaim/rebase (authoritative-fold-only, exclusive with
+  transfer) — never an auto-grab.** *Not cheap*, frontloaded.
+- **FD-14 — The money gate consumes ONLY canonical reviewed, validated, non-stale
+  price points; per-door `freshnessSlaDays` / `staleMode` / `conservativeMax` live in
+  the canonical manifest (or PIN store), NEVER config; global default SLA 45 days;
+  stale default = book-conservative-max.** *Not cheap*, frontloaded.
+- **FD-15 — The reporting NET figure and the gate's COMMITTED figure are both
+  surfaced with explicit labels; the cap enforces the committed figure.** *Not cheap*,
   frontloaded.
-- **FD-16 — Maturation: Increment A (read view) ships ENABLED on developer agents
-  (omit `enabled` + `DEV_GATED_FEATURES`, dark on fleet); Increment B (money authority)
-  is a documented `DARK_GATE_EXCLUSIONS` action-bearing case (arming spend is an
-  operator PIN decision); Increment C (alerts) ships dryRun-first live-on-dev.** *Not
-  cheap* (maturation posture), frontloaded.
-- **FD-17 — Build a NEW `MeteredSpendLedger` (distinct domain) that REUSES
-  DriftSpendLedger's write-discipline rather than a parallel counter or a literal
-  reuse; the shared pool-lease closes DriftSpendLedger's deferred
-  `drift-spend-cross-machine` child (a follow-up migrates drift onto the substrate).**
-  *Not cheap* (avoids drifting dual ledgers), frontloaded.
+- **FD-16 — Maturation: Increment A ships ENABLED on developer agents (omit `enabled`
+  + `DEV_GATED_FEATURES`, dark on fleet); Increments B and D are documented
+  `DARK_GATE_EXCLUSIONS` action-bearing cases; Increment C ships dryRun-first
+  live-on-dev.** *Not cheap*, frontloaded.
+- **FD-17 — Build a NEW `MeteredSpendLedger` (distinct domain) reusing
+  DriftSpendLedger's write-discipline; a registered follow-up migrates drift-checks
+  onto the substrate and closes `drift-spend-cross-machine`.** *Not cheap*,
+  frontloaded.
+- **FD-18 — Every canonical price point's `effectiveAt` is UTC-day-aligned
+  (`T00:00:00Z`), including corrections and backdated fixes (manifest-lint enforced).
+  Every daily token bucket therefore maps to exactly ONE price regime — the daily
+  rollup is exact under as-of pricing for the full horizon, and no raw-row splitting
+  path exists. The ≤24h mid-day approximation is disclosed and reporting-only.** *Not
+  cheap* (accounting-correctness policy), frontloaded.
+- **FD-19 — Cached-token pricing: an optional per-point `cachedInPerMtok` (reviewed
+  like any price); absent ⇒ cached reads bill as FULL input (the over-booking safe
+  direction, matching the vendored bench). The gate reserves cached-as-input always.**
+  *Not cheap* (money accounting), frontloaded.
+- **FD-20 — Increment B is SINGLE-WRITER money (whole cap, one machine); multi-machine
+  slicing (Increment D) ships later, dark, with FD-10's rules and the portable
+  operator-signed (Ed25519) cross-machine arming mechanism — a per-machine local PIN
+  is the ONLY arming authority until D.** *Not cheap* (money blast radius +
+  complexity sequencing), frontloaded. This resolves the replicated-authority tension:
+  in B there is nothing to replicate (one holder); in D, arming a peer requires the
+  receiver-verifiable operator signature (never bare replication).
 
 ## Multi-machine posture
 
 This is a multi-machine agent. Default posture is `unified`. Every surface is declared:
 
 - **Token ground truth (`feature_metrics` raw rows + `spend_token_rollup`):
-  `proxied-on-read`.** Each machine records its OWN LLM calls locally (the calls
-  physically happen there — the existing posture of `FeatureMetricsLedger` /
-  `TokenLedger`). The operator-facing spend NUMBER is UNIFIED by a **pool-scope
-  fan-out**: `GET /routing-spend/summary?scope=pool` merges each online machine's local
-  rollup. **The fan-out model is `GET /guards?scope=pool` / `GET /subscription-pool
-  ?scope=pool`** (NOT `/metrics/features`, which is LOCAL-ONLY — I-7); the merge for
-  spend is net-new work reusing the shared pool-fan-out helper. It **rides the shared
-  per-peer poll cache (WS4.4(f))** with a short TTL and load-shed-to-`stale`, so an
-  auto-refreshing dashboard never re-fans (or re-runs the heavy rollup) per poll
-  (scal-F6). A dark peer degrades to a tagged `pool.failed` row, never a 500.
-- **Price authority (manifest): `unified`.** Git-tracked, identical on every machine,
-  reviewed. The per-machine SQLite price index is a regenerable materialized view
-  rebuilt on boot / manifest change. Operator-specific overlays are machine-local
-  REPORTING-only (they never reach the gate, so they cannot diverge money enforcement).
-- **Money authority (caps, go-live) + the committed-spend counter: `replicated` via a
-  FENCED pool LEASE with CUMULATIVE-COMMITTED accounting (money-safety critical).** A
-  vault key's dollars can be spent from ANY machine, so a naive per-machine cap would
-  let N machines each spend the cap = N× overspend. Enforcement:
-  - The pool tracks **dollars BURNED per machine** (each machine reports committed
-    spend from its `MeteredSpendLedger`). The allocatable remainder is
-    `globalCap − Σ(committed) − Σ(outstanding reservations)`. A slice is "remaining
-    spendable dollars," decremented by real bookings and **never re-credited on
-    release for a lifetime cap** (A-B3). Only the DAILY cap resets — on a single
-    pool-agreed day boundary stamped by the metered-lease holder, so clock skew cannot
-    give two machines two daily allotments (A-M6).
-  - Issuance is FENCED single-writer (the `FencedLease` holder; epoch-stamped; a
-    failover re-derives outstanding slices before issuing — the `AccountFollowMeGrants`
-    / `AccountFollowMeSpendSlice` MECHANISM, reused for its fencing, NOT its
-    outstanding-allocation accounting).
-  - The local O(1) gate re-validates the slice's lease epoch on EVERY call (A-B4); a
-    partitioned holder fails closed. Holder-death default = FREEZE fleet-wide (the
-    re-derivation shows the ceiling fully allocated to the dead holder → a new holder
-    fails closed to $0), never an auto-grab; a planned handoff transfers the committed
-    counter with the lease (or reconstructs it from the pooled booking ledgers).
-  - The conservative go-live default (FD-13) grants the whole cap to ONE authoritative
-    metered-lease machine, making the global cap single-writer until multi-machine
-    slicing is explicitly enabled — the safest default.
-- **Replicated go-live/cap records are UNTRUSTED on receive (S-F4 — Know Your
-  Principal).** A go-live/cap record armed with the PIN on machine A replicates to
-  machine B as advisory data: it may grant B its lease SLICE, but it can NEVER by
-  itself flip a door skipped→armed or raise a cap on B without operator authorization
-  verifiable ON B (a re-required local PIN, or an Ed25519 operator-signed authorization
-  B re-validates — the exact WS5.2 / topic-operator posture). Money authority is never
-  laundered through replication.
-- **`frozen` is FREEZE-WINS / monotone-latching under replication (S-F5).** Any
-  `frozen:true` from any machine wins; a `frozen:false` state is authoritative only
-  when written by a LOCAL PIN unfreeze on that machine — a stale/rogue peer can never
-  un-freeze via replication.
-- **Alert emission: `unified` single-voice.** A pool-wide condition (a key hitting its
-  GLOBAL cap) alerts ONCE, emitted by the metered-lease holder with a stable pool-wide
-  attention `id` (`spend-cap:<keyRef>:<capKind>:<threshold>:<dayEpoch>`, using the
-  pool-agreed `dayEpoch` so a midnight skew cannot double-buzz — A-M6). Door-dark /
-  fallback alerts key on `<machineId>:<chain>` because they ARE machine-specific.
-- **Fresh single-machine agent = clean no-op.** Dark by default → routes 503; no pool
-  peers → `scope=pool` degrades to self; no metered door armed → gate inert.
+  `proxied-on-read`.** Each machine records its OWN calls locally (the existing
+  `FeatureMetricsLedger`/`TokenLedger` posture). The operator-facing spend NUMBER is
+  UNIFIED by pool-scope fan-out: `GET /routing-spend/summary?scope=pool` merges each
+  online machine's local rollup. **Fan-out model = `GET /guards?scope=pool` /
+  `GET /subscription-pool?scope=pool`** (NOT `/metrics/features`, which is LOCAL-ONLY
+  — I-7); the merge rides the **shared per-peer poll cache (WS4.4(f))** with
+  load-shed-to-`stale` (scal-F6). A dark peer degrades to a tagged `pool.failed` row.
+- **Price authority: `unified` (canonical manifest) + machine-local observed cache.**
+  The canonical manifest is git-tracked and identical everywhere; the per-machine
+  SQLite index is a regenerable view. The observed cache is machine-local REPORTING
+  input only (its `machine-local-justification`: probe results are this machine's
+  observations; they carry no authority, feed no gate, and promote only through
+  git/PIN).
+- **Operator adjustments (overlay + credits): machine-local BY DESIGN — declared, with
+  the merge-once composition rule (IL2-2/FD-12).** See Layer 1b. They never reach the
+  gate; pool reads apply the SERVING machine's adjustments exactly once at the merge
+  point, labeled `adjustmentsSource`.
+- **Money authority (caps, go-live, committed counter): SINGLE-WRITER in Increment B
+  (FD-20).** The whole cap and the `MeteredSpendLedger` live on the ONE PIN-designated
+  metered-lease machine; other machines hold no cap authority and their metered calls
+  fail closed `no-cap-slice` (in B, metered dispatch is only armed on the holder
+  anyway). The caps money-READ is **proxied-to-holder** (IL2-1): a non-holder machine
+  proxies `GET /routing-spend/caps` money numbers to the holder and NEVER renders its
+  empty local ledger as `$0 spent`; holder-unreachable is stated honestly with
+  last-known values + age.
+- **Increment D (dark until built): `replicated` cap authority via the FENCED pool
+  lease with CUMULATIVE-COMMITTED accounting (FD-10).** Issuance is fenced
+  single-writer (`FencedLease`; epoch-stamped; failover re-derives before issuing —
+  the `AccountFollowMeGrants`/`AccountFollowMeSpendSlice` MECHANISM, not its
+  allocation accounting). The local O(1) gate re-validates the slice epoch on EVERY
+  call (A-B4). Pool committed reports are ABSOLUTE folded values. Cross-machine ARMING
+  in D uses the receiver-verifiable operator-signed authorization (S-F4/C2-3);
+  a replicated record alone can never arm a door or raise a cap on a peer.
+- **`frozen` is FREEZE-WINS / monotone-latching under any replication (S-F5).** Any
+  `frozen:true` from any machine wins; `frozen:false` is authoritative only from a
+  LOCAL PIN unfreeze on the holder.
+- **Alert emission: `unified` single-voice from the metered-lease holder** with stable
+  pool-wide ids (`spend-cap:<keyRef>:<capKind>:<threshold>:<dayEpoch>`, holder-stamped
+  dayEpoch — A-M6), plus the ONE named surviving-voice exception: holder-dead is
+  emitted by a surviving machine (A2-2). Door-dark/fallback alerts key on
+  `<machineId>:<chain>` (machine-specific by nature).
+- **Fresh single-machine agent = clean no-op.** Dark → routes 503; no peers →
+  `scope=pool` degrades to self; nothing armed → gate inert.
 
-No surface is declared `machine-local`, so no `machine-local-justification` marker is
-required. The candidates (raw token rows, price index) are a merged-read and a
-regenerable-view-of-unified respectively — not machine-local state.
+The two machine-local surfaces (observed price cache; operator overlay/credits) are
+declared above with their justifications; every other surface is unified,
+proxied-on-read, proxied-to-holder, or (in D) lease-replicated.
 
 ## Self-Heal Before Notify — watcher declaration
 
-Only the **alert layer (Increment C)** introduces monitor/notice sources; each is
-declared against Standard B:
+Only the **alert layer (Increment C)** introduces monitor/notice sources:
 
 | Degradation | Class | Self-heal (upstream) | Escalation gate | P19 brakes |
 |---|---|---|---|---|
-| Door dark (`RouterFailClosedError`) | recoverable | router swap-tail (incl. a money-cap-refused door, which advances like a dark door) falls to the next; escalate ONLY when the whole chain (incl. free tails) is exhausted | downstream of chain-exhaustion | `max-attempts` = chain length; `dedupe-key` = `spend-door-dark:<machine>:<chain>:<episodeBucket>`; widening `backoff`; flapping breaker (N/window → critical, bypasses coalescing); `max-notification-latency: 120s`; scrubbed jsonl |
-| Fallback used (`onNatureRoutePlan` swapTail served) | recoverable | the fallback succeeding IS the heal | digest-only, never per-event | hourly "N fallbacks" summary; `dedupe-key` per chain |
-| Cap hit (reservation would cross) | recoverable (protective) | none needed — blocking spend is the safe direction | one edge-triggered notice, worded "reservation would exceed", actual-vs-reserved | edge-trigger dedup; DISTINCT source from door-dark; `dedupe-key` = `spend-cap:<keyRef>:<capKind>:<dayEpoch>` |
-| Approaching 50%/80% (daily AND lifetime) | recoverable | n/a informational | one edge-triggered notice per (capKind, threshold, window) | edge-trigger dedup; coalesced into digest |
+| Door dark (`RouterFailClosedError`) | recoverable | swap-tail (incl. a cap-refused door advancing like a dark one) falls to the next; escalate ONLY on whole-chain exhaustion (incl. free tails) | downstream of chain-exhaustion | `max-attempts` = chain length; `dedupe-key` = `spend-door-dark:<machine>:<chain>:<episodeBucket>`; widening backoff; flapping breaker (N/window → critical, bypasses coalescing); `max-notification-latency: 120s`; scrubbed jsonl |
+| Fallback used (swapTail served) | recoverable | the fallback succeeding IS the heal | digest-only | hourly "N fallbacks" summary; `dedupe-key` per chain |
+| Cap hit (reservation would cross) | recoverable (protective) | none needed — blocking spend is the safe direction | one edge-triggered notice ("reservation would exceed", actual-vs-reserved) | edge-trigger dedup; DISTINCT source; `dedupe-key` = `spend-cap:<keyRef>:<capKind>:<dayEpoch>` |
+| Approaching 50%/80% (daily AND lifetime) | recoverable | n/a informational | one edge-triggered notice per (capKind, threshold, window) | edge-trigger dedup; digest-coalesced |
+| Metered-lease holder dead | critical (money frozen) | the freeze itself IS the safe state; recovery = operator PIN reclaim | mesh-death threshold confirmed; emitted by a SURVIVING machine (named single-voice exception) | ONE per episode, stable pool-wide id `spend-holder-dead:<keyEpoch>`; never per-heartbeat |
 
-Composes with No Silent Degradation: every detection + heal-attempt is audited to a
-scrubbed metadata-only jsonl (`logs/routing-spend-alerts.jsonl`); the operator is the
-last resort, never the silent-drop alternative. The first runtime application extracts
-the door-dark watcher's gate into the reusable `SelfHealGate` declaration+assertion
-layer (a downstream build task, registered under Close the Loop).
+Composes with No Silent Degradation: every detection + heal-attempt is audited to the
+scrubbed metadata-only `logs/routing-spend-alerts.jsonl`. The door-dark watcher's gate
+extraction into the reusable `SelfHealGate` layer is a registered follow-up (Close the
+Loop).
 
 ## Testing (Testing Integrity Standard — three tiers; I-6 / B5 / LF-F3)
 
-- **Unit** — the as-of price join (incl. correction-supersede + freshness/stale +
-  validation-fail-closed); subsidy/credit REPORTING math (and the invariant that
-  neither reaches the gate); the `MeteredSpendLedger` reserve/settle incl.
-  all-no-charge-outcomes→$0 and the reconciliation sweep; the O(1) gate boundary (allow
-  at `≤ cap`, refuse at `> cap`); fail-closed on unreadable ledger / unknown /
-  out-of-range / implausible / stale-epoch / frozen; the cumulative-committed pool math
-  (slice never re-credited on release for lifetime; daily reset on dayEpoch); the
-  money-gate-refusal → swap-tail-advance behavior; edge-triggered alert dedup incl. the
-  episode bucket; the metadata-only scrub against a poisoned provider error body; the
-  NULL-door → uncosted composer.
-- **Integration** — each route 200 / 503 (dark) / 403 (Bearer-without-PIN on a PIN
-  route); the Bearer `PATCH /config` CANNOT arm/unfreeze/raise (the S-F2 regression
-  test); `scope=pool` merges + tags a `pool.failed` peer; the `door === keyRef.door`
-  wiring test; a metered `keyRef` can never resolve to a `$0`/subscription price.
-- **E2E (the single most important)** — the feature is ALIVE through the production
-  init path: `GET /routing-spend/summary` returns 200 (not 503) when enabled; a
-  PIN-gated write is refused without the PIN; the fresh-single-machine no-op.
-- **Burst-invariant** — the new `SpendAlert` dispatcher's own dedup/coalescing under
-  burst (in addition to the `/attention` path's existing burst test).
+- **Unit** — as-of join (correction-supersede, freshness/stale + staleMode,
+  validation-fail-closed, day-alignment lint, cached-rate formula, canonical()
+  round-trip); subsidy/credit REPORTING math + the never-reaches-gate invariant;
+  `MeteredSpendLedger` reserve/settle/expire idempotent terminal states (late settle
+  after expiry books ABSOLUTE — the A2-1 race test), all-no-charge→$0, locked sweep,
+  TTL; the O(1) gate boundary (`≤ cap` allow, `> cap` refuse) + the full fail-closed
+  matrix (unreadable/unknown/implausible/negative/stale-epoch/frozen/
+  unbounded-reservation); reserve sizing requires hard `max_tokens`;
+  cumulative-committed pool math (never-re-credit lifetime; dayEpoch daily reset;
+  absolute folded reports); gate-refusal → swap-tail advance; alert edge-trigger dedup
+  + episode bucket; metadata-only scrub vs a poisoned provider error body; NULL-door
+  uncosted composer; refresh-job-writes-observed-only.
+- **Integration** — routes 200 / 503 (dark) / 403 (Bearer-without-PIN); **Bearer
+  `PATCH /config` can neither arm/unfreeze/raise NOR influence any gate-consumed price
+  value** (S-F2 + A2-3 regression); a payload field absent from the rendered plan
+  cannot commit (S2-3); `scope=pool` merges + tags `pool.failed`; caps read proxies to
+  holder + honest `holderUnreachable`; `door === keyRef.door` wiring; a metered
+  `keyRef` never resolves to $0/subscription.
+- **E2E** — feature-alive through the production init path (`GET /routing-spend/summary`
+  200 when enabled); PIN-gated write refused without PIN; fresh-single-machine no-op.
+- **Burst-invariant** — the `SpendAlert` dispatcher's own dedup/coalescing under burst.
 
-## Migration parity & Agent Awareness (Migration Parity + Agent Awareness Standards; I-3 / I-4)
+## Migration parity & Agent Awareness (I-3 / I-4)
 
-- **Schema:** the `door` column rides the idempotent `ensureAddedColumns()` (runs at
-  every DB open) — existing agents' DBs get it automatically. `FeatureMetricRecord`,
-  `record()`, and the prepared INSERT all gain `door` (not just the ALTER).
-- **Config:** either a `migrateConfigRoutingSpendDark` (mirroring the in-tree
-  `migrateConfigNatureRoutingDark`, `PostUpdateMigrator.ts:440`) with existence checks,
-  OR every `routingSpend.*` read uses `?? default` so absence = dark (verified for the
-  alert topic/channels reads). The retention `max()` change is code at
-  `AgentServer.ts:1113` (ships to all via the code update) — named as the edit point.
-- **CLAUDE.md template (Agent Awareness):** `generateClaudeMd()`
-  (`src/scaffold/templates.ts`) gains a Capabilities block (curl examples + proactive
-  triggers + a Registry-First "what's my spend / caps?" row), and `migrateClaudeMd()`
-  gets a content-sniff insertion so existing agents learn the `/routing-spend/*`
-  surface on update.
+- **Schema:** `door` rides `ensureAddedColumns()` (every DB open); the type + writer +
+  INSERT all gain `door`. `spend_token_rollup` is created idempotently at open;
+  boot-reconcile backfills it.
+- **Config:** `migrateConfigRoutingSpendDark` (mirroring `migrateConfigNatureRoutingDark`,
+  `PostUpdateMigrator.ts:440`) with existence checks, or `?? default` reads
+  everywhere. The retention/prune edit point is `AgentServer.ts:1113`.
+- **Jobs:** the price-refresh job ships as a template manifest under
+  `src/scaffold/templates/jobs/instar/` (the `doorway-scan` precedent);
+  `installBuiltinJobs()` (invoked from `PostUpdateMigrator.ts:3452`) installs it
+  non-destructively on update — no bespoke migration needed (named for completeness).
+- **CLAUDE.md template (Agent Awareness):** `generateClaudeMd()` gains a Capabilities
+  block (curl examples + proactive triggers + a Registry-First "what's my spend /
+  caps?" row); `migrateClaudeMd()` gets a content-sniff insertion for existing agents.
 
 ## Vendored bench logic (grounding-honesty; F4 / GF3)
 
 The earned bench patterns (`settleCost`, two-phase reserve-settle, no-charge
-force-settle, `frozen`, edge-triggered 50%/80% thresholds) live on the research branch
-`echo/serve-main`, NOT on canonical `JKHeadley/main`. This spec VENDORS the exact
-logic into `src/` (the `MeteredSpendLedger` + the alert emitters) as canonical
-production code with its own tests — the implementer grounds on `src/`, not an
-off-branch path. The metered-caps shape (`{ keys: { <keyRef>: { provider,
-lifetimeCapUsd, dailyCapUsd, frozen } } }`, key-NAMES-only) and the metered-prices
-shape are re-expressed in the production manifest/store described above (the production
-`(door, modelId)` price key is an IMPROVEMENT over the bench's model-id-only key, which
-carried prefixed/unprefixed duplicates at different prices). Note: one `keyRef` spans
-multiple `(door, model)` points (openrouter hosts both `gpt-5.5` and `opus-4.8` under
-`metered_openrouter_bench`) — the per-key cap correctly aggregates across them.
+force-settle, `frozen`, edge-triggered thresholds) live on `echo/serve-main`, NOT
+canonical main. This spec VENDORS the exact logic into `src/` (the `MeteredSpendLedger`
++ alert emitters) as production code with its own tests. The metered-caps shape
+(`{ keys: { <keyRef>: { provider, lifetimeCapUsd, dailyCapUsd, frozen } } }`,
+key-NAMES-only) and metered-prices shape are re-expressed in the production
+manifest/store above (the `(door, modelId)` key is an IMPROVEMENT over the bench's
+model-id-only key, which carried prefixed/unprefixed duplicates at different prices).
+One `keyRef` spans multiple `(door, model)` points (openrouter hosts `gpt-5.5` AND
+`opus-4.8` under one key) — the per-key cap correctly aggregates across them.
 
 ## Alternatives considered (X-C6)
 
-- **Stored cost projection / materialized rollup.** Rejected for the money number: a
-  stored COST rollup goes stale on a price correction (violates retroactive-recompute).
-  ADOPTED for the immutable TOKEN sums (Layer 2) — which never go stale — as the
-  perf/disk answer.
-- **Event-sourcing the whole spend domain.** The `MeteredSpendLedger` IS an append-only
-  event log with a maintained fold (`committed*`) — event-sourcing where it earns its
-  keep (the money gate), not across the analytical reporting layer (which is a
-  recompute over immutable tokens).
+- **Stored cost projection.** Rejected for the money number (goes stale on price
+  correction). ADOPTED for the immutable TOKEN sums (Layer 2), which never go stale —
+  and made exact by day-aligned price points (FD-18).
+- **Event-sourcing the whole spend domain.** The `MeteredSpendLedger` IS an
+  append-only event log with a maintained fold — event-sourcing where it earns its
+  keep (the money gate), not across the analytical layer.
 - **Provider invoice reconciliation as source of truth.** Rejected as the GATE source
-  (invoices lag hours–days; the cap must protect in real time). Retained as a FUTURE
-  reconciliation input to detect drift between booked spend and billed spend (a
-  registered follow-up, not this feature).
+  (invoices lag hours–days). Retained as a FUTURE drift-detection input (registered
+  follow-up).
+- **A live price service instead of a git manifest (X-G1).** Rejected for the gate:
+  a network dependency on the money path adds a fail-open temptation and an
+  unreviewed admission channel. The observed-cache + promotion flow captures the
+  freshness benefit while keeping gate admission human-reviewed.
 
 ## Increment split (FD-style — what ships when, and behind what gate)
 
 - **Increment A — Read-only spend VIEW (dev-agent ENABLED, dark on fleet; no money
-  authority).** Layer 0 `door` column; Layer 1 price manifest + index + as-of join +
-  validation + freshness; Layer 1b subsidy/credit REPORTING model + overlay; Layer 2
-  daily token rollup + on-read pricing + `GET /routing-spend/summary` +
-  `GET /routing-spend/caps` (read); the dashboard "Spend" tab; the price-refresh job
-  (OFF). Ships via `resolveDevAgentGate` on `routingSpend.enabled` (dev-on / fleet-off);
-  routes 503 when off. Shows `$0` / `not-live-yet` honestly. Reversible by revert; the
-  only persistent state is additive/regenerable.
-- **Increment B — Money authority (`DARK_GATE_EXCLUSIONS`, PIN-gated).** The
-  `MeteredSpendLedger` + O(1) fail-closed lease-fenced gate wired into the metered call
-  path (which itself depends on the out-of-scope metered dispatch — FD-11); the
-  cumulative-committed pool-lease; `POST /routing-spend/caps/adjust` (PIN);
-  `POST /routing-spend/go-live` (PIN); the phone-complete controls; the cap-change
-  audit log; the dedicated PIN-only state store. Arming spend is an operator PIN
-  decision (the documented action-bearing exclusion), inert until then.
-- **Increment C — Alerts (dryRun-first live-on-dev).** The `AlertChannel` interface +
-  `TelegramAttentionChannel`; the door-dark / fallback / cap / approaching emitters
-  with their Self-Heal-Before-Notify gates + lifeline fallback; the fan-out + scrubbed
-  sink. Inert until nature-routing observation is enabled (I-9). Slack is a later
-  config-add, no emitter rework.
+  authority).** Layer 0 `door` column; Layer 1 canonical manifest + observed cache +
+  index + as-of join + validation + freshness; Layer 1b reporting subsidy/credit +
+  overlay; Layer 2 daily token rollup + on-read pricing + boot reconcile +
+  `GET /routing-spend/summary` + `GET /routing-spend/caps` (read); the Spend tab; the
+  refresh job (OFF). Via `resolveDevAgentGate` on `routingSpend.enabled`; routes 503
+  when off. Honest `$0` / `not-live-yet`. Reversible by revert; persistent state is
+  additive/regenerable.
+- **Increment B — Money authority, SINGLE-WRITER (`DARK_GATE_EXCLUSIONS`,
+  PIN-gated).** `MeteredSpendLedger` + the O(1) fail-closed gate (stub-testable
+  against a fake metered dispatch until A2.2 + providers land — FD-11); whole-cap
+  single-machine (FD-20); PIN routes + rendered-plan commit + phone-complete controls +
+  the durable PIN-attempt counter + the cap-change audit log + the PIN-only state
+  store. Inert until the operator arms a door.
+- **Increment C — Alerts (dryRun-first live-on-dev).** `AlertChannel` +
+  `TelegramAttentionChannel`; the emitters + Self-Heal gates + lifeline fallback +
+  the surviving-voice holder-dead alert; the fan-out + scrubbed sink. Inert until
+  nature-routing observation is enabled (I-9). Slack is a later config-add.
+- **Increment D — Multi-machine cap slicing (dark until built;
+  `DARK_GATE_EXCLUSIONS`).** FD-10's cumulative-committed lease slicing; per-call
+  epoch fencing at every gate; the operator-signed cross-machine arming mechanism;
+  quota-aware slice placement. Single-machine agents and un-enabled pools are strict
+  no-ops. Ships only after B has a live soak.
 
-Each increment is independently reversible and independently gated. The read VIEW (A)
-never depends on B or C; money authority (B) never depends on alerts (C).
+Each increment is independently reversible and independently gated. A never depends
+on B/C/D; B never depends on C; D extends B without changing A–C's surfaces.
 
 ## Open questions
 

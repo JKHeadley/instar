@@ -41,8 +41,11 @@ had set. Splitting the books fixes that.
    dollar amount into that log.
 2. **A price book with history.** A version-controlled file lists what each model costs
    per million tokens, *with dates* — and only prices a human has reviewed are allowed
-   to affect the actual spending gate. An automatic price-checker can suggest new
-   prices, but they only show up in reports until you confirm them.
+   to affect the actual spending gate. An automatic price-checker writes what it sees
+   into a separate "observed" scratch file that structurally cannot touch the gate; you
+   promote an observed price into the real book with your PIN (or a reviewed commit).
+   Price changes always take effect at a day boundary — that one rule keeps the daily
+   math exact for the whole history without keeping years of raw logs.
 3. **Views = math on read.** Hourly / daily / monthly / total spend is computed from a
    small daily token summary times the price — so a price fix instantly flows through,
    and we never have to keep years of raw log rows or freeze the server crunching a
@@ -66,8 +69,11 @@ so it doesn't leak onto other machines.
 - **Stopping** spend (freeze a key): instant, no PIN — halting money is always cheap.
 - **Raising** a cap or **turning a paid door on**: requires the dashboard **PIN**, from
   a proper phone-friendly form that shows a plain-English "arm this door at $X/day —
-  approve?" plan. The agent's own token can't do it, and it deliberately can't be done
-  by quietly patching a config file either.
+  approve?" plan. What you approve is exactly what applies: the server lists EVERY
+  field it will change, and anything not shown in that plan is rejected outright — a
+  request can't smuggle a hidden cap raise past your approval. The agent's own token
+  can't do any of it, and it deliberately can't be done by quietly patching a config
+  file either.
 - **Alerts** go to a dedicated Telegram topic when a cap is hit (or at 50% / 80% of the
   daily AND lifetime cap), a door goes fully dark, or a fallback door had to step in.
   It's built so Slack can be added later without redoing the alerts. Alerts are polite:
@@ -77,13 +83,18 @@ so it doesn't leak onto other machines.
 
 ## Multi-machine safety
 
-The agent can run on several machines that share one wallet. So the cap is sliced
-across machines — but the slices track **dollars actually burned**, not just "how much
-is handed out right now," so a machine can't spend its slice, hand it back, and get it
-re-issued to spend the same money twice. Each machine also re-checks it still holds a
-valid slice on *every* call, so a machine that got cut off from the group can't keep
-spending on a stale copy. The safe default gives the whole cap to one machine until you
-opt into sharing, and if that machine dies, spending freezes rather than getting grabbed.
+The agent can run on several machines that share one wallet. **The first live money
+release deliberately keeps it simple: the whole budget lives on ONE machine you
+designate** — other machines can't spend at all, and every machine's dashboard shows
+the real number by asking that machine (never a misleading local "$0"). If the money
+machine dies, spending freezes (the safe direction), a *surviving* machine tells you,
+and you reclaim it from the dashboard with your PIN — never an automatic grab.
+
+Sharing the budget across machines is a later, separately-switched increment with
+strict rules already decided: slices track **dollars actually burned**, not just "how
+much is handed out," so a machine can't spend its slice, hand it back, and get the same
+money re-issued; and each machine re-checks it still holds a valid slice on *every*
+call, so a machine cut off from the group can't keep spending on a stale copy.
 
 ## An honesty note about scope
 
@@ -98,8 +109,9 @@ per-door money tracking depends on that other work landing.
 - **First (dev-agent on, dark on the fleet, read-only):** the spend view and price book
   — shows "$0, no paid door live yet" honestly.
 - **Then (PIN-gated, the documented money exception):** the caps you can adjust and the
-  switch that turns paid doors on.
+  switch that turns paid doors on — single-machine money only.
 - **Then (dry-run first):** the alerts.
+- **Last (dark until proven):** sharing the budget across machines.
 
 Each part is reversible and independently switched, and nothing about the money can
 happen until a human types the PIN.
