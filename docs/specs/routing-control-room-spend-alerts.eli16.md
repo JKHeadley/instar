@@ -101,13 +101,19 @@ so it doesn't leak onto other machines.
   request can't smuggle a hidden cap raise past your approval. The agent's own token
   can't do any of it, and it deliberately can't be done by quietly patching a config
   file either.
-- **Alerts** go to a dedicated Telegram topic when a cap is hit (or at 50% / 80% of the
-  daily AND lifetime cap), a door goes fully dark, or fallback usage suddenly spikes.
-  It's built so Slack can be added later without redoing the alerts. Alerts are polite:
-  a door that dies but is instantly covered by a backup doesn't cry wolf — you only hear
-  about a door when its whole backup chain is exhausted, and routine "the backup stepped
-  in" churn is just logged, never pinged. And a money alert is never dropped just
-  because no topic was configured — it falls back to your lifeline.
+- **Alerts** all go to **ONE dedicated Telegram topic — "💰 Routing & Spend Alerts" —
+  never a scatter of topics.** A cap being hit (or at 50% / 80% of the daily AND
+  lifetime cap), a door going fully dark, fallback usage spiking, a price looking
+  stale, or the provider's own numbers disagreeing with ours all land in that same one
+  place. The topic is found by a saved id (not by guessing at its name), and created
+  only if it doesn't already exist — with a guard so two machines can never
+  accidentally make two copies of it (only the one "money machine" ever creates it, and
+  it makes it exactly once). It's built so Slack can be added later without redoing the
+  alerts. Alerts are polite: a door that dies but is instantly covered by a backup
+  doesn't cry wolf — you only hear about a door when its whole backup chain is
+  exhausted, and routine "the backup stepped in" churn is just logged, never pinged. And
+  a money alert is never dropped just because the topic isn't set up yet — it falls back
+  to your lifeline.
 
 ## Multi-machine safety
 

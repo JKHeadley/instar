@@ -91,11 +91,19 @@ The operator's explicit requirements (verbatim intent), all addressed below:
 5. **Caps display + ADJUST** — show lifetime/daily caps per key and live spend vs
    cap; the adjust control (and the paid-door go-live flip) is **PIN-gated** and
    **phone-complete** (a dashboard form, not a curl).
-6. **Alerts — Telegram-FIRST, Slack-extensible** — a dedicated topic firing on cap
-   hit (and approaching 50%/80%), a door going dark, and fallback usage (spike-gated
-   per Near-Silent Notifications: every fallback is durably logged, but routine
-   self-healed churn never pings — only a rate-spike or chain exhaustion does);
-   routed through a channel abstraction so Slack adds later without rework.
+6. **Alerts — Telegram-FIRST, Slack-extensible — to EXACTLY ONE dedicated topic
+   (operator directive: "any alerts go to one single topic not multiple").** ALL
+   control-room alerts (cap hit / approaching 50%/80%, a door going dark, fallback
+   usage, price-drift, provider-reconciliation drift) deliver to ONE dedicated,
+   clearly-named Telegram topic — **"💰 Routing & Spend Alerts"** — located via a
+   DURABLE persisted topic-id record and CREATED once only if genuinely absent, with a
+   concurrency-safe guard so a duplicate topic can never be race-created. Fallback usage
+   is spike-gated per Near-Silent Notifications (every fallback is durably logged, but
+   routine self-healed churn never pings — only a rate-spike or chain exhaustion does),
+   and all alerts respect the existing dedup/coalescing (one coalesced message per
+   episode, never a flood). The delivery sits behind a channel abstraction so Slack
+   adds later without rework — the Telegram implementation now targets this one durable
+   topic.
 
 ## Design principles this spec is bound by
 
@@ -675,7 +683,10 @@ recorded row — this spec is HONEST about the dependency:
   `PATCH /config` (Bearer, deep-merge) can never arm a door, unfreeze a key, raise a
   cap, **or influence any gate-consumed price value** (A2-3). Regression tests assert
   both. Only inert knobs (`routingSpend.enabled` dark-toggle, retention days,
-  `alerts.telegramTopicId`, `alerts.channels`) live in config.
+  `alerts.telegramTopicId` (the operator-configured dedicated-topic id — the zero-race
+  find path), `alerts.channels`, `reconciliation.driftAlertPct`) live in config.
+  `alerts.telegramTopicId` names WHERE alerts go — it can never arm a door, raise a
+  cap, or move a price, so it is safe as a Bearer-`PATCH`able knob.
 - `POST /routing-spend/caps/adjust` and `POST /routing-spend/go-live` — **PIN-gated**
   via `checkMandatePin` (`routes.ts:9044`; sha256 + `timingSafeEqual` + per-IP
   rate-limit). **Honest hardening note (S2-1):** `checkMandatePin`'s attempt counter
@@ -735,21 +746,63 @@ recorded row — this spec is HONEST about the dependency:
 
 ### Surface 2 — Alerts (channel-abstracted; Increment C)
 
-- **`AlertChannel` abstraction.** `dispatch(alert: SpendAlert): Promise<DispatchResult>`
-  with a `kind` discriminator. Increment C ships `TelegramAttentionChannel`, routing
-  through `POST /attention` (inheriting the topic-flood guard, the
-  bounded-notification budget, and dedup) into a dedicated **"Routing Spend"** topic
-  (`routingSpend.alerts.telegramTopicId`). A future `SlackAlertChannel` is a registry
-  entry + `alerts.channels: ["telegram","slack"]` — no emitter rework
-  (channel-neutral `SpendAlert`s; dispatcher-level dedup/aggregation BEFORE any
-  channel send). `AttentionTopicGuard.decide()` is already channel-agnostic.
-- **Money-critical alerts are never dropped for a missing topic (G5).** If
-  `telegramTopicId` is unset, cap-hit and chain-exhausted door-dark alerts FALL BACK
-  to the lifeline/system topic. The "Routing Spend" topic is created once under the
-  bounded-notification budget on first alert, or operator-configured.
-- **Cap-hit/approaching use a DISTINCT attention `source` (S-F8)** from
-  door-dark/fallback, so a flapping door's volume can never coalesce a money-critical
-  cap alert into a digest.
+- **`AlertChannel` abstraction — ONE dedicated topic, message-INTO not topic-PER
+  (Amendment 2).** `dispatch(alert: SpendAlert): Promise<DispatchResult>` with a `kind`
+  discriminator. Increment C ships `TelegramSpendTopicChannel`, which delivers each
+  alert as a MESSAGE into the ONE dedicated **"💰 Routing & Spend Alerts"** topic via
+  `TelegramAdapter.sendToTopic(topicId, text)` — the **`monitoring.burnDetection.alertTopicId`
+  precedent** (`BurnThrottleRunbook.sendTelegram(this.alertTopicId, …)`), where alerts
+  post to ONE configured topic. It deliberately does **NOT** route through
+  `POST /attention`, because the attention queue spawns ONE forum topic PER item — the
+  exact many-topics flood the operator directive forbids. A future `SlackSpendChannel`
+  is a registry entry + `alerts.channels: ["telegram","slack"]` — no emitter rework
+  (channel-neutral `SpendAlert`s; dispatcher-level dedup/aggregation/coalescing runs
+  BEFORE any channel send, so one coalesced message per episode reaches the topic).
+- **Idempotent find-or-create of the ONE dedicated topic — no duplicate, ever (the
+  duplicate-topic guard the directive requires).** Resolution order:
+  1. **Operator-configured id wins (zero-race primary path).** If
+     `routingSpend.alerts.telegramTopicId` is set, that id IS the topic — nothing is
+     ever created, no race exists (mirrors `burnDetection.alertTopicId`).
+  2. **Else auto find-or-create via a DURABLE persisted record, not name-matching** —
+     the **`ensureLifelineTopic()` precedent** (`TelegramAdapter.ts`): a persisted
+     topic-id is the single source of truth; on first alert it is created ONCE as a
+     **bounded create-once SYSTEM topic** — `createForumTopic("💰 Routing & Spend Alerts",
+     …, { origin: 'system', bounded: true, label: 'routing-spend-alerts' })`, which is
+     **EXEMPT from the bounded-notification-surface budget** (the create-once system
+     exemption at `TelegramAdapter.createForumTopic`) — and the returned id is persisted
+     atomically (tmp+rename into the telegram messaging config block, exactly like
+     `persistLifelineTopicId`). On every later boot/alert the id is verified (a
+     `sendChatAction` typing probe) and only RE-created if the topic was deleted — never
+     duplicated. Name-matching is never used to "find" the topic (topic names are
+     mutable and duplicable); the persisted id is authoritative.
+- **Concurrency-safe against a duplicate race (single-writer, matching the money
+  model).** Two guards compose so two machines / two processes can never race-create
+  two topics:
+  - **Cross-machine: creation is HOLDER-ONLY.** Only the single metered-lease holder
+    (the same single-writer that owns money authority and emits the unified
+    cap/holder-dead alerts) may create + persist the dedicated topic. This reuses the
+    converged single-writer money-holder model rather than inventing a new claim.
+  - **In-process: single-flight.** The holder serializes creation through the existing
+    `TelegramAdapter` in-flight-`createForumTopic`-promise map (the same guard that
+    stops concurrent coalesced attention items from double-creating a topic), so even a
+    burst of first-alerts yields exactly one `createForumTopic` call. The persisted-id
+    write is atomic (tmp+rename) — last-writer-wins over an identical id, never two ids.
+  - **A NON-holder machine that must emit a machine-specific alert (door-dark/fallback
+    key on `<machineId>` by nature) before the holder has published the id** does NOT
+    race to create — it delivers to the **lifeline fallback** (below) and re-resolves
+    the holder-published id on its next tick. This keeps "exactly one topic" true even
+    while alerts can originate on more than one machine.
+- **Money-critical alerts are never dropped for a missing/unresolvable topic (G5).**
+  If the dedicated topic id is unset AND cannot be resolved/created yet (no holder, or
+  a creation failure), cap-hit, holder-dead, and chain-exhausted door-dark alerts FALL
+  BACK to the lifeline/system topic — never silently dropped. The dedicated topic is a
+  create-once system topic; once it exists, all alert kinds converge to it.
+- **Money-critical alerts ride a DISTINCT dedup lane (S-F8)** — now enforced at the
+  dispatcher (before `sendToTopic`), since delivery no longer goes through
+  `/attention`. Cap-hit/holder-dead carry a distinct `dedupeLane` from
+  door-dark/fallback/price-drift, so a flapping door's volume can never coalesce a
+  money-critical cap alert into a digest line. All kinds land in the SAME dedicated
+  topic; the lane governs coalescing, not the destination.
 - **Triggers (Self-Heal Before Notify):**
   - **Cap hit**: ONE edge-triggered alert, worded honestly — "a reservation would
     exceed key X's daily cap" with actual-vs-reserved shown (A-Min13). Protective;
@@ -769,6 +822,15 @@ recorded row — this spec is HONEST about the dependency:
     digest line is emitted ONLY when the fallback RATE crosses a spike threshold
     (a sustained jump vs the trailing baseline, or an absolute per-hour ceiling) —
     steady-state fallback churn never buzzes the operator at all.
+  - **Provider-reconciliation drift** (Layer 1c, Amendment 1): when the reconciliation
+    sweep's signed `driftPct` for a `(keyRef, door)` exceeds
+    `routingSpend.reconciliation.driftAlertPct`, ONE edge-triggered digest line lands in
+    the SAME dedicated topic (dedupe-key
+    `spend-recon-drift:<keyRef>:<door>:<driftBucket>`), worded as an observability
+    signal ("openrouter reports ~12% more than we booked — your manifest price may be
+    stale; promote?"). Below the threshold it is recorded silently (Near-Silent). This
+    shares the price-drift lane (informational), never the money-critical lane, and —
+    like every reconciliation output — NEVER moves the gate.
   - **Metered-lease holder dead (A2-2 — the named exception to holder-single-voice):**
     when the pool observes the metered-lease holder offline past the mesh-death
     threshold while any door is live, a SURVIVING machine emits ONE money-critical
@@ -826,8 +888,11 @@ recorded row — this spec is HONEST about the dependency:
 - **Adds** an O(1) fail-closed, lease-fenced money gate on the metered call path
   (Increment B, single-writer) that refuses at cap as a swap-tail ADVANCE (never a
   chain kill), refuses unbounded reservations, and fails CLOSED on every uncertainty.
-- **Adds** an alert-emission path (Increment C) through the flood-guarded `/attention`
-  surface, downstream of self-heal, with a lifeline fallback and one named
+- **Adds** an alert-emission path (Increment C) that delivers ALL alerts into EXACTLY
+  ONE dedicated Telegram topic ("💰 Routing & Spend Alerts") via `sendToTopic`
+  (idempotent find-or-create from a durable persisted id; holder-only creation +
+  single-flight duplicate guard; bounded create-once system topic) — NOT `POST /attention`
+  (topic-per-item) — downstream of self-heal, with a lifeline fallback and one named
   surviving-voice exception (holder-dead).
 - **Adds** a nullable `door` column (+ type + writer + INSERT), a maintained
   `spend_token_rollup` table, the canonical/observed price stores, and the
@@ -866,11 +931,19 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
 - **FD-5 — Reporting rollups pre-aggregate IMMUTABLE daily token sums and apply
   price/subsidy on read.** *Not cheap* (retroactive-recompute + event-loop-safety +
   disk), frontloaded.
-- **FD-6 — Alerts route through the flood-guarded `/attention` surface via a channel
-  abstraction; Telegram in Increment C, Slack a later config-add; money-critical
-  alerts fall back to the lifeline; ONE named surviving-voice exception (holder-dead);
-  routine self-healed fallback churn is jsonl-only (a digest line ONLY on a
-  rate-spike — Near-Silent Notifications).** *Not cheap*, frontloaded.
+- **FD-6 — ALL alerts deliver to EXACTLY ONE dedicated Telegram topic ("💰 Routing &
+  Spend Alerts") via a channel abstraction — message-INTO the topic (the
+  `burnDetection.alertTopicId` `sendToTopic` precedent), NOT `POST /attention`
+  (topic-per-item, the flood the operator forbids). Idempotent find-or-create via a
+  DURABLE persisted topic-id (operator-configured id wins; else a bounded create-once
+  SYSTEM topic exempt from the notification budget, persisted atomically like
+  `persistLifelineTopicId`), with a concurrency-safe duplicate guard (HOLDER-ONLY
+  creation + in-process single-flight + non-holder-falls-back-to-lifeline). Slack a
+  later config-add; money-critical alerts fall back to the lifeline when the topic is
+  unresolvable; ONE named surviving-voice exception (holder-dead); dispatcher-level
+  dedup/coalescing (one message per episode, money-critical on a distinct lane);
+  routine self-healed fallback churn is jsonl-only (a digest line ONLY on a rate-spike
+  — Near-Silent Notifications).** *Not cheap*, frontloaded.
 - **FD-7 — Amortized subscription-cost estimation is OUT OF SCOPE (the DEFERRAL is
   cheap-to-change-after); the `$0 (subscription — not per-token billed)` DISPLAY ships
   now and is frontloaded.** Deferral tag survives contest.
@@ -1021,7 +1094,12 @@ This is a multi-machine agent. Default posture is `unified`. Every surface is de
   pool-wide ids (`spend-cap:<keyRef>:<capKind>:<threshold>:<dayEpoch>`, holder-stamped
   dayEpoch — A-M6), plus the ONE named surviving-voice exception: holder-dead is
   emitted by a surviving machine (A2-2). Door-dark/fallback alerts key on
-  `<machineId>:<chain>` (machine-specific by nature).
+  `<machineId>:<chain>` (machine-specific by nature). **The ONE dedicated
+  "💰 Routing & Spend Alerts" topic is a `unified` create-once system topic: the
+  metered-lease holder is its sole CREATOR (the duplicate-topic guard), the persisted
+  id is the single source of truth, and a non-holder that must emit a machine-specific
+  alert before the id is published falls back to the lifeline rather than creating a
+  second topic** (Amendment 2). A single-machine agent is trivially its own holder.
 - **Fresh single-machine agent = clean no-op.** Dark → routes 503; no peers →
   `scope=pool` degrades to self; nothing armed → gate inert.
 
@@ -1040,6 +1118,7 @@ Only the **alert layer (Increment C)** introduces monitor/notice sources:
 | Cap hit (reservation would cross) | recoverable (protective) | none needed — blocking spend is the safe direction | one edge-triggered notice ("reservation would exceed", actual-vs-reserved) | edge-trigger dedup; DISTINCT source; `dedupe-key` = `spend-cap:<keyRef>:<capKind>:<dayEpoch>` |
 | Approaching 50%/80% (daily AND lifetime) | recoverable | n/a informational | one edge-triggered notice per (capKind, threshold, window) | edge-trigger dedup; digest-coalesced |
 | Metered-lease holder dead | critical (money frozen) | the freeze itself IS the safe state; recovery = operator PIN reclaim | mesh-death threshold confirmed; emitted by a SURVIVING machine (named single-voice exception) | ONE per episode, stable pool-wide id `spend-holder-dead:<keyEpoch>`; never per-heartbeat |
+| Provider-reconciliation drift (Layer 1c) | recoverable (informational) | n/a — observability of a booked-vs-reported gap; the fix is a human price promotion | one edge-triggered digest line above `driftAlertPct`; below it, jsonl-only (Near-Silent) | edge-trigger dedup; `dedupe-key` = `spend-recon-drift:<keyRef>:<door>:<driftBucket>`; shares the informational (non-money-critical) lane; NEVER moves the gate |
 
 Composes with No Silent Degradation: every detection + heal-attempt is audited to the
 scrubbed metadata-only `logs/routing-spend-alerts.jsonl`. The door-dark watcher's gate
@@ -1078,10 +1157,21 @@ Loop).
   REFUSED while the alive-but-partitioned signal is live (N-2); `scope=pool` merges +
   tags `pool.failed`; caps read proxies to holder + honest `holderUnreachable`;
   `door === keyRef.door` wiring; a metered `keyRef` never resolves to
-  $0/subscription.
+  $0/subscription; the summary/reconciliation routes expose `costBasis`/
+  `providerReportedUsd`/`providerDriftPct` (Layer 1c).
+- **Alerts — ONE dedicated topic (Amendment 2)** — every alert kind (cap /
+  approaching / door-dark / fallback / price-drift / reconciliation-drift) delivers to
+  the SAME resolved topic id via `sendToTopic`, NEVER `POST /attention` (asserted: no
+  per-item topic is created); idempotent find-or-create resolves an operator-configured
+  id without creating; auto-create makes EXACTLY ONE topic and a second first-alert
+  (concurrent + a simulated non-holder) creates NO second topic (single-flight +
+  holder-only guard); a deleted-topic re-create does not duplicate; money-critical
+  alerts fall back to the lifeline when the id is unresolvable.
 - **E2E** — feature-alive through the production init path (`GET /routing-spend/summary`
   200 when enabled); PIN-gated write refused without PIN; fresh-single-machine no-op.
-- **Burst-invariant** — the `SpendAlert` dispatcher's own dedup/coalescing under burst.
+- **Burst-invariant** — the `SpendAlert` dispatcher's own dedup/coalescing under burst,
+  asserting a burst of alerts across all kinds collapses to the bounded per-episode
+  message count into the ONE dedicated topic (never a topic-per-item flood).
 
 ## Migration parity & Agent Awareness (I-3 / I-4)
 
@@ -1184,10 +1274,16 @@ math is unchanged.
   invoice-drift REPORTING, observability-only, never gate authority**. Go-live
   additionally requires FD-11's release gate (live wiring proof + holder-death drill +
   invoice/provider-report drift reporting). Inert until the operator arms a door.
-- **Increment C — Alerts (dryRun-first live-on-dev).** `AlertChannel` +
-  `TelegramAttentionChannel`; the emitters + Self-Heal gates + lifeline fallback +
-  the surviving-voice holder-dead alert; the fan-out + scrubbed sink. Inert until
-  nature-routing observation is enabled (I-9). Slack is a later config-add.
+- **Increment C — Alerts to ONE dedicated topic (dryRun-first live-on-dev).**
+  `AlertChannel` + `TelegramSpendTopicChannel` delivering ALL alert kinds (cap /
+  approaching / door-dark / fallback / price-drift / provider-reconciliation-drift)
+  into the single **"💰 Routing & Spend Alerts"** topic via `sendToTopic` — idempotent
+  find-or-create from a durable persisted id (operator-configured id wins; else a
+  bounded create-once system topic), holder-only creation + single-flight duplicate
+  guard, NOT `POST /attention`; the emitters + Self-Heal gates + lifeline fallback +
+  the surviving-voice holder-dead alert; the fan-out + scrubbed sink; dispatcher-level
+  dedup/coalescing. Inert until nature-routing observation is enabled (I-9). Slack is a
+  later config-add (`SlackSpendChannel` registry entry).
 - **Increment D — Multi-machine cap slicing (dark until built;
   `DARK_GATE_EXCLUSIONS`).** FD-10's cumulative-committed lease slicing; per-call
   epoch fencing at every gate; the operator-signed cross-machine arming mechanism;
