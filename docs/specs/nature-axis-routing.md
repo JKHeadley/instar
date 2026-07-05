@@ -45,6 +45,21 @@ Two prerequisites are already **merged on `JKHeadley/main`** (PR #1352):
 (and structurally harden) the merged S2 clamp, and ship **dark & reversible first** (fleet behavior
 byte-identical when the nature-routing config is unset).
 
+## Glossary (codex CR4-1 — one place for the overloaded terms)
+
+| Term | One-line meaning |
+|---|---|
+| **door** (`RoutingDoor`) | A concrete access path to a model: the 4 CLI frameworks (`pi-cli`, `codex-cli`, `gemini-cli`, `claude-code`) + the 3 metered-API doors (`gemini-api`, `openrouter-api`, `groq-api`). Superset of `framework`. |
+| **framework** (`IntelligenceFramework`) | The existing 4 CLI doors only — today's routing target. |
+| **nature** (`A/B/D/E`) | The task's kind (bounded-verdict / critical-judgment / background / deep-reasoning) — a static per-component property. |
+| **chain** (`FAST/SORT/JUDGE/WRITE`) | An ordered default→fallback ladder of positions for a nature. |
+| **position** | One rung of a chain: `{ door, model, flags }`. |
+| **model label** | A benchmark name (`gpt-5.5`, `flash-lite`, `balanced`) on a position. |
+| **resolved model id** | The concrete adapter/provider id a label resolves to (`claude-sonnet-4-6`) — validated against adapter-supported ids. |
+| **category** (`sentinel/gate/…`) | The LEGACY routing key (today's `resolveFramework`) — used only in the unmapped fall-through. |
+
+Worked example: `CompletionEvaluator/judge` → nature **B** → chain **JUDGE** → walk `pi-cli/gpt-5.5` (available) → PRIMARY `(pi-cli, gpt-5.5)`; the rest are the swap tail.
+
 ## Frontloaded Decisions
 
 Every decision below is **resolved**; `## Open questions` is empty by construction.
@@ -227,7 +242,13 @@ defaults AND live config:
 - **R6 (absolute):** doc-tree / cartographer components carry `claudeBanned: true` and **no chain
   position may route them to any `claude-code` door** — nature routing must NOT re-open the Claude route
   that `CartographerSweepEngine.probeRouting()` already forbids. Their WRITE chain uses off-Claude doors
-  only (codex → groq); if all are down the call **fails closed to the caller's heuristic**, never Claude.
+  only (codex → groq). If all off-Claude doors are down, the behavior is **NOT a silent drop to a brittle
+  heuristic** (No-Silent-Degradation): because doc-tree authoring is **non-gating, deferrable background
+  work**, the call first rides the existing **deferrable backoff/queue ladder** (retry-for-capacity), and
+  only if that is exhausted does it **refuse to author this tick** — the same durable "refuse rather than
+  fall back to Claude" contract `CartographerSweepEngine` already enforces (skip + retry next cadence,
+  recorded via `onHeuristicFallthrough`/`DegradationReporter` so it is **tracked, never silent**). It
+  never touches Claude and never silently degrades — it defers and reports.
 - **R8:** input-classifier-nature components (`InputClassifier`, `MessageSentinel`, `TaskClassifier`) are
   marked `injectionExposed` and **pinned off the `gemini-api/flash-lite` position** (Flash-Lite's one
   reproduced trap-fall is exactly the input-classifier slot) — their FAST/SORT walk skips Flash-Lite.
@@ -286,6 +307,16 @@ A/B, B/D callsites S1 deferred, using per-operation keys — FD3). A ratchet
 explicit `{ chainExempt: <reason ≥40 chars> }` marker — **except** FD6 critical gates, for which
 `chainExempt` is forbidden (Adv5). Doc-tree/cartographer components carry `claudeBanned` (FD5c/R6).
 
+**Semantic-drift guard (codex CR4-2 / gemini): a ratchet ensures coverage, not correctness** — a
+component's callsite can change (its prompt starts carrying untrusted content, or its verdict shifts from
+bounded to judgment) while its `nature`/`injectionExposure` row stays *syntactically* valid but
+*semantically* stale. Two structural mitigations: (i) each `LLM_ROUTING_NATURE` /
+`LLM_ROUTING_INJECTION_EXPOSURE` row carries a **prompt/callsite fingerprint**, and a lint FAILS when a
+component's prompt file changes without its row being re-touched — forcing the author to re-confirm
+"does this change the nature / injection exposure?"; (ii) the `/instar-dev` review checklist gains one
+line: *"touched an LLM callsite? re-verify its nature + injection-exposure row."* This ties the static
+maps to the code they classify so a refactor can't silently invalidate a routing decision.
+
 ### FD8 — Fable reconciliation (operator decision #4) — **requires a session restart**
 No nature chain emits `claude-fable-5`; the FD4.2 lint FAILS the build if any chain position resolves to
 a Fable model. A **companion config change** moves `frameworkDefaultModels.claude-code` off
@@ -329,10 +360,15 @@ Decision-Completeness reviewer's contest is accepted and the tag is narrowed acc
 - **dryRun** (default **true** on first enable): the resolver computes and LOGS the intended
   `(door, model)` + would-be swap tail + clamp landings, but passes through to today's behavior (no actual
   re-route). The observe-first canary.
-- **Readable canary (Int4/Ge3).** `GET /intelligence/routing` exposes, per component, the **dryRun
-  resolved plan** — primary `(door, model)`, available vs skipped positions (with skip reason), clamp
-  landings, and a **diff against the current enforced routing** — so an operator can read the full impact
-  before flipping `dryRun:false`. This is the read-surface that S6's routing-defaults-diff gate builds on.
+- **Readable canary + resolution trace (Int4/Ge3/gemini-CR4).** `GET /intelligence/routing` exposes, per
+  component, the **dryRun resolved plan** — primary `(door, model)`, available vs skipped positions (each
+  with its structured skip **reason code**, FD5a), clamp landings, and a **diff against the current
+  enforced routing**. It ALSO supports a **per-component simulate/trace** (`?trace=<component>`) that
+  returns the **step-by-step resolution** — nature resolved, chain selected, each position's
+  availability verdict + reason, the allowlist/injection/R-rule checks applied, and the final
+  `(door, model)` — so an operator diagnosing an unexpected route under pressure gets a single readable
+  trace instead of piecing it together from layers of config + live state. This is the read-surface that
+  S6's routing-defaults-diff gate builds on.
 - **Versioned migration (Int2).** `sessions.natureRouting` carries a `schemaVersion`. `migrateConfig`
   adds the block if missing AND **migrates chain defaults forward on a version bump** (existence-checked
   per-version, idempotent) — so a future v4 chain reslot reaches EXISTING agents, not just new ones. An
