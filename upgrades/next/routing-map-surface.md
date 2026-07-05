@@ -1,0 +1,20 @@
+<!-- bump: minor -->
+
+## What Changed
+
+Added a READ-ONLY "routing map" surface (Surface 3 of the routing control-room; FD11 readable canary, docs/specs/nature-axis-routing.md).
+
+- New pure composer `src/core/natureRoutingMap.ts` (`buildNatureRoutingMap` / `traceComponent`) that reads the shipped static routing maps (`NATURE_ROUTING_DEFAULT_CHAINS`, `LLM_ROUTING_NATURE`, `ROUTING_LABEL_TO_MODEL_ID`, `NATURE_ROUTING_CRITICAL_GATES`, `LLM_UNTRUSTED_INPUT`, door taxonomy) and composes them into a display structure. Zero writes, mutates no config, changes no routing behavior.
+- New Bearer-auth sibling route `GET /intelligence/routing/chains` — for every `knownComponents()` entry: its nature/chain, the ordered door+model fallback list (each label mapped to its concrete model id), and per-position/per-component flags (door class, injection-safe, money-gated, metered-skipped-in-Increment-A, critical-gate, untrusted-input). Optional `?trace=<component>` drills into one job-kind. Same 503-when-no-IntelligenceRouter shape as the legacy `GET /intelligence/routing`, which is left untouched.
+- New "Routing Map" dashboard tab that renders the map as two tables (the four lanes + a by-job-kind breakdown). Read-only, no controls beyond Refresh.
+- Tests: `tests/unit/nature-routing-map.test.ts` (composition + purity) and `tests/integration/intelligence-routing-chains-route.test.ts` (alive 200-not-503, `?trace`, 503-when-no-router, legacy route unchanged).
+
+Read-only and reversible: no behavior change, no money, no PIN. The write/adjust/go-live controls (Surfaces 1/2, money/PIN-gated) are out of scope.
+
+## Summary of New Capabilities
+
+A new read-only observability surface for the internal LLM routing map — one API route (`GET /intelligence/routing/chains`) and one dashboard tab ("Routing Map"). It lets an operator see, for every internal AI job-kind, which door + model it uses and its full ordered fallback list, without changing any routing behavior.
+
+## What to Tell Your User
+
+- **See where your AI work is routed**: "There's a new Routing Map page in your dashboard. It shows, for every background AI job I run, which model provider it uses and its full ordered backup list if the first one is unavailable — plus a note on any that are paid or reserved. It's read-only: it just shows the map, it doesn't change anything."
