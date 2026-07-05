@@ -114,12 +114,19 @@ per-adapter maps (`resolveModelForFramework` / `TIER_TO_MODEL`); metered-door mo
 the metered adapter (Increment B).
 
 ### FD-LABEL — benchmark label vs resolved model id (codex C5)
-A position's `model` is a **benchmark label** (`flash-lite`, `gpt-5.5`, `opus-4.8`, `balanced`), NOT
-a raw provider id. Resolution to a concrete id goes through the per-adapter maps + the merged
-model-registry-freshness manifest (`scripts/model-registry-freshness.manifest.json`, S6 substrate).
-A lint (`lint-nature-chains.mjs`, FD4.2) validates that **every** chain position's label resolves to
-an **adapter-supported id** (reusing `frontierSetForDoor()` / the freshness lint) — so a re-slot
-(GPT-5.6 lands) is a manifest edit, never a chain rewrite, and a typo'd label fails the build.
+A position's `model` is a **benchmark label** (`flash-lite`, `gpt-5.5`, `opus-4.8`), NOT a raw provider
+id and NOT a tier hint. Resolution is an **explicit per-door registry** (codex CR7-2 — no hidden
+adapter-specific translation invented at build time): `ROUTING_LABEL_TO_MODEL_ID[door][label] → concrete
+model id`, e.g. `{ 'gemini-api': { 'flash-lite': 'gemini-3.1-flash-lite' }, 'openrouter-api': { 'opus-4.8':
+'anthropic/claude-opus-4-8', 'gpt-5.5': 'openai/gpt-5.5' }, 'claude-code': { 'balanced': 'sonnet' } }`.
+Two distinct cases, kept separate on purpose:
+- A **tier hint** (`fast|balanced|capable`) still resolves through the existing `resolveModelForFramework`
+  / per-adapter `TIER_TO_MODEL` (the `claude-code/balanced` reserve uses this path).
+- A **benchmark label** resolves through `ROUTING_LABEL_TO_MODEL_ID`; the resulting id is validated against
+  the **adapter-supported id set** + the merged model-registry-freshness manifest
+  (`scripts/model-registry-freshness.manifest.json`, S6 substrate) by the FD4.2 lint. A label with no
+  registry entry, or an id the adapter/manifest doesn't support, **fails the build**. So a re-slot
+  (GPT-5.6 lands) is a one-line registry/manifest edit, never a chain rewrite, and a typo'd label is caught.
 
 ### FD3 — Nature signal origin: **static per-component map**, with per-operation keys
 Nature is resolved from `LLM_ROUTING_NATURE` (extended exhaustive over `COMPONENT_CATEGORY` — FD7),
@@ -137,12 +144,13 @@ gameable by injected input; the static map is deterministic, auditable, ratchet-
   a judgment call never silently downgrades to a sorter). Nature `E` is explicitly included (closes Sec3).
   **E vs B are EQUIVALENT (both JUDGE-tier); a map-vs-declared tie between two same-tier natures resolves
   to the MAP value** (codex CR2-2) — the override can only *raise* the tier, never swap within a tier and
-  never widen. **The override tightens the NATURE only; the CHAIN is then derived from the RESOLVED
-  (tightened) nature** — `resolvedChain = chainForResolvedNature(resolvedNature)`, NOT the original map
-  row's chain (codex CR5-1). A row `{A, SORT}` tightened by a caller to `B` resolves to chain **JUDGE**
-  (B's canonical chain), the safe direction. A component's OWN map row `{nature, chain}` is authoritative
-  when nothing tightens it (an A-nature row may legitimately pin FAST vs SORT); a tightening override just
-  re-derives the chain from the higher tier. A declared value outside `{A,B,D,E}` is ignored (map wins).
+  never widen. **The component's OWN map row `{nature, chain}` is authoritative by default** (so an
+  A-nature row legitimately pins FAST *or* SORT — a per-component choice a pure `nature→chain` function
+  could not preserve, codex CR7-1). **A caller-declared `attribution.nature` tightens the NATURE only;**
+  because tightening always raises the tier (a tightened nature is B or E), **the resolved chain on the
+  tightened path is deterministically `JUDGE`** — `resolvedChain = tightened ? 'JUDGE' : mapRow.chain`
+  (the safe direction: a judgment call gets the JUDGE ladder). A declared value outside `{A,B,D,E}` is
+  ignored (map wins).
 - **Trust boundary (Sec4).** `attribution.*` MUST originate from **callsite code**, never from a
   field derived from model/user content. A `nature` value **outside `{A,B,D,E}`** is ignored — the
   static map wins (fail-safe); an override can only ever *tighten*, never widen.
@@ -438,14 +446,21 @@ running continuously). Therefore:
 ## Proposed design (mechanics)
 
 ### Resolver
-Introduce `resolveRoute(component, category, options, cfg): { door, model, swapTail } | 'fall-through'`,
-which `evaluate()` calls when `cfg.natureRouting?.enabled`. Steps:
+Introduce `resolveRoute(component, category, options, cfg): { door, model, swapTail } | 'fall-through' |
+'no-route'` (and it may THROW the provider-down error for a critical-gate fail-closed), which `evaluate()`
+calls when `cfg.natureRouting?.enabled`. The **four** distinct outcomes are load-bearing (verifier r7 — an
+implementer must not collapse them): a resolved route; `'fall-through'` → legacy category routing (unmapped
+only); `'no-route'` → the caller's OWN non-gating heuristic (low-stakes A/D empty-set — NEVER legacy
+routing, so the harness door can't re-open); a **throw** → the critical-gate fail-closed path. Steps:
 
-1. `{ resolvedNature } = resolveNature(component, options.attribution?.nature)` (FD3: map + per-op key +
-   `E,B≥D≥A` tighten; non-enum ignored).
-2. `resolvedChain = chainForResolvedNature(resolvedNature)` (codex CR6-1 — derived from the RESOLVED,
-   possibly-tightened nature, NOT the original map row's chain; a `{A,SORT}` row tightened to `B` yields
-   JUDGE). When nothing tightened it, this equals the component's own map-row chain.
+1-2. `{ resolvedNature, resolvedChain } = resolveNatureAndChain(component, options.attribution?.nature)`
+   (codex CR7-1 — one function returns BOTH). The rule: **the component's own map row `{nature, chain}` is
+   authoritative by default** — this preserves a per-component A/**FAST** vs A/**SORT** choice that a pure
+   `nature→chain` function could NOT (e.g. `MessageSentinel` is A/FAST, `CommitmentSentinel` is A/SORT).
+   **Only when a caller-declared `attribution.nature` TIGHTENS the nature** (FD3, `E,B≥D≥A`) is the chain
+   replaced — and a tightened nature is always B or E (you only tighten UP a tier), so the replacement
+   chain is deterministically **JUDGE**. So: `resolvedChain = tightened ? 'JUDGE' : mapRow.chain`. No
+   ambiguous `chainForResolvedNature` on the untightened path.
 3. `positions = validated(cfg.natureRouting.chains[resolvedChain])` — FD4.3 resolve-time assertion; an
    invalid live chain → built-in defaults + FD6 notice.
 4. `available = positions.filter(p => isAvailable(p, options))` — FD5: cacheable door health (`reachable`,
@@ -508,7 +523,13 @@ existing `IntelligenceRouter` primitives (unchanged). The only new *stateful* pi
 spend counter (Performance §S1) and the short-TTL availability cache (§S4), both read-through caches over
 existing state, not a new engine. This bounded surface is the deliberate answer to "don't grow a service-
 mesh policy layer": the schema is small (a chain is an ordered list of `{door,model,flags}`), the
-evaluator is a fold, and everything durable/stateful is reused.
+evaluator is a **stateless fold** (sticky-primary is a deferred, default-off damper — §S3), and everything
+durable/stateful is reused. **The complexity is split by INCREMENT, not crammed into one ship (codex
+CR7-3):** Increment A is exactly the CLI-only nature-routing core (nature map + chains + resolver + the
+FD4 safety enforcement) — a self-contained, reviewable unit; the metered doors, spend governance (FD12),
+and PIN go-live land in Increment B; migration/notification/dry-run-diff are orthogonal surfaces AROUND
+the fold, not inside it. A reader/builder can take Increment A alone and get a complete, safe, CLI-only
+feature — which is the "split into stages" the complexity concern asks for, already built into FD9.
 
 ### Performance / hot-path (scalability S1–S5)
 This resolver runs on **every** internal LLM call, so:
@@ -519,10 +540,14 @@ This resolver runs on **every** internal LLM call, so:
   `isAvailable` reads the counter — **never** scans the growing JSONL per call.
 - **S2 — the audit is async/buffered (or sampled), never a blocking `appendFileSync` in `evaluate`**; the
   dryRun log records the decision, not a re-serialized full chain per call.
-- **S3 — sticky-primary + jittered admission (bounded, safety-subordinate — codex CR6-4):** when a primary
-  door transitions to unavailable, the whole tier does not reslot instantly onto the next door; admission
-  to the new primary is jittered/staggered so the fallback door isn't thundered; a transient blip within
-  the sticky window keeps the current primary. **Tight invariants so this is not a hidden policy engine:**
+- **S3 — sticky-primary + jittered admission: a DEFERRED, default-OFF sub-increment (codex CR7-3 / gemini
+  Ge7-1).** The core resolver ships as a **pure, stateless fold** over the chain — no sticky state. The
+  sticky-primary damper is a **separate opt-in** (`sessions.natureRouting.stickyPrimary`, default **off**)
+  introduced **only if a thundering-herd is actually observed** in production; shipping it dark keeps the
+  initial ship simple and the walk trivially reasoned-about. When enabled: on a primary door transitioning
+  to unavailable, the whole tier does not reslot instantly; admission to the new primary is jittered so the
+  fallback isn't thundered; a transient blip within the sticky window keeps the current primary. **Tight
+  invariants so it is never a hidden policy engine:**
   (i) it may only DELAY movement among **equivalent-health, still-sanctioned** positions — it can NEVER
   keep a door that is now `policySkipped` / `injectionUnsafe` / `budgetClosed` / allowlist-banned (those
   are re-checked FRESH per call per §S4, and a sticky primary that becomes policy-ineligible is dropped
