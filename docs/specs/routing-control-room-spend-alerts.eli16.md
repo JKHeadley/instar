@@ -56,6 +56,33 @@ had set. Splitting the books fixes that.
    a dollar cap doesn't kill the job — it just steps over to the next (often free) door,
    exactly like a door that went dark.
 
+## Grounding on the provider's own numbers
+
+The operator asked for one more thing: wherever possible, trust the **provider's own
+report** of what a call cost, not just our own tokens-times-a-price-list math. So the
+*reporting* book now prefers the provider's figure whenever the provider gives one —
+captured as its own dated, never-edited record — and falls back to our own math only
+when it doesn't.
+
+Being honest, the three paid doors report very different things:
+- **OpenRouter** hands back the actual dollar cost of each call right in the response
+  (plus a follow-up endpoint with the exact cost, and an account-balance check). That's
+  the strongest case — we use OpenRouter's own cost figure.
+- **Groq** and **Gemini** report exact *token counts* per call, but **not** a dollar
+  cost. So for those we still compute the cost ourselves — but from the provider's true
+  token counts, which is better than our estimate. Gemini's dollar figures only exist in
+  a heavy, slow billing export, so that's a later add-on.
+
+A background **reconciliation** check compares "what we thought we spent" against "what
+the provider says we spent," per door, and flags any meaningful gap. If the provider
+says a call was *cheaper*, the report shows the cheaper number — but it never loosens
+your cap (that would re-open spending you'd committed). If the provider says it was
+*more expensive*, that's a signal your price list is stale — it raises an alert and
+nudges you to update the price the gate uses going forward. Crucially, **none of these
+provider numbers ever touch the actual spending gate** — the gate can't wait on a
+provider's website, so it keeps using its own fast, fail-safe math. Provider reporting
+makes the *view* truer; it never changes what blocks a call.
+
 ## Subsidies and credits
 
 If a model is discounted for us, or we have $50 of free credits, that's shown in the

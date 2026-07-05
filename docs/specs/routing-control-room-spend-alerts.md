@@ -2,7 +2,7 @@
 title: "Routing Control Room — Spend Tracking, Caps & Alerts (Surfaces 1 & 2)"
 slug: "routing-control-room-spend-alerts"
 author: "echo"
-status: "converged"
+status: "revising"
 review-convergence: "2026-07-05T21:56:35.595Z"
 review-iterations: 5
 review-completed-at: "2026-07-05T21:56:35.595Z"
@@ -75,7 +75,13 @@ money / blast-radius / multi-machine / maturation standard in the constitution.
 The operator's explicit requirements (verbatim intent), all addressed below:
 1. Spend tracking on **timestamped, immutable ground truth** so dollar cost can be
    **re-calculated as needed later**. Store ground-truth tokens + timestamp — never
-   only a derived cost.
+   only a derived cost. **Ground cost/usage on ACTUAL provider reporting wherever and
+   as much as possible (operator directive):** where a provider itself reports the
+   call's cost and/or authoritative usage, that PROVIDER-REPORTED figure is the
+   PREFERRED reporting anchor — captured as its own immutable, timestamped,
+   append-only record (Layer 1c) and shown as the cost basis in the view. Internal
+   token×price stays as the immediate estimate, the money-GATE's basis (the gate can
+   never wait on a provider API), and the cross-check.
 2. **Price-at-time-of-use**: cost = tokens × the door/model price *in effect at that
    timestamp* — a versioned/timestamped price table, joined as-of each usage record.
 3. **Regularly confirm + track door/model dollar costs, staying up to date, including
@@ -100,6 +106,15 @@ The operator's explicit requirements (verbatim intent), all addressed below:
   accounting).** Token records are append-only; a price correction NEVER mutates a
   usage record — it recomputes derived cost in the REPORTING layer only. The money
   GATE books at time-of-use price and is NEVER retroactively rewritten.
+- **Provider reporting is the preferred REPORTING anchor, never a gate input
+  (operator directive: "ground our cost usage on actual reporting from the provider").**
+  Where a provider reports the call's cost/usage, that figure — captured as its own
+  immutable append-only record — is what the view PREFERS to display and the basis the
+  reconciliation sweep cross-checks the internal-derived figure against. It flows DOWN
+  the REPORTING side exactly like a price correction: it can refine a REPORTED figure
+  retroactively but NEVER re-opens gate headroom and NEVER moves the money gate (the
+  same one-way safety as the re-pricing rule). The fail-closed gate cannot block on a
+  provider API, so its basis stays internal token×price booked at time-of-use.
 - **Deny-by-default for money authority (The Operator Channel Is Sacred / Know Your
   Principal).** Changing a cap, arming a paid door, or influencing ANY gate-consumed
   price value requires the dashboard PIN (or a reviewed git commit); a Bearer token —
@@ -126,8 +141,10 @@ the **accounting split**:
 
 - **REPORTING** truth (analytical, recomputable): immutable tokens
   (`feature_metrics`, Layer 0) → price authority (versioned, as-of; Layer 1) →
-  subsidy/credit (Layer 1b) → derived rollups (Layer 2). This side answers "what did
-  we spend?" and RECOMPUTES when a price is corrected. It is best-effort and may
+  subsidy/credit (Layer 1b) → **provider-reported cost/usage records (the PREFERRED
+  anchor where available; Layer 1c)** → derived rollups (Layer 2). This side answers
+  "what did we spend?", PREFERS the provider's own reported figure where a provider
+  supplies one, and RECOMPUTES when a price is corrected. It is best-effort and may
   under-count on a dropped observability write — which is why it never gates money.
 - **MONEY** truth (authoritative, protective): a NEW booking-priced
   `MeteredSpendLedger` (Layer 3) that the O(1) gate reads and writes, fail-closed,
@@ -135,8 +152,9 @@ the **accounting split**:
   "may this call spend?" and NEVER recomputes — it protects real dollars committed at
   the moment of the call.
 
-Corrections flow DOWN the REPORTING side; nothing flows up into token ground truth,
-and NOTHING from the reporting side ever moves the money gate.
+Corrections AND provider-reported figures flow DOWN the REPORTING side; nothing flows
+up into token ground truth, and NOTHING from the reporting side — including a provider's
+own reported cost — ever moves the money gate.
 
 ### Layer 0 — Token ground truth for REPORTING (REUSE `feature_metrics`, add a `door` dimension)
 
@@ -343,6 +361,84 @@ ever reaches Layer 3** (G3 + S-F1 reconciled). A subsidy/credit can only make th
   operator path. The refresh job is FORBIDDEN from writing credit/subsidy rows
   anywhere.
 
+#### Layer 1c — Provider-reported cost & usage (PREFERRED reporting anchor + reconciliation; REPORTING-ONLY, never the gate)
+
+Requirement 1's operator directive — *"ground our cost usage on actual reporting from
+the provider whenever and as much as possible"* — is honored HERE, and honestly: the
+three metered providers report VERY different things, so the design PREFERS the
+provider figure exactly where the provider actually supplies one and falls back to
+internal token×price where it does not — labeling which basis every row used.
+
+**What each metered provider actually reports programmatically (verified against the
+bench funnel `metered-funnel.mjs`, the OpenRouter/Gemini live docs, and the OpenAI-
+compatible response shape each door uses):**
+
+| Door (key) | Per-call USD cost? | Authoritative usage (tokens)? | Granularity / latency | Basis this spec uses |
+|---|---|---|---|---|
+| **`openrouter-api`** (`metered_openrouter_bench`) | **YES** — every chat-completion response now carries `usage.cost` (total USD) + `usage.cost_details` (incl. `upstream_inference_cost`) and `prompt_tokens_details.cached_tokens`/`cache_write_tokens`; the `GET /api/v1/generation?id=<id>` endpoint returns the authoritative `total_cost` + native token counts + `cache_discount` a few seconds after the call; `GET /api/v1/credits` gives the account balance. (Historically gated behind a request `usage:{include:true}`; now returned automatically.) | YES (native tokenizer) | **Per-call, in-response (immediate) for `usage.cost`; ~seconds for `/generation`; account-level for `/credits`** | **provider-reported** cost is the preferred anchor |
+| **`groq-api`** (`metered_groq_bench`) | **NO** per-call USD cost field. OpenAI-compatible `usage` block only: `prompt_tokens`/`completion_tokens`/`total_tokens` (+ Groq timing `prompt_time`/`completion_time`/`queue_time`/`total_time`). No cheap per-call cost API; cost is only in the dashboard/usage export. | YES (in-response `usage`) | Per-call token usage in-response; **cost export is dashboard-grade, not programmatic per-call** | **internal-derived** cost (token×price); provider tokens replace our estimated token counts |
+| **`gemini-api`** (`metered_gemini_bench`) | **NO** per-call USD cost field. `usageMetadata` (native path) / OpenAI-compat `usage` (the funnel's path) reports `promptTokenCount`/`candidatesTokenCount`/`totalTokenCount` (+ `cachedContentTokenCount`, `thoughtsTokenCount`). USD only via **Google Cloud Billing / BigQuery export** (label-attributable, but heavyweight and lagging hours→a day). (Known caveat: `candidatesTokenCount` can under-report vs billed output on some models when thinking tokens are excluded — itself a real drift signal, below.) | YES (in-response usage metadata) | Per-call token usage in-response; **USD export is heavyweight + lagged** | **internal-derived** cost; provider tokens replace our estimated token counts; billing export is a FUTURE reconciliation input (registered follow-up, alongside FD-11's invoice-drift REPORTING) |
+
+**Honest architectural consequence:** only OpenRouter gives us a provider-reported
+COST today; Groq and Gemini give us authoritative provider-reported USAGE (tokens) but
+no cheap per-call cost. So "ground on the provider" means, precisely: **prefer the
+provider's cost when it reports one (OpenRouter), and ALWAYS prefer the provider's
+reported TOKEN counts over our chars/token estimate when it reports them (all three) —
+recomputing our internal cost from the truer token counts.** This is a genuine
+improvement even where no cost figure exists.
+
+- **The provider-report store — a NEW immutable, append-only, timestamped record set
+  (same discipline as Layer 0).** Per metered call the seam (below) appends a
+  `provider_cost_report` row `{ ts, keyRef, door, modelId, generationId?, source
+  ('openrouter-usage'|'openrouter-generation'|'groq-usage'|'gemini-usage-metadata'|
+  'gemini-billing-export'), providerCostUsd? (null when the provider reports none),
+  providerTokensIn?, providerTokensOut?, providerTokensCached?, capturedAt }`. Rows
+  are **APPENDED, never mutated** — a later, more-authoritative report (e.g. the
+  `/generation` cost arriving after the in-response `usage.cost`) is a NEW row that
+  supersedes by `(door, modelId, generationId, greatest capturedAt)`, exactly like a
+  price `corrects` row supersedes. It lives on the REPORTING side (a small SQLite
+  table beside the rollup, regenerable) — NEVER the money ledger.
+- **The reporting join PREFERS the provider figure, labeled.** Layer 2's on-read cost
+  for a row is: **(1)** the provider-reported cost when a `provider_cost_report` with a
+  non-null `providerCostUsd` exists for that call/day+door+model
+  (`costBasis: "provider-reported"`); **(2)** else internal token×as-of-price, using
+  the provider-reported TOKEN counts where present, our recorded tokens otherwise
+  (`costBasis: "internal-derived"` / `"internal-derived-provider-tokens"`). The view
+  states the basis per row so "grounded on the provider" is never an unverifiable
+  claim.
+- **Reconciliation sweep (the cross-check the directive asks for).** A cadenced,
+  REPORTING-side sweep compares, per `(keyRef, door)` over a window, the
+  internal-derived spend against the provider-reported spend (and, for the money
+  increment, against the ledger's committed figure — the booked-vs-reported/
+  booked-vs-billed comparison FD-11 already requires, here made per-call and faster
+  than a monthly invoice). It stores each comparison as its own timestamped
+  append-only record and computes a signed `driftPct` per key/door. **Direction +
+  safety (one-way, matching the re-pricing rule):**
+  - Drift where the provider reports **LOWER** than internally booked → the REPORT
+    shows the lower provider figure; the money ledger's committed counter is **NEVER
+    lowered** (lowering = re-opening spent headroom — forbidden).
+  - Drift where the provider reports **HIGHER** than internally booked (our manifest
+    price was stale/low, or cache assumptions were wrong) → surfaced as a **drift
+    signal** that (a) raises the price-drift/reconciliation alert (Amendment 2's
+    dedicated topic, §Alerts) and (b) is the natural trigger to PROMOTE a corrected
+    canonical price (§Layer 1, the PIN-gated promotion flow) — which tightens FUTURE
+    gate bookings. The committed counter is still **not** retroactively rewritten
+    (converged gate semantics UNCHANGED); the drift is observability that feeds the
+    human-reviewed price path, never the gate directly.
+  - Above a configurable `routingSpend.reconciliation.driftAlertPct` threshold the
+    drift becomes an alert; below it, it is recorded silently (Near-Silent
+    Notifications).
+- **Multi-machine (declared).** The `provider_cost_report` store and the
+  reconciliation records are **`proxied-on-read`** exactly like `feature_metrics` (each
+  machine records its own calls; the pool view merges via the shared per-peer poll
+  cache). The booked-vs-reported reconciliation that involves the money ledger is
+  computed **on the metered-lease holder** (the ledger's home), like `coverageOk`.
+- **Never a gate input (the load-bearing invariant).** No `provider_cost_report`,
+  reconciliation record, or drift figure is ever read by the O(1) money gate or the
+  reserve/settle path. A unit test asserts the gate's read set excludes the
+  provider-report store — the structural twin of the "gate never reads
+  `feature_metrics`" and "subsidy/credit never reaches the gate" invariants.
+
 ### Layer 2 — Derived REPORTING views & rollups (immutable token pre-aggregate + price on read)
 
 Requirement 4 (hourly/daily/monthly/total) is served WITHOUT freezing the event loop
@@ -379,6 +475,13 @@ and WITHOUT hoarding raw rows (scal-F1/F2/F3):
   the SQLite-portable batch idiom — `DELETE FROM feature_metrics WHERE rowid IN
   (SELECT rowid FROM feature_metrics WHERE ts < ? LIMIT 5000)` — looped with a
   per-tick ceiling and yields between batches.
+- **Provider-reported cost is preferred on read, per row, labeled (Layer 1c).** Each
+  costed row carries a `costBasis` (`provider-reported` | `internal-derived` |
+  `internal-derived-provider-tokens`) and, where reconciliation has run, a signed
+  `providerDriftPct`. A row PREFERS the provider's own reported cost when one exists;
+  otherwise it derives from tokens×as-of-price (using provider-reported token counts
+  where available). This is the read-time expression of the operator's "ground on the
+  provider" directive — always visible, never assumed.
 - **Honesty when not-yet-live.** Before go-live, metered doors are skipped: token
   volume zero, cost `$0`, and the view states plainly "no paid door is live yet —
   metered spend is $0."
@@ -391,9 +494,13 @@ and WITHOUT hoarding raw rows (scal-F1/F2/F3):
 ### Layer 3 — MONEY layer: authoritative booking-priced ledger + O(1) fail-closed gate (Increment B)
 
 This is the ONLY layer that gates real money. It is deliberately SEPARATE from the
-recomputable reporting views and does NOT read `feature_metrics`. **Increment B ships
-it SINGLE-WRITER: the whole cap lives on ONE PIN-designated metered-lease machine
-(C2-5); the multi-machine slice mechanics are Increment D.**
+recomputable reporting views and does NOT read `feature_metrics` **or the Layer-1c
+provider-report / reconciliation store** — provider-reported cost is REPORTING truth
+and can never move the gate (the fail-closed gate cannot wait on a provider API, and a
+provider figure that arrives after the call must never re-open committed headroom). The
+gate books internal token×as-of-BASE-price at time-of-use, exactly as converged.
+**Increment B ships it SINGLE-WRITER: the whole cap lives on ONE PIN-designated
+metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.**
 
 - **A NEW authoritative append-only booking ledger, `MeteredSpendLedger` (LF-F1 /
   A-B1 / I-2).** Per metered vault key, a durable append-only ledger records each
@@ -516,14 +623,31 @@ recorded row — this spec is HONEST about the dependency:
   `feature_metrics.door === gate.keyRef.door` for every metered call, and a metered
   `keyRef` can NEVER resolve to a `$0`/subscription price (S-F6). Interim: CLI-door
   rows may derive `door = framework` (1:1); only metered doors need the stamped thread.
+- **The provider-report capture rides the SAME seam (Layer 1c).** The metered call
+  path is the one place the provider's response body is seen, so it is where the
+  provider-reported figures are captured: on a 200 the dispatch reads the door's
+  provider-reported fields (`usage.cost`/`cost_details` and cached-token details for
+  OpenRouter; the `usage`/`usageMetadata` token counts for all three) and appends a
+  `provider_cost_report` row keyed to the same resolved `(keyRef, door, modelId)` and,
+  where the provider returns one, the `generationId` (so the later OpenRouter
+  `/generation` cost supersedes the in-response `usage.cost` by a fresh appended row).
+  This capture is REPORTING-side and best-effort (a failed append is swallowed like a
+  `feature_metrics` write) — it NEVER blocks the call and NEVER feeds the settle/gate.
+  It shares the door-attribution dependency: until real metered dispatch lands, no
+  `provider_cost_report` rows exist and the view shows honest `$0` / no-provider-data.
 
 ### Surface 1 — Spend view (read-only; Increment A)
 
 - `GET /routing-spend/summary?grain=day&sinceHours=…&scope=pool` → per door/model and
   aggregate rollups (Layer 2), each row `{ door, modelId, doorClass, tokensIn,
   tokensOut, tokensCached, grossUsd, subsidyUsd, creditUsd, netUsd, committedUsd,
-  priceBasis, priceStale, notLiveYet }`, plus `totals`, `horizonNote`,
-  `adjustmentsSource`, and loud `unpricedTokens` rows. **Best-effort labeling rides
+  priceBasis, costBasis, providerReportedUsd, providerDriftPct, priceStale,
+  notLiveYet }` — `costBasis` and `providerReportedUsd` surface the Layer-1c
+  provider-grounded figure (and `providerDriftPct` where the reconciliation sweep has
+  run) — plus `totals`, `horizonNote`, `adjustmentsSource`, and loud `unpricedTokens`
+  rows. A companion `GET /routing-spend/reconciliation?scope=pool` returns the
+  per-`(keyRef, door)` internal-vs-provider (and, post-B, vs-committed) drift records.
+  **Best-effort labeling rides
   the summary too (C3-5):** the response carries a `reportingBasis` block (best-effort
   observability source; last boot-reconcile time; any known dropped-write/reconcile
   repair) so the analytical view never masquerades as the authoritative money number —
@@ -708,6 +832,10 @@ recorded row — this spec is HONEST about the dependency:
 - **Adds** a nullable `door` column (+ type + writer + INSERT), a maintained
   `spend_token_rollup` table, the canonical/observed price stores, and the
   machine-local overlay/credits reporting stores.
+- **Adds** an immutable append-only `provider_cost_report` store + a reconciliation
+  record set (Layer 1c) — the provider-grounded REPORTING anchor + internal-vs-provider
+  (post-B vs-committed) drift — captured at the metered-call seam, PREFERRED on read,
+  and structurally excluded from the money gate.
 - **Modifies** the token-prune to a batched delete; adds the rollup retention knob.
 - **Depends on (out of scope):** nature-routing enforcement (A2.2) + metered provider
   implementations (real attribution + live gating); nature-routing observation
@@ -821,6 +949,23 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
   complexity sequencing), frontloaded. This resolves the replicated-authority tension:
   in B there is nothing to replicate (one holder); in D, arming a peer requires the
   receiver-verifiable operator signature (never bare replication).
+- **FD-21 — Provider-reported cost/usage is the PREFERRED REPORTING anchor (operator
+  directive), captured as immutable append-only `provider_cost_report` records at the
+  metered-call seam, PREFERRED on read (per-row `costBasis`), and cross-checked by a
+  cadenced reconciliation sweep that surfaces internal-vs-provider (and post-B
+  vs-committed) drift. It flows DOWN the reporting side like a price correction:
+  provider-LOWER never lowers the committed counter (no re-opened headroom);
+  provider-HIGHER is a drift signal feeding the price-drift alert + the PIN price-
+  promotion path, never the gate. Per-provider truth is honest and asymmetric:
+  OpenRouter reports per-call USD cost in-response (+ a `/generation` cost + `/credits`
+  balance); Groq and Gemini report authoritative per-call TOKEN usage but NO cheap
+  per-call USD cost (Gemini USD only via the heavyweight lagged Cloud-Billing export —
+  a registered follow-up reconciliation input alongside FD-11). The provider-report
+  store is NEVER a money-gate input (unit-tested, the twin of FD-9/FD-12). Lands:
+  capture + display in Increment A (empty until metered dispatch lands), the
+  authoritative booked-vs-reported reconciliation in Increment B (extends FD-11's
+  invoice-drift REPORTING), the drift ALERT in Increment C.** *Not cheap* (money
+  accounting + immutable-record discipline), frontloaded.
 
 ## Multi-machine posture
 
@@ -834,6 +979,12 @@ This is a multi-machine agent. Default posture is `unified`. Every surface is de
   `GET /subscription-pool?scope=pool`** (NOT `/metrics/features`, which is LOCAL-ONLY
   — I-7); the merge rides the **shared per-peer poll cache (WS4.4(f))** with
   load-shed-to-`stale` (scal-F6). A dark peer degrades to a tagged `pool.failed` row.
+- **Provider-report + reconciliation records (Layer 1c): `proxied-on-read`.** Each
+  machine appends its own metered calls' `provider_cost_report` rows locally (same
+  posture as `feature_metrics`); the pool spend/reconciliation view merges via the
+  shared per-peer poll cache. The booked-vs-reported reconciliation that reads the
+  money ledger is computed **on the metered-lease holder** (proxied-to-holder, like
+  `coverageOk`). No provider-report row ever crosses into a peer's money gate.
 - **Price authority: `unified` (canonical manifest) + machine-local observed cache.**
   The canonical manifest is git-tracked and identical everywhere; the per-machine
   SQLite index is a regenerable view. The observed cache is machine-local REPORTING
@@ -911,7 +1062,13 @@ Loop).
   absolute folded reports); gate-refusal → swap-tail advance; alert edge-trigger dedup
   + episode bucket + the fallback **rate-spike gate** (steady churn emits nothing);
   metadata-only scrub vs a poisoned provider error body; NULL-door uncosted composer;
-  refresh-job-writes-observed-only; `cachedInPerMtok ≤ inPerMtok` lint.
+  refresh-job-writes-observed-only; `cachedInPerMtok ≤ inPerMtok` lint;
+  **provider-report PREFER-on-read (provider-reported cost wins; provider tokens
+  replace the estimate; append-only supersede by `(door,model,generationId,capturedAt)`);
+  reconciliation drift math (signed `driftPct`, LOWER-never-lowers-committed,
+  HIGHER→alert+promotion-hint) + the never-reaches-gate invariant (the gate read set
+  excludes the `provider_cost_report`/reconciliation store — twin of the
+  `feature_metrics` + subsidy/credit gate-exclusion tests)**.
 - **Integration** — routes 200 / 503 (dark) / 403 (Bearer-without-PIN); **Bearer
   `PATCH /config` can neither arm/unfreeze/raise NOR influence any gate-consumed price
   value** (S-F2 + A2-3 regression); a payload field absent from the rendered plan
@@ -954,6 +1111,12 @@ manifest/store above (the `(door, modelId)` key is an IMPROVEMENT over the bench
 model-id-only key, which carried prefixed/unprefixed duplicates at different prices).
 One `keyRef` spans multiple `(door, model)` points (openrouter hosts `gpt-5.5` AND
 `opus-4.8` under one key) — the per-key cap correctly aggregates across them.
+**Honesty note on what the bench funnel does NOT vendor (FD-21):** the funnel's
+`settleCost` books INTERNAL token×price from the parsed `usage` tokens — it does not
+read a provider-reported COST. Layer 1c's provider-cost capture (OpenRouter's
+`usage.cost`/`/generation`) is therefore NEW production behavior beyond the vendored
+logic, added at the metered-call seam on the REPORTING side only; the vendored gate
+math is unchanged.
 
 ## Alternatives considered (X-C6)
 
@@ -963,9 +1126,16 @@ One `keyRef` spans multiple `(door, model)` points (openrouter hosts `gpt-5.5` A
 - **Event-sourcing the whole spend domain.** The `MeteredSpendLedger` IS an
   append-only event log with a maintained fold — event-sourcing where it earns its
   keep (the money gate), not across the analytical layer.
-- **Provider invoice reconciliation as source of truth.** Rejected as the GATE source
-  (invoices lag hours–days). Retained as a FUTURE drift-detection input (registered
-  follow-up).
+- **Provider reporting as source of truth.** Split by what "provider reporting"
+  actually is (FD-21). Per-call provider-REPORTED figures — OpenRouter's in-response
+  `usage.cost` + `/generation` cost, and every provider's authoritative token counts —
+  are **ADOPTED as the PREFERRED REPORTING anchor** (grounding on the provider per the
+  operator directive) and as the reconciliation cross-check, but NEVER as the GATE
+  source (the fail-closed gate cannot wait on a provider API, and a report arriving
+  after the call must never re-open committed headroom). The heavyweight lagged path —
+  monthly invoices / Google Cloud Billing (BigQuery) export — is Rejected as any
+  real-time source and retained as a FUTURE drift-detection input (registered
+  follow-up, alongside FD-11's booked-vs-billed reporting).
 - **A live price service instead of a git manifest (X-G1).** Rejected for the gate:
   a network dependency on the money path adds a fail-open temptation and an
   unreviewed admission channel. The observed-cache + promotion flow captures the
@@ -995,20 +1165,25 @@ One `keyRef` spans multiple `(door, model)` points (openrouter hosts `gpt-5.5` A
 - **Increment A — Read-only spend VIEW (dev-agent ENABLED, dark on fleet; no money
   authority).** Layer 0 `door` column; Layer 1 canonical manifest + observed cache +
   index + as-of join + validation + freshness; Layer 1b reporting subsidy/credit +
-  overlay; Layer 2 daily token rollup + on-read pricing + boot reconcile +
-  `GET /routing-spend/summary` + `GET /routing-spend/caps` (read); the Spend tab; the
-  refresh job (OFF). Via `resolveDevAgentGate` on `routingSpend.enabled`; routes 503
-  when off. Honest `$0` / `not-live-yet`. Reversible by revert; persistent state is
-  additive/regenerable.
+  overlay; **Layer 1c the `provider_cost_report` store + capture seam + PREFER-on-read
+  `costBasis` (empty until real metered dispatch lands — display notes + the honest
+  no-provider-data state ship now)**; Layer 2 daily token rollup + on-read pricing +
+  boot reconcile + `GET /routing-spend/summary` + `GET /routing-spend/caps` (read); the
+  Spend tab; the refresh job (OFF). Via `resolveDevAgentGate` on `routingSpend.enabled`;
+  routes 503 when off. Honest `$0` / `not-live-yet`. Reversible by revert; persistent
+  state is additive/regenerable.
 - **Increment B — Money authority, SINGLE-WRITER (`DARK_GATE_EXCLUSIONS`,
   PIN-gated).** `MeteredSpendLedger` + the O(1) fail-closed gate (stub-testable
   against a fake metered dispatch until A2.2 + providers land — FD-11); whole-cap
   single-machine (FD-20); PIN routes + rendered-plan commit + phone-complete controls +
   the durable PIN-attempt counter + the cap-change audit log + the PIN-only state
   store; the stale-price + observed-drift alerts (C5-5 — they change money admission,
-  so they ship with the money, riding `/attention` + the lifeline fallback directly).
-  Go-live additionally requires FD-11's release gate (live wiring proof +
-  holder-death drill + invoice-drift reporting). Inert until the operator arms a door.
+  so they ship with the money, riding the dedicated alerts topic + the lifeline
+  fallback directly); **the authoritative booked-vs-provider-reported reconciliation
+  sweep (Layer 1c) — this is the per-call, faster form of FD-11's booked-vs-billed
+  invoice-drift REPORTING, observability-only, never gate authority**. Go-live
+  additionally requires FD-11's release gate (live wiring proof + holder-death drill +
+  invoice/provider-report drift reporting). Inert until the operator arms a door.
 - **Increment C — Alerts (dryRun-first live-on-dev).** `AlertChannel` +
   `TelegramAttentionChannel`; the emitters + Self-Heal gates + lifeline fallback +
   the surviving-voice holder-dead alert; the fan-out + scrubbed sink. Inert until
