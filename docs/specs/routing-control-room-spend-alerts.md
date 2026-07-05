@@ -2,8 +2,16 @@
 title: "Routing Control Room — Spend Tracking, Caps & Alerts (Surfaces 1 & 2)"
 slug: "routing-control-room-spend-alerts"
 author: "echo"
-status: "draft"
-eli16-overview: "docs/specs/routing-control-room-spend-alerts.eli16.md"
+status: "converged"
+review-convergence: "2026-07-05T21:56:35.595Z"
+review-iterations: 5
+review-completed-at: "2026-07-05T21:56:35.595Z"
+review-report: "docs/specs/reports/routing-control-room-spend-alerts-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 20
+cheap-to-change-tags: 1
+contested-then-cleared: 1
 ---
 
 # Routing Control Room — Spend Tracking, Caps & Alerts (Surfaces 1 & 2)
@@ -283,7 +291,12 @@ manifest.
   class (≥ a code-defined multiple of the door's newest canonical base price), and
   the drift surface raises an alert when an OBSERVED price exceeds the canonical
   base or approaches the `conservativeMax` assumption — so the stale-mode backstop
-  cannot itself rot below reality.
+  cannot itself rot below reality. **Sequencing (C5-5): the stale-price and
+  observed-drift alerts ship WITH Increment B, not C** — stale pricing changes money
+  ADMISSION behavior, so its alarm belongs to the money increment; silent staleness
+  until costs diverge is exactly the failure this closes. (These two alert kinds ride
+  the same `/attention` + lifeline-fallback rails; the full channel abstraction still
+  arrives in C.)
 - **Machine-local read index (NOT authoritative), refreshed on running machines
   (X-G3).** Each machine builds a read-only SQLite index of the canonical points for
   fast as-of joins — a regenerable materialized view, rebuilt on boot AND when the
@@ -561,9 +574,14 @@ recorded row — this spec is HONEST about the dependency:
   carrying a server-minted single-use nonce and a short TTL; the PIN approval commits
   exactly that snapshot, the nonce is consumed on commit (no replay), an expired plan
   must be re-rendered, and the commit is REFUSED if the underlying caps/lease/manifest
-  state changed since the render (approve-what-you-saw, never approve-then-drift). No
-  separable "approved-plan token" outlives the single commit — a captured approval is
-  worthless. **Scope: this rule governs EVERY PIN action that writes ANY gate-consumed
+  state changed since the render (approve-what-you-saw, never approve-then-drift).
+  **Drift is judged by optimistic concurrency, not vibes (C5-3):** each governed
+  store (caps store, go-live record, canonical manifest) carries an explicit VERSION
+  field; a plan pins the version(s) it read; commit refuses only on a version
+  mismatch of a store the plan touches; the refusal UX is deterministic
+  ("re-rendered — here's the fresh plan"), so an unrelated background change can
+  never invalidate a phone approval loop. No separable "approved-plan token"
+  outlives the single commit — a captured approval is worthless. **Scope: this rule governs EVERY PIN action that writes ANY gate-consumed
   value** — caps/adjust, go-live, reclaim/re-designate, AND the price-promotion action
   (N-1, §Layer 1). **Defense-in-depth below the plan path (C4-4):** every committed
   money-authority record ADDITIONALLY passes a schema-level validator that is
@@ -747,11 +765,16 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
 - **FD-11 — Real per-door attribution + live money-gating DEPEND on out-of-scope
   A2.2 + metered provider impls; Increment A ships metered `door` NULL and honest $0;
   the door is single-sourced with the gate when they land; Increment B is
-  stub-testable meanwhile. RELEASE GATE (C4-5): a production go-live (arming a real
-  paid door) is REFUSED until one end-to-end LIVE metered call has proven
+  stub-testable meanwhile. RELEASE GATE (C4-5/C5): a production go-live (arming a
+  real paid door) is REFUSED until (a) one end-to-end LIVE metered call has proven
   `door === ledger door === priced door` on this agent — the wiring invariant as a
   gate precondition, not merely a test target (the Live-User-Channel-Proof posture
-  applied to money).** *Not cheap*, frontloaded (declared dependency).
+  applied to money); (b) the holder-death runbook exists and one holder-death DRILL
+  (kill the holder, observe the surviving-voice alert, PIN-reclaim) has been
+  exercised; and (c) provider-invoice drift REPORTING (booked-vs-billed comparison,
+  observability-only, never gate authority) is wired, so a policy-exact rollup that
+  drifts from real invoices is seen, not assumed.** *Not cheap*, frontloaded
+  (declared dependency).
 - **FD-12 — Subsidies and credits are REPORTING-ONLY and NEVER reach the money gate;
   operator-specific deals live in the machine-local overlay/credits stores (declared
   machine-local BY DESIGN), applied exactly once at the pool-merge point by the
@@ -959,7 +982,13 @@ One `keyRef` spans multiple `(door, model)` points (openrouter hosts `gpt-5.5` A
   invariant structurally obvious. The maintained O(1) total file (tmp+rename atomic)
   gives the read performance a transactional table would have provided. SQLite
   remains the right substrate for the REPORTING side (feature_metrics, the rollup,
-  the price index), where a rebuildable/regenerable store is acceptable.
+  the price index), where a rebuildable/regenerable store is acceptable. **Bounded
+  bespoke-ness (C5-2):** the ledger reuses DriftSpendLedger's daily-rotation
+  convention (one file per UTC day + a monthly archive) so no single file grows
+  unbounded — the fold-on-boot reads the current day + the totals checkpoint, not
+  all history; and the build phase includes a short failure-injection comparison
+  (torn append / torn rename / stale lock, JSONL-vs-SQLite-WAL) as a documented
+  design proof rather than an assertion.
 
 ## Increment split (FD-style — what ships when, and behind what gate)
 
@@ -976,7 +1005,10 @@ One `keyRef` spans multiple `(door, model)` points (openrouter hosts `gpt-5.5` A
   against a fake metered dispatch until A2.2 + providers land — FD-11); whole-cap
   single-machine (FD-20); PIN routes + rendered-plan commit + phone-complete controls +
   the durable PIN-attempt counter + the cap-change audit log + the PIN-only state
-  store. Inert until the operator arms a door.
+  store; the stale-price + observed-drift alerts (C5-5 — they change money admission,
+  so they ship with the money, riding `/attention` + the lifeline fallback directly).
+  Go-live additionally requires FD-11's release gate (live wiring proof +
+  holder-death drill + invoice-drift reporting). Inert until the operator arms a door.
 - **Increment C — Alerts (dryRun-first live-on-dev).** `AlertChannel` +
   `TelegramAttentionChannel`; the emitters + Self-Heal gates + lifeline fallback +
   the surviving-voice holder-dead alert; the fan-out + scrubbed sink. Inert until
@@ -992,4 +1024,4 @@ on B/C/D; B never depends on C; D extends B without changing A–C's surfaces.
 
 ## Open questions
 
-*(none — all resolved into Frontloaded Decisions above.)*
+*(none)*
