@@ -2751,6 +2751,7 @@
           <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
           <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
           <button class="tab" data-tab="llm-activity" onclick="switchTab('llm-activity')">LLM Activity</button>
+          <button class="tab" data-tab="routing-map" onclick="switchTab('routing-map')">Routing Map</button>
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
@@ -3332,6 +3333,41 @@
       <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
         <div style="font-weight:600">By component</div>
         <div id="llmActivityBody" style="font-size:13px;overflow-x:auto">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Routing Map tab — the read-only nature-axis routing map (FD11 readable canary,
+         docs/specs/nature-axis-routing.md). For every internal job-kind: which door +
+         model it uses and its full ordered fallback tier list, with injection-safe /
+         money-gated / critical-gate flags. Read-only display; data from
+         /intelligence/routing/chains. No controls — the map only DISPLAYS the routing. -->
+    <div id="routingMapPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">Routing Map</h2>
+        <button onclick="loadRoutingMap()" style="padding:6px 12px">Refresh</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+        Where each internal job-kind sends its AI calls. Every background check, gate, and
+        sentinel has a <b>lane</b> (its "nature") and a fallback list of <b>doors</b> — the ways
+        it can reach a model. This shows, per lane, the ordered door + model list it tries, and
+        flags a door that's <b>metered</b> (a paid API, skipped for now), <b>money-gated</b>, or
+        that must never take untrusted input. Read-only: it shows the map, it changes nothing.
+      </div>
+
+      <!-- The four lanes (chains) -->
+      <div id="routingMapChainsCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px">
+        <div style="font-weight:600">Lanes (fallback order)</div>
+        <div id="routingMapChainsBody" style="font-size:13px;overflow-x:auto">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Per job-kind mapping -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">By job-kind</div>
+        <div id="routingMapComponentsBody" style="font-size:13px;overflow-x:auto">
           <div style="color:var(--text-dim)">Loading...</div>
         </div>
       </div>
@@ -5005,6 +5041,12 @@
         onActivate: () => { if (typeof loadLlmActivity === 'function') loadLlmActivity(); },
       },
       {
+        id: 'routing-map',
+        panels: ['routingMapPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadRoutingMap === 'function') loadRoutingMap(); },
+      },
+      {
         id: 'threadline',
         panels: ['threadlineTab'],
         display: ['flex'],
@@ -5673,6 +5715,98 @@
           headlineEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
         }
         bodyEl.innerHTML = '';
+      }
+    }
+
+    async function loadRoutingMap() {
+      const chainsEl = document.getElementById('routingMapChainsBody');
+      const compsEl = document.getElementById('routingMapComponentsBody');
+      // Render one door+model position as a compact chip line.
+      const flags = (p) => {
+        const f = [];
+        if (p.doorClass === 'metered') f.push('metered' + (p.skippedInIncrementA ? ' · skipped now' : ''));
+        if (p.moneyGated) f.push('money-gated');
+        if (p.injectionSafe === false) f.push('unsafe for untrusted input');
+        if (p.claudeBanned) f.push('no-Claude');
+        return f.length ? ' <span style="color:var(--text-dim)">(' + f.map(escapeHtml).join(' · ') + ')</span>' : '';
+      };
+      const posLine = (p, i) => '<div style="padding:2px 0">' +
+        '<span style="color:var(--text-dim)">' + (i + 1) + '.</span> ' +
+        '<b>' + escapeHtml(p.door) + '</b> → ' + escapeHtml(p.modelId) + flags(p) + '</div>';
+      const th = (t, right) => '<th style="padding:6px 8px;' + (right ? 'text-align:right' : 'text-align:left') + '">' + t + '</th>';
+      const td = (v, right) => '<td style="padding:6px 8px;vertical-align:top;' + (right ? 'text-align:right' : '') + '">' + v + '</td>';
+      try {
+        const data = await apiFetch('/intelligence/routing/chains');
+        const chains = data.chains || [];
+        chainsEl.innerHTML =
+          '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Enforced default framework: <b>' +
+            escapeHtml(String(data.defaultFramework || '—')) + '</b> · injection signal: ' +
+            escapeHtml(String(data.injectionExposureSource || '—')) + '</div>' +
+          '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">' +
+          chains.map((c) =>
+            '<div style="border:1px solid var(--border);border-radius:6px;padding:10px">' +
+            '<div style="font-weight:600;margin-bottom:4px">' + escapeHtml(c.chain) + '</div>' +
+            (c.positions || []).map(posLine).join('') +
+            '</div>').join('') +
+          '</div>';
+
+        const comps = (data.components || []).slice().sort((a, b) => {
+          // Mapped (has a chain) first, then by component name.
+          if (!!a.chain !== !!b.chain) return a.chain ? -1 : 1;
+          return String(a.component).localeCompare(String(b.component));
+        });
+        if (comps.length === 0) {
+          compsEl.innerHTML = '<div style="color:var(--text-dim)">No components mapped.</div>';
+          return;
+        }
+        const yn = (v) => v === true ? 'yes' : (v === false ? 'no' : '—');
+        compsEl.innerHTML =
+          '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:760px">' +
+          '<thead><tr style="color:var(--text-dim)">' +
+            th('Job-kind') + th('Category') + th('Lane') + th('Enforced now') +
+            th('Critical gate') + th('Injection exposure') + th('Fallback order') +
+          '</tr></thead><tbody>' +
+          comps.map((c) => {
+            const route = (c.route && c.route.length)
+              ? c.route.map(posLine).join('')
+              : '<span style="color:var(--text-dim)">legacy category routing (no nature lane)</span>';
+            const lane = c.chain
+              ? escapeHtml(c.chain) + ' <span style="color:var(--text-dim)">(' + escapeHtml(String(c.nature)) + ')</span>'
+              : '<span style="color:var(--text-dim)">—</span>';
+            // Prefer the richer FD5b exposure classification; fall back to the untrusted-input flag.
+            let exposure;
+            if (c.injectionExposure) {
+              const ch = c.injectionExposure.channels || {};
+              const chans = ['user', 'model', 'tool'].filter((k) => ch[k]);
+              exposure = c.injectionExposure.exposed
+                ? 'exposed' + (chans.length ? ' <span style="color:var(--text-dim)">(' + chans.join('/') + ')</span>' : '')
+                : 'not exposed' + (c.injectionExposure.reason ? ' <span style="color:var(--text-dim)">(' + escapeHtml(c.injectionExposure.reason) + ')</span>' : '');
+            } else if (c.untrustedInput === true) {
+              exposure = 'exposed';
+            } else if (c.untrustedInput === false) {
+              exposure = 'not exposed' + (c.untrustedInputReason ? ' <span style="color:var(--text-dim)">(' + escapeHtml(c.untrustedInputReason) + ')</span>' : '');
+            } else {
+              exposure = '—';
+            }
+            return '<tr style="border-top:1px solid var(--border)">' +
+              td('<b>' + escapeHtml(c.component) + '</b>') +
+              td(escapeHtml(String(c.category || '—'))) +
+              td(lane) +
+              td(escapeHtml(String(c.enforcedFramework || '—'))) +
+              td(c.criticalGate ? '<b>yes</b>' : 'no') +
+              td(exposure) +
+              td(route) +
+            '</tr>';
+          }).join('') +
+          '</tbody></table>';
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        if (/503|unavailable|not initialized/i.test(m)) {
+          chainsEl.innerHTML = '<div style="color:var(--text-dim)">The routing map isn\'t available on this agent (no AI provider configured).</div>';
+        } else {
+          chainsEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
+        }
+        compsEl.innerHTML = '';
       }
     }
 

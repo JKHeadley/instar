@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-05T19:01:16.012Z",
+  "slug": "routing-map-surface",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 261,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

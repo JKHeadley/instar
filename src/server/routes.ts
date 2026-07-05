@@ -64,6 +64,7 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
+import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import {
@@ -9994,6 +9995,45 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         routedOffDefault: components.filter((c) => c.framework !== defaultFramework).length,
       },
       note: 'Routes INTERNAL component LLM calls only; spawned interactive sessions use topicFrameworks.',
+    });
+  });
+
+  // ── Nature-axis routing MAP (FD11 readable canary; read-only) ─────────
+  // A richer, non-breaking SIBLING of GET /intelligence/routing. Where the legacy
+  // route returns the live category→framework view (IntelligenceRouter.for), this
+  // returns the full nature-axis routing MAP: for every known internal job-kind, its
+  // nature/chain and the ORDERED fallback door+model list, with per-door flags
+  // (injection-safe / money-gated / metered-skipped-in-Increment-A) and per-component
+  // critical-gate + untrusted-input annotations. Composed PURELY from the shipped
+  // static routing maps (docs/specs/nature-axis-routing.md) — it performs ZERO writes,
+  // mutates no config, and changes NO routing behavior; it only DESCRIBES the maps.
+  // `?trace=<component>` drills into a single component. Same Bearer-auth + 503-when-
+  // no-IntelligenceRouter shape as the legacy route above.
+  router.get('/intelligence/routing/chains', (req, res) => {
+    const intel = ctx.intelligence;
+    if (!intel || !(intel instanceof IntelligenceRouter)) {
+      res.status(503).json({ error: 'intelligence router unavailable (no LLM provider configured)' });
+      return;
+    }
+    // Live legacy-framework annotation per component (the "currently enforced" view,
+    // read-only) — lets the map show enforced framework alongside the nature chain.
+    // `intel.for` is a pure registry resolution (the legacy route above calls it bare);
+    // no try/catch — a silent catch here would be a swallowed fallback with no report.
+    const enforcedFrameworkFor = (name: string): string | undefined => intel.for(name).framework;
+    const traceName = typeof req.query.trace === 'string' ? req.query.trace.trim() : '';
+    if (traceName) {
+      const entry = traceComponent(traceName, { enforcedFrameworkFor });
+      if (!entry) {
+        res.status(404).json({ error: `unknown component '${traceName}'` });
+        return;
+      }
+      res.json({ trace: entry });
+      return;
+    }
+    const map = buildNatureRoutingMap({ enforcedFrameworkFor });
+    res.json({
+      defaultFramework: intel.for('__nonexistent__').framework,
+      ...map,
     });
   });
 
