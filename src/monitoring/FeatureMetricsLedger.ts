@@ -65,6 +65,13 @@ export interface FeatureMetricRecord {
   model?: string;
   /** Resolved framework that served the call (e.g. "codex-cli", "claude-code"). Observable Intelligence. */
   framework?: string;
+  /**
+   * Resolved routing DOOR (the access path — CLI harness or metered API) the call
+   * used (routing-control-room-spend, Layer 0). NULL until the metered dispatch seam
+   * stamps it (spec §Door attribution — out of scope for Increment A); NULL-door token
+   * volume renders as UNCOSTED in the spend view, never a fabricated $0.
+   */
+  door?: string;
   /** Post-#638: did this call wait for a rate-limit window before running. */
   waited?: boolean;
   waitMs?: number;
@@ -149,6 +156,23 @@ export interface ModelRollup {
 }
 
 /**
+ * One aggregated spend-token bucket (routing-control-room-spend, Layer 2). Immutable
+ * token sums per bucket×door×model — the "pre-aggregate the IMMUTABLE fact, join the
+ * MUTABLE price on read" shape. `door`/`modelId` are 'unknown' when the source row
+ * had none (NULL-door pre-attribution volume). `bucketStartMs` is the UTC start of
+ * the bucket; `bucket` is 'YYYY-MM-DD' (daily) or an ISO hour (hourly).
+ */
+export interface SpendTokenBucket {
+  bucket: string;
+  bucketStartMs: number;
+  door: string;
+  modelId: string;
+  tokensIn: number;
+  tokensOut: number;
+  tokensCached: number;
+}
+
+/**
  * Per-framework usage-reporting coverage (the drift tripwire's durable
  * surface). Denominator = SUCCESSFUL llm rows only (fired + noop) — error
  * rows legitimately lack usage (claude parses usage only on success; codex
@@ -213,6 +237,13 @@ export interface FeatureMetricsLedgerOptions {
   databaseFactory?: (dbPath: string) => BetterSqliteDatabase;
   /** Injectable clock for deterministic tests. */
   now?: () => number;
+  /**
+   * Maintain the `spend_token_rollup` daily aggregate on each insert (Layer 2 of
+   * routing-control-room-spend). Gated so the daily rollup writes only where the spend
+   * view is live (dev agents; dark on the fleet) — the `door` column and batched prune
+   * are always active (additive/safe). Absent ⇒ false (no rollup maintenance).
+   */
+  maintainSpendRollup?: boolean;
 }
 
 const SCHEMA = [
@@ -233,6 +264,21 @@ const SCHEMA = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_feature_metrics_ts ON feature_metrics (ts)`,
   `CREATE INDEX IF NOT EXISTS idx_feature_metrics_feature ON feature_metrics (feature, ts)`,
+  // Layer 2 (routing-control-room-spend): a maintained daily aggregate of IMMUTABLE
+  // token sums per UTC day×door×model. Provably untouched by any price/subsidy/credit
+  // correction (it holds tokens only — cost is a read-time join). Created idempotently
+  // at open; door/modelId are NOT NULL (COALESCE'd to 'unknown') so ON CONFLICT can
+  // dedupe (SQLite treats each NULL as distinct in a UNIQUE key).
+  `CREATE TABLE IF NOT EXISTS spend_token_rollup (
+     day           TEXT NOT NULL,
+     door          TEXT NOT NULL DEFAULT 'unknown',
+     model_id      TEXT NOT NULL DEFAULT 'unknown',
+     tokens_in     INTEGER NOT NULL DEFAULT 0,
+     tokens_out    INTEGER NOT NULL DEFAULT 0,
+     tokens_cached INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (day, door, model_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_spend_token_rollup_day ON spend_token_rollup (day)`,
 ];
 
 /**
@@ -244,7 +290,23 @@ const SCHEMA = [
 const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: 'framework', ddl: 'ALTER TABLE feature_metrics ADD COLUMN framework TEXT' },
   { name: 'tokens_cached', ddl: 'ALTER TABLE feature_metrics ADD COLUMN tokens_cached INTEGER' },
+  // routing-control-room-spend Layer 0: the routing DOOR dimension. Additive + nullable
+  // (matches framework/tokens_cached); a DB from an earlier instar gains it at open.
+  { name: 'door', ddl: 'ALTER TABLE feature_metrics ADD COLUMN door TEXT' },
 ];
+
+/** Batch ceiling for the retention prune (scal-F4): SQLite-portable bounded DELETE. */
+const PRUNE_BATCH = 5000;
+
+/** UTC day key 'YYYY-MM-DD' for a timestamp (the daily-rollup bucket key). */
+function dayKey(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** UTC day-start ms for a 'YYYY-MM-DD' key. */
+function dayStartMs(day: string): number {
+  return Date.parse(`${day}T00:00:00.000Z`);
+}
 
 function percentile(sortedAsc: number[], p: number): number {
   if (sortedAsc.length === 0) return 0;
@@ -259,10 +321,14 @@ export class FeatureMetricsLedger {
   private db: BetterSqliteDatabase;
   private now: () => number;
   private insertStmt!: ReturnType<BetterSqliteDatabase['prepare']>;
+  private rollupUpsertStmt: ReturnType<BetterSqliteDatabase['prepare']> | null = null;
+  private readonly maintainSpendRollup: boolean;
+  private lastRollupReconcileMs: number | null = null;
   private closed = false;
 
   constructor(opts: FeatureMetricsLedgerOptions) {
     this.now = opts.now ?? (() => Date.now());
+    this.maintainSpendRollup = opts.maintainSpendRollup === true;
     if (opts.dbPath !== ':memory:') {
       fs.mkdirSync(path.dirname(opts.dbPath), { recursive: true });
     }
@@ -280,9 +346,30 @@ export class FeatureMetricsLedger {
     registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
       `INSERT INTO feature_metrics
-         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, waited, wait_ms, verdict_id)
-       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @waited, @waitMs, @verdictId)`,
+         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, waited, wait_ms, verdict_id)
+       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @waited, @waitMs, @verdictId)`,
     );
+    if (this.maintainSpendRollup) {
+      try {
+        this.rollupUpsertStmt = this.db.prepare(
+          `INSERT INTO spend_token_rollup (day, door, model_id, tokens_in, tokens_out, tokens_cached)
+             VALUES (@day, @door, @modelId, @tokensIn, @tokensOut, @tokensCached)
+           ON CONFLICT(day, door, model_id) DO UPDATE SET
+             tokens_in     = tokens_in     + excluded.tokens_in,
+             tokens_out    = tokens_out    + excluded.tokens_out,
+             tokens_cached = tokens_cached + excluded.tokens_cached`,
+        );
+        // Bounded boot reconcile: recompute the last 30 days of daily buckets from raw
+        // rows, so an upsert dropped by a crash is repaired before the raw rows prune,
+        // and a missing rollup table is backfilled (scal — the fold is idempotent).
+        this.reconcileSpendRollup(30);
+      } catch {
+        // @silent-fallback-ok: the rollup is a reporting aggregate. A prepare/reconcile
+        // failure leaves it un-maintained (the spend view degrades to what it can read)
+        // — it must never break the primary metrics insert path this store exists for.
+        this.rollupUpsertStmt = null;
+      }
+    }
   }
 
   /** Add post-ship columns to an existing table, idempotently (pragma-guarded). */
@@ -304,11 +391,13 @@ export class FeatureMetricsLedger {
   /** Record a metric row (typically one LLM funnel call). Never throws to callers. */
   record(r: FeatureMetricRecord): void {
     if (this.closed) return;
+    const ts = r.ts ?? this.now();
+    const kind = r.kind ?? 'llm';
     try {
       this.insertStmt.run({
-        ts: r.ts ?? this.now(),
+        ts,
         feature: r.feature && r.feature.trim() ? r.feature : 'unlabeled',
-        kind: r.kind ?? 'llm',
+        kind,
         outcome: r.outcome,
         tokensIn: r.tokensIn ?? null,
         tokensOut: r.tokensOut ?? null,
@@ -316,6 +405,7 @@ export class FeatureMetricsLedger {
         latencyMs: r.latencyMs ?? null,
         model: r.model ?? null,
         framework: r.framework ?? null,
+        door: r.door ?? null,
         waited: r.waited ? 1 : 0,
         waitMs: r.waitMs ?? null,
         verdictId: r.verdictId ?? null,
@@ -323,6 +413,24 @@ export class FeatureMetricsLedger {
     } catch {
       // Observability must never break the path it observes (Close the Loop:
       // the metric is a side-channel, not a gate). Swallow write errors.
+    }
+    // Layer 2 daily-rollup upsert — post-insert, fire-and-forget, fully isolated in its
+    // own try/catch so it can NEVER affect the primary insert above or its guarantees.
+    // llm-kind rows only (token-bearing); events carry no spend.
+    if (this.rollupUpsertStmt && kind === 'llm') {
+      try {
+        this.rollupUpsertStmt.run({
+          day: dayKey(ts),
+          door: r.door && r.door.trim() ? r.door : 'unknown',
+          modelId: r.model && r.model.trim() ? r.model : 'unknown',
+          tokensIn: r.tokensIn ?? 0,
+          tokensOut: r.tokensOut ?? 0,
+          tokensCached: r.tokensCached ?? 0,
+        });
+      } catch {
+        // @silent-fallback-ok: the daily rollup is a reporting aggregate repaired by the
+        // boot reconcile from raw truth — a dropped upsert is never lost data.
+      }
     }
   }
 
@@ -655,21 +763,179 @@ export class FeatureMetricsLedger {
   }
 
   /**
-   * Delete rows older than `cutoffMs`. Returns rows deleted. Fail-open.
+   * Delete raw rows older than `cutoffMs`. Returns rows deleted. Fail-open.
    * Observable Intelligence is balanced by the Responsible Resource standard:
    * the audit trail is kept long enough to see behaviour/performance trends, then
    * aged out — never hoarded forever. Mirrors ResourceLedger.pruneOlderThan.
+   *
+   * BATCHED (scal-F4): a single unbounded DELETE could lock the DB for a long span on
+   * a large table. This deletes in bounded batches (SQLite-portable rowid idiom) up to
+   * a per-tick ceiling so a big backlog is drained across ticks, never in one stall.
    */
-  pruneOlderThan(cutoffMs: number): number {
+  pruneOlderThan(cutoffMs: number, opts: { maxBatches?: number } = {}): number {
     if (this.closed) return 0;
+    const maxBatches = opts.maxBatches ?? 20;
+    let deleted = 0;
     try {
-      const res = this.db.prepare(`DELETE FROM feature_metrics WHERE ts < ?`).run(cutoffMs);
-      return Number(res.changes ?? 0);
+      const stmt = this.db.prepare(
+        `DELETE FROM feature_metrics WHERE rowid IN
+           (SELECT rowid FROM feature_metrics WHERE ts < ? LIMIT ${PRUNE_BATCH})`,
+      );
+      for (let i = 0; i < maxBatches; i++) {
+        const res = stmt.run(cutoffMs);
+        const n = Number(res.changes ?? 0);
+        deleted += n;
+        if (n < PRUNE_BATCH) break; // drained
+      }
+      return deleted;
     } catch {
       // @silent-fallback-ok: retention prune is best-effort housekeeping. A failed
       // prune just leaves older rows for the next tick; it must never throw into
       // the path it observes.
+      return deleted;
+    }
+  }
+
+  /**
+   * Retention prune for the daily spend rollup (routing-control-room-spend, scal-F3):
+   * the long spend history lives here, decoupled from the short raw-row horizon.
+   * Deletes buckets whose day is older than `retentionDays`. Fail-open.
+   */
+  pruneSpendRollup(retentionDays: number): number {
+    if (this.closed) return 0;
+    try {
+      const cutoff = dayKey(this.now() - retentionDays * 86_400_000);
+      const res = this.db.prepare(`DELETE FROM spend_token_rollup WHERE day < ?`).run(cutoff);
+      return Number(res.changes ?? 0);
+    } catch {
+      // @silent-fallback-ok: rollup retention prune is best-effort housekeeping (mirrors
+      // pruneOlderThan) — a failed prune just leaves old buckets for the next tick.
       return 0;
+    }
+  }
+
+  /**
+   * Recompute the last `days` daily buckets of `spend_token_rollup` from raw
+   * feature_metrics rows (idempotent fold — DELETE the window, re-INSERT from truth).
+   * Repairs an upsert dropped by a crash and backfills a missing/empty table. No-op
+   * when rollup maintenance is off. Returns the number of buckets written.
+   */
+  reconcileSpendRollup(days: number): number {
+    if (this.closed || !this.maintainSpendRollup) return 0;
+    try {
+      const cutoffDay = dayKey(this.now() - days * 86_400_000);
+      const tx = this.db.transaction(() => {
+        this.db.prepare(`DELETE FROM spend_token_rollup WHERE day >= ?`).run(cutoffDay);
+        const cutoffMs = dayStartMs(cutoffDay);
+        const res = this.db
+          .prepare(
+            `INSERT INTO spend_token_rollup (day, door, model_id, tokens_in, tokens_out, tokens_cached)
+             SELECT
+               strftime('%Y-%m-%d', ts/1000, 'unixepoch')       AS day,
+               COALESCE(NULLIF(TRIM(door), ''), 'unknown')       AS door,
+               COALESCE(NULLIF(TRIM(model), ''), 'unknown')      AS model_id,
+               COALESCE(SUM(tokens_in), 0),
+               COALESCE(SUM(tokens_out), 0),
+               COALESCE(SUM(tokens_cached), 0)
+             FROM feature_metrics
+             WHERE kind='llm' AND ts >= ?
+             GROUP BY day, door, model_id`,
+          )
+          .run(cutoffMs);
+        return Number(res.changes ?? 0);
+      });
+      const written = tx();
+      this.lastRollupReconcileMs = this.now();
+      return written;
+    } catch {
+      // @silent-fallback-ok: a reconcile failure leaves the last-good rollup in place;
+      // the next boot/reconcile retries. It never touches the raw truth it reads from.
+      return 0;
+    }
+  }
+
+  /** When the daily rollup was last reconciled from raw truth (reportingBasis surface). */
+  lastSpendReconcileMs(): number | null {
+    return this.lastRollupReconcileMs;
+  }
+
+  /** Is the daily spend rollup being maintained on this ledger? */
+  spendRollupEnabled(): boolean {
+    return this.maintainSpendRollup;
+  }
+
+  /**
+   * Daily spend-token buckets from the maintained rollup (survives the 400-day horizon).
+   * `sinceDays` bounds the window (default: all rollup rows). Returns immutable token
+   * sums per day×door×model; price is joined ON READ by the composer.
+   */
+  spendTokenRollupDaily(opts: { sinceDays?: number } = {}): SpendTokenBucket[] {
+    try {
+      const params: unknown[] = [];
+      let where = '';
+      if (opts.sinceDays && opts.sinceDays > 0) {
+        where = 'WHERE day >= ?';
+        params.push(dayKey(this.now() - opts.sinceDays * 86_400_000));
+      }
+      const rows = this.db
+        .prepare(
+          `SELECT day, door, model_id AS modelId, tokens_in AS tokensIn, tokens_out AS tokensOut, tokens_cached AS tokensCached
+             FROM spend_token_rollup ${where}
+            ORDER BY day ASC`,
+        )
+        .all(...params) as Array<Record<string, string | number>>;
+      return rows.map((r) => ({
+        bucket: String(r.day),
+        bucketStartMs: dayStartMs(String(r.day)),
+        door: String(r.door),
+        modelId: String(r.modelId),
+        tokensIn: Number(r.tokensIn) || 0,
+        tokensOut: Number(r.tokensOut) || 0,
+        tokensCached: Number(r.tokensCached) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: a read-only reporting query — degrade to an empty result
+      // (the spend view shows no rows) rather than throw into the read path.
+      return [];
+    }
+  }
+
+  /**
+   * Hourly spend-token buckets computed on read from raw feature_metrics rows within
+   * the short raw-retention window (spec Layer 2 — hourly detail is not offered beyond
+   * the raw horizon). `sinceHours` bounds the scan (indexed on ts).
+   */
+  spendTokenRollupHourly(opts: { sinceHours?: number } = {}): SpendTokenBucket[] {
+    try {
+      const sinceMs = this.sinceMsFrom(opts);
+      const rows = this.db
+        .prepare(
+          `SELECT
+             strftime('%Y-%m-%dT%H:00:00Z', ts/1000, 'unixepoch')  AS hour,
+             COALESCE(NULLIF(TRIM(door), ''), 'unknown')           AS door,
+             COALESCE(NULLIF(TRIM(model), ''), 'unknown')          AS modelId,
+             COALESCE(SUM(tokens_in), 0)                           AS tokensIn,
+             COALESCE(SUM(tokens_out), 0)                          AS tokensOut,
+             COALESCE(SUM(tokens_cached), 0)                       AS tokensCached
+           FROM feature_metrics
+           WHERE kind='llm' AND ts >= ?
+           GROUP BY hour, door, modelId
+           ORDER BY hour ASC`,
+        )
+        .all(sinceMs) as Array<Record<string, string | number>>;
+      return rows.map((r) => ({
+        bucket: String(r.hour),
+        bucketStartMs: Date.parse(String(r.hour)),
+        door: String(r.door),
+        modelId: String(r.modelId),
+        tokensIn: Number(r.tokensIn) || 0,
+        tokensOut: Number(r.tokensOut) || 0,
+        tokensCached: Number(r.tokensCached) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: a read-only reporting query — degrade to an empty result
+      // (the spend view shows no hourly rows) rather than throw into the read path.
+      return [];
     }
   }
 

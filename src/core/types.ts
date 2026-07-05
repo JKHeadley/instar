@@ -3241,6 +3241,31 @@ export interface InstarConfig {
       budgetCapUsd?: number;
     };
   };
+  /**
+   * Routing Control Room — spend/caps VIEW config (docs/specs/routing-control-room-spend-alerts.md).
+   * Increment A ships the READ-ONLY spend/caps view; Increments B (money authority),
+   * C (alerts), D (multi-machine slicing) are separate, dark, and NOT built here.
+   *
+   * MATURATION LADDER (FD-16): `enabled` is OMITTED from the shipped config so it rides
+   * `resolveDevAgentGate` — the read-only view is LIVE on a development agent, DARK on
+   * the fleet. An explicit value always wins (false force-darks; true is the fleet-flip).
+   * Only INERT knobs live here; NO money-authority value (caps, go-live, gate-consumed
+   * price) is ever config — those live in a dedicated PIN-only store (Increment B),
+   * NEVER a Bearer-`PATCH`able config key (S-F2).
+   */
+  routingSpend?: {
+    /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
+    enabled?: boolean;
+    /** Daily-token-rollup retention (days); default 400. Governs the small spend-history table, NOT the raw 30d rows. */
+    tokenRollupRetentionDays?: number;
+    /** Alert routing (Increment C — inert here). */
+    alerts?: {
+      /** Dedicated "Routing Spend" Telegram topic id (Increment C). */
+      telegramTopicId?: number | null;
+      /** Enabled alert channels (Increment C); e.g. ["telegram"]. */
+      channels?: string[];
+    };
+  };
   /** Session manager config */
   sessions: SessionManagerConfig;
   /**

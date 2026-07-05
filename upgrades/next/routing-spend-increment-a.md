@@ -1,0 +1,22 @@
+<!-- bump: minor -->
+
+## What Changed
+
+Added **Increment A** of the Routing Control Room — a READ-ONLY spend/caps view (docs/specs/routing-control-room-spend-alerts.md). It turns the immutable per-call token record into dollars by joining a reviewed price manifest ON READ, and lists every metered paid-door key with its published caps and honest not-live/$0 state. It gates nothing and books nothing — the money ledger, the fail-closed cap gate, and the PIN cap controls are Increment B (not built here); alerts are Increment C.
+
+- New price authority `src/core/routingPriceAuthority.ts` (Layer 1/1b): loads the git-tracked canonical price manifest (`scripts/routing-prices.manifest.json`) into a regenerable in-memory index, does the as-of price join (a correction supersedes), fails closed on invalid/negative/cached>input prices, computes freshness/stale, and applies reporting-only subsidy/credit/overlay. Never gate-eligible.
+- New composer `src/core/routingSpendView.ts` (Surface 1): priced per-door/model rows + totals, honest `$0 (subscription — not per-token billed)`, loud `unpricedTokens` for a metered door with no matching price, every metered key's caps at $0-committed/not-live, and the Layer-1c cost-basis read contract (`costBasis`/`providerReportedUsd`/`providerDriftPct`, internal-derived + null in Increment A).
+- `FeatureMetricsLedger` gains a nullable `door` column (Layer 0), a maintained `spend_token_rollup` daily aggregate (Layer 2, upsert-on-insert + boot reconcile from raw truth, maintained only where the view is live), a decoupled 400-day rollup retention, and a batched (bounded) retention prune.
+- New Bearer-auth read routes `GET /routing-spend/summary?grain=hour|day|month|total` + `GET /routing-spend/caps`, dev-gated (live on a development agent, dark on the fleet; 503 when off). New read-only **Spend** dashboard tab.
+- OFF-by-default `routing-price-refresh` job + its deterministic prober (`scripts/routing-price-refresh.mjs`) that free-probes public model-list prices and writes ONLY the machine-local observed cache — structurally never the canonical manifest.
+- Migration parity: `migrateConfigRoutingSpendDark` seeds the dark `routingSpend` config block; `ROUTING_SPEND_CLAUDEMD_SECTION` teaches existing agents the surfaces. Tests across all three tiers (unit/integration/e2e).
+
+Read-only, dark-on-fleet, reversible: no money controls, no PIN, no Increment-B reach. The converged spec docs (spec + ELI16 + convergence report) are brought to main status-as-is.
+
+## Summary of New Capabilities
+
+A new read-only spend surface for the internal AI routing — two API routes (`GET /routing-spend/summary`, `GET /routing-spend/caps`) and a dashboard **Spend** tab. It lets an operator see what the internal AI calls cost (immutable token counts priced against a reviewed price list on read) and where each paid-door budget cap sits, without changing any spending behavior. On a development agent it is live; on the fleet it is dark until flipped on.
+
+## What to Tell Your User
+
+- **See what your AI routing costs**: "There's a new **Spend** page in your dashboard. It shows what the internal AI calls cost — the token counts are priced against a reviewed price list, so the dollar figures reflow automatically if a price is corrected — and it lists each paid-provider budget cap and its status. Right now no paid provider is switched on, so paid spend shows $0 and your subscription/CLI models correctly show '$0 — not per-token billed'. It's read-only: it shows the numbers, it doesn't change any spending, and there are no money controls yet (those come in a later step)."
