@@ -2752,6 +2752,7 @@
           <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
           <button class="tab" data-tab="llm-activity" onclick="switchTab('llm-activity')">LLM Activity</button>
           <button class="tab" data-tab="routing-map" onclick="switchTab('routing-map')">Routing Map</button>
+          <button class="tab" data-tab="spend" onclick="switchTab('spend')">Spend</button>
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
@@ -3368,6 +3369,56 @@
       <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
         <div style="font-weight:600">By job-kind</div>
         <div id="routingMapComponentsBody" style="font-size:13px;overflow-x:auto">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Spend tab — the read-only Routing Control Room spend/caps view (Increment A,
+         docs/specs/routing-control-room-spend-alerts.md). Immutable token usage priced ON
+         READ + every metered paid-door key with its caps and honest not-live/$0 state.
+         Read-only: data from /routing-spend/summary + /routing-spend/caps. No money controls
+         (caps adjust, go-live, alerts are later, dark increments). -->
+    <div id="spendPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">Spend</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="spendGrain" onchange="loadRoutingSpend()" style="padding:6px 8px">
+            <option value="day" selected>Daily</option>
+            <option value="hour">Hourly (30d)</option>
+            <option value="month">Monthly</option>
+            <option value="total">Total</option>
+          </select>
+          <button onclick="loadRoutingSpend()" style="padding:6px 12px">Refresh</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+        What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
+        <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
+        price correction reflows automatically. <b>No paid door is live yet</b>, so metered spend is $0;
+        subscription/CLI doors are <b>$0 (not per-token billed)</b>. This is read-only — money caps and the
+        go-live control are a later increment.
+      </div>
+
+      <!-- Headline totals -->
+      <div id="spendHeadlineCard" style="border:1px solid var(--border);border-radius:8px;padding:16px">
+        <div id="spendHeadlineBody" style="font-size:13px;overflow-x:auto">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Per door/model spend -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">By door &amp; model</div>
+        <div id="spendRowsBody" style="font-size:13px;overflow-x:auto">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Paid-door caps -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">Paid-door caps</div>
+        <div id="spendCapsBody" style="font-size:13px;overflow-x:auto">
           <div style="color:var(--text-dim)">Loading...</div>
         </div>
       </div>
@@ -5047,6 +5098,12 @@
         onActivate: () => { if (typeof loadRoutingMap === 'function') loadRoutingMap(); },
       },
       {
+        id: 'spend',
+        panels: ['spendPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadRoutingSpend === 'function') loadRoutingSpend(); },
+      },
+      {
         id: 'threadline',
         panels: ['threadlineTab'],
         display: ['flex'],
@@ -5807,6 +5864,110 @@
           chainsEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
         }
         compsEl.innerHTML = '';
+      }
+    }
+
+    // Routing Control Room — read-only spend/caps view (Increment A). Data from
+    // /routing-spend/summary + /routing-spend/caps. Honest $0 / not-live-yet labelling.
+    async function loadRoutingSpend() {
+      const headEl = document.getElementById('spendHeadlineBody');
+      const rowsEl = document.getElementById('spendRowsBody');
+      const capsEl = document.getElementById('spendCapsBody');
+      const grain = (document.getElementById('spendGrain') || {}).value || 'day';
+      const usd = (n) => '$' + (Number(n) || 0).toFixed(4);
+      const num = (n) => (Number(n) || 0).toLocaleString();
+      const th = (t, right) => '<th style="padding:6px 8px;' + (right ? 'text-align:right' : 'text-align:left') + '">' + t + '</th>';
+      const td = (v, right) => '<td style="padding:6px 8px;vertical-align:top;' + (right ? 'text-align:right' : '') + '">' + v + '</td>';
+      try {
+        const [summary, caps] = await Promise.all([
+          apiFetch('/routing-spend/summary?grain=' + encodeURIComponent(grain)),
+          apiFetch('/routing-spend/caps'),
+        ]);
+
+        // Headline totals
+        const t = summary.totals || {};
+        const unpriced = (Number(t.unpricedTokensIn) || 0) + (Number(t.unpricedTokensOut) || 0);
+        const stat = (label, val) => '<div style="min-width:120px"><div style="font-size:11px;color:var(--text-dim)">' + label + '</div><div style="font-size:18px;font-weight:600">' + val + '</div></div>';
+        headEl.innerHTML =
+          '<div style="display:flex;gap:20px;flex-wrap:wrap">' +
+            stat('Gross', usd(t.grossUsd)) +
+            stat('Net (of subsidy/credits)', usd(t.netUsd)) +
+            stat('Committed (cap-enforced)', usd(t.committedUsd)) +
+            stat('Tokens in', num(t.tokensIn)) +
+            stat('Tokens out', num(t.tokensOut)) +
+            (unpriced > 0 ? stat('Unpriced tokens', num(unpriced)) : '') +
+          '</div>' +
+          '<div style="font-size:11px;color:var(--text-dim);margin-top:10px;line-height:1.4">' +
+            escapeHtml(String(summary.note || '')) + '<br>' +
+            escapeHtml(String(summary.horizonNote || '')) +
+            (summary.providerGroundingNote ? '<br>' + escapeHtml(String(summary.providerGroundingNote)) : '') +
+            (summary.reportingBasis ? '<br>Basis: ' + escapeHtml(String(summary.reportingBasis.note || '')) : '') +
+          '</div>';
+
+        // Per door/model rows
+        const rows = summary.rows || [];
+        if (rows.length === 0) {
+          rowsEl.innerHTML = '<div style="color:var(--text-dim)">No internal-LLM usage recorded in this window yet.</div>';
+        } else {
+          rowsEl.innerHTML =
+            '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:720px">' +
+            '<thead><tr style="color:var(--text-dim)">' +
+              th('Door') + th('Model') + th('Class') + th('Tokens in', true) + th('Tokens out', true) +
+              th('Gross', true) + th('Net', true) + th('Price basis') +
+            '</tr></thead><tbody>' +
+            rows.map((r) => {
+              const cls = r.doorClass === 'metered'
+                ? 'metered' + (r.notLiveYet ? ' · not live' : '')
+                : escapeHtml(String(r.doorClass));
+              let basis;
+              if (r.priceBasis === 'subscription-zero') basis = '<span style="color:var(--text-dim)">subscription — not per-token billed</span>';
+              else if (r.priceBasis === 'no-matching-point') basis = '<span style="color:var(--red)">unpriced (no matching price)</span>';
+              else basis = escapeHtml(String(r.priceBasis)) + (r.priceStale ? ' <span style="color:var(--red)">(stale)</span>' : '');
+              const netCell = r.priceBasis === 'subscription-zero' ? '<span style="color:var(--text-dim)">$0 (subscription)</span>' : usd(r.netUsd);
+              return '<tr style="border-top:1px solid var(--border)">' +
+                td('<b>' + escapeHtml(String(r.door)) + '</b>') +
+                td(escapeHtml(String(r.modelId))) +
+                td(escapeHtml(cls)) +
+                td(num(r.tokensIn), true) +
+                td(num(r.tokensOut), true) +
+                td(usd(r.grossUsd), true) +
+                td(netCell, true) +
+                td(basis) +
+              '</tr>';
+            }).join('') +
+            '</tbody></table>';
+        }
+
+        // Paid-door caps
+        const keys = caps.keys || [];
+        capsEl.innerHTML =
+          '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">' + escapeHtml(String(caps.note || '')) + '</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:640px">' +
+          '<thead><tr style="color:var(--text-dim)">' +
+            th('Key') + th('Provider') + th('Door') + th('Daily cap', true) + th('Lifetime cap', true) +
+            th('Committed', true) + th('Status') +
+          '</tr></thead><tbody>' +
+          keys.map((k) =>
+            '<tr style="border-top:1px solid var(--border)">' +
+            td('<b>' + escapeHtml(String(k.keyRef)) + '</b>') +
+            td(escapeHtml(String(k.provider))) +
+            td(escapeHtml(String(k.door))) +
+            td(usd(k.dailyCapUsd), true) +
+            td(usd(k.lifetimeCapUsd), true) +
+            td(usd(k.committedDayUsd) + ' / ' + usd(k.committedLifetimeUsd), true) +
+            td('<span style="color:var(--text-dim)">' + escapeHtml(String(k.goLiveState)) + (k.frozen ? ' · frozen' : '') + '</span>') +
+            '</tr>').join('') +
+          '</tbody></table>' +
+          '<div style="font-size:11px;color:var(--text-dim);margin-top:8px">' + escapeHtml(String(caps.singleMachineNote || '')) + '</div>';
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        if (/503|not enabled|unavailable/i.test(m)) {
+          headEl.innerHTML = '<div style="color:var(--text-dim)">The spend view isn\'t enabled on this agent (it\'s a development-agent surface, dark on the fleet).</div>';
+        } else {
+          headEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
+        }
+        rowsEl.innerHTML = '';
+        capsEl.innerHTML = '';
       }
     }
 

@@ -65,6 +65,7 @@ import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
+import { buildRoutingSpendSummary, buildRoutingSpendCaps, type SpendGrain } from '../core/routingSpendView.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import {
@@ -1001,6 +1002,9 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  /** Routing Control Room price authority (read-only reporting; routing-control-room-spend
+   *  Increment A). Null when the spend view is dark (dev-gated). */
+  routingPriceAuthority: import('../core/routingPriceAuthority.js').RoutingPriceAuthority | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
   /** Per-machine process-footprint monitor (observe-only; dark by default). */
   processFootprintMonitor: import('../monitoring/ProcessFootprintMonitor.js').ProcessFootprintMonitor | null;
@@ -10105,6 +10109,57 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       defaultFramework: intel.for('__nonexistent__').framework,
       ...map,
     });
+  });
+
+  // ── Routing Control Room — spend/caps VIEW (routing-control-room-spend, Increment A) ──
+  // READ-ONLY reporting: the immutable token rollup (FeatureMetricsLedger Layer 2) priced
+  // ON READ against the reviewed price manifest (Layer 1). It gates NOTHING and books
+  // NOTHING — the authoritative money ledger + O(1) gate + PIN cap controls are Increment B
+  // (not built here). Dev-gated (resolveDevAgentGate on routingSpend.enabled) → 503 on the
+  // fleet; Bearer-auth is applied globally. Honest $0 / not-live-yet before go-live.
+  const routingSpendCfg = (ctx.config as { routingSpend?: { enabled?: boolean; tokenRollupRetentionDays?: number } }).routingSpend;
+  const routingSpendRetentionDays = routingSpendCfg?.tokenRollupRetentionDays ?? 400;
+
+  router.get('/routing-spend/summary', (req, res) => {
+    if (!resolveDevAgentGate(routingSpendCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' });
+      return;
+    }
+    if (!ctx.featureMetricsLedger || !ctx.routingPriceAuthority) {
+      res.status(503).json({ error: 'routing-spend view unavailable (no feature-metrics ledger or price authority)' });
+      return;
+    }
+    ctx.routingPriceAuthority.reloadIfChanged();
+    const grainRaw = typeof req.query.grain === 'string' ? req.query.grain : 'day';
+    const grain: SpendGrain = (['hour', 'day', 'month', 'total'] as const).includes(grainRaw as SpendGrain)
+      ? (grainRaw as SpendGrain)
+      : 'day';
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : undefined;
+    const buckets =
+      grain === 'hour'
+        ? ctx.featureMetricsLedger.spendTokenRollupHourly(sinceHours && sinceHours > 0 ? { sinceHours } : { sinceHours: 24 })
+        : ctx.featureMetricsLedger.spendTokenRollupDaily(
+            sinceHours && sinceHours > 0 ? { sinceDays: Math.ceil(sinceHours / 24) } : {},
+          );
+    const summary = buildRoutingSpendSummary({
+      buckets,
+      prices: ctx.routingPriceAuthority,
+      grain,
+      now: Date.now(),
+      rollupMaintained: ctx.featureMetricsLedger.spendRollupEnabled(),
+      lastReconcileAt: ctx.featureMetricsLedger.lastSpendReconcileMs(),
+      tokenRollupRetentionDays: routingSpendRetentionDays,
+      adjustmentsSource: (ctx.config as { machineId?: string }).machineId ?? null,
+    });
+    res.json(summary);
+  });
+
+  router.get('/routing-spend/caps', (_req, res) => {
+    if (!resolveDevAgentGate(routingSpendCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' });
+      return;
+    }
+    res.json(buildRoutingSpendCaps());
   });
 
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────

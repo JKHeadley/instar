@@ -737,6 +737,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'routingSpend',
+    prefixes: ['/routing-spend'],
+    description: 'Routing Control Room spend VIEW (Increment A) — READ-ONLY reporting: the immutable token record priced ON READ against a reviewed price manifest, plus every metered paid-door key with its caps and honest not-live/$0 state. Gates nothing, books nothing (the money ledger + O(1) gate + PIN cap controls are Increment B). Dev-gated (live on a development agent, dark on the fleet).',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /routing-spend/summary — priced spend rollup per door/model + totals; ?grain=hour|day|month|total, ?sinceHours=; honest $0/not-live-yet + loud unpricedTokens',
+        'GET /routing-spend/caps — every metered key with its caps + committed ($0 in Increment A) + goLiveState (not-live)',
+      ],
+    }),
+  },
+  {
     key: 'approvalLedger',
     prefixes: ['/approvals'],
     description: 'Approval-as-Data ledger — every operator approval recorded as durable, signed data (approved-as-is vs approved-with-change with the why, vs rejected) + per-class agreement ratios. Tracks approvals wherever they occur (spec, chat, other). Read-only observability; the ratio is a signal, never a gate. The OPERATOR is the authoritative source of mode+divergences — never self-classify their intent.',

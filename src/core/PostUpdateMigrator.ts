@@ -193,6 +193,24 @@ A durable map from each of my **doorways** (the ways I reach LLMs — Claude Cod
 }
 
 /**
+ * CLAUDE.md awareness block for the Routing Control Room spend VIEW (Increment A — the
+ * read-only spend/caps surface). The unique heading substring `Routing Spend view` is the
+ * content-sniff marker used by migrateClaudeMd (Migration Parity). Read-only; the money
+ * controls (caps adjust, go-live, gate) are Increment B and NOT surfaced as capabilities.
+ */
+export function ROUTING_SPEND_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Routing Spend view — what am I spending on routing? (\`GET /routing-spend/summary\`, \`GET /routing-spend/caps\`)
+
+A READ-ONLY window on internal-LLM spend and the paid-door caps (docs/specs/routing-control-room-spend-alerts.md, Increment A). It turns the immutable token record (\`feature_metrics\`) into dollars by joining a reviewed price manifest ON READ — so "what did we spend, and where do the caps sit?" is a READ, not a guess. It gates NOTHING and books NOTHING (the money ledger + O(1) gate + PIN cap controls are Increment B, not built yet).
+- Spend rollup (per door/model + totals): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/routing-spend/summary?grain=day"\` → per-row \`{ door, modelId, doorClass, tokensIn/Out/Cached, grossUsd, subsidyUsd, netUsd, committedUsd, priceBasis, priceStale, notLiveYet, unpricedTokens* }\` + \`totals\` + \`reportingBasis\`. Grains: \`hour|day|month|total\`.
+- Caps + paid-door status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/caps\` → each metered key \`{ keyRef, provider, door, lifetimeCapUsd, dailyCapUsd, frozen, committedLifetimeUsd, committedDayUsd, goLiveState }\`. **Honest state:** no paid door is live yet, so committed spend is \`$0\` and \`goLiveState:"not-live"\` everywhere; subscription/CLI doors show \`$0 (subscription — not per-token billed)\`.
+- Dashboard: the **Spend** tab renders both surfaces in plain language — point the user there rather than pasting curl output.
+- Dev-gated: the routes are LIVE on a development agent, DARK on the fleet (\`503\` when off; \`routingSpend.enabled\` overrides the gate). Money caps + go-live + alerts are later, dark increments.
+- **When to use** (PROACTIVE — this is the trigger): user asks "what am I spending on routing / the internal LLM calls?" / "where do my paid-door caps sit?" / "is any paid door live?" → read \`GET /routing-spend/summary\` + \`/caps\`, or send them to the Spend tab; do NOT guess.
+`;
+}
+
+/**
  * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
  * incident) + the API fresh-respawn lever. Appended to NEW installs as part of
  * the Stuck-Context Recovery section, and patched onto agents that already
@@ -446,6 +464,28 @@ export function migrateConfigNatureRoutingDark(config: Record<string, unknown>):
     // `enabled` OMITTED so resolveDevAgentGate decides (live-in-dryRun on a dev agent, dark fleet).
     dryRun: true,
     metered: { goLive: false },
+  };
+  return true;
+}
+
+/**
+ * Routing Control Room spend VIEW (docs/specs/routing-control-room-spend-alerts.md,
+ * § Migration parity): SEED the top-level `routingSpend` block DARK on existing agents so
+ * the update path reaches deployed agents (not only new agents via init). Added ONLY when
+ * ABSENT — never clobbers an operator/agent that already configured it (existence-checked,
+ * idempotent).
+ *
+ * CRITICAL — `enabled` is DELIBERATELY OMITTED (the #1001 pattern): the route + the ledger
+ * construction resolve it via `resolveDevAgentGate(routingSpend.enabled, config)`, so a
+ * seeded `enabled:false` would force-dark even a development agent. Only the INERT retention
+ * knob is seeded; NO money-authority value ever lives in config (those are Increment B's
+ * PIN-only store).
+ */
+export function migrateConfigRoutingSpendDark(config: Record<string, unknown>): boolean {
+  if (Object.prototype.hasOwnProperty.call(config, 'routingSpend')) return false; // already present
+  config.routingSpend = {
+    // `enabled` OMITTED so resolveDevAgentGate decides (live on a dev agent, dark fleet).
+    tokenRollupRetentionDays: 400,
   };
   return true;
 }
@@ -4770,6 +4810,16 @@ setTimeout(() => process.exit(0), 2000);
       content += DOORWAY_REGISTRY_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Doorway/Model Knowledge Registry section');
+    }
+
+    // Routing Spend view (routing-control-room-spend-alerts, Increment A) — Agent
+    // Awareness Standard + Migration Parity: existing agents learn the read-only spend/caps
+    // surfaces + the Spend tab via this appended section. Same text as generateClaudeMd.
+    // Content-sniff on the unique heading keeps it idempotent.
+    if (!content.includes('Routing Spend view')) {
+      content += ROUTING_SPEND_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Routing Spend view section');
     }
 
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent
@@ -9105,6 +9155,17 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: seeded dark sessions.natureRouting (schemaVersion:3, dryRun:true, metered.goLive:false; enabled omitted for the developmentAgent gate)');
     } else {
       result.skipped.push('config.json: sessions.natureRouting already present or no sessions block (no seed)');
+    }
+
+    // Routing Control Room spend VIEW (Increment A): SEED the top-level routingSpend block
+    // DARK (tokenRollupRetentionDays only; `enabled` OMITTED so the developmentAgent gate
+    // resolves it live-on-dev / dark-fleet). Existence-checked — never clobbers an operator
+    // who already configured it.
+    if (migrateConfigRoutingSpendDark(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded dark routingSpend (tokenRollupRetentionDays:400; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: routingSpend already present (no seed)');
     }
 
     // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger

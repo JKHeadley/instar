@@ -110,6 +110,7 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
 import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
@@ -244,6 +245,7 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  private routingPriceAuthority: RoutingPriceAuthority | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
@@ -1096,12 +1098,35 @@ export class AgentServer {
       try {
         const serverDataDir = path.join(options.config.stateDir, 'server-data');
         fs.mkdirSync(serverDataDir, { recursive: true });
+        // routing-control-room-spend Increment A: the daily spend rollup is maintained
+        // only where the read-only spend view is live (dev agents; dark on the fleet).
+        // The `door` column + batched prune are always active (additive/safe); this flag
+        // bounds fleet blast radius to just the (tiny) daily-aggregate writes.
+        const routingSpendCfg = (options.config as {
+          routingSpend?: { enabled?: boolean; tokenRollupRetentionDays?: number };
+        }).routingSpend;
+        const routingSpendOn = resolveDevAgentGate(routingSpendCfg?.enabled, options.config);
         this.featureMetricsLedger = new FeatureMetricsLedger({
           dbPath: path.join(serverDataDir, 'feature-metrics.db'),
+          maintainSpendRollup: routingSpendOn,
         });
         // Phase 1b: wire the funnel → ledger. One injection point covers every
         // wrapped provider (current and future). Null-safe; no-op if it failed above.
         setFeatureMetricsRecorder(this.featureMetricsLedger);
+
+        // The reporting price authority (Layer 1) — reviewed manifest + machine-local
+        // observed/overlay/credits. Read-only; constructed only when the view is live.
+        if (routingSpendOn) {
+          try {
+            this.routingPriceAuthority = new RoutingPriceAuthority({
+              projectDir: options.config.projectDir,
+              stateDir: options.config.stateDir,
+            });
+          } catch (err) {
+            console.warn('[instar] routing-price-authority init failed (non-fatal):', err);
+            this.routingPriceAuthority = null;
+          }
+        }
 
         // Observable Intelligence × Responsible Resource: the audit trail is kept
         // long enough to see behaviour/performance trends, then aged out — never
@@ -1111,10 +1136,14 @@ export class AgentServer {
           monitoring?: { featureMetrics?: { retentionDays?: number } };
         }).monitoring?.featureMetrics;
         const retentionDays = fmCfg?.retentionDays ?? 30;
-        if (retentionDays > 0) {
+        // The daily spend rollup has its OWN (longer) horizon, decoupled from the 30d raw
+        // rows (routing-control-room-spend scal-F3) — default 400 days.
+        const rollupRetentionDays = routingSpendCfg?.tokenRollupRetentionDays ?? 400;
+        if (retentionDays > 0 || routingSpendOn) {
           const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
           const prune = () => {
-            try { this.featureMetricsLedger?.pruneOlderThan(Date.now() - retentionMs); } catch { /* @silent-fallback-ok: retention prune is best-effort housekeeping — a failed prune just leaves old rows for the next tick */ }
+            try { if (retentionDays > 0) this.featureMetricsLedger?.pruneOlderThan(Date.now() - retentionMs); } catch { /* @silent-fallback-ok: retention prune is best-effort housekeeping — a failed prune just leaves old rows for the next tick */ }
+            try { if (routingSpendOn && rollupRetentionDays > 0) this.featureMetricsLedger?.pruneSpendRollup(rollupRetentionDays); } catch { /* @silent-fallback-ok: rollup prune is best-effort housekeeping */ }
           };
           prune();
           this.featureMetricsPruneTimer = setInterval(prune, 6 * 60 * 60 * 1000);
@@ -2418,6 +2447,7 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
+      routingPriceAuthority: this.routingPriceAuthority,
       resourceLedger: this.resourceLedger,
       processFootprintMonitor: this.processFootprintMonitor,
       approvalLedger: this.approvalLedger,
