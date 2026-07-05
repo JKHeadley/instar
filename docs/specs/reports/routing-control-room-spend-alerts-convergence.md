@@ -3,13 +3,61 @@
 ## Cross-model review: codex-cli:gpt-5.5
 
 A real GPT-tier external pass ran through the agent's codex CLI in EVERY round
-(rounds 1–5, all successful). The Gemini family (gemini-cli:gemini-3.1-pro-preview)
-contributed one full successful pass in round 1 and timed out (per-round `degraded`)
-in rounds 2–5's attempts — recorded honestly per round; because at least one full
+(rounds 1–7, all successful — including both post-amendment rounds). The Gemini
+family (gemini-cli:gemini-3.1-pro-preview) contributed one full successful pass in
+round 1 and timed out (per-round `degraded`) in every later attempt (rounds 2–5 and
+both amendment rounds 6–7) — recorded honestly per round; because at least one full
 pass per family succeeded and codex reviewed every round, the spec-level flag is the
 clean RAN state, not `degraded-all-rounds`. Family diversity was real: codex drove
 the price-freshness/booking-vs-reporting/single-writer findings; gemini's round-1
 pass drove the manifest-update-workflow and running-machine-refresh findings.
+
+## Operator amendments (2026-07-05, rounds 6–7)
+
+After the round-5 convergence the OPERATOR reviewed the design summary and issued
+TWO amendments, folded as a proper revision and taken through a full confirmation
+review round (two internal angle reviewers + codex external + a gemini attempt + the
+live Standards-Conformance Gate) plus a verification round (codex external + an
+internal delta verifier):
+
+1. **Provider-reported cost/usage as ground truth** (verbatim intent: *"whenever and
+   as much as possible ground our cost usage on actual reporting from the
+   provider"*). A new **Layer 1c**: per-provider reporting researched and stated
+   honestly — OpenRouter reports per-call USD cost in-response (`usage.cost` +
+   `cost_details`; the request MUST set `usage:{include:true}`) plus a `/generation`
+   authoritative cost and a `/credits` balance; Groq and Gemini report authoritative
+   per-call TOKEN usage but NO cheap per-call USD cost; Gemini USD exists only via
+   the heavyweight, lagging Cloud-Billing/BigQuery export (a registered follow-up
+   input). Provider reports are captured as immutable, append-only, timestamped
+   `provider_cost_report` records (retention-declared, receive-clamped), joined per
+   call on ONE durable `meteredCallId` (=== the ledger `reserveId`), PREFERRED on
+   read (per-row `costBasis`), and cross-checked by a cadenced
+   provider-reconciliation sweep whose drift feeds the alerts topic and the PIN
+   price-promotion path. One-way safety preserved: a provider report can refine
+   REPORTING retroactively but NEVER re-opens gate headroom; the fail-closed
+   booking-at-time-of-use gate semantics are UNCHANGED and the gate/settle is
+   structurally excluded from the provider-report store. New FD-21.
+2. **One single dedicated alerts topic** (verbatim intent: *"any alerts go to one
+   single topic … created if it doesn't already exist with checks to make sure a
+   duplicate topic isn't being created"*). ALL control-room alerts deliver into ONE
+   dedicated **"💰 Routing & Spend Alerts"** Telegram topic via `sendToTopic` (the
+   `burnDetection.alertTopicId` precedent) — never `POST /attention`, which spawns a
+   topic per item. Idempotent find-or-create rides a resolution LADDER
+   (operator-configured id → a POOL-PUBLISHED durable topic-id record → create ONCE
+   as a bounded create-once system topic, the `ensureLifelineTopic`/
+   `persistLifelineTopicId` precedent); the duplicate guard is fenced
+   SERVING-lease-holder-only creation + in-process single-flight +
+   everyone-else-falls-back-to-lifeline. Money-critical alerts ride the durable
+   relay (dedup latched on CONFIRMED delivery) and the lifeline is the single NAMED
+   emergency exception. FD-6 rewritten; the Telegram channel implementation targets
+   this one durable topic; Slack extensibility unchanged.
+
+Everything the amendments did not touch — the booking-priced fail-closed gate, PIN
+surfaces, single-writer money, rollup storage, subsidy-reporting-only, the increment
+split's structure — is UNCHANGED; the split was amended minimally (Layer 1c
+capture/display in A as schema+interface-contract, the authoritative reconciliation
+in B, the drift alert in C; B ships the minimal topic-resolver foundation it is the
+first to need).
 
 ## ELI10 Overview
 
@@ -90,6 +138,8 @@ than cited by an off-branch path; and "total" spend is honestly "total within th
 | 3 | Gate: ran (1 flag — Near-Silent) · codex (6, MINOR) · gemini degraded · money-safety verifier (2: N-1, N-2) · systems verifier (0 — CONVERGED) | 3 | Promotion brought under the rendered-plan rule (N-1); holder self-fencing `lease-liveness-unconfirmed` + reclaim refused while alive-but-partitioned (N-2); plan nonce/TTL/single-use/refuse-on-drift (C3-4); fallback digest spike-gated (Near-Silent); exactness-wording, holder-health-before-go-live, conservativeMax lint, reportingBasis labeling, substrate-alternatives |
 | 4 | Gate: ran (0 flags) · codex (5, MINOR — refinement-class) · gemini degraded · delta verifier (0 — CONVERGED) | 0 (5 refinements folded anyway) | Round-5 polish: exactness qualifier applied everywhere; torn-write recovery invariants (fold is canon, totals a cache); reclaim attestation = conservative emergency estimate (max of fold/attested); schema validator independent of the plan path + before/after audits; go-live release gate (e2e door===ledger===priced proof) |
 | 5 | Gate: ran (advisory stochastic singles — each a re-statement of a resolved concern) · codex (5, MINOR — "no fundamental architecture blocker"; refinement-of-refinement notes, all folded) | 0 | Mobile-Complete primary path for credit/subsidy writes; requirement-6 fallback wording spike-gated at the source; C5 folds: stale-price/drift alerts moved INTO Increment B; go-live release gate extended (holder-death drill + invoice-drift reporting); plan-drift = optimistic version-field concurrency with deterministic re-render UX; ledger daily-rotation size bound + build-phase failure-injection design proof |
+| 6 (operator amendments) | Gate: ran (51 standards; 1 advisory pre-existing single-writer flag) · codex (5: 2 in-scope material, 2 converged-content tightenings, 1 subsumed) · gemini degraded (timeout) · internal money-safety/adversarial (1 blocker + 7 major + 3 minor) · internal integration/precedents (3 major + 4 minor; ALL cited precedents verified accurate) | ~13 | Duplicate-guard hardened: SERVING-lease-holder creator (not metered-lease), POOL-PUBLISHED topic-id, resolution ladder, fail-toward-lifeline; money-critical alerts on the durable relay with confirmed-delivery dedup + audible `telegramTopicId` repoint; invariant restated (steady-state one topic + named lifeline exception); B ships the minimal topic-resolver foundation (B-never-depends-on-C restored); `meteredCallId` join key; settle reads in-hand response only; per-door BILLED-token mapping (Gemini candidates+thoughts); OpenRouter `usage:{include:true}` mandated; receive-clamp + poisoned capture/render test; provider-store retention (400d, not regenerable); provider-reconciliation sweep isolated (no money lock, `.iterate()`, cadence knob); verifiable totals-checkpoint across rotation; heartbeat-carried monotone committed figure in the reclaim max() |
+| 7 (verification) | codex (6: 3 foldable refinements, 3 re-statements of converged decisions) · gemini degraded (timeout) · delta verifier (1 material residue + 6 polish; all 11 other folds verified present & coherent) | 1 | The material residue fixed: the money layer's sweep renamed RESERVE-EXPIRY sweep at every site (the provider-reconciliation sweep is now genuinely "named distinctly" — the two have opposite lock semantics); Increment A's Layer 1c restated as schema + display + interface contract with stub-only tests; provider capabilities hedged as degradable facts (absent field ⇒ normal internal-derived, never an error); implementer's glossary (the two leases, the two sweeps, meteredCallId, topic/lifeline/relay); polish (capture-after-settle wording, three-input rebase audit, both Gemini response shapes, ELI16 ship-list) |
 
 Standards-Conformance Gate: ran every round (51 standards; 3 → 0 → 1 → 0 → 1 flags;
 the round-3 flag was fixed; the round-5 singles are advisory LLM re-statements of
@@ -263,24 +313,69 @@ ledger's bespoke-ness bounded (DriftSpendLedger daily-rotation size bound; a
 build-phase failure-injection JSONL-vs-SQLite-WAL design proof); the remaining
 "policy-exact" wording note was already satisfied by the applied qualifier.
 
+### Rounds 6–7 (operator-amendment revision, commits b2ab1ae76 / 59811787b / a6b3d1a66 / a5c413b75)
+
+**Round 6 (confirmation round over both amendments).** The Standards-Conformance
+Gate ran live (51 standards; its single `possible-violation` flag re-states the
+DELIBERATE converged single-writer/Increment-D deferral — pre-existing, defended in
+the spec, not introduced by the amendments). The integration reviewer VERIFIED every
+cited precedent against the worktree source (`burnDetection.alertTopicId` /
+`BurnThrottleRunbook.sendTelegram`; `ensureLifelineTopic`/`persistLifelineTopicId`;
+the `bounded:true` create-once budget exemption; the per-lane in-flight
+`createForumTopic` single-flight; `POST /attention` = one topic per item) — none
+mis-cited. Material findings and their resolutions: the amendment's original
+metered-lease-holder-creates + machine-local-persisted-id design would DUPLICATE the
+topic on any holder change and was undefined in the C-without-B window → creator
+changed to the fenced SERVING-lease holder with a pool-published id and a
+resolve-before-create ladder that fails toward the lifeline; money-critical alerts
+were fire-and-forget → durable relay + confirmed-delivery dedup latch + lifeline
+fallback on ANY failure + audible repoint; a stale `/attention rails` line and the
+B-depends-on-C sequencing were fixed (B ships the minimal resolver foundation);
+codex's per-call join-key gap → `meteredCallId` threaded end-to-end; the settle's
+token source was pinned to the in-hand response with a per-door BILLED-token mapping
+(Gemini candidates+thoughts — the thinking-token under-booking trap); OpenRouter's
+cost field was made a MUST-set request option; provider fields got a receive-clamp
+and the poisoned-body test extended to capture/render; the provider store got a
+declared 400d retention (and lost its inaccurate "regenerable" label); the
+provider-reconciliation sweep was isolated from the money lock with a cadence knob
+and `.iterate()` streaming; the totals-checkpoint became verifiable across rotation
+(corrupt/stale ⇒ full re-fold, fail-closed); and the reclaim rebase gained the
+heartbeat-carried monotone committed figure as a third max() input.
+
+**Round 7 (verification round).** codex ran again on the changed body: three
+foldable refinement-class notes (Increment-A capture honesty; provider-claims
+hedging; a glossary), all folded, plus three re-statements of converged decisions —
+the JSONL-vs-SQLite substrate choice (resolved at C3-6 with the failure-injection
+design proof), the single-writer holder-death trade (FD-13/FD-20/C4-3, now
+STRONGER via the heartbeat-carried counter), and "zero open questions" (the named
+items are recorded frontloaded decisions: FD-11(c), FD-13, C3-2 — the structural
+open-questions gate working as intended). The internal delta verifier confirmed 11
+of the 12 round-6 folds present and coherent and found ONE material residue — the
+money-layer sweep had not been renamed on its own side, leaving the "named
+distinctly" claim false — fixed exactly as prescribed (reserve-expiry sweep at every
+site + prefixed ambiguous references), alongside its six polish items. The verifier
+itself classified the spec as CONVERGED contingent on precisely that rename.
+
 ### External-reviewer degradation (honest record)
 
-gemini-cli timed out (`degraded: timeout`) on its round-2, round-3, and round-4
-attempts after a successful round-1 pass. codex-cli succeeded on every round. The
-spec therefore received real cross-model review of every revision from the GPT
-family, and of the round-1 design from the Gemini family. Spec-level flag: clean RAN
-(`codex-cli:gpt-5.5`), per the aggregation rule; the per-round degradations are
-recorded here rather than hidden.
+gemini-cli timed out (`degraded: timeout`) on its round-2, round-3, round-4,
+round-6, and round-7 attempts after a successful round-1 pass. codex-cli succeeded
+on every round (1–7). The spec therefore received real cross-model review of every
+revision from the GPT family, and of the round-1 design from the Gemini family.
+Spec-level flag: clean RAN (`codex-cli:gpt-5.5`), per the aggregation rule; the
+per-round degradations are recorded here rather than hidden.
 
 ## Convergence verdict
 
-Converged at iteration 5. The round-3 systems verifier and the round-4 money-safety
-delta verifier each returned zero material findings on their final passes; the
-Standards-Conformance Gate's remaining output is advisory re-statement of resolved
-concerns; the final external (codex) round produced only refinement-class notes,
-which were folded in regardless. Zero unresolved user decisions remain (the tag
-writer's structural open-questions check passes). Frontloaded decisions: 20;
-surviving cheap-to-change tags: 1 (FD-7's deferral of amortized subscription cost);
-contested-then-cleared: 1. Spec is ready for user review and approval — noting
-plainly that this is DESIGN ONLY: nothing here is built, and `approved: true` is the
-operator's step after reading this report.
+Converged at iteration 7 (re-convergence after the two operator amendments; the
+original convergence was iteration 5). The round-7 delta verifier confirmed every
+amendment fold present and coherent with exactly one material residue, which was
+fixed as prescribed; the remaining external notes are refinement-class or
+re-statements of decisions the design body already resolves; the
+Standards-Conformance Gate's single advisory flag re-states the deliberate,
+defended single-writer deferral. Zero unresolved user decisions remain (the tag
+writer's structural open-questions check passes). Frontloaded decisions: 21 (FD-21
+added by Amendment 1); surviving cheap-to-change tags: 1 (FD-7's deferral of
+amortized subscription cost); contested-then-cleared: 1. Spec is ready for user
+review and approval — noting plainly that this is DESIGN ONLY: nothing here is
+built, and `approved: true` is the operator's step after reading this report.

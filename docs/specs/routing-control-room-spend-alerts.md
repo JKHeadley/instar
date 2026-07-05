@@ -2,14 +2,14 @@
 title: "Routing Control Room — Spend Tracking, Caps & Alerts (Surfaces 1 & 2)"
 slug: "routing-control-room-spend-alerts"
 author: "echo"
-status: "revising"
-review-convergence: "2026-07-05T21:56:35.595Z"
-review-iterations: 5
-review-completed-at: "2026-07-05T21:56:35.595Z"
+status: "converged"
+review-convergence: "2026-07-05T23:00:03.564Z"
+review-iterations: 7
+review-completed-at: "2026-07-05T23:00:03.564Z"
 review-report: "docs/specs/reports/routing-control-room-spend-alerts-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
 single-run-completable: true
-frontloaded-decisions: 20
+frontloaded-decisions: 21
 cheap-to-change-tags: 1
 contested-then-cleared: 1
 ---
