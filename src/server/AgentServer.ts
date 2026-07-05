@@ -463,6 +463,7 @@ export class AgentServer {
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
      *  POST /coherence/fetch-working-set. Absent while the layer is dark. */
     workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator;
+    workingSetArtifactManager?: import('../core/WorkingSetArtifactManager.js').WorkingSetArtifactManager;
     /** Commitments-coherence replica store (COMMITMENTS-COHERENCE §3.2) —
      *  merged GET /commitments?scope=mesh. Absent while dark. */
     commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore;
@@ -2497,6 +2498,7 @@ export class AgentServer {
       getMachineCoherence: options.getMachineCoherence ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
+      workingSetArtifactManager: options.workingSetArtifactManager ?? null,
       commitmentReplicaStore: options.commitmentReplicaStore ?? null,
       preferenceReplicaStore: options.preferenceReplicaStore ?? null,
       replicatedRecordEmitter: options.replicatedRecordEmitter ?? null,

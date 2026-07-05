@@ -89,6 +89,11 @@ export interface ServeDeps {
   stateDir: string;
   /** Own-stream journal evidence for the topic (reader, threaded by server). */
   readRuns: (topic: number) => OwnAutonomousRuns;
+  /** Source 3 (intelligent-working-set-lazy-sync): relPaths of the topic's READY interactive
+   *  artifact rows (threaded by server from the WorkingSetArtifactManager). Absent ⇒ no
+   *  interactive source (byte-identical to before). Each is re-jailed + scanned in
+   *  computeWorkingSet exactly like the other sources. */
+  readInteractiveArtifacts?: (topic: number) => string[];
   caps?: Partial<WorkingSetCaps>;
   pullMaxBatchBytes?: number;
   serveConcurrency?: number;
@@ -133,6 +138,7 @@ export class WorkingSetPullServer {
       topic: cmd.topic,
       runs: this.d.readRuns(cmd.topic),
       caps: this.d.caps,
+      interactiveArtifactRelPaths: this.d.readInteractiveArtifacts?.(cmd.topic),
     });
     if (cmd.manifestOnly || !cmd.want?.length) return { manifest };
 

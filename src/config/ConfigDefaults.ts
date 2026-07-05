@@ -1379,6 +1379,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         serveConcurrency: 2,
         rearmConcurrency: 1,
         busyRetryCap: 10,
+        // intelligent-working-set-lazy-sync (F3/F8). recordInteractive is the
+        // recorder kill-switch READ BY THE PostToolUse hook (a standalone JS file
+        // that can't dev-gate) — DARK by default (false ⇒ the hook early-exits, no
+        // interactive artifact is recorded). recordTtlDays is the record-GC horizon
+        // (distinct from the 7d pending-pull TTL above); rows older are purged at boot.
+        recordInteractive: false,
+        recordTtlDays: 30,
       },
       // Commitments Coherence (COMMITMENTS-COHERENCE-SPEC §3.6). No enable
       // flag — rides replication.enabled === true like the working set.

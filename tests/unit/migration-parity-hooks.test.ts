@@ -93,6 +93,14 @@ const INSTALL_VS_MIGRATE_KNOWN_GAPS: Record<string, string> = {
     'non-blocking error, execution continues), exactly like pr-hand-lease-guard.js. Installed ' +
     'migrator-only for now; a fresh-init agent gets it on first auto-update, well before any ' +
     'operator enables the dark job. Follow-up: add to installHooks() at fleet rollout.',
+  'working-set-artifact-recorder.js':
+    'Deferred-install accepted: interactive working-set artifact recorder (spec ' +
+    'intelligent-working-set-lazy-sync §F8) is a PostToolUse Write/Edit hook that fires ' +
+    'fire-and-forget + NON-blocking and early-exits fast when the feature is off — dark by ' +
+    'default (coherenceJournal.workingSet.recordInteractive, code-default off). It records ' +
+    'nothing until an operator enables the flag, exactly like action-claim-followthrough.js. ' +
+    'Installed migrator-only for now; a fresh-init agent gets it on first auto-update, well ' +
+    'before any operator enables it. Follow-up: add to installHooks() at fleet rollout.',
 };
 
 /**

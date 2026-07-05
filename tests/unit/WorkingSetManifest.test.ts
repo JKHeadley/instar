@@ -287,3 +287,51 @@ describe('CoherenceJournalReader.readOwnAutonomousRuns', () => {
     expect(own.truncated).toBe(false);
   });
 });
+
+// ── Source 3: interactive-artifact records (intelligent-working-set-lazy-sync) ──
+describe('WorkingSetManifest — Source 3 interactive artifacts', () => {
+  function writeUnder(rel: string, content: string | Buffer): void {
+    const p = path.join(tmpDir, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  }
+
+  it('lists an interactive relPath under the .instar jail as a jailed+hashed entry', () => {
+    writeUnder('reports/interactive.md', 'hello interactive');
+    const m = compute({ interactiveArtifactRelPaths: ['reports/interactive.md'] });
+    const rels = m.entries.map((e) => e.relPath);
+    expect(rels).toContain(path.join('reports', 'interactive.md'));
+    const e = m.entries.find((x) => x.relPath === path.join('reports', 'interactive.md'))!;
+    expect(e.sha256).toBe(sha('hello interactive'));
+  });
+
+  it('drops an interactive path that escapes the jail (absolute or ..), never errors', () => {
+    const outside = path.join(os.tmpdir(), 'ws-src3-outside.md');
+    fs.writeFileSync(outside, 'escaped');
+    const m = compute({ interactiveArtifactRelPaths: [outside, '../outside-rel.md'] });
+    expect(m.entries).toHaveLength(0);
+    fs.rmSync(outside, { force: true });
+  });
+
+  it('a secretFlagged interactive file is LISTED but excluded from transferable bytes', () => {
+    writeUnder('reports/creds.md', 'token=SEKRET_VALUE');
+    writeUnder('reports/clean.md', 'ok');
+    const m = compute({
+      interactiveArtifactRelPaths: ['reports/creds.md', 'reports/clean.md'],
+      secretScan: (buf) => buf.includes('SEKRET'),
+    });
+    const creds = m.entries.find((e) => e.relPath === path.join('reports', 'creds.md'))!;
+    const clean = m.entries.find((e) => e.relPath === path.join('reports', 'clean.md'))!;
+    expect(creds.secretFlagged).toBe(true);
+    expect(clean.secretFlagged).toBeFalsy();
+    // the flagged file is listed but not part of transferable bytes (only clean counts).
+    expect(m.transferableBytes).toBe(clean.bytes);
+  });
+
+  it('dedupes an interactive relPath against a convention hit (one entry)', () => {
+    writeConvention(`${TOPIC}.extra.md`, 'dup');
+    const m = compute({ interactiveArtifactRelPaths: [path.join('autonomous', `${TOPIC}.extra.md`)] });
+    const matches = m.entries.filter((e) => e.relPath === path.join('autonomous', `${TOPIC}.extra.md`));
+    expect(matches).toHaveLength(1);
+  });
+});

@@ -4034,6 +4034,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the mesh client) can reference it lazily; constructed in the mesh-wiring
     // block ONLY under the same explicit replication gate.
     let workingSetPullCoordinator: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator | undefined;
+    // Source-3 interactive-artifact manager (intelligent-working-set-lazy-sync). File-backed
+    // (.instar/working-set/artifacts.json), hoisted so ONE instance is shared by the read-side
+    // (WorkingSetPullServer), the replication emit-side (setReplicationEmitter), AND the recorder
+    // route (POST /coherence/working-set/record). Sharing matters: the emit seam attaches to this
+    // instance, so an artifact recorded via the route replicates when the flag is enabled.
+    // Assigned lazily (??=) at whichever of those sites runs first; undefined ⇒ the routes 503.
+    let workingSetArtifactManager: import('../core/WorkingSetArtifactManager.js').WorkingSetArtifactManager | undefined;
     // Commitments-coherence receive side (COMMITMENTS-COHERENCE-SPEC §3.2) —
     // same explicit replication gate; undefined = dark (verb answers
     // 'disabled', merge layer returns own rows only).
@@ -4116,9 +4123,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               const wsReaderMod = await import('../core/CoherenceJournalReader.js');
               const wsReader = new wsReaderMod.CoherenceJournalReader({ stateDir: config.stateDir });
               const ws = cjCfg?.workingSet;
+              // Source 3 (intelligent-working-set-lazy-sync): the interactive-artifact manager.
+              // File-backed, so this read-side instance sees the same artifacts.json the
+              // replication-side instance (constructed later for the emit seam) writes. Only
+              // READY rows nominate; each relPath is re-jailed by the canonical validator here
+              // AND re-jailed + scanned inside computeWorkingSet (defense in depth).
+              const wsArtStoreMod = await import('../core/WorkingSetArtifactReplicatedStore.js');
+              const wsArtMgrMod = await import('../core/WorkingSetArtifactManager.js');
+              const wsArtifactMgrServe = (workingSetArtifactManager ??= new wsArtMgrMod.WorkingSetArtifactManager(config.stateDir));
               workingSetPullServer = new wsMod.WorkingSetPullServer({
                 stateDir: config.stateDir,
                 readRuns: (topic) => wsReader.readOwnAutonomousRuns(topic, cjMachineId),
+                readInteractiveArtifacts: (topic) =>
+                  wsArtifactMgrServe
+                    .getReadyRows(topic)
+                    .map((r) => r.relPath)
+                    .filter((rel) => wsArtStoreMod.jailValidateRelPath(rel) !== null),
                 caps: {
                   ...(ws?.maxFileBytes != null ? { maxFileBytes: ws.maxFileBytes } : {}),
                   ...(ws?.headlineFileBytes != null ? { headlineFileBytes: ws.headlineFileBytes } : {}),
@@ -4300,6 +4320,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the file body), keyed on a content fingerprint (KnowledgeReplicatedStore.deriveKnowledgeRecordKey).
     const { KNOWLEDGE_KIND_REGISTRATION } = await import('../core/KnowledgeReplicatedStore.js');
     replicatedKindRegistry.register(KNOWLEDGE_KIND_REGISTRATION);
+
+    // intelligent-working-set-lazy-sync — register the `working-set-artifact` replicated
+    // kind (a per-topic index of files the agent wrote INTERACTIVELY under the .instar/
+    // jail, so an interactive artifact follows a conversation across machines — the case
+    // the computed WorkingSetManifest engine misses). Dual-registry's dynamic half (the
+    // static half is CoherenceJournal.JOURNAL_KINDS, which now lists 'working-set-artifact').
+    // Registration is INERT — emission/serve/pull stay gated behind
+    // `multiMachine.stateSync.workingSetArtifact.enabled` (default false ⇒ strict no-op).
+    // Only the row METADATA crosses (relPath/contentHash/state), keyed on a NON-path-shaped
+    // sha256(jailedRelPath)+':'+producer surface; the file BODY is fetched by the existing
+    // working-set engine, never replicated here.
+    const { WORKING_SET_ARTIFACT_KIND_REGISTRATION } = await import('../core/WorkingSetArtifactReplicatedStore.js');
+    replicatedKindRegistry.register(WORKING_SET_ARTIFACT_KIND_REGISTRATION);
 
     // WS2.5 (multi-machine-replicated-store-foundation) — register the FIFTH concrete
     // replicated kind, `evolution-action-record`, onto the registry: the FOURTH memory-family
@@ -11224,6 +11257,82 @@ export async function startServer(options: StartOptions): Promise<void> {
             KNOWLEDGE_STORE_KEY,
             deriveKnowledgeRecordKey(title, url, type),
             (hlc, origin, observed) => buildKnowledgeTombstoneData({ title, url, type, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
+
+    // intelligent-working-set-lazy-sync — the union reader for the `workingSetArtifact`
+    // store. loadOriginRecords materializes the OWN interactive-artifact rows (via
+    // workingSetArtifactToOriginRecord, keyed on the NON-path-shaped
+    // sha256(jailedRelPath)+':'+producer surface); peer replicas land via the journal-apply
+    // path (a later rollout stage). With only the own origin the union is a strict no-op.
+    // tierOf HIGH (append-both-and-flag; the READ layer is advisory). The emit seam is
+    // attached ONLY when stateSync.workingSetArtifact.enabled is true (default false ⇒ NOT
+    // injected ⇒ strict no-op). The manager is ALSO the recorder route's write target.
+    const {
+      workingSetArtifactTierOf,
+      workingSetArtifactToOriginRecord,
+      deriveWorkingSetArtifactRecordKey,
+      buildWorkingSetArtifactData,
+      buildWorkingSetArtifactTombstoneData,
+      WORKING_SET_ARTIFACT_STORE_KEY,
+    } = await import('../core/WorkingSetArtifactReplicatedStore.js');
+    const { WorkingSetArtifactManager } = await import('../core/WorkingSetArtifactManager.js');
+    // Consolidate onto the hoisted instance (shared with the read-side + the recorder route).
+    // The local alias carries the definite type for use inside the reader/emit closures.
+    const wsArtMgr = (workingSetArtifactManager ??= new WorkingSetArtifactManager(config.stateDir));
+    // Boot-time record GC (intelligent-working-set-lazy-sync F3): purge interactive-artifact
+    // rows older than the record TTL so the metadata catalog stays bounded across restarts
+    // (a LOCAL cleanup, not a tombstone — a peer's copy ages out under its own TTL). Distinct
+    // from the engine's 7d pending-pull TTL.
+    try {
+      const wsTtlDays = (config as unknown as { coherenceJournal?: { workingSet?: { recordTtlDays?: number } } }).coherenceJournal?.workingSet?.recordTtlDays;
+      const wsTtlMs = (typeof wsTtlDays === 'number' && wsTtlDays > 0 ? wsTtlDays : 30) * 24 * 60 * 60 * 1000;
+      const wsPurged = wsArtMgr.gc(wsTtlMs);
+      if (wsPurged > 0) console.log(pc.dim(`  [ws-artifact] GC purged ${wsPurged} record(s) older than ${Math.round(wsTtlMs / 86400000)}d`));
+    } catch { /* @silent-fallback-ok: record GC is best-effort housekeeping, never fails boot */ }
+    const workingSetArtifactUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: _stateSyncStoresResolved,
+      tierOf: workingSetArtifactTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== WORKING_SET_ARTIFACT_STORE_KEY || _meshSelfId === null) return [];
+        for (const r of wsArtMgr.getAllRows()) {
+          if (deriveWorkingSetArtifactRecordKey(r.relPath, _meshSelfId) === recordKey) {
+            const o = workingSetArtifactToOriginRecord({ ...r, producerMachineId: _meshSelfId }, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== WORKING_SET_ARTIFACT_STORE_KEY || _meshSelfId === null) return [];
+        const keys: string[] = [];
+        for (const r of wsArtMgr.getAllRows()) {
+          const k = deriveWorkingSetArtifactRecordKey(r.relPath, _meshSelfId);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
+    void workingSetArtifactUnionReader;
+    if (replicatedRecordEmitter && _meshSelfId !== null) {
+      const emitter = replicatedRecordEmitter;
+      const selfId = _meshSelfId;
+      wsArtMgr.setReplicationEmitter({
+        emitPut: (row) =>
+          emitter.emit(
+            WORKING_SET_ARTIFACT_STORE_KEY,
+            deriveWorkingSetArtifactRecordKey(row.relPath, selfId),
+            (hlc, origin, observed) => buildWorkingSetArtifactData({ row, hlc, origin, observed }),
+          ),
+        emitDelete: (d) =>
+          emitter.emit(
+            WORKING_SET_ARTIFACT_STORE_KEY,
+            deriveWorkingSetArtifactRecordKey(d.relPath, d.producerMachineId),
+            (hlc, origin, observed) => buildWorkingSetArtifactTombstoneData({ relPath: d.relPath, producerMachineId: d.producerMachineId, hlc, origin, deletedAt: d.deletedAt, observed }),
           ),
       });
     }
@@ -21926,7 +22035,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, workingSetArtifactManager, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

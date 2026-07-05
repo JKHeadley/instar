@@ -135,6 +135,16 @@
             "timeout": 3000
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/working-set-artifact-recorder.js",
+            "timeout": 5000
+          }
+        ]
       }
     ],
     "SubagentStart": [

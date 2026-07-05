@@ -257,6 +257,19 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
 
+  // ── Interactive working-set artifact recorder (intelligent-working-set-lazy-sync §F8) ──
+  // Machine-local: POST /coherence/working-set/record writes THIS machine's OWN-ORIGIN interactive
+  // artifact rows to .instar/working-set/artifacts.json. Logical state converges via the WS2
+  // 'working-set-artifact' replicated store (dark by default: stateSync.workingSetArtifact omitted
+  // ⇒ no emit); the backing file sits under the git-sync-excluded .instar/ jail.
+  const workingSetArtifactStory: ConvergenceStory = {
+    logical: 'ws2x-replicated',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'WS2 working-set-artifact replication covers .instar/working-set/artifacts.json (own-origin per-topic rows) and is dark on the fleet (stateSync.workingSetArtifact omitted ⇒ no emit); file-level arm via the .instar/ git-sync exclusion',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/coherence/working-set/record', domain: 'machine-local', story: workingSetArtifactStory });
+
   // ── Review canary battery trigger (context-aware-outbound-review §D9.4b) ──
   // Machine-local by construction: the Bearer-gated soak trigger runs THIS
   // machine's review pipeline against booby-trapped fixtures. Its only writes

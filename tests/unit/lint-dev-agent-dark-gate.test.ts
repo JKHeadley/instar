@@ -395,10 +395,10 @@ describe('lint-dev-agent-dark-gate', () => {
       '1290': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
       '1300': 'multiMachine.sessionPool.inboundQueue.enabled',
       '1329': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1517': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1658': 'cartographer.freshnessSweep.enabled',
-      '1703': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1728': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1524': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1665': 'cartographer.freshnessSweep.enabled',
+      '1710': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1735': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

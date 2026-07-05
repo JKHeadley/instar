@@ -113,6 +113,11 @@ export interface ComputeWorkingSetOpts {
   fsImpl?: WorkingSetFs;
   /** Secret-content scan seam; defaults to the versioned credential-shape enum. */
   secretScan?: (content: Buffer) => boolean;
+  /** Source 3 (intelligent-working-set-lazy-sync): relPaths of files the agent wrote
+   *  INTERACTIVELY under the `.instar/` jail (the case the computed sources miss). Injected
+   *  by the caller from the WorkingSetArtifactManager's READY rows for this topic; re-jailed +
+   *  secret-scanned + capped here exactly like the other sources (no jail widening). */
+  interactiveArtifactRelPaths?: string[];
 }
 
 function realFs(): WorkingSetFs {
@@ -202,6 +207,16 @@ export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManife
   for (const p of opts.runs.artifactPaths) {
     const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(stateDir, p);
     if (!candidates.has(abs)) candidates.set(abs, { abs, fromJournal: true });
+  }
+
+  // Source 3: interactive-artifact records (intelligent-working-set-lazy-sync) — files the
+  // agent wrote INTERACTIVELY under the .instar/ jail. Treated as fresh local candidates
+  // (fromJournal:false) so they flow through the IDENTICAL jail + secret-scan + caps pipeline
+  // below — the "re-jail + cred-scan at the serve boundary; only ready rows nominate; caps
+  // unchanged" contract (the caller passes ONLY ready-row relPaths).
+  for (const rel of opts.interactiveArtifactRelPaths ?? []) {
+    const abs = path.isAbsolute(rel) ? path.resolve(rel) : path.resolve(stateDir, rel);
+    if (!candidates.has(abs)) candidates.set(abs, { abs, fromJournal: false });
   }
 
   // ---- jail + stat + hash + scan -------------------------------------------
