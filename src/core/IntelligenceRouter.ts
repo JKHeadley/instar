@@ -31,6 +31,7 @@ import {
   isComponentCategory,
   categoryForComponent,
 } from './componentCategories.js';
+import { LLM_ROUTING_NATURE, type RoutingNature } from '../data/llmBenchCoverage.js';
 
 export interface ComponentFrameworksConfig {
   /** Framework for anything not otherwise specified. Defaults to the router's defaultFramework. */
@@ -297,6 +298,44 @@ export function clampClaudeCliSwapModel(
   return { model: requested, clamped: false };
 }
 
+/**
+ * Resolve a component's static routing nature from the merged S1 map
+ * (`LLM_ROUTING_NATURE`). Mirrors `categoryForComponent`'s per-operation key
+ * handling (FD3): an exact key (incl. a "/segment" operation suffix) wins, else the
+ * base component name (`split('/')[0]`, `server:` prefix stripped) is the fallback.
+ * Returns `undefined` for an unmapped component. Pure map lookup — always available,
+ * independent of `sessions.natureRouting`.
+ */
+export function routingNatureFor(component: string | undefined): RoutingNature | undefined {
+  if (!component) return undefined;
+  const exact = LLM_ROUTING_NATURE[component];
+  if (exact) return exact;
+  const base = component.split('/')[0].replace(/^server:/, '').trim();
+  return LLM_ROUTING_NATURE[base];
+}
+
+/**
+ * LA4 (S4 A1) degrade-path safety predicate (FD4 / codex CR6-3). A binary-missing
+ * degrade to the default door is a bounded/gating call — and so must be clamped OFF
+ * the Opus-via-Claude-CLI landing — iff either:
+ *   (a) the caller declared `attribution.gating === true`, OR
+ *   (b) the component maps to a NON-`WRITE` chain in `LLM_ROUTING_NATURE`
+ *       (mapped nature A/B, or D-non-WRITE — all bounded/gating).
+ * A `WRITE`-chain component (Opus-via-CLI is its legitimate open-ended-writing quality
+ * lane) or an unmapped, non-gating call is left UNCHANGED — the clamp stays exactly as
+ * narrow as bench rules R1/R2. This is a pure lookup over `attribution` + the static
+ * map, so it never depends on `sessions.natureRouting` being set.
+ */
+export function isBoundedGatingDegrade(
+  component: string | undefined,
+  options?: IntelligenceOptions,
+): boolean {
+  if (options?.attribution?.gating === true) return true;
+  const row = routingNatureFor(component);
+  if (!row) return false; // unmapped + not gating ⇒ out of R1's scope, unchanged
+  return row.chain !== 'WRITE'; // WRITE is the sanctioned Opus-CLI lane; everything else is bounded/gating
+}
+
 export class IntelligenceRouter implements IntelligenceProvider {
   private readonly cache = new Map<IntelligenceFramework, CachedFramework>();
 
@@ -417,7 +456,39 @@ export class IntelligenceRouter implements IntelligenceProvider {
         to: this.opts.defaultFramework,
         reason: `framework '${framework}' unavailable (binary missing / not built) — degraded to default`,
       });
-      return this.opts.defaultProvider.evaluate(prompt, options);
+      // LA4 (S4 A1) — UNCONDITIONAL degrade-path safety clamp. This degrade lands on
+      // `defaultFramework`; if that door is `claude-code` and the requested tier is
+      // `capable`, the landing is Opus-via-Claude-CLI — the one MEASURED-BANNED route for a
+      // bounded/gating verdict (81.7% vs 99.1% API; missed canonical STOPs at 73%). The
+      // shipped router leaves this exit UNCLAMPED (the S2 clamp only guards the failure-swap
+      // loop), so a binary-missing bounded/gating `capable` degrade with a `claude-code`
+      // default fails OPEN onto Opus-via-CLI. Clamp it to the Sonnet-4.6-CLI reserve
+      // (`balanced`, the SAME reserve `clampClaudeCliSwapModel` already uses) for
+      // bounded/gating calls ONLY — `WRITE` keeps its legitimate Opus-CLI quality lane, and
+      // an unmapped non-gating call is out of R1's scope. This fires REGARDLESS of
+      // `sessions.natureRouting`: it is a standalone safety narrowing, NOT gated on the S4
+      // feature flag (FD4 LA4-r2). Strictly the safe direction (a measured-worse route → the
+      // sanctioned reserve) — never an upgrade, never a block.
+      let degradeOptions = options;
+      if (isBoundedGatingDegrade(component, options)) {
+        const { model: clampedModel, clamped } = clampClaudeCliSwapModel(
+          this.opts.defaultFramework,
+          options?.model,
+        );
+        if (clamped) {
+          degradeOptions = { ...(options ?? {}), model: clampedModel };
+          this.opts.onDegrade?.({
+            component: component ?? '(none)',
+            category,
+            from: framework,
+            to: this.opts.defaultFramework,
+            reason:
+              `degrade-path-model-clamp (LA4): '${this.opts.defaultFramework}' capable→balanced ` +
+              `(Opus-via-Claude-CLI is banned for bounded/gating verdicts — R1/R2; unconditional)`,
+          });
+        }
+      }
+      return this.opts.defaultProvider.evaluate(prompt, degradeOptions);
     }
 
     // Failure-swap: ONLY a safety-gating call with configured failureSwap targets
