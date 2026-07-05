@@ -78,7 +78,9 @@ The operator's explicit requirements (verbatim intent), all addressed below:
    cap; the adjust control (and the paid-door go-live flip) is **PIN-gated** and
    **phone-complete** (a dashboard form, not a curl).
 6. **Alerts — Telegram-FIRST, Slack-extensible** — a dedicated topic firing on cap
-   hit (and approaching 50%/80%), a door going dark, and a fallback being used;
+   hit (and approaching 50%/80%), a door going dark, and fallback usage (spike-gated
+   per Near-Silent Notifications: every fallback is durably logged, but routine
+   self-healed churn never pings — only a rate-spike or chain exhaustion does);
    routed through a channel abstraction so Slack adds later without rework.
 
 ## Design principles this spec is bound by
