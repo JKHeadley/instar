@@ -92,3 +92,37 @@ export function parseSlackConversationKey(key: string): string | null {
  * Slack↔numeric bridging (PresenceProxy, resume heartbeat).
  */
 export { candidateIdForRoutingKey as slackRoutingKeySyntheticId } from './conversationIdentity.js';
+
+/**
+ * slack-respawn-bind-token fix: resolve the `bootstrapConversationIds` for a Slack
+ * session RESPAWN (the /sessions/refresh, quota-swap, restart, restart-all paths, all
+ * funneling through SessionRefresh → slackRespawner) from its `routingKey`.
+ *
+ * A FRESH Slack spawn passes `bootstrapConversationIds: [conversationId]` so the session
+ * mints `INSTAR_BIND_TOKEN` + `INSTAR_CONVERSATION_ID` (durable-conversation-identity §7)
+ * and can open durable state (a commitment) bound to its minted conversation id. The
+ * respawn path previously OMITTED it, so a refreshed/quota-swapped Slack session came up
+ * token-less and its durable binds were refused (fail-closed) → the follow-through fell
+ * back to a fragile session-local timer that dies on the next restart (the live-proven
+ * S7 gap). This restores parity. `mintForInbound` is an idempotent get-or-create, so it
+ * returns the SAME id the fresh dispatch resolved for this key.
+ *
+ * Fail-toward-respawn: any resolution error → `undefined` (the prior token-less
+ * behavior), NEVER throws — a refresh must never be blocked by id resolution.
+ */
+export function slackRespawnBootstrapIds(
+  routingKey: string,
+  mintForInbound: (key: string) => { id: number | null },
+): number[] | undefined {
+  try {
+    const id = mintForInbound(routingKey).id;
+    return typeof id === 'number' ? [id] : undefined;
+  } catch {
+    /* @silent-fallback-ok: fail-toward-respawn — id resolution must NEVER block a Slack
+       session refresh/quota-swap/restart; a resolution error degrades to `undefined`
+       (the prior token-less behavior), exactly the safe direction. The absence of a bind
+       token only means this respawned session can't open durable state until its next
+       clean spawn — never a lost refresh. */
+    return undefined;
+  }
+}

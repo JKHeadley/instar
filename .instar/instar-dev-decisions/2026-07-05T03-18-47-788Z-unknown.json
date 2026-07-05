@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-05T03:18:47.788Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

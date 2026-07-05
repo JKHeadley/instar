@@ -23,6 +23,7 @@ const execFileAsync = promisify(execFile);
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
+import { slackRespawnBootstrapIds } from '../core/slackRefreshBinding.js';
 import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
 import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifier.js';
@@ -16766,6 +16767,24 @@ export async function startServer(options: StartOptions): Promise<void> {
               const sep = routingKey.indexOf(':');
               const slackChannelId = sep === -1 ? routingKey : routingKey.slice(0, sep);
               const slackThreadTs = sep === -1 ? undefined : routingKey.slice(sep + 1);
+              // durable-conversation-identity §7 (slack-respawn-bind-token fix): a
+              // FRESH Slack spawn passes `bootstrapConversationIds: [conversationId]`
+              // (server.ts fresh-dispatch path) so the session mints INSTAR_BIND_TOKEN
+              // + INSTAR_CONVERSATION_ID and can open durable state (a commitment)
+              // bound to the minted id. This RESPAWN path (used by /sessions/refresh,
+              // quota-swap, restart, restart-all — all funnel through SessionRefresh →
+              // slackRespawner) previously OMITTED it, so a refreshed/quota-swapped
+              // Slack session came up token-less and its durable binds were refused
+              // (fail-closed) → the follow-through fell back to a fragile session-local
+              // timer that dies on the next restart (the live-proven S7 gap). Telegram's
+              // respawn is unaffected because it passes telegramTopicId, which
+              // bindTokenEnvFlags uses as a fallback; Slack has no such fallback.
+              // mintForInbound is an idempotent get-or-create → the SAME minted id the
+              // fresh dispatch resolved for this routingKey. (Helper is unit-tested in
+              // slackRefreshBinding.ts.)
+              const bootstrapIds = slackRespawnBootstrapIds(routingKey, (k) =>
+                conversationRegistry.mintForInbound(k),
+              );
               const newSessionName = await sessionManager.spawnInteractiveSession(
                 followUpPrompt ?? 'Session refreshed — continue where you left off.',
                 undefined,
@@ -16773,6 +16792,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   resumeSessionId,
                   slackChannelId,
                   slackThreadTs,
+                  ...(bootstrapIds ? { bootstrapConversationIds: bootstrapIds } : {}),
                   ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
                   ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
                 },
