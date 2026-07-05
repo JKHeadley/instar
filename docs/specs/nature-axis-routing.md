@@ -199,6 +199,15 @@ reserve), and the byte-identical claim elsewhere in this spec is explicitly scop
 safety clamp. A test asserts the degrade clamp fires with `natureRouting` UNSET, for BOTH
 `defaultFramework` values.
 
+**The clamp predicate WHEN the feature is UNSET (codex CR6-3).** With nature routing off, the resolver has
+only `component`, `category`, and the requested model — so "is this a bounded/gating call?" is decided by
+a **read-only consult of `LLM_ROUTING_NATURE`** (always available, a pure map lookup) **OR** the caller's
+existing `attribution.gating` flag: the degrade clamp fires (Opus-family `claude-code` degrade → Sonnet
+reserve) **only** for a call that is bounded/gating — mapped nature A/B (or D-non-WRITE), or
+`attribution.gating === true`. A call mapped **WRITE**, or **unmapped and not `gating`**, is left
+UNCHANGED (WRITE's Opus-CLI is the legitimate quality lane; an unmapped non-gating degrade is out of R1's
+scope). This keeps the standalone clamp precisely as narrow as R1/R2 — it never touches open-ended writing.
+
 - **Critical gates may never resolve chain WRITE / nature D (Adv1).** A ratchet asserts **no** FD6
   critical-gate component resolves **chain WRITE** — critical gates are nature **B (JUDGE)** OR nature **A
   (FAST/SORT)** (e.g. `MessageSentinel`, the R2 emergency-stop classifier, is nature A / injection-exposed
@@ -216,11 +225,11 @@ money-gate budget > 0 — FD12) AND its circuit breaker is closed AND (FD5b) it 
 this call. The **first available** position is the PRIMARY `(door, model)`; the remaining available
 positions become the ordered **failureSwap tail** fed to the existing swap loop. An unavailable position
 is **skipped**, never a hard error — and every skip carries a **structured reason code** (codex CR2-4)
-separating **call-independent door health** (cacheable — Performance §S4) from **call-dependent policy**
-(evaluated fresh per call, never cached): health = `unsupported` (no such door) / `notConfigured`
-(binary/key absent) / `budgetClosed` (metered cap ≤ 0) / `breakerOpen` (circuit); policy = `policySkipped`
-(R-rule/allowlist ban) / `injectionUnsafe` (FD5b). The policy reasons depend on THIS call's component +
-injection-exposure, so they are recomputed every call (O(1) map lookups). Reason codes appear in `logs/nature-routing.jsonl` and
+separating **cached door health** from **fresh-per-call** reasons: cached (Performance §S4) = `unsupported`
+(no such door) / `notConfigured` (binary/key absent) / `breakerOpen` (circuit); fresh-per-call =
+`budgetClosed` (metered cap ≤ 0 — O(1) counter, never cached so the cap stays hard, r6) / `policySkipped`
+(R-rule/allowlist ban) / `injectionUnsafe` (FD5b). The fresh reasons depend on THIS call's money state or
+component + injection-exposure, so they are recomputed every call (O(1) lookups). Reason codes appear in `logs/nature-routing.jsonl` and
 `GET /intelligence/routing` so "why did this route change?" is answerable without guessing. Concrete Echo walks (no OpenAI key):
 
 - FAST → `gemini-api/flash-lite` (Increment B) then `pi-cli/gpt-5.5`.
@@ -432,23 +441,35 @@ running continuously). Therefore:
 Introduce `resolveRoute(component, category, options, cfg): { door, model, swapTail } | 'fall-through'`,
 which `evaluate()` calls when `cfg.natureRouting?.enabled`. Steps:
 
-1. `nature = resolveNature(component, options.attribution?.nature)` (FD3: map + per-op key + `E,B≥D≥A`
-   tighten; non-enum ignored).
-2. `chain = chainForNature(nature)` (the map row's `chain`, S1-validated).
-3. `positions = validated(cfg.natureRouting.chains[chain])` — FD4.3 resolve-time assertion; an invalid
-   live chain → built-in defaults + FD6 notice.
-4. `available = positions.filter(p => isAvailable(p, options))` — FD5 (door reachable, breaker closed,
-   metered budget>0, injection-eligible, R-rule-eligible). Verdicts cached behind a short TTL (Performance §).
+1. `{ resolvedNature } = resolveNature(component, options.attribution?.nature)` (FD3: map + per-op key +
+   `E,B≥D≥A` tighten; non-enum ignored).
+2. `resolvedChain = chainForResolvedNature(resolvedNature)` (codex CR6-1 — derived from the RESOLVED,
+   possibly-tightened nature, NOT the original map row's chain; a `{A,SORT}` row tightened to `B` yields
+   JUDGE). When nothing tightened it, this equals the component's own map-row chain.
+3. `positions = validated(cfg.natureRouting.chains[resolvedChain])` — FD4.3 resolve-time assertion; an
+   invalid live chain → built-in defaults + FD6 notice.
+4. `available = positions.filter(p => isAvailable(p, options))` — FD5: cacheable door health (`reachable`,
+   `breakerClosed`) AND, evaluated FRESH per call, `budget>0` (O(1) counter — never cached, keeps the cap
+   hard) + the call-dependent policy (injection-eligible, R-rule-eligible, allowlist). Only `{reachable,
+   breakerClosed}` is cached (Performance §S4).
 5. **Empty `available` — nature-aware, NEVER a blanket legacy fall-through (codex CR3-1).** A blanket
    fall-through to today's category routing is unsafe for a mapped gate: legacy category routing does not
    respect the R-rules, the allowlist ban, the injection gate, the doc-tree Claude-ban, or the baseline —
    it could route a safety gate onto `claude-code`+opus, re-opening the banned route the whole spec closes.
-   So the empty-set branch splits by whether the component carries static routing constraints:
-   - **Unmapped / non-benched component** (no `LLM_ROUTING_NATURE` entry, no static bans) ⇒ return
-     `'fall-through'` → today's category routing (the LA5 byte-identical safe default). This is the ONLY
-     fall-through case.
-   - **Mapped FD6 critical gate, or ANY component with a static ban** (`claudeBanned`/R6, injection-exposed,
-     R-rule-constrained) ⇒ **FAIL CLOSED**: the resolver raises the same error a provider-down produces, so
+   So the empty-set branch splits by **authority class** (codex CR6-2 — NOT a blanket fail-closed, which
+   would wrongly turn ordinary low-stakes background calls into hard "safety denials" merely because
+   injection-exposure defaults true and all safe doors are momentarily down):
+   - **Unmapped / non-benched component** (no `LLM_ROUTING_NATURE` entry) ⇒ return `'fall-through'` →
+     today's category routing (the LA5 byte-identical safe default).
+   - **Doc-tree / R6 (`claudeBanned`) component** ⇒ deferrable ladder then **refuse-to-author** (FD5c) —
+     never Claude, never a heuristic pretending to be a summary.
+   - **Low-stakes mapped component (nature A/D, NOT an FD6 critical gate)** ⇒ return a **typed `'no-route'`**
+     so the caller uses its **own non-gating heuristic** (the existing degrade behavior, tracked never-
+     silent via `onHeuristicFallthrough`) — NOT legacy category routing (which could land the harness
+     door) and NOT a hard fail-closed "denial" (it is not a safety gate). A momentary all-doors-down for a
+     background sorter degrades gracefully, exactly as a non-gating call does today.
+   - **Mapped FD6 critical gate** ⇒ **FAIL CLOSED**: the resolver raises the same error a provider-down
+     produces, so
      `evaluate()` propagates it and the **caller applies its existing gating fail-closed semantics** (a
      safety gate fails closed, never open) — NEVER legacy category routing. **This "caller already fails
      closed on a router error" is an EXPLICIT, TESTED contract, not an implicit assumption (codex CR5-3):**
@@ -498,14 +519,27 @@ This resolver runs on **every** internal LLM call, so:
   `isAvailable` reads the counter — **never** scans the growing JSONL per call.
 - **S2 — the audit is async/buffered (or sampled), never a blocking `appendFileSync` in `evaluate`**; the
   dryRun log records the decision, not a re-serialized full chain per call.
-- **S3 — sticky-primary + jittered admission:** when a primary door transitions to unavailable, the whole
-  tier does not reslot instantly onto the next door; admission to the new primary is jittered/staggered so
-  the fallback door isn't thundered. A transient blip within the sticky window keeps the current primary.
-- **S4 — cache ONLY the call-INDEPENDENT door health, never the per-call policy verdict** (safety-critical
-  — combined-safety r5). The TTL cache (1–2 s) holds only `{ reachable, breakerClosed, budget>0 }` per
-  door — freshness within a couple seconds is fine there. The **call-DEPENDENT** checks (injection
-  eligibility FD5b, R-rules FD5c, the family allowlist FD4) are evaluated **FRESH per call** — they are
-  O(1) static-map lookups, so this costs nothing. This is load-bearing: caching the *full* `isAvailable`
+- **S3 — sticky-primary + jittered admission (bounded, safety-subordinate — codex CR6-4):** when a primary
+  door transitions to unavailable, the whole tier does not reslot instantly onto the next door; admission
+  to the new primary is jittered/staggered so the fallback door isn't thundered; a transient blip within
+  the sticky window keeps the current primary. **Tight invariants so this is not a hidden policy engine:**
+  (i) it may only DELAY movement among **equivalent-health, still-sanctioned** positions — it can NEVER
+  keep a door that is now `policySkipped` / `injectionUnsafe` / `budgetClosed` / allowlist-banned (those
+  are re-checked FRESH per call per §S4, and a sticky primary that becomes policy-ineligible is dropped
+  IMMEDIATELY — safety always wins over stickiness); (ii) state is a per-component `{ stickyPrimary,
+  windowExpiresAt }` (bounded TTL, no cross-component effect); (iii) it never re-orders the chain or
+  suppresses a critical-gate drift notice — a sticky primary that DIFFERS from the reviewed baseline still
+  counts toward FD6 drift; (iv) the sticky choice is visible in the `GET /intelligence/routing` trace. It
+  is a thundering-herd damper over the existing walk, not a new authority.
+- **S4 — cache ONLY `{ reachable, breakerClosed }`, never the per-call policy verdict AND never
+  `budget>0`** (safety-critical — combined-safety r5 + r6). The TTL cache (1–2 s) holds only the two
+  slow-to-probe, call-independent, non-money door-health facts. **`budget>0` is deliberately NOT cached**
+  (r6): it is already an O(1) in-memory counter read (§S1) with no probe cost, and caching it for 1–2 s
+  would keep a metered door serving for up to the TTL *after* its cap crosses zero — a real overspend on
+  exactly the high-volume paid FAST primary FD12 names. So the spend counter is read **fresh per call**,
+  keeping the cap hard. The **call-DEPENDENT** checks (injection eligibility FD5b, R-rules FD5c, the family
+  allowlist FD4) are also evaluated **FRESH per call** — they are O(1) static-map lookups, so this costs
+  nothing. This is load-bearing: caching the *full* `isAvailable`
   verdict per door would let a non-injection-exposed call populate `available:true` for
   `groq-api/gpt-oss-120B`, and a subsequent injection-EXPOSED call within the TTL would reuse it and land
   on the non-injection door — a static-injection-gate bypass introduced by the optimization. Splitting the

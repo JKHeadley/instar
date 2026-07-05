@@ -1,0 +1,6 @@
+# Round 6 findings — nature-axis-routing
+## Gate: 0 (clean).
+## codex r6 MINOR (4, all FIXED): CR6-1 resolver step2 wording contradicts FD3 → chainForResolvedNature. CR6-2 empty-set fail-closed too broad (injection defaults true → low-stakes hard-fail) → split by authority class (unmapped→fallthrough, doc-tree→refuse, low-stakes A/D→typed no-route→caller heuristic, crit-gate→fail-closed). CR6-3 degrade clamp lacks predicate when feature unset → consult LLM_ROUTING_NATURE + attribution.gating; clamp only bounded/gating, WRITE/unmapped-non-gating unchanged. CR6-4 sticky-primary underspecified → tight invariants (only delay among equivalent-health sanctioned; never keep policy-skipped; per-component TTL state; counts toward drift; visible in trace).
+## internal r6: safety = budget>0 must NOT be cached (post-cap overspend window up to TTL) [FIXED — cache only {reachable,breakerClosed}, read counter fresh]. lessons = empty-set unassigned class (mapped non-crit non-banned exposed:false) [COVERED by CR6-2 low-stakes branch, safer than legacy fallthrough]. Both confirmed injection hole CLOSED.
+## gemini r6 MINOR (2): re-raises (stale perf assumptions / drift-guard brittleness) — already acknowledged. NON-material.
+## → round 7 convergence check.
