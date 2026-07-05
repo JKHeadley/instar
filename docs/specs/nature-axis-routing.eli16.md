@@ -56,6 +56,31 @@ A single config removal reverts everything instantly, no restart. A build-time l
 routing decision is logged. The only new operator notice fires *after* the agent has already self-healed
 (walked to a working backup) and only if a door stays broken for a while — never on a momentary blip.
 
+## How a request flows (the decision tree)
+
+```
+a background part needs an AI answer
+        │
+        ▼
+what KIND of task is this? (looked up in a fixed table — never guessed)
+        │
+        ├─ quick check / emergency-stop ─────▶ FAST/SORT list: fast cheap doors first
+        ├─ careful safety judgment ──────────▶ JUDGE list: clean GPT-5.5 doors first,
+        │                                       NEVER the gullible Opus-via-Claude route,
+        │                                       Sonnet-CLI only as a last-resort reserve
+        ├─ background bulk work ──────────────▶ SORT list
+        └─ writing ──────────────────────────▶ WRITE list (Opus-via-Claude allowed here)
+        │
+        ▼
+walk the list top-down; skip a door that is: down / rate-limited /
+   out of money / would break a safety rule / unsafe for untrusted input
+        │
+        ├─ found a usable door ──────▶ use it (rest of the list = automatic backups)
+        └─ every door unusable ──────▶ • safety gate → fail CLOSED (never guess "allow")
+                                       • background task → use its own simple fallback
+                                       • never silently route to the banned door
+```
+
 ## What you'd notice if it ships
 Nothing, until an operator enables it. After that: safety gates get measurably more accurate (they stop
 using the gullible door), background checks get faster and cheaper, and the emergency-stop classifier

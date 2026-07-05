@@ -42,8 +42,27 @@ Two prerequisites are already **merged on `JKHeadley/main`** (PR #1352):
 
 **S4 is the actuation.** Make the router resolve a concrete **(door, model)** by
 **nature → chain → door-availability**, apply the v3 chains as **config defaults**, compose with
-(and structurally harden) the merged S2 clamp, and ship **dark & reversible first** (fleet behavior
-byte-identical when the nature-routing config is unset).
+(and structurally harden) the merged S2 clamp, and ship on the **standard maturation ladder — LIVE (in
+`dryRun`) on a development agent, DARK on the fleet** (via `resolveDevAgentGate`; the required
+enabled-on-developer-agents path, NOT flat-off — see FD11/FD9), reversible, and byte-identical on the
+fleet when the nature-routing config is unset (except the A1 always-on LA4 safety clamp).
+
+## Constitutional traceability (No Unconstitutional Work)
+
+This feature serves these parent constitutional standards, each with a direct fit:
+- **"Cite-the-Bench" / benchmark-cited routing** — routing decisions are actuated from the merged S1
+  bench-cited nature map; a routing claim without bench coverage fails CI (the primary purpose).
+- **"Structure > Willpower"** — the harness-door ban is a build lint + resolve-time assertion + runtime
+  allowlist clamp (three structural gates), not a documented rule an author must remember; nature +
+  injection exposure are exhaustive ratcheted maps.
+- **"No Silent Degradation to Brittle Fallback"** — the walk swaps provider-before-fail-closed, and every
+  fall-through/heuristic landing is tracked (`onHeuristicFallthrough`/`DegradationReporter`), never silent.
+- **"Bounded Blast Radius"** — the metered money cap (reservation + fail-closed) + fail-closed multi-machine
+  N-detection bound the money blast radius; the deferred sticky-primary + spawn-cap bound the load one.
+- **"Observable Intelligence" / "Token-Audit Completeness"** — `GET /intelligence/routing` (dryRun plan /
+  diff / `?trace`) + `logs/nature-routing.jsonl` + per-model metrics make every routing decision auditable.
+- **"Signal vs Authority"** — the FD6 routing-drift notice is signal-only; the PIN-gated go-live and the
+  operator-reviewed critical-gate baseline are the authority. **"Know Your Principal"** governs the PIN gate.
 
 ## Glossary (codex CR4-1 — one place for the overloaded terms)
 
@@ -223,7 +242,9 @@ scope). This keeps the standalone clamp precisely as narrow as R1/R2 — it neve
 - **Critical gates may never resolve chain WRITE / nature D (Adv1).** A ratchet asserts **no** FD6
   critical-gate component resolves **chain WRITE** — critical gates are nature **B (JUDGE)** OR nature **A
   (FAST/SORT)** (e.g. `MessageSentinel`, the R2 emergency-stop classifier, is nature A / injection-exposed
-  / Flash-Lite-pinned — a legitimate FAST/SORT critical gate), but **never D/WRITE**. This is the precise
+  / **pinned OFF the `gemini-api/flash-lite` position per R8** (FD5c — Flash-Lite fails the trap in exactly
+  the input-classifier slot, so its FAST/SORT walk SKIPS Flash-Lite) — a legitimate FAST/SORT critical
+  gate), but **never D/WRITE**. This is the precise
   invariant: WRITE is the sole Opus-CLI-exempt lane, so the hazard is a gate *authored* as `{D,WRITE}` to
   sneak onto it — not "a gate that isn't JUDGE." (An earlier draft over-stated this as "must be B/JUDGE",
   which would have wrongly failed on the nature-A `MessageSentinel`; the correct rule is chain ≠ WRITE.)
@@ -392,7 +413,13 @@ Both increments are covered here; each is independently dark-shippable and byte-
 degrade-path clamp** (FD4), which is a standalone safety narrowing (Opus-CLI → Sonnet-CLI on the
 binary-missing bounded/gating degrade) that fires even when nature routing is off.
 
-**Increment A — exact deliverables / non-deliverables (codex CR9-1, the concrete implementation boundary):**
+**Increment A splits into two independently-landable sub-changes (codex CR10-1 — don't market a
+combined thing as byte-identical):** **A1 = the unconditional LA4 safety clamp** (always-on, NOT byte-
+identical on the degrade path — a standalone safety narrowing that can ship first, on its own) and
+**A2 = dark/dryRun nature routing** (byte-identical when unset). A1 and A2 are separable PRs; A2's
+"byte-identical when unset" claim is honest precisely because A1 carries the one deviation.
+
+**Increment A (=A1+A2) — exact deliverables / non-deliverables (codex CR9-1, the concrete implementation boundary):**
 - DELIVERS: `LLM_ROUTING_NATURE` extended exhaustive + `LLM_ROUTING_INJECTION_EXPOSURE` map + their
   ratchets (`src/data/llmBenchCoverage.ts` + `tests/unit/*ratchet*`); `resolveNatureAndChain` +
   `resolveRoute` + the failure-swap reuse (`src/core/IntelligenceRouter.ts`); the FD4 three-place ban
@@ -470,11 +497,16 @@ running continuously). Therefore:
   inert and the walk uses CLI doors only. The *authorization mechanism* is fully frontloaded (agent-
   proposes-operator-PIN-approves, mobile-complete); the specific cap *value* is the operator's approval-time
   choice (the agent proposes a default) — so no build-stop decision is parked.
-- **Money semantics (C6).** "Fail-closed" means: a metered door is available **only while remaining budget
-  > 0**; when the cap is exhausted (remaining ≤ $0) the door is skipped and the walk continues to a CLI
-  door (a JUDGE call still lands on a CLI door, never silently drops). Caps are **USD**; an **unknown
-  per-call price → refuse** (skip the position). This is the existing bench metered-funnel discipline,
-  reused verbatim.
+- **Money semantics + reservation accounting (C6 / codex CR10-4).** "Fail-closed" means: a metered door is
+  available **only while remaining budget > 0**; when the cap is exhausted (remaining ≤ $0) the door is
+  skipped and the walk continues to a CLI door (a JUDGE call still lands on a CLI door, never silently
+  drops). Caps are **USD**; an **unknown per-call price → refuse** (skip the position). Because real
+  provider cost varies (input/output tokens, retries, streaming, cached tokens, post-hoc adjustments), the
+  counter uses **reservation semantics**: **estimate** the call's max cost before it runs, **reserve** that
+  against the in-memory counter (so a concurrent call can't double-spend the last dollar), then
+  **reconcile** the actual cost after (releasing over-reservation, or — if actual > reservation — absorbing
+  the overage and tightening the counter so the NEXT call fails closed sooner). The cap is never breached
+  by more than one in-flight call's estimate. This extends the existing bench metered-funnel discipline.
 - **Multi-machine money safety (Int1/Ge2/gate-G2), with FAIL-CLOSED N-detection (M2/sec-r2-3).** The
   spend ledger must be **unified** to keep the cap meaningful across the fleet. Metered doors are
   **DISABLED (fail-closed) on any multi-machine deployment until a shared/replicated spend ledger exists**.
@@ -496,7 +528,13 @@ Introduce `resolveRoute(component, category, options, cfg): { door, model, swapT
 calls when `cfg.natureRouting?.enabled`. The **four** distinct outcomes are load-bearing (verifier r7 — an
 implementer must not collapse them): a resolved route; `'fall-through'` → legacy category routing (unmapped
 only); `'no-route'` → the caller's OWN non-gating heuristic (low-stakes A/D empty-set — NEVER legacy
-routing, so the harness door can't re-open); a **throw** → the critical-gate fail-closed path. Steps:
+routing, so the harness door can't re-open); a **throw** → the critical-gate fail-closed path. **Typed
+error contract (codex CR10-3/CR8-4):** the critical-gate fail-closed throw is a **distinct typed error**
+(`RouterFailClosedError`) that the per-critical-gate integration test asserts each gate maps to a
+fail-CLOSED verdict — so a caller can NEVER mistake it for an ordinary model failure. The low-stakes
+`'no-route'` deliberately maps to the SAME ordinary non-gating error a provider-down already raises (the
+existing zero-change contract every non-gating caller implements) — the two are typed apart on purpose:
+distinct where a caller must fail closed, identical where it should degrade to its heuristic. Steps:
 
 1-2. `{ resolvedNature, resolvedChain } = resolveNatureAndChain(component, options.attribution?.nature)`
    (codex CR7-1 — one function returns BOTH). The rule: **the component's own map row `{nature, chain}` is
@@ -579,6 +617,14 @@ FD4 safety enforcement) — a self-contained, reviewable unit; the metered doors
 and PIN go-live land in Increment B; migration/notification/dry-run-diff are orthogonal surfaces AROUND
 the fold, not inside it. A reader/builder can take Increment A alone and get a complete, safe, CLI-only
 feature — which is the "split into stages" the complexity concern asks for, already built into FD9.
+**Why bespoke over an off-the-shelf policy engine (codex CR10-5):** the resolver DOES resemble a
+priority-failover-with-health-checks policy layer (OPA/Envoy-outlier-detection family), but a general
+policy engine is the wrong tool here — it would add a new runtime dependency + a second config language,
+and it could NOT reuse Instar's already-threaded per-framework circuit breakers, swap-timeout budgets,
+LlmQueue, and DegradationReporter (the very machinery the failure-swap loop runs). The bespoke resolver is
+a thin fold whose "policy" is a handful of pure predicates over static maps + those existing primitives —
+strictly less machinery than adopting an external engine, and the safety rules are compile-time-lintable
+in-repo rather than in a separate policy artifact.
 
 ### Performance / hot-path (scalability S1–S5)
 This resolver runs on **every** internal LLM call, so:
@@ -745,6 +791,12 @@ enabled). The concrete cases:
    item and the code enforces the precondition.
 2. **Pool-level coalescing of the FD6 critical-gate notice** (Int5) — per-machine dedupe today (consistent
    with attention-queue posture); a fleet-wide door outage multi-firing is the follow-up.
+4. **Periodic sampled trace audit for static-map semantic rot (codex CR10-2)** — the FD7 fingerprint
+   catches prompt-anchor + input-shape EDITS, but not a semantic upstream-dataflow change that touches
+   neither. A follow-up job periodically samples `logs/nature-routing.jsonl` traces + the live input
+   provenance and flags a component whose actual input-shape diverges from its declared row — runtime
+   corroboration of the static maps, beyond the compile-time fingerprint. Tracked; not in S4's initial
+   scope (a runtime input-provenance subsystem is its own effort).
 3. **Dynamic-adaptation / harness-penalty drift closure** (gemini Ge1/Ge3-2) — the static bench maps (and
    the whole harness-penalty premise the FD4 ban rests on) drift as the model landscape moves; a provider
    update could in principle alter the `(claude-code, Opus)` penalty. The primary closure is the S5
