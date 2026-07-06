@@ -330,6 +330,140 @@ describe('evaluate() — nature routing is BYTE-IDENTICAL when unset/off', () =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// A2.2 — ENFORCING selection (`dryRun:false`). THE load-bearing new case: the
+// resolved plan ACTUALLY CHANGES the selected (door, model) and the swapTail
+// drives the failure-swap. Spec §Resolver steps 8-9. Every test asserts the
+// selection DIVERGED from today's default-provider path.
+// ─────────────────────────────────────────────────────────────────────────────
+function failingProvider(msg: string): IntelligenceProvider & { calls: Array<IntelligenceOptions | undefined> } {
+  const calls: Array<IntelligenceOptions | undefined> = [];
+  return {
+    calls,
+    async evaluate(_prompt: string, _opts?: IntelligenceOptions): Promise<string> {
+      calls.push(_opts);
+      throw new Error(msg);
+    },
+  };
+}
+
+/** A router whose default door is claude-code, with an explicit set of reachable non-default doors. */
+function makeEnforcingRouter(
+  built: Partial<Record<IntelligenceFramework, IntelligenceProvider>>,
+  opts?: { defaultProvider?: ReturnType<typeof fakeProvider>; defaultFramework?: IntelligenceFramework; onHeuristic?: (c: string, f: string) => void },
+) {
+  const defaultProvider = opts?.defaultProvider ?? fakeProvider('claude-default');
+  const router = new IntelligenceRouter({
+    defaultProvider,
+    defaultFramework: opts?.defaultFramework ?? 'claude-code',
+    resolveConfig: () => undefined, // the common fleet shape — componentFrameworks unconfigured
+    buildProvider: (fw) => built[fw] ?? null,
+    resolveNatureRouting: () => ({ enabled: true, dryRun: false }),
+    onHeuristicFallthrough: opts?.onHeuristic,
+  });
+  return { router, defaultProvider };
+}
+
+describe('evaluate() — A2.2 ENFORCING selection changes (door, model) when dryRun:false', () => {
+  it('ENFORCES the resolved primary door + concrete model — selection DIVERGES from the default', async () => {
+    // SORT: CommitmentSentinel → codex-cli/gpt-5.4-mini (primary) → pi-cli → gemini-api(skip) → claude reserve.
+    const codex = fakeProvider('codex-answer');
+    const pi = fakeProvider('pi-answer');
+    const { router, defaultProvider } = makeEnforcingRouter({ 'codex-cli': codex, 'pi-cli': pi });
+    // The caller asked for the 'capable' TIER on the default door — enforcement must OVERRIDE both.
+    const out = await router.evaluate('p', { model: 'capable', attribution: { component: 'CommitmentSentinel' } });
+    expect(out).toBe('codex-answer'); // answer came from codex — NOT the claude default
+    expect(codex.calls).toHaveLength(1);
+    expect(defaultProvider.calls).toHaveLength(0); // the default (harness) door was NOT used
+    // The resolved CONCRETE model id replaced the caller's 'capable' tier hint (spec step 8).
+    expect(codex.calls[0]?.model).toBe('gpt-5.4-mini');
+  });
+
+  it('the swapTail drives the failure-swap: primary fails → next door+model in the resolved chain serves', async () => {
+    // Same SORT chain, but the primary (codex) FAILS. gating:true opens the swap loop; the resolved
+    // swapTail [pi-cli/gpt-5.5, claude-code/reserve] must take over on its OWN model.
+    const codex = failingProvider('codex-boom');
+    const pi = fakeProvider('pi-answer');
+    const { router } = makeEnforcingRouter({ 'codex-cli': codex, 'pi-cli': pi });
+    const out = await router.evaluate('p', { model: 'capable', attribution: { component: 'CommitmentSentinel', gating: true } });
+    expect(out).toBe('pi-answer'); // swapped down the resolved tail to pi-cli
+    expect(codex.calls).toHaveLength(1); // primary attempted
+    expect(pi.calls).toHaveLength(1); // swapTail served
+    expect(pi.calls[0]?.model).toBe('gpt-5.5'); // pi's OWN resolved model, not the primary's / caller's tier
+  });
+
+  it('a metered primary position is SKIPPED (Increment A) — selection lands on the next CLI door', async () => {
+    // FAST: MessageSentinel → gemini-api (metered, ALWAYS skipped in Increment A) → pi-cli/gpt-5.5.
+    const pi = fakeProvider('pi-answer');
+    const { router, defaultProvider } = makeEnforcingRouter({ 'pi-cli': pi });
+    const out = await router.evaluate('p', { model: 'fast', attribution: { component: 'MessageSentinel' } });
+    expect(out).toBe('pi-answer');
+    expect(defaultProvider.calls).toHaveLength(0);
+    expect(pi.calls[0]?.model).toBe('gpt-5.5'); // gemini-api never reached
+  });
+
+  it('a JUDGE gate landing on claude-code enforces the CONCRETE reserve id (not the caller tier, never Opus)', async () => {
+    // MessagingToneGate JUDGE with ONLY claude-code reachable ⇒ the terminal reserve is the primary.
+    // The caller's 'capable' (→ Opus, the banned door) must be REPLACED by the pinned Sonnet reserve id.
+    const claude = fakeProvider('claude-reserve-answer');
+    const { router } = makeEnforcingRouter({}, { defaultProvider: claude }); // pi/codex unreachable → claude only
+    const out = await router.evaluate('p', { model: 'capable', attribution: { component: 'MessagingToneGate' } });
+    expect(out).toBe('claude-reserve-answer');
+    expect(claude.calls[0]?.model).toBe(CLAUDE_CODE_RESERVE_MODEL_ID); // 'capable' → concrete Sonnet reserve id
+    expect(claude.calls[0]?.model).not.toBe('capable');
+  });
+
+  it('a mapped CRITICAL GATE with NO available door FAILS CLOSED on the real path (throws, never the harness door)', async () => {
+    // MessagingToneGate JUDGE; default door gemini-cli is NOT in the JUDGE chain and every other door is
+    // unreachable ⇒ empty set ⇒ RouterFailClosedError PROPAGATES (the caller applies fail-closed).
+    const gemini = fakeProvider('gemini-default');
+    const { router } = makeEnforcingRouter({}, { defaultProvider: gemini, defaultFramework: 'gemini-cli' });
+    await expect(router.evaluate('p', { attribution: { component: 'MessagingToneGate' } })).rejects.toThrow(RouterFailClosedError);
+    expect(gemini.calls).toHaveLength(0); // NEVER fell through to the default (harness) door
+  });
+
+  it("a low-stakes component with NO available door raises the ordinary heuristic error (never legacy routing)", async () => {
+    // CommitmentSentinel SORT, every chain door unreachable (default gemini-cli not in SORT) ⇒ 'no-route'
+    // ⇒ the ordinary non-gating error the caller catches into its heuristic; NEVER the default door.
+    const onHeuristic = vi.fn();
+    const gemini = fakeProvider('gemini-default');
+    const { router } = makeEnforcingRouter({}, { defaultProvider: gemini, defaultFramework: 'gemini-cli', onHeuristic });
+    await expect(router.evaluate('p', { attribution: { component: 'CommitmentSentinel' } })).rejects.toThrow(/no-route/);
+    expect(gemini.calls).toHaveLength(0); // NEVER routed to the default (harness) door — spec §573-581
+    expect(onHeuristic).toHaveBeenCalledTimes(1); // tracked never-silent
+  });
+
+  it("an UNMAPPED component falls through to today's routing under enforcement (no re-route)", async () => {
+    // TotallyUnknownThing has no nature map row ⇒ 'fall-through' ⇒ legacy path (here: default provider).
+    const { router, defaultProvider } = makeEnforcingRouter({});
+    const opts: IntelligenceOptions = { model: 'capable', attribution: { component: 'TotallyUnknownThing' } };
+    const out = await router.evaluate('p', opts);
+    expect(out).toBe('claude-default');
+    expect(defaultProvider.calls[0]).toBe(opts); // SAME options object — nothing rewritten for an unmapped call
+  });
+
+  it('dryRun:true still OBSERVES only — enforcing changes NOTHING (byte-identical selection)', async () => {
+    // Same reachable doors as the enforcing test, but dryRun:true ⇒ the plan is logged, selection unchanged.
+    const codex = fakeProvider('codex-answer');
+    const defaultProvider = fakeProvider('claude-default');
+    const onPlan = vi.fn();
+    const router = new IntelligenceRouter({
+      defaultProvider,
+      defaultFramework: 'claude-code',
+      resolveConfig: () => undefined,
+      buildProvider: (fw) => (fw === 'codex-cli' ? codex : null),
+      resolveNatureRouting: () => ({ enabled: true, dryRun: true }),
+      onNatureRoutePlan: onPlan,
+    });
+    const opts: IntelligenceOptions = { model: 'capable', attribution: { component: 'CommitmentSentinel' } };
+    const out = await router.evaluate('p', opts);
+    expect(out).toBe('claude-default'); // UNCHANGED — codex NOT used in dryRun
+    expect(codex.calls).toHaveLength(0);
+    expect(defaultProvider.calls[0]).toBe(opts); // SAME options object
+    expect((onPlan.mock.calls[0][0] as NatureRoutePlan).resolution?.outcome).toBe('route'); // …but observed
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FD4.3 — the resolve-time + config-load CHAIN VALIDATOR (the pure predicate that
 // rejects a banned chain at config LOAD and at RESOLVE time). Spec §221-225 / §Resolver
 // step 3 / FD8 §393. The runtime companion to the build-lint; dev-gated / byte-identical

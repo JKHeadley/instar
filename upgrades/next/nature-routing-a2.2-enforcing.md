@@ -1,0 +1,61 @@
+---
+user_announcement:
+  - audience: agent-only
+    maturity: experimental
+---
+
+## What Changed
+
+Wired the enforcing half of Nature-Axis Routing (S4 Increment A2.2). The internal LLM router's
+nature resolver — which since A2.1 has only watched, computing and logging the model + access door it
+WOULD pick for a background check — can now actually apply that choice. When the feature is enabled AND
+an operator has deliberately turned dryRun off, the resolved primary (door, model) becomes the real
+selection and the resolver's fallback list drives the real failover, each fallback position carrying its
+own concrete model. The routing switch is now real machinery — but it stays off by default, so nothing
+changes until it is deliberately turned on.
+
+This preserves the maturation ladder A2.1 shipped: DARK on the fleet, and LIVE-in-dryRun on a development
+agent (still observe-and-log only). No default was changed, the enable flag is still omitted so it rides
+the development-agent gate, and the metered paid doors stay skipped (that is Increment B, still deferred
+and PIN-gated). The old one-time "enforcing not yet wired" warning is retired, since it is now real.
+
+The four resolver outcomes are honored on the real path: a resolved route applies the chosen door and
+concrete model; an unmapped component falls through to today's routing untouched; a low-stakes sorter
+with every door down raises the ordinary "use your own heuristic" error its caller already catches (never
+today's category routing, so the Claude harness door can never sneak back in); and a safety gate with
+every door down fails closed with a distinct typed error, so its caller blocks or denies rather than
+falling open. Every existing safety clamp — the deny-by-default Claude-reserve allowlist, the FD4 chain
+validators, A1's always-on degrade clamp — is reused unchanged.
+
+## What to Tell Your User
+
+Nothing proactive — this is an internal, off-by-default plumbing change with no user-facing surface. If a
+user ever asks why a background check might one day run on a different model than the one they talk to, the
+plain answer is: the agent measured which model is best at each kind of internal check, and this lets it
+eventually run the right one for each job. Right now it is off; on a development agent it only watches and
+logs what it would choose. Turning it fully on is a separate, deliberate step the operator takes after
+reviewing what it would do. Nothing the user does changes today, and no setting is required.
+
+## Summary of New Capabilities
+
+- The nature resolver's plan can now become the real selection: when the feature is enabled and dryRun is
+  deliberately turned off, the chosen (door, model) is applied and the fallback tail drives the real
+  failure-swap. Shipped dark on the fleet, dryRun-observe on a development agent.
+- A safety gate with no reachable door now actually fails closed on the enforcing path (distinct typed
+  error → the caller blocks/denies), and a low-stakes sorter with no door degrades to its own heuristic —
+  never to legacy category routing, so the measured-banned Claude harness door cannot re-open.
+- When the feature is off or unset (the fleet default), routing is byte-identical to today — the same
+  options object is passed through untouched. No default was flipped; the metered doors stay skipped.
+
+## Evidence
+
+- tests/unit/nature-routing-resolver.test.ts — new enforcing suite proving selection DIVERGES under
+  dryRun:false: it routes to the resolved primary door with its concrete model (the default provider is
+  NOT used); the swapTail drives the failure-swap when the primary fails (the next door serves on its OWN
+  model); a metered primary is skipped; a JUDGE gate on claude-code enforces the concrete Sonnet reserve
+  id (not the caller's `capable` tier, never Opus); a critical gate with no door throws RouterFailClosedError
+  on the real path (never the harness door); a low-stakes empty set raises the ordinary heuristic error
+  (never legacy routing); an unmapped component falls through; and dryRun:true still observes only.
+- Byte-identical-when-off and dryRun-observes tests remain green; A1 clamp, FD5b injection, FD4/FD4.2
+  lints, and the llm-routing-nature / injection-exposure ratchets all stay green; tsc --noEmit clean.
+- Spec: docs/specs/nature-axis-routing.md — §Resolver steps 8-9, FD9 (the A1/A2 increment split).
