@@ -54,6 +54,10 @@ const LONG_LIVED_STORES = [
   // Durable Inbound Message Queue (CMT-1118): the custody store registers its
   // handle in the constructor (registerSqliteHandle), process-lifetime.
   'src/core/PendingInboundStore.ts',
+  // routing-control-room-spend Layer 1c (CMT-1929): the provider-report store
+  // registers its handle in the constructor (registerSqliteHandle), process-
+  // lifetime, closed once at shutdown like FeatureMetricsLedger beside it.
+  'src/monitoring/ProviderCostReportStore.ts',
 ];
 
 /**
