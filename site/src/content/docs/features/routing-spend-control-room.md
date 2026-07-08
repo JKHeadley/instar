@@ -60,6 +60,30 @@ until the operator PIN-arms it, one door at a time.
   releasing it is always the operator's.
 - `GET /routing-spend/caps/log` — the audited cap-change history.
 
+## The alert layer (Increment C — dryRun-first, live on development agents)
+
+Every spend alert lands in the ONE dedicated **"💰 Routing & Spend Alerts"** topic — a message
+INTO the topic, never a topic per item, with the lifeline as the single named emergency fallback.
+
+- **`SpendAlertDispatcher`** — lane-scoped dedup and coalescing BEFORE any channel send:
+  money-critical kinds (cap-hit, holder-dead) ride their own dedupe lane and are never digested;
+  informational kinds (door-dark, fallback-spike, price/recon drift, cap-approach) coalesce into
+  one digest message per window. The edge latch sets only on CONFIRMED delivery, so a transient
+  failure stays eligible for re-send. Ships dryRun-first: decisions are audited to
+  `logs/routing-spend-alerts.jsonl` (metadata only) and nothing is delivered until the deliberate
+  `routingSpend.alerts.dryRun: false` flip.
+- **`TelegramSpendTopicChannel`** — the concrete channel: resolves the topic through the ladder
+  (operator-configured id → pool-published/persisted record → fenced serving-lease-holder-only
+  create-once), prefers the durable relay (retry-until-delivered) for money-critical kinds, falls
+  back to the lifeline on ANY failure, and makes a repoint of the configured topic id audible in
+  both the old and new topics.
+- **`SpendAlertEmitters`** — the trigger set: cap-approach at 50%/80% on BOTH daily and lifetime
+  caps, cap-hit on a gate refusal, door-dark on whole-chain exhaustion (episode budget, widening
+  backoff, flapping escalation), fallback-spike only when the hourly fallback rate crosses the
+  ceiling, holder-dead as the surviving machine's voice, and the reconciliation-drift surface.
+- The topic id is published as a content-free field on the replicated machine registry, so a
+  future serving-lease holder inherits it instead of creating a duplicate.
+
 ## Safety posture
 
 Reporting and money are strictly separated: provider reports, subsidies, credits, and observed

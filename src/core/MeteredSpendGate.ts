@@ -105,6 +105,14 @@ export interface MeteredSpendGateOptions {
    * A single-machine agent trivially self-confirms (return 0).
    */
   leaseConfirmedAgoMs: () => number | null;
+  /**
+   * OPTIONAL alert observer (Increment C — signal-only): fired AFTER a
+   * successful admit (with post-admit committed + the caps, for the
+   * cap-approach thresholds) and on a cap-exceeded refusal (for the
+   * money-critical cap-hit alert). Throw-swallowed — an observer failure can
+   * never disturb the admit/refuse path (unit-pinned).
+   */
+  onGateEvent?: (ev: import('./SpendAlertEmitters.js').GateEvent) => void;
   now?: () => number;
 }
 
@@ -183,9 +191,27 @@ export class MeteredSpendGate {
       });
     } catch (err) {
       if (err instanceof CapExceededError) {
+        try {
+          this.d.onGateEvent?.({ type: 'refusal', reason: 'cap-exceeded', keyRef, door: req.door, detail: err.message });
+        } catch {
+          // @silent-fallback-ok: the observer is signal-only — never on the refusal path.
+        }
         throw new MoneyGateRefusal('cap-exceeded', err.message, keyRef, req.door);
       }
       throw new MoneyGateRefusal('ledger-error', `reserve booking failed: ${String(err)}`, keyRef, req.door);
+    }
+    try {
+      this.d.onGateEvent?.({
+        type: 'admit',
+        keyRef,
+        door: req.door,
+        committedLifetimeUsd: handle.committedLifetimeUsd,
+        committedDayUsd: handle.committedDayUsd,
+        lifetimeCapUsd: lifetimeCap,
+        dailyCapUsd: dailyCap,
+      });
+    } catch {
+      // @silent-fallback-ok: the observer is signal-only — never on the admit path.
     }
     return {
       reserveId: handle.reserveId,

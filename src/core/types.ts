@@ -1954,6 +1954,15 @@ export interface MachineRegistryEntry {
    * docs/specs/multi-transport-mesh-comms.md.
    */
   endpoints?: MeshEndpoint[];
+  /**
+   * routing-control-room-spend Increment C (FD-6 rung 2, pool-published half):
+   * the auto-created "💰 Routing & Spend Alerts" Telegram topic id this machine
+   * created/adopted — a CONTENT-FREE number riding the same replicated-registry
+   * path as `lastKnownUrl`, so every peer and any FUTURE serving-lease holder
+   * resolves the SAME id instead of re-creating (Telegram mints a fresh id per
+   * createForumTopic, so last-writer-wins can never merge two creations).
+   */
+  routingSpendAlertTopicId?: number;
   /** ISO timestamp of revocation (if revoked) */
   revokedAt?: string;
   /** Machine ID that revoked this one */
@@ -3273,11 +3282,22 @@ export interface InstarConfig {
       /** Stale-price check cadence (hours); default 6. */
       priceStaleCheckIntervalHours?: number;
     };
-    /** Alert routing (resolver foundation ships with B; full channel abstraction is Increment C). */
+    /** Alert routing (resolver foundation ships with B; the channel abstraction is Increment C). */
     alerts?: {
+      /**
+       * Increment C dispatcher gate: OMITTED ⇒ rides resolveDevAgentGate
+       * (LIVE on a development agent, DARK on the fleet — FD-16).
+       */
+      enabled?: boolean;
+      /**
+       * dryRun-FIRST (FD-16): default TRUE even on a dev agent — every dispatch
+       * decision is audited to logs/routing-spend-alerts.jsonl, nothing is
+       * delivered, until a deliberate `dryRun: false` flip.
+       */
+      dryRun?: boolean;
       /** Dedicated "Routing Spend" Telegram topic id (rung 1 of the resolution ladder — never creates). */
       telegramTopicId?: number | null;
-      /** Enabled alert channels (Increment C); e.g. ["telegram"]. */
+      /** Enabled alert channels; default ["telegram"]. A future Slack channel is a config add. */
       channels?: string[];
     };
     /** Provider-report store retention (days); default 400 (Layer 1c — capture lands with the reconciliation PR). */
