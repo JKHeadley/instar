@@ -257,6 +257,24 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
 
+  // ── Routing Control Room MONEY surfaces (Increment B, §Surface 2) ────────
+  // Single-writer BY DESIGN (FD-20): the whole cap lives on ONE PIN-designated
+  // metered-lease machine until Increment D — the caps store + booking ledger are
+  // that machine's local state files (git-sync-excluded under .instar/state/), and
+  // every OTHER machine's gate fails closed by construction (`no-cap-slice` /
+  // `lease-liveness-unconfirmed`), so machine-local admission IS the convergence
+  // story: there is nothing to converge, one machine may ever write.
+  const moneyStory: ConvergenceStory = {
+    logical: 'git-sync-excluded',
+    onSharedGitSyncedPath: false,
+    note: 'FD-20: Increment B money is single-writer (one PIN-designated metered-lease machine); state/routing-spend-caps.json + the booking ledger are its local files; every other machine’s gate fails closed by construction. Increment D replicates cap SLICES, never these files.',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/plan', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/caps/adjust', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/go-live', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/unfreeze', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/freeze', domain: 'machine-local', story: moneyStory });
+
   // ── Interactive working-set artifact recorder (intelligent-working-set-lazy-sync §F8) ──
   // Machine-local: POST /coherence/working-set/record writes THIS machine's OWN-ORIGIN interactive
   // artifact rows to .instar/working-set/artifacts.json. Logical state converges via the WS2

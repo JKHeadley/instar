@@ -19,7 +19,7 @@
 ## Phase 4 — Side-effects review
 
 1. **Over-block:** The gate fails closed on unknown price / stale lease / unbounded reservation — this can refuse legitimate metered calls when the manifest is stale or the pool is partitioned. Accepted BY DESIGN (money safety over availability); the refusal is a swap-tail advance to free doors, so the JOB still completes — only the paid door is withheld. Stale-price default is `book-conservative-max` (spend continues, over-booked), so manifest staleness alone does not halt paid routing.
-2. **Under-block:** A crash between fsync'd row-append and totals update leaves totals STALE-LOW by at most one booking; the next gate read runs the row-count/high-water check and re-folds — bounded, tested both torn directions. Reserve sizing uses `max_tokens` worst-case; a provider that bills MORE than `max_tokens` output would under-reserve — mitigated by settle-books-actual (absolute row) and the billed-token per-door mapping erring HIGH.
+2. **Under-block:** A crash between fsync'd row-append and totals update leaves totals STALE-LOW by at most one booking; the next gate read runs the row-count/high-water check and re-folds — bounded, tested both torn directions. Reserve sizing uses `max_tokens` worst-case; a provider that bills MORE than `max_tokens` output would under-reserve — mitigated by settle-books-actual (absolute row) and the billed-token per-door mapping erring HIGH. **Build-time finding worth recording:** the first gate implementation compared committed-vs-cap OUTSIDE the ledger's booking mutex; the two-concurrent-reserves test caught two $8 admits passing against a $12 cap. Fixed by moving the comparison INSIDE the per-key critical section (`admitOnlyUnderCaps` on `reserve()`), which is now the pinned shape — the check-and-reserve is atomic by construction.
 3. **Level-of-abstraction fit:** The ledger/gate live in `src/core/` beside `DriftSpendLedger` (whose write-discipline they adopt); the caps store is a dedicated PIN-only store OUTSIDE config, exactly where the spec pins it (S-F2). The gate is a library consumed at the (future) metered dispatch seam — it does NOT modify `IntelligenceRouter` selection (the seam is declared, not wired; metered doors still skip — FD-11).
 4. **Signal vs authority:** See Phase 1 — compliant; deterministic authority at the right layer, reporting side structurally excluded from the gate.
 5. **Interactions:** Freeze vs go-live: freeze halts NEW admissions only (in-flight settles land — A-Min11). The reserve-expiry sweep takes the per-key lock; the (future) provider-reconciliation sweep never does — named distinctly to keep them un-conflated. Plan commits refuse on store-version drift, so a concurrent PIN action or background change re-renders instead of silently composing. The alert resolver is serving-lease-holder-only for creation; everyone else falls back to the lifeline — no duplicate-topic race with the attention queue (which is never used for spend alerts — Amendment 2).
@@ -29,9 +29,15 @@
 
 ## Phase 5 — Second-pass review
 
-Required (money gate = "gate" class). Independent audit performed via cross-model reviewer (codex CLI) over this artifact + the diff; verdict appended below.
+Required (money gate = "gate" class). Independent audit performed via a CROSS-MODEL reviewer — the gemini CLI (this build ran as a fork that cannot spawn subagents, so the skill's reviewer-subagent step was satisfied with a cross-model independent audit instead, which is stronger independence than a same-model subagent; codex is not installed on this machine and pi's non-interactive mode wedged on file attachments). Review scope: this artifact + `MeteredSpendGate.ts` in full, with the ledger/caps-store/plan-store contracts summarized; questions posed: fail-closed completeness, reporting-side reachability into the gate, Bearer-level money authority, signal-vs-authority compliance.
 
-**Reviewer verdict:** _pending_
+**Reviewer verdict:** `VERDICT: Concur with the review` (gemini, 2026-07-08)
+
+## Self-action convergence (unbounded-self-action — closure: guard)
+
+This change adds two self-triggered cadences, both registered as convergence models in `src/testing/selfActionRegistry.ts` and proven to settle by `tests/unit/self-action-convergence.test.ts` (the ratchet — enforcement: ratchet):
+- **Reserve-expiry sweep** (`metered-reserve-expiry-sweep`): the idempotent terminal state machine IS the brake — an expired reserve can never re-expire and the sweep creates no reserves, so the steady-state emission bound is the finite stale pool (per-target 1, ever).
+- **Stale-price alert** (`spend-stale-price-alert`): the 24h edge latch is the brake — a declared **Eternal Sentinel** with a 24h rate floor (stale pricing changes money ADMISSION behavior, so the alarm must re-arm daily while the condition persists; never a flood).
 
 ## No-deferrals accounting
 

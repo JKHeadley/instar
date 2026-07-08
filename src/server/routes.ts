@@ -65,7 +65,7 @@ import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
-import { buildRoutingSpendSummary, buildRoutingSpendCaps, type SpendGrain } from '../core/routingSpendView.js';
+import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import {
@@ -1005,6 +1005,16 @@ export interface RouteContext {
   /** Routing Control Room price authority (read-only reporting; routing-control-room-spend
    *  Increment A). Null when the spend view is dark (dev-gated). */
   routingPriceAuthority: import('../core/routingPriceAuthority.js').RoutingPriceAuthority | null;
+  /** Increment B money layer (routing-control-room-spend §Layer 3 / Surface 2). ALL null
+   *  unless `routingSpend.money.enabled === true` (a DARK_GATE_EXCLUSIONS action-bearing
+   *  case — dark for everyone incl. dev agents until an explicit operator enable).
+   *  Optional so existing partial test contexts stay valid — the routes null-guard. */
+  meteredSpendLedger?: import('../core/MeteredSpendLedger.js').MeteredSpendLedger | null;
+  routingSpendCapsStore?: import('../core/RoutingSpendCapsStore.js').RoutingSpendCapsStore | null;
+  meteredSpendGate?: import('../core/MeteredSpendGate.js').MeteredSpendGate | null;
+  spendPlanStore?: import('../core/RenderedPlanStore.js').RenderedPlanStore | null;
+  /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
+  pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
   /** Per-machine process-footprint monitor (observe-only; dark by default). */
   processFootprintMonitor: import('../monitoring/ProcessFootprintMonitor.js').ProcessFootprintMonitor | null;
@@ -9044,7 +9054,11 @@ export function createRoutes(ctx: RouteContext): Router {
   const MANDATE_PIN_WINDOW_MS = 5 * 60 * 1000;
 
   /** Verify the operator PIN for mandate issuance/revocation. Returns an error
-   *  string (already sent) or null when the PIN is valid. */
+   *  string (already sent) or null when the PIN is valid.
+   *  S2-1 hardening (routing-control-room-spend): the per-IP lockout counters
+   *  write through to the durable PinAttemptStore when available, so a server
+   *  restart no longer resets brute-force lockout. The in-memory Map remains the
+   *  fallback when stateDir is unavailable. */
   function checkMandatePin(req: import('express').Request, res: import('express').Response): boolean {
     if (!ctx.config.dashboardPin) {
       res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' });
@@ -9052,6 +9066,10 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const ip = req.ip || req.socket?.remoteAddress || 'unknown';
     const now = Date.now();
+    if (ctx.pinAttemptStore?.blocked(ip)) {
+      res.status(429).json({ error: 'Too many attempts. Try again later.' });
+      return false;
+    }
     let entry = mandatePinAttempts.get(ip);
     if (entry && now > entry.resetAt) { mandatePinAttempts.delete(ip); entry = undefined; }
     if (entry && entry.count >= MANDATE_PIN_MAX_ATTEMPTS) {
@@ -9068,9 +9086,12 @@ export function createRoutes(ctx: RouteContext): Router {
     if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
       if (!entry) { entry = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; mandatePinAttempts.set(ip, entry); }
       entry.count++;
-      res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: MANDATE_PIN_MAX_ATTEMPTS - entry.count });
+      const durableRemaining = ctx.pinAttemptStore?.recordFailure(ip);
+      res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: durableRemaining ?? (MANDATE_PIN_MAX_ATTEMPTS - entry.count) });
       return false;
     }
+    mandatePinAttempts.delete(ip);
+    ctx.pinAttemptStore?.recordSuccess(ip);
     return true;
   }
 
@@ -10159,7 +10180,197 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' });
       return;
     }
-    res.json(buildRoutingSpendCaps());
+    res.json(composeCapsView());
+  });
+
+  // ── Routing Control Room — Increment B MONEY surfaces (Surface 2) ─────────
+  // ALL money routes are gated on the EXPLICIT `routingSpend.money.enabled === true`
+  // (a DARK_GATE_EXCLUSIONS action-bearing case — never resolveDevAgentGate; FD-16).
+  // STOP is Bearer (freeze); ARM/RAISE/UNFREEZE/PROMOTE are PIN behind a canonical
+  // server-rendered plan (S2-3: the commit derives SOLELY from the rendered plan).
+
+  const moneyOn = (): boolean => ctx.config.routingSpend?.money?.enabled === true;
+
+  /** Compose the caps view from the PIN store + the ledger's committed totals (falls back to the honest pre-B view). */
+  function composeCapsView() {
+    if (!moneyOn() || !ctx.routingSpendCapsStore || !ctx.meteredSpendLedger) {
+      return buildRoutingSpendCaps();
+    }
+    let store;
+    try {
+      store = ctx.routingSpendCapsStore.read();
+    } catch (err) {
+      // A corrupt money store is surfaced honestly — the view says so, the gate fails closed.
+      return { ...buildRoutingSpendCaps(), storeError: `caps store unreadable (gate fails closed): ${String(err)}` };
+    }
+    const capsOverride: NonNullable<Parameters<typeof buildRoutingSpendCaps>[0]>['capsOverride'] = {};
+    for (const [keyRef, c] of Object.entries(store.caps)) {
+      capsOverride[keyRef] = { provider: c.provider, lifetimeCapUsd: c.lifetimeCapUsd, dailyCapUsd: c.dailyCapUsd, frozen: c.frozen };
+    }
+    for (const g of Object.values(store.goLive)) {
+      const prev = capsOverride[g.keyRef] ?? {};
+      capsOverride[g.keyRef] = { ...prev, goLiveState: g.enabled ? 'live' : 'disarmed', meteredLeaseHolder: g.designatedMachineId };
+    }
+    const committed: Record<string, { committedLifetimeUsd: number; committedDayUsd: number }> = {};
+    for (const t of ctx.meteredSpendLedger.allCommitted()) {
+      committed[t.keyRef] = { committedLifetimeUsd: t.committedLifetimeUsd, committedDayUsd: t.committedDayUsd };
+    }
+    return { ...buildRoutingSpendCaps({ capsOverride, committed, moneyLive: true }), storeVersion: store.version };
+  }
+
+  /** Render the canonical plan for a money action (Bearer — rendering is not authority; the PIN commit is). */
+  router.post('/routing-spend/plan', (req, res) => {
+    if (!moneyOn() || !ctx.spendPlanStore || !ctx.routingSpendCapsStore) {
+      res.status(503).json({ error: 'routing-spend money layer not enabled (routingSpend.money.enabled — an explicit operator enable; dark by default per FD-16)' });
+      return;
+    }
+    const b = req.body ?? {};
+    const action = b.action;
+    const storeVersion = ctx.routingSpendCapsStore.version();
+    if (storeVersion < 0) {
+      res.status(503).json({ error: 'caps store unreadable — money surfaces fail closed' });
+      return;
+    }
+    try {
+      if (action === 'caps-adjust') {
+        const { keyRef, provider, lifetimeCapUsd, dailyCapUsd } = b;
+        if (typeof keyRef !== 'string' || !keyRef.trim()) throw new Error('keyRef required');
+        if (typeof provider !== 'string' || !provider.trim()) throw new Error('provider required');
+        for (const [n, v] of [['lifetimeCapUsd', lifetimeCapUsd], ['dailyCapUsd', dailyCapUsd]] as const) {
+          if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`${n} must be a number ≥ 0`);
+        }
+        const current = ctx.routingSpendCapsStore.read().caps[keyRef];
+        const renderedText =
+          `Adjust caps for key '${keyRef}' (${provider}): ` +
+          `daily cap ${current ? `$${current.dailyCapUsd.toFixed(2)} → ` : ''}$${dailyCapUsd.toFixed(2)}; ` +
+          `lifetime cap ${current ? `$${current.lifetimeCapUsd.toFixed(2)} → ` : ''}$${lifetimeCapUsd.toFixed(2)}. ` +
+          `No other field changes. ${current && (lifetimeCapUsd < current.lifetimeCapUsd || dailyCapUsd < current.dailyCapUsd) ? 'This LOWERS a cap — the lease epoch bumps and the gate clamps on its next read.' : ''}`;
+        const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, dailyCapUsd }, { capsStore: storeVersion });
+        res.json({ planId: plan.planId, nonce: plan.nonce, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
+        return;
+      }
+      if (action === 'go-live') {
+        const { door, keyRef, enabled } = b;
+        if (typeof door !== 'string' || !door.trim()) throw new Error('door required');
+        if (typeof keyRef !== 'string' || !keyRef.trim()) throw new Error('keyRef required');
+        if (typeof enabled !== 'boolean') throw new Error('enabled must be boolean');
+        const machineId = (ctx.config as { machineId?: string }).machineId ?? 'single-machine';
+        const renderedText = enabled
+          ? `ARM paid door '${door}' using key '${keyRef}', designating THIS machine (${machineId}) as the metered-lease ` +
+            `money authority (FD-13). Paid routing is single-machine until Increment D — if this machine is down, paid ` +
+            `doors are down everywhere (free doors still serve via the swap-tail). No cap values change in this action.`
+          : `DISARM paid door '${door}' (key '${keyRef}'). New metered admissions on this door stop immediately; in-flight ` +
+            `reserved calls settle their real cost. No cap values change in this action.`;
+        const plan = ctx.spendPlanStore.render('go-live', renderedText, { door, keyRef, enabled, designatedMachineId: machineId }, { capsStore: storeVersion });
+        res.json({ planId: plan.planId, nonce: plan.nonce, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
+        return;
+      }
+      if (action === 'unfreeze') {
+        const { keyRef } = b;
+        if (typeof keyRef !== 'string' || !keyRef.trim()) throw new Error('keyRef required');
+        const renderedText = `UNFREEZE key '${keyRef}' — new metered admissions on its doors resume, subject to its caps. No cap values change in this action.`;
+        const plan = ctx.spendPlanStore.render('unfreeze', renderedText, { keyRef }, { capsStore: storeVersion });
+        res.json({ planId: plan.planId, nonce: plan.nonce, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
+        return;
+      }
+      res.status(400).json({ error: `unknown plan action '${String(action)}' (caps-adjust | go-live | unfreeze)` });
+    } catch (err) {
+      res.status(400).json({ error: String(err instanceof Error ? err.message : err) });
+    }
+  });
+
+  /** PIN commit of a rendered caps-adjust plan. The commit derives SOLELY from the plan snapshot (S2-3). */
+  router.post('/routing-spend/caps/adjust', (req, res) => {
+    commitMoneyPlan(req, res, 'caps-adjust', (fields, expectedVersion, actor) =>
+      ctx.routingSpendCapsStore!.adjustCaps(actor, expectedVersion, fields.keyRef as string, fields.provider as string, {
+        lifetimeCapUsd: fields.lifetimeCapUsd as number,
+        dailyCapUsd: fields.dailyCapUsd as number,
+      }),
+    );
+  });
+
+  /** PIN commit of a rendered go-live plan (arms/disarms + designates the metered-lease machine). */
+  router.post('/routing-spend/go-live', (req, res) => {
+    commitMoneyPlan(req, res, 'go-live', (fields, expectedVersion, actor) =>
+      ctx.routingSpendCapsStore!.setGoLive(actor, expectedVersion, fields.door as string, {
+        enabled: fields.enabled as boolean,
+        keyRef: fields.keyRef as string,
+        designatedMachineId: fields.designatedMachineId as string,
+      }),
+    );
+  });
+
+  /** PIN commit of a rendered unfreeze plan (releasing money is always the operator's). */
+  router.post('/routing-spend/unfreeze', (req, res) => {
+    commitMoneyPlan(req, res, 'unfreeze', (fields, expectedVersion, actor) =>
+      ctx.routingSpendCapsStore!.unfreeze(actor, expectedVersion, fields.keyRef as string),
+    );
+  });
+
+  function commitMoneyPlan(
+    req: import('express').Request,
+    res: import('express').Response,
+    action: 'caps-adjust' | 'go-live' | 'unfreeze',
+    apply: (fields: Record<string, unknown>, expectedVersion: number, actor: string) => unknown,
+  ): void {
+    if (!moneyOn() || !ctx.spendPlanStore || !ctx.routingSpendCapsStore) {
+      res.status(503).json({ error: 'routing-spend money layer not enabled (routingSpend.money.enabled — an explicit operator enable; dark by default per FD-16)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return; // response already sent on failure
+    const { planId, nonce } = req.body ?? {};
+    if (typeof planId !== 'string' || typeof nonce !== 'string') {
+      res.status(400).json({ error: 'planId + nonce required — render a plan first (POST /routing-spend/plan)' });
+      return;
+    }
+    let plan;
+    try {
+      plan = ctx.spendPlanStore.commit(planId, nonce, { capsStore: ctx.routingSpendCapsStore.version() });
+    } catch (err) {
+      const e = err as { code?: string; message?: string };
+      res.status(e.code === 'version-drift' ? 409 : 400).json({ error: e.message ?? String(err), code: e.code ?? 'plan-error' });
+      return;
+    }
+    if (plan.action !== action) {
+      res.status(400).json({ error: `plan action mismatch: plan is '${plan.action}', route is '${action}'` });
+      return;
+    }
+    try {
+      const after = apply(plan.fields, plan.versionsPinned.capsStore, 'operator-pin');
+      res.json({ ok: true, committed: plan.renderedText, store: after });
+    } catch (err) {
+      res.status(409).json({ error: String(err instanceof Error ? err.message : err) });
+    }
+  }
+
+  /** Bearer FREEZE — set-true-only, instant, never blocked by a concurrent plan (S-F5/X-C5). */
+  router.post('/routing-spend/freeze', (req, res) => {
+    if (!moneyOn() || !ctx.routingSpendCapsStore) {
+      res.status(503).json({ error: 'routing-spend money layer not enabled (routingSpend.money.enabled — an explicit operator enable; dark by default per FD-16)' });
+      return;
+    }
+    const { keyRef } = req.body ?? {};
+    if (typeof keyRef !== 'string' || !keyRef.trim()) {
+      res.status(400).json({ error: 'keyRef required' });
+      return;
+    }
+    try {
+      const def = DEFAULT_METERED_CAPS[keyRef];
+      const after = ctx.routingSpendCapsStore.freeze(`bearer:${req.ip ?? 'unknown'}`, keyRef, def);
+      res.json({ ok: true, frozen: keyRef, store: after });
+    } catch (err) {
+      res.status(500).json({ error: String(err instanceof Error ? err.message : err) });
+    }
+  });
+
+  /** Bearer-read audited cap-change log (before+after per change). */
+  router.get('/routing-spend/caps/log', (req, res) => {
+    if (!moneyOn() || !ctx.routingSpendCapsStore) {
+      res.status(503).json({ error: 'routing-spend money layer not enabled (routingSpend.money.enabled — an explicit operator enable; dark by default per FD-16)' });
+      return;
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    res.json({ entries: ctx.routingSpendCapsStore.auditLog(Number.isFinite(limit) && limit > 0 ? limit : 100) });
   });
 
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────

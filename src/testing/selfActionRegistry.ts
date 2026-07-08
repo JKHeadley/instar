@@ -303,10 +303,88 @@ const externalHogKillBreaker: SelfActionController = {
   },
 };
 
+/**
+ * Routing-spend reserve-expiry sweep (routing-control-room-spend Increment B,
+ * src/core/MeteredSpendLedger.ts sweepExpired + the 5-min AgentServer cadence).
+ * Convergence shape: the terminal state machine IS the brake — an expired
+ * reserve can never re-expire (first terminal transition wins), and the sweep
+ * creates no reserves of its own. Under the pinned worst case (a burst of
+ * reserves whose settles never arrive), the sweep expires each exactly ONCE and
+ * then converges to zero emissions forever: steady state is bounded by the
+ * (finite) stale pool, per-target bound 1 by construction.
+ */
+const meteredReserveExpirySweep: SelfActionController = {
+  id: 'metered-reserve-expiry-sweep',
+  actionVerb: 'expire-reserve-kill', // 'kill' detector token; the swept reserve is terminally closed
+  models: 'src/core/MeteredSpendLedger.ts (sweepExpired; idempotent terminal reserve→expired) + src/server/AgentServer.ts 5-min cadence',
+  boundK: 3, // exactly the 3 stale reserves in the fixture — never more
+  perTargetBoundK: 1, // terminal: one expire per reserveId, ever
+  ticks: 50,
+  tickMs: 5 * 60_000, // the real sweep cadence
+  makeUnderPressure(f, sink) {
+    const TTL_MS = 15 * 60_000;
+    // The pinned worst case: three reserves booked at t0 whose settles NEVER arrive.
+    const reserves = [
+      { id: 'rsv-1', reservedAtMs: 0, state: 'reserved' as 'reserved' | 'expired' },
+      { id: 'rsv-2', reservedAtMs: 0, state: 'reserved' as 'reserved' | 'expired' },
+      { id: 'rsv-3', reservedAtMs: 0, state: 'reserved' as 'reserved' | 'expired' },
+    ];
+    return {
+      tick() {
+        sink.considered += 1;
+        for (const r of reserves) {
+          if (r.state !== 'reserved') continue; // terminal — the brake
+          if (f.clock.nowMs() - r.reservedAtMs <= TTL_MS) continue;
+          r.state = 'expired';
+          sink.emit({ verb: 'expire-reserve-kill', target: r.id });
+        }
+      },
+    };
+  },
+};
+
+/**
+ * Routing-spend stale-price alert cadence (routing-control-room-spend Increment
+ * B, src/core/SpendAlertResolver.ts emit + the 6h AgentServer staleCheck).
+ * Convergence shape: the edge latch is the brake — a CONFIRMED emission latches
+ * its dedupe key for the 24h re-arm window, so under permanently-stale pricing
+ * (the pressure that never clears) the loop converges to one alert per door per
+ * day: a declared Eternal Sentinel with a 24h rate floor, never a flood.
+ */
+const spendStalePriceAlert: SelfActionController = {
+  id: 'spend-stale-price-alert',
+  actionVerb: 'stale-price-notify',
+  models: 'src/core/SpendAlertResolver.ts (emit — edge latch on CONFIRMED delivery, 24h re-arm) + src/server/AgentServer.ts 6h staleCheck cadence',
+  boundK: 3, // 3 emissions across the ~2.1-day horizon = 1 per 24h window (rate floor), one door
+  perTargetBoundK: 3,
+  ticks: 8, // 8 × 6h = 48h+2 ticks horizon; 2N=16 ticks (~4 days) still settles at the daily rate
+  tickMs: 6 * 60 * 60_000, // the real 6h cadence
+  eternalSentinel: {
+    reason:
+      'Stale pricing changes money ADMISSION behavior (C5-5) — the alarm must re-arm daily while the condition persists (silent staleness is the failure this closes); the 24h edge latch is the rate floor.',
+    rateFloorMs: 24 * 60 * 60_000,
+  },
+  makeUnderPressure(f, sink) {
+    const REARM_MS = 24 * 60 * 60_000;
+    let lastConfirmedAtMs = -Infinity;
+    return {
+      tick() {
+        sink.considered += 1;
+        // The pressure: the door's price is stale FOREVER (never clears).
+        if (f.clock.nowMs() - lastConfirmedAtMs < REARM_MS) return; // the latch — suppressed
+        sink.emit({ verb: 'stale-price-notify', target: 'openrouter-api' });
+        lastConfirmedAtMs = f.clock.nowMs(); // latch ONLY on confirmed delivery
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   proactiveSwapMonitor,
   ageKillBackoff,
   promiseBeaconNotify,
   livenessHeartbeat,
   externalHogKillBreaker,
+  meteredReserveExpirySweep,
+  spendStalePriceAlert,
 ];

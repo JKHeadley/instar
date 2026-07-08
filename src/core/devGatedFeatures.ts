@@ -609,6 +609,15 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'destructive',
     reason: 'kills idle sessions; off+dry-run for everyone',
   },
+  // ── action-bearing — real-money authority; dark for EVERYONE until an explicit
+  //    operator enable (routing-control-room-spend-alerts FD-16: Increments B and D
+  //    are the documented action-bearing exclusion cases). Even when enabled, every
+  //    door stays deny-by-default until a per-door operator PIN go-live. ──
+  {
+    configPath: 'routingSpend.money.enabled',
+    category: 'action-bearing',
+    reason: 'real-dollar spending authority (metered-door money gate + PIN caps/arming); dark for everyone incl. dev agents until an explicit operator enable — FD-16',
+  },
   {
     configPath: 'monitoring.agentWorktreeReaper.enabled',
     category: 'destructive',

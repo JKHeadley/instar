@@ -8,6 +8,7 @@ review-iterations: 7
 review-completed-at: "2026-07-05T23:00:03.564Z"
 review-report: "docs/specs/reports/routing-control-room-spend-alerts-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
+parent-principle: "Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One"
 approved: true
 approved-by: "operator conversational approval (Justin), topic 29723, 2026-07-07 19:26 PDT"
 single-run-completable: true
@@ -53,10 +54,10 @@ Grounding confirms the gap is real and total:
 - **A production USD cost ledger already exists.** `src/core/DriftSpendLedger.ts` is a
   daily-rotated, `proper-lockfile`-coordinated, append-only reserve/reconcile USD
   ledger with a strict `spent + est > cap → reject` gate and a per-machine cap whose
-  atomic cross-machine variant is an explicitly-deferred child
+  atomic cross-machine variant is an explicitly-deferred child <!-- tracked: CMT-1929 -->
   (`drift-spend-cross-machine`, `DriftSpendLedger.ts:26-31`). This spec's money layer
-  REUSES its earned write-discipline, and the follow-up registered under FD-17
-  closes that deferred child (§Money layer).
+  REUSES its earned write-discipline, and the follow-up registered under FD-17 <!-- tracked: CMT-1929 -->
+  closes that deferred child (§Money layer). <!-- tracked: CMT-1929 -->
 - **USD/cap/alert *routing* patterns exist ONLY bench-side.** The metered-funnel
   research code (`metered-funnel.mjs` + `metered-caps.json` + `metered-prices.json`)
   has a mature pattern — `settleCost` (tokens×price/1e6), a lifetime+daily rollup,
@@ -412,7 +413,7 @@ compatible response shape each door uses):**
 |---|---|---|---|---|
 | **`openrouter-api`** (`metered_openrouter_bench`) | **YES** — every chat-completion response now carries `usage.cost` (total USD) + `usage.cost_details` (incl. `upstream_inference_cost`) and `prompt_tokens_details.cached_tokens`/`cache_write_tokens`; the `GET /api/v1/generation?id=<id>` endpoint returns the authoritative `total_cost` + native token counts + `cache_discount` a few seconds after the call; `GET /api/v1/credits` gives the account balance. **The metered request MUST set `usage: {include: true}`** (the same MUST-set posture as the required `max_tokens`): the field has historically been opt-in, and relying on "now returned automatically" would let every OpenRouter row silently degrade to internal-derived if the default regresses — mandated explicitly, harmless if redundant. | YES (native tokenizer) | **Per-call, in-response (immediate) for `usage.cost`; ~seconds for `/generation`; account-level for `/credits`** | **provider-reported** cost is the preferred anchor |
 | **`groq-api`** (`metered_groq_bench`) | **NO** per-call USD cost field. OpenAI-compatible `usage` block only: `prompt_tokens`/`completion_tokens`/`total_tokens` (+ Groq timing `prompt_time`/`completion_time`/`queue_time`/`total_time`). No cheap per-call cost API; cost is only in the dashboard/usage export. | YES (in-response `usage`) | Per-call token usage in-response; **cost export is dashboard-grade, not programmatic per-call** | **internal-derived** cost (token×price); provider tokens replace our estimated token counts |
-| **`gemini-api`** (`metered_gemini_bench`) | **NO** per-call USD cost field. `usageMetadata` (native path) / OpenAI-compat `usage` (the funnel's path) reports `promptTokenCount`/`candidatesTokenCount`/`totalTokenCount` (+ `cachedContentTokenCount`, `thoughtsTokenCount`). USD only via **Google Cloud Billing / BigQuery export** (label-attributable, but heavyweight and lagging hours→a day). (Known caveat: `candidatesTokenCount` can under-report vs billed output on some models when thinking tokens are excluded — itself a real drift signal, below.) | YES (in-response usage metadata) | Per-call token usage in-response; **USD export is heavyweight + lagged** | **internal-derived** cost; provider tokens replace our estimated token counts; billing export is a FUTURE reconciliation input (registered follow-up, alongside FD-11's invoice-drift REPORTING) |
+| **`gemini-api`** (`metered_gemini_bench`) | **NO** per-call USD cost field. `usageMetadata` (native path) / OpenAI-compat `usage` (the funnel's path) reports `promptTokenCount`/`candidatesTokenCount`/`totalTokenCount` (+ `cachedContentTokenCount`, `thoughtsTokenCount`). USD only via **Google Cloud Billing / BigQuery export** (label-attributable, but heavyweight and lagging hours→a day). (Known caveat: `candidatesTokenCount` can under-report vs billed output on some models when thinking tokens are excluded — itself a real drift signal, below.) | YES (in-response usage metadata) | Per-call token usage in-response; **USD export is heavyweight + lagged** | **internal-derived** cost; provider tokens replace our estimated token counts; billing export is a FUTURE reconciliation input (registered follow-up, alongside FD-11's invoice-drift REPORTING) | <!-- tracked: CMT-1929 -->
 
 **Honest architectural consequence:** only OpenRouter gives us a provider-reported
 COST today; Groq and Gemini give us authoritative provider-reported USAGE (tokens) but
@@ -607,8 +608,8 @@ metered-lease machine (C2-5); the multi-machine slice mechanics are Increment D.
   impossible by ordering, asserted).
 - **Build-vs-reuse vs DriftSpendLedger (I-2/LF-F5, FD-17).** A NEW ledger (distinct
   domain) reusing the write-discipline, because the gate needs O(1) never-cached
-  reads. A registered follow-up (Close the Loop) migrates drift-checks onto the same
-  substrate and thereby closes the deferred `drift-spend-cross-machine` child. The two
+  reads. A registered follow-up (Close the Loop) migrates drift-checks onto the same <!-- tracked: CMT-1929 -->
+  substrate and thereby closes the deferred `drift-spend-cross-machine` child. The two <!-- tracked: CMT-1929 -->
   ledgers never overlap in domain.
 - **Two-phase reserve/settle with IDEMPOTENT TERMINAL STATES and a locked
   RESERVE-EXPIRY sweep (A-B2 / A2-1 / scal-F5).** (This money-layer sweep is named
@@ -1096,9 +1097,9 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
   dedup/coalescing (one message per episode, money-critical on a distinct lane);
   routine self-healed fallback churn is jsonl-only (a digest line ONLY on a
   rate-spike — Near-Silent Notifications).** *Not cheap*, frontloaded.
-- **FD-7 — Amortized subscription-cost estimation is OUT OF SCOPE (the DEFERRAL is
+- **FD-7 — Amortized subscription-cost estimation is OUT OF SCOPE (the DEFERRAL is <!-- tracked: CMT-1929 -->
   cheap-to-change-after); the `$0 (subscription — not per-token billed)` DISPLAY ships
-  now and is frontloaded.** Deferral tag survives contest.
+  now and is frontloaded.** Deferral tag survives contest. <!-- tracked: CMT-1929 -->
 - **FD-8 — The price-refresh job ships OFF by default, free-probe first,
   metered/web-verify probes manual-only + budget-capped, FORWARD-ONLY
   (`effectiveAt ≥ now`, day-aligned, `corrects: null`, never credit/subsidy rows),
@@ -1153,7 +1154,7 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
   `DARK_GATE_EXCLUSIONS` action-bearing cases; Increment C ships dryRun-first
   live-on-dev.** *Not cheap*, frontloaded.
 - **FD-17 — Build a NEW `MeteredSpendLedger` (distinct domain) reusing
-  DriftSpendLedger's write-discipline; a registered follow-up migrates drift-checks
+  DriftSpendLedger's write-discipline; a registered follow-up migrates drift-checks <!-- tracked: CMT-1929 -->
   onto the substrate and closes `drift-spend-cross-machine`.** *Not cheap*,
   frontloaded.
 - **FD-18 — Every canonical price point's `effectiveAt` is UTC-day-aligned
@@ -1189,7 +1190,7 @@ side-effects, money, identity, published interface) overrides any "cheap" tag.
   OpenRouter reports per-call USD cost in-response (+ a `/generation` cost + `/credits`
   balance); Groq and Gemini report authoritative per-call TOKEN usage but NO cheap
   per-call USD cost (Gemini USD only via the heavyweight lagged Cloud-Billing export —
-  a registered follow-up reconciliation input alongside FD-11). The provider-report
+  a registered follow-up reconciliation input alongside FD-11). The provider-report <!-- tracked: CMT-1929 -->
   store is NEVER a money-gate input (unit-tested, the twin of FD-9/FD-12). Lands:
   capture + display in Increment A (empty until metered dispatch lands), the
   authoritative booked-vs-reported reconciliation in Increment B (extends FD-11's
@@ -1281,7 +1282,7 @@ Only the **alert layer (Increment C)** introduces monitor/notice sources:
 
 Composes with No Silent Degradation: every detection + heal-attempt is audited to the
 scrubbed metadata-only `logs/routing-spend-alerts.jsonl`. The door-dark watcher's gate
-extraction into the reusable `SelfHealGate` layer is a registered follow-up (Close the
+extraction into the reusable `SelfHealGate` layer is a registered follow-up (Close the <!-- tracked: CMT-1929 -->
 Loop).
 
 ## Testing (Testing Integrity Standard — three tiers; I-6 / B5 / LF-F3)
@@ -1396,7 +1397,7 @@ math is unchanged.
   after the call must never re-open committed headroom). The heavyweight lagged path —
   monthly invoices / Google Cloud Billing (BigQuery) export — is Rejected as any
   real-time source and retained as a FUTURE drift-detection input (registered
-  follow-up, alongside FD-11's booked-vs-billed reporting).
+  follow-up, alongside FD-11's booked-vs-billed reporting). <!-- tracked: CMT-1929 -->
 - **A live price service instead of a git manifest (X-G1).** Rejected for the gate:
   a network dependency on the money path adds a fail-open temptation and an
   unreviewed admission channel. The observed-cache + promotion flow captures the

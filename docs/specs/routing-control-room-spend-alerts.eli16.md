@@ -159,3 +159,12 @@ per-door money tracking depends on that other work landing.
 
 Each part is reversible and independently switched, and nothing about the money can
 happen until a human types the PIN.
+
+## Status update (2026-07-08)
+
+The operator approved this design conversationally on 2026-07-07 (topic 29723) and the money
+increment (Increment B) is now built: the spending ledger, the fail-closed cap gate, the
+PIN-approved plan flow for raising caps / arming doors, and the instant freeze button. It all
+ships switched OFF for everyone — turning the money layer on is an explicit operator action,
+and even then every paid door stays off until you arm it with your PIN, one by one.
+Constitutional anchor: "Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One."

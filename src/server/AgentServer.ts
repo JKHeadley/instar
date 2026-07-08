@@ -111,6 +111,15 @@ import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
+import { MeteredSpendLedger } from '../core/MeteredSpendLedger.js';
+import { RoutingSpendCapsStore } from '../core/RoutingSpendCapsStore.js';
+import { MeteredSpendGate } from '../core/MeteredSpendGate.js';
+import { RenderedPlanStore } from '../core/RenderedPlanStore.js';
+import { PinAttemptStore } from '../core/PinAttemptStore.js';
+import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertResolver.js';
+import { DEFAULT_FRESHNESS_SLA_DAYS } from '../core/routingPriceAuthority.js';
+import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
+import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
 import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
@@ -246,6 +255,15 @@ export class AgentServer {
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private routingPriceAuthority: RoutingPriceAuthority | null = null;
+  /** Increment B money layer — all null unless routingSpend.money.enabled === true (FD-16). */
+  private meteredSpendLedger: MeteredSpendLedger | null = null;
+  private routingSpendCapsStore: RoutingSpendCapsStore | null = null;
+  private meteredSpendGate: MeteredSpendGate | null = null;
+  private spendPlanStore: RenderedPlanStore | null = null;
+  private pinAttemptStore: PinAttemptStore | null = null;
+  private meteredSweepTimer: ReturnType<typeof setInterval> | null = null;
+  private spendAlertResolver: SpendAlertResolver | null = null;
+  private spendAlertTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
@@ -1125,6 +1143,154 @@ export class AgentServer {
           } catch (err) {
             console.warn('[instar] routing-price-authority init failed (non-fatal):', err);
             this.routingPriceAuthority = null;
+          }
+        }
+
+        // Durable per-IP PIN-attempt lockout (S2-1) — hardens EVERY PIN route
+        // (mandates, money surfaces, external-hog arm) so a restart no longer
+        // resets brute-force lockout. Independent of the money layer.
+        try {
+          this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir });
+        } catch (err) {
+          // @silent-fallback-ok: loud warn + degrade to the pre-existing in-memory
+          // lockout (defence-in-depth layer, never the auth decision itself).
+          console.warn('[instar] pin-attempt store init failed (non-fatal — in-memory lockout only):', err);
+          this.pinAttemptStore = null;
+        }
+
+        // ── Increment B MONEY layer (routing-control-room-spend §Layer 3 / Surface 2).
+        // EXPLICIT enable only (`routingSpend.money.enabled === true`) — a documented
+        // DARK_GATE_EXCLUSIONS action-bearing case (FD-16): NEVER resolveDevAgentGate.
+        // Even enabled, every door stays deny-by-default until a per-door PIN go-live.
+        const moneyCfg = (options.config as {
+          routingSpend?: { money?: { enabled?: boolean; reserveTtlMs?: number } };
+        }).routingSpend?.money;
+        if (moneyCfg?.enabled === true) {
+          try {
+            this.meteredSpendLedger = new MeteredSpendLedger({
+              stateDir: options.config.stateDir,
+              reserveTtlMs: moneyCfg.reserveTtlMs,
+            });
+            this.routingSpendCapsStore = new RoutingSpendCapsStore({
+              stateDir: options.config.stateDir,
+              knownKeyRefs: new Set(Object.keys(DEFAULT_METERED_CAPS)),
+              knownDoors: new Set([...METERED_ROUTING_DOORS] as string[]),
+            });
+            this.spendPlanStore = new RenderedPlanStore();
+            const machineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+            const poolOn = (options.config as {
+              multiMachine?: { sessionPool?: { enabled?: boolean; stage?: string } };
+            }).multiMachine?.sessionPool?.enabled === true;
+            this.meteredSpendGate = this.routingPriceAuthority
+              ? new MeteredSpendGate({
+                  ledger: this.meteredSpendLedger,
+                  prices: this.routingPriceAuthority,
+                  capsStore: this.routingSpendCapsStore,
+                  machineId,
+                  // Single-machine trivially self-confirms (it IS the pool). On a
+                  // multi-machine pool the REAL designation re-confirmation plumbing
+                  // lands with the metered dispatch seam — until then the gate
+                  // SELF-FENCES (fails closed) there, the safe direction, matching
+                  // the spec's own "paid routing is single-machine until D".
+                  leaseConfirmedAgoMs: () => (poolOn ? null : 0),
+                })
+              : null;
+            // Reserve-expiry sweep: at boot + cadence (money-side; takes the per-key mutex).
+            // @silent-fallback-ok: a failed sweep pass retries on the next cadence tick;
+            // un-expired reserves only ever OVER-count committed (the safe direction).
+            const sweep = () => void this.meteredSpendLedger?.sweepExpired().catch(() => {});
+            sweep();
+            this.meteredSweepTimer = setInterval(sweep, 5 * 60 * 1000);
+            this.meteredSweepTimer.unref?.();
+
+            // Stale-price / observed-drift alerts ride Increment B (C5-5: stale pricing
+            // changes money ADMISSION behavior, so its alarm belongs to the money
+            // increment) on the minimal resolver foundation — ladder + lifeline fallback.
+            const alertsCfg = (options.config as {
+              routingSpend?: { alerts?: { telegramTopicId?: number | null }; money?: { priceStaleCheckIntervalHours?: number } };
+            }).routingSpend;
+            const tg = this.telegramAdapter;
+            if (tg) {
+              const persistPath = path.join(options.config.stateDir, 'state', 'routing-spend-alert-topic.json');
+              this.spendAlertResolver = new SpendAlertResolver({
+                configuredTopicId: () => {
+                  const id = alertsCfg?.alerts?.telegramTopicId;
+                  return typeof id === 'number' && Number.isFinite(id) ? id : undefined;
+                },
+                readPersistedTopicId: () => {
+                  try {
+                    const raw = JSON.parse(fs.readFileSync(persistPath, 'utf-8')) as { topicId?: number };
+                    return typeof raw.topicId === 'number' ? raw.topicId : undefined;
+                  } catch {
+                    // @silent-fallback-ok: no persisted record yet — rung 2 simply misses.
+                    return undefined;
+                  }
+                },
+                persistTopicId: (topicId) => {
+                  try {
+                    const tmp = persistPath + '.tmp';
+                    fs.writeFileSync(tmp, JSON.stringify({ topicId }), { mode: 0o600 });
+                    fs.renameSync(tmp, persistPath);
+                  } catch {
+                    // @silent-fallback-ok: a failed persist means the next resolve re-runs
+                    // the ladder; creation stays fenced, so no duplicate can result.
+                  }
+                },
+                // Single machine trivially self-confirms (it IS the serving lease); on a
+                // multi-machine pool the confirmed-lease plumbing rides the C increment —
+                // until then this machine does NOT create (fail toward the lifeline).
+                servingLeaseConfirmedAgoMs: () => (poolOn ? null : 0),
+                createTopic: async () => {
+                  const t = await tg.createForumTopic('💰 Routing & Spend Alerts', undefined, {
+                    origin: 'system',
+                    bounded: true,
+                    label: 'routing-spend-alerts',
+                  });
+                  return t.topicId;
+                },
+                sendToTopic: async (topicId, text) => {
+                  await tg.sendToTopic(topicId, text);
+                  return true;
+                },
+                lifelineTopicId: () => tg.getLifelineTopicId(),
+              });
+              const staleCheck = () => {
+                try {
+                  const prices = this.routingPriceAuthority;
+                  const caps = this.routingSpendCapsStore;
+                  const resolver = this.spendAlertResolver;
+                  if (!prices || !caps || !resolver) return;
+                  prices.reloadIfChanged();
+                  const store = caps.read();
+                  for (const [door, g] of Object.entries(store.goLive)) {
+                    if (!g.enabled) continue; // staleness only alarms where money can move
+                    const res = prices.resolve(door, '__staleness-probe__', Date.now());
+                    if (res.priceStale && res.newestPointAgeDays !== null) {
+                      const meta = prices.doorMetaFor(door);
+                      void resolver.emit(
+                        buildStalePriceAlert(door, res.newestPointAgeDays, meta?.freshnessSlaDays ?? DEFAULT_FRESHNESS_SLA_DAYS),
+                      );
+                    }
+                  }
+                } catch {
+                  // @silent-fallback-ok: the alert cadence is observability — a failed
+                  // pass retries next tick; it must never disturb the server loop.
+                }
+              };
+              const staleIntervalMs = Math.max(1, alertsCfg?.money?.priceStaleCheckIntervalHours ?? 6) * 60 * 60 * 1000;
+              staleCheck();
+              this.spendAlertTimer = setInterval(staleCheck, staleIntervalMs);
+              this.spendAlertTimer.unref?.();
+            }
+          } catch (err) {
+            // @silent-fallback-ok: NOT a silent fallback — fail CLOSED, loudly: a
+            // money-layer init failure leaves every component null, the routes 503,
+            // and no metered admission is possible anywhere.
+            console.error('[instar] routing-spend MONEY layer init FAILED (fail-closed — money routes 503):', err);
+            this.meteredSpendLedger = null;
+            this.routingSpendCapsStore = null;
+            this.meteredSpendGate = null;
+            this.spendPlanStore = null;
           }
         }
 
@@ -2448,6 +2614,11 @@ export class AgentServer {
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
       routingPriceAuthority: this.routingPriceAuthority,
+      meteredSpendLedger: this.meteredSpendLedger,
+      routingSpendCapsStore: this.routingSpendCapsStore,
+      meteredSpendGate: this.meteredSpendGate,
+      spendPlanStore: this.spendPlanStore,
+      pinAttemptStore: this.pinAttemptStore,
       resourceLedger: this.resourceLedger,
       processFootprintMonitor: this.processFootprintMonitor,
       approvalLedger: this.approvalLedger,
@@ -4230,6 +4401,8 @@ export class AgentServer {
     }
     if (this.featureMetricsPruneTimer) {
       try { clearInterval(this.featureMetricsPruneTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+      try { if (this.meteredSweepTimer) clearInterval(this.meteredSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+      try { if (this.spendAlertTimer) clearInterval(this.spendAlertTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       this.featureMetricsPruneTimer = null;
     }
     if (this.tokenLedger) {

@@ -3258,12 +3258,34 @@ export interface InstarConfig {
     enabled?: boolean;
     /** Daily-token-rollup retention (days); default 400. Governs the small spend-history table, NOT the raw 30d rows. */
     tokenRollupRetentionDays?: number;
-    /** Alert routing (Increment C — inert here). */
+    /**
+     * Increment B MONEY authority (ledger + gate + PIN caps/go-live routes +
+     * stale-price alerts). A documented DARK_GATE_EXCLUSIONS action-bearing case
+     * (FD-16): absent/false = DARK for EVERYONE including dev agents — it never
+     * rides resolveDevAgentGate. Enabling exposes the PIN-gated control routes;
+     * arming a door additionally requires the operator's PIN go-live per door
+     * (deny-by-default with no go-live record).
+     */
+    money?: {
+      enabled?: boolean;
+      /** Reserve-expiry sweep TTL override (ms); default 15 min. */
+      reserveTtlMs?: number;
+      /** Stale-price check cadence (hours); default 6. */
+      priceStaleCheckIntervalHours?: number;
+    };
+    /** Alert routing (resolver foundation ships with B; full channel abstraction is Increment C). */
     alerts?: {
-      /** Dedicated "Routing Spend" Telegram topic id (Increment C). */
+      /** Dedicated "Routing Spend" Telegram topic id (rung 1 of the resolution ladder — never creates). */
       telegramTopicId?: number | null;
       /** Enabled alert channels (Increment C); e.g. ["telegram"]. */
       channels?: string[];
+    };
+    /** Provider-report store retention (days); default 400 (Layer 1c — capture lands with the reconciliation PR). */
+    providerReportRetentionDays?: number;
+    /** Provider-reconciliation sweep config (Layer 1c — inert until the reconciliation PR). */
+    reconciliation?: {
+      sweepIntervalHours?: number;
+      driftAlertPct?: number;
     };
   };
   /** Session manager config */

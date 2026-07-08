@@ -327,12 +327,17 @@ export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendS
 export interface BuildSpendCapsOptions {
   /** Optional PIN-store caps override (Increment B). Absent in A → published defaults. */
   capsOverride?: Record<string, { provider?: string; lifetimeCapUsd?: number; dailyCapUsd?: number; frozen?: boolean; goLiveState?: SpendCapRow['goLiveState']; meteredLeaseHolder?: string | null }>;
+  /** Committed totals from the MeteredSpendLedger (Increment B). Absent → $0 (pre-B honest state). */
+  committed?: Record<string, { committedLifetimeUsd: number; committedDayUsd: number }>;
+  /** True once the money layer is enabled (Increment B) — flips the caps-view notes. */
+  moneyLive?: boolean;
 }
 
 /**
  * Compose the caps view: every metered key named by the routing chains, its caps, and
- * honest not-live / $0-committed state. Increment A has no money ledger, so committed
- * is $0 and every door is not-live. Pure.
+ * honest committed state. Pre-B (no money ledger) committed is $0 and every door is
+ * not-live; with the Increment-B money layer live the committed figures come from the
+ * authoritative ledger fold. Pure.
  */
 export function buildRoutingSpendCaps(opts: BuildSpendCapsOptions = {}): SpendCapsView {
   const keys: SpendCapRow[] = meteredKeysFromChains().map(({ keyRef, door }) => {
@@ -340,6 +345,9 @@ export function buildRoutingSpendCaps(opts: BuildSpendCapsOptions = {}): SpendCa
     const ov = opts.capsOverride?.[keyRef];
     const lifetimeCapUsd = ov?.lifetimeCapUsd ?? def?.lifetimeCapUsd ?? 0;
     const dailyCapUsd = ov?.dailyCapUsd ?? def?.dailyCapUsd ?? 0;
+    const committed = opts.committed?.[keyRef];
+    const committedLifetimeUsd = committed?.committedLifetimeUsd ?? 0;
+    const committedDayUsd = committed?.committedDayUsd ?? 0;
     return {
       keyRef,
       provider: ov?.provider ?? def?.provider ?? 'unknown',
@@ -347,23 +355,26 @@ export function buildRoutingSpendCaps(opts: BuildSpendCapsOptions = {}): SpendCa
       lifetimeCapUsd,
       dailyCapUsd,
       frozen: ov?.frozen ?? false,
-      committedLifetimeUsd: 0,
-      committedDayUsd: 0,
-      pctLifetime: 0,
-      pctDaily: 0,
+      committedLifetimeUsd,
+      committedDayUsd,
+      pctLifetime: lifetimeCapUsd > 0 ? Math.round((committedLifetimeUsd / lifetimeCapUsd) * 1000) / 10 : 0,
+      pctDaily: dailyCapUsd > 0 ? Math.round((committedDayUsd / dailyCapUsd) * 1000) / 10 : 0,
       goLiveState: ov?.goLiveState ?? 'not-live',
       meteredLeaseHolder: ov?.meteredLeaseHolder ?? null,
       coverageOk: true,
     };
   });
+  const anyLive = keys.some((k) => k.goLiveState === 'live');
   return {
     keys,
-    meteredLiveYet: false,
+    meteredLiveYet: anyLive,
     singleMachineNote:
-      'Paid routing is single-machine until Increment D — arming + the money gate ship in Increment B; ' +
+      'Paid routing is single-machine until Increment D — the money gate is single-writer; ' +
       'a single PIN-designated metered-lease machine holds the cap.',
-    note:
-      'Read-only caps VIEW (Increment A): every metered key with its published caps. No paid door is live yet, ' +
-      'so committed spend is $0 everywhere. Cap ADJUST + go-live (PIN-gated) are Increment B.',
+    note: opts.moneyLive
+      ? 'Caps view (Increment B): committed figures are the GATE-enforced booked-at-time-of-use totals from the ' +
+        'authoritative money ledger. Adjust/arm via the PIN-gated plan flow; freeze is Bearer (instant).'
+      : 'Read-only caps VIEW (Increment A): every metered key with its published caps. No paid door is live yet, ' +
+        'so committed spend is $0 everywhere. Cap ADJUST + go-live (PIN-gated) are Increment B.',
   };
 }

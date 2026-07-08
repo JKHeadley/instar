@@ -211,6 +211,23 @@ A READ-ONLY window on internal-LLM spend and the paid-door caps (docs/specs/rout
 }
 
 /**
+ * CLAUDE.md awareness block for the Routing Control Room MONEY layer (Increment B —
+ * ledger + fail-closed gate + PIN caps/arming). Unique content-sniff marker:
+ * `Routing Spend MONEY layer`. Ships DARK for everyone (DARK_GATE_EXCLUSIONS
+ * action-bearing; FD-16) — the section says so honestly (Maturity Honesty).
+ */
+export function ROUTING_SPEND_MONEY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Routing Spend MONEY layer (⚗️ experimental, DARK for everyone) — caps, arming, freeze
+
+Increment B of the Routing Control Room (docs/specs/routing-control-room-spend-alerts.md): the authoritative booking ledger + the O(1) FAIL-CLOSED money gate + PIN-gated cap controls. It ships DARK for EVERYONE — \`routingSpend.money.enabled\` is an explicit operator enable (never the dev-agent gate), and even enabled, every paid door stays deny-by-default until the operator PIN-arms it. All routes 503 while dark — say so honestly rather than guessing.
+- **Adjust caps / arm a door / unfreeze (PIN plan flow):** render the canonical plan first — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/plan -H 'Content-Type: application/json' -d '{"action":"caps-adjust","keyRef":"metered_openrouter_bench","provider":"openrouter","lifetimeCapUsd":60,"dailyCapUsd":25}'\` → show the operator the \`renderedText\`; the operator approves with their PIN → \`POST /routing-spend/caps/adjust\` \`{"pin":"<dashboard PIN>","planId":"…","nonce":"…"}\`. The commit derives SOLELY from the rendered plan — a field the operator never saw rendered cannot land. NEVER ask the user to paste the PIN into chat; point them at the dashboard Spend tab controls.
+- **FREEZE a key (Bearer — instant, always available to you):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/freeze -d '{"keyRef":"metered_openrouter_bench"}'\` — set-TRUE-only; halting money is always cheap. UNFREEZING is the operator's PIN action, never yours.
+- **Audit trail:** \`GET /routing-spend/caps/log\` — every cap/arm/freeze change with canonical before+after state.
+- **When to use** (PROACTIVE): a runaway paid-spend concern → FREEZE first, ask questions after. User says "raise the cap / arm the paid door" → drive the plan flow and hand them the rendered plan + the dashboard for the PIN — never improvise a config edit (\`PATCH /config\` structurally cannot touch money state, by design).
+`;
+}
+
+/**
  * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
  * incident) + the API fresh-respawn lever. Appended to NEW installs as part of
  * the Stuck-Context Recovery section, and patched onto agents that already
@@ -4820,6 +4837,15 @@ setTimeout(() => process.exit(0), 2000);
       content += ROUTING_SPEND_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Routing Spend view section');
+    }
+
+    // Routing Spend MONEY layer (Increment B) — Agent Awareness + Migration Parity:
+    // existing agents learn the PIN plan flow + the Bearer freeze + the dark-by-default
+    // posture. Content-sniff on the unique heading keeps it idempotent.
+    if (!content.includes('Routing Spend MONEY layer')) {
+      content += ROUTING_SPEND_MONEY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Routing Spend MONEY layer section');
     }
 
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent

@@ -120,3 +120,144 @@ describe('GET /routing-spend/summary + /caps (integration)', () => {
     expect(res.status).toBe(503);
   });
 });
+
+// ── Increment B — MONEY surfaces (Surface 2) ────────────────────────────────
+// The full HTTP pipeline for the PIN-gated plan flow, the Bearer freeze, and the
+// dark-by-default posture (routingSpend.money.enabled is a DARK_GATE_EXCLUSIONS
+// action-bearing case — 503 even on a developmentAgent unless explicitly true).
+import { MeteredSpendLedger } from '../../src/core/MeteredSpendLedger.js';
+import { RoutingSpendCapsStore } from '../../src/core/RoutingSpendCapsStore.js';
+import { RenderedPlanStore } from '../../src/core/RenderedPlanStore.js';
+import { PinAttemptStore } from '../../src/core/PinAttemptStore.js';
+
+const PIN = '123456';
+
+function moneyCtx(opts: { moneyOn?: boolean } = {}): RouteContext {
+  const base = ctx() as unknown as Record<string, unknown>;
+  const config = base.config as Record<string, unknown>;
+  config.dashboardPin = PIN;
+  config.machineId = 'm-test';
+  config.routingSpend = { tokenRollupRetentionDays: 400, ...(opts.moneyOn === false ? {} : { money: { enabled: true } }) };
+  base.meteredSpendLedger = opts.moneyOn === false ? null : new MeteredSpendLedger({ stateDir });
+  base.routingSpendCapsStore = opts.moneyOn === false ? null : new RoutingSpendCapsStore({ stateDir });
+  base.spendPlanStore = opts.moneyOn === false ? null : new RenderedPlanStore();
+  base.pinAttemptStore = new PinAttemptStore({ stateDir });
+  return base as unknown as RouteContext;
+}
+
+describe('Increment B money routes (integration)', () => {
+  it('ALL money routes 503 when routingSpend.money.enabled is not explicitly true — even on a dev agent', async () => {
+    const app = appWith(moneyCtx({ moneyOn: false }));
+    for (const [method, url] of [
+      ['post', '/routing-spend/plan'],
+      ['post', '/routing-spend/caps/adjust'],
+      ['post', '/routing-spend/go-live'],
+      ['post', '/routing-spend/unfreeze'],
+      ['post', '/routing-spend/freeze'],
+      ['get', '/routing-spend/caps/log'],
+    ] as const) {
+      const res = await (request(app) as unknown as Record<string, (u: string) => request.Test>)[method](url);
+      expect(res.status, `${method} ${url}`).toBe(503);
+    }
+  });
+
+  it('the full PIN plan flow: render → commit applies EXACTLY the rendered fields', async () => {
+    const c = moneyCtx();
+    const app = appWith(c);
+    const plan = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'metered_openrouter_bench', provider: 'openrouter', lifetimeCapUsd: 50, dailyCapUsd: 20 });
+    expect(plan.status).toBe(200);
+    expect(plan.body.renderedText).toContain('$20.00');
+    const commit = await request(app).post('/routing-spend/caps/adjust').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(commit.status).toBe(200);
+    expect(commit.body.store.caps.metered_openrouter_bench.lifetimeCapUsd).toBe(50);
+    // The caps VIEW now reflects the store.
+    const caps = await request(app).get('/routing-spend/caps');
+    const row = caps.body.keys.find((k: { keyRef: string }) => k.keyRef === 'metered_openrouter_bench');
+    expect(row.lifetimeCapUsd).toBe(50);
+    expect(row.dailyCapUsd).toBe(20);
+  });
+
+  it('a wrong PIN 403s, the durable lockout counts down, and the commit never lands', async () => {
+    const c = moneyCtx();
+    const app = appWith(c);
+    const plan = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'metered_groq_bench', provider: 'groq', lifetimeCapUsd: 5, dailyCapUsd: 5 });
+    const bad = await request(app).post('/routing-spend/caps/adjust').send({ pin: '000000', planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(bad.status).toBe(403);
+    expect(bad.body.attemptsRemaining).toBeLessThan(5);
+    const caps = await request(app).get('/routing-spend/caps');
+    const row = caps.body.keys.find((k: { keyRef: string }) => k.keyRef === 'metered_groq_bench');
+    expect(row.lifetimeCapUsd).toBe(30); // untouched default
+  });
+
+  it('a consumed nonce refuses replay (single-use)', async () => {
+    const app = appWith(moneyCtx());
+    const plan = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'metered_openrouter_bench', provider: 'openrouter', lifetimeCapUsd: 50, dailyCapUsd: 20 });
+    const first = await request(app).post('/routing-spend/caps/adjust').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(first.status).toBe(200);
+    const replay = await request(app).post('/routing-spend/caps/adjust').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(replay.status).toBe(400);
+    expect(replay.body.code).toBe('consumed');
+  });
+
+  it('version drift between render and commit 409s (approve-what-you-saw)', async () => {
+    const c = moneyCtx();
+    const app = appWith(c);
+    const plan = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'metered_openrouter_bench', provider: 'openrouter', lifetimeCapUsd: 50, dailyCapUsd: 20 });
+    // A concurrent Bearer freeze bumps the store version underneath the plan.
+    await request(app).post('/routing-spend/freeze').send({ keyRef: 'metered_gemini_bench' });
+    const commit = await request(app).post('/routing-spend/caps/adjust').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(commit.status).toBe(409);
+    expect(commit.body.code).toBe('version-drift');
+  });
+
+  it('go-live arms a door via the plan flow and the caps view shows it live + designated', async () => {
+    const app = appWith(moneyCtx());
+    const plan = await request(app).post('/routing-spend/plan').send({ action: 'go-live', door: 'openrouter-api', keyRef: 'metered_openrouter_bench', enabled: true });
+    expect(plan.body.renderedText).toContain('ARM paid door');
+    expect(plan.body.renderedText).toContain('m-test');
+    const commit = await request(app).post('/routing-spend/go-live').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(commit.status).toBe(200);
+    const caps = await request(app).get('/routing-spend/caps');
+    const row = caps.body.keys.find((k: { keyRef: string }) => k.keyRef === 'metered_openrouter_bench');
+    expect(row.goLiveState).toBe('live');
+    expect(row.meteredLeaseHolder).toBe('m-test');
+    expect(caps.body.meteredLiveYet).toBe(true);
+  });
+
+  it('freeze is Bearer + instant (no plan, no PIN); unfreeze REQUIRES the PIN plan flow', async () => {
+    const app = appWith(moneyCtx());
+    const freeze = await request(app).post('/routing-spend/freeze').send({ keyRef: 'metered_openrouter_bench' });
+    expect(freeze.status).toBe(200);
+    expect(freeze.body.store.caps.metered_openrouter_bench.frozen).toBe(true);
+    // Unfreeze without a plan/PIN → refused.
+    const noPin = await request(app).post('/routing-spend/unfreeze').send({});
+    expect([400, 403]).toContain(noPin.status);
+    const plan = await request(app).post('/routing-spend/plan').send({ action: 'unfreeze', keyRef: 'metered_openrouter_bench' });
+    const commit = await request(app).post('/routing-spend/unfreeze').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(commit.status).toBe(200);
+    expect(commit.body.store.caps.metered_openrouter_bench.frozen).toBe(false);
+  });
+
+  it('a smuggled request field on the commit is ignored — the plan snapshot is the sole input (S2-3)', async () => {
+    const app = appWith(moneyCtx());
+    const plan = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'metered_openrouter_bench', provider: 'openrouter', lifetimeCapUsd: 50, dailyCapUsd: 20 });
+    const commit = await request(app)
+      .post('/routing-spend/caps/adjust')
+      .send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce, lifetimeCapUsd: 999999, keyRef: 'metered_gemini_bench' });
+    expect(commit.status).toBe(200);
+    expect(commit.body.store.caps.metered_openrouter_bench.lifetimeCapUsd).toBe(50); // the RENDERED value
+    expect(commit.body.store.caps.metered_gemini_bench).toBeUndefined(); // the smuggled key never landed
+  });
+
+  it('the audited cap-change log is Bearer-readable with before+after rows', async () => {
+    const app = appWith(moneyCtx());
+    await request(app).post('/routing-spend/freeze').send({ keyRef: 'metered_openrouter_bench' });
+    const log = await request(app).get('/routing-spend/caps/log');
+    expect(log.status).toBe(200);
+    expect(log.body.entries.length).toBeGreaterThanOrEqual(1);
+    const last = log.body.entries[log.body.entries.length - 1];
+    expect(last.action).toBe('freeze');
+    expect(last.before).toBeTruthy();
+    expect(last.after.caps.metered_openrouter_bench.frozen).toBe(true);
+  });
+});
