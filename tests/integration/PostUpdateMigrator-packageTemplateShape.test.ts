@@ -26,6 +26,10 @@ describe('PostUpdateMigrator package template shape', () => {
     const raw = execFileSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: repoRoot,
       encoding: 'utf-8',
+      // The pack file-list JSON crossed execFileSync's 1MB default maxBuffer at
+      // ~1.05MB (ENOBUFS, CI shard-4 2026-07-08) — same headroom as
+      // npm-pack-templates-smoke.test.ts.
+      maxBuffer: 16 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const parsed = JSON.parse(raw) as Array<{ files: Array<{ path: string }> }>;
@@ -47,6 +51,8 @@ describe('PostUpdateMigrator package template shape', () => {
     const raw = execFileSync('npm', ['pack', '--json', '--pack-destination', tmp], {
       cwd: repoRoot,
       encoding: 'utf-8',
+      // Same ENOBUFS headroom as above — the --json file list is ~1MB.
+      maxBuffer: 16 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const parsed = JSON.parse(raw) as Array<{ filename: string }>;
