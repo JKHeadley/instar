@@ -353,11 +353,17 @@ describe('ConversationRegistry', () => {
       // (R8-M1) converts the crash-orphaned LOGICAL intent (last word for its
       // pair) into an ambiguous-send suppressor. Flush captures the converted
       // state, then the journal is pruned.
-      const reg = makeRegistry();
+      // Pin `now` just after the journal timestamps so pruneSendGuardState()'s
+      // age check (AMBIGUOUS_DEDUP_TTL_MS = 7 days) is deterministic — otherwise
+      // the ambiguous-send ages past its 7-day TTL against the real wall clock
+      // and is pruned before the snapshot (a wall-clock time-bomb that went red
+      // exactly 7 days after the hardcoded 2026-07-01 journal date).
+      const fixedNow = () => new Date('2026-07-01T00:00:05.000Z');
+      const reg = makeRegistry({ now: fixedNow });
       reg.resolve(-111); // trigger load() (replay + R8-M1 conversion + state-dir create)
       await reg.flushSnapshot();
       SafeFsExecutor.safeUnlinkSync(journal, { operation: 'tests/unit/conversation-registry.test.ts — simulate pruning every superseded journal file' });
-      const reopened = makeRegistry();
+      const reopened = makeRegistry({ now: fixedNow });
       const snap = JSON.parse(fs.readFileSync(path.join(dir, 'state', 'conversation-registry.json'), 'utf-8'));
       // Nothing lost across snapshot → journal loss → reboot.
       expect(snap.bindPins['-111']).toEqual({ tuple: ['slack', 'C0AAAA11111', null], refcount: 1 });
