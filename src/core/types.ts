@@ -3302,6 +3302,16 @@ export interface InstarConfig {
     };
     /** Provider-report store retention (days); default 400 (Layer 1c — capture lands with the reconciliation PR). */
     providerReportRetentionDays?: number;
+    /**
+     * Operator-declared subscription costs per CLI door (REPORTING-ONLY — never a
+     * gate input; operator decision 2026-07-07: "amortize but show the math").
+     * The spend view amortizes each declared monthly price over the reporting
+     * window by CALENDAR TIME (subscriptions bill by time, not tokens) and shows
+     * the full derivation next to the figure. Absent doors keep the honest
+     * "$0 (subscription — not per-token billed)" display.
+     */
+    subscriptions?: Record<string, { monthlyUsd: number; label?: string }>;
+
     /** Provider-reconciliation sweep config (Layer 1c — inert until the reconciliation PR). */
     reconciliation?: {
       sweepIntervalHours?: number;

@@ -154,6 +154,108 @@ async function fetchOpenRouterModels(timeoutMs = 8000) {
   }
 }
 
+/**
+ * Web-verify (FD-8, operator-directed schedule 2026-07-07): DETERMINISTIC
+ * extraction from the providers' OFFICIAL pricing pages — the two doors whose
+ * prices are published on web pages only (Groq, Google). CONSERVATIVE by
+ * construction: any ambiguity yields NO point (an unknown price refuses rather
+ * than guesses); every candidate still passes isSanePoint + the plausibility
+ * clamp before the forward-only merge. No LLM, no metered spend — the fetch is
+ * free; any future LLM-assisted extraction stays manual + budget-capped.
+ */
+
+/** Strip tags to a pipe-delimited text stream (the page-shape the fixtures pin). */
+function stripHtml(html) {
+  return String(html ?? '').replace(/<[^>]+>/g, '|').replace(/\s+/g, ' ');
+}
+
+/** Groq page model labels for the tracked ids (the table names models in marketing case). */
+const GROQ_LABELS = { 'openai/gpt-oss-120b': /GPT OSS 120B/i };
+
+/** parseGroqPricingHtml — the groq.com/pricing table rows (fixture: pricing-page-groq). */
+export function parseGroqPricingHtml(html, nowMs) {
+  const points = [];
+  const rows = String(html ?? '').split(/<tr>/i);
+  for (const [modelId, label] of Object.entries(GROQ_LABELS)) {
+    if (!TRACKED['groq-api'].includes(modelId)) continue;
+    const row = rows.find((r) => label.test(stripHtml(r)));
+    if (!row) continue; // model row absent → refuse (page reshaped)
+    const txt = stripHtml(row);
+    const input = /Input Token Price[^$]*\$([0-9]+(?:\.[0-9]+)?)/i.exec(txt);
+    const output = /Output Token Price[^$]*\$([0-9]+(?:\.[0-9]+)?)/i.exec(txt);
+    if (!input || !output) continue; // shape drifted → refuse, never guess
+    points.push({
+      door: 'groq-api',
+      modelId: canonical(modelId),
+      inPerMtok: Number(input[1]),
+      outPerMtok: Number(output[1]),
+      effectiveAt: dayAlignedIso(nowMs),
+      recordedAt: new Date(nowMs).toISOString(),
+      source: 'groq-pricing-page',
+      corrects: null,
+    });
+  }
+  return points;
+}
+
+/** parseGooglePricingHtml — the ai.google.dev/pricing model card (fixture: pricing-page-google). */
+export function parseGooglePricingHtml(html, nowMs) {
+  const points = [];
+  const txt = stripHtml(html);
+  for (const modelId of TRACKED['gemini-api']) {
+    const at = txt.indexOf(canonical(modelId));
+    if (at < 0) continue;
+    const card = txt.slice(at, at + 2500);
+    // The PAID text rate only: "$X (text ..." — never the audio rate, never the free tier.
+    const input = /Input price[^$]*\$([0-9]+(?:\.[0-9]+)?) \(text/i.exec(card);
+    // Output: the first plain dollar figure after the label (thinking tokens included per the page).
+    const output = /Output price[^$]*\$([0-9]+(?:\.[0-9]+)?)/i.exec(card);
+    if (!input || !output) continue; // shape drifted → refuse, never guess
+    points.push({
+      door: 'gemini-api',
+      modelId: canonical(modelId),
+      inPerMtok: Number(input[1]),
+      outPerMtok: Number(output[1]),
+      effectiveAt: dayAlignedIso(nowMs),
+      recordedAt: new Date(nowMs).toISOString(),
+      source: 'google-pricing-page',
+      corrects: null,
+    });
+  }
+  return points;
+}
+
+/**
+ * Plausibility clamp vs the canonical manifest (parser-drift protection): an
+ * extracted price wildly off the reviewed one (>10x either way on either axis)
+ * is REFUSED — a reshaped marketing page must never flood the observed cache.
+ * No canonical point → the clamp passes (a brand-new door has no baseline).
+ */
+export function plausibleVsCanonical(point, manifest) {
+  const pts = (manifest?.points ?? []).filter(
+    (p) => p.door === point.door && canonical(p.modelId) === canonical(point.modelId),
+  );
+  if (pts.length === 0) return true;
+  const newest = pts[pts.length - 1];
+  const ok = (a, b) => !(a > 0 && b > 0) || (a / b <= 10 && b / a <= 10);
+  return ok(point.inPerMtok, newest.inPerMtok) && ok(point.outPerMtok, newest.outPerMtok);
+}
+
+/** Read the canonical manifest for the plausibility clamp (absent/corrupt → null → clamp passes). */
+function readManifest(p) {
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+async function fetchText(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
+  return res.text();
+}
+
 function parseArgs(argv) {
   const args = { scope: 'free-probes', budgetUsd: 0, dryRun: false, out: null, projectDir: process.cwd(), stateDir: null };
   for (let i = 0; i < argv.length; i++) {
@@ -174,8 +276,11 @@ async function main() {
   const outPath = args.out ?? path.join(stateDir, 'routing-prices.observed.json');
   const now = Date.now();
 
-  if (args.scope !== 'free-probes' && !(args.budgetUsd > 0)) {
-    // Metered / web-verify probes are MANUAL-ONLY + budget-capped (FD-8). No budget → refuse.
+  if (args.scope !== 'free-probes' && args.scope !== '+web-verify' && !(args.budgetUsd > 0)) {
+    // Metered probes are MANUAL-ONLY + budget-capped (FD-8). No budget → refuse.
+    // '+web-verify' is exempt: its DETERMINISTIC page fetch spends nothing (no
+    // LLM, no metered key) — any future LLM-assisted extraction stays behind a
+    // positive budget (fail-closed at 0 for that path).
     console.error(`[routing-price-refresh] scope '${args.scope}' requires a positive --budget-usd (metered probes are manual-only, budget-fail-closed). Refusing.`);
     process.exit(2);
     return;
@@ -192,8 +297,37 @@ async function main() {
   } catch (err) {
     notes.push(`openrouter-api: probe failed (${err?.message ?? err}) — skipped, no data written for this door`);
   }
-  // gemini-api / groq-api need a key → out of the free scope. Honestly reported, never guessed.
-  notes.push('gemini-api, groq-api: need an API key → not in free-probe scope (manual metered probe only)');
+  if (args.scope === '+web-verify') {
+    // Web-verify (operator-directed schedule): DETERMINISTIC extraction from the
+    // OFFICIAL pricing pages of the doors without machine-readable price APIs.
+    // Conservative fail-closed parsers + the plausibility clamp vs canonical;
+    // an unparseable page yields an honest note, never a guessed price.
+    const manifest = readManifest(path.join(args.projectDir, 'scripts', 'routing-prices.manifest.json'));
+    const pages = [
+      { door: 'groq-api', url: 'https://groq.com/pricing', parse: parseGroqPricingHtml },
+      { door: 'gemini-api', url: 'https://ai.google.dev/pricing', parse: parseGooglePricingHtml },
+    ];
+    for (const page of pages) {
+      try {
+        const html = await fetchText(page.url);
+        const pts = page.parse(html, now).filter((pt) => {
+          if (!isSanePoint(pt)) return false;
+          if (!plausibleVsCanonical(pt, manifest)) {
+            notes.push(`${page.door}: extracted price for ${pt.modelId} REFUSED by the plausibility clamp (>10x off the reviewed price — likely a reshaped page)`);
+            return false;
+          }
+          return true;
+        });
+        candidates.push(...pts);
+        notes.push(`${page.door}: ${pts.length} price(s) extracted from the official pricing page${pts.length === 0 ? ' (page shape not confidently parseable — refused, never guessed)' : ''}`);
+      } catch (err) {
+        notes.push(`${page.door}: pricing-page fetch failed (${err?.message ?? err}) — skipped, no data written for this door`);
+      }
+    }
+  } else {
+    // gemini-api / groq-api need a key → out of the free scope. Honestly reported, never guessed.
+    notes.push('gemini-api, groq-api: need an API key → not in free-probe scope (manual metered probe / scheduled web-verify)');
+  }
 
   const existing = readObserved(outPath);
   const { points, added } = mergeForwardOnly(existing, candidates);

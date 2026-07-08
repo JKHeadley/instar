@@ -1,0 +1,13 @@
+{
+ "source": "real https://groq.com/pricing static HTML — the <table> pricing region the web-verify parser consumes, byte-for-byte as served to a plain curl (no JS execution)",
+ "command": "curl -sL https://groq.com/pricing (trimmed to the pricing <table> element)",
+ "capturedAt": "2026-07-08T18:40:00Z",
+ "machine": "echo laptop (build worktree)",
+ "redactions": [],
+ "representativeRows": [
+  "GPT OSS 120B row: Input $0.15 / Output $0.60 per million tokens — the tracked groq-api model (openai/gpt-oss-120b)",
+  "GPT OSS 20B row: the near-name sibling the parser must NOT confuse with 120B",
+  "marketing markup: '$X (N.NNM / $1)*' parenthetical the parser must not misread as a second price"
+ ],
+ "note": "REAL bytes: the groq.com/pricing <table> region as served to a plain curl on 2026-07-08 — the exact untrusted marketing HTML the web-verify parser consumes; carries the GPT OSS 120B row ($0.15 in / $0.60 out per Mtok), the near-name 20B sibling, and the \"(N.NNM / $1)*\" parentheticals the parser must not misread."
+}

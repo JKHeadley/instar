@@ -50,6 +50,23 @@ const ROOT = path.resolve(__dirname, '..');
  * parser we KNOW consumes untrusted terminal text and bit us (the code=t bug).
  */
 export const SCRAPE_PARSERS = [
+  // routing-control-room-spend PR 4 (CMT-1929, operator directive 2026-07-07): the
+  // web-verify pricing-page parsers consume UNTRUSTED marketing HTML from the two
+  // doors without machine-readable price APIs — load-bearing for the observed
+  // price cache (parse drift would feed the promote-me hints garbage; the
+  // plausibility clamp is the second barrier).
+  {
+    parserSymbol: 'parseGroqPricingHtml',
+    fixtureSlug: 'pricing-page-groq',
+    testFile: 'tests/unit/routing-price-web-verify.test.ts',
+    testName: 'parses the REAL groq.com/pricing table bytes',
+  },
+  {
+    parserSymbol: 'parseGooglePricingHtml',
+    fixtureSlug: 'pricing-page-google',
+    testFile: 'tests/unit/routing-price-web-verify.test.ts',
+    testName: 'parses the REAL ai.google.dev/pricing flash-lite card bytes (PAID text rate, never audio/free)',
+  },
   {
     parserSymbol: 'FrameworkLoginDriver.parseArtifact',
     fixtureSlug: 'claude-url-code-paste',

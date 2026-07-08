@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-08T18:38:29.045Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 263,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot/cadenced observation work, not a self-triggered loop: the web-verify job is calendar-driven (output never changes input) and OFF by default; the amortized display emits nothing"
+  },
+  "verdict": "pass"
+}

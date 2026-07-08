@@ -1,0 +1,13 @@
+{
+ "source": "real https://ai.google.dev/pricing static HTML — the gemini-3.1-flash-lite pricing-card region the web-verify parser consumes, byte-for-byte as served to a plain curl (no JS execution)",
+ "command": "curl -sL https://ai.google.dev/pricing (trimmed to the flash-lite card region)",
+ "capturedAt": "2026-07-08T18:40:00Z",
+ "machine": "echo laptop (build worktree)",
+ "redactions": [],
+ "representativeRows": [
+  "Input price: Free of charge | $0.25 (text / image / video) | $0.50 (audio) — the parser must take the PAID text rate, never the audio rate and never the free tier",
+  "Output price (including thinking tokens): the paid text rate that follows",
+  "grounding/RPD marketing prices ($35 / 1,000 grounded prompts) the parser must not misread as per-token rates"
+ ],
+ "note": "REAL bytes: the ai.google.dev/pricing gemini-3.1-flash-lite card region as served to a plain curl on 2026-07-08 — carries the paid text rate ($0.25) beside the audio rate ($0.50) and free tier the parser must skip, and the thinking-tokens-inclusive output price ($1.50)."
+}

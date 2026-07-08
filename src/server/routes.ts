@@ -10191,6 +10191,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       adjustmentsSource: (ctx.config as { machineId?: string }).machineId ?? null,
       providerDaily,
       driftByDoor,
+      // Operator-declared subscription costs (reporting-only — "show the math").
+      subscriptions: ctx.config.routingSpend?.subscriptions,
     });
     res.json(summary);
   });

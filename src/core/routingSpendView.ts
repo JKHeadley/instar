@@ -57,6 +57,14 @@ export interface SpendSummaryRow {
   netUsd: number;
   /** The cap-enforced (committed-at-time-of-use) figure — 0 until Increment B's money ledger exists. */
   committedUsd: number;
+  /**
+   * Amortized subscription cost for a CLI door with an operator-declared monthly
+   * price (REPORTING-only; operator decision 2026-07-07). Null when undeclared
+   * or not a subscription door.
+   */
+  amortizedSubscriptionUsd: number | null;
+  /** The VISIBLE derivation of the amortized figure — the "show the math" contract. */
+  amortizationDerivation: string | null;
   priceBasis: PriceBasis;
   /** How the dollar figure was derived (Layer 1c). Always internal-derived / subscription / unpriced in Increment A. */
   costBasis: CostBasis;
@@ -82,6 +90,8 @@ export interface SpendSummaryTotals {
   committedUsd: number;
   unpricedTokensIn: number;
   unpricedTokensOut: number;
+  /** Amortized subscription total (counted ONCE per door) — null when none declared. */
+  amortizedSubscriptionUsd?: number | null;
 }
 
 export interface SpendSummary {
@@ -217,6 +227,13 @@ export interface BuildSpendSummaryOptions {
   providerDaily?: Array<{ day: string; door: string; modelId: string; providerCostUsd: number; reportedCalls: number }>;
   /** Layer 1c: latest signed reconciliation driftPct per door (display-only). */
   driftByDoor?: Record<string, number>;
+  /**
+   * Operator-declared subscription costs per CLI door (reporting-only). The
+   * composer amortizes by CALENDAR TIME over the door's ACTIVE days in the
+   * window and emits the full derivation string (operator decision 2026-07-07:
+   * "amortize but make sure we can show the math and how everything is derived").
+   */
+  subscriptions?: Record<string, { monthlyUsd: number; label?: string }>;
 }
 
 /**
@@ -227,6 +244,8 @@ export interface BuildSpendSummaryOptions {
 export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendSummary {
   const graded = regrain(opts.buckets, opts.grain);
   const rowAcc = new Map<string, SpendSummaryRow>();
+  /** Distinct ACTIVE UTC days per door (for calendar-time subscription amortization). */
+  const activeDaysByDoor = new Map<string, Set<string>>();
 
   for (const b of graded) {
     // For total-grain the as-of is "now" (a single collapsed bucket has no meaningful
@@ -253,6 +272,8 @@ export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendS
         costBasis: costBasisFor(res.priceBasis),
         providerReportedUsd: null,
         providerDriftPct: null,
+        amortizedSubscriptionUsd: null,
+        amortizationDerivation: null,
         priceStale: res.priceStale,
         notLiveYet: METERED_ROUTING_DOORS.has(b.door as never),
         unpricedTokensIn: 0,
@@ -268,8 +289,41 @@ export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendS
     // The row's basis reflects its latest bucket (buckets arrive day-ASC).
     row.priceBasis = res.priceBasis;
     row.costBasis = costBasisFor(res.priceBasis);
+    {
+      const days = activeDaysByDoor.get(b.door) ?? new Set<string>();
+      days.add(new Date(b.bucketStartMs).toISOString().slice(0, 10));
+      activeDaysByDoor.set(b.door, days);
+    }
     row.priceStale = res.priceStale;
     rowAcc.set(key, row);
+  }
+
+  // Amortized subscription display (operator decision 2026-07-07 — reporting-only,
+  // never a gate input): a CLI door with a declared monthly price is amortized by
+  // CALENDAR TIME over its ACTIVE days in the window, with the FULL derivation
+  // visible ("show the math and how everything is derived"). 30.4375 = the average
+  // Gregorian month (365.25 / 12) — named in the derivation, never hidden.
+  if (opts.subscriptions) {
+    const AVG_DAYS_PER_MONTH = 30.4375;
+    for (const row of rowAcc.values()) {
+      const sub = opts.subscriptions[row.door];
+      if (!sub || !(sub.monthlyUsd > 0) || row.doorClass !== 'cli') continue;
+      const days = activeDaysByDoor.get(row.door)?.size ?? 0;
+      if (days === 0) continue;
+      const perDay = sub.monthlyUsd / AVG_DAYS_PER_MONTH;
+      // A door's subscription is shared across its models: allocate the door's
+      // per-day cost across the door's rows proportionally by token volume so the
+      // door-level sum stays exact. Simpler and exact-at-door-level: attach the
+      // full door figure to each row but label it DOOR-LEVEL in the derivation,
+      // and count it ONCE per door in the totals.
+      const amortized = Math.round(perDay * days * 1e4) / 1e4;
+      row.amortizedSubscriptionUsd = amortized;
+      row.amortizationDerivation =
+        `${sub.label ?? row.door}: $${sub.monthlyUsd.toFixed(2)}/mo ÷ 30.4375 avg days/mo = ` +
+        `$${perDay.toFixed(4)}/day × ${days} active day(s) in this window = $${amortized.toFixed(4)} ` +
+        `(DOOR-level calendar-time allocation — subscriptions bill by time, not tokens; ` +
+        `shown once per door, token volume alongside for context; reporting-only, never cap-enforced).`;
+    }
   }
 
   // Layer 1c provider-preferred basis: sum the daily provider aggregates per
@@ -325,6 +379,14 @@ export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendS
   totals.subsidyUsd = round6(totals.subsidyUsd);
   totals.creditUsd = round6(creditTotal);
   totals.netUsd = round6(Math.max(0, totals.grossUsd - totals.subsidyUsd - totals.creditUsd));
+  {
+    // Amortized subscription total: each door's DOOR-LEVEL figure counted once.
+    const perDoor = new Map<string, number>();
+    for (const r of rows) {
+      if (typeof r.amortizedSubscriptionUsd === 'number') perDoor.set(r.door, r.amortizedSubscriptionUsd);
+    }
+    totals.amortizedSubscriptionUsd = perDoor.size > 0 ? round6([...perDoor.values()].reduce((a, b) => a + b, 0)) : null;
+  }
 
   const horizonNote =
     opts.grain === 'hour'

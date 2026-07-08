@@ -5893,6 +5893,7 @@
             stat('Gross', usd(t.grossUsd)) +
             stat('Net (of subsidy/credits)', usd(t.netUsd)) +
             stat('Committed (cap-enforced)', usd(t.committedUsd)) +
+            (typeof t.amortizedSubscriptionUsd === 'number' ? stat('Subscriptions (amortized)', '~' + usd(t.amortizedSubscriptionUsd)) : '') +
             stat('Tokens in', num(t.tokensIn)) +
             stat('Tokens out', num(t.tokensOut)) +
             (unpriced > 0 ? stat('Unpriced tokens', num(unpriced)) : '') +
@@ -5923,7 +5924,11 @@
               if (r.priceBasis === 'subscription-zero') basis = '<span style="color:var(--text-dim)">subscription — not per-token billed</span>';
               else if (r.priceBasis === 'no-matching-point') basis = '<span style="color:var(--red)">unpriced (no matching price)</span>';
               else basis = escapeHtml(String(r.priceBasis)) + (r.priceStale ? ' <span style="color:var(--red)">(stale)</span>' : '');
-              const netCell = r.priceBasis === 'subscription-zero' ? '<span style="color:var(--text-dim)">$0 (subscription)</span>' : usd(r.netUsd);
+              const netCell = r.priceBasis === 'subscription-zero'
+                ? (typeof r.amortizedSubscriptionUsd === 'number'
+                    ? '<span title="' + escapeHtml(String(r.amortizationDerivation || '')) + '">~' + usd(r.amortizedSubscriptionUsd) + ' <span style="color:var(--text-dim);font-size:10px">amortized ⓘ</span></span>'
+                    : '<span style="color:var(--text-dim)">$0 (subscription)</span>')
+                : usd(r.netUsd);
               return '<tr style="border-top:1px solid var(--border)">' +
                 td('<b>' + escapeHtml(String(r.door)) + '</b>') +
                 td(escapeHtml(String(r.modelId))) +
@@ -5935,7 +5940,15 @@
                 td(basis) +
               '</tr>';
             }).join('') +
-            '</tbody></table>';
+            '</tbody></table>' +
+            (function () {
+              // "Show the math": each door's amortization derivation, verbatim, once.
+              const der = {}; rows.forEach((r) => { if (r.amortizationDerivation) der[r.door] = r.amortizationDerivation; });
+              const lines = Object.values(der);
+              return lines.length
+                ? '<div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.5"><b>Amortization math:</b><br>' + lines.map((l) => escapeHtml(String(l))).join('<br>') + '</div>'
+                : '';
+            })();
         }
 
         // Paid-door caps

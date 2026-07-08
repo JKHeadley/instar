@@ -104,6 +104,24 @@ Gemini report authoritative per-call TOKEN counts but no cheap per-call USD.
 - `GET /routing-spend/reconciliation` — the drift-record read surface; the spend summary rows
   carry `costBasis: "provider-reported"` and `providerReportedUsd` where reports exist.
 
+## Keeping prices current (the two refresh jobs)
+
+Two OFF-by-default, tier-1-supervised jobs keep the observed price cache current — `routing-price-refresh`
+(Mondays: the free OpenRouter model-list probe) and `routing-price-web-verify` (Tuesdays: the scheduled
+web-research check that reads the OFFICIAL Groq and Google pricing pages with conservative fail-closed
+parsers and a >10x plausibility clamp). Both write forward-only observations into the machine-local
+observed cache only; promoting an observed price into the reviewed canonical manifest is always the
+operator's PIN action.
+
+## Amortized subscription costs (with the math shown)
+
+Declare what a subscription door actually costs (`routingSpend.subscriptions`, e.g. Claude Max at
+$200/mo) and the Spend view stops showing a bare `$0` for it: the monthly price is amortized by
+CALENDAR TIME over the door's active days in the window, and the full derivation is displayed —
+`$200.00/mo ÷ 30.4375 avg days/mo = $6.5708/day × 2 active day(s) = $13.1417` — labeled as a
+door-level, reporting-only allocation that is never cap-enforced. Undeclared doors keep the honest
+`$0 (subscription — not per-token billed)` wording.
+
 ## Safety posture
 
 Reporting and money are strictly separated: provider reports, subsidies, credits, and observed
