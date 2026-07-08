@@ -241,8 +241,15 @@ export function plausibleVsCanonical(point, manifest) {
   return ok(point.inPerMtok, newest.inPerMtok) && ok(point.outPerMtok, newest.outPerMtok);
 }
 
-/** Read the canonical manifest for the plausibility clamp (absent/corrupt → null → clamp passes). */
-function readManifest(p) {
+/**
+ * Read the CALLER-SUPPLIED plausibility baseline (`--plausibility-baseline <path>`)
+ * for the clamp. The prober itself is structurally BASELINE-BLIND: it never names
+ * any reviewed price file in its own source (S2-2 — this script is observed-cache-
+ * only; the reviewed baseline's location is the CALLER's knowledge, see spec
+ * Layer 1 / FD-8). Absent/corrupt/unset → null → the clamp passes (no baseline).
+ */
+function readBaseline(p) {
+  if (!p) return null;
   try {
     return JSON.parse(fs.readFileSync(p, 'utf-8'));
   } catch {
@@ -266,6 +273,7 @@ function parseArgs(argv) {
     else if (a === '--out') args.out = argv[++i];
     else if (a === '--project-dir') args.projectDir = argv[++i];
     else if (a === '--state-dir') args.stateDir = argv[++i];
+    else if (a === '--plausibility-baseline') args.plausibilityBaseline = argv[++i];
   }
   return args;
 }
@@ -302,7 +310,7 @@ async function main() {
     // OFFICIAL pricing pages of the doors without machine-readable price APIs.
     // Conservative fail-closed parsers + the plausibility clamp vs canonical;
     // an unparseable page yields an honest note, never a guessed price.
-    const manifest = readManifest(path.join(args.projectDir, 'scripts', 'routing-prices.manifest.json'));
+    const manifest = readBaseline(args.plausibilityBaseline);
     const pages = [
       { door: 'groq-api', url: 'https://groq.com/pricing', parse: parseGroqPricingHtml },
       { door: 'gemini-api', url: 'https://ai.google.dev/pricing', parse: parseGooglePricingHtml },

@@ -44,3 +44,7 @@ No new self-triggered loop: the web-verify job is a fixed-cadence, OFF-by-defaul
 ## No-deferrals accounting
 
 This is the train's final increment; the pool-scope reconciliation merge remains the one tracked follow-up under CMT-1929 <!-- tracked: CMT-1929 -->.
+
+## S2-2 hardening round (post-CI, staged with this fix)
+
+CI's string-level S2-2 ratchet (`the prober source never names routing-prices.manifest.json`) caught the plausibility clamp's `readManifest` naming the canonical manifest in CODE — a genuine violation of the prober's structural manifest-blindness, not just a comment. Fixed by inverting the dependency: the prober now takes a generic READ-ONLY `--plausibility-baseline <path>` argument (absent → the clamp passes, no baseline), and the CALLER (the web-verify job template) passes the manifest's location. The prober source contains zero references to the reviewed price file; write-incapability is preserved by construction; the clamp behavior is unchanged (verified: sane passes, >10x refused, no-baseline passes).

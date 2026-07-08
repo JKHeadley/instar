@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-08T20:54:51.927Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 18,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "compliance fix to an existing cadenced observation job; no self-triggered loop added"
+  },
+  "verdict": "pass"
+}

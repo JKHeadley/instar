@@ -23,7 +23,9 @@ Run one routing-price web-verify pass. This job only INVOKES the deterministic p
    `test -f scripts/routing-price-refresh.mjs`
 
 2. **Run the deterministic prober at the web-verify scope (official pricing pages; zero metered spend — the fetch is free and no LLM is involved):**
-   `node scripts/routing-price-refresh.mjs --scope +web-verify`
+   `node scripts/routing-price-refresh.mjs --scope +web-verify --plausibility-baseline scripts/routing-prices.manifest.json`
+
+   (The `--plausibility-baseline` path is READ-ONLY input for the >10x sanity clamp — the prober's own source is structurally baseline-blind (S2-2) and can never write that file; you pass its location, the prober only compares against it.)
 
 3. **Tier-1 supervision (your job) — sanity-check the run, do NOT re-surface anything yourself.** Confirm the prober printed a well-formed JSON result (`added`, `totalObserved`, `notes`). A note saying a page was "not confidently parseable — refused, never guessed" or "REFUSED by the plausibility clamp" is a HEALTHY fail-closed outcome, not an error. The observed cache is REPORTING-ONLY; a real price drift surfaces in the Routing Spend dashboard tab's promote hint and the observed-drift alert, never as an edit here.
 
