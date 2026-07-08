@@ -222,3 +222,75 @@ describe('Routing Control Room MONEY layer stays DARK by default (FD-16)', () =>
     expect(log.status).toBe(503);
   });
 });
+
+// ── Increment C — the alert layer is ALIVE on the production init path on a
+// dev agent (dryRun-first), and DARK on the fleet (FD-16). ──
+describe('Routing Control Room ALERT layer E2E lifecycle (Increment C)', () => {
+  function fakeTelegram() {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    return {
+      sent,
+      adapter: {
+        sendToTopic: async (topicId: number, text: string) => {
+          sent.push({ topicId, text });
+        },
+        createForumTopic: async () => ({ topicId: 7777, name: '💰 Routing & Spend Alerts' }),
+        getLifelineTopicId: () => 999,
+      } as never,
+    };
+  }
+
+  async function boot(devAgent: boolean) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-alerts-e2e-'));
+    const stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+    const config = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: 'x',
+      requestTimeoutMs: 10000, version: '0.0.0',
+      developmentAgent: devAgent,
+      routingSpend: { tokenRollupRetentionDays: 400 },
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as unknown as InstarConfig;
+    const tg = fakeTelegram();
+    const server = new AgentServer({
+      config,
+      sessionManager: createMockSessionManager() as never,
+      state: new StateManager(stateDir),
+      telegram: tg.adapter,
+    });
+    await server.start();
+    return { server, tmpDir, tg };
+  }
+
+  it('dev agent: the alert layer constructs on the REAL boot path (dryRun soak) and audits a dispatch', async () => {
+    const { server, tmpDir } = await boot(true);
+    try {
+      const emitters = (server as unknown as { getSpendAlertEmitters(): { onGateEvent(e: unknown): void } | null }).getSpendAlertEmitters();
+      expect(emitters).not.toBeNull(); // feature is ALIVE on the production init path
+      emitters!.onGateEvent({ type: 'refusal', reason: 'cap-exceeded', keyRef: 'k1', detail: 'e2e > cap' });
+      await new Promise((r) => setTimeout(r, 30));
+      const auditPath = path.join(tmpDir, 'logs', 'routing-spend-alerts.jsonl');
+      expect(fs.existsSync(auditPath)).toBe(true);
+      const lines = fs.readFileSync(auditPath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(lines.some((l) => l.decision === 'dry-run' && l.kind === 'cap-hit')).toBe(true); // dryRun-FIRST (FD-16)
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/routing-spend-lifecycle.test.ts' });
+    }
+  });
+
+  it('fleet (no dev gate): the alert layer stays DARK — no emitters constructed', async () => {
+    const { server, tmpDir } = await boot(false);
+    try {
+      const emitters = (server as unknown as { getSpendAlertEmitters(): unknown }).getSpendAlertEmitters();
+      expect(emitters).toBeNull();
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/routing-spend-lifecycle.test.ts' });
+    }
+  });
+});

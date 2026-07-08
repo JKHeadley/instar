@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-08T17:14:09.333Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 1144,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Three new self-triggered notifiers: door-dark (episode budget = chain length + widening backoff + flapping breaker → converges to the bucket budget; eternal-sentinel rate floor while the chain stays dark), fallback-spike (one digest per hour bucket under sustained churn — bucket edge is the rate floor), cap-approach (edge latch per (kind,threshold,window) — horizon-independent; the daily re-arm is calendar-driven, not feedback-driven). All modeled + settling under the pinned fixture (47/47)."
+    }
+  },
+  "verdict": "pass"
+}

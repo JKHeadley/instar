@@ -117,6 +117,11 @@ import { MeteredSpendGate } from '../core/MeteredSpendGate.js';
 import { RenderedPlanStore } from '../core/RenderedPlanStore.js';
 import { PinAttemptStore } from '../core/PinAttemptStore.js';
 import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertResolver.js';
+import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
+import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
+import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
+import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { DEFAULT_FRESHNESS_SLA_DAYS } from '../core/routingPriceAuthority.js';
 import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
 import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
@@ -264,6 +269,11 @@ export class AgentServer {
   private meteredSweepTimer: ReturnType<typeof setInterval> | null = null;
   private spendAlertResolver: SpendAlertResolver | null = null;
   private spendAlertTimer: ReturnType<typeof setInterval> | null = null;
+  /** Increment C alert layer (dryRun-first live-on-dev — FD-16). */
+  private spendAlertDispatcher: SpendAlertDispatcher | null = null;
+  private spendAlertEmitters: SpendAlertEmitters | null = null;
+  /** Lazily-opened durable relay handle for money-critical alert delivery. */
+  private spendAlertRelayStore: SpendAlertRelayStore | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
@@ -1187,6 +1197,9 @@ export class AgentServer {
                   prices: this.routingPriceAuthority,
                   capsStore: this.routingSpendCapsStore,
                   machineId,
+                  // Increment C observer (signal-only, late-bound — the alert layer
+                  // constructs after this block; null while dark).
+                  onGateEvent: (ev) => this.spendAlertEmitters?.onGateEvent(ev),
                   // Single-machine trivially self-confirms (it IS the pool). On a
                   // multi-machine pool the REAL designation re-confirmation plumbing
                   // lands with the metered dispatch seam — until then the gate
@@ -1211,49 +1224,7 @@ export class AgentServer {
             }).routingSpend;
             const tg = this.telegramAdapter;
             if (tg) {
-              const persistPath = path.join(options.config.stateDir, 'state', 'routing-spend-alert-topic.json');
-              this.spendAlertResolver = new SpendAlertResolver({
-                configuredTopicId: () => {
-                  const id = alertsCfg?.alerts?.telegramTopicId;
-                  return typeof id === 'number' && Number.isFinite(id) ? id : undefined;
-                },
-                readPersistedTopicId: () => {
-                  try {
-                    const raw = JSON.parse(fs.readFileSync(persistPath, 'utf-8')) as { topicId?: number };
-                    return typeof raw.topicId === 'number' ? raw.topicId : undefined;
-                  } catch {
-                    // @silent-fallback-ok: no persisted record yet — rung 2 simply misses.
-                    return undefined;
-                  }
-                },
-                persistTopicId: (topicId) => {
-                  try {
-                    const tmp = persistPath + '.tmp';
-                    fs.writeFileSync(tmp, JSON.stringify({ topicId }), { mode: 0o600 });
-                    fs.renameSync(tmp, persistPath);
-                  } catch {
-                    // @silent-fallback-ok: a failed persist means the next resolve re-runs
-                    // the ladder; creation stays fenced, so no duplicate can result.
-                  }
-                },
-                // Single machine trivially self-confirms (it IS the serving lease); on a
-                // multi-machine pool the confirmed-lease plumbing rides the C increment —
-                // until then this machine does NOT create (fail toward the lifeline).
-                servingLeaseConfirmedAgoMs: () => (poolOn ? null : 0),
-                createTopic: async () => {
-                  const t = await tg.createForumTopic('💰 Routing & Spend Alerts', undefined, {
-                    origin: 'system',
-                    bounded: true,
-                    label: 'routing-spend-alerts',
-                  });
-                  return t.topicId;
-                },
-                sendToTopic: async (topicId, text) => {
-                  await tg.sendToTopic(topicId, text);
-                  return true;
-                },
-                lifelineTopicId: () => tg.getLifelineTopicId(),
-              });
+              this.spendAlertResolver ??= this.buildSpendAlertResolver(tg, options.config, poolOn);
               const staleCheck = () => {
                 try {
                   const prices = this.routingPriceAuthority;
@@ -1267,9 +1238,13 @@ export class AgentServer {
                     const res = prices.resolve(door, '__staleness-probe__', Date.now());
                     if (res.priceStale && res.newestPointAgeDays !== null) {
                       const meta = prices.doorMetaFor(door);
-                      void resolver.emit(
-                        buildStalePriceAlert(door, res.newestPointAgeDays, meta?.freshnessSlaDays ?? DEFAULT_FRESHNESS_SLA_DAYS),
-                      );
+                      const alert = buildStalePriceAlert(door, res.newestPointAgeDays, meta?.freshnessSlaDays ?? DEFAULT_FRESHNESS_SLA_DAYS);
+                      // Increment C: prefer the dispatcher (lane dedup + coalescing +
+                      // dryRun soak); the B resolver-direct path remains the fallback
+                      // when the alert layer is dark (byte-identical B behavior).
+                      const dispatcher = this.spendAlertDispatcher;
+                      if (dispatcher) void dispatcher.dispatch(alert);
+                      else void resolver.emit(alert);
                     }
                   }
                 } catch {
@@ -1292,6 +1267,86 @@ export class AgentServer {
             this.meteredSpendGate = null;
             this.spendPlanStore = null;
           }
+        }
+
+        // ── Increment C alert layer (routing-control-room-spend §Surface 2 Alerts).
+        // dryRun-FIRST live-on-dev (FD-16): `routingSpend.alerts.enabled` rides the
+        // dev-agent gate; `alerts.dryRun` defaults TRUE so a dev agent soaks the
+        // dispatch decisions in logs/routing-spend-alerts.jsonl before anything is
+        // delivered. Independent of the money layer — door-dark/fallback alerts can
+        // flow with no door ever armed (that is WHY the SERVING lease owns creation).
+        try {
+          const alertsCfgC = (options.config as {
+            routingSpend?: { alerts?: { enabled?: boolean; dryRun?: boolean } };
+          }).routingSpend?.alerts;
+          const alertsOn = resolveDevAgentGate(alertsCfgC?.enabled, options.config);
+          const tgC = this.telegramAdapter;
+          if (alertsOn && tgC) {
+            const poolOnC = (options.config as {
+              multiMachine?: { sessionPool?: { enabled?: boolean } };
+            }).multiMachine?.sessionPool?.enabled === true;
+            this.spendAlertResolver ??= this.buildSpendAlertResolver(tgC, options.config, poolOnC);
+            const auditPath = path.join(options.config.projectDir, 'logs', 'routing-spend-alerts.jsonl');
+            const auditSink = (entry: Record<string, unknown>) => {
+              try {
+                fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+                fs.appendFileSync(auditPath, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n', { mode: 0o600 });
+              } catch {
+                // @silent-fallback-ok: the audit line is observability — never blocks dispatch.
+              }
+            };
+            const channel = new TelegramSpendTopicChannel({
+              resolver: this.spendAlertResolver,
+              sendToTopic: async (topicId, text) => {
+                await tgC.sendToTopic(topicId, text);
+                return true;
+              },
+              lifelineTopicId: () => tgC.getLifelineTopicId(),
+              // Money-critical kinds ride the durable relay when the store opens
+              // (retry-until-delivered — delivery-robustness Layers 2/3; the
+              // DeliveryFailureSentinel drains this store). Opened lazily,
+              // per-agent-id isolated, degrade-to-direct-send on ANY failure.
+              enqueueDurable: (topicId, text) => {
+                try {
+                  this.spendAlertRelayStore ??= SpendAlertRelayStore.open(options.config.projectName, options.config.stateDir);
+                  const store = this.spendAlertRelayStore;
+                  const id = spendAlertDeliveryId(topicId, text);
+                  return store.enqueue({
+                    delivery_id: id,
+                    topic_id: topicId,
+                    text_hash: id,
+                    text,
+                    http_code: 0,
+                    attempted_port: options.config.port ?? 0,
+                    next_attempt_at: new Date().toISOString(),
+                  });
+                } catch {
+                  // @silent-fallback-ok: no sqlite / store unavailable — the channel
+                  // degrades to the direct send + lifeline ladder (delivery degrades,
+                  // never dies; the dispatcher's latch still requires a confirmed leg).
+                  return false;
+                }
+              },
+              audit: auditSink,
+            });
+            this.spendAlertDispatcher = new SpendAlertDispatcher({
+              channels: [channel],
+              dryRun: alertsCfgC?.dryRun !== false, // FD-16 dryRun-first
+              auditPath,
+            });
+            const machineIdC = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+            this.spendAlertEmitters = new SpendAlertEmitters({
+              dispatcher: this.spendAlertDispatcher,
+              machineId: machineIdC,
+            });
+          }
+        } catch (err) {
+          // @silent-fallback-ok: loud warn — a broken alert layer degrades to the
+          // Increment-B behavior (resolver-direct stale-price emission); it never
+          // touches money admission or the router path.
+          console.warn('[instar] routing-spend alert layer init failed (non-fatal — B-level alerts remain):', err);
+          this.spendAlertDispatcher = null;
+          this.spendAlertEmitters = null;
         }
 
         // Observable Intelligence × Responsible Resource: the audit trail is kept
@@ -4403,6 +4458,7 @@ export class AgentServer {
       try { clearInterval(this.featureMetricsPruneTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.meteredSweepTimer) clearInterval(this.meteredSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.spendAlertTimer) clearInterval(this.spendAlertTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+      try { await this.spendAlertDispatcher?.flushDigest(); } catch { /* @silent-fallback-ok: a failed final digest flush loses only a coalesced NOTICE at shutdown */ }
       this.featureMetricsPruneTimer = null;
     }
     if (this.tokenLedger) {
@@ -4520,6 +4576,77 @@ export class AgentServer {
    * its map in memory, so constructing a second instance on the same file would
    * lose updates between the two caches.
    */
+  /** Increment C — the router fan-out + gate observer reach the emitters here (late-bound; null while dark). */
+  getSpendAlertEmitters(): SpendAlertEmitters | null {
+    return this.spendAlertEmitters;
+  }
+
+  /**
+   * Shared builder for the "💰 Routing & Spend Alerts" topic resolver — used by
+   * BOTH the Increment-B money block (stale-price cadence) and the Increment-C
+   * alert layer, whichever constructs first. Rung 2 carries both halves: the
+   * machine-local persisted record AND the pool-published registry field
+   * (FD-6 — a future serving-lease holder inherits the id, never re-creates).
+   */
+  private buildSpendAlertResolver(
+    tg: TelegramAdapter,
+    config: { stateDir: string; machineId?: string; routingSpend?: { alerts?: { telegramTopicId?: number | null } } },
+    poolOn: boolean,
+  ): SpendAlertResolver {
+    const persistPath = path.join(config.stateDir, 'state', 'routing-spend-alert-topic.json');
+    const machineId = (config as { machineId?: string }).machineId;
+    const registry = new MachineIdentityManager(config.stateDir);
+    return new SpendAlertResolver({
+      configuredTopicId: () => {
+        const id = config.routingSpend?.alerts?.telegramTopicId;
+        return typeof id === 'number' && Number.isFinite(id) ? id : undefined;
+      },
+      readPersistedTopicId: () => {
+        try {
+          const raw = JSON.parse(fs.readFileSync(persistPath, 'utf-8')) as { topicId?: number };
+          return typeof raw.topicId === 'number' ? raw.topicId : undefined;
+        } catch {
+          // @silent-fallback-ok: no persisted record yet — rung 2 simply misses.
+          return undefined;
+        }
+      },
+      persistTopicId: (topicId) => {
+        try {
+          const tmp = persistPath + '.tmp';
+          fs.writeFileSync(tmp, JSON.stringify({ topicId }), { mode: 0o600 });
+          fs.renameSync(tmp, persistPath);
+        } catch {
+          // @silent-fallback-ok: a failed persist means the next resolve re-runs
+          // the ladder; creation stays fenced, so no duplicate can result.
+        }
+      },
+      // FD-6 rung 2, pool half: the replicated machine-registry field.
+      readPoolPublishedTopicId: () => registry.readAnyRoutingSpendAlertTopic(),
+      publishTopicId: (topicId) => {
+        if (!machineId) return; // single-machine installs: the local record suffices
+        registry.updateRoutingSpendAlertTopic(machineId, topicId);
+      },
+      // Single machine trivially self-confirms (it IS the serving lease); on a
+      // multi-machine pool the confirmed-lease plumbing is a tracked follow-up —
+      // until then this machine does NOT create (fail toward the lifeline)
+      // <!-- tracked: CMT-1929 -->.
+      servingLeaseConfirmedAgoMs: () => (poolOn ? null : 0),
+      createTopic: async () => {
+        const t = await tg.createForumTopic('💰 Routing & Spend Alerts', undefined, {
+          origin: 'system',
+          bounded: true,
+          label: 'routing-spend-alerts',
+        });
+        return t.topicId;
+      },
+      sendToTopic: async (topicId, text) => {
+        await tg.sendToTopic(topicId, text);
+        return true;
+      },
+      lifelineTopicId: () => tg.getLifelineTopicId(),
+    });
+  }
+
   getTopicOperatorStore(): TopicOperatorStore | null {
     return this.topicOperatorStore;
   }

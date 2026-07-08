@@ -379,7 +379,137 @@ const spendStalePriceAlert: SelfActionController = {
   },
 };
 
+/**
+ * Routing-spend door-dark escalation (routing-control-room-spend Increment C,
+ * src/core/SpendAlertEmitters.ts onChainExhausted). Convergence shape: a
+ * per-episode-bucket attempt budget (= chain length) + widening backoff + the
+ * dispatcher's edge latch downstream. Under a PERMANENTLY dark chain (the
+ * pressure that never clears) emissions converge to the episode budget per
+ * bucket — never a per-exhaustion flood.
+ */
+const spendDoorDarkBrakes: SelfActionController = {
+  id: 'spend-door-dark-brakes',
+  actionVerb: 'door-dark-notify',
+  models: 'src/core/SpendAlertEmitters.ts (onChainExhausted — episode budget = chain length, widening backoff, flapping wording)',
+  boundK: 6, // 2 episode buckets × chain length 3 over the horizon
+  perTargetBoundK: 6, // same chain each time — bounded by the episode budgets, not a ping-pong
+  ticks: 145, // 145 × 5min ≈ 12.1h — crosses one 6h episode-bucket boundary
+  tickMs: 5 * 60_000,
+  eternalSentinel: {
+    reason:
+      'A permanently dark chain must keep surfacing at a bounded rate while it persists (whole-chain exhaustion is gated work failing closed); the episode-bucket budget is the rate floor.',
+    rateFloorMs: 2 * 60 * 60_000, // ≥3 emissions per 6h bucket ⇒ one per ≤2h worst case
+  },
+  makeUnderPressure(f, sink) {
+    const CHAIN_LENGTH = 3;
+    const BACKOFF_BASE_MS = 5 * 60_000;
+    const BUCKET_MS = 6 * 60 * 60_000;
+    let bucket = -1;
+    let attempts = 0;
+    let nextAllowedAtMs = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        // The pressure: EVERY tick is a whole-chain exhaustion that never heals.
+        const nowMs = f.clock.nowMs();
+        const b = Math.floor(nowMs / BUCKET_MS);
+        if (b !== bucket) {
+          bucket = b;
+          attempts = 0;
+          nextAllowedAtMs = 0;
+        }
+        if (attempts >= CHAIN_LENGTH) return; // episode budget spent — the brake
+        if (nowMs < nextAllowedAtMs) return; // widening backoff — the spacing brake
+        attempts += 1;
+        nextAllowedAtMs = nowMs + BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
+        sink.emit({ verb: 'door-dark-notify', target: 'chain-JUDGE' });
+      },
+    };
+  },
+};
+
+/**
+ * Routing-spend fallback-spike digest (Increment C, SpendAlertEmitters
+ * onFallbackServed). Convergence shape: steady-state fallback churn is
+ * jsonl-only; ONE digest line fires exactly at the hourly ceiling crossing —
+ * the hour bucket is the latch, so sustained churn converges to one emission
+ * per hour (eternal-sentinel rate floor), never per-fallback noise.
+ */
+const spendFallbackSpike: SelfActionController = {
+  id: 'spend-fallback-spike',
+  actionVerb: 'fallback-spike-notify',
+  models: 'src/core/SpendAlertEmitters.ts (onFallbackServed — hourly ceiling edge, one per hour bucket)',
+  boundK: 3, // 3 hour-buckets over the horizon → at most one each
+  perTargetBoundK: 3,
+  ticks: 180, // 180 × 1min = 3h of sustained churn
+  tickMs: 60_000,
+  eternalSentinel: {
+    reason:
+      'Sustained fallback churn above the ceiling keeps surfacing once per hour bucket while it persists (primaries degrading is operator-relevant); the bucket edge is the rate floor.',
+    rateFloorMs: 60 * 60_000,
+  },
+  makeUnderPressure(f, sink) {
+    const CEILING = 60;
+    let hour = -1;
+    let count = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        // The pressure: a fallback serves EVERY MINUTE, forever (rate ≥ ceiling).
+        const h = Math.floor(f.clock.nowMs() / 3_600_000);
+        if (h !== hour) {
+          hour = h;
+          count = 0;
+        }
+        count += 1;
+        if (count === CEILING) sink.emit({ verb: 'fallback-spike-notify', target: `hour-${h}` });
+      },
+    };
+  },
+};
+
+/**
+ * Routing-spend cap-approach thresholds (Increment C, SpendAlertEmitters
+ * checkCapApproach). Convergence shape: edge-triggered per (capKind,
+ * threshold, window) with the dispatcher latch — a key parked at 90% of both
+ * caps emits AT MOST 4 notices per window (2 kinds × 2 thresholds), re-armed
+ * only by the window rolling (daily) — never per-admit noise.
+ */
+const spendCapApproach: SelfActionController = {
+  id: 'spend-cap-approach',
+  actionVerb: 'cap-approach-notify',
+  models:
+    'src/core/SpendAlertEmitters.ts (checkCapApproach — 50/80 on both caps, per-window dedupe via the dispatcher latch). ' +
+    'The FEEDBACK-driven surface is the edge latch (modeled here, horizon-independent); the daily window additionally ' +
+    're-arms on the CALENDAR day boundary — clock-driven, not feedback-driven, bounded at 2 notices/key/day by construction.',
+  boundK: 4, // 2 kinds × 2 thresholds — the latch bound, horizon-independent
+  perTargetBoundK: 1, // each (kind, threshold, window) key emits ONCE, ever
+  ticks: 96, // 96 × 5min = 8h of admits with committed parked ≥80% (inside one window)
+  tickMs: 5 * 60_000,
+  makeUnderPressure(f, sink) {
+    const latched = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        // The pressure: every admit lands with committed at 90% of BOTH caps,
+        // inside one window (the calendar re-arm is out of feedback scope).
+        for (const capKind of ['daily', 'lifetime'] as const) {
+          for (const threshold of [0.5, 0.8]) {
+            const key = `spend-approach:k1:${capKind}:${threshold}:w1`;
+            if (latched.has(key)) continue; // the dispatcher's edge latch — the brake
+            latched.add(key);
+            sink.emit({ verb: 'cap-approach-notify', target: key });
+          }
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  spendDoorDarkBrakes,
+  spendFallbackSpike,
+  spendCapApproach,
   proactiveSwapMonitor,
   ageKillBackoff,
   promiseBeaconNotify,

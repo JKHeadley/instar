@@ -6187,6 +6187,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 impact: `LLM calls for '${info.component}' run on ${info.to} instead of the configured ${info.from} until that framework is available.`,
               });
             } catch { /* never break the LLM path on a degradation report */ }
+            // Increment C fallback counting (spec "Fallback used"): every served
+            // fallback (a swap-tail/degrade position answering instead of the
+            // primary) increments the Near-Silent hourly counter; a Telegram digest
+            // line fires ONLY on the rate-spike ceiling. Observer-isolated.
+            try {
+              _agentServerRef?.getSpendAlertEmitters?.()?.onNatureRoutePlan({ dryRun: false, servedFallback: true });
+            } catch { /* @silent-fallback-ok: observer isolation (I-9) — the fallback counter is a notifier, never the LLM path */ }
           },
           // Never-silent tracking (Resilient Degradation Ladder §4): a non-gating call that
           // exhausts the ladder (→ caller heuristic) opens a tracked degradation; a successful
@@ -6216,24 +6223,42 @@ export async function startServer(options: StartOptions): Promise<void> {
             };
           },
           onNatureRoutePlan: (plan) => {
-            // A2.1 observe-only breadcrumb (env-gated so a dev agent's hot path stays quiet;
-            // the durable logs/nature-routing.jsonl + GET /intelligence/routing dryRun plan
-            // surface are the tracked A2.2 remainder). Never breaks the LLM call path.
+            // I-9 (Increment C): onNatureRoutePlan is a SINGLE optional callback —
+            // fan out to each subscriber with observer ISOLATION (throw-swallow per
+            // subscriber; one throwing never breaks the LLM path or double-fires
+            // the others). Subscribers: (1) the A2.1 env-gated console breadcrumb;
+            // (2) the spend-alert emitters (door-dark / fallback-spike), resolved
+            // LATE via the AgentServer accessor so construction order never races.
             try {
-              if (process.env.INSTAR_NATURE_ROUTING_LOG !== '1') return;
-              const r = plan.resolution;
-              const detail =
-                r && r.outcome === 'route'
-                  ? `chain=${r.resolvedChain} primary=${r.primary.door}/${r.primary.modelId}` +
-                    `${r.primary.clamped ? ' (clamped)' : ''} tail=${r.swapTail.length}`
-                  : plan.failClosed
-                    ? 'FAIL-CLOSED (critical gate, no door)'
-                    : `outcome=${r?.outcome ?? 'n/a'}`;
-              console.log(
-                `[nature-routing] ${plan.component ?? '(none)'} (${plan.category}) ${detail} ` +
-                  `dryRun=${plan.dryRun}`,
-              );
-            } catch { /* never break the LLM path on an observation */ }
+              if (process.env.INSTAR_NATURE_ROUTING_LOG === '1') {
+                const r = plan.resolution;
+                const detail =
+                  r && r.outcome === 'route'
+                    ? `chain=${r.resolvedChain} primary=${r.primary.door}/${r.primary.modelId}` +
+                      `${r.primary.clamped ? ' (clamped)' : ''} tail=${r.swapTail.length}`
+                    : plan.failClosed
+                      ? 'FAIL-CLOSED (critical gate, no door)'
+                      : `outcome=${r?.outcome ?? 'n/a'}`;
+                console.log(
+                  `[nature-routing] ${plan.component ?? '(none)'} (${plan.category}) ${detail} ` +
+                    `dryRun=${plan.dryRun}`,
+                );
+              }
+            } catch { /* @silent-fallback-ok: the env-gated console breadcrumb is observability — never break the LLM path on an observation */ }
+            try {
+              const emitters = _agentServerRef?.getSpendAlertEmitters?.();
+              emitters?.onNatureRoutePlan({
+                component: plan.component,
+                dryRun: plan.dryRun,
+                failClosed: plan.failClosed,
+                resolution: plan.resolution as never,
+                // A served fallback = a swap/degrade position answering instead of
+                // the primary. That signal rides the router's onDegrade callback
+                // (wired below in this file) — at RESOLUTION time only fail-closed
+                // (door-dark) is derivable here.
+                servedFallback: false,
+              });
+            } catch { /* @silent-fallback-ok: observer isolation (I-9) — a notifier failure never breaks the LLM path */ }
           },
         });
       } catch (err) {

@@ -523,6 +523,36 @@ export class MachineIdentityManager {
   }
 
   /**
+   * routing-control-room-spend Increment C (FD-6 rung 2, pool half) — publish
+   * this machine's created/adopted "💰 Routing & Spend Alerts" topic id as a
+   * content-free field on its registry entry (rides the SAME replicated
+   * registry-sync path as lastKnownUrl/endpoints).
+   */
+  updateRoutingSpendAlertTopic(machineId: string, topicId: number): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.routingSpendAlertTopicId = topicId;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /**
+   * Read the pool-published alerts-topic id from ANY (non-revoked) machine
+   * entry — first hit wins; a new serving-lease holder INHERITS the id instead
+   * of re-creating. Returns undefined when no machine has published one.
+   */
+  readAnyRoutingSpendAlertTopic(): number | undefined {
+    const registry = this.loadRegistry();
+    for (const entry of Object.values(registry.machines)) {
+      if (entry.revokedAt) continue;
+      const id = entry.routingSpendAlertTopicId;
+      if (typeof id === 'number' && Number.isFinite(id)) return id;
+    }
+    return undefined;
+  }
+
+  /**
    * Revoke a machine. Marks it as revoked with reason.
    * Does NOT handle external secret rotation — caller must do that.
    */

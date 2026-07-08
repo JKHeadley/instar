@@ -38,6 +38,16 @@ export interface SpendAlertResolverDeps {
   /** Rung 2 (machine-local half): read/persist the auto-created id. */
   readPersistedTopicId: () => number | undefined;
   persistTopicId: (topicId: number) => void;
+  /**
+   * Rung 2 (POOL-PUBLISHED half, Increment C — FD-6): read the id any pool
+   * machine published on the replicated machine registry, and publish this
+   * machine's created id there — so a FUTURE serving-lease holder INHERITS the
+   * id instead of re-creating (Telegram mints a fresh id per createForumTopic,
+   * so last-writer-wins can never merge two creations). Optional: absent on
+   * single-machine installs (the machine-local record suffices there).
+   */
+  readPoolPublishedTopicId?: () => number | undefined;
+  publishTopicId?: (topicId: number) => void;
   /** Rung 3 gate: ms since the serving lease was POSITIVELY re-confirmed (null = not holder / unconfirmed). */
   servingLeaseConfirmedAgoMs: () => number | null;
   /** Create the bounded create-once system topic; returns its id. */
@@ -67,12 +77,37 @@ export class SpendAlertResolver {
     this.now = deps.now ?? (() => Date.now());
   }
 
+  /** Rung-1 accessor for the channel's repoint detection (G5) — never resolves/creates. */
+  configuredTopicIdForRepointCheck(): number | undefined {
+    const configured = this.d.configuredTopicId();
+    return typeof configured === 'number' && Number.isFinite(configured) ? configured : undefined;
+  }
+
   /** Resolve the dedicated topic id via the ladder — or undefined (caller falls back to lifeline). */
   async resolveTopicId(): Promise<number | undefined> {
     const configured = this.d.configuredTopicId();
     if (typeof configured === 'number' && Number.isFinite(configured)) return configured;
     const persisted = this.d.readPersistedTopicId();
     if (typeof persisted === 'number' && Number.isFinite(persisted)) return persisted;
+    // Rung 2 pool half (FD-6): an id ANY pool machine published — a new serving
+    // holder inherits instead of re-creating. Adopted locally so the next
+    // resolve is disk-fast even if the registry read degrades later.
+    try {
+      const pooled = this.d.readPoolPublishedTopicId?.();
+      if (typeof pooled === 'number' && Number.isFinite(pooled)) {
+        try {
+          this.d.persistTopicId(pooled);
+        } catch {
+          // @silent-fallback-ok: local adoption is an optimization; the pool
+          // read stays the source next resolve.
+        }
+        this.d.audit?.({ decision: 'adopted-pool-published', topicId: pooled });
+        return pooled;
+      }
+    } catch {
+      // @silent-fallback-ok: a degraded registry read falls through the ladder —
+      // creation stays fenced below, so a miss can never mint a duplicate.
+    }
     // Rung 3: create once — serving-lease-holder-only, fenced, single-flight.
     const confirmedAgo = this.d.servingLeaseConfirmedAgoMs();
     if (confirmedAgo === null || confirmedAgo > SERVING_LEASE_WINDOW_MS) {
@@ -84,6 +119,13 @@ export class SpendAlertResolver {
         try {
           const id = await this.d.createTopic();
           this.d.persistTopicId(id);
+          try {
+            this.d.publishTopicId?.(id); // rung-2 pool half: peers + future holders inherit
+          } catch {
+            // @silent-fallback-ok: a failed publish leaves the machine-local
+            // record authoritative; the next holder falls back to the lifeline
+            // rather than duplicating (creation is lease-fenced).
+          }
           this.d.audit?.({ decision: 'created', topicId: id });
           return id;
         } catch (err) {
