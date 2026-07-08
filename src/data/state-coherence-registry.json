@@ -1,1225 +1,1243 @@
 {
-  "$schema-note": "Machine form of docs/specs/STATE-COHERENCE-REGISTRY.md (the approved census, census-date 2026-06-05). AUTHORED, NOT build-generated (committed-generated-manifest conflict-loop lesson, COHERENCE-JOURNAL-SPEC §3.6). One entry per durable state category the census enumerates. Consumed by scripts/lint-state-registry.js: every direct durable-write site targeting a state dir / .instar/ must match an entry's `paths` (or carry an inline `/* state-registry: <category> */` annotation). Fields: category (kebab-case id) | description | scope (machine-local | must-be-coherent | derived-cache | coherent-on-demand) | freshness (real-time | eventual | session-boundary | n/a) | conflictShape (single-writer | append-only | lww | n/a) | transport (git | peer-http | none | deferred) | paths (glob-ish hints) | grandfathered (census marked uncertainty, §4e). New state declares its class here at birth.",
-  "version": 1,
-  "censusDate": "2026-06-05",
-  "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
-  "entries": [
-    {
-      "category": "coherence-journal",
-      "description": "Per-machine append-only cross-machine event streams (topic-placement / session-lifecycle / autonomous-run); replicated first-hop over the mesh (COHERENCE-JOURNAL-SPEC P1).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "peer-http",
-      "paths": [
-        "state/coherence-journal/"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "R",
-        "access": "protocol-reader",
-        "boundedBy": "replication-protocol",
-        "note": "CARVED OUT — bounded inside CoherenceJournal via KindRetention + the new seq-floor prune guard; never externally rotated"
-      }
-    },
-    {
-      "category": "pending-pulls",
-      "description": "Durable working-set pending-pull ledger - outstanding fetches whose producer was offline/unreachable/revoked/mid-run; re-fired on reappearance/run-stopped (WORKING-SET-HANDOFF-SPEC P2 §3.4). Machine-local: records describe THIS machine's outstanding fetches; single-writer serialized mutate() funnel.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/coherence-journal/pending-pulls.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "pull-opkeys",
-      "description": "Durable (topic,epoch) operation-key window for working-set pull dedupe - restart-proof at-most-once scheduling per move (WORKING-SET-HANDOFF-SPEC P2 §3.3). Machine-local, bounded window (200 keys), single-writer (the coordinator).",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/coherence-journal/pull-opkeys.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "visibility-guard",
-      "description": "Peer-visibility guard dedupe state - which improper revocations were already surfaced (keyed on revokedAt, cross-boot) + per-machine disappearance episodes for flap bounding (WORKING-SET-HANDOFF-SPEC P2 §3.6). Machine-local notice hygiene, never authority.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/coherence-journal/visibility-guard.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "commitments",
-      "description": "CommitmentTracker single-writer CAS store of user-facing promises and follow-through state. P1.5 (COMMITMENTS-COHERENCE-SPEC) fulfills the peer-http transport: owner-routed mutation + first-hop delta replication; the census's earlier 'AO desired' note is resolved-as-won't-do (owner-routing achieves coherence without the append-only conversion).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        "state/commitments.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "commitment-replicas",
-      "description": "Per-peer read-only replicas of other machines' commitment stores (COMMITMENTS-COHERENCE-SPEC P1.5 §3.2). Derived cache - rebuilt by a full re-pull; written ONLY by the commitments-sync receive path; first-hop sender-bound; incarnation-fenced.",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        "state/commitment-replicas/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "commitment-pending-mutations",
-      "description": "Durable owner-routed mutation intents awaiting an offline owner (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4). Stores INTENT only - a FRESH signed envelope is re-issued at fire time; single-writer serialized funnel; per-(origin,id) and per-owner enqueue bounds; TTL 7d with one honest expiry notice.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/commitment-replicas/pending-mutations.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "commitment-opkeys",
-      "description": "Owner-side durable opKey replay window for commitment-mutate (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4) - the replay control beyond the 60s envelope nonce window; records verdicts, survives restarts, TTL >= pending-mutation TTL.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/coherence-journal/commitment-opkeys.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "attention-queue",
-      "description": "Attention items surfaced to the user, plus the per-source coalescing/suppression ledger.",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        "state/attention-items.json",
-        "state/attention-suppressed.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "remote-ack-queue",
-      "description": "Operator-bound ack/resolve INTENT for a pooled attention item whose owner machine is briefly offline (WS4.1 follow-up, dark behind multiMachine.seamlessness.ws41DurableAck). Carries the authenticated operator principal; the owner revalidates it at apply time on return/boot. Append-then-compact, idempotent on (itemId,targetMachineId).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        "logs/remote-ack-queue.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "slack-permission-decisions",
-      "description": "Observe-only ledger of Slack org permission-gate decisions (allow/clarify/refuse/step-up) with the verified principal + basis. Append-only; feeds false-positive-rate measurement before any enforcement is enabled. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/slack-permission-decisions.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "slack-pending-registrations",
-      "description": "Durable pending Slack self-registration requests awaiting admin approval (SlackUserRegistry). Cleared on approve/deny. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.3.",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/slack-pending-registrations.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "slack-relationship-baselines",
-      "description": "Durable per-principal behavioral baseline (Pillar 3 relationship-aware anomaly second factor): privacy-respecting SHAPE aggregates only — action repertoire, tier/hour histograms, coarse message-length stats, urgency rate — NEVER message content. Fed observe-only from authorized Slack traffic; read by RelationshipAnomalyScorer. Ships DARK. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §7.1-7.2, §7.6.",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/slack-relationship-baselines.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "topic-placement-history",
-      "description": "Topic<->machine placement history (does not exist as its own store yet; the journal's first stream materializes it). Distinct from current-owner pool state.",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "peer-http",
-      "paths": [
-        "state/coherence-journal/*.topic-placement.jsonl"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "R",
-        "access": "protocol-reader",
-        "boundedBy": "replication-protocol",
-        "note": "CARVED OUT — replication substrate"
-      }
-    },
-    {
-      "category": "autonomous-working-artifacts",
-      "description": "Autonomous run working files and their declared artifact paths (the EXO stranding). Coherent-on-demand: fetched via working-set pull when a topic moves.",
-      "scope": "coherent-on-demand",
-      "freshness": "session-boundary",
-      "conflictShape": "single-writer",
-      "transport": "deferred",
-      "paths": [
-        ".instar/autonomous/",
-        ".instar/autonomous/*.local.md",
-        "state/autonomous-emergency-stop",
-        "autonomous-emergency-stop"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "threadline-conversation-state",
-      "description": "Threadline conversation store plus context-thread-map, thread-resume-map, telegram-bridge-bindings.",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        "threadline/conversations.json",
-        "threadline/context-thread-map.json",
-        "threadline/thread-resume-map.json",
-        "threadline/telegram-bridge-bindings.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "message-store-and-threads",
-      "description": "Cross-platform A2A message store, threads, and inbox/outbox JSONL indexes.",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "peer-http",
-      "paths": [
-        ".instar/messages/store/",
-        ".instar/messages/threads/",
-        ".instar/messages/inbox.jsonl",
-        ".instar/messages/outbox.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "topic-project-bindings",
-      "description": "Telegram-topic-to-project bindings.",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "lww",
-      "transport": "peer-http",
-      "paths": [
-        "topic-project-bindings.json",
-        "state/topic-project-bindings.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "relationships",
-      "description": "Per-person relationship records (one file per identity).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "lww",
-      "transport": "peer-http",
-      "paths": [
-        "relationships/",
-        "relationships/*.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "users-registry",
-      "description": "Multi-user identity / permissions registry.",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "lww",
-      "transport": "peer-http",
-      "paths": [
-        "users.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "job-definitions",
-      "description": "Declarative job definitions (cron / prompt / supervision). The coherent half of jobs.json plus markdown job specs; run state is machine-local (see job-run-state). Field split required before whole-file sync (census §5).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "lww",
-      "transport": "git",
-      "paths": [
-        "jobs.json",
-        ".instar/jobs/",
-        ".instar/jobs/*.md"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "soul-identity-documents",
-      "description": "Soul / identity narrative documents and self-knowledge facts (soul.md, identity.json, AGENT.md/USER.md/MEMORY.md/CLAUDE.md identity scaffold, self-knowledge facts).",
-      "scope": "must-be-coherent",
-      "freshness": "session-boundary",
-      "conflictShape": "single-writer",
-      "transport": "git",
-      "paths": [
-        "soul.md",
-        "soul.init.md",
-        "state/soul.init.md",
-        "identity.json",
-        "AGENT.md",
-        "USER.md",
-        "MEMORY.md",
-        "CLAUDE.md",
-        "state/self-knowledge-facts.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "projects-registry",
-      "description": "Multi-spec project registry + plan docs + digest cache (claim-ownership verb already models owner-machine claim).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        ".instar/projects/",
-        ".instar/projects/*.md"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "learned-preferences",
-      "description": "Learned preferences and correction-loop ledger.",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "peer-http",
-      "paths": [
-        ".instar/preferences.json",
-        "state/correction-ledger.db"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "secret-vault",
-      "description": "Encrypted secret vault. The one category that truly replicates today (cross-machine secret sync, X25519-sealed push, receive-only default).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        "config.secrets.enc",
-        "state/secrets.enc"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "topic-ownership-current",
-      "description": "Current topic ownership (session-pool CAS + lease). The live single-writer source of truth for placement; the journal records its mutations.",
-      "scope": "must-be-coherent",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        ".instar/state/session-pool/",
-        "state/session-pool/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "topic-pin-skew-quarantine",
-      "description": "U4.1 sticky durable exclusion set for future-skewed replicated topic-pin records (key+HLC pairs; docs/specs/u4-1-pin-persistence.md §2C). Machine-local BY DESIGN: each fold quarantines what ITS skew gate rejected.",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/session-pool/topic-pin-skew-quarantine.json"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "R",
-        "access": "protocol-reader",
-        "boundedBy": "domain-cardinality",
-        "note": "One entry per poisoned record (rare by construction); entries prune on honest supersession (a newer honest HLC wins) or explicit per-record re-admission — never unbounded growth."
-      }
-    },
-    {
-      "category": "conversation-live-tail",
-      "description": "Conversation live-tail replicated holder->standby per the seamlessness spec.",
-      "scope": "must-be-coherent",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "peer-http",
-      "paths": [
-        "state/live-tail/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "fleet-config",
-      "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census §5).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "lww",
-      "transport": "git",
-      "paths": [
-        "config.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "machine-identity-keys",
-      "description": "Machine identity + signing/encryption keypairs. Identity IS the machine; never synced by definition.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "machine/identity.json",
-        "machine/*.pem",
-        "signing-private.pem",
-        "encryption-private.pem"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "per-session-state",
-      "description": "Per-session state files. Sessions live and die on one machine; pool transfers create NEW sessions (CONTINUATION), not file copies.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/sessions/",
-        "state/sessions/*.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "job-run-state",
-      "description": "Job RUN state: executions, active-job, run-history ledger. Runs are machine events (definitions are the coherent half, job-definitions).",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/jobs/",
-        "state/active-job.json",
-        "state/job-runs.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "quota-state",
-      "description": "Per-account-seat per-machine quota state. Broadcast-view ships via capacity heartbeats (quota-aware placement); the file itself is machine-local.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "quota-state.json",
-        "state/quota-state.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "resource-samples",
-      "description": "ResourceLedger CPU/RSS samples. Physical per-machine telemetry.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/resource-ledger.db",
-        "state/resources.db"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "sqlite",
-        "access": "sqlite",
-        "maxAgeMs": 2592000000
-      }
-    },
-    {
-      "category": "lease-coordination-state",
-      "description": "Lease / coordination state and registry liveness. The lease IS the cross-machine protocol; its state is the protocol's own.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/lease-local.json",
-        "state/registry-liveness.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "nonce-sequence-watermarks",
-      "description": "NonceStore replay-protection watermarks. Per-channel per-machine by design.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/nonce-store.json",
-        "state/nonces/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "relay-delivery-queues",
-      "description": "Pending-relay and message-ledger SQLite queues. Outbound queue drains on the machine that owns the channel seat.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        ".instar/state/pending-relay.*.sqlite",
-        "state/message-ledger.db"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "messaging-adapter-state",
-      "description": "Telegram/iMessage/WhatsApp/Slack adapter state: poll offsets, chat.db, consent.json. Channel seat is held by one machine (lifeline); failover = seat transfer, not state merge.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/telegram-offset.json",
-        "state/consent.json",
-        "state/adapter-state/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "platform-attachment-caches",
-      "description": "Telegram/document attachment caches. Fetchable from the platform on demand.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "telegram-images/",
-        "documents/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "listener-daemon-internals",
-      "description": "Listener-daemon IPC internals: inbox/outbox.jsonl.active, pid, sentinels, hmac key. Daemon-local.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/listener/",
-        "state/listener/inbox.jsonl.active",
-        "state/listener/outbox.jsonl.active"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "threadline-transport-internals",
-      "description": "Threadline transport internals: relay-tokens, mcp-tokens, rate-limits. Connection-scoped; identity-keys are local-secret like machine keys.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "threadline/relay-tokens.json",
-        "threadline/mcp-tokens.json",
-        "threadline/rate-limits.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "threadline-trust-profiles",
-      "description": "Per-peer agent trust profiles (AgentTrustManager) + audit trail. Now CREDENTIAL-GATING (Secure A2A Verified Pairing §3.8): the profile carries the pairing lifecycle state (pending-verification / mutual-verified / verification-failed / identity-verified) that the credential-share gate keys on. MACHINE-LOCAL: the SAS-bound pending state + the machine-local handshake's identity decision live here; the SAS words themselves are in a separate 0600 store (pairing-pending.json, never in the registry). The VERIFIED-IDENTITY RESULT alone replicates via the threadline-pairing stateSync transport (see threadline-pairing-result) — this file is never whole-file-synced.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "threadline/trust-profiles.json",
-        "threadline/trust-audit.jsonl",
-        "threadline/pairing-pending.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "threadline-pairing-result",
-      "description": "The replicated verified-IDENTITY RESULT of a Secure A2A pairing (Secure A2A Verified Pairing §3.8 / FD11). Replicates ONLY { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt, verifiedOnMachine } across the agent's OWN machines via the HLC replicated-store foundation (kind 'threadline-pairing-record') — NEVER the SAS words, shared secret, or relay token (those stay machine-local, bound to the machine-local handshake's ephemeral secret). Machine B honors a replicated record ONLY by pinning peerIdentityPub; a revoke/verification-failed propagates as a tombstone. Ships DARK behind multiMachine.stateSync.threadlinePairing (enabled:false, dryRun:true). Rides the coherence-journal stream files (no dedicated path).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "lww",
-      "transport": "peer-http",
-      "paths": [
-        "state/coherence-journal/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "process-restart-coordination",
-      "description": "Process/restart coordination: boot-id, restart markers, auto-updater state, caffeinate pid, slept-marker. Per-process lifecycle.",
-      "scope": "machine-local",
-      "freshness": "real-time",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/boot-id",
-        "state/auto-updater.json",
-        "state/slept-marker.json",
-        "state/lifeline-restart-requested.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "ephemeral-caches",
-      "description": "Per-boot/ephemeral caches: paste/, stop-gate.db, feature-registry.db, capability manifest. Recomputed or per-machine detection.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/paste/",
-        "state/stop-gate.db",
-        "state/feature-registry.db"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "trust-elevation-incidents",
-      "description": "External-op trust elevation / incident state. Debatable whether trust transfers across machines -- flagged for P3+ review rather than silently local.",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/trust-levels.json",
-        "state/trust-incidents.json",
-        "state/trust-*.json"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "audit-destructive-ops",
-      "description": "Destructive-ops audit stream (411M live -- needs rotation, census §7). Append-only per-machine.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/destructive-ops.jsonl",
-        "logs/destructive-ops.jsonl"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "C",
-        "access": "streamed",
-        "complianceHold": true,
-        "keepSegments": 0,
-        "note": "forensic trail — archive, never drop-delete (replaces SafeGitExecutor.maybeRotateAuditLog drop-rotate)"
-      }
-    },
-    {
-      "category": "audit-job-runs",
-      "description": "Job-runs audit stream. Append-only per-machine.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/job-runs.jsonl",
-        "logs/job-runs.jsonl"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "A",
-        "access": "streamed",
-        "maxBytes": 33554432,
-        "keepSegments": 4
-      }
-    },
-    {
-      "category": "audit-reaper",
-      "description": "Reaper decision audit stream (keep/kill transitions stamped with pressure tier).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/reaper-audit.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-reap-log",
-      "description": "Reap-log: why a session vanished (one JSON line per shutoff/refused-shutoff).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/reap-log.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-sentinel-events",
-      "description": "Sentinel-events audit stream (silently-stopped family transitions).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/sentinel-events.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-security",
-      "description": "Security audit stream (auth/security events).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "security.jsonl",
-        "state/security.jsonl",
-        "logs/security.jsonl"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "C",
-        "access": "streamed",
-        "complianceHold": true,
-        "keepSegments": 0,
-        "note": "forensic trail — archive, never drop-delete (replaces SecurityLog maybeRotateJsonl keep-ratio trim)"
-      }
-    },
-    {
-      "category": "audit-decision-journal",
-      "description": "Decision-journal audit stream.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/decision-journal.jsonl",
-        "state/decision-journal.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-activity",
-      "description": "Activity audit streams (date-partitioned, ~37M).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/activity-*.jsonl",
-        "state/activity/"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-watchdog-interventions",
-      "description": "Watchdog-interventions audit stream.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/watchdog-interventions.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-operation-log",
-      "description": "External-operation gate operation-log audit stream.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/operation-log.jsonl",
-        "state/operation-log.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-trust-chain",
-      "description": "Hash-chained trust-audit / mandate-decision chain.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/trust-audit-chain.jsonl",
-        "state/trust-audit-chain.jsonl",
-        "threadline/trust-audit.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-telegram-messages",
-      "description": "Telegram message history JSONL (5.2M).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/telegram-messages.jsonl",
-        "logs/telegram-messages.jsonl"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "A",
-        "access": "streamed",
-        "maxBytes": 33554432,
-        "keepSegments": 4
-      }
-    },
-    {
-      "category": "audit-a2a-messages",
-      "description": "Agent-to-agent sent/received audit streams.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        ".instar/messages/a2a-sent.jsonl",
-        ".instar/messages/a2a-received.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-prompt-gate",
-      "description": "Prompt-gate audit stream.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/prompt-gate-audit.jsonl",
-        "state/prompt-gate-audit.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-recovery-events",
-      "description": "Recovery-events audit stream (compaction/recovery lifecycle).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/recovery-events.jsonl",
-        "state/recovery-events.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-skill-telemetry",
-      "description": "Skill-telemetry audit stream.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/skill-telemetry.jsonl",
-        "state/skill-telemetry.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "audit-feedback",
-      "description": "Feedback audit stream (Rising Tide feedback loop).",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/feedback.jsonl",
-        "logs/feedback.jsonl"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "A",
-        "access": "streamed",
-        "maxBytes": 33554432,
-        "keepSegments": 4
-      }
-    },
-    {
-      "category": "audit-apprenticeship-decisions",
-      "description": "Apprenticeship lifecycle gate decisions audit stream.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "logs/apprenticeship-decisions.jsonl",
-        "state/apprenticeship-decisions.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "derived-token-ledger",
-      "description": "Token ledger SQLite, rebuilt from Claude Code JSONL transcripts.",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/token-ledger.db",
-        "state/tokens.db"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "sqlite",
-        "access": "sqlite",
-        "maxAgeMs": 2592000000,
-        "note": "incremental-vacuum + batched delete off-thread (Increment 2)"
-      }
-    },
-    {
-      "category": "derived-semantic-memory",
-      "description": "semantic.db / memory.db / episodes -- rebuildable from evidence. (Live-disk: stale since Jun 1 -- investigate separately, census §1.6/§7.)",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/semantic.db",
-        "state/memory.db",
-        "state/episodes.db",
-        "state/episodes/",
-        "memory/semantic.jsonl"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "sqlite",
-        "access": "sqlite",
-        "maxAgeMs": 7776000000,
-        "note": "mixed .db + memory/semantic.jsonl; jsonl arm is A-class streamed in retrofit"
-      }
-    },
-    {
-      "category": "derived-topic-memory",
-      "description": "topic-memory.db (16M, active). Master spec open Q2: promote to COHERENT? -- left derived-cache until P3 review (census honesty).",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/topic-memory.db"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "derived-project-map",
-      "description": "Project-map spatial-awareness scan (refreshable).",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/project-map.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "derived-projects-digest",
-      "description": "Projects-digest cache.",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/projects-digest.cache",
-        ".instar/projects/.digest.cache"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "derived-docs-code-sync",
-      "description": "docs-code-sync.json derived index.",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/docs-code-sync.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "derived-memory-index",
-      "description": "MemoryIndex derived index over memory artifacts.",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/memory-index.json",
-        "memory/index.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "derived-framework-model-preferences",
-      "description": "framework-model-preferences.db derived cache.",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/framework-model-preferences.db"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "derived-discovery",
-      "description": "discovery.db derived cache (agent discovery).",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/discovery.db",
-        "threadline/discovery.db"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "uncertain-instructions-tracking",
-      "description": "state/instructions-tracking/ (59M, 15,180 UUID-keyed JSONL files). Census did not map an owner; volume says it matters. Owner + rotation + class needed (census §4e).",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/instructions-tracking/"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "uncertain-topic-intent-store",
-      "description": "TopicIntentStore. Code references it; on-disk location unverified (census §4e).",
-      "scope": "derived-cache",
-      "freshness": "eventual",
-      "conflictShape": "n/a",
-      "transport": "none",
-      "paths": [
-        "state/topic-intent/",
-        "state/topic-intent.json"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "uncertain-shared-state-ledger",
-      "description": "shared-state.jsonl (SharedStateLedger). Nominally the git-synced cross-machine ledger -- is anything consuming it on real machines? May be the vestigial ancestor of the P1 journal (census §4e).",
-      "scope": "must-be-coherent",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "git",
-      "paths": [
-        "state/shared-state.jsonl",
-        "shared-state.jsonl"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "uncertain-correction-capture-backlog",
-      "description": "correction-capture-backlog.db vs correction-ledger.db: two stores, one sentinel -- which is canonical? (census §4e).",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "append-only",
-      "transport": "none",
-      "paths": [
-        "state/correction-capture-backlog.db"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "uncertain-project-round-worktrees",
-      "description": "ProjectRoundWorktrees / TaskFlow stores. Routes-managed; durable form unverified (census §4e).",
-      "scope": "machine-local",
-      "freshness": "eventual",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/project-round-worktrees.json",
-        "state/taskflow/"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "legacy-singletons",
-      "description": "Stale legacy singletons (anti-patterns.json, quick-facts.json, project-registry.json, May 20 vintage, no live writers found). Retire per census §7.",
-      "scope": "machine-local",
-      "freshness": "n/a",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/anti-patterns.json",
-        "state/quick-facts.json",
-        "state/project-registry.json"
-      ],
-      "grandfathered": true
-    },
-    {
-      "category": "session-monitor-ctx-notified",
-      "description": "Persisted context-exhaustion notify ledger - topicId -> {sessionName, at} already announced as dead, so the once-per-death-episode dedup survives server restarts (update-train churn previously re-announced the same death once per boot; 2026-06-06 residual on topics 16566/19437). Machine-local, single-writer (SessionMonitor), pruned at 7 days on load.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/session-monitor-ctx-notified.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "stream-tickets",
-      "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC §2.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/stream-tickets.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "guard-posture-snapshot",
-      "description": "Boot-time guard posture snapshot written by the GuardPostureTripwire at every server boot; read by GET /guards for diverged-pending-restart derivation (GUARD-POSTURE-ENDPOINT-SPEC §2.2). Machine-local observability, never authority.",
-      "scope": "machine-local",
-      "freshness": "boot",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/guard-posture.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "guard-posture-peers",
-      "description": "Durable last-known guard posture per peer machine with RECEIVER-side receipt time (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)) - survives local restarts so a dark peer's posture renders with its honest age. Written only at the heartbeat-ingestion chokepoint (registry-keyed identity). Machine-local observability, never authority.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/guard-posture-peers.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "guard-posture-episodes",
-      "description": "GuardPostureProbe episode state - per-anomaly first/last-seen for the persist-across-ticks rule, flap windows, and the open-episode marker that keeps alerts to ONE aggregated Attention item per episode (GUARD-POSTURE-ENDPOINT-SPEC §2.4). Machine-local notice hygiene, never authority.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/guard-posture-episodes.json"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "guard-accepted-fallbacks",
-      "description": "Durable, per-machine OWNED operator-accept records for the G3 dark-but-load-bearing classification (g3-dark-but-load-bearing-guards §2.4) - keyed <machineId>:<guardKey> -> {reason, owner, acceptedAt}. Suppresses a load-bearing guard's loadBearingGap into a VISIBLE accepted-risk row. Reserved for a genuine PIN-authenticated operator decision; per-machine (an accept on one machine never silences a peer's gap). Machine-local decision record, never authority over a peer.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/guard-accepted-fallbacks.json"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "resolution",
-        "boundedByResolution": true,
-        "maxOpenItems": 100,
-        "note": "Bounded by the curated load-bearing guard set (currently small): one record per <machineId>:<guardKey>. Each record is RESOLVED by graduating the guard or by an operator DELETE-revoke; never grows unbounded."
-      }
-    },
-    {
-      "category": "remote-close-audit",
-      "description": "Relaying machine's append-only record of every relayed session-close ORDER (REMOTE-SESSION-CLOSE-SPEC §2.3) - target machine, sessionUuid, observed outcome. The owner's reap-log is the authoritative record of the kill; this is the order-end manifest so a relayed kill sweep cannot be traceless on the relayer. Machine-local audit history, never authority.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "logs/remote-close-audit.jsonl"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "resume-queue",
-      "description": "Durable mid-work resume queue + single-writer lockfile + decision audit (reap-notify spec R2.3): entries for autonomously-reaped mid-work sessions awaiting ordered revival, plus the resurrection tombstone ledger. Machine-local BY DESIGN — entries reference local tmux sessions/worktrees; deliberately EXCLUDED from backup/restore and never replicated (a foreign-host lock disables the queue loudly).",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/resume-queue.json",
-        "state/resume-queue.lock"
-      ],
-      "grandfathered": false
-    },
-    {
-      "category": "rope-health-monitor",
-      "description": "U4.5 RopeHealthMonitor durable debounce/episode memory (u4-5-rope-health-alerts §2) - per peer: condition, all-down onset, episodeKey, lastAlertAt, detected-not-notified flag. Transition-only writes with a short debounce; intra-episode counters lost to a restart are ACCEPTED (a restart re-debounces, never fabricates an episode). Machine-local BY DESIGN (rope health is per-machine-pair and directional); never authority.",
-      "scope": "machine-local",
-      "freshness": "live",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/rope-health.json"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "bounded-set",
-        "maxOpenItems": 100,
-        "note": "One record per known peer machine (peers x 1) - bounded by the machine registry size; a peer's record is overwritten in place on every transition, never appended."
-      }
-    }
-  ]
+ "$schema-note": "Machine form of docs/specs/STATE-COHERENCE-REGISTRY.md (the approved census, census-date 2026-06-05). AUTHORED, NOT build-generated (committed-generated-manifest conflict-loop lesson, COHERENCE-JOURNAL-SPEC §3.6). One entry per durable state category the census enumerates. Consumed by scripts/lint-state-registry.js: every direct durable-write site targeting a state dir / .instar/ must match an entry's `paths` (or carry an inline `/* state-registry: <category> */` annotation). Fields: category (kebab-case id) | description | scope (machine-local | must-be-coherent | derived-cache | coherent-on-demand) | freshness (real-time | eventual | session-boundary | n/a) | conflictShape (single-writer | append-only | lww | n/a) | transport (git | peer-http | none | deferred) | paths (glob-ish hints) | grandfathered (census marked uncertainty, §4e). New state declares its class here at birth.",
+ "version": 1,
+ "censusDate": "2026-06-05",
+ "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
+ "entries": [
+  {
+   "category": "coherence-journal",
+   "description": "Per-machine append-only cross-machine event streams (topic-placement / session-lifecycle / autonomous-run); replicated first-hop over the mesh (COHERENCE-JOURNAL-SPEC P1).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "peer-http",
+   "paths": [
+    "state/coherence-journal/"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "R",
+    "access": "protocol-reader",
+    "boundedBy": "replication-protocol",
+    "note": "CARVED OUT — bounded inside CoherenceJournal via KindRetention + the new seq-floor prune guard; never externally rotated"
+   }
+  },
+  {
+   "category": "pending-pulls",
+   "description": "Durable working-set pending-pull ledger - outstanding fetches whose producer was offline/unreachable/revoked/mid-run; re-fired on reappearance/run-stopped (WORKING-SET-HANDOFF-SPEC P2 §3.4). Machine-local: records describe THIS machine's outstanding fetches; single-writer serialized mutate() funnel.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/coherence-journal/pending-pulls.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "pull-opkeys",
+   "description": "Durable (topic,epoch) operation-key window for working-set pull dedupe - restart-proof at-most-once scheduling per move (WORKING-SET-HANDOFF-SPEC P2 §3.3). Machine-local, bounded window (200 keys), single-writer (the coordinator).",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/coherence-journal/pull-opkeys.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "visibility-guard",
+   "description": "Peer-visibility guard dedupe state - which improper revocations were already surfaced (keyed on revokedAt, cross-boot) + per-machine disappearance episodes for flap bounding (WORKING-SET-HANDOFF-SPEC P2 §3.6). Machine-local notice hygiene, never authority.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/coherence-journal/visibility-guard.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "commitments",
+   "description": "CommitmentTracker single-writer CAS store of user-facing promises and follow-through state. P1.5 (COMMITMENTS-COHERENCE-SPEC) fulfills the peer-http transport: owner-routed mutation + first-hop delta replication; the census's earlier 'AO desired' note is resolved-as-won't-do (owner-routing achieves coherence without the append-only conversion).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    "state/commitments.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "commitment-replicas",
+   "description": "Per-peer read-only replicas of other machines' commitment stores (COMMITMENTS-COHERENCE-SPEC P1.5 §3.2). Derived cache - rebuilt by a full re-pull; written ONLY by the commitments-sync receive path; first-hop sender-bound; incarnation-fenced.",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    "state/commitment-replicas/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "commitment-pending-mutations",
+   "description": "Durable owner-routed mutation intents awaiting an offline owner (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4). Stores INTENT only - a FRESH signed envelope is re-issued at fire time; single-writer serialized funnel; per-(origin,id) and per-owner enqueue bounds; TTL 7d with one honest expiry notice.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/commitment-replicas/pending-mutations.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "commitment-opkeys",
+   "description": "Owner-side durable opKey replay window for commitment-mutate (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4) - the replay control beyond the 60s envelope nonce window; records verdicts, survives restarts, TTL >= pending-mutation TTL.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/coherence-journal/commitment-opkeys.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "attention-queue",
+   "description": "Attention items surfaced to the user, plus the per-source coalescing/suppression ledger.",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    "state/attention-items.json",
+    "state/attention-suppressed.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "remote-ack-queue",
+   "description": "Operator-bound ack/resolve INTENT for a pooled attention item whose owner machine is briefly offline (WS4.1 follow-up, dark behind multiMachine.seamlessness.ws41DurableAck). Carries the authenticated operator principal; the owner revalidates it at apply time on return/boot. Append-then-compact, idempotent on (itemId,targetMachineId).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    "logs/remote-ack-queue.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "slack-permission-decisions",
+   "description": "Observe-only ledger of Slack org permission-gate decisions (allow/clarify/refuse/step-up) with the verified principal + basis. Append-only; feeds false-positive-rate measurement before any enforcement is enabled. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/slack-permission-decisions.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "slack-pending-registrations",
+   "description": "Durable pending Slack self-registration requests awaiting admin approval (SlackUserRegistry). Cleared on approve/deny. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.3.",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/slack-pending-registrations.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "slack-relationship-baselines",
+   "description": "Durable per-principal behavioral baseline (Pillar 3 relationship-aware anomaly second factor): privacy-respecting SHAPE aggregates only — action repertoire, tier/hour histograms, coarse message-length stats, urgency rate — NEVER message content. Fed observe-only from authorized Slack traffic; read by RelationshipAnomalyScorer. Ships DARK. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §7.1-7.2, §7.6.",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/slack-relationship-baselines.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "topic-placement-history",
+   "description": "Topic<->machine placement history (does not exist as its own store yet; the journal's first stream materializes it). Distinct from current-owner pool state.",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "peer-http",
+   "paths": [
+    "state/coherence-journal/*.topic-placement.jsonl"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "R",
+    "access": "protocol-reader",
+    "boundedBy": "replication-protocol",
+    "note": "CARVED OUT — replication substrate"
+   }
+  },
+  {
+   "category": "autonomous-working-artifacts",
+   "description": "Autonomous run working files and their declared artifact paths (the EXO stranding). Coherent-on-demand: fetched via working-set pull when a topic moves.",
+   "scope": "coherent-on-demand",
+   "freshness": "session-boundary",
+   "conflictShape": "single-writer",
+   "transport": "deferred",
+   "paths": [
+    ".instar/autonomous/",
+    ".instar/autonomous/*.local.md",
+    "state/autonomous-emergency-stop",
+    "autonomous-emergency-stop"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "threadline-conversation-state",
+   "description": "Threadline conversation store plus context-thread-map, thread-resume-map, telegram-bridge-bindings.",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    "threadline/conversations.json",
+    "threadline/context-thread-map.json",
+    "threadline/thread-resume-map.json",
+    "threadline/telegram-bridge-bindings.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "message-store-and-threads",
+   "description": "Cross-platform A2A message store, threads, and inbox/outbox JSONL indexes.",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "peer-http",
+   "paths": [
+    ".instar/messages/store/",
+    ".instar/messages/threads/",
+    ".instar/messages/inbox.jsonl",
+    ".instar/messages/outbox.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "topic-project-bindings",
+   "description": "Telegram-topic-to-project bindings.",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "lww",
+   "transport": "peer-http",
+   "paths": [
+    "topic-project-bindings.json",
+    "state/topic-project-bindings.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "relationships",
+   "description": "Per-person relationship records (one file per identity).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "lww",
+   "transport": "peer-http",
+   "paths": [
+    "relationships/",
+    "relationships/*.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "users-registry",
+   "description": "Multi-user identity / permissions registry.",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "lww",
+   "transport": "peer-http",
+   "paths": [
+    "users.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "job-definitions",
+   "description": "Declarative job definitions (cron / prompt / supervision). The coherent half of jobs.json plus markdown job specs; run state is machine-local (see job-run-state). Field split required before whole-file sync (census §5).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "lww",
+   "transport": "git",
+   "paths": [
+    "jobs.json",
+    ".instar/jobs/",
+    ".instar/jobs/*.md"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "soul-identity-documents",
+   "description": "Soul / identity narrative documents and self-knowledge facts (soul.md, identity.json, AGENT.md/USER.md/MEMORY.md/CLAUDE.md identity scaffold, self-knowledge facts).",
+   "scope": "must-be-coherent",
+   "freshness": "session-boundary",
+   "conflictShape": "single-writer",
+   "transport": "git",
+   "paths": [
+    "soul.md",
+    "soul.init.md",
+    "state/soul.init.md",
+    "identity.json",
+    "AGENT.md",
+    "USER.md",
+    "MEMORY.md",
+    "CLAUDE.md",
+    "state/self-knowledge-facts.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "projects-registry",
+   "description": "Multi-spec project registry + plan docs + digest cache (claim-ownership verb already models owner-machine claim).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    ".instar/projects/",
+    ".instar/projects/*.md"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "learned-preferences",
+   "description": "Learned preferences and correction-loop ledger.",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "peer-http",
+   "paths": [
+    ".instar/preferences.json",
+    "state/correction-ledger.db"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "secret-vault",
+   "description": "Encrypted secret vault. The one category that truly replicates today (cross-machine secret sync, X25519-sealed push, receive-only default).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    "config.secrets.enc",
+    "state/secrets.enc"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "topic-ownership-current",
+   "description": "Current topic ownership (session-pool CAS + lease). The live single-writer source of truth for placement; the journal records its mutations.",
+   "scope": "must-be-coherent",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    ".instar/state/session-pool/",
+    "state/session-pool/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "topic-pin-skew-quarantine",
+   "description": "U4.1 sticky durable exclusion set for future-skewed replicated topic-pin records (key+HLC pairs; docs/specs/u4-1-pin-persistence.md §2C). Machine-local BY DESIGN: each fold quarantines what ITS skew gate rejected.",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/session-pool/topic-pin-skew-quarantine.json"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "R",
+    "access": "protocol-reader",
+    "boundedBy": "domain-cardinality",
+    "note": "One entry per poisoned record (rare by construction); entries prune on honest supersession (a newer honest HLC wins) or explicit per-record re-admission — never unbounded growth."
+   }
+  },
+  {
+   "category": "conversation-live-tail",
+   "description": "Conversation live-tail replicated holder->standby per the seamlessness spec.",
+   "scope": "must-be-coherent",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "peer-http",
+   "paths": [
+    "state/live-tail/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "fleet-config",
+   "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census §5).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "lww",
+   "transport": "git",
+   "paths": [
+    "config.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "machine-identity-keys",
+   "description": "Machine identity + signing/encryption keypairs. Identity IS the machine; never synced by definition.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "machine/identity.json",
+    "machine/*.pem",
+    "signing-private.pem",
+    "encryption-private.pem"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "per-session-state",
+   "description": "Per-session state files. Sessions live and die on one machine; pool transfers create NEW sessions (CONTINUATION), not file copies.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/sessions/",
+    "state/sessions/*.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "job-run-state",
+   "description": "Job RUN state: executions, active-job, run-history ledger. Runs are machine events (definitions are the coherent half, job-definitions).",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/jobs/",
+    "state/active-job.json",
+    "state/job-runs.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "quota-state",
+   "description": "Per-account-seat per-machine quota state. Broadcast-view ships via capacity heartbeats (quota-aware placement); the file itself is machine-local.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "quota-state.json",
+    "state/quota-state.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "resource-samples",
+   "description": "ResourceLedger CPU/RSS samples. Physical per-machine telemetry.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/resource-ledger.db",
+    "state/resources.db"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "sqlite",
+    "access": "sqlite",
+    "maxAgeMs": 2592000000
+   }
+  },
+  {
+   "category": "lease-coordination-state",
+   "description": "Lease / coordination state and registry liveness. The lease IS the cross-machine protocol; its state is the protocol's own.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/lease-local.json",
+    "state/registry-liveness.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "nonce-sequence-watermarks",
+   "description": "NonceStore replay-protection watermarks. Per-channel per-machine by design.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/nonce-store.json",
+    "state/nonces/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "relay-delivery-queues",
+   "description": "Pending-relay and message-ledger SQLite queues. Outbound queue drains on the machine that owns the channel seat.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    ".instar/state/pending-relay.*.sqlite",
+    "state/message-ledger.db"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "messaging-adapter-state",
+   "description": "Telegram/iMessage/WhatsApp/Slack adapter state: poll offsets, chat.db, consent.json. Channel seat is held by one machine (lifeline); failover = seat transfer, not state merge.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/telegram-offset.json",
+    "state/consent.json",
+    "state/adapter-state/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "platform-attachment-caches",
+   "description": "Telegram/document attachment caches. Fetchable from the platform on demand.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "telegram-images/",
+    "documents/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "listener-daemon-internals",
+   "description": "Listener-daemon IPC internals: inbox/outbox.jsonl.active, pid, sentinels, hmac key. Daemon-local.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/listener/",
+    "state/listener/inbox.jsonl.active",
+    "state/listener/outbox.jsonl.active"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "threadline-transport-internals",
+   "description": "Threadline transport internals: relay-tokens, mcp-tokens, rate-limits. Connection-scoped; identity-keys are local-secret like machine keys.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "threadline/relay-tokens.json",
+    "threadline/mcp-tokens.json",
+    "threadline/rate-limits.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "threadline-trust-profiles",
+   "description": "Per-peer agent trust profiles (AgentTrustManager) + audit trail. Now CREDENTIAL-GATING (Secure A2A Verified Pairing §3.8): the profile carries the pairing lifecycle state (pending-verification / mutual-verified / verification-failed / identity-verified) that the credential-share gate keys on. MACHINE-LOCAL: the SAS-bound pending state + the machine-local handshake's identity decision live here; the SAS words themselves are in a separate 0600 store (pairing-pending.json, never in the registry). The VERIFIED-IDENTITY RESULT alone replicates via the threadline-pairing stateSync transport (see threadline-pairing-result) — this file is never whole-file-synced.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "threadline/trust-profiles.json",
+    "threadline/trust-audit.jsonl",
+    "threadline/pairing-pending.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "threadline-pairing-result",
+   "description": "The replicated verified-IDENTITY RESULT of a Secure A2A pairing (Secure A2A Verified Pairing §3.8 / FD11). Replicates ONLY { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt, verifiedOnMachine } across the agent's OWN machines via the HLC replicated-store foundation (kind 'threadline-pairing-record') — NEVER the SAS words, shared secret, or relay token (those stay machine-local, bound to the machine-local handshake's ephemeral secret). Machine B honors a replicated record ONLY by pinning peerIdentityPub; a revoke/verification-failed propagates as a tombstone. Ships DARK behind multiMachine.stateSync.threadlinePairing (enabled:false, dryRun:true). Rides the coherence-journal stream files (no dedicated path).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "lww",
+   "transport": "peer-http",
+   "paths": [
+    "state/coherence-journal/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "process-restart-coordination",
+   "description": "Process/restart coordination: boot-id, restart markers, auto-updater state, caffeinate pid, slept-marker. Per-process lifecycle.",
+   "scope": "machine-local",
+   "freshness": "real-time",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/boot-id",
+    "state/auto-updater.json",
+    "state/slept-marker.json",
+    "state/lifeline-restart-requested.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "ephemeral-caches",
+   "description": "Per-boot/ephemeral caches: paste/, stop-gate.db, feature-registry.db, capability manifest. Recomputed or per-machine detection.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/paste/",
+    "state/stop-gate.db",
+    "state/feature-registry.db"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "trust-elevation-incidents",
+   "description": "External-op trust elevation / incident state. Debatable whether trust transfers across machines -- flagged for P3+ review rather than silently local.",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/trust-levels.json",
+    "state/trust-incidents.json",
+    "state/trust-*.json"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "audit-destructive-ops",
+   "description": "Destructive-ops audit stream (411M live -- needs rotation, census §7). Append-only per-machine.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/destructive-ops.jsonl",
+    "logs/destructive-ops.jsonl"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "C",
+    "access": "streamed",
+    "complianceHold": true,
+    "keepSegments": 0,
+    "note": "forensic trail — archive, never drop-delete (replaces SafeGitExecutor.maybeRotateAuditLog drop-rotate)"
+   }
+  },
+  {
+   "category": "audit-job-runs",
+   "description": "Job-runs audit stream. Append-only per-machine.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/job-runs.jsonl",
+    "logs/job-runs.jsonl"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "A",
+    "access": "streamed",
+    "maxBytes": 33554432,
+    "keepSegments": 4
+   }
+  },
+  {
+   "category": "audit-reaper",
+   "description": "Reaper decision audit stream (keep/kill transitions stamped with pressure tier).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/reaper-audit.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-reap-log",
+   "description": "Reap-log: why a session vanished (one JSON line per shutoff/refused-shutoff).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/reap-log.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-sentinel-events",
+   "description": "Sentinel-events audit stream (silently-stopped family transitions).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/sentinel-events.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-security",
+   "description": "Security audit stream (auth/security events).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "security.jsonl",
+    "state/security.jsonl",
+    "logs/security.jsonl"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "C",
+    "access": "streamed",
+    "complianceHold": true,
+    "keepSegments": 0,
+    "note": "forensic trail — archive, never drop-delete (replaces SecurityLog maybeRotateJsonl keep-ratio trim)"
+   }
+  },
+  {
+   "category": "audit-decision-journal",
+   "description": "Decision-journal audit stream.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/decision-journal.jsonl",
+    "state/decision-journal.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-activity",
+   "description": "Activity audit streams (date-partitioned, ~37M).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/activity-*.jsonl",
+    "state/activity/"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-watchdog-interventions",
+   "description": "Watchdog-interventions audit stream.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/watchdog-interventions.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-operation-log",
+   "description": "External-operation gate operation-log audit stream.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/operation-log.jsonl",
+    "state/operation-log.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-trust-chain",
+   "description": "Hash-chained trust-audit / mandate-decision chain.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/trust-audit-chain.jsonl",
+    "state/trust-audit-chain.jsonl",
+    "threadline/trust-audit.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-telegram-messages",
+   "description": "Telegram message history JSONL (5.2M).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/telegram-messages.jsonl",
+    "logs/telegram-messages.jsonl"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "A",
+    "access": "streamed",
+    "maxBytes": 33554432,
+    "keepSegments": 4
+   }
+  },
+  {
+   "category": "audit-a2a-messages",
+   "description": "Agent-to-agent sent/received audit streams.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    ".instar/messages/a2a-sent.jsonl",
+    ".instar/messages/a2a-received.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-prompt-gate",
+   "description": "Prompt-gate audit stream.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/prompt-gate-audit.jsonl",
+    "state/prompt-gate-audit.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-recovery-events",
+   "description": "Recovery-events audit stream (compaction/recovery lifecycle).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/recovery-events.jsonl",
+    "state/recovery-events.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-skill-telemetry",
+   "description": "Skill-telemetry audit stream.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/skill-telemetry.jsonl",
+    "state/skill-telemetry.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "audit-feedback",
+   "description": "Feedback audit stream (Rising Tide feedback loop).",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/feedback.jsonl",
+    "logs/feedback.jsonl"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "A",
+    "access": "streamed",
+    "maxBytes": 33554432,
+    "keepSegments": 4
+   }
+  },
+  {
+   "category": "audit-apprenticeship-decisions",
+   "description": "Apprenticeship lifecycle gate decisions audit stream.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "logs/apprenticeship-decisions.jsonl",
+    "state/apprenticeship-decisions.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "derived-token-ledger",
+   "description": "Token ledger SQLite, rebuilt from Claude Code JSONL transcripts.",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/token-ledger.db",
+    "state/tokens.db"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "sqlite",
+    "access": "sqlite",
+    "maxAgeMs": 2592000000,
+    "note": "incremental-vacuum + batched delete off-thread (Increment 2)"
+   }
+  },
+  {
+   "category": "derived-semantic-memory",
+   "description": "semantic.db / memory.db / episodes -- rebuildable from evidence. (Live-disk: stale since Jun 1 -- investigate separately, census §1.6/§7.)",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/semantic.db",
+    "state/memory.db",
+    "state/episodes.db",
+    "state/episodes/",
+    "memory/semantic.jsonl"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "sqlite",
+    "access": "sqlite",
+    "maxAgeMs": 7776000000,
+    "note": "mixed .db + memory/semantic.jsonl; jsonl arm is A-class streamed in retrofit"
+   }
+  },
+  {
+   "category": "derived-topic-memory",
+   "description": "topic-memory.db (16M, active). Master spec open Q2: promote to COHERENT? -- left derived-cache until P3 review (census honesty).",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/topic-memory.db"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "derived-project-map",
+   "description": "Project-map spatial-awareness scan (refreshable).",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/project-map.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "derived-projects-digest",
+   "description": "Projects-digest cache.",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/projects-digest.cache",
+    ".instar/projects/.digest.cache"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "derived-docs-code-sync",
+   "description": "docs-code-sync.json derived index.",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/docs-code-sync.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "derived-memory-index",
+   "description": "MemoryIndex derived index over memory artifacts.",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/memory-index.json",
+    "memory/index.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "derived-framework-model-preferences",
+   "description": "framework-model-preferences.db derived cache.",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/framework-model-preferences.db"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "derived-discovery",
+   "description": "discovery.db derived cache (agent discovery).",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/discovery.db",
+    "threadline/discovery.db"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "uncertain-instructions-tracking",
+   "description": "state/instructions-tracking/ (59M, 15,180 UUID-keyed JSONL files). Census did not map an owner; volume says it matters. Owner + rotation + class needed (census §4e).",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/instructions-tracking/"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "uncertain-topic-intent-store",
+   "description": "TopicIntentStore. Code references it; on-disk location unverified (census §4e).",
+   "scope": "derived-cache",
+   "freshness": "eventual",
+   "conflictShape": "n/a",
+   "transport": "none",
+   "paths": [
+    "state/topic-intent/",
+    "state/topic-intent.json"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "uncertain-shared-state-ledger",
+   "description": "shared-state.jsonl (SharedStateLedger). Nominally the git-synced cross-machine ledger -- is anything consuming it on real machines? May be the vestigial ancestor of the P1 journal (census §4e).",
+   "scope": "must-be-coherent",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "git",
+   "paths": [
+    "state/shared-state.jsonl",
+    "shared-state.jsonl"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "uncertain-correction-capture-backlog",
+   "description": "correction-capture-backlog.db vs correction-ledger.db: two stores, one sentinel -- which is canonical? (census §4e).",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/correction-capture-backlog.db"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "uncertain-project-round-worktrees",
+   "description": "ProjectRoundWorktrees / TaskFlow stores. Routes-managed; durable form unverified (census §4e).",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/project-round-worktrees.json",
+    "state/taskflow/"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "legacy-singletons",
+   "description": "Stale legacy singletons (anti-patterns.json, quick-facts.json, project-registry.json, May 20 vintage, no live writers found). Retire per census §7.",
+   "scope": "machine-local",
+   "freshness": "n/a",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/anti-patterns.json",
+    "state/quick-facts.json",
+    "state/project-registry.json"
+   ],
+   "grandfathered": true
+  },
+  {
+   "category": "session-monitor-ctx-notified",
+   "description": "Persisted context-exhaustion notify ledger - topicId -> {sessionName, at} already announced as dead, so the once-per-death-episode dedup survives server restarts (update-train churn previously re-announced the same death once per boot; 2026-06-06 residual on topics 16566/19437). Machine-local, single-writer (SessionMonitor), pruned at 7 days on load.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/session-monitor-ctx-notified.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "stream-tickets",
+   "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC §2.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/stream-tickets.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "guard-posture-snapshot",
+   "description": "Boot-time guard posture snapshot written by the GuardPostureTripwire at every server boot; read by GET /guards for diverged-pending-restart derivation (GUARD-POSTURE-ENDPOINT-SPEC §2.2). Machine-local observability, never authority.",
+   "scope": "machine-local",
+   "freshness": "boot",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/guard-posture.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "guard-posture-peers",
+   "description": "Durable last-known guard posture per peer machine with RECEIVER-side receipt time (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)) - survives local restarts so a dark peer's posture renders with its honest age. Written only at the heartbeat-ingestion chokepoint (registry-keyed identity). Machine-local observability, never authority.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/guard-posture-peers.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "guard-posture-episodes",
+   "description": "GuardPostureProbe episode state - per-anomaly first/last-seen for the persist-across-ticks rule, flap windows, and the open-episode marker that keeps alerts to ONE aggregated Attention item per episode (GUARD-POSTURE-ENDPOINT-SPEC §2.4). Machine-local notice hygiene, never authority.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/guard-posture-episodes.json"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "guard-accepted-fallbacks",
+   "description": "Durable, per-machine OWNED operator-accept records for the G3 dark-but-load-bearing classification (g3-dark-but-load-bearing-guards §2.4) - keyed <machineId>:<guardKey> -> {reason, owner, acceptedAt}. Suppresses a load-bearing guard's loadBearingGap into a VISIBLE accepted-risk row. Reserved for a genuine PIN-authenticated operator decision; per-machine (an accept on one machine never silences a peer's gap). Machine-local decision record, never authority over a peer.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/guard-accepted-fallbacks.json"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "resolution",
+    "boundedByResolution": true,
+    "maxOpenItems": 100,
+    "note": "Bounded by the curated load-bearing guard set (currently small): one record per <machineId>:<guardKey>. Each record is RESOLVED by graduating the guard or by an operator DELETE-revoke; never grows unbounded."
+   }
+  },
+  {
+   "category": "remote-close-audit",
+   "description": "Relaying machine's append-only record of every relayed session-close ORDER (REMOTE-SESSION-CLOSE-SPEC §2.3) - target machine, sessionUuid, observed outcome. The owner's reap-log is the authoritative record of the kill; this is the order-end manifest so a relayed kill sweep cannot be traceless on the relayer. Machine-local audit history, never authority.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "logs/remote-close-audit.jsonl"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "resume-queue",
+   "description": "Durable mid-work resume queue + single-writer lockfile + decision audit (reap-notify spec R2.3): entries for autonomously-reaped mid-work sessions awaiting ordered revival, plus the resurrection tombstone ledger. Machine-local BY DESIGN — entries reference local tmux sessions/worktrees; deliberately EXCLUDED from backup/restore and never replicated (a foreign-host lock disables the queue loudly).",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/resume-queue.json",
+    "state/resume-queue.lock"
+   ],
+   "grandfathered": false
+  },
+  {
+   "category": "rope-health-monitor",
+   "description": "U4.5 RopeHealthMonitor durable debounce/episode memory (u4-5-rope-health-alerts §2) - per peer: condition, all-down onset, episodeKey, lastAlertAt, detected-not-notified flag. Transition-only writes with a short debounce; intra-episode counters lost to a restart are ACCEPTED (a restart re-debounces, never fabricates an episode). Machine-local BY DESIGN (rope health is per-machine-pair and directional); never authority.",
+   "scope": "machine-local",
+   "freshness": "live",
+   "conflictShape": "single-writer",
+   "transport": "none",
+   "paths": [
+    "state/rope-health.json"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "bounded-set",
+    "maxOpenItems": 100,
+    "note": "One record per known peer machine (peers x 1) - bounded by the machine registry size; a peer's record is overwritten in place on every transition, never appended."
+   }
+  },
+  {
+   "category": "provider-cost-reports",
+   "description": "routing-control-room-spend Layer 1c: immutable append-only provider-reported cost/usage records (provider_cost_report) + reconciliation records (recon_record), joined on meteredCallId. REPORTING-only — structurally excluded from the money gate (FD-21).",
+   "scope": "machine-local",
+   "freshness": "eventual",
+   "conflictShape": "append-only",
+   "transport": "none",
+   "paths": [
+    "state/server-data/provider-cost-reports.db"
+   ],
+   "grandfathered": false,
+   "retention": {
+    "class": "sqlite",
+    "access": "sqlite",
+    "maxAgeMs": 34560000000,
+    "note": "400d (routingSpend.providerReportRetentionDays) — NOT re-derivable, volume bounded by metered calls only; batched-delete prune (scal-F4) at boot + daily"
+   }
+  }
+ ]
 }

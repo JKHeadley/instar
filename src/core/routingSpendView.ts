@@ -207,6 +207,16 @@ export interface BuildSpendSummaryOptions {
   tokenRollupRetentionDays: number;
   /** Machine whose overlay/credits produced the adjustments (pool-merge label). */
   adjustmentsSource?: string | null;
+  /**
+   * Layer 1c: superseded-resolved daily provider-cost aggregates. Where a
+   * (door, modelId) row has provider-reported dollars, the row PREFERS them
+   * (`costBasis: 'provider-reported'`, `providerReportedUsd` set) — the
+   * read-time expression of "ground on the provider". Absent/empty ⇒ every
+   * row stays internal-derived (a labeled, first-class basis).
+   */
+  providerDaily?: Array<{ day: string; door: string; modelId: string; providerCostUsd: number; reportedCalls: number }>;
+  /** Layer 1c: latest signed reconciliation driftPct per door (display-only). */
+  driftByDoor?: Record<string, number>;
 }
 
 /**
@@ -260,6 +270,28 @@ export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendS
     row.costBasis = costBasisFor(res.priceBasis);
     row.priceStale = res.priceStale;
     rowAcc.set(key, row);
+  }
+
+  // Layer 1c provider-preferred basis: sum the daily provider aggregates per
+  // (door, modelId) and prefer them where present (spec §Layer 2 read contract).
+  if (opts.providerDaily && opts.providerDaily.length > 0) {
+    const provByRow = new Map<string, number>();
+    for (const p of opts.providerDaily) {
+      const k = `${p.door}|${p.modelId}`;
+      provByRow.set(k, (provByRow.get(k) ?? 0) + p.providerCostUsd);
+    }
+    for (const [k, usd] of provByRow) {
+      const row = rowAcc.get(k);
+      if (!row) continue;
+      row.providerReportedUsd = Math.round(usd * 1e6) / 1e6;
+      row.costBasis = 'provider-reported';
+    }
+  }
+  if (opts.driftByDoor) {
+    for (const row of rowAcc.values()) {
+      const d = opts.driftByDoor[row.door];
+      if (typeof d === 'number' && Number.isFinite(d)) row.providerDriftPct = d;
+    }
   }
 
   const rows = Array.from(rowAcc.values()).map((r) => {

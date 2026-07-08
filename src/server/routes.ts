@@ -1015,6 +1015,8 @@ export interface RouteContext {
   spendPlanStore?: import('../core/RenderedPlanStore.js').RenderedPlanStore | null;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
+  /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
+  providerCostReportStore?: import('../monitoring/ProviderCostReportStore.js').ProviderCostReportStore | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
   /** Per-machine process-footprint monitor (observe-only; dark by default). */
   processFootprintMonitor: import('../monitoring/ProcessFootprintMonitor.js').ProcessFootprintMonitor | null;
@@ -10162,6 +10164,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : ctx.featureMetricsLedger.spendTokenRollupDaily(
             sinceHours && sinceHours > 0 ? { sinceDays: Math.ceil(sinceHours / 24) } : {},
           );
+    // Layer 1c: the provider-preferred basis — daily provider-cost aggregates +
+    // the latest signed drift per door, joined into the reporting rows on read.
+    let providerDaily;
+    let driftByDoor;
+    try {
+      if (ctx.providerCostReportStore) {
+        providerDaily = ctx.providerCostReportStore.dailyCostAggregates(Math.ceil(routingSpendRetentionDays));
+        driftByDoor = {} as Record<string, number>;
+        for (const r of ctx.providerCostReportStore.recentRecon(50)) {
+          if (r.driftPct !== null && driftByDoor[r.door] === undefined) driftByDoor[r.door] = r.driftPct;
+        }
+      }
+    } catch {
+      // @silent-fallback-ok: provider grounding is an enrichment — a store read
+      // failure degrades every row to internal-derived (a labeled, first-class basis).
+    }
     const summary = buildRoutingSpendSummary({
       buckets,
       prices: ctx.routingPriceAuthority,
@@ -10171,6 +10189,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       lastReconcileAt: ctx.featureMetricsLedger.lastSpendReconcileMs(),
       tokenRollupRetentionDays: routingSpendRetentionDays,
       adjustmentsSource: (ctx.config as { machineId?: string }).machineId ?? null,
+      providerDaily,
+      driftByDoor,
     });
     res.json(summary);
   });
@@ -10181,6 +10201,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json(composeCapsView());
+  });
+
+  // Layer 1c (routing-control-room-spend §Surface 1): the per-(keyRef, door)
+  // internal-vs-provider (and, on the metered-lease holder, vs-committed) drift
+  // records the reconciliation sweep produces. Read-only; same dev gate as the view.
+  router.get('/routing-spend/reconciliation', (req, res) => {
+    if (!resolveDevAgentGate(routingSpendCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' });
+      return;
+    }
+    if (!ctx.providerCostReportStore) {
+      res.status(503).json({ error: 'provider-cost store unavailable on this install' });
+      return;
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    res.json({
+      records: ctx.providerCostReportStore.recentRecon(Number.isFinite(limit) && limit > 0 ? limit : 100),
+      note:
+        'Layer 1c reconciliation (REPORTING-only — never a gate input): signed driftPct compares provider-reported vs ' +
+        'internally-derived spend per (keyRef, door) window; committedUsd appears only on the metered-lease holder. ' +
+        'Empty until the metered dispatch seam produces provider reports.',
+    });
   });
 
   // ── Routing Control Room — Increment B MONEY surfaces (Surface 2) ─────────

@@ -84,6 +84,26 @@ INTO the topic, never a topic per item, with the lifeline as the single named em
 - The topic id is published as a content-free field on the replicated machine registry, so a
   future serving-lease holder inherits it instead of creating a duplicate.
 
+## Provider grounding (Layer 1c — the reconciliation cross-check)
+
+"Ground our cost usage on actual reporting from the provider" is honored honestly: OpenRouter
+reports true per-call USD (`usage.cost`, superseded by the later `/generation` figure); Groq and
+Gemini report authoritative per-call TOKEN counts but no cheap per-call USD.
+
+- **`ProviderCostReportStore`** — an immutable, append-only record of what each provider itself
+  reported, joined per call on the `meteredCallId` (the same id as the money ledger's reserve and
+  `feature_metrics.callId`). Rows are receive-clamped (a malformed numeric preserves the row for
+  audit but excludes it from every aggregate) and superseded by newest capture — a late, more
+  authoritative report can never double-count. Declared 400-day retention with a batched prune.
+- **`ProviderReconciliationSweep`** — the cadenced reporting-side cross-check: per (key, door)
+  window it compares provider-reported vs internally-derived spend (and, on the money-authority
+  machine, the booked committed figure), records a signed drift percentage, and raises the
+  Increment-C drift alert above the threshold. It never touches the money lock, and nothing it
+  produces can ever move the money gate — provider-lower only changes the report; provider-higher
+  feeds the PIN price-promotion path.
+- `GET /routing-spend/reconciliation` — the drift-record read surface; the spend summary rows
+  carry `costBasis: "provider-reported"` and `providerReportedUsd` where reports exist.
+
 ## Safety posture
 
 Reporting and money are strictly separated: provider reports, subsidies, credits, and observed

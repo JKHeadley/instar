@@ -72,6 +72,12 @@ export interface FeatureMetricRecord {
    * volume renders as UNCOSTED in the spend view, never a fabricated $0.
    */
   door?: string;
+  /**
+   * routing-control-room-spend Layer 1c: the per-call join key (=== the money
+   * ledger reserveId === provider_cost_report.meteredCallId). Stamped only on
+   * metered calls by the (future) dispatch seam; null on internal CLI calls.
+   */
+  callId?: string;
   /** Post-#638: did this call wait for a rate-limit window before running. */
   waited?: boolean;
   waitMs?: number;
@@ -293,6 +299,10 @@ const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
   // routing-control-room-spend Layer 0: the routing DOOR dimension. Additive + nullable
   // (matches framework/tokens_cached); a DB from an earlier instar gains it at open.
   { name: 'door', ddl: 'ALTER TABLE feature_metrics ADD COLUMN door TEXT' },
+  // routing-control-room-spend Layer 1c: the per-call join key (=== the money
+  // ledger's reserveId === every provider_cost_report row's meteredCallId).
+  // Additive + nullable; only metered calls stamp it (FD-21).
+  { name: 'call_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN call_id TEXT' },
 ];
 
 /** Batch ceiling for the retention prune (scal-F4): SQLite-portable bounded DELETE. */
@@ -346,8 +356,8 @@ export class FeatureMetricsLedger {
     registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
       `INSERT INTO feature_metrics
-         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, waited, wait_ms, verdict_id)
-       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @waited, @waitMs, @verdictId)`,
+         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, call_id, waited, wait_ms, verdict_id)
+       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @callId, @waited, @waitMs, @verdictId)`,
     );
     if (this.maintainSpendRollup) {
       try {
@@ -406,6 +416,7 @@ export class FeatureMetricsLedger {
         model: r.model ?? null,
         framework: r.framework ?? null,
         door: r.door ?? null,
+        callId: r.callId ?? null,
         waited: r.waited ? 1 : 0,
         waitMs: r.waitMs ?? null,
         verdictId: r.verdictId ?? null,

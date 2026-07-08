@@ -261,3 +261,39 @@ describe('Increment B money routes (integration)', () => {
     expect(last.after.caps.metered_openrouter_bench.frozen).toBe(true);
   });
 });
+
+// ── Layer 1c — the reconciliation read route + the provider-preferred summary basis ──
+import { ProviderCostReportStore } from '../../src/monitoring/ProviderCostReportStore.js';
+
+describe('Layer 1c provider grounding (integration)', () => {
+  it('GET /routing-spend/reconciliation 503s when dark, 200s with records when live', async () => {
+    const dark = await request(appWith(ctx({ dark: true }))).get('/routing-spend/reconciliation');
+    expect(dark.status).toBe(503);
+    const c = ctx() as unknown as Record<string, unknown>;
+    const store = new ProviderCostReportStore({ dbPath: path.join(stateDir, 'pcr.db') });
+    store.appendRecon({ keyRef: 'k1', door: 'openrouter-api', windowStartMs: 1, windowEndMs: 2, internalUsd: 1, providerUsd: 1.2, committedUsd: null, driftPct: 20 });
+    c.providerCostReportStore = store;
+    const live = await request(appWith(c as unknown as RouteContext)).get('/routing-spend/reconciliation');
+    expect(live.status).toBe(200);
+    expect(live.body.records).toHaveLength(1);
+    expect(live.body.records[0].driftPct).toBe(20);
+    expect(live.body.note).toContain('never a gate input');
+  });
+
+  it('the summary PREFERS provider-reported cost where reports exist (costBasis labeled)', async () => {
+    const c = ctx() as unknown as Record<string, unknown>;
+    const store = new ProviderCostReportStore({ dbPath: path.join(stateDir, 'pcr2.db') });
+    store.append({
+      meteredCallId: 'call-1', keyRef: 'metered_openrouter_bench', door: 'openrouter-api',
+      modelId: 'openai/gpt-5.5', source: 'openrouter-usage', providerCostUsd: 12.34, providerTokensOut: 100,
+    });
+    c.providerCostReportStore = store;
+    const res = await request(appWith(c as unknown as RouteContext)).get('/routing-spend/summary?grain=day');
+    expect(res.status).toBe(200);
+    const metered = res.body.rows.find((r: { door: string }) => r.door === 'openrouter-api');
+    expect(metered.providerReportedUsd).toBeCloseTo(12.34, 4);
+    expect(metered.costBasis).toBe('provider-reported');
+    const sub = res.body.rows.find((r: { door: string }) => r.door === 'claude-code');
+    expect(sub.costBasis).not.toBe('provider-reported'); // no report → labeled internal/subscription
+  });
+});

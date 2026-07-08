@@ -1,0 +1,26 @@
+{
+  "ts": "2026-07-08T17:58:43.588Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 3196,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "One new self-triggered notifier: the reconciliation sweep's drift alert — no feedback loop in the sweep itself (output never changes input); the drift emission rides the Increment-C dispatcher latch (24h re-arm per (keyRef, door, driftBucket)), modeled as spend-recon-sweep (eternal sentinel, 24h rate floor), settling 50/50 under the pinned fixture."
+    }
+  },
+  "verdict": "blocked"
+}

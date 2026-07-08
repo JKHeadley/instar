@@ -122,6 +122,9 @@ import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/Telegra
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
+import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
+import { ProviderReconciliationSweep } from '../monitoring/ProviderReconciliationSweep.js';
+import { meteredKeysFromChains } from '../core/routingSpendView.js';
 import { DEFAULT_FRESHNESS_SLA_DAYS } from '../core/routingPriceAuthority.js';
 import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
 import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
@@ -274,6 +277,9 @@ export class AgentServer {
   private spendAlertEmitters: SpendAlertEmitters | null = null;
   /** Lazily-opened durable relay handle for money-critical alert delivery. */
   private spendAlertRelayStore: SpendAlertRelayStore | null = null;
+  /** Layer 1c provider-report store + reconciliation sweep (reporting-only; FD-21). */
+  private providerCostReportStore: ProviderCostReportStore | null = null;
+  private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
@@ -1166,6 +1172,70 @@ export class AgentServer {
           // lockout (defence-in-depth layer, never the auth decision itself).
           console.warn('[instar] pin-attempt store init failed (non-fatal — in-memory lockout only):', err);
           this.pinAttemptStore = null;
+        }
+
+        // ── Layer 1c provider-report store + reconciliation sweep (FD-21 —
+        // REPORTING-only; rides the same dev-gated view flag as the summary;
+        // structurally excluded from the money gate, which imports nothing here).
+        if (routingSpendOn) {
+          try {
+            const rsCfg = (options.config as {
+              routingSpend?: { providerReportRetentionDays?: number; reconciliation?: { sweepIntervalHours?: number; driftAlertPct?: number } };
+            }).routingSpend;
+            this.providerCostReportStore = new ProviderCostReportStore({
+              dbPath: path.join(options.config.stateDir, 'server-data', 'provider-cost-reports.db'),
+              retentionDays: rsCfg?.providerReportRetentionDays ?? 400,
+            });
+            this.providerCostReportStore.prune(); // boot prune (batched — scal-F4)
+            const doorToKey = new Map(meteredKeysFromChains().map((m) => [m.door, m.keyRef]));
+            const sweep = new ProviderReconciliationSweep({
+              store: this.providerCostReportStore,
+              // Internal-derived per (keyRef, door): the metered doors' daily token
+              // buckets × the as-of reviewed price (the same reporting math the
+              // summary uses) — reporting-side reads only, never the money mutex.
+              internalDerivedUsd: (sinceMs, untilMs) => {
+                const ledger = this.featureMetricsLedger;
+                const prices = this.routingPriceAuthority;
+                if (!ledger || !prices) return [];
+                prices.reloadIfChanged();
+                const sinceDays = Math.max(1, Math.ceil((untilMs - sinceMs) / 86_400_000) + 1);
+                const buckets = ledger.spendTokenRollupDaily({ sinceDays });
+                const agg = new Map<string, { keyRef: string; door: string; internalUsd: number }>();
+                for (const b of buckets) {
+                  const keyRef = doorToKey.get(b.door);
+                  if (!keyRef) continue; // metered doors only
+                  if (b.bucketStartMs < sinceMs - 86_400_000 || b.bucketStartMs > untilMs) continue;
+                  const res = prices.resolve(b.door, b.modelId, b.bucketStartMs);
+                  const cost = prices.reportingCost(res, b.tokensIn, b.tokensOut, b.tokensCached);
+                  const e = agg.get(`${keyRef} ${b.door}`) ?? { keyRef, door: b.door, internalUsd: 0 };
+                  e.internalUsd += cost.grossUsd;
+                  agg.set(`${keyRef} ${b.door}`, e);
+                }
+                return [...agg.values()];
+              },
+              committedUsd: (keyRef) => {
+                try {
+                  return this.meteredSpendLedger?.committed(keyRef).committedLifetimeUsd ?? null;
+                } catch {
+                  // @silent-fallback-ok: committed is holder-known enrichment; a
+                  // read failure records the comparison provider-vs-internal only.
+                  return null;
+                }
+              },
+              // The Increment-C emit surface (late-bound; dispatcher dryRun-soaked).
+              onDrift: (keyRef, door, driftPct) => this.spendAlertEmitters?.onReconciliationDrift(keyRef, door, driftPct),
+              driftAlertPct: rsCfg?.reconciliation?.driftAlertPct ?? 10,
+            });
+            const sweepMs = Math.max(1, rsCfg?.reconciliation?.sweepIntervalHours ?? 6) * 60 * 60 * 1000;
+            this.reconSweepTimer = setInterval(() => void sweep.run(), sweepMs);
+            this.reconSweepTimer.unref?.();
+          } catch (err) {
+            // @silent-fallback-ok: loud warn — a broken provider-report layer
+            // degrades every row to internal-derived (labeled); it never touches
+            // money admission or the router path.
+            console.warn('[instar] provider-cost report layer init failed (non-fatal — internal-derived reporting remains):', err);
+            this.providerCostReportStore = null;
+          }
         }
 
         // ── Increment B MONEY layer (routing-control-room-spend §Layer 3 / Surface 2).
@@ -2674,6 +2744,7 @@ export class AgentServer {
       meteredSpendGate: this.meteredSpendGate,
       spendPlanStore: this.spendPlanStore,
       pinAttemptStore: this.pinAttemptStore,
+      providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
       processFootprintMonitor: this.processFootprintMonitor,
       approvalLedger: this.approvalLedger,
@@ -4459,6 +4530,7 @@ export class AgentServer {
       try { if (this.meteredSweepTimer) clearInterval(this.meteredSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.spendAlertTimer) clearInterval(this.spendAlertTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { await this.spendAlertDispatcher?.flushDigest(); } catch { /* @silent-fallback-ok: a failed final digest flush loses only a coalesced NOTICE at shutdown */ }
+      try { if (this.reconSweepTimer) clearInterval(this.reconSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       this.featureMetricsPruneTimer = null;
     }
     if (this.tokenLedger) {

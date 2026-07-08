@@ -38,3 +38,7 @@ One new self-triggered behavior: the reconciliation sweep's drift ALERT — alre
 ## No-deferrals accounting
 
 PR 4 (amortized subscription display with visible derivation math + scheduled web-research price checks) and the pool-scope merge of the reconciliation view are the remaining tracked items of this train, tracked under CMT-1929 <!-- tracked: CMT-1929 --> and enumerated in `.instar/plans/money-increment-b-brief.md`; nothing in THIS PR's claimed scope is partial.
+
+## Build outcome (staged with the change)
+
+Delivered exactly as reviewed: 18 unit + 2 integration + 1 e2e new tests green; FD-21 exclusion pinned; retention lint green with the store registered (never grandfathered); self-action ratchet 50/50 with `spend-recon-sweep`; docs-coverage floors held (class 55 / route 55).

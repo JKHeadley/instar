@@ -506,7 +506,46 @@ const spendCapApproach: SelfActionController = {
   },
 };
 
+/**
+ * Routing-spend provider-reconciliation drift alert (Layer 1c,
+ * src/monitoring/ProviderReconciliationSweep.ts run() → the Increment-C
+ * dispatcher). Convergence shape: the sweep itself has NO feedback loop (its
+ * output never changes its input — prices and provider reports are external
+ * facts); its only self-action is the drift alert, deduped by the dispatcher
+ * latch per (keyRef, door, driftBucket) with a 24h re-arm. Under a PERMANENTLY
+ * drifting pair (the pressure that never clears) emissions converge to one per
+ * re-arm window — an eternal sentinel with a 24h rate floor.
+ */
+const spendReconSweep: SelfActionController = {
+  id: 'spend-recon-sweep',
+  actionVerb: 'recon-drift-notify',
+  models: 'src/monitoring/ProviderReconciliationSweep.ts (cadenced read-only comparator) + the Increment-C dispatcher latch (24h re-arm per (keyRef, door, driftBucket))',
+  boundK: 3, // 3 re-arm windows over the horizon → one each
+  perTargetBoundK: 3,
+  ticks: 12, // 12 × 6h sweep cadence = 3 days of permanent drift
+  tickMs: 6 * 60 * 60_000,
+  eternalSentinel: {
+    reason:
+      'A permanently drifting (provider ≫ booked) pair must keep surfacing daily while it persists — stale pricing feeds the PIN promotion path; the dispatcher 24h latch is the rate floor.',
+    rateFloorMs: 24 * 60 * 60_000,
+  },
+  makeUnderPressure(f, sink) {
+    const REARM_MS = 24 * 60 * 60_000;
+    let lastEmitAtMs = -Infinity;
+    return {
+      tick() {
+        sink.considered += 1;
+        // The pressure: every sweep pass finds the SAME +20% drift, forever.
+        if (f.clock.nowMs() - lastEmitAtMs < REARM_MS) return; // the dispatcher latch
+        lastEmitAtMs = f.clock.nowMs();
+        sink.emit({ verb: 'recon-drift-notify', target: 'metered_openrouter_bench:openrouter-api' });
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  spendReconSweep,
   spendDoorDarkBrakes,
   spendFallbackSpike,
   spendCapApproach,

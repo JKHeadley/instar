@@ -294,3 +294,33 @@ describe('Routing Control Room ALERT layer E2E lifecycle (Increment C)', () => {
     }
   });
 });
+
+// ── Layer 1c — the reconciliation route is ALIVE on the production init path. ──
+describe('Routing Control Room Layer 1c E2E (reconciliation surface alive)', () => {
+  it('GET /routing-spend/reconciliation is alive (200, not 503) on a dev-agent boot', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-1c-e2e-'));
+    const stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+    const config = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: 'x-1c',
+      requestTimeoutMs: 10000, version: '0.0.0', developmentAgent: true,
+      routingSpend: { tokenRollupRetentionDays: 400 },
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as unknown as InstarConfig;
+    const server = new AgentServer({ config, sessionManager: createMockSessionManager() as never, state: new StateManager(stateDir) });
+    await server.start();
+    try {
+      const res = await request(server.getApp()).get('/routing-spend/reconciliation').set({ Authorization: 'Bearer x-1c' });
+      expect(res.status).toBe(200); // the store constructs on the REAL boot path
+      expect(res.body.records).toEqual([]); // honest empty until metered dispatch exists
+      expect(fs.existsSync(path.join(stateDir, 'server-data', 'provider-cost-reports.db'))).toBe(true);
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/routing-spend-lifecycle.test.ts' });
+    }
+  });
+});
