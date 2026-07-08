@@ -1,0 +1,43 @@
+# Routing Control Room — PR 4: amortized subscriptions (math shown) + scheduled web price checks
+
+**Spec:** `docs/specs/routing-control-room-spend-alerts.md` (converged r7 + approved, parent-principle: Token-Audit Completeness) — FD-7 resolved by the operator, FD-8 web-verify
+**Side-effects:** `upgrades/side-effects/routing-spend-pr4-operator-additions.md`
+**Maturity:** ⚗️ Experimental — the display activates only when the operator declares `routingSpend.subscriptions`; the web-verify job ships `enabled: false`.
+
+## What Changed
+
+- **Amortized subscription display (operator decision #3 — "amortize but show the math"):**
+  `routingSpend.subscriptions` (reporting-only) declares a monthly price per CLI door; the spend
+  view amortizes it by CALENDAR TIME over the door's active days and shows the FULL derivation
+  (`$200.00/mo ÷ 30.4375 avg days/mo = $6.5708/day × 2 active day(s) = $13.1417`) per door —
+  never cap-enforced, counted once per door in totals; the Spend tab renders the figure inline
+  with a math footnote. Undeclared doors keep the honest `$0 (subscription)` wording.
+- **Scheduled web-research price checks (operator directive):** `--scope +web-verify` in the
+  deterministic prober fetches the OFFICIAL Groq + Google pricing pages, extracts tracked-model
+  prices with conservative fail-closed parsers (registered in SCRAPE_PARSERS, fed the REAL
+  captured page bytes) + a >10x plausibility clamp vs the reviewed canonical price, and writes
+  forward-only OBSERVATIONS into the gate-ineligible observed cache. Zero spend (no LLM, no
+  metered key — the FD-8 budget refusal now exempts exactly this deterministic scope). New
+  OFF-by-default weekly `routing-price-web-verify` job (tier-1 supervised, Bash-only).
+
+## Evidence
+
+`tests/unit/routing-price-web-verify.test.ts` — 7 cases: both parsers over the REAL captured page
+bytes (groq $0.15/$0.60; flash-lite $0.25 text-rate/$1.50 thinking-inclusive), reshaped-page
+refusal, plausibility-clamp refusal, and the amortization math (derivation string pinned verbatim,
+door-level totals, undeclared-door nulls). Realness lint green; docs-coverage floors held.
+
+## What to Tell Your User
+
+If you tell me what your AI subscriptions cost per month (e.g. "Claude Max is $200/mo"), the Spend
+tab stops showing a bare $0 for them — you'll see an amortized share for the reporting window with
+the exact arithmetic printed underneath, clearly labeled as a time-based estimate that never
+affects any spending cap. And once you enable the weekly price-check job, I'll quietly re-read the
+providers' official pricing pages and flag drift against the reviewed prices — you always keep the
+final say (PIN) on what price the books use.
+
+## Summary of New Capabilities
+
+- (⚗️ Experimental) Amortized subscription costs with visible derivation math + scheduled
+  web-research price observations. This completes the money-increment train (B → C → 1c → PR 4);
+  the pool-scope reconciliation merge stays tracked under CMT-1929.
