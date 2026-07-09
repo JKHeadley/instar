@@ -559,6 +559,18 @@
       background: var(--bg);
     }
 
+    /* F3 — Dashboard UX Standard: every tab's plain-language purpose line.
+       One muted, readable sentence directly under the tab header telling a
+       non-expert what the tab is for and what they can do here. Enforced by
+       tests/unit/dashboard-tab-purpose.test.ts. */
+    .tab-purpose {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.5;
+      margin: 0 0 4px 0;
+      max-width: 900px;
+    }
+
     .terminal-header {
       display: flex;
       align-items: center;
@@ -2875,6 +2887,7 @@
           <button class="new-session-btn" onclick="openNewSessionModal()" title="New session">+</button>
         </div>
       </div>
+      <div class="tab-purpose" style="padding:0 12px 8px">Your agent's live sessions — pick one to watch its terminal in real time.</div>
       <div class="session-list" id="sessionList">
         <div class="empty-state" id="emptyState">
           <div class="icon">&#x1F4AD;</div>
@@ -2927,6 +2940,7 @@
         <div class="file-tree-header">
           <h2>Files</h2>
         </div>
+        <div class="tab-purpose" style="padding:0 12px">Browse and edit this project's files from any device — changes save straight to disk.</div>
         <div class="file-tree-list" id="fileTreeList">
           <div class="file-loading" id="fileTreeLoading">Loading...</div>
         </div>
@@ -3041,7 +3055,7 @@
             <option value="lastRun">Sort: Last Run</option>
           </select>
         </div>
-        <div style="font-size:11px;color:var(--text-dim);padding:0 12px 8px;line-height:1.4">Monitor and control your scheduled tasks</div>
+        <div class="tab-purpose" style="padding:0 12px 8px">Monitor and control your scheduled tasks — recurring jobs that run on their own.</div>
         <div id="jobsSummary" class="jobs-summary"></div>
         <div class="jobs-filter-bar" id="jobsFilterBar">
           <button class="jobs-filter-chip active" data-filter="all" onclick="setJobFilter('all')">All</button>
@@ -3072,6 +3086,7 @@
           <button onclick="loadIntegratedBeing()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
+      <div class="tab-purpose">A cross-session record of what other parts of this agent have been doing — the shared memory that keeps separate conversations aware of each other.</div>
       <div id="ibPerMachineNotice" style="font-size:12px;color:var(--text-dim);display:none">
         Integrated-Being on this machine only — cross-machine ledger visibility is not yet implemented.
       </div>
@@ -3193,6 +3208,7 @@
           <button onclick="loadPrPipeline()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
+      <div class="tab-purpose">A live view of your open pull requests as they move through review and CI checks toward merge.</div>
       <div id="prPipelinePhaseNotice" style="font-size:12px;color:var(--text-dim)"></div>
       <div id="prPipelineEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
         No PR activity to display.
@@ -3206,8 +3222,8 @@
         <h2 style="margin:0">Projects</h2>
         <button onclick="loadProjects()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
-        Multi-spec project plans. Each project bundles related child initiatives across rounds with structurally-gated round advance.
+      <div class="tab-purpose">
+        Multi-spec project plans. Each project groups related pieces of work and only advances to its next round once its required checks pass.
       </div>
       <div id="projectsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
         No active projects. Create one via <code>POST /projects</code> with a plan-doc path.
@@ -3233,8 +3249,8 @@
           <button onclick="loadInitiatives()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
-        Multi-phase long-running work. Signals: <span style="color:#e27d3b">needs-user</span>,
+      <div class="tab-purpose">
+        Long-running work that spans multiple phases, with a status flag on each. Signals: <span style="color:#e27d3b">needs-user</span>,
         <span style="color:#d65f5f">next-check-due</span>,
         <span style="color:#4a9a4a">ready-to-advance</span>,
         <span style="color:#888">stale (&gt;7d)</span>.
@@ -3255,9 +3271,8 @@
           <button onclick="loadSecrets()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
-        Secret Drop — one-time-use links for users to submit credentials safely (never through chat).
-        Links expire automatically and are destroyed after submission.
+      <div class="tab-purpose">
+        Secret Drop — create one-time links so someone can hand you a password or API key safely, never pasted into chat. Each link expires and is destroyed the moment it's used.
       </div>
       <div id="secretsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
         No pending secret requests.
@@ -3270,7 +3285,7 @@
         <h2 style="margin:0">Commitments</h2>
         <button onclick="loadCommitments()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Open promises — beacon-watched commitments (⏳). States:
         <span style="color:#4a9a4a">pending</span>,
         <span style="color:#e27d3b">atRisk</span>,
@@ -3288,7 +3303,7 @@
         <h2 style="margin:0">Tokens</h2>
         <button onclick="loadTokens()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Token usage rolled up from Claude Code session transcripts. Last 24 hours unless noted.
       </div>
 
@@ -3324,7 +3339,7 @@
         <h2 style="margin:0">Resource Usage</h2>
         <button onclick="loadResources()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         How much CPU and memory this agent is using right now — the server process and each running session — sampled continuously. Last hour unless noted.
       </div>
 
@@ -3364,7 +3379,7 @@
         <h2 style="margin:0">Blockers</h2>
         <button onclick="loadBlockers()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Things that looked like they stopped progress, tracked as <b>decaying hypotheses</b> rather than settled walls.
         Each one moves through verification states; a "true blocker" is the best current understanding with a recheck date —
         never a permanent "give up".
@@ -3390,7 +3405,7 @@
           <button onclick="loadLlmActivity()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Every decision the system's "autopilot" makes with an AI call — sentinels, gates, background checks.
         For each one: which AI provider ran it, how often it actually <b>acted</b> on something vs. found
         nothing to do, how often it was <b>skipped</b> to save on rate limits, and what it cost. A row that
@@ -3424,7 +3439,7 @@
         <h2 style="margin:0">Routing Map</h2>
         <button onclick="loadRoutingMap()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Where each internal job-kind sends its AI calls. Every background check, gate, and
         sentinel has a <b>lane</b> (its "nature") and a fallback list of <b>doors</b> — the ways
         it can reach a model. This shows, per lane, the ordered door + model list it tries, and
@@ -3467,7 +3482,7 @@
           <button onclick="loadRoutingSpend()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
         <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
         price correction reflows automatically. <b>No paid door is live yet</b>, so metered spend is $0;
@@ -3702,7 +3717,7 @@
         <h2 style="margin:0">Evidence</h2>
         <div style="font-size:12px;color:var(--text-dim)">Per-entity evidence + reverse citations</div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Inspect the evidence trail behind any memory entity, or ask "what cites this?" given a kind + sourceId.
         All results are viewer-scope filtered by SemanticMemory before they reach this view.
       </div>
@@ -3761,7 +3776,7 @@
         <h2 style="margin:0">Threadline</h2>
         <button onclick="loadThreadlineBridgeConfig()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Threadline is your agent's secure channel to other AI agents. The Telegram bridge mirrors those conversations into per-thread Telegram topics so you can watch every exchange. Quiet by default — flip the master switch below to opt in.
       </div>
 
@@ -3858,7 +3873,7 @@
             <h2>Health</h2>
             <button class="systems-refresh" onclick="loadSystems()">Refresh</button>
           </div>
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;line-height:1.4">Your agent's health and running processes</div>
+          <div class="tab-purpose" style="margin-bottom:16px">Your agent's health and running processes — the server and each running session at a glance.</div>
           <div id="systemsBanner">
             <div style="padding:20px;color:var(--text-dim);text-align:center">Loading...</div>
           </div>
@@ -5597,7 +5612,7 @@
             <span style="font-size:11px;color:var(--text-dim)">confidence: ${escapeHtml(confidence)}</span>
             <button class="ev-inspect-btn" data-entity-id="${id}" style="margin-left:auto;padding:2px 8px;font-size:11px">Inspect evidence</button>
           </div>
-          ${content ? `<div style="font-size:12px;color:var(--text-dim);line-height:1.4">${content}</div>` : ''}
+          ${content ? `<div class="tab-purpose">${content}</div>` : ''}
         </div>
       `;
     }
