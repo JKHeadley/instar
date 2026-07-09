@@ -527,6 +527,21 @@
       background: var(--bg);
     }
 
+    /* ── REQUIRED placement for every tab panel declared after </main> ──
+       Those panels are direct .app grid children. switchTab() hides the
+       sidebar too, so WITHOUT explicit grid placement the lone visible
+       panel auto-places into the 280px sidebar COLUMN — the "squished to
+       the side" bug (operator report 2026-07-08). Every after-main panel
+       MUST carry class="tab-panel" (or one of the container classes that
+       already sets grid-column: files/jobs/systems/features/dropzone, or
+       ph-root). Enforced structurally:
+       tests/unit/dashboard-panel-placement.test.ts fails on a bare panel. */
+    .tab-panel {
+      grid-column: 1 / -1;
+      min-width: 0;
+      background: var(--bg);
+    }
+
     .terminal-header {
       display: flex;
       align-items: center;
@@ -884,10 +899,10 @@
        maturation "you're here" marker. */
     .ph-root {
       --ph-accent: #4ade80;
-      /* These panels are declared after </main>, making them direct .app grid
-         children. switchTab() hides the sidebar too, so without explicit
-         placement the lone visible panel auto-places into the 280px sidebar
-         COLUMN — the "squashed to the side" bug. Span the full grid. */
+      /* Grid placement for after-main panels is now the shared .tab-panel
+         contract (see the .tab-panel rule + the placement floor test:
+         tests/unit/dashboard-panel-placement.test.ts). ph-root keeps its own
+         grid-column because it ALSO constrains width for prose readability. */
       grid-column: 1 / -1;
       max-width: 760px;
       width: 100%;
@@ -2990,7 +3005,7 @@
     </div>
 
     <!-- Integrated-Being Tab (Integrated-Being v1) -->
-    <div id="integratedBeingPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="integratedBeingPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Integrated-Being</h2>
         <div>
@@ -3111,7 +3126,7 @@
     <!-- Read-only: NO action buttons that mutate eligibility. All PR-authored -->
     <!-- content rendered via textContent, never innerHTML — XSS defense rule -->
     <!-- for the dashboard per spec §"Dashboard surface rules". -->
-    <div id="prPipelinePanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="prPipelinePanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">PR Pipeline</h2>
         <div>
@@ -3126,7 +3141,7 @@
     </div>
 
     <!-- Projects Tab — PROJECT-SCOPE-SPEC Phase 1.10 read-only view -->
-    <div id="projectsPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="projectsPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Projects</h2>
         <button onclick="loadProjects()" style="padding:6px 12px">Refresh</button>
@@ -3141,7 +3156,7 @@
     </div>
 
     <!-- Initiatives Tab — multi-phase long-running work -->
-    <div id="initiativesPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="initiativesPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Initiatives</h2>
         <div style="display:flex;gap:8px;align-items:center">
@@ -3172,7 +3187,7 @@
     </div>
 
     <!-- Commitments Tab (Open Promises) -->
-    <div id="secretsPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="secretsPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
         <h2 style="margin:0">Secrets</h2>
         <div style="display:flex;gap:8px">
@@ -3190,7 +3205,7 @@
       <div id="secretsList" style="display:flex;flex-direction:column;gap:12px"></div>
     </div>
 
-    <div id="commitmentsPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="commitmentsPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Commitments</h2>
         <button onclick="loadCommitments()" style="padding:6px 12px">Refresh</button>
@@ -3208,7 +3223,7 @@
     </div>
 
     <!-- Tokens Tab — read-only token-usage observability -->
-    <div id="tokensPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="tokensPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Tokens</h2>
         <button onclick="loadTokens()" style="padding:6px 12px">Refresh</button>
@@ -3244,7 +3259,7 @@
 
     <!-- Resource Usage tab — per-agent CPU + memory (ResourceLedger Phase B).
          Read-only observability; mirrors the Tokens tab. -->
-    <div id="resourcesPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="resourcesPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Resource Usage</h2>
         <button onclick="loadResources()" style="padding:6px 12px">Refresh</button>
@@ -3284,7 +3299,7 @@
          true-blocker. A true-blocker is "best current understanding — recheck after <date>",
          never "stop trying". Read-only here; data from GET /blockers. detectedText and all
          free-text are UNTRUSTED and HTML-escaped before render. 503 = feature off. -->
-    <div id="blockersPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="blockersPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Blockers</h2>
         <button onclick="loadBlockers()" style="padding:6px 12px">Refresh</button>
@@ -3303,7 +3318,7 @@
          Every LLM call the system makes on its own behalf: which component, which
          provider/model, whether it acted or no-op'd, was skipped, cost + latency.
          Read-only; data from /metrics/features. -->
-    <div id="llmActivityPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="llmActivityPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
         <h2 style="margin:0">LLM Activity</h2>
         <div style="display:flex;gap:8px;align-items:center">
@@ -3344,7 +3359,7 @@
          model it uses and its full ordered fallback tier list, with injection-safe /
          money-gated / critical-gate flags. Read-only display; data from
          /intelligence/routing/chains. No controls — the map only DISPLAYS the routing. -->
-    <div id="routingMapPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="routingMapPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
         <h2 style="margin:0">Routing Map</h2>
         <button onclick="loadRoutingMap()" style="padding:6px 12px">Refresh</button>
@@ -3379,7 +3394,7 @@
          READ + every metered paid-door key with its caps and honest not-live/$0 state.
          Read-only: data from /routing-spend/summary + /routing-spend/caps. No money controls
          (caps adjust, go-live, alerts are later, dark increments). -->
-    <div id="spendPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="spendPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
         <h2 style="margin:0">Spend</h2>
         <div style="display:flex;gap:8px;align-items:center">
@@ -3622,7 +3637,7 @@
       </section>
     </div>
 
-    <div id="evidenceTab" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="evidenceTab" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Evidence</h2>
         <div style="font-size:12px;color:var(--text-dim)">Per-entity evidence + reverse citations</div>
@@ -3681,7 +3696,7 @@
     </div>
 
     <!-- Threadline Tab — agent-to-agent conversations + Telegram bridge settings -->
-    <div id="threadlineTab" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="threadlineTab" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Threadline</h2>
         <button onclick="loadThreadlineBridgeConfig()" style="padding:6px 12px">Refresh</button>
