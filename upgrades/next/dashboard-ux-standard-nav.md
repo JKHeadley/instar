@@ -1,0 +1,42 @@
+<!-- bump: patch -->
+
+## What Changed
+
+- **All 25 dashboard tabs are now reachable — grouped navigation (Dashboard UX Standard F2).**
+  The dashboard grew to 25 tabs in a flat horizontal bar that clipped at ~8 tabs on a 1280px
+  viewport with a hidden scrollbar — the other ~17 (Spend, Machines, Mandates, Process Health,
+  …) were unreachable by pointer, and the active tab often wasn't even visible in the nav
+  (operator report, topic 29723). The nav is now ONE grouped dropdown menu, opened from the
+  always-visible `☰` button at every viewport, organized into five labeled sections (Runtime,
+  Work & Delivery, Cost & Routing, Intelligence & Comms, Content & Access). It reuses the
+  existing (previously mobile-only) collapsible-menu machinery — every tab's data-tab, onclick,
+  and count badge is preserved verbatim.
+- **The Dashboard UX Standard is now a constitutional standard with CI-enforced floors.**
+  `docs/specs/dashboard-ux-standard.md` (operator-approved, topic 29723) turns the operator's
+  "VERY user friendly / EASY to navigate" bar into eight objective floors. Two ship enforced:
+  F1 (panel placement, shipped #1403) and F2 (nav reachability, this change) — the rest are
+  tracked follow-up passes. Registered in `docs/STANDARDS-REGISTRY.md` so the
+  Standards-Enforcement-Coverage audit classifies them as enforced gates.
+
+## What to Tell Your User
+
+Every dashboard tab is now reachable from one clean, grouped menu (opened by the ☰ button) at
+desktop and phone width — no more tabs hidden off the edge of the screen. Nothing to enable;
+it lands with the release.
+
+## Summary of New Capabilities
+
+- None — this is a navigation/UX fix plus a build-time floor (`dashboard-nav-reachability.test.ts`)
+  that fails the build if a future tab is unreachable or the nav loses its grouped structure.
+
+## Evidence
+
+`tests/unit/dashboard-nav-reachability.test.ts` — 3 cases: every `TAB_REGISTRY` tab has a
+reachable nav control and there are no orphan nav buttons (population floor ≥20), the nav is
+grouped into labeled sections, and the menu is reachable at all widths (`.nav-toggle`
+`display:flex` at base + `.app.nav-open .tab-bar` open mechanism). Real-browser (headless
+Chromium) verified at 1280×860 and 390×844: the grouped menu renders all five sections with all
+25 tabs, active-tab highlight + count badges intact, closed-state header shows the `☰ Sessions`
+button and a full-width panel; no horizontal body overflow. Both dashboard floor tests green
+(7 cases). The header-logo audit finding was confirmed a static-render artifact (logo.png is
+served live via `express.static`) — corrected in the spec, no spurious fix made.

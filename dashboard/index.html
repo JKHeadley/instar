@@ -55,10 +55,27 @@
       position: relative;
     }
 
-    /* Hamburger toggle — visible only on mobile, sits in the header row */
+    /* Navigation menu button — grouped-nav trigger at ALL widths (F2, dashboard-ux-standard).
+       Reachability floor: 25 tabs can't fit a flat bar, so a single grouped menu opens from here. */
     .nav-toggle {
-      display: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 16px;
+      padding: 8px 14px;
+      min-height: 38px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      flex-shrink: 0;
     }
+    .nav-toggle:hover { background: var(--bg-hover); }
+    .nav-toggle[aria-expanded="true"] { background: var(--bg-active); border-color: var(--accent); }
+    #navToggleLabel { font-weight: 600; color: var(--text-bright); }
 
     .header-left {
       display: flex;
@@ -767,41 +784,69 @@
     ::-webkit-scrollbar-thumb:hover { background: #444; }
 
     /* ── Tab bar ──────────────────────────────────────────── */
+    /* Grouped navigation menu (F2, dashboard-ux-standard) — one dropdown at ALL widths,
+       opened by .nav-toggle. Hidden until .app.nav-open. Replaces the old horizontal bar
+       that clipped 17 of 25 tabs with no reachable affordance. */
     .tab-bar {
-      display: flex;
-      gap: 0;
-      margin-left: 24px;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-      scrollbar-width: none; /* hide scrollbar on Firefox */
+      position: absolute;
+      top: 100%;
+      left: 16px;
+      width: 320px;
+      max-width: calc(100vw - 32px);
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 0 0 10px 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+      z-index: 100;
+      max-height: calc(100vh - 64px);
+      overflow-y: auto;
     }
-    .tab-bar::-webkit-scrollbar { display: none; }
+    .app.nav-open .tab-bar { display: flex; }
+
+    /* Group headers inside the menu (grouped sections). */
+    .tab-group { display: flex; flex-direction: column; gap: 2px; }
+    .tab-group + .tab-group { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+    .tab-group-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding: 4px 10px 2px;
+    }
 
     .tab-bar .tab {
-      padding: 6px 16px;
-      border: 1px solid var(--border);
-      border-radius: 6px 6px 0 0;
-      background: var(--bg);
-      color: var(--text-dim);
-      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      padding: 9px 12px;
+      min-height: 40px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      font-size: 14px;
       font-weight: 500;
       cursor: pointer;
-      border-bottom: none;
-      margin-bottom: -1px;
       transition: color 0.15s, background 0.15s;
-      white-space: nowrap;
-      flex-shrink: 0;
     }
 
     .tab-bar .tab:hover {
-      color: var(--text);
+      color: var(--text-bright);
       background: var(--bg-hover);
     }
 
     .tab-bar .tab.active {
-      background: var(--bg-panel);
+      background: var(--bg-active);
       color: var(--accent);
-      border-color: var(--border);
+      border-color: var(--accent);
     }
 
     .tab-bar .tab-count {
@@ -2750,32 +2795,47 @@
         <img class="logo" src="/dashboard/logo.png" alt="Instar">
         <h1>Instar Dashboard</h1>
         <button class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-expanded="false" onclick="toggleNavMenu()">&#9776; <span id="navToggleLabel">Sessions</span></button>
-        <nav class="tab-bar" id="tabBar">
-          <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
-          <button class="tab" data-tab="files" onclick="switchTab('files')">Files</button>
-          <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Send Content</button>
-          <button class="tab" data-tab="secrets" onclick="switchTab('secrets')">Secrets <span class="tab-count" id="tabSecretCount">0</span></button>
-          <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
-          <button class="tab" data-tab="features" onclick="switchTab('features')">Features</button>
-          <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
-          <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
-          <button class="tab" data-tab="pr-pipeline" onclick="switchTab('pr-pipeline')">PR Pipeline</button>
-          <button class="tab" data-tab="projects" onclick="switchTab('projects')">Projects <span class="tab-count" id="tabProjectCount">0</span></button>
-          <button class="tab" data-tab="initiatives" onclick="switchTab('initiatives')">Initiatives <span class="tab-count" id="tabInitiativeCount">0</span></button>
-          <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
-          <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
-          <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
-          <button class="tab" data-tab="llm-activity" onclick="switchTab('llm-activity')">LLM Activity</button>
-          <button class="tab" data-tab="routing-map" onclick="switchTab('routing-map')">Routing Map</button>
-          <button class="tab" data-tab="spend" onclick="switchTab('spend')">Spend</button>
-          <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
-          <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
-          <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
-          <button class="tab" data-tab="subscriptions" onclick="switchTab('subscriptions')">Subscriptions</button>
-          <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
-          <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
-          <button class="tab" data-tab="mandates" onclick="switchTab('mandates')">Mandates</button>
-          <button class="tab" data-tab="blockers" onclick="switchTab('blockers')">Blockers</button>
+        <nav class="tab-bar" id="tabBar" aria-label="Dashboard sections">
+          <div class="tab-group" role="group" aria-label="Runtime">
+            <div class="tab-group-label">Runtime</div>
+            <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
+            <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
+            <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
+            <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Work & Delivery">
+            <div class="tab-group-label">Work &amp; Delivery</div>
+            <button class="tab" data-tab="pr-pipeline" onclick="switchTab('pr-pipeline')">PR Pipeline</button>
+            <button class="tab" data-tab="projects" onclick="switchTab('projects')">Projects <span class="tab-count" id="tabProjectCount">0</span></button>
+            <button class="tab" data-tab="initiatives" onclick="switchTab('initiatives')">Initiatives <span class="tab-count" id="tabInitiativeCount">0</span></button>
+            <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
+            <button class="tab" data-tab="blockers" onclick="switchTab('blockers')">Blockers</button>
+            <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Cost & Routing">
+            <div class="tab-group-label">Cost &amp; Routing</div>
+            <button class="tab" data-tab="spend" onclick="switchTab('spend')">Spend</button>
+            <button class="tab" data-tab="subscriptions" onclick="switchTab('subscriptions')">Subscriptions</button>
+            <button class="tab" data-tab="routing-map" onclick="switchTab('routing-map')">Routing Map</button>
+            <button class="tab" data-tab="llm-activity" onclick="switchTab('llm-activity')">LLM Activity</button>
+            <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
+            <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Intelligence & Comms">
+            <div class="tab-group-label">Intelligence &amp; Comms</div>
+            <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
+            <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
+            <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
+            <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Content & Access">
+            <div class="tab-group-label">Content &amp; Access</div>
+            <button class="tab" data-tab="files" onclick="switchTab('files')">Files</button>
+            <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Send Content</button>
+            <button class="tab" data-tab="secrets" onclick="switchTab('secrets')">Secrets <span class="tab-count" id="tabSecretCount">0</span></button>
+            <button class="tab" data-tab="features" onclick="switchTab('features')">Features</button>
+            <button class="tab" data-tab="mandates" onclick="switchTab('mandates')">Mandates</button>
+          </div>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
