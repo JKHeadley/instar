@@ -562,7 +562,17 @@
     /* F3 — Dashboard UX Standard: every tab's plain-language purpose line.
        One muted, readable sentence directly under the tab header telling a
        non-expert what the tab is for and what they can do here. Enforced by
-       tests/unit/dashboard-tab-purpose.test.ts. */
+       tests/unit/dashboard-tab-purpose.test.ts.
+
+       F7 — CANONICAL purpose-line class. `.tab-purpose` is the shared vocabulary
+       every NEW tab should use for its purpose line. Three legacy variants still
+       exist and carry their own deliberately-distinct sizing — `.ph-intro`
+       (Process-Health design-system intro, larger), `.features-subtitle`, and
+       `.dropzone-subtitle` — all recognized by the F3 floor test. Per the spec
+       (docs/specs/dashboard-ux-standard.md, FD-3) F7 is soft-first: consolidating
+       those three into `.tab-purpose` is a tracked migration (it changes their
+       visual size, so it is done deliberately, not big-bang). Until then: reach
+       for `.tab-purpose`; do not add a fifth variant or an inline-styled line. */
     .tab-purpose {
       font-size: 13px;
       color: var(--text-dim);
@@ -2950,7 +2960,7 @@
       </div>
       <div class="file-content-panel" id="fileContentPanel">
         <div class="file-content-header" id="fileContentHeader" style="display:none">
-          <button class="files-back-btn" onclick="filesGoBack()">&larr;</button>
+          <button class="files-back-btn" onclick="filesGoBack()" title="Back" aria-label="Back">&larr;</button>
           <div class="breadcrumbs" id="fileBreadcrumbs"></div>
           <div class="file-badges" id="fileBadges"></div>
         </div>
@@ -3229,7 +3239,7 @@
         Multi-spec project plans. Each project groups related pieces of work and only advances to its next round once its required checks pass.
       </div>
       <div id="projectsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No active projects. Create one via <code>POST /projects</code> with a plan-doc path.
+        No active projects yet. Ask your agent to start one from a plan document, and it'll appear here.
       </div>
       <div id="projectsList" style="display:flex;flex-direction:column;gap:12px"></div>
     </div>
@@ -3260,7 +3270,7 @@
       </div>
       <div id="initiativesDigest" style="display:none;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-dim)"></div>
       <div id="initiativesEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No initiatives to display. Create one via <code>POST /initiatives</code>.
+        No initiatives yet. Ask your agent to create one, and it'll appear here.
       </div>
       <div id="initiativesList" style="display:flex;flex-direction:column;gap:12px"></div>
     </div>
@@ -3945,7 +3955,7 @@
   <!-- WhatsApp QR panel (hidden by default) -->
   <div class="wa-qr-backdrop" id="waQrBackdrop" style="display:none" onclick="closeQrPanel()"></div>
   <div class="wa-qr-panel" id="waQrPanel" style="display:none">
-    <button class="wa-close" onclick="closeQrPanel()">&times;</button>
+    <button class="wa-close" onclick="closeQrPanel()" title="Close" aria-label="Close">&times;</button>
     <h3>WhatsApp Connection</h3>
     <p id="waQrMsg">Scan this QR code with WhatsApp to connect</p>
     <div id="waQrContainer"></div>
@@ -7649,7 +7659,7 @@
 
       detail.innerHTML = '<div class="job-detail-header">'
         + '<div>'
-        + '<button class="back-btn" onclick="jobsGoBack()" style="display:none;margin-right:8px">&larr;</button>'
+        + '<button class="back-btn" onclick="jobsGoBack()" style="display:none;margin-right:8px" title="Back" aria-label="Back">&larr;</button>'
         + '<h3>' + esc(displayName) + '</h3>'
         + '<div class="job-desc">' + esc(job.description || '') + '</div>'
         + '</div>'
@@ -9420,7 +9430,7 @@
       try {
         const data = await apiFetch(info.endpoint);
         panel.innerHTML = '<div class="cap-content-panel">' +
-          '<div class="cap-content-header"><span>' + esc(info.label) + '</span><button onclick="document.getElementById(\'capContentBrowser\').innerHTML=\'\'" style="border:none;background:none;color:var(--text-dim);cursor:pointer;font-size:14px">&times;</button></div>' +
+          '<div class="cap-content-header"><span>' + esc(info.label) + '</span><button onclick="document.getElementById(\'capContentBrowser\').innerHTML=\'\'" style="border:none;background:none;color:var(--text-dim);cursor:pointer;font-size:14px" title="Close" aria-label="Close">&times;</button></div>' +
           '<div class="cap-content-body">' + renderBrowsableContent(info.renderer, data) + '</div></div>';
       } catch (e) {
         panel.innerHTML = '<div style="padding:12px;color:var(--red);font-size:12px">Failed to load: ' + esc(e.message) + '</div>';
