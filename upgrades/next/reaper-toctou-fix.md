@@ -1,0 +1,18 @@
+<!-- bump: patch -->
+
+## What Changed
+
+- **The stale-worktree reaper no longer reaps a worktree that a builder started using between the reaper's check and its delete (AgentWorktreeReaper TOCTOU fix).** The reaper enumerates all worktrees, captures each one's branch, then reaps up to N of them in a later loop. A build worktree whose branch was merged at enumeration but which a builder then `git checkout -b`'d onto a NEW unmerged branch would still be judged "merged" against the STALE branch and deleted mid-build (this happened once tonight). The reaper now RE-READS each worktree's live state — current branch, clean, in-use, merged — immediately before the irreversible delete, and ABORTS (keeps) on any change since evaluation. It is a pure safety tightening: strictly FEWER reaps, never more; fail-closed on any unreadable signal.
+- **New belt-and-suspenders claim:** a `.instar-build-active` marker file at a worktree root is now honored as "in use" — an in-flight builder can drop it to be certain the reaper leaves the worktree alone.
+
+## What to Tell Your User
+
+If your agent's background cleanup ever removed a worktree while a build was actively using it, that race is closed — the cleanup now double-checks the live state right before deleting and backs off if anything changed. Nothing to enable; it lands with the release. It only ever makes the cleanup MORE cautious, never less.
+
+## Summary of New Capabilities
+
+- None user-facing — a safety hardening of the AgentWorktreeReaper. Two new injected signals (`currentBranch`, `hasActiveBuildMarker`) power an execution-time re-validation that closes the enumerate→reclaim time-of-check-to-time-of-use window. No config, no gate (a pure tightening, always on).
+
+## Evidence
+
+`tests/unit/agent-worktree-reaper.test.ts` — 6 new cases pin the guard: branch-changed-since-eval → keep; went-dirty → keep; became-in-use → keep; build-marker-present → keep; still-unchanged → reaps (happy path unchanged); currentBranch-read-error (null) → keep (fail-closed). All 53 reaper tests pass, including the real-git end-to-end reclaim test. The change is delete-safe by construction — every new branch of the guard resolves toward KEEP.
