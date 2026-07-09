@@ -1,0 +1,29 @@
+{
+  "phase": "complete",
+  "slug": "taskflow-phase3b",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/EvolutionManager.ts",
+    "src/tasks/DivergenceChecker.ts",
+    "tests/unit/divergence-checker.test.ts",
+    "tests/unit/evolution-manager-taskflow-authority.test.ts",
+    "tests/unit/evolution-manager-taskflow-dualwrite.test.ts",
+    "upgrades/side-effects/taskflow-phase3b.md"
+  ],
+  "artifactPath": "upgrades/side-effects/taskflow-phase3b.md",
+  "artifactSha256": "3400d6c67826dffcc5b2bd2de04b342724eb0fd41d7f6916b4b2c08fb82b32ad",
+  "specPath": "docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md",
+  "createdAt": "2026-05-10T00:11:26Z",
+  "phaseBoundary": "Phase 3b cutover — JSONL shadow writes removed, DivergenceChecker removed; TaskFlow becomes sole authority for proposal lifecycle state on wired installs.",
+  "gate": {
+    "kind": "quiet-period",
+    "criterion": "divergence_count == 0 for >= 7 consecutive days AND ledger contains zero `taskflow-divergence` notes in that window",
+    "specReference": "docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md § Phase 3b, line 641",
+    "earliestPossibleMergeDate": "2026-05-17",
+    "phase3aDeploymentDate": "2026-05-10",
+    "doNotMerge": true,
+    "draftPr": true
+  },
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
