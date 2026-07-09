@@ -3619,7 +3619,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     // handler frees the lock within a bounded grace); only a genuine duplicate
     // is refused. A standby on a DIFFERENT host with its own state dir boots
     // freely. Override with INSTAR_ALLOW_SECOND_INSTANCE=1.
-    const singleInstanceLock = new SingleInstanceLock({ stateDir: config.stateDir });
+    const silCfg = config.monitoring?.singleInstanceLock;
+    const singleInstanceLock = new SingleInstanceLock({
+      stateDir: config.stateDir,
+      // Hostname-flap auto-heal (2026-07-08 wedge). Operator override wins; else
+      // the dev-agent gate flips it LIVE on a development agent, DARK on the fleet
+      // (mirrors resumeQueue.autoHealStaleHostLock). Fail-closed inside acquire().
+      autoHealStaleHostRename: silCfg?.autoHealStaleHostRename ?? resolveDevAgentGate(undefined, config),
+      staleHostRenameMs: silCfg?.staleHostRenameMs,
+    });
     const lockResult = await singleInstanceLock.acquire();
     if (!lockResult.acquired) {
       console.error(

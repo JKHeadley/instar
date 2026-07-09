@@ -1,0 +1,38 @@
+<!-- bump: patch -->
+
+## What Changed
+
+- **The server now self-heals its startup lock when the Mac renames itself (SingleInstanceLock).**
+  When `os.hostname()` flaps (e.g. `mac.lan` ↔ `Justins-MacBook-Pro-99.local`, as macOS does on a
+  network name conflict), a leftover `server-instance.lock` stamped with the old name used to look
+  like it belonged to a *different machine*, so `acquire()` refused to reclaim it — the server
+  crash-looped on every boot until someone manually cleared the lock (this wedged a dev machine
+  three times in one night). The foreign-host branch now recognizes a **provable single-host
+  rename** — dead holder pid, `df -P` host-local disk (so a "foreign" hostname cannot be a second
+  machine sharing the dir), and a stale heartbeat — and reclaims the stale lock through the
+  existing same-host-dead path. Every other combination (live holder, non-host-local disk, fresh or
+  absent heartbeat, flag off, genuine foreign host) still fails closed to the unchanged refuse-loud.
+- **Dev-agent-gated, operator-overridable.** Ships live on development agents (where this bites),
+  dark on the fleet until soak, via `monitoring.singleInstanceLock.autoHealStaleHostRename`
+  (with `staleHostRenameMs`, default 300000). Mirrors the existing ResumeQueue `autoHealStaleHostLock`
+  precedent.
+
+## What to Tell Your User
+
+If your Mac ever renames itself on the network, the agent's server no longer gets stuck unable to
+restart — it recognizes the rename and recovers on its own instead of crash-looping. Nothing to
+enable; it lands with the release on development agents.
+
+## Summary of New Capabilities
+
+- None user-facing — a startup-robustness fix. It adds one dev-gated self-heal path
+  (`monitoring.singleInstanceLock.autoHealStaleHostRename`) that lets the single-instance lock
+  reclaim its own stale lock after a same-host hostname rename, fail-closed on every ambiguous case.
+
+## Evidence
+
+`tests/unit/single-instance-lock.test.ts` — 7 new cases pin every branch: reclaims ONLY on the exact
+rename signature (dead pid + host-local + stale heartbeat + flag on); refuses on a live holder, a
+non-host-local disk, a fresh heartbeat, an absent/zero heartbeat, the flag off, and a genuine
+foreign host. Fail-closed on every uncertain combination. Deploying it needs one server restart to
+activate; after that, future hostname flaps self-heal in code.

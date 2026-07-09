@@ -5696,6 +5696,23 @@ export interface MonitoringConfig {
     githubMergeCheck?: boolean;
   };
   /**
+   * SingleInstanceLock — the server-boot fork-bomb guard (docs/specs/
+   * forkbomb-prevention-simple.md). This block tunes the 2026-07-08 hostname-flap
+   * auto-heal: when this host's `os.hostname()` FLAPS (e.g. mac.lan ↔
+   * Justins-MacBook-Pro-99), a dead-holder lock stamped with the old name looks
+   * FOREIGN and wedges every boot. `autoHealStaleHostRename` reclaims such a lock
+   * IFF it is provably a single-host rename (dead pid + `df -P` host-local + a
+   * heartbeat older than `staleHostRenameMs`) — fail-closed on any doubt. Fleet
+   * default FALSE (touches the boot single-instance invariant); resolves TRUE on a
+   * development agent via the dev-agent gate. CODE-defaulted (absent from
+   * ConfigDefaults — preserves the fleet flip). Mirrors resumeQueue.autoHealStaleHostLock.
+   */
+  singleInstanceLock?: {
+    autoHealStaleHostRename?: boolean;
+    /** Heartbeat-staleness floor (ms) for the rename auto-heal. Default 300000. */
+    staleHostRenameMs?: number;
+  };
+  /**
    * OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
    * topic 22367). Detects agent worktrees with uncommitted work whose owning
    * session is DEAD and that have SETTLED, records them durably, and raises ONE

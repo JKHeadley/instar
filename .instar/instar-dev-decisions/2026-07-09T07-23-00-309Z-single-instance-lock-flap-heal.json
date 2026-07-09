@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-09T07:23:00.309Z",
+  "slug": "single-instance-lock-flap-heal",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 95,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Pre-existing SingleInstanceLock foreign-host branch refused unconditionally; latent until os.hostname() began flapping under load 2026-07-08, exposing the single-host-rename gap."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

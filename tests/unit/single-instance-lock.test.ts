@@ -36,6 +36,8 @@ interface Overrides {
   handoffGraceMs?: number;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
+  autoHealStaleHostRename?: boolean;
+  staleHostRenameMs?: number;
 }
 
 function makeLock(stateDir: string, o: Overrides = {}): SingleInstanceLock {
@@ -50,6 +52,8 @@ function makeLock(stateDir: string, o: Overrides = {}): SingleInstanceLock {
     sleep: async () => {},
     env: o.env ?? {},
     now: o.now,
+    autoHealStaleHostRename: o.autoHealStaleHostRename,
+    staleHostRenameMs: o.staleHostRenameMs,
     log: () => {},
   });
 }
@@ -150,5 +154,91 @@ describe('SingleInstanceLock', () => {
     // Our release must NOT have deleted the successor's lock.
     expect(fs.existsSync(lockFile)).toBe(true);
     expect(JSON.parse(fs.readFileSync(lockFile, 'utf-8')).pid).toBe(777777);
+  });
+
+  // ── Single-host RENAME auto-heal (2026-07-08 os.hostname() flap wedge) ──
+  // A dead-holder lock stamped with THIS host's OLD name (mac.lan ↔
+  // Justins-MacBook-Pro-99) looks FOREIGN after a flap and wedged every boot.
+  // Reclaim it IFF provably a rename (flag on + dead pid + host-local + stale hb);
+  // fail-closed on every other combination (never widen the shared-volume refuse).
+  describe('single-host rename auto-heal', () => {
+    const STALE_MS = 300_000;
+    const staleHb = (): number => Date.now() - (STALE_MS + 60_000);
+
+    it('(a) reclaims a FOREIGN-name lock that is a single-host rename (dead + host-local + stale hb + flag on)', async () => {
+      seedLock(dir, { pid: 987654, hostname: 'Justins-MacBook-Pro-99.local', heartbeat: staleHb() });
+      const lock = makeLock(dir, {
+        hostname: 'mac.lan', alivePids: new Set([process.pid]), hostLocal: true,
+        autoHealStaleHostRename: true, staleHostRenameMs: STALE_MS,
+      });
+      const r = await lock.acquire();
+      expect(r.acquired).toBe(true);
+    });
+
+    it('(b) refuses when the FOREIGN holder pid is still ALIVE', async () => {
+      seedLock(dir, { pid: 987654, hostname: 'old-name', heartbeat: staleHb() });
+      const lock = makeLock(dir, {
+        hostname: 'mac.lan', alivePids: new Set([process.pid, 987654]), hostLocal: true,
+        autoHealStaleHostRename: true, staleHostRenameMs: STALE_MS,
+      });
+      const r = await lock.acquire();
+      expect(r.acquired).toBe(false);
+      expect(r.reason).toBe('foreign-host-conflict');
+    });
+
+    it('(c) refuses (fail-closed) when the FS is NOT host-local — a possible shared volume', async () => {
+      seedLock(dir, { pid: 987654, hostname: 'old-name', heartbeat: staleHb() });
+      const lock = makeLock(dir, {
+        hostname: 'mac.lan', alivePids: new Set([process.pid]), hostLocal: false,
+        autoHealStaleHostRename: true, staleHostRenameMs: STALE_MS,
+      });
+      const r = await lock.acquire();
+      expect(r.acquired).toBe(false);
+      expect(r.reason).toBe('foreign-host-conflict');
+    });
+
+    it('(d) refuses when the FOREIGN holder heartbeat is FRESH (not provably stale)', async () => {
+      seedLock(dir, { pid: 987654, hostname: 'old-name', heartbeat: Date.now() });
+      const lock = makeLock(dir, {
+        hostname: 'mac.lan', alivePids: new Set([process.pid]), hostLocal: true,
+        autoHealStaleHostRename: true, staleHostRenameMs: STALE_MS,
+      });
+      const r = await lock.acquire();
+      expect(r.acquired).toBe(false);
+      expect(r.reason).toBe('foreign-host-conflict');
+    });
+
+    it('(e) refuses when the heartbeat is 0/absent (cannot confirm staleness)', async () => {
+      seedLock(dir, { pid: 987654, hostname: 'old-name', heartbeat: 0 });
+      const lock = makeLock(dir, {
+        hostname: 'mac.lan', alivePids: new Set([process.pid]), hostLocal: true,
+        autoHealStaleHostRename: true, staleHostRenameMs: STALE_MS,
+      });
+      const r = await lock.acquire();
+      expect(r.acquired).toBe(false);
+      expect(r.reason).toBe('foreign-host-conflict');
+    });
+
+    it('(f) refuses when the flag is OFF, even if dead + host-local + stale (gate respected)', async () => {
+      seedLock(dir, { pid: 987654, hostname: 'old-name', heartbeat: staleHb() });
+      const lock = makeLock(dir, {
+        hostname: 'mac.lan', alivePids: new Set([process.pid]), hostLocal: true,
+        autoHealStaleHostRename: false, staleHostRenameMs: STALE_MS,
+      });
+      const r = await lock.acquire();
+      expect(r.acquired).toBe(false);
+      expect(r.reason).toBe('foreign-host-conflict');
+    });
+
+    it('(g) still refuses a genuine FOREIGN-host live lock (shared-volume hazard unchanged)', async () => {
+      seedLock(dir, { pid: 987654, hostname: 'OTHER-REAL-HOST', heartbeat: Date.now() });
+      const lock = makeLock(dir, {
+        hostname: 'mac.lan', alivePids: new Set([process.pid, 987654]), hostLocal: false,
+        autoHealStaleHostRename: true, staleHostRenameMs: STALE_MS,
+      });
+      const r = await lock.acquire();
+      expect(r.acquired).toBe(false);
+      expect(r.reason).toBe('foreign-host-conflict');
+    });
   });
 });
