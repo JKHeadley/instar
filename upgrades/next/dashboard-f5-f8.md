@@ -1,0 +1,41 @@
+<!-- bump: patch -->
+
+## What Changed
+
+- **Every dashboard control is now labeled (Dashboard UX Standard F5).** Four icon-only buttons
+  (the Files back arrow, the QR-panel close, the Jobs back arrow, and the capability-content
+  close) shipped as a bare `←` / `×` glyph with no accessible name — a user (or screen reader)
+  had to guess. Each now carries a `title` + `aria-label`. A build-time floor
+  (`dashboard-controls-labeled.test.ts`) fails if any future button ships icon-only.
+- **Empty states speak plain language, not API jargon (F6).** Two empty states told the operator
+  to "Create one via `POST /projects`" / "`POST /initiatives`" — meaningless to the person
+  reading the dashboard. They now say "Ask your agent to start one … and it'll appear here." A
+  floor (`dashboard-empty-states.test.ts`) fails on a bare or jargon-leaking empty state.
+- **Shared purpose-line vocabulary documented (F7, soft-first).** `.tab-purpose` is marked the
+  canonical purpose-line class; the three legacy variants (`ph-intro`, `features-subtitle`,
+  `dropzone-subtitle`) are documented for a tracked, deliberate migration (per spec FD-3, not a
+  big-bang restyle).
+- **Broken-asset floor (F8).** `dashboard-assets-resolve.test.ts` fails if a referenced local
+  image/icon has no file on disk.
+
+## What to Tell Your User
+
+A few more dashboard papercuts are gone: every button now has a readable label (better for
+accessibility too), and the "nothing here yet" messages tell you what to do in plain English
+instead of showing a developer command. Nothing to enable — it lands with the release.
+
+## Summary of New Capabilities
+
+- None — UX polish plus three build-time floors (F5 control labeling, F6 empty-state clarity,
+  F8 asset resolution) that fail the build if a future change regresses them.
+
+## Evidence
+
+`tests/unit/dashboard-controls-labeled.test.ts` (F5): scans every `<button>` in
+`dashboard/index.html`, asserts each has visible text, `title`, or `aria-label` (population floor
+≥30). `tests/unit/dashboard-empty-states.test.ts` (F6): audits the `*Empty*` resting-state
+containers (population floor ≥6) for a real sentence and no `POST /…`/curl jargon.
+`tests/unit/dashboard-assets-resolve.test.ts` (F8): every static local `src`/`url(...)` ref
+resolves to a real file (logo.png confirmed present). All 7 dashboard floor tests green (13
+cases, 1 browser-gated skip). Display-only markup + build-time floors — no runtime surface;
+machine-local static asset; rollback is a plain revert.
