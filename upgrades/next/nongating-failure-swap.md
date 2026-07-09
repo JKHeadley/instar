@@ -1,0 +1,79 @@
+# Upgrade Guide — nongating-failure-swap
+
+<!-- bump: patch -->
+
+## What Changed
+
+The `IntelligenceRouter` failure-swap now covers NON-gating internal calls, fixing a class where a
+non-gating background component hard-errored instead of trying a healthy fallback door.
+
+Background: internal components run off Claude by default (Codex → Pi → Gemini → Claude). When a
+GATING call's primary provider fails at runtime it already swaps down that chain. NON-gating calls
+did not — they re-threw straight to the caller's heuristic. In production, `TopicIntentExtractor`
+(non-gating, routed to codex-cli/gpt-5.4-mini) showed a 28% error rate (122/428 over 7 days), every
+error row zero-usage — i.e. the codex `exec` invocation itself failed/timed out/returned empty. The
+GATING calls beside it errored ~1.5% precisely because they swap.
+
+The fix extends the swap to non-gating calls with a TIGHTER bound than gating calls get:
+- It fires ONLY on an INVOCATION-level primary failure (the primary threw AND produced zero tokens).
+  A content/parse error that carried tokens does NOT swap (the caller fail-opens that, per
+  provider-fallback §6.4). The router composes an `onUsage` capture onto the primary attempt to
+  observe token production; a provider that never surfaces usage (gemini) is treated as
+  invocation-level (the conservative, error-reducing direction).
+- At most `maxAttempts` (default 1) steps down the active `failureSwap` tail, each target
+  circuit-checked and bounded by the existing `intelligence.swapAttemptTimeoutMs` per-attempt cap
+  (also flowed through as the provider's `timeoutMs`).
+- NEVER onto `claude-code` or the default framework — the provider-fallback §6.2 invariant that
+  non-gating background traffic must never herd onto the last-resort Claude tail. If the only
+  remaining tail entry is claude-code, the call re-throws to its heuristic (today's behavior).
+- Metrics honesty is automatic: each provider's own CircuitBreaking wrapper records its own
+  feature_metrics row (the failed codex primary keeps its zero-usage error row; the pi swap records
+  pi's usage/model). `usageCoverage` is unaffected.
+
+New config: `intelligence.nonGatingFailureSwap: { enabled?: boolean; maxAttempts?: number }`,
+inline-defaulted at the router construction site (`enabled` default true; the codexExecJson /
+swapAttemptTimeoutMs precedent — no ConfigDefaults/migrateConfig entry). Set `enabled: false` to
+restore the old hard-error behavior. Gating-call behavior, deferrable behavior,
+`sessions.componentFrameworks` semantics, the spawn-cap funnel, and nature-routing are all
+untouched. On a Claude-only agent (no off-Claude CLI) the whole thing is a no-op.
+
+## What to Tell Your User
+
+Some of my quick background helpers — like the one that works out what a conversation topic is
+about — used to just fail whenever the tool they run on had a brief hiccup, even though a healthy
+backup tool was sitting right there. In real numbers, one of them was failing more than a quarter
+of the time for exactly this reason. Now, when a background helper's tool fails to run, I quietly
+try one backup tool before giving up, so far fewer of these little checks fall over. It never adds
+a noticeable wait, it never pushes that background chatter onto your main Claude account, and it
+only kicks in when the tool genuinely failed to run — not when it answered. You don't have to do
+anything; it's on by default and it just makes me more reliable. If you ever want the old behavior
+back, I can switch it off for you.
+
+## Summary of New Capabilities
+
+- Non-gating internal calls now get a bounded, herd-safe provider swap on an invocation-level
+  failure, instead of hard-erroring — sharply reducing user-visible errors on components like the
+  topic classifier.
+- New off-switch: `intelligence.nonGatingFailureSwap.enabled: false` restores the old hard-error
+  behavior; `maxAttempts` tunes how many tail steps a non-gating call may take (default 1).
+- Proactive trigger for the agent: "why did my background classifier's error rate drop / does a
+  non-gating call fall back too?" → this bounded swap.
+
+## Evidence
+
+Reproduction (production, 2026-07-09, from `GET /metrics/features` 7d + the overnight routing
+investigation `/.instar/plans/overnight-routing-error-investigation.md`): `TopicIntentExtractor`
+`byModel` (codex-cli/gpt-5.4-mini) = 434 calls, 123 errors, `errorRowsWithUsage: 0`, `fired: 0`,
+311 noop — a 28% error rate. The zero-usage on every error row is the tell: these are
+invocation-level codex-exec failures (no tokens produced), not rate-limits (codex ~3% used) and not
+parse errors (those carry tokens). The GATING `MessagingToneGate` errored at 1.5% and
+`CoherenceReviewer` at 2.6% because they ride the failure-swap tail; the non-gating call did not.
+
+Before: a non-gating primary invocation failure re-throws immediately → the 28% user-visible error
+rate. After: the same failure swaps once onto the next active off-Claude framework (pi-cli, ~1.5%),
+so the call succeeds instead of erroring. Verified by driving the exact router path end-to-end:
+`tests/unit/nongating-failure-swap.test.ts` (13 — invocation-failure→swap, content-error→no-swap,
+disabled/absent→old behavior, target-down→re-throw original, herd-safety never-onto-Claude while
+gating still swaps, maxAttempts bound, tier preserved, slow-target abandoned at the cap),
+`tests/integration/nongating-failure-swap-routing.test.ts` (3), and
+`tests/e2e/nongating-failure-swap-lifecycle.test.ts` (2, real AgentServer init path, default-ON).
