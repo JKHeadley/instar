@@ -1,0 +1,14 @@
+## What Changed
+
+The GPT-5.6 model family (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) went GA on the Codex subscription and is now on instar's accepted-model allowlists for the `codex-cli` framework. Two mirrored lists gained the three ids: `KNOWN_CODEX_MODEL_IDS` (the model-tier-escalation resolver's closed enum, `src/core/ModelTierEscalation.ts`) and `CODEX_MODELS_SUBSCRIPTION` (the `POST /sessions/spawn` model validator, `src/server/routes.ts`). The topic-profile validator reads the same enum, so it accepts the new ids automatically. The fail-closed design is unchanged — an id outside the closed enum is still rejected; we only widened the set of recognized ids.
+
+The Doorway/Model Knowledge Registry (`scripts/model-registry-freshness.manifest.json`) also learned the three models as recognized, reachable entries with pricing, so `GET /doorways` knows they exist. They are deliberately NOT promoted to the frontier pin — the capable tier still resolves to `gpt-5.5`; a benchmark-driven promotion is a tracked follow-up.
+
+## What to Tell Your User
+
+If you run Codex sessions, you can now pin a topic or spawn a session on the new GPT-5.6 models — sol (the flagship), terra (mid-size), or luna (small and cheap) — and instar accepts them instead of rejecting them as unknown. This needs the Codex CLI at version 0.144.0 or newer; older CLIs reject GPT-5.6 with a "requires a newer version" error, so update the Codex CLI if you hit that. If your setup already escalates heavy work onto the GPT-5.6 flagship, it becomes live with this update. The Pro variants are intentionally not accepted yet (they're likely plan-gated and pricier — a future follow-up), and for now instar still picks GPT-5.5 for its heavy tier until the new models earn that spot through benchmarks.
+
+## Summary of New Capabilities
+
+- `codex-cli` sessions and topic profiles accept `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` (model-tier escalation, `/sessions/spawn`, and topic-profile pins).
+- `GET /doorways` reports the three GPT-5.6 models (with pricing) as recognized, reachable Codex models.
