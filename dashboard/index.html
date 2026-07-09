@@ -1065,6 +1065,7 @@
     .files-container {
       display: flex;
       grid-column: 1 / -1;
+      min-width: 0; /* F4 — a grid child must be able to shrink below content width, else it blows out the row and the body scrolls sideways */
       overflow: hidden;
       background: var(--bg);
     }
@@ -1876,6 +1877,7 @@
     .jobs-container {
       display: flex;
       grid-column: 1 / -1;
+      min-width: 0; /* F4 — grid child must shrink below content width (no body h-scroll) */
       overflow: hidden;
       background: var(--bg);
     }
@@ -2250,6 +2252,7 @@
     /* ── Features Tab (was Discovery) ──────────────────────────── */
     .features-container {
       grid-column: 1 / -1;
+      min-width: 0; /* F4 — grid child must shrink below content width (no body h-scroll) */
       overflow-y: auto;
       background: var(--bg);
       padding: 20px;
@@ -2341,7 +2344,7 @@
     .feat-reversibility { font-size: 12px; color: var(--text-dim); line-height: 1.5; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
 
     /* ── Systems Tab ──────────────────────────────────────────── */
-    .systems-container { grid-column: 1 / -1; overflow-y: auto; background: var(--bg); padding: 20px; }
+    .systems-container { grid-column: 1 / -1; min-width: 0; overflow-y: auto; background: var(--bg); padding: 20px; }
     .systems-main { max-width: 960px; margin: 0 auto; }
     .systems-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
     .systems-header h2 { font-size: 16px; font-weight: 600; color: var(--text-bright); }
