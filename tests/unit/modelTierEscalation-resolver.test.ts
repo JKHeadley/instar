@@ -138,6 +138,33 @@ describe('resolveTierModel — §5.1', () => {
     expect(resolveTierModel('pi-cli', 'escalated', c)).toBeNull();
   });
 
+  it('codex-cli enum accepts the GA GPT-5.6 family (gpt-5.6-sol/terra/luna)', () => {
+    expect(KNOWN_MODEL_IDS['codex-cli']).toContain('gpt-5.6-sol');
+    expect(KNOWN_MODEL_IDS['codex-cli']).toContain('gpt-5.6-terra');
+    expect(KNOWN_MODEL_IDS['codex-cli']).toContain('gpt-5.6-luna');
+    for (const id of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+      const c = cfgWith({
+        frameworks: { 'codex-cli': { default: null, escalated: id } },
+      });
+      expect(resolveTierModel('codex-cli', 'escalated', c)).toBe(id);
+    }
+  });
+
+  it('codex-cli rejects a made-up id (fail-closed, closed enumeration)', () => {
+    const c = cfgWith({
+      frameworks: { 'codex-cli': { default: null, escalated: 'gpt-9.9-fake' } },
+    });
+    const events: ResolveAuditEvent[] = [];
+    expect(resolveTierModel('codex-cli', 'escalated', c, e => events.push(e))).toBeNull();
+    expect(events[0]?.reason).toBe('id-not-in-closed-enum');
+    expect(events[0]?.rejectedId).toBe('gpt-9.9-fake');
+  });
+
+  it('the -pro variants are deliberately NOT in the codex enum (excluded)', () => {
+    expect(KNOWN_MODEL_IDS['codex-cli']).not.toContain('gpt-5.6-sol-pro');
+    expect(KNOWN_MODEL_IDS['codex-cli']).not.toContain('gpt-5.6-pro');
+  });
+
   it('undefined config fails closed to null everywhere', () => {
     expect(resolveTierModel('claude-code', 'escalated', undefined)).toBeNull();
   });

@@ -89,6 +89,26 @@ describe('Route validation edge cases', () => {
       expect(res.status).not.toBe(400);
     });
 
+    it('accepts codex-cli GPT-5.6 family model values', async () => {
+      for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+        // Session name must be dot-free (SESSION_NAME_RE) — the model id has dots.
+        const name = `test-codex-${model.replace(/\./g, '-')}`;
+        const res = await request(app)
+          .post('/sessions/spawn')
+          .send({ name, prompt: 'hello', framework: 'codex-cli', model });
+        // NOT 400 = the model passed the codex allowlist (may be 201/500 downstream).
+        expect(res.status).not.toBe(400);
+      }
+    });
+
+    it('rejects a made-up codex-cli model value (fail-closed)', async () => {
+      const res = await request(app)
+        .post('/sessions/spawn')
+        .send({ name: 'test-fake-codex', prompt: 'hello', framework: 'codex-cli', model: 'gpt-9.9-fake' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('model');
+    });
+
     it('rejects name over 200 characters', async () => {
       const res = await request(app)
         .post('/sessions/spawn')

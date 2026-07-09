@@ -28,6 +28,12 @@ describe('validateModelId (§10.2 closed-enum clamp)', () => {
     expect(validateModelId('gpt-5.5', 'codex-cli')).toBeNull();
   });
 
+  it('accepts the GA GPT-5.6 family against codex-cli (allowlist mirror)', () => {
+    expect(validateModelId('gpt-5.6-sol', 'codex-cli')).toBeNull();
+    expect(validateModelId('gpt-5.6-terra', 'codex-cli')).toBeNull();
+    expect(validateModelId('gpt-5.6-luna', 'codex-cli')).toBeNull();
+  });
+
   it('rejects a newline-bearing id (regex failure class)', () => {
     const err = validateModelId('opus\nrm -rf /', 'claude-code');
     expect(err?.failure).toBe('regex');

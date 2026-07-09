@@ -7831,7 +7831,10 @@ export function createRoutes(ctx: RouteContext): Router {
     // enum from ModelTierEscalation.ts — includes the concrete model ids
     // (claude-fable-5, claude-opus-4-8, …) AND the CLI tier aliases
     // (opus/sonnet/haiku), so instar can natively spawn Fable sessions.
-    const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5'];
+    // Mirror of KNOWN_CODEX_MODEL_IDS (ModelTierEscalation.ts) — keep in lockstep.
+    // GPT-5.6 family GA on the codex subscription 2026-07-09 (codex CLI >= 0.144.0);
+    // -pro variants deliberately excluded (plan-gated + pricier, future follow-up).
+    const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
     if (model !== undefined) {
       if (typeof model !== 'string') {
         res.status(400).json({ error: '"model" must be a string' });
