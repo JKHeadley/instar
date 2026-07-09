@@ -6181,6 +6181,14 @@ export interface MonitoringConfig {
     armTimeoutMs?: number;
     /** K-consecutive-unconfirmed-arms-on-same-head threshold before the attention line (default 3). */
     unconfirmedArmCeiling?: number;
+    /**
+     * red-pr-watchdog. Signal-only backstop: raise ONE deduped, age-escalating
+     * attention line when a self-authored open PR has a required check stuck RED
+     * past `redThresholdMs` (default 2h). Default on — a red PR sitting silent is
+     * the incident this closes. Only runs while the parent watcher runs (repo +
+     * lease gated); NEVER blocks/merges/closes.
+     */
+    redPrWatchdog?: { enabled?: boolean; redThresholdMs?: number };
   };
   /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations

@@ -189,6 +189,35 @@ describe('green-pr-automerge routes (integration)', () => {
     expect(res.body.disarmed).toContain(88);
   });
 
+  // ── red-pr-watchdog ─────────────────────────────────────────────────────
+
+  it('GET surfaces redPrWatchdog config + an empty stuckRed[] when nothing is stuck (feature-alive)', async () => {
+    const watcher = fakeWatcher(stateDir, latches);
+    const app = appWith(baseCtx(stateDir, { greenPrAutoMerger: watcher, guardLatchStore: latches }));
+    const res = await request(app).get('/green-pr-automerge');
+    expect(res.status).toBe(200);
+    expect(res.body.stuckRed).toEqual([]); // non-optional, empty when nothing is red
+    expect(res.body.redPrWatchdog).toMatchObject({ enabled: true, redThresholdMs: 7_200_000 });
+  });
+
+  it('a tick over a stuck-red self-authored PR surfaces it in GET stuckRed[]', async () => {
+    const redPr: PrSummary = {
+      number: 1399, title: 'feat: money', labels: [], isDraft: false,
+      headRefName: 'echo/money', headRefOid: 'sha1399', mergeable: 'MERGEABLE', statusRollup: 'FAILURE',
+      failingChecks: [{ name: 'shard 4', completedAt: Date.now() - 3 * 3_600_000 }], // red for ~3h > 2h threshold
+    };
+    const watcher = fakeWatcher(stateDir, latches, [redPr]);
+    const app = appWith(baseCtx(stateDir, { greenPrAutoMerger: watcher, guardLatchStore: latches }));
+    // One tick (warm-up) runs the watchdog and records the stuck-red memory.
+    const tick = await request(app).post('/green-pr-automerge/tick');
+    expect(tick.status).toBe(200);
+    const res = await request(app).get('/green-pr-automerge');
+    expect(res.status).toBe(200);
+    expect(res.body.stuckRed).toHaveLength(1);
+    expect(res.body.stuckRed[0]).toMatchObject({ pr: 1399, failingChecks: ['shard 4'] });
+    expect(res.body.stuckRed[0].redForMs).toBeGreaterThanOrEqual(2 * 3_600_000);
+  });
+
   it('rollback is a null-safe no-op for disarm when the merger is absent (latch still set)', async () => {
     // guardLatchStore present, greenPrAutoMerger null → the route still rolls
     // back the latch and does not throw on the in-line disarm.

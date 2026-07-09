@@ -18245,6 +18245,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             ...(gpCfg as object),
             agentNamespace,
             repo: 'JKHeadley/instar',
+            // red-pr-watchdog: thread the (optional) config block through explicitly
+            // (the class deep-merges its defaults — enabled:true, redThresholdMs:2h).
+            redPrWatchdog: (gpCfg as { redPrWatchdog?: { enabled?: boolean; redThresholdMs?: number } }).redPrWatchdog,
           } as never);
           if (greenPrAutoMerger.invariantOk) {
             guardLatchStore.markPoolArmed(); // R7: this pool is deliberately armed

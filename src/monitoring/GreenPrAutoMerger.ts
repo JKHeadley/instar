@@ -25,6 +25,8 @@ import {
   type HoldMemoryEntry,
   classifyCandidate,
   holdReasonOf,
+  headInNamespace,
+  stuckRedChecks,
   selectOldest,
   debounceHoldRelease,
   applyOutcome,
@@ -167,6 +169,14 @@ export interface GreenPrState {
   identity?: { login: string | null; resolvedAt: number };
   /** Episodes that gave up (surfaced via attention), for the aggregate. */
   attentionLines?: string[];
+  /**
+   * red-pr-watchdog per-PR "already-raised" memory. Keyed by PR number. Present
+   * ⇔ we have surfaced this stuck-red PR; re-raised only when the elapsed-hours
+   * bucket grows OR the failing-check set changes (dedup discipline — ONE item
+   * per stuck PR). Cleared when the PR recovers (goes green) or leaves the open
+   * list (merged/closed).
+   */
+  redPrRaised?: Record<number, { at: number; firstFailAt: number; hours: number; checks: string[] }>;
 }
 
 export interface GreenPrAutoMergerConfig {
@@ -204,6 +214,14 @@ export interface GreenPrAutoMergerConfig {
   armTimeoutMs?: number;
   /** K-consecutive-unconfirmed-arms-on-same-head threshold before the Blocker-D line. */
   unconfirmedArmCeiling?: number;
+  /**
+   * red-pr-watchdog. Signal-only backstop: when a self-authored open PR has a
+   * required check stuck RED past `redThresholdMs`, raise ONE deduped,
+   * age-escalating attention line. Default on (a red PR sitting silent is the
+   * incident this closes — the 2026-07-08 operator-found escape). Runs on the
+   * same repo/lease gate as the merge path; NEVER blocks/merges/closes.
+   */
+  redPrWatchdog?: { enabled?: boolean; redThresholdMs?: number };
 }
 
 type ResolvedConfig = Required<Omit<GreenPrAutoMergerConfig, 'expectedGhLogin'>> & { expectedGhLogin: string };
@@ -230,6 +248,7 @@ const DEFAULTS = {
   armedOverdueReraiseMs: 86_400_000,
   armTimeoutMs: 60_000,
   unconfirmedArmCeiling: 3,
+  redPrWatchdog: { enabled: true, redThresholdMs: 7_200_000 },
 };
 
 export function freshState(): GreenPrState {
@@ -239,6 +258,7 @@ export function freshState(): GreenPrState {
     episodes: {},
     holdMemory: {},
     snapshot: { at: 0, entries: [] },
+    redPrRaised: {},
   };
 }
 
@@ -262,6 +282,12 @@ export class GreenPrAutoMerger extends EventEmitter {
       agentNamespace: cfg.agentNamespace,
       repo: cfg.repo,
       expectedGhLogin: cfg.expectedGhLogin ?? '',
+      // Deep-merge the nested watchdog block so a partial override (e.g. just
+      // `enabled:false`) keeps the other default instead of dropping it.
+      redPrWatchdog: {
+        enabled: cfg.redPrWatchdog?.enabled ?? DEFAULTS.redPrWatchdog.enabled,
+        redThresholdMs: cfg.redPrWatchdog?.redThresholdMs ?? DEFAULTS.redPrWatchdog.redThresholdMs,
+      },
     } as ResolvedConfig;
     // B24 invariant scope (mergerunner-auto-arm-handoff §armTimeoutMs): on the
     // auto path the busy-skip budget is checked against the SHORT armTimeoutMs
@@ -399,6 +425,14 @@ export class GreenPrAutoMerger extends EventEmitter {
     // Build the candidate set (cheap fields) + the Layer-2 snapshot.
     const { eligible, snapshotEntries } = await this.gather(candidates, state);
     state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
+
+    // Red-PR watchdog (red-pr-watchdog): surface my own PRs stuck RED past the
+    // threshold. Runs on every acting/warm-up tick that got a fresh PR list —
+    // same repo/lease gate as the merge path. SIGNAL-ONLY: it only raises
+    // attention (mutations here are persisted by the saveState below, whichever
+    // branch returns). Placed AFTER the merge-candidate gather so a stuck-red PR
+    // is surfaced even on a lease-flap warm-up tenure.
+    this.redPrWatchdogPass(candidates, state);
 
     if (isWarmup) {
       // Seed hold memory + snapshot + reap any orphan; begin merges next tick.
@@ -814,6 +848,93 @@ export class GreenPrAutoMerger extends EventEmitter {
     try {
       await this.deps.postAttentionAggregate(state.attentionLines);
     } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ /* attention delivery failure is non-fatal to the tick */ }
+  }
+
+  // ---- red-PR watchdog (red-pr-watchdog) ----------------------------------
+
+  /**
+   * SIGNAL-ONLY pass over MY OWN open PRs: raise ONE deduped, age-escalating
+   * attention line for each PR that has a required check stuck RED past
+   * `redThresholdMs`. Never blocks/merges/closes — it only calls refreshAggregate.
+   *
+   * Dedup: per-PR `redPrRaised` memory. First stuck observation raises; after
+   * that, re-raise only when the elapsed-hours bucket GROWS or the failing-check
+   * SET changes. A PR that recovers (no stuck-red checks) or leaves the open list
+   * (merged/closed) has its memory cleared (Close the Loop).
+   *
+   * "My own" is the branch-namespace filter (a pure proxy for author — listOpenPrs
+   * already passes `--author @me`, and PrSummary carries no author field).
+   */
+  private redPrWatchdogPass(prs: PrSummary[], state: GreenPrState): void {
+    const wd = this.cfg.redPrWatchdog;
+    if (!wd || wd.enabled === false) return;
+    const now = this.deps.now();
+    const thresholdMs = wd.redThresholdMs ?? DEFAULTS.redPrWatchdog.redThresholdMs;
+    const raised = (state.redPrRaised ??= {});
+    const openPrNumbers = new Set(prs.map((p) => p.number));
+    const lines: string[] = [];
+
+    for (const pr of prs) {
+      // Only my own PRs (branch-namespace proxy for author).
+      if (!headInNamespace(pr.headRefName, this.cfg.agentNamespace)) continue;
+      const stuck = stuckRedChecks(pr, now, thresholdMs);
+      if (stuck.length === 0) {
+        // Green / recovered / not-yet-stuck → clear any prior raise.
+        if (raised[pr.number]) {
+          delete raised[pr.number];
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'red-pr-recovered', pr: pr.number });
+        }
+        continue;
+      }
+      const checkNames = [...new Set(stuck.map((c) => c.name))].sort();
+      const firstFailAt = Math.min(...stuck.map((c) => c.completedAt));
+      const hours = Math.max(1, Math.round((now - firstFailAt) / 3_600_000));
+      const prior = raised[pr.number];
+      const checksChanged = !prior || prior.checks.join(' ') !== checkNames.join(' ');
+      const aged = !!prior && hours > prior.hours;
+      if (!prior || aged || checksChanged) {
+        raised[pr.number] = { at: now, firstFailAt, hours, checks: checkNames };
+        lines.push(`PR #${pr.number} red for ${hours}h — ${checkNames.join(', ')}`);
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'red-pr-stuck', pr: pr.number, hours, checks: checkNames });
+      }
+    }
+
+    // Clear memory for PRs no longer in the open list (they merged/closed).
+    for (const key of Object.keys(raised)) {
+      const n = Number(key);
+      if (!openPrNumbers.has(n)) {
+        delete raised[n];
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'red-pr-cleared', pr: n, reason: 'closed-or-merged' });
+      }
+    }
+
+    if (lines.length > 0) void this.refreshAggregate(state, lines);
+  }
+
+  /**
+   * The GET /green-pr-automerge read surface for the watchdog: the current
+   * config + the live stuck-red memory (answers "why did I get a red-PR alert?").
+   * `redForMs` is measured from each PR's oldest failing check.
+   */
+  redPrWatchdogView(): {
+    config: { enabled: boolean; redThresholdMs: number };
+    stuckRed: { pr: number; redForMs: number; failingChecks: string[] }[];
+  } {
+    const state = this.deps.loadState();
+    const now = this.deps.now();
+    const raised = state.redPrRaised ?? {};
+    const stuckRed = Object.entries(raised).map(([pr, r]) => ({
+      pr: Number(pr),
+      redForMs: Math.max(0, now - (r.firstFailAt ?? r.at ?? now)),
+      failingChecks: Array.isArray(r.checks) ? r.checks : [],
+    }));
+    return {
+      config: {
+        enabled: this.cfg.redPrWatchdog.enabled !== false,
+        redThresholdMs: this.cfg.redPrWatchdog.redThresholdMs ?? DEFAULTS.redPrWatchdog.redThresholdMs,
+      },
+      stuckRed,
+    };
   }
 
   // ---- runtime control (R9, via GuardLatchStore wired at boot) ------------

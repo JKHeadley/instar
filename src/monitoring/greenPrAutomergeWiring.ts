@@ -38,7 +38,7 @@ import {
   type ProtectedPathsVerdict,
   freshState,
 } from './GreenPrAutoMerger.js';
-import type { PrSummary } from './greenPrLogic.js';
+import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, type PrSummary } from './greenPrLogic.js';
 
 /** Protected globs (round-4/6): a PR touching these never auto-merges. */
 export const PROTECTED_PATH_PREFIXES = [
@@ -299,19 +299,28 @@ function mapPr(row: Record<string, unknown>): PrSummary {
     // mergerunner-auto-arm-handoff Blocker 4: GitHub-side armed state, derived
     // from the autoMergeRequest field of the widened pr-list projection.
     autoMergeArmed: !!row.autoMergeRequest,
+    // red-pr-watchdog: the latest-run-per-check FAILING checks (no new gh call —
+    // derived from the same rollup the list projection already fetched).
+    failingChecks: failingChecksFromRollup(rollup),
   };
 }
 
-/** Derive a single SUCCESS|PENDING|FAILURE from the statusCheckRollup array. */
+/**
+ * Derive a single SUCCESS|PENDING|FAILURE from the statusCheckRollup array.
+ *
+ * red-pr-watchdog correctness fix: dedup to the LATEST run per check name BEFORE
+ * collapsing. Previously a stale FAILED run superseded by a passing rerun still
+ * short-circuited to 'FAILURE' (the 2026-07-08 bug). latestRunPerCheck keeps only
+ * the newest run of each check, so a green rerun correctly reads SUCCESS.
+ */
 export function deriveRollup(rollup: unknown): string | null {
   if (!Array.isArray(rollup)) return typeof rollup === 'string' ? rollup : null;
   let sawPending = false;
-  for (const c of rollup as Array<Record<string, unknown>>) {
-    const state = String(c.state ?? c.conclusion ?? '').toUpperCase();
-    const status = String(c.status ?? '').toUpperCase();
-    if (status && status !== 'COMPLETED') { sawPending = true; continue; }
-    if (state === 'FAILURE' || state === 'ERROR' || state === 'CANCELLED' || state === 'TIMED_OUT') return 'FAILURE';
-    if (state === 'PENDING' || state === 'EXPECTED' || state === 'IN_PROGRESS' || state === 'QUEUED') sawPending = true;
+  for (const c of latestRunPerCheck(rollup)) {
+    // A check whose latest run has not COMPLETED (an in-progress rerun) is pending.
+    if (c.status && c.status !== 'COMPLETED') { sawPending = true; continue; }
+    if (FAILING_CONCLUSIONS.has(c.conclusion)) return 'FAILURE';
+    if (c.conclusion === 'PENDING' || c.conclusion === 'EXPECTED' || c.conclusion === 'IN_PROGRESS' || c.conclusion === 'QUEUED') sawPending = true;
   }
   return sawPending ? 'PENDING' : 'SUCCESS';
 }

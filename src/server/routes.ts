@@ -10492,6 +10492,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // invisible). NON-OPTIONAL — a NUMBER (0) / EMPTY ARRAY when nothing is armed.
     const armedEpisodes = Object.values(state.episodes ?? {}).filter((e) => e.armedAt != null);
     const armed = armedEpisodes.map((e) => ({ pr: e.pr, armedAt: e.armedAt ?? null, armedHead: e.armedHead ?? null, overdue: e.overdue === true }));
+    // red-pr-watchdog: the stuck-red memory + config (answers "why did I get a
+    // red-PR alert?"). NON-OPTIONAL — an EMPTY ARRAY when nothing is stuck red.
+    const wd = ctx.greenPrAutoMerger.redPrWatchdogView();
     res.json({
       lastTickAt: state.lastTickAt ?? null,
       lastSuccessfulListAt: state.lastSuccessfulListAt ?? null,
@@ -10500,6 +10503,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       episodes: Object.values(state.episodes ?? {}),
       armedCount: armed.length,
       armed,
+      stuckRed: wd.stuckRed,
+      redPrWatchdog: wd.config,
       snapshot: state.snapshot,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,

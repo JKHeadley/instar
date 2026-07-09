@@ -377,30 +377,38 @@ describe('lint-dev-agent-dark-gate', () => {
       '636': 'monitoring.apprenticeshipCycleSla.enabled',
       '644': 'monitoring.geminiCapacityEscalation.enabled',
       '668': 'monitoring.greenPrAutoMerge.enabled',
-      '718': 'threadline.a2aCheckIn.enabled',
-      '849': 'mentor.enabled',
-      '860': 'mentor.autonomousFix.enabled',
-      '875': 'mentee.enabled',
-      '935': 'prGate.classClosure.enabled',
+      // red-pr-watchdog (2026-07-09): a 4-line `redPrWatchdog` default sub-block
+      // (3 comment lines + `redPrWatchdog: { enabled: true, ... }`) was inserted
+      // INSIDE the greenPrAutoMerge block, BELOW its `enabled: false` (668). It
+      // OMITS an `enabled: false` literal (its `enabled: true` is not a dark-gate
+      // row), so it adds NO attributed path — it only shifts every `enabled: false`
+      // line below it DOWN by +4. Path SET unchanged (still 25 entries, same dotted
+      // paths); RE-VERIFIED via attributeEnabledFalsePaths on the edited
+      // ConfigDefaults (uniform +4 shift, no new/removed entries).
+      '722': 'threadline.a2aCheckIn.enabled',
+      '853': 'mentor.enabled',
+      '864': 'mentor.autonomousFix.enabled',
+      '879': 'mentee.enabled',
+      '939': 'prGate.classClosure.enabled',
       // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
       // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
       // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
       // adds no map row, and shifts every subsequent `enabled:` line by +21.
-      '1019': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '1023': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '1030': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1040': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1277': 'multiMachine.sessionPool.enabled',
+      '1023': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1027': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1034': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1044': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1281': 'multiMachine.sessionPool.enabled',
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1321': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1331': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1360': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1555': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1696': 'cartographer.freshnessSweep.enabled',
-      '1741': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1766': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1325': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1335': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1364': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1559': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1700': 'cartographer.freshnessSweep.enabled',
+      '1745': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1770': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

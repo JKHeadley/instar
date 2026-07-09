@@ -683,6 +683,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       floorDriftCheckTicks: 6,
       floorDriftLookbackPrs: 10,
       floorDriftLookbackCommits: 30,
+      // red-pr-watchdog: signal-only backstop, default on. Raises ONE deduped,
+      // age-escalating attention line when a self-authored open PR is stuck RED
+      // past redThresholdMs (2h). Only runs while the parent watcher is enabled.
+      redPrWatchdog: { enabled: true, redThresholdMs: 7_200_000 },
     },
     // Master gate for Telegram delivery of silently-stopped-sentinel
     // escalations. Default false → sentinel notices are housekeeping and stay
