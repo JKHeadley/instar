@@ -6160,6 +6160,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           swapAttemptTimeoutMsByFramework: config.intelligence?.swapAttemptTimeoutMsByFramework,
           swapAttemptTimeoutMsMax: config.intelligence?.swapAttemptTimeoutMsMax,
           swapTotalBudgetMs: config.intelligence?.swapTotalBudgetMs,
+          // NON-GATING failure-swap (docs/specs/nongating-failure-swap.md): extend the
+          // bounded swap tail to non-gating internal calls (TopicIntentExtractor's 28% codex
+          // invocation-error class). INLINE-DEFAULTED enabled:true (codexExecJson precedent —
+          // no ConfigDefaults/migrateConfig entry; absence ⇒ the default). A strict, bounded
+          // error reduction: at most maxAttempts (default 1) steps, never onto the Claude tail.
+          // `{ enabled: false }` restores today's behavior (hard-error to the heuristic).
+          nonGatingFailureSwap: {
+            enabled: config.intelligence?.nonGatingFailureSwap?.enabled ?? true,
+            maxAttempts: config.intelligence?.nonGatingFailureSwap?.maxAttempts,
+          },
           // The dedicated queue for the DEFERRABLE queue rung (§3b.3); undefined when the rung is
           // dark ⇒ the rung is a no-op (a deferrable call falls straight to its heuristic, as before).
           llmQueue: degradationLadderQueue,

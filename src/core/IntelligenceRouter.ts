@@ -140,6 +140,23 @@ export interface IntelligenceRouterOptions {
    */
   monotonicNow?: () => number;
   /**
+   * NON-GATING failure-swap (docs/specs/nongating-failure-swap.md). Extends the bounded
+   * failure-swap tail to NON-gating internal calls (e.g. TopicIntentExtractor — 28% codex
+   * invocation-error rate in production) — but with a TIGHTER bound than gating calls:
+   *  - it fires ONLY on an INVOCATION-level primary failure (the primary threw AND produced
+   *    ZERO tokens — a spawn failure / timeout / empty output), NEVER on a content/parse
+   *    error that carried tokens (the caller fail-opens that per provider-fallback §6.4);
+   *  - it takes at most `maxAttempts` (default 1) steps down the active config tail; and
+   *  - it NEVER lands on `claude-code` or the default framework — the provider-fallback §6.2
+   *    invariant that non-gating background traffic must never herd onto the last-resort
+   *    Claude tail (that population is the small set of safety-gating callers, by design).
+   * Absent ⇒ feature OFF (byte-identical to today — a non-gating primary failure re-throws
+   * straight to the caller's heuristic). `enabled` is resolved at the construction site
+   * (default TRUE — a strict error reduction; the one-step + Claude-exclusion bound keeps
+   * cost/herd flat). Reuses the SAME per-attempt cap machinery the gating loop uses.
+   */
+  nonGatingFailureSwap?: { enabled: boolean; maxAttempts?: number };
+  /**
    * Build a provider for a non-default framework, with its OWN circuit breaker.
    * Returns null when that framework's binary isn't available. Called at most
    * once per framework (result cached). MUST NOT throw (catch internally).
@@ -1217,9 +1234,38 @@ export class IntelligenceRouter implements IntelligenceProvider {
     // awaited gate stays responsive (no stacking rungs). Deferrable calls are not budgeted this way.
     const gatingDeadlineAt = gating && ladder ? Date.now() + ladder.gatingLadderBudgetMs : undefined;
 
+    // NON-GATING bounded failure-swap (docs/specs/nongating-failure-swap.md). A non-gating,
+    // non-deferrable, non-nature-enforced internal call is ELIGIBLE for a bounded, herd-safe
+    // swap when the feature is on and a config `failureSwap` tail exists. To honor the §6.4
+    // caller-handled-malformed-output contract, the swap must fire ONLY on an INVOCATION-level
+    // failure (zero tokens produced), never on a content/parse error that carried tokens — so
+    // we compose an onUsage capture onto the PRIMARY attempt to observe whether it produced any
+    // tokens. This capture is installed ONLY on the eligible path; gating/deferrable/enforced
+    // calls use `evalOptions` verbatim (byte-identical). A provider that never surfaces usage
+    // (gemini-cli) leaves `primaryProducedTokens` false, so its errors are treated as
+    // invocation-level (swap) — the conservative, error-reducing direction when unobservable.
+    const nonGatingSwapEligible =
+      !gating &&
+      !deferrable &&
+      !enforced &&
+      this.opts.nonGatingFailureSwap?.enabled === true &&
+      (cfg?.failureSwap?.length ?? 0) > 0;
+    let primaryProducedTokens = false;
+    let primaryEvalOptions = evalOptions;
+    if (nonGatingSwapEligible) {
+      const callerOnUsage = evalOptions?.onUsage;
+      primaryEvalOptions = {
+        ...(evalOptions ?? {}),
+        onUsage: (u) => {
+          if (u.inputTokens > 0 || u.outputTokens > 0) primaryProducedTokens = true;
+          callerOnUsage?.(u);
+        },
+      };
+    }
+
     let err: unknown;
     try {
-      const mainResult = await primary.evaluate(prompt, evalOptions);
+      const mainResult = await primary.evaluate(prompt, primaryEvalOptions);
       this.opts.onResolved?.(component ?? '(none)', framework); // a real answer → auto-resolve any open degradation
       return mainResult;
     } catch (firstErr) {
@@ -1244,6 +1290,17 @@ export class IntelligenceRouter implements IntelligenceProvider {
         }
       }
       if (swapPositions.length === 0) {
+        // NON-GATING bounded failure-swap: a non-gating call whose PRIMARY INVOCATION failed
+        // (zero tokens produced) gets a bounded, herd-safe swap onto the next active off-Claude
+        // framework before dropping to its heuristic. A content/parse error that carried tokens is
+        // NOT swapped (`primaryProducedTokens` true ⇒ skip — the caller fail-opens it, §6.4). On
+        // success we return before the heuristic-fallthrough tracking below (no false degradation).
+        if (nonGatingSwapEligible && !primaryProducedTokens) {
+          const ng = await this.tryNonGatingSwap(
+            cfg, prompt, evalOptions, component ?? '(none)', framework, category, err,
+          );
+          if (ng.ok) return ng.result;
+        }
         // RUNG (c) — DEFERRABLE queue: no swap configured, but a deferrable call can WAIT for capacity
         // in the LlmQueue before dropping to its heuristic. gating can never reach here (deferrable =
         // !gating && …) — the D5 queue-skip invariant is structural.
@@ -1386,6 +1443,94 @@ export class IntelligenceRouter implements IntelligenceProvider {
       if (!gating) this.opts.onHeuristicFallthrough?.(component ?? '(none)', framework);
       throw err;
     }
+  }
+
+  /**
+   * NON-GATING bounded failure-swap (docs/specs/nongating-failure-swap.md). Invoked ONLY from
+   * the non-gating branch of evaluate() after the PRIMARY suffered an INVOCATION-level failure
+   * (threw with ZERO tokens produced). It attempts at most `maxAttempts` (default 1) steps down
+   * the config `failureSwap` tail — each target circuit-checked (a binary-missing or
+   * circuit-open target is skipped) and bounded by the SAME per-attempt cap machinery the gating
+   * loop uses (resolveSwapCap + withSwapTimeout). It NEVER targets `claude-code` or the default
+   * framework: a non-gating background call must never herd onto the last-resort Claude tail
+   * (provider-fallback §6.2). Returns the first successful answer, else `{ ok: false }` so the
+   * caller falls through to its heuristic (the byte-identical legacy outcome). Metrics honesty is
+   * automatic: each provider's own CircuitBreaking wrapper records its own feature_metrics row
+   * (the codex error row with zero usage; the pi success row with pi's usage/model) — this helper
+   * adds no recording, only onDegrade/onResolved observability notes.
+   */
+  private async tryNonGatingSwap(
+    cfg: ComponentFrameworksConfig | undefined,
+    prompt: string,
+    evalOptions: IntelligenceOptions | undefined,
+    component: string,
+    primaryFramework: IntelligenceFramework,
+    category: ComponentCategory,
+    firstErr: unknown,
+  ): Promise<{ ok: true; result: string } | { ok: false }> {
+    const ng = this.opts.nonGatingFailureSwap;
+    if (!ng?.enabled) return { ok: false };
+    const tail = cfg?.failureSwap ?? [];
+    if (tail.length === 0) return { ok: false };
+    const maxAttempts =
+      typeof ng.maxAttempts === 'number' && Number.isInteger(ng.maxAttempts) && ng.maxAttempts > 0
+        ? ng.maxAttempts
+        : 1;
+    // Herd-safety (§6.2 / R1): a non-gating background call must NEVER herd onto the last-resort
+    // default framework or claude-code (the measured-banned bounded-verdict door). Exclude both
+    // + the framework that just failed, then take at most `maxAttempts` steps down the tail.
+    const targets = tail
+      .filter((fw) => fw !== 'claude-code' && fw !== this.opts.defaultFramework && fw !== primaryFramework)
+      .slice(0, maxAttempts);
+    if (targets.length === 0) return { ok: false };
+
+    const globalCapMs = this.opts.swapAttemptTimeoutMs;
+    const byFramework = this.opts.swapAttemptTimeoutMsByFramework;
+    this.warnUnknownSwapCapKeys(byFramework);
+    const maxCapMs = this.opts.swapAttemptTimeoutMsMax;
+
+    for (const target of targets) {
+      const tp = this.resolveProvider(target);
+      if (!tp) continue; // target binary missing → skip
+      const cap = resolveSwapCap(target, globalCapMs, byFramework, maxCapMs);
+      // Model-size preservation (Q5): the caller's tier travels verbatim. No claude-code
+      // tier-clamp is needed here — claude-code is excluded from non-gating targets above.
+      const attemptOptions: IntelligenceOptions | undefined =
+        cap !== undefined ? { ...(evalOptions ?? {}), timeoutMs: cap } : evalOptions;
+      try {
+        // withSwapTimeout keeps the shipped crash-safe Promise.race pattern (per-input
+        // settlement handlers → a late reject/resolve from an abandoned attempt is handled/
+        // ignored) and clears the timer on settle. The cap also flows through as the provider's
+        // per-call `timeoutMs` so the CLI subprocess SIGTERMs itself at the same bound.
+        const result =
+          cap !== undefined
+            ? await withSwapTimeout(tp.evaluate(prompt, attemptOptions), cap, target)
+            : await tp.evaluate(prompt, attemptOptions);
+        this.opts.onDegrade?.({
+          component,
+          category,
+          from: primaryFramework,
+          to: target,
+          reason: `nongating-failure-swap: '${primaryFramework}' invocation failed (${firstErr instanceof Error ? firstErr.message : 'error'}); served by '${target}'`,
+        });
+        this.opts.onResolved?.(component, primaryFramework); // a real answer via swap → auto-resolve
+        return { ok: true, result };
+      } catch (attemptErr) {
+        // A timed-out attempt emits a distinct degrade reason (visible in DegradationReporter +
+        // /metrics/features), then the loop advances / gives up (fail-open per-attempt).
+        if (attemptErr instanceof Error && attemptErr.message.startsWith('swap-attempt-timeout:')) {
+          this.opts.onDegrade?.({
+            component,
+            category,
+            from: primaryFramework,
+            to: target,
+            reason: `nongating-swap-attempt-timeout: ${target}`,
+          });
+        }
+        continue; // target also down (timeout / circuit-open / binary-missing / error) → next / give up
+      }
+    }
+    return { ok: false };
   }
 
   /**

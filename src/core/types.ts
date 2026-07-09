@@ -3542,6 +3542,25 @@ export interface InstarConfig {
      */
     swapTotalBudgetMs?: number;
     /**
+     * NON-GATING failure-swap (docs/specs/nongating-failure-swap.md). Extends the
+     * IntelligenceRouter failure-swap tail to NON-gating internal calls (e.g.
+     * TopicIntentExtractor, which showed a 28% codex INVOCATION-error rate in
+     * production while gating calls — which already ride the swap tail — errored at
+     * 1.5%). A non-gating primary INVOCATION failure (the primary threw AND produced
+     * ZERO tokens) gets ONE bounded, herd-safe swap onto the next active off-Claude
+     * framework instead of hard-erroring straight to the caller's heuristic. TIGHTER
+     * than the gating swap: at most `maxAttempts` (default 1) steps, NEVER onto
+     * claude-code / the default framework (the §6.2 "non-gating never herds onto the
+     * Claude tail" invariant), and NEVER on a content/parse error that carried tokens
+     * (the caller fail-opens that, §6.4). INLINE-DEFAULTED at the router construction
+     * site (`enabled` default TRUE — a strict, bounded error reduction; the
+     * codexExecJson/swapAttemptTimeoutMs precedent) so it is deliberately kept out of
+     * ConfigDefaults/migrateConfig; absence ⇒ the enabled default. Set
+     * `{ enabled: false }` to restore today's behavior (a non-gating failure re-throws
+     * to the heuristic with no swap).
+     */
+    nonGatingFailureSwap?: { enabled?: boolean; maxAttempts?: number };
+    /**
      * Pinned-callsite model overrides (docs/LLM-ROUTING-REGISTRY.md "Risk items"
      * #3/#5/#6/#7 — the hardcoded-model callsites that bypass the router).
      * INLINE-DEFAULTED at each callsite (the codexExecJson/swapAttemptTimeoutMs

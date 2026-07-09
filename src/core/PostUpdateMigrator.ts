@@ -6838,6 +6838,23 @@ Run different INTERNAL components on different agentic frameworks to spread LLM 
       result.upgraded.push('CLAUDE.md: added Provider-Fallback Default Policy awareness');
     }
 
+    // Non-Gating Failure-Swap (2026-07-09) — Agent Awareness + Migration Parity: the
+    // failure-swap tail now ALSO covers NON-gating internal calls (bounded: one step,
+    // never onto the Claude tail, only on an invocation-level zero-token failure),
+    // fixing the class where TopicIntentExtractor hard-errored at 28% while gating calls
+    // swapped. This UPDATES the "when a *gating* call ... swaps DOWN the chain" framing of
+    // the provider-fallback block above. migrateClaudeMd only APPENDS, so it is a corrective
+    // subsection content-sniffed on the NEW distinctive marker `non-gating internal calls
+    // also get a bounded` (idempotent; distinct from every existing marker).
+    if (!content.includes('non-gating internal calls also get a bounded')) {
+      const nonGatingSwapNote = `
+**Non-gating internal calls also get a bounded failure-swap (Non-Gating Failure-Swap)** — Extending the provider-fallback framing above: non-gating internal calls also get a bounded, herd-safe swap now — not just gating calls. When a NON-gating internal component (e.g. \`TopicIntentExtractor\`) suffers an INVOCATION-level primary failure (the off-Claude CLI spawn/timeout/empty-output errored with ZERO tokens produced), it swaps ONCE onto the next active off-Claude framework instead of hard-erroring to its heuristic (the production class where TopicIntentExtractor showed a 28% codex invocation-error rate while gating calls errored at ~1.5%). It is TIGHTER than the gating swap: at most \`maxAttempts\` (default 1) steps, NEVER onto \`claude-code\`/the default framework (non-gating background traffic must never herd onto the last-resort Claude tail), and NEVER on a content/parse error that already carried tokens (the caller fail-opens that). Ships ON by default (\`intelligence.nonGatingFailureSwap\`, inline-defaulted — no persisted config block); set \`intelligence.nonGatingFailureSwap.enabled: false\` to restore the old hard-error behavior. Proactive: "why did my background classifier's error rate drop?" / "does a non-gating call fall back too?" → this bounded swap. (Spec: \`docs/specs/nongating-failure-swap.md\`.)
+`;
+      content += '\n' + nonGatingSwapNote;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Non-Gating Failure-Swap awareness');
+    }
+
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +
     // Migration Parity: existing agents must learn about the preferences read-
     // surface (the session-start hook now fetches /preferences/session-context
