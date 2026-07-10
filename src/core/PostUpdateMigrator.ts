@@ -8149,6 +8149,13 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      // Self-Action Backpressure Governor (unified-self-action-backpressure §11
+      // / LA9-1): framework-agnostic server behavior — a Codex/Gemini agent
+      // also needs the GET /self-action-governor read surface, the three
+      // "why was my respawn held / swap queued / notify folded?" triggers, and
+      // the emergencyDisable valve with the conversational flip as the
+      // operator's mass-incident path.
+      '**Self-Action Backpressure Governor',
       // Context-Aware Outbound Review (context-aware-outbound-review §4.3):
       // framework-agnostic server behavior — a Codex/Gemini agent whose turn
       // was would-blocked also needs the "check contextMeta before assuming

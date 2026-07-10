@@ -101,3 +101,7 @@ Cheap, layered: (1) `intelligence.selfActionGovernor.emergencyDisable: true` —
 
 - **defectClass:** `unbounded-self-action` — **closure:** `guard` — **enforcement:** `ratchet` — **citation:** `tests/unit/self-action-convergence.test.ts`
 - **How caught (convergence argument):** the generalized convergence ratchet drives every registered controller's worst-case emissions THROUGH `SelfActionGovernor.admit()` in enforce mode and asserts the steady-state action count stays bounded at each model's proven `boundK` — horizon-independent (fixed-bucket sliding windows with NO episode reset for relief classes; the demote latch re-promotes only after a clean cooldown dwell, so the floor cannot flap). Eternal sentinels stay rate-floored (never count-bounded, never starved), and the P19 breaker + per-target/total count ceilings make every retrofitted loop converge rather than storm. The `lint-emit-without-admit` usage-scan lint is the completeness half: a controller cannot mint/borrow a looser class's ceiling by construction.
+
+## Addendum (same PR, parity commit)
+
+The delivery-completeness parity guard caught that the new CLAUDE.md governor section was absent from `migrateFrameworkShadowCapabilities` markers[] — added (plus the featureSections registry entry), so Codex/Gemini agents receive the capability block too. No runtime surface beyond the migrator's existing marker-mirroring mechanics; idempotent by the same content-sniff.
