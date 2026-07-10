@@ -1,0 +1,21 @@
+# Non-gating provider swaps get their own timeout
+
+## What Changed
+
+Non-gating provider failure-swaps now use `intelligence.nonGatingSwapTimeoutMs`, defaulting to 15000ms, instead of inheriting the global safety-gating `intelligence.swapAttemptTimeoutMs` default of 5000ms. Safety-gating swaps keep the existing 5s fail-closed bound. This lets cold-start providers such as `pi-cli` serve advisory/background swaps without making gates wait longer.
+
+## What to Tell Your User
+
+Background internal LLM calls that fail over to another provider are more patient now. If a provider needs a cold start, Instar gives that non-gating swap up to 15 seconds by default, while safety gates still keep their fast 5-second timeout. You can tune the non-gating value with the intelligence non-gating swap timeout setting.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| Longer non-gating swap timeout | Set `intelligence.nonGatingSwapTimeoutMs` to tune how long advisory/background provider swaps can wait. |
+
+## Evidence
+
+- Unit: non-gating 6s swap succeeds with a 15s cap; gating 6s swap still times out at 5s; ConfigDefaults seeds the new value without overwriting operator overrides.
+- Integration: production-shaped router wiring passes the 15s non-gating cap and serves a 6s target.
+- E2E: AgentServer lifecycle wiring passes `timeoutMs: 15000` through the live non-gating swap path.

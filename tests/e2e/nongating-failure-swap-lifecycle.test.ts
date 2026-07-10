@@ -26,8 +26,15 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 function createMockSessionManager() {
   return { listRunningSessions: () => [], getSession: () => null };
 }
-function okProvider(label: string): IntelligenceProvider & { calls: number } {
-  return { calls: 0, async evaluate() { this.calls++; return label; } } as IntelligenceProvider & { calls: number };
+function okProvider(label: string): IntelligenceProvider & { calls: number; sawTimeoutMs?: number } {
+  return {
+    calls: 0,
+    async evaluate(this: { calls: number; sawTimeoutMs?: number }, _p: string, opts?: IntelligenceOptions) {
+      this.calls++;
+      this.sawTimeoutMs = opts?.timeoutMs;
+      return label;
+    },
+  };
 }
 function invocationFailProvider(msg = 'codex exec failed'): IntelligenceProvider {
   return { async evaluate() { throw new Error(msg); } };
@@ -74,6 +81,7 @@ describe('non-gating failure-swap E2E lifecycle (feature is alive + ON by defaul
       resolveConfig: () => ({ overrides: { TopicIntentExtractor: 'codex-cli' }, failureSwap: ['pi-cli', 'gemini-cli', 'claude-code'] }),
       buildProvider: (fw) => built[fw] ?? null,
       swapAttemptTimeoutMs: 5000,
+      nonGatingSwapTimeoutMs: config.intelligence?.nonGatingSwapTimeoutMs ?? 15000,
       // The SHIPPED default expression from src/commands/server.ts — config unset ⇒ enabled:true.
       nonGatingFailureSwap: {
         enabled: (config as InstarConfig).intelligence?.nonGatingFailureSwap?.enabled ?? true,
@@ -110,5 +118,6 @@ describe('non-gating failure-swap E2E lifecycle (feature is alive + ON by defaul
     const result = await router.evaluate('classify this', NON_GATING);
     expect(result).toBe('pi');
     expect(pi.calls).toBeGreaterThan(0);
+    expect(pi.sawTimeoutMs).toBe(15000);
   });
 });

@@ -379,14 +379,19 @@ describe('lint-dev-agent-dark-gate', () => {
       // unchanged (still 25 entries, same dotted paths); RE-VERIFIED via
       // attributeRealConfigDefaults on the edited ConfigDefaults (uniform +17 shift,
       // no new/removed entries).
-      '288': 'monitoring.sessionReaper.enabled',
-      '346': 'monitoring.agentWorktreeReaper.enabled',
-      '465': 'monitoring.mcpProcessReaper.enabled',
-      '479': 'monitoring.agentSleep.enabled',
-      '550': 'monitoring.correctionLearning.enabled',
-      '653': 'monitoring.apprenticeshipCycleSla.enabled',
-      '661': 'monitoring.geminiCapacityEscalation.enabled',
-      '685': 'monitoring.greenPrAutoMerge.enabled',
+      //
+      // non-gating-swap-timeout (2026-07-10): a 6-line numeric timeout default
+      // (`intelligence.nonGatingSwapTimeoutMs`, no `enabled` literal) was inserted
+      // above monitoring. It adds NO attributed dark-gate path and shifts every
+      // existing `enabled: false` row below it DOWN by +6.
+      '294': 'monitoring.sessionReaper.enabled',
+      '352': 'monitoring.agentWorktreeReaper.enabled',
+      '471': 'monitoring.mcpProcessReaper.enabled',
+      '485': 'monitoring.agentSleep.enabled',
+      '556': 'monitoring.correctionLearning.enabled',
+      '659': 'monitoring.apprenticeshipCycleSla.enabled',
+      '667': 'monitoring.geminiCapacityEscalation.enabled',
+      '691': 'monitoring.greenPrAutoMerge.enabled',
       // red-pr-watchdog (2026-07-09): a 4-line `redPrWatchdog` default sub-block
       // (3 comment lines + `redPrWatchdog: { enabled: true, ... }`) was inserted
       // INSIDE the greenPrAutoMerge block, BELOW its `enabled: false` (668). It
@@ -395,30 +400,30 @@ describe('lint-dev-agent-dark-gate', () => {
       // line below it DOWN by +4. Path SET unchanged (still 25 entries, same dotted
       // paths); RE-VERIFIED via attributeEnabledFalsePaths on the edited
       // ConfigDefaults (uniform +4 shift, no new/removed entries).
-      '739': 'threadline.a2aCheckIn.enabled',
-      '870': 'mentor.enabled',
-      '881': 'mentor.autonomousFix.enabled',
-      '896': 'mentee.enabled',
-      '956': 'prGate.classClosure.enabled',
+      '745': 'threadline.a2aCheckIn.enabled',
+      '876': 'mentor.enabled',
+      '887': 'mentor.autonomousFix.enabled',
+      '902': 'mentee.enabled',
+      '962': 'prGate.classClosure.enabled',
       // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
       // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
       // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
       // adds no map row, and shifts every subsequent `enabled:` line by +21.
-      '1040': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '1044': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '1051': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1061': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1298': 'multiMachine.sessionPool.enabled',
+      '1046': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1050': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1057': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1067': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1304': 'multiMachine.sessionPool.enabled',
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1342': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1352': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1381': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1576': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1717': 'cartographer.freshnessSweep.enabled',
-      '1762': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1787': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1348': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1358': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1387': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1582': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1723': 'cartographer.freshnessSweep.enabled',
+      '1768': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1793': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

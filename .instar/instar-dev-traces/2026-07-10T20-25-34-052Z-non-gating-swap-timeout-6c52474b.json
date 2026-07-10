@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "sessionId": "3b6e537d-21c9-4cb7-81f7-9cf9a51be2ef",
+  "timestamp": "2026-07-10T20:25:34.052Z",
+  "artifactPath": "upgrades/side-effects/non-gating-swap-timeout.md",
+  "artifactSha256": "dfc9f7a6dafe1817b51a81ea0cb3cae70e4a388b5a333203d7c2f755b743fbd9",
+  "coveredFiles": [
+    "docs/eli16/non-gating-swap-timeout.eli16.md",
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/IntelligenceRouter.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/nongating-failure-swap-lifecycle.test.ts",
+    "tests/integration/nongating-failure-swap-routing.test.ts",
+    "tests/unit/ConfigDefaults.test.ts",
+    "tests/unit/PostUpdateMigrator-nonGatingFailureSwap.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "tests/unit/nongating-failure-swap.test.ts",
+    "upgrades/next/non-gating-swap-timeout.md",
+    "upgrades/side-effects/non-gating-swap-timeout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small scoped routing/config timeout split for an existing non-gating swap path; no new authority, no schema migration, tests cover gating unchanged and non-gating longer cap.",
+  "eli16Path": "docs/eli16/non-gating-swap-timeout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/non-gating-swap-timeout.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}
