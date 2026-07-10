@@ -1,7 +1,7 @@
 ---
 title: "Notification Selectivity — Quiet by Default: logs-first automated messaging with category-level push opt-in"
 slug: "notification-selectivity"
-status: "draft — reconstructed (needs fresh operator approval)"
+status: "approved — converged r3 + fresh operator sign-off 2026-07-10"
 tier: 2
 created: "2026-07-10"
 author: "echo"
@@ -10,7 +10,7 @@ eli16-overview: "notification-selectivity.eli16.md"
 provenance:
   - "Design approved by operator 2026-06-13 13:59 PDT (topic 11960, verbatim: 'Approved') after three review rounds — recorded here as DESIGN provenance only. The converged spec artifact was LOST: the build session was reaped at max runtime the same day and the spec file died with its worktree; only the design conversation survives."
   - "Reconstructed 2026-07-10 against canonical main (v1.3.802) after operator reaffirmation (topic 11960, 2026-07-10, verbatim): 'we need to be VERY selective about what gets actually sent to the user (most should be internal logs)'."
-  - "This reconstructed artifact requires FRESH operator sign-off — the June-13 'Approved' binds the design direction, not this document. No approved tag is carried."
+  - "FRESH operator sign-off RECEIVED 2026-07-10 13:17 PDT (topic 11960, verbatim: 'Approved with your recommendations') — approving this reconstructed document with the recommended defaults on both named decision points: the significant-lane emergency floor stays (ELI16 item 1), and the rollout lever exists through the staged rollout with full removal as the final cleanup increment (DEV-1)."
 extends:
   - "docs/specs/attention-single-topic-routing.eli16.md (PR #1417 — the urgent slice that already shipped)"
   - "docs/specs/notification-ux-coherence.md (the Agent Health lane)"
@@ -41,6 +41,9 @@ lessons-engaged:
   - "Close the Loop — the opt-in digest + unread-aging counters + agent-facing re-surfacing + tracked deferrals keep quiet items from rotting unseen (engaged, §4.3, §4.5)"
   - "Cross-Machine Coherence — every new surface declares its posture; the opt-in surface is unified via a durable sole-writer fan-out (engaged, §Multi-machine)"
 review-convergence: "2026-07-10T20:02:56.648Z"
+approved: true
+approved-at: "2026-07-10T20:17:00Z"
+approved-by: "operator conversational approval, topic 11960, 2026-07-10 13:17 PDT, 'Approved with your recommendations' (post ELI16 + convergence-report handoff via signed private views)"
 review-iterations: 3
 review-completed-at: "2026-07-10T20:02:56.648Z"
 review-report: "docs/specs/reports/notification-selectivity-convergence.md"
