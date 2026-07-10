@@ -248,6 +248,14 @@ const CONTEXT_WALL_ESCALATION_NOTE = `
 When a session is genuinely stuck at the context wall ("Context limit reached · /compact or /clear to continue" / "conversation too long"), recovery now tries a NON-DESTRUCTIVE rung FIRST: it presses \`/compact\` for the session and verifies the wall cleared — preserving the whole conversation. Only if \`/compact\` can't clear it (the conversation is too long to even compact) does recovery fall back to the previous behavior, a fresh respawn that keeps thread history but starts a new conversation. This is gated to a genuinely idle session (a session still actively working at 100% context is left alone, never compacted out from under its work). If a user asks "why did my long session restart / did I lose the conversation?" — the answer is: I try to compact it in place first; a fresh start only happens when compaction itself fails.
 `;
 
+/**
+ * Lead paragraph of the CLAUDE.md Topic-Flood Guard section, rewritten for the
+ * single-alerts-topic default (2026-07-09 directive). Used for fresh section
+ * inserts AND as the in-place replacement for the stale pre-flip paragraph
+ * ("The attention queue spawns ONE Telegram forum topic per item…").
+ */
+const SINGLE_ATTENTION_TOPIC_LEAD = `Attention items route into the single durable "🔔 Attention" hub topic by default (single-alerts-topic routing, 2026-07-09): EVERY priority — HIGH/URGENT included — lands as one message THERE, and alerts never spawn their own Telegram topic. The legacy per-item mode is opt-in via \`messaging[].config.attentionRouting = { "mode": "per-item" }\`; in THAT mode a per-source circuit breaker sits at the topic-creation chokepoint (\`TelegramAdapter.createAttentionItem\`): if a single attention \`sourceContext\` exceeds its topic budget within a rolling window, further NON-critical items from that source are COALESCED into ONE running "notices coalesced" topic and recorded in \`state/attention-suppressed.jsonl\` — never a wall of new topics. No item is ever dropped in either mode; every item is still in the attention store.`;
+
 export interface MigrationResult {
   /** What was upgraded */
   upgraded: string[];
@@ -6066,9 +6074,9 @@ Every conversation I talk in has ONE durable numeric identity: a Telegram topic 
       const section = `
 ## Topic-Flood Guard (attention queue circuit breaker)
 
-The attention queue spawns ONE Telegram forum topic per item — right for a genuine /ack-able to-do, catastrophic when a HOUSEKEEPING feature raises items at volume (this is exactly the 2026-05-22 sentinel flood and the 2026-05-28 collaboration-redrive flood). A per-source circuit breaker now sits at the topic-creation chokepoint (\`TelegramAdapter.createAttentionItem\`): if a single attention \`sourceContext\` exceeds its topic budget within a rolling window, further NON-critical items from that source are COALESCED into ONE running "notices coalesced" topic and recorded in \`state/attention-suppressed.jsonl\` — never a wall of new topics. HIGH/URGENT items are NEVER coalesced (critical messages always get their own topic). No item is dropped — only its per-item topic is withheld; every item is still in the attention store.
+${SINGLE_ATTENTION_TOPIC_LEAD}
 
-- Default-ON, no config required (it ships in code). Tune via \`messaging[].config.attentionTopicGuard\` = \`{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }\`.
+- Single-topic routing is the code default — no config required. The legacy per-item mode is still shaped by \`messaging[].config.attentionTopicGuard\` = \`{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }\`.
 - If a user asks "why are my notices grouped together / where did topic X go / what is this 'notices coalesced' topic?" — read \`state/attention-suppressed.jsonl\` for the per-source suppressed items and explain the breaker above. The real fix for a recurring flood is to make the offending feature route housekeeping to the logs (like the sentinels and collaboration-redrive now do); the guard is the backstop that protects you regardless.
 `;
       content += '\n' + section;
@@ -6076,6 +6084,32 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
       result.upgraded.push('CLAUDE.md: added Topic-Flood Guard section');
     } else {
       result.skipped.push('CLAUDE.md: Topic-Flood Guard section already present');
+    }
+
+    // Single-alerts-topic routing (2026-07-09 directive) — agents migrated
+    // BEFORE the default flip carry the old Topic-Flood Guard lead paragraph
+    // asserting one-topic-per-item + HIGH/URGENT-always-get-their-own-topic,
+    // which now contradicts shipped behavior (every item routes into the ONE
+    // "🔔 Attention" hub by default). Rewrite that stale paragraph in place.
+    // Idempotent: keyed on the old opening sentence, gone after one run.
+    const staleFloodLead = 'The attention queue spawns ONE Telegram forum topic per item';
+    const staleFloodBullet = '- Default-ON, no config required (it ships in code). Tune via `messaging[].config.attentionTopicGuard`';
+    if (content.includes(staleFloodLead) || content.includes(staleFloodBullet)) {
+      const staleParagraphPattern = /The attention queue spawns ONE Telegram forum topic per item[^\n]*\n/;
+      if (staleParagraphPattern.test(content)) {
+        content = content.replace(staleParagraphPattern, `${SINGLE_ATTENTION_TOPIC_LEAD}\n`);
+      }
+      const staleBulletPattern = /- Default-ON, no config required \(it ships in code\)\. Tune via `messaging\[\]\.config\.attentionTopicGuard`[^\n]*\n/;
+      if (staleBulletPattern.test(content)) {
+        content = content.replace(
+          staleBulletPattern,
+          '- Single-topic routing is the code default — no config required. The legacy per-item mode is still shaped by `messaging[].config.attentionTopicGuard` = `{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }`.\n',
+        );
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated Topic-Flood Guard section for single-alerts-topic default');
+    } else {
+      result.skipped.push('CLAUDE.md: Topic-Flood Guard section already on single-alerts-topic wording');
     }
 
     // Bounded Notification Surface (2026-06-05, flood #3) — extends the

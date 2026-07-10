@@ -77,7 +77,46 @@ describe('Notification-flood burst invariant (production-default budgets)', () =
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'burst-invariant cleanup' });
   });
 
-  it('1,000 LOW attention items with UNIQUE sourceContexts (the 2026-06-05 dodge) create ≤ global-budget + 1 topics', async () => {
+  it('SHIPPED DEFAULT (single-topic routing): 1,000 attention items of every priority create ≤ 1 topic — the hub', async () => {
+    const rec = installApiStub(adapter);
+
+    const priorities = ['LOW', 'NORMAL', 'HIGH', 'URGENT'] as const;
+    const N = 1000;
+    for (let i = 0; i < N; i++) {
+      await adapter.createAttentionItem({
+        id: `hub-burst-${i}`,
+        title: `synthetic notice ${i}`,
+        summary: `burst item ${i}`,
+        category: 'hub-burst-test',
+        priority: priorities[i % priorities.length],
+        // Unique source per item — the 2026-06-05 dodge — which under
+        // single-topic routing doesn't even matter: NOTHING spawns a topic.
+        sourceContext: `/some/unique/path/${i}`,
+      });
+    }
+
+    // The 2026-07-09 directive bound: at most ONE topic total (the self-healed
+    // "🔔 Attention" hub — zero when a boot hub id is injected), regardless of
+    // volume, labels, or priority.
+    expect(rec.forumTopicsCreated).toBeLessThanOrEqual(1);
+    expect(rec.topicTitles.every((t) => t.includes('Attention'))).toBe(true);
+    // No item dropped: every one of the 1,000 is in the attention store.
+    expect(adapter.getAttentionItems().filter((a) => a.category === 'hub-burst-test').length).toBe(N);
+  });
+
+  it('LEGACY per-item mode: 1,000 LOW attention items with UNIQUE sourceContexts (the 2026-06-05 dodge) create ≤ global-budget + 1 topics', async () => {
+    await adapter.stop();
+    adapter = new TelegramAdapter(
+      {
+        token: 'test-token-123',
+        chatId: '-100123456',
+        pollIntervalMs: 100,
+        // The legacy opt-out — this test pins the guard invariants that still
+        // protect agents that deliberately restore per-item topics.
+        attentionRouting: { mode: 'per-item' },
+      },
+      tmpDir,
+    );
     const rec = installApiStub(adapter);
 
     const N = 1000;
@@ -114,6 +153,7 @@ describe('Notification-flood burst invariant (production-default budgets)', () =
         pollIntervalMs: 100,
         // A mis-config (or a future feature bypassing the attention path
         // entirely). The chokepoint budget is the layer that must hold.
+        attentionRouting: { mode: 'per-item' },
         attentionTopicGuard: { enabled: false },
       },
       tmpDir,
@@ -212,7 +252,12 @@ describe('Notification-flood burst invariant (production-default budgets)', () =
     expect(refused).toBeGreaterThanOrEqual(188);
   });
 
-  it('CRITICAL-FLOOD BOUND: 1,000 distinct HIGH/URGENT attention items are bounded and never dropped', async () => {
+  it('CRITICAL-FLOOD BOUND (legacy per-item mode): 1,000 distinct HIGH/URGENT attention items are bounded and never dropped', async () => {
+    await adapter.stop();
+    adapter = new TelegramAdapter(
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, attentionRouting: { mode: 'per-item' } },
+      tmpDir,
+    );
     const rec = installApiStub(adapter);
 
     const N = 1000;
@@ -239,7 +284,12 @@ describe('Notification-flood burst invariant (production-default budgets)', () =
       .toBeGreaterThan(0);
   });
 
-  it('HIGH/URGENT attention items always get their own topic even mid-flood (critical never coalesced, never budget-refused)', async () => {
+  it('LEGACY per-item mode: HIGH/URGENT attention items get their own topic even mid-flood (critical never coalesced, never budget-refused)', async () => {
+    await adapter.stop();
+    adapter = new TelegramAdapter(
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, attentionRouting: { mode: 'per-item' } },
+      tmpDir,
+    );
     const rec = installApiStub(adapter);
 
     // Saturate both layers with LOW noise.
@@ -310,16 +360,20 @@ describe('Growth digest aggregation invariant (500 findings → one bounded mess
 // this table-driven contract test proves the ROUTING RULE at the adapter/funnel
 // boundary — one extended burst test can miss direct adapter calls / legacy
 // paths / future notice sources, so we assert the enumerated routing cases
-// directly (spec §Standard C, round-5 external finding):
+// directly (spec §Standard C, round-5 external finding; amended 2026-07-09 —
+// the single-alerts-topic directive retired the critical carve-out):
 //   • topic-less non-critical housekeeping → the ONE hub topic (from the FIRST
 //     item, never one-per-item)
-//   • HIGH / URGENT → its OWN individual topic (critical carve-out preserved)
+//   • HIGH / URGENT → the SAME single "🔔 Attention" hub (2026-07-09: alerts
+//     go to ONE dedicated topic, ALL priorities — the old per-item critical
+//     carve-out survives only behind the `attentionRouting.mode: 'per-item'`
+//     legacy opt-out)
 //   • an existing-owning-topic send → that topic, minting NO new topic
 //   • a misconfigured / unresolvable hub → a SAFE fallback (item still stored,
 //     never a silent per-item new-topic mint)
-// Ship criterion (no-miscite): hub routing covers ONLY non-critical topic-less
-// notices — it is NEVER cited as critical-alert reachability (that guarantee is
-// the pooled attention queue's read, and the deferred unified push stream's).
+// Ship criterion (no-miscite): hub routing is a delivery surface — it is NEVER
+// cited as critical-alert reachability (that guarantee is the pooled attention
+// queue's read, and the deferred unified push stream's).
 describe('Standard C — topic-less notice routing default (contract, adapter boundary)', () => {
   let adapter: TelegramAdapter;
   let tmpDir: string;
@@ -363,13 +417,13 @@ describe('Standard C — topic-less notice routing default (contract, adapter bo
     expect(adapter.getAttentionItems().filter((a) => a.lane === 'agent-health').every((a) => a.coalesced === true)).toBe(true);
   });
 
-  it('HIGH / URGENT topic-less notices keep their OWN individual topic (critical carve-out preserved)', async () => {
+  it('HIGH / URGENT topic-less notices route to the SAME single hub (2026-07-09: the critical carve-out is retired)', async () => {
     const rec = installApiStub(adapter);
-    // Even a critical item that opts into the housekeeping lane must NOT be
-    // muffled into the hub — but here we use the standard attention path: each
-    // critical item gets its own topic.
+    // The operator directive is absolute: alerts go into ONE dedicated topic —
+    // ALL priorities. A critical item posts into the hub like everything else;
+    // it never mints its own topic (per-item topics are the legacy opt-out).
+    const hubIds = new Set<number | undefined>();
     for (const priority of ['HIGH', 'URGENT'] as const) {
-      const before = rec.forumTopicsCreated;
       const item = await adapter.createAttentionItem({
         id: `crit-${priority}`,
         title: `critical ${priority}`,
@@ -378,10 +432,15 @@ describe('Standard C — topic-less notice routing default (contract, adapter bo
         priority,
         sourceContext: `/crit/${priority}`,
       });
-      expect(rec.forumTopicsCreated).toBe(before + 1); // its OWN topic
-      expect(item.coalesced).not.toBe(true);
+      expect(item.coalesced).toBe(true);
       expect(item.topicId).toBeDefined();
+      hubIds.add(item.topicId);
     }
+    // Both criticals share the ONE hub — at most one topic ever created (the
+    // self-healed hub; zero when a boot hub id is injected).
+    expect(hubIds.size).toBe(1);
+    expect(rec.forumTopicsCreated).toBeLessThanOrEqual(1);
+    expect(rec.topicTitles.every((t) => t.includes('Attention'))).toBe(true);
   });
 
   it('a send to an EXISTING owning topic mints NO new topic', async () => {
