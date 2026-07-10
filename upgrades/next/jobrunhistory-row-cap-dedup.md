@@ -1,0 +1,22 @@
+# Upgrade Guide — vNEXT
+
+## What Changed
+
+JobRunHistory now handles oversized job-run rows without losing the failure reason or flooding health status during retry loops. When a row exceeds the 2 KB cap, bulky non-diagnostic fields are still removed first, but an oversized error is shortened in place with the beginning and end preserved around an omission marker. The stored row still fits the cap and still tells the next debugger why the job failed.
+
+The degradation emitted by the cap path is now deduplicated per job slug and row-cap condition for a one-hour rolling window. A retry loop that produces many same-shaped oversized rows updates one JobRunHistory health event with an increasing count instead of appending one degradation per failed retry. Different job slugs and expired windows still emit distinct events.
+
+## What to Tell Your User
+
+If one scheduled job gets stuck failing with a large error, your health page should now stay readable. You will see one JobRunHistory warning for that job with a count, instead of a long list of identical warnings. The job history row also keeps the important part of the error message, so debugging starts from the saved history instead of needing to hunt through old logs.
+
+## Summary of New Capabilities
+
+- Oversized job-run errors are preserved in shortened head-and-tail form instead of being dropped.
+- Repeated same-job row-cap degradations are grouped into one health event per rolling window with a running count.
+
+## Evidence
+
+- `instar dev:claim-check src/scheduler/JobRunHistory.ts` passed before building: no sibling claim on the touched scheduler layer.
+- `npm test -- tests/unit/JobRunHistory.test.ts` passed: 38 tests, including small error exact preservation, oversized error head/tail preservation, same-slug dedup inside the window, different-slug non-dedup, and expired-window non-dedup.
+- `npm run lint -- --help` passed the repo lint chain; existing self-action and scrape-parser ratchets remained report-only.
