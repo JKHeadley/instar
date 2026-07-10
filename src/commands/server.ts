@@ -17806,6 +17806,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) {
       console.error('[self-action-governor] init failed (admits pass through this boot):', err instanceof Error ? err.message : String(err));
       _selfActionGovernor = undefined;
+      DegradationReporter.getInstance().report({
+        feature: 'SelfActionGovernor',
+        primary: 'self-action admission chokepoint (observe-only would-deny measurement)',
+        fallback: 'governor uninitialized for this boot — every admit resolves disabled-passthrough (allow)',
+        reason: `init failed: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Self-action would-deny telemetry is not collected this boot; the retrofitted emit paths behave exactly as before (observe mode never blocks anyway).',
+      });
     }
 
     // Detects agent worktrees with uncommitted work whose owning session is dead

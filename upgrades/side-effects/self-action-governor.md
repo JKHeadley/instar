@@ -105,3 +105,7 @@ Cheap, layered: (1) `intelligence.selfActionGovernor.emergencyDisable: true` —
 ## Addendum (same PR, parity commit)
 
 The delivery-completeness parity guard caught that the new CLAUDE.md governor section was absent from `migrateFrameworkShadowCapabilities` markers[] — added (plus the featureSections registry entry), so Codex/Gemini agents receive the capability block too. No runtime surface beyond the migrator's existing marker-mirroring mechanics; idempotent by the same content-sniff.
+
+## Addendum 2 (same PR, CI-ratchet conformance commit)
+
+Two CI ratchets caught conformance gaps, both folded: (1) the no-silent-fallbacks ratchet — the governor's boot-init catch in `src/commands/server.ts` now reports through DegradationReporter (never-silent degradation; admits resolve disabled-passthrough for the boot, behavior unchanged); (2) the G3 load-bearing manifest lint — the `intelligence.selfActionGovernor.enabled` GUARD_MANIFEST entry now declares its uniform `soakWindowDays`/`declaredLoadBearingAt` fields (the guard reports enabled/never-dryRun, so no gap/soak posture arises in the shipped observe-only state).

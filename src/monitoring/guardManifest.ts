@@ -422,6 +422,14 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
       'Unified self-action backpressure chokepoint (observe-only rollout): every registered self-triggered action (kill, swap, notify, respawn) rides admit() for would-deny measurement; per-class enforce is the operator FD8 ladder.',
     loadBearing: true,
     criticalPath: 'self-action capacity safety (the runaway self-trigger flood brake: reaper kill storms, swap thrash, notify floods)',
+    // G3 manifest lint: every loadBearing entry declares its soak budget. The
+    // governor ships observe-only BY DESIGN (FD1) and its runtime getter does
+    // not report observe as dryRun (the FD8/FD12 ladder owns per-class
+    // graduation), so the soak window exists to satisfy the uniform G3
+    // contract — the guard's own enabled-state (emergencyDisable inversion)
+    // is what the gap classification watches.
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-10',
   },
   {
     key: 'monitoring.externalHogSentinel.enabled',
