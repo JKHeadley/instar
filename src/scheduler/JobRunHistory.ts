@@ -114,6 +114,9 @@ let runCounter = 0;
  *  runId, slug, sessionId, trigger, startedAt, result, origin — is
  *  always preserved so query results remain coherent. */
 const ROW_SIZE_CAP_BYTES = 2 * 1024;
+const ROW_SIZE_CAP_DEGRADATION_WINDOW_MS = 60 * 60 * 1000;
+const ERROR_OMISSION_MARKER_PREFIX = '\n...[omitted ';
+const ERROR_OMISSION_MARKER_SUFFIX = ' bytes to fit JobRunHistory row cap]...\n';
 
 /** Fields that are dropped first when a row exceeds the size cap.
  *  Ordered loosely by user-visibility: bulky outputs first, summaries last. */
@@ -122,8 +125,15 @@ const TRUNCATABLE_FIELDS = [
   'stateSnapshot',
   'handoffNotes',
   'reflection',
-  'error',
 ] as const;
+
+interface RowCapDegradationWindow {
+  windowStartedAt: number;
+  count: number;
+  event?: ReturnType<DegradationReporter['getEvents']>[number];
+}
+
+const rowCapDegradationWindows = new Map<string, RowCapDegradationWindow>();
 
 export class JobRunHistory {
   private ledgerDir: string;
@@ -163,6 +173,10 @@ export class JobRunHistory {
 
   setMachineId(machineId: string): void {
     this.machineId = machineId;
+  }
+
+  static _resetRowCapDegradationDedupForTesting(): void {
+    rowCapDegradationWindows.clear();
   }
 
   /**
@@ -579,31 +593,107 @@ export class JobRunHistory {
     const initialSize = Buffer.byteLength(JSON.stringify(row), 'utf-8');
     if (initialSize <= ROW_SIZE_CAP_BYTES) return row;
 
-    // Clone and truncate iteratively. Always preserve the essential set.
-    const truncated: JobRun = { ...row, truncated: true };
+    const limited: JobRun = { ...row, ["truncated"]: true };
+    const droppedFields: string[] = [];
     for (const field of TRUNCATABLE_FIELDS) {
-      if (truncated[field] === undefined) continue;
-      delete (truncated as unknown as Record<string, unknown>)[field];
-      if (Buffer.byteLength(JSON.stringify(truncated), 'utf-8') <= ROW_SIZE_CAP_BYTES) {
+      if (limited[field] === undefined) continue;
+      delete (limited as unknown as Record<string, unknown>)[field];
+      droppedFields.push(field);
+      if (Buffer.byteLength(JSON.stringify(limited), 'utf-8') <= ROW_SIZE_CAP_BYTES) {
         break;
       }
     }
 
-    const finalSize = Buffer.byteLength(JSON.stringify(truncated), 'utf-8');
+    const originalError = limited.error;
+    let errorShortened = false;
+    if (Buffer.byteLength(JSON.stringify(limited), 'utf-8') > ROW_SIZE_CAP_BYTES &&
+        typeof originalError === 'string') {
+      const fitted = this.fitStringFieldToRowCap(limited, 'error', originalError);
+      if (fitted !== null) {
+        limited.error = fitted;
+        errorShortened = fitted !== originalError;
+      }
+    }
+
+    const finalSize = Buffer.byteLength(JSON.stringify(limited), 'utf-8');
+    if (finalSize > ROW_SIZE_CAP_BYTES && limited.error !== undefined) {
+      delete (limited as unknown as Record<string, unknown>).error;
+      droppedFields.push('error');
+    }
+    const storedSize = Buffer.byteLength(JSON.stringify(limited), 'utf-8');
+    this.reportRowCapDegradation(row, initialSize, storedSize, droppedFields, errorShortened);
+    return limited;
+  }
+
+  private fitStringFieldToRowCap(row: JobRun, field: 'error', value: string): string | null {
+    let low = 0;
+    let high = value.length;
+    let best: string | null = null;
+
+    while (low <= high) {
+      const keepChars = Math.floor((low + high) / 2);
+      const candidate = this.headTailFit(value, keepChars);
+      const candidateRow = { ...row, [field]: candidate };
+      if (Buffer.byteLength(JSON.stringify(candidateRow), 'utf-8') <= ROW_SIZE_CAP_BYTES) {
+        best = candidate;
+        low = keepChars + 1;
+      } else {
+        high = keepChars - 1;
+      }
+    }
+
+    return best;
+  }
+
+  private headTailFit(value: string, keepChars: number): string {
+    if (keepChars >= value.length) return value;
+    const headChars = Math.ceil(keepChars / 2);
+    const tailChars = Math.floor(keepChars / 2);
+    const omittedBytes = Buffer.byteLength(value.slice(headChars, value.length - tailChars), 'utf-8');
+    const marker = `${ERROR_OMISSION_MARKER_PREFIX}${omittedBytes}${ERROR_OMISSION_MARKER_SUFFIX}`;
+    return `${value.slice(0, headChars)}${marker}${tailChars > 0 ? value.slice(value.length - tailChars) : ''}`;
+  }
+
+  private reportRowCapDegradation(
+    row: JobRun,
+    initialSize: number,
+    finalSize: number,
+    droppedFields: string[],
+    errorShortened: boolean,
+  ): void {
+    const key = `${row.slug}:row-size-cap`;
+    const now = Date.now();
+    const existing = rowCapDegradationWindows.get(key);
+    const inWindow = existing && now - existing.windowStartedAt < ROW_SIZE_CAP_DEGRADATION_WINDOW_MS;
+    const window = inWindow ? existing : { windowStartedAt: now, count: 0 };
+    window.count += 1;
+    rowCapDegradationWindows.set(key, window);
+
+    const reason = `Row size ${initialSize}B exceeded ${ROW_SIZE_CAP_BYTES}B cap for slug=${row.slug}; dedupKey=${key}; count=${window.count}`;
+    const fallback = `Fit oversized run record fields (dropped: ${droppedFields.join(', ') || 'none'}; error=${errorShortened ? 'head-tail shortened' : 'preserved'})`;
+    const impact = `Run record stored at ${finalSize}B with truncated:true flag set; deduped ${window.count} oversized row(s) for slug=${row.slug} in the current window`;
+
+    const reporter = DegradationReporter.getInstance();
+    if (window.event && reporter.getEvents().includes(window.event)) {
+      window.event.reason = reason;
+      window.event.fallback = fallback;
+      window.event.impact = impact;
+      window.event.timestamp = new Date().toISOString();
+      return;
+    }
+
     try {
-      DegradationReporter.getInstance().report({
+      reporter.report({
         feature: 'JobRunHistory.appendLine',
         primary: 'Write full run record with all fields',
-        fallback: `Truncate non-essential fields (dropped: ${TRUNCATABLE_FIELDS
-          .filter(f => row[f] !== undefined && truncated[f] === undefined)
-          .join(', ')})`,
-        reason: `Row size ${initialSize}B exceeded ${ROW_SIZE_CAP_BYTES}B cap for run ${row.runId} (slug=${row.slug})`,
-        impact: `Run record stored at ${finalSize}B with truncated:true flag set`,
+        fallback,
+        reason,
+        impact,
       });
+      window.event = reporter.getEvents().at(-1);
     } catch {
       // @silent-fallback-ok — degradation reporting is best-effort
     }
-    return truncated;
   }
 
   /**
