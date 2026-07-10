@@ -24020,18 +24020,74 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ enabled: true, count: accounts.length, accounts });
   });
 
+  // D5 (topic 29836) — record-state ⟂ pane-liveness. A pending login is only genuinely
+  // submittable while its interactive sign-in pane is ALIVE on this machine; a record that
+  // says "pending" with no pane behind it is a zombie the operator can pour a code into
+  // forever. Tri-state, fail-toward-unknown: true (pane captured), false (capture says the
+  // session is gone), null (cannot verify — no capture surface / capture threw). Read-only:
+  // callers use it to present honestly and to decide supersede-vs-reuse; it never mutates.
+  const enrollPaneAlive = (login: { framework: string; configHome?: string }): boolean | null => {
+    try {
+      if (typeof ctx.sessionManager?.captureOutput !== 'function') return null;
+      const pane = enrollPaneSessionName(login.framework, login.configHome);
+      // captureOutput returns null for a missing/dead session (the same contract the
+      // submit-code readiness guard relies on).
+      return ctx.sessionManager.captureOutput(pane, 2) != null;
+    } catch {
+      return null; // @silent-fallback-ok: liveness UNKNOWN is an honest tri-state answer
+    }
+  };
+  const annotatePaneLiveness = <T extends { framework: string; configHome?: string }>(logins: T[]): Array<T & { paneAlive: boolean | null }> =>
+    logins.map((l) => ({ ...l, paneAlive: enrollPaneAlive(l) }));
+
+  // D5 (topic 29836): a VALIDATED follow-me completion for an account id already in the pool
+  // is a RE-AUTH (the operator's "Needs sign-in → Sign in" matrix path) — upsert it back to
+  // active instead of hitting add()'s duplicate-id refusal, which stranded the re-sign-in flow
+  // at "finishing sign-in…" forever (the completion threw, was swallowed by the poll loop, and
+  // the account never flipped active). New account → add; existing → update to active.
+  const upsertValidatedAccount = (
+    login: { id: string; label: string; provider: string; framework: string; configHome?: string },
+    email: string,
+  ) => {
+    const pool = ctx.subscriptionPool!;
+    const existing = pool.get(login.id);
+    if (existing) {
+      return pool.update(login.id, {
+        nickname: login.label,
+        status: 'active',
+        email,
+        ...(login.configHome ? { configHome: login.configHome } : {}),
+      });
+    }
+    return pool.add({
+      id: login.id, nickname: login.label,
+      provider: login.provider as Parameters<typeof pool.add>[0]['provider'],
+      framework: login.framework as Parameters<typeof pool.add>[0]['framework'],
+      configHome: login.configHome ?? '', status: 'active', email,
+    });
+  };
+
   // P2.1 — the "Pending Logins" surface (the phone/dashboard panel). MUST be
   // registered before GET /subscription-pool/:id, or the param route shadows the
   // literal "pending-logins" segment. 200 { enabled:false } when unwired.
   router.get('/subscription-pool/pending-logins', async (req, res) => {
-    const localLogins = ctx.enrollmentWizard ? ctx.enrollmentWizard.pending() : [];
+    // Every LOCAL login carries paneAlive (D5) — and the pool fan-out below inherits it from
+    // each peer's own plain response, so the fronting dashboard sees liveness for every machine.
+    const localLogins = ctx.enrollmentWizard ? annotatePaneLiveness(ctx.enrollmentWizard.pending()) : [];
     // WS5.2 seam #3 — POOL-SCOPE merge: a follow-me login is created on the TARGET machine (e.g. the
     // Mac Mini), but the operator views their SINGLE (fronting) dashboard. Without this, the device-code
     // login link the operator must tap never surfaces — the proof stalls after Approve. ?scope=pool fans
     // out to peers' LOCAL pending-logins and merges, tagging each with its machine. Dark/slow peers are
     // tolerated (a classified failed entry, never a 500) — same pattern as /sessions?scope=pool.
     if (req.query.scope === 'pool') {
-      const tagLocal = (ctx.enrollmentWizard ? localLogins : []).map((l) => ({ ...l, machineId: ctx.meshSelfId ?? 'self', remote: false }));
+      // The SELF nickname rides along too (D5 wording floor: the operator sees "Laptop",
+      // never a raw m_<hex> machine id) — same source the accounts pool-scope read uses.
+      const selfNickname = ctx.meshSelfId
+        ? (ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname ?? null)
+        : null;
+      const tagLocal = (ctx.enrollmentWizard ? localLogins : []).map((l) => ({
+        ...l, machineId: ctx.meshSelfId ?? 'self', machineNickname: selfNickname ?? undefined, remote: false,
+      }));
       const peers = ctx.resolvePeerUrls?.() ?? [];
       const failed: Array<{ machineId: string; error: string }> = [];
       const remote: Record<string, unknown>[] = [];
@@ -24433,6 +24489,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // S7 — resolve the operator-APPROVED email authoritatively (local pool + peer views), NEVER
     // from the request body. Unresolvable ⇒ fail-closed (never start with a blank/wrong email).
     try {
+      // D5 single-attempt discipline (topic 29836): at most ONE live attempt per account slot,
+      // and the record must match the pane behind it. A re-request while a HEALTHY attempt is
+      // live returns THAT attempt (idempotent — the operator's two surfaces can never hold two
+      // different PKCE URLs whose codes cross). A record whose pane is DEAD (the 2026-07-10
+      // zombie: status pending, TTL alive, no tmux pane at all) is SUPERSEDED atomically —
+      // abandoned here, then a fresh drive replaces record AND pane together. Without this,
+      // wizard.start() would drive a NEW pane first and then hit the store's duplicate-pending
+      // refusal, stranding a record that points at the OLD attempt.
+      const inFlight = ctx.enrollmentWizard.pending().find((l) => l.id === accountId);
+      if (inFlight) {
+        if (enrollPaneAlive(inFlight) !== false) {
+          // Alive or unverifiable → fail toward REUSE (never kill a possibly-healthy attempt).
+          console.log(`[follow-me] enroll-start id=${accountId} outcome=reused-live-attempt`);
+          res.status(201).json({ enabled: true, login: inFlight, reused: true });
+          return;
+        }
+        ctx.enrollmentWizard.abandon(inFlight.id);
+        console.log(`[follow-me] enroll-start id=${accountId} outcome=superseded-dead-pane`);
+      }
       const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
       const localAccounts = ctx.subscriptionPool.list().map((a) => ({
         id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
@@ -24531,7 +24606,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // name (derived through the shared helper so it can NEVER drift from enroll-start's spawn).
     const login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
     if (!login) {
-      res.status(404).json({ error: `no pending login "${id}" is waiting for a code — re-tap Approve to start a fresh sign-in` });
+      res.status(404).json({ error: `no pending login "${id}" is waiting for a code — start the sign-in again from the dashboard grid` });
       return;
     }
     // Narrow the authority (codex finding #4): this paste-back path is ONLY for the
@@ -24560,11 +24635,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: `cannot verify the login pane on this machine — code not delivered` });
       return;
     }
-    let frame = '';
-    try { frame = ctx.sessionManager.captureOutput(paneSession, 12) || ''; }
-    catch { frame = ''; /* capture failed → treated as not-ready below (fail closed) */ }
-    // An empty frame also covers a MISSING pane (captureOutput returns null for a dead session),
-    // so this single check subsumes the old has-session existence test — and fails closed.
+    let rawFrame: string | null = null;
+    try { rawFrame = ctx.sessionManager.captureOutput(paneSession, 12); }
+    catch { rawFrame = null; /* capture failed → treated as dead below (fail closed) */ }
+    const frame = rawFrame || '';
     const lastLine = frame.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0).pop() ?? '';
     // POSITIVE: the paste-code prompt is present (last ~12 lines, near the live prompt, so old
     // scrollback can't satisfy it — codex r5 #1). NEGATIVE: the last visible line is NOT a shell
@@ -24572,14 +24646,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // prompt ends in '>'. Both must hold, on a non-empty frame, before a single char is typed.
     const looksReady = /paste/i.test(frame) && /code/i.test(frame);
     const looksLikeShell = /[#$%]\s*$/.test(lastLine);
-    if (!frame.trim() || !looksReady || looksLikeShell) {
-      res.status(409).json({ error: `this login isn't at the code prompt (the sign-in window may have closed) — re-tap Approve to start a fresh sign-in` });
+    // D5 (topic 29836): a DEAD pane (captureOutput null / empty frame — the sign-in window is
+    // gone entirely) is a DISTINCT terminal state from a live-but-not-ready pane. The dashboard
+    // maps `pane-dead` to an explicit "needs a restart" presentation with a working restart
+    // affordance — never a "may have closed" guess. Wording floor: the message only references
+    // affordances that exist on the surface it lands on (the grid's Retry — never "Approve").
+    if (rawFrame == null || !frame.trim()) {
+      res.status(409).json({ code: 'pane-dead', error: `this sign-in's window is no longer running on its machine, so it can't take a code — start the sign-in again from the dashboard grid` });
+      return;
+    }
+    if (!looksReady || looksLikeShell) {
+      res.status(409).json({ code: 'pane-not-ready', error: `the sign-in window isn't at its code prompt yet — give it a moment and try again, or restart the sign-in from the dashboard grid` });
       return;
     }
     // Type the code into the pane (sendInput appends Enter). NEVER log the code value.
     const sent = ctx.sessionManager.sendInput(paneSession, code.trim());
     if (!sent) {
-      res.status(502).json({ error: 'could not deliver the code to the login — try again, or re-tap Approve' });
+      res.status(502).json({ error: 'could not deliver the code to the login — try again, or restart the sign-in from the dashboard grid' });
       return;
     }
     // Residual hardening (codex r3 #2): the code echoes into the pane's tmux scrollback. The
@@ -24608,17 +24691,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try {
           const result = await ctx.enrollmentWizard.completeFollowMe(id, 'this machine');
           if (result.outcome === 'validated') {
-            const acct = ctx.subscriptionPool.add({
-              id: result.login.id, nickname: result.login.label, provider: result.login.provider,
-              framework: result.login.framework, configHome: result.login.configHome ?? '', status: 'active', email: result.email,
-            });
+            // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active;
+            // only a genuinely-new account is added.
+            const acct = upsertValidatedAccount(result.login, result.email);
             logOutcome('validated');
-            res.status(201).json({ enabled: true, outcome: 'validated', account: acct });
+            // `email` rides along so the dashboard's terminal success state can NAME the
+            // verified account ("headley.justin@gmail.com is set up on this machine") —
+            // topic 29836 D4 (invisible success). An account email, never a credential.
+            res.status(201).json({ enabled: true, outcome: 'validated', account: acct, email: result.email });
             return;
           }
           if (result.outcome === 'held') {
             logOutcome('held', `reason=${result.reason}`);
-            res.json({ enabled: true, outcome: 'held', reason: result.reason });
+            // Surface the gate verdict's BOTH-account detail (operator-approved vs the account
+            // the sign-in actually authenticated as) so the dashboard can say "that code signed
+            // in X — this slot needs Y" instead of a bare reason code (topic 29836 D3). Account
+            // emails only — already operator-visible on the pool surfaces; never a credential.
+            res.json({ enabled: true, outcome: 'held', reason: result.reason, expected: result.expected, got: result.got });
             return;
           }
         } catch { /* keep polling until the deadline */ }
@@ -24742,7 +24831,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const body = await r.json().catch(() => ({}));
       res.status(r.status).json(body);
     } catch (err) {
-      res.status(502).json({ error: 'could not reach the machine doing the login — try again, or re-tap Approve' });
+      res.status(502).json({ error: 'could not reach the machine doing the login — try again in a moment, or restart the sign-in from the dashboard grid' });
     }
   });
 
@@ -24849,11 +24938,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const existing = ctx.enrollmentWizard.pending().find(
           (l) => l.id === accountId && l.status === 'pending'
             && Date.parse(l.ttlExpiresAt) > Date.now()
-            && (!l.expectedEmail || l.expectedEmail === target.expectedEmail),
+            && (!l.expectedEmail || l.expectedEmail === target.expectedEmail)
+            // D5: only reuse an attempt whose sign-in pane is still ALIVE — a zombie record
+            // (pending, TTL alive, no pane) must be superseded, not handed back to the
+            // operator as a link whose code has nowhere to go. paneAlive===false falls
+            // through to the fresh mint below; enroll/start abandons the zombie atomically.
+            && enrollPaneAlive(l) !== false,
         );
         if (existing) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=reused-pending`);
-          res.status(201).json({ verificationUrl: existing.verificationUrl, loginId: existing.id, machineId, reused: true });
+          // Flow-detail passthrough (topic 29836 D2/D3): expectedEmail (which account the OAuth
+          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (the two-codes heads-up)
+          // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
+          // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
+          // never secrets (same fields the pending-logins surface already serves).
+          res.status(201).json({
+            verificationUrl: existing.verificationUrl, loginId: existing.id, machineId, reused: true,
+            expectedEmail: existing.expectedEmail ?? null, ttlExpiresAt: existing.ttlExpiresAt,
+            notice: existing.notice ?? null, kind: existing.kind,
+          });
           return;
         }
       } catch (err) {
@@ -24922,10 +25025,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         body: JSON.stringify({ mandateId, accountId }),
         signal: AbortSignal.timeout(40_000),
       });
-      const body = await r.json().catch(() => ({})) as { login?: { id?: string; verificationUrl?: string }; error?: string };
+      const body = await r.json().catch(() => ({})) as {
+        login?: { id?: string; verificationUrl?: string; expectedEmail?: string; ttlExpiresAt?: string; notice?: string; kind?: string };
+        error?: string;
+      };
       if (r.status === 201 && body.login?.verificationUrl) {
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=started`);
-        res.status(201).json({ verificationUrl: body.login.verificationUrl, loginId: body.login.id ?? accountId, machineId });
+        // Flow-detail passthrough (topic 29836 D2/D3) — same fields as the reused-pending
+        // branch above, sourced from the freshly-created login the target machine returned.
+        res.status(201).json({
+          verificationUrl: body.login.verificationUrl, loginId: body.login.id ?? accountId, machineId,
+          expectedEmail: body.login.expectedEmail ?? null, ttlExpiresAt: body.login.ttlExpiresAt ?? null,
+          notice: body.login.notice ?? null, kind: body.login.kind ?? null,
+        });
         return;
       }
       if (r.status === 409) {
@@ -25002,16 +25114,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       // outcome === 'validated' — the email matched operator expectation; make it selectable.
+      // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active.
       const { login, email } = result;
-      const account = ctx.subscriptionPool.add({
-        id: login.id,
-        nickname: login.label,
-        provider: login.provider,
-        framework: login.framework,
-        configHome: login.configHome ?? '',
-        status: 'active',
-        email,
-      });
+      const account = upsertValidatedAccount(login, email);
       res.status(201).json({ enabled: true, outcome: 'validated', account });
     } catch (err) {
       const isValidation = err instanceof Error && err.name === 'ValidationError';

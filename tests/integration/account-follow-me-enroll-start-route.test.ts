@@ -199,4 +199,45 @@ describe('/subscription-pool/follow-me/enroll/start (integration)', () => {
     // An openai (device-code-capable) provider on the remote path uses the device-code single-code flow.
     expect(driveCapture[0].kind).toBe('device-code');
   });
+
+  // ── D5 (topic 29836) — single-attempt discipline at the mint chokepoint ──
+
+  it('(g) a re-request while a HEALTHY attempt is live returns THAT attempt (no parallel PKCE attempt, no second drive)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-start-'));
+    const driveCapture: Array<Record<string, unknown>> = [];
+    const ctx = buildCtx(dir, { dev: true, decision: 'allow', knowAccountEmail: true, driveCapture });
+    // Pane liveness verifiable and ALIVE.
+    (ctx as unknown as { sessionManager: unknown }).sessionManager = { captureOutput: () => 'Paste the code you receive back here:' };
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+    const first = await post('/subscription-pool/follow-me/enroll/start', { mandateId: 'm1', accountId: 'a1' });
+    expect(first.status).toBe(201);
+    const second = await post('/subscription-pool/follow-me/enroll/start', { mandateId: 'm1', accountId: 'a1' });
+    expect(second.status).toBe(201);
+    expect(second.body.reused).toBe(true);
+    expect(second.body.login.verificationUrl).toBe(first.body.login.verificationUrl); // ONE attempt, ONE URL
+    expect(driveCapture).toHaveLength(1); // the second request drove NOTHING
+    const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
+    expect(wizard.pending()).toHaveLength(1);
+  });
+
+  it('(h) a re-request while the existing attempt\'s pane is DEAD supersedes it atomically (abandon + fresh drive — record and pane replaced together)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-start-'));
+    const driveCapture: Array<Record<string, unknown>> = [];
+    const ctx = buildCtx(dir, { dev: true, decision: 'allow', knowAccountEmail: true, driveCapture });
+    // The 2026-07-10 zombie: the record says pending, tmux has NO pane at all.
+    (ctx as unknown as { sessionManager: unknown }).sessionManager = { captureOutput: () => null };
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+    const first = await post('/subscription-pool/follow-me/enroll/start', { mandateId: 'm1', accountId: 'a1' });
+    expect(first.status).toBe(201);
+    const second = await post('/subscription-pool/follow-me/enroll/start', { mandateId: 'm1', accountId: 'a1' });
+    expect(second.status).toBe(201);
+    expect(second.body.reused).toBeUndefined(); // NOT a reuse — the zombie was superseded
+    expect(driveCapture).toHaveLength(2); // a fresh drive replaced record AND pane together
+    const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
+    expect(wizard.pending()).toHaveLength(1); // exactly ONE live attempt — codes can never cross
+  });
 });

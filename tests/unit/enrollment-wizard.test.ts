@@ -240,6 +240,28 @@ describe('EnrollmentWizard', () => {
       expect(emit.mock.calls[0][0]).toMatchObject({ priority: 'high', source: 'agent' });
     });
 
+    it('(b2) a held verdict carries BOTH account emails (expected + got) so the surface can name them — topic 29836 D3', async () => {
+      issueFollowMe('approved@x.com');
+      const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'other@x.com' }) } });
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('held');
+      if (r.outcome === 'held') {
+        expect(r.expected).toBe('approved@x.com');
+        expect(r.got).toBe('other@x.com');
+      }
+    });
+
+    it('(b3) an oracle-unavailable held carries got:null (honest "couldn\'t confirm"), never a fabricated email', async () => {
+      issueFollowMe('approved@x.com');
+      const w = build({ oracle: { resolveSlotTenant: async () => ({ unavailable: true, reason: 'probe down' }) } });
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('held');
+      if (r.outcome === 'held') {
+        expect(r.got).toBeNull();
+        expect(r.expected).toBe('approved@x.com');
+      }
+    });
+
     it('(c) oracle unavailable → held (fail-closed)', async () => {
       issueFollowMe('j@x.com');
       const emit = vi.fn();
@@ -276,6 +298,67 @@ describe('EnrollmentWizard', () => {
       const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
       const r = await w.completeFollowMe('nope', 'the Mini');
       expect(r.outcome).toBe('not-found');
+    });
+
+    // ── D5 (topic 29836) — the already-authorized short-circuit completion sweep ──
+    describe('sweepFollowMeCompletions', () => {
+      it('a landed credential + matching identity → validated + onValidated (pool add) called', async () => {
+        issueFollowMe('j@x.com');
+        const onValidated = vi.fn();
+        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+        const results = await w.sweepFollowMeCompletions({
+          credentialReady: () => true,
+          onValidated,
+        });
+        expect(results).toEqual([{ id: 'fm-1', outcome: 'validated' }]);
+        expect(onValidated).toHaveBeenCalledTimes(1);
+        expect(onValidated.mock.calls[0][1]).toBe('j@x.com');
+        expect(store.get('fm-1')?.status).toBe('completed');
+      });
+
+      it('a landed credential with a MISMATCHED identity → held, onValidated NOT called (fail-closed)', async () => {
+        issueFollowMe('approved@x.com');
+        const onValidated = vi.fn();
+        const emit = vi.fn();
+        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'other@x.com' }) }, emitAttention: emit });
+        const results = await w.sweepFollowMeCompletions({ credentialReady: () => true, onValidated });
+        expect(results).toEqual([{ id: 'fm-1', outcome: 'held' }]);
+        expect(onValidated).not.toHaveBeenCalled();
+        expect(emit).toHaveBeenCalledTimes(1); // HIGH attention item raised
+      });
+
+      it('no landed credential → untouched (the login stays pending for the code paste-back)', async () => {
+        issueFollowMe('j@x.com');
+        const onValidated = vi.fn();
+        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+        const results = await w.sweepFollowMeCompletions({ credentialReady: () => false, onValidated });
+        expect(results).toEqual([]);
+        expect(onValidated).not.toHaveBeenCalled();
+        expect(store.get('fm-1')?.status).toBe('pending');
+      });
+
+      it('a NON-follow-me login (no expectedEmail) is never swept (its completion stays explicit)', async () => {
+        store.issue({
+          id: 'plain-1', label: 'plain', provider: 'anthropic', framework: 'claude-code',
+          kind: 'url-code-paste', configHome: '/x/.claude-plain', verificationUrl: 'https://claude.com/oauth',
+        });
+        const onValidated = vi.fn();
+        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+        const results = await w.sweepFollowMeCompletions({ credentialReady: () => true, onValidated });
+        expect(results).toEqual([]);
+        expect(store.get('plain-1')?.status).toBe('pending');
+      });
+
+      it('a credentialReady probe that THROWS is treated as not-ready (never crashes the sweep)', async () => {
+        issueFollowMe('j@x.com');
+        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+        const results = await w.sweepFollowMeCompletions({
+          credentialReady: () => { throw new Error('fs boom'); },
+          onValidated: vi.fn(),
+        });
+        expect(results).toEqual([]);
+        expect(store.get('fm-1')?.status).toBe('pending');
+      });
     });
   });
 

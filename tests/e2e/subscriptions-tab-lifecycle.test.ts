@@ -45,6 +45,7 @@ function bootApp(ctx: any): Promise<TestServer> {
 // Mirrors dashboard/index.html element ids for the Subscriptions tab.
 const PANEL_HTML = `<!doctype html><body>
   <div id="subscriptionsPanel">
+    <div id="subMatrix"></div>
     <div id="subAccounts"></div>
     <div id="subPending"></div>
   </div>
@@ -52,7 +53,11 @@ const PANEL_HTML = `<!doctype html><body>
 
 function mountTab(baseUrl: string) {
   const doc = new JSDOM(PANEL_HTML).window.document;
-  const els = { accounts: doc.getElementById('subAccounts'), pending: doc.getElementById('subPending') };
+  const els = {
+    accounts: doc.getElementById('subAccounts'),
+    pending: doc.getElementById('subPending'),
+    matrix: doc.getElementById('subMatrix'),
+  };
   const fetchImpl = (url: string, init?: any) => fetch(baseUrl + url, init);
   const c = createController({ doc, els, fetchImpl, now: () => Date.parse('2026-06-07T00:00:00Z') });
   c._state.active = true; // enable a manual tick() (start() would also schedule)
@@ -93,6 +98,53 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
     expect(JSON.stringify(els.pending.innerHTML).toLowerCase()).not.toMatch(/token|secret|refresh|api_key/);
     // safety: no injected <script> survived the round-trip
     expect(els.accounts.querySelector('script')).toBeNull();
+  });
+
+  it('topic 29836 D1/D2/D3(a)/D5: the matrix cell carries the COMPLETE sign-in flow from the LIVE server, and a real poll tick never clobbers a half-typed code', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-tab-e2e-'));
+    const pool = new SubscriptionPool({ stateDir: dir });
+    pool.add({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
+    const store = new PendingLoginStore({ stateDir: dir, now: () => Date.parse('2026-06-07T00:00:00Z') });
+    const wizard = new EnrollmentWizard({ store, now: () => Date.parse('2026-06-07T00:00:00Z'),
+      driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth/authorize?code=true&client_id=x', ttlMs: 15 * 60_000 }) });
+    // A live follow-me attempt (the matrix "Set up" mid-flight state), enrolling a SECOND account.
+    await wizard.start({
+      id: 'justin-gmail', label: 'Justin', provider: 'anthropic', framework: 'claude-code',
+      configHome: path.join(dir, '.claude-followme-justin-gmail'), expectedEmail: 'headley.justin@gmail.com',
+    });
+
+    server = await bootApp({
+      config: { authToken: 't', stateDir: dir, port: 0 },
+      startTime: new Date(),
+      meshSelfId: 'm-self',
+      subscriptionPool: pool,
+      enrollmentWizard: wizard,
+    });
+    const { els, c } = mountTab(server.url);
+    await c.tick();
+
+    // D5: the production pending-logins read annotates pane liveness (no tmux in this
+    // harness → the honest tri-state null, never a fabricated verdict).
+    const pend = await (await fetch(server.url + '/subscription-pool/pending-logins')).json();
+    expect(pend.logins[0]).toHaveProperty('paneAlive', null);
+
+    // D2: the in-progress matrix cell renders the COMPLETE flow from server state.
+    const cell = els.matrix!.querySelector('.sub-matrix-in-progress')!;
+    expect(cell).toBeTruthy();
+    // D3(a): the expected-account warning, rendered from the enrollment record.
+    expect(cell.querySelector('.sub-matrix-expected')!.textContent).toContain('headley.justin@gmail.com');
+    expect(cell.querySelector('a.sub-matrix-signin')!.getAttribute('href')).toContain('code=true');
+    const code = cell.querySelector('input.sub-matrix-code-input') as HTMLInputElement;
+    expect(code).toBeTruthy();
+    expect(cell.querySelector('[data-matrix-cancel]')).toBeTruthy();
+    expect(cell.querySelector('[data-ttl-expires]')).toBeTruthy();
+
+    // D1: half-type a code, then run a REAL poll tick against the live server — the
+    // typed state survives (the F9 hold), instead of being swapped for "◷ Signing in…".
+    code.value = 'HALF-TYPED';
+    await c.tick();
+    expect(els.matrix!.contains(code)).toBe(true);
+    expect(code.value).toBe('HALF-TYPED');
   });
 
   it('feature OFF: both routes 200 { enabled:false } → friendly not-set-up copy', async () => {

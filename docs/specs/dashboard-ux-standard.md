@@ -112,6 +112,26 @@ by tab; a floor never blocks an unrelated change.
 - **F8 — No broken assets.** Referenced images/icons resolve. Enforced by a static check
   that asset references have a real target (or are inlined).
 
+- **F9 — A background refresh never clobbers an open interaction (added 2026-07-10, topic
+  29836 case study).** Any dashboard surface that polls/re-renders MUST NOT replace an
+  element holding an open interaction: an in-progress multi-step episode (marked
+  `data-interaction-open`), a focused text-entry element, or a dirty (partially-typed)
+  field. While an interaction is open the poll MERGES server state into the view
+  (targeted patches — e.g. live countdowns via `data-ttl-expires`) instead of rebuilding
+  the interacting DOM; the hold releases when the flow reaches a terminal state
+  (verified / failed / cancelled / expired) or the user backs out. Evidence: the
+  Subscriptions matrix "Set up" flow reverted the PIN input to a button mid-typing and
+  swapped the code-paste step for "◷ Signing in…" before the code could be pasted
+  (screenshot-proven, 2026-07-10). Shared primitives: `hasOpenInteraction` +
+  `updateCountdowns` in `dashboard/subscriptions.js`. Enforced by
+  `tests/unit/dashboard-refresh-interaction-hold.test.ts` (semantics + a negative
+  control proving a naive rebuild WOULD clobber) and the Subscriptions controller
+  integration tests (a poll mid-interaction leaves the typed state intact). Migrating
+  the other polling tabs (mandates, process-health, preferences) onto the shared
+  primitives — and promoting F9 to a static lint over `dashboard/*.js` — is a tracked
+  follow-up <!-- tracked: topic-29836 --> ; until then F9 is a hard floor for the
+  Subscriptions tab and the rule of record for every NEW polling surface.
+
 ## Enforcement design
 
 Two tiers, mirroring the money-increment "static floor + smoke test" pattern:

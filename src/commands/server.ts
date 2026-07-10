@@ -12906,9 +12906,43 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Background auto-reissue sweep — refreshes an expired login code without the
     // operator asking (the pi-live-test gap). Inert with no pending logins; the
     // timer is unref'd so it never holds the process open.
+    // The SAME tick also runs the follow-me COMPLETION sweep (D5, topic 29836): a
+    // sign-in that completed WITHOUT a paste-back code (the provider's already-
+    // authorized short-circuit — "You're all set up… close this window") lands its
+    // credential in the slot with nothing calling submit-code; the sweep detects the
+    // landed credential and drives the identity-verified completion (S7 email gate —
+    // a mismatch is HELD, never auto-enrolled) instead of waiting forever at a code
+    // prompt. This makes the submit-code route's "the reissue/complete sweep finishes
+    // it" contract true.
     const enrollReissueTimer = setInterval(() => {
       enrollmentWizard
         .reissueExpired()
+        .catch(() => { /* @silent-fallback-ok — one bad sweep is retried next tick */ });
+      enrollmentWizard
+        .sweepFollowMeCompletions({
+          credentialReady: (l) => !!l.configHome && fs.existsSync(path.join(l.configHome, '.claude.json')),
+          onValidated: (login, email) => {
+            // Upsert (D5): a re-auth of an EXISTING pool account updates it back to
+            // active; only a genuinely-new account is added (add() refuses dup ids).
+            if (subscriptionPool.get(login.id)) {
+              subscriptionPool.update(login.id, {
+                nickname: login.label, status: 'active', email,
+                ...(login.configHome ? { configHome: login.configHome } : {}),
+              });
+            } else {
+              subscriptionPool.add({
+                id: login.id, nickname: login.label, provider: login.provider,
+                framework: login.framework, configHome: login.configHome ?? '', status: 'active', email,
+              });
+            }
+            console.log(`[follow-me] completion-sweep outcome=validated id=${login.id}`);
+          },
+        })
+        .then((results) => {
+          for (const r of results) {
+            if (r.outcome === 'held') console.warn(`[follow-me] completion-sweep outcome=held id=${r.id}`);
+          }
+        })
         .catch(() => { /* @silent-fallback-ok — one bad sweep is retried next tick */ });
     }, config.subscriptionPool?.enrollment?.reissueSweepMs ?? 5 * 60_000);
     if (enrollReissueTimer.unref) enrollReissueTimer.unref();

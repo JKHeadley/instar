@@ -90,6 +90,36 @@ describe('/subscription-pool enrollment routes (integration)', () => {
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(true);
     expect(res.body.logins.map((l: any) => l.id)).toEqual(['codex-1']);
+    // D5 (topic 29836) record ⟂ pane-liveness: every local login carries paneAlive. This
+    // harness has NO sessionManager → liveness is UNVERIFIABLE → the honest tri-state null
+    // (never a fabricated true/false).
+    expect(res.body.logins[0]).toHaveProperty('paneAlive', null);
+  });
+
+  it('GET /pending-logins annotates paneAlive from the live pane capture (true = alive, false = the pane is gone)', async () => {
+    await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' }),
+    });
+    // Rebuild the server with a sessionManager whose capture answers per call: first ALIVE…
+    await server.close();
+    let frame: string | null = 'Sign in at the URL below';
+    const app = express();
+    app.use(express.json());
+    const wizard = new EnrollmentWizard({ store, driveLogin: async () => ARTIFACT, now: () => clock });
+    app.use(createRoutes({
+      config: { authToken: 't', stateDir: dir, port: 0 },
+      startTime: new Date(),
+      enrollmentWizard: wizard,
+      sessionManager: { captureOutput: () => frame },
+    } as any));
+    server = await listen(app);
+    const alive = await api('/subscription-pool/pending-logins');
+    expect(alive.body.logins[0].paneAlive).toBe(true);
+    // …then the pane dies (tmux session gone → captureOutput null) — the record is honest.
+    frame = null;
+    const dead = await api('/subscription-pool/pending-logins');
+    expect(dead.body.logins[0].paneAlive).toBe(false);
   });
 
   it('POST /enroll/:id/complete moves it off the pending surface', async () => {

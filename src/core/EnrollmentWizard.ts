@@ -318,7 +318,11 @@ export class EnrollmentWizard {
     targetMachineNickname: string,
   ): Promise<
     | { outcome: 'validated'; login: PendingLogin; email: string }
-    | { outcome: 'held'; login: PendingLogin; reason: string }
+    // `expected`/`got` are the gate verdict's account emails (operator-approved vs the
+    // account the sign-in ACTUALLY authenticated as) — surfaced so the dashboard can name
+    // BOTH accounts in plain language instead of a bare reason code (wrong-account hazard,
+    // topic 29836 case study D3). Never secrets: both are operator-visible account emails.
+    | { outcome: 'held'; login: PendingLogin; reason: string; expected: string | null; got: string | null }
     | { outcome: 'not-found' }
   > {
     const login = this.complete(id);
@@ -353,12 +357,49 @@ export class EnrollmentWizard {
 
     this.emitAttention?.(verdict.attentionItem);
     this.logger.warn(`[EnrollmentWizard] follow-me completion ${login.id} HELD (${verdict.reason}) — account NOT selected`);
-    return { outcome: 'held', login, reason: verdict.reason };
+    return { outcome: 'held', login, reason: verdict.reason, expected: verdict.expected, got: verdict.got };
   }
 
   /** The phone surface: still-valid logins awaiting approval. */
   pending(): PendingLogin[] {
     return this.store.active();
+  }
+
+  /**
+   * D5 (topic 29836) — the already-authorized short-circuit. A follow-me sign-in can
+   * complete WITHOUT ever showing a paste-back code: the provider short-circuits an
+   * already-authorized browser session ("You're all set up… you can close this window"),
+   * so nothing calls submit-code and the pending login would sit at "signing in" until
+   * TTL expiry even though the credential already landed in its config-home slot. This
+   * sweep detects the landed credential and drives the SAME identity-verified completion
+   * path (`completeFollowMe` — the S7 email gate ALWAYS runs; a mismatch/unverifiable
+   * account is HELD, never auto-enrolled). Follow-me logins only (expectedEmail set):
+   * a plain enrollment's completion stays the explicit /enroll/:id/complete call.
+   */
+  async sweepFollowMeCompletions(deps: {
+    /** Does this login's config-home hold a landed credential? (fs probe injected by the caller) */
+    credentialReady: (login: PendingLogin) => boolean;
+    /** Called on a VALIDATED completion so the caller adds the account to its pool. */
+    onValidated: (login: PendingLogin, email: string) => void;
+    targetMachineNickname?: string;
+  }): Promise<Array<{ id: string; outcome: 'validated' | 'held' }>> {
+    const results: Array<{ id: string; outcome: 'validated' | 'held' }> = [];
+    for (const login of this.store.active()) {
+      if (!login.expectedEmail || !login.configHome) continue;
+      let ready = false;
+      try { ready = deps.credentialReady(login); } catch { ready = false; }
+      if (!ready) continue;
+      const result = await this.completeFollowMe(login.id, deps.targetMachineNickname ?? 'this machine');
+      if (result.outcome === 'validated') {
+        try { deps.onValidated(result.login, result.email); } catch (err) {
+          this.logger.warn(`[EnrollmentWizard] completion-sweep pool-add failed for ${login.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        results.push({ id: login.id, outcome: 'validated' });
+      } else if (result.outcome === 'held') {
+        results.push({ id: login.id, outcome: 'held' });
+      }
+    }
+    return results;
   }
 
   /** Look up a single login by id INCLUDING terminal/expired records (unlike

@@ -223,7 +223,7 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     expect(sendInput).not.toHaveBeenCalled();
   });
 
-  it('TARGET — an empty/blank captured frame (dead pane) → 409, no code typed (fail closed)', async () => {
+  it('TARGET — an empty/blank captured frame (dead pane) → 409 with code:pane-dead, no code typed (fail closed)', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
     const sendInput = vi.fn(() => true);
     const ctx = buildCtx(dir, { dev: true, seedPending: true, sendInputCapture: sendInput, paneFrame: '' });
@@ -232,8 +232,77 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     server = await listen(app);
     const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'ABC123' });
     expect(r.status).toBe(409);
+    // D5: a DEAD pane is a DISTINCT, machine-readable terminal state — the dashboard maps it
+    // to an explicit "needs a restart" presentation instead of a "may have closed" guess.
+    expect(r.body.code).toBe('pane-dead');
     expect(sendInput).not.toHaveBeenCalled();
   });
+
+  it('TARGET — captureOutput returns null (the pane session is GONE entirely) → 409 pane-dead; wording references the grid, never "Approve"', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
+    const sendInput = vi.fn(() => true);
+    const ctx = buildCtx(dir, { dev: true, seedPending: true, sendInputCapture: sendInput });
+    // The 2026-07-10 zombie shape: record pending + TTL alive, but tmux has NO session at all.
+    (ctx as unknown as { sessionManager: { captureOutput: () => null } }).sessionManager.captureOutput = () => null;
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+    const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'ABC123' });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('pane-dead');
+    // D5 wording floor: error copy only references affordances that exist on the surface.
+    expect(r.body.error).not.toContain('Approve');
+    expect(r.body.error).toContain('start the sign-in again');
+    expect(sendInput).not.toHaveBeenCalled();
+  });
+
+  it('TARGET — a live-but-not-ready pane → 409 with code:pane-not-ready (distinct from dead)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
+    const sendInput = vi.fn(() => true);
+    // Pane alive but the login UI hasn't reached the paste-code prompt yet.
+    const ctx = buildCtx(dir, { dev: true, seedPending: true, sendInputCapture: sendInput, paneFrame: 'Opening browser for sign-in…' });
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+    const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'ABC123' });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('pane-not-ready');
+    expect(sendInput).not.toHaveBeenCalled();
+  });
+
+  it('TARGET — a MISMATCHED account → held response carries BOTH emails (expected + got) for the D3 surface', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
+    const ctx = buildCtx(dir, { dev: true, seedPending: true, credentialPresent: true, oracleEmail: 'justin@sagemindai.io' });
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+    const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'WRONG-ACCT' });
+    expect(r.status).toBe(200);
+    expect(r.body.outcome).toBe('held');
+    expect(r.body.reason).toBe('email-mismatch');
+    expect(r.body.expected).toBe('approved@x.com');
+    expect(r.body.got).toBe('justin@sagemindai.io');
+    // Refused + parked: the wrong account is NOT in the pool; the credential slot is untouched.
+    const pool = (ctx as unknown as { subscriptionPool: SubscriptionPool }).subscriptionPool;
+    expect(pool.get('fm-1')).toBeNull();
+  }, 15_000);
+
+  it('TARGET — a validated RE-AUTH of an account already in the pool UPSERTS it back to active (D5 — never a duplicate-id crash)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
+    const ctx = buildCtx(dir, { dev: true, seedPending: true, credentialPresent: true, oracleEmail: 'approved@x.com' });
+    // The account ALREADY exists (the operator's "Needs sign-in → Sign in" matrix path).
+    const pool = (ctx as unknown as { subscriptionPool: SubscriptionPool }).subscriptionPool;
+    pool.add({ id: 'fm-1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/old/home', email: 'approved@x.com', status: 'needs-reauth' });
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+    const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'REAUTH-CODE' });
+    expect(r.status).toBe(201);
+    expect(r.body.outcome).toBe('validated');
+    const acct = pool.get('fm-1')!;
+    expect(acct.status).toBe('active'); // flipped back — no "already exists" strand
+    expect(acct.email).toBe('approved@x.com');
+  }, 15_000);
 
   it('TARGET — scrollback contains paste/code but the live last line is a shell prompt → 409 (negative shell check, codex r6 #1)', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));

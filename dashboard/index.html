@@ -3641,6 +3641,24 @@
       .sub-matrix-status { font-size:11px; opacity:.8; margin-top:4px; }
       .sub-matrix-signin { display:inline-block; margin-top:4px; }
       .sub-matrix-url { font-size:11px; opacity:.7; word-break:break-all; margin-top:4px; }
+      /* subs-setup-flow UX (topic 29836 D1–D5): in-cell flow, explicit terminal states */
+      .sub-matrix-flow-step { font-size:11px; opacity:.85; margin-top:4px; }
+      .sub-matrix-expected, .sub-pending-expected { font-size:12px; font-weight:600; color:#eab308; margin:6px 0 4px; }
+      .sub-matrix-notice { font-size:11px; opacity:.75; margin-top:4px; }
+      .sub-matrix-ttl { font-size:11px; opacity:.7; margin-top:4px; }
+      .sub-matrix-cancel, .sub-matrix-collapse { margin-top:4px; margin-left:4px; padding:2px 8px; cursor:pointer; font-size:11px; opacity:.85; }
+      .sub-matrix-held-detail { font-size:11px; color:#f87171; margin-top:4px; }
+      .sub-matrix-done-detail { font-size:11px; margin-top:4px; }
+      .sub-matrix-cell.sub-matrix-held .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-expired .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-broken .sub-matrix-glyph { color:#f87171; }
+      .sub-matrix-cell.sub-matrix-done .sub-matrix-glyph { color:#22c55e; font-weight:600; }
+      .sub-matrix-cell.sub-matrix-just-verified { background:rgba(22,163,74,.14); outline:2px solid #16a34a; animation:subVerifiedPulse 1.2s ease-in-out 3; }
+      @keyframes subVerifiedPulse { 0%,100% { box-shadow:none; } 50% { box-shadow:0 0 0 4px rgba(22,163,74,.28); } }
+      .sub-pending.sub-pending-done { border-color:#16a34a; background:rgba(22,163,74,.08); }
+      .sub-pending-done-head { color:#22c55e; font-weight:600; }
+      .sub-pending.sub-pending-failed { border-color:#f87171; background:rgba(248,113,113,.06); }
+      .sub-pending-failed-head { color:#f87171; font-weight:600; }
+      .sub-pending-outcome-body { font-size:12px; opacity:.85; margin-top:4px; }
+      .sub-pending-status { font-size:12px; opacity:.85; margin-top:6px; }
     </style>
     <div id="subscriptionsPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <h2 class="ph-title">Subscriptions</h2>
@@ -3664,7 +3682,7 @@
       </section>
       <section class="ph-section">
         <h3 class="ph-h">Pending logins</h3>
-        <p class="ph-h-sub">Logins waiting for approval — open the link on your phone and confirm. An expired code is re-issued automatically.</p>
+        <p class="ph-h-sub">A mirror of every sign-in still in flight (each grid cell above carries its own complete flow) — plus explicit “done” and “didn’t finish” cards. An expired code is re-issued automatically.</p>
         <div id="subPending"></div>
       </section>
     </div>
