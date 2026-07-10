@@ -66,6 +66,7 @@ describe('PostUpdateMigrator — Non-Gating Failure-Swap awareness', () => {
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
     expect(after).toContain(MARKER);
     expect(after).toContain('intelligence.nonGatingFailureSwap');
+    expect(after).toContain('intelligence.nonGatingSwapTimeoutMs');
     // the herd-safety invariant is stated
     expect(after).toContain('never herd onto the last-resort Claude tail');
     // the off-switch
@@ -115,6 +116,7 @@ describe('generateClaudeMd template includes the non-gating failure-swap note', 
     );
     expect(templateSource).toContain('Non-gating calls also get a bounded swap now');
     expect(templateSource).toContain('intelligence.nonGatingFailureSwap');
+    expect(templateSource).toContain('intelligence.nonGatingSwapTimeoutMs');
     expect(templateSource).toContain('nongating-failure-swap.md');
   });
 });

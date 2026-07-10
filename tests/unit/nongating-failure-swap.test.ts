@@ -77,6 +77,7 @@ function build(opts: {
   config?: ComponentFrameworksConfig | undefined;
   nonGating?: { enabled: boolean; maxAttempts?: number } | undefined;
   swapAttemptTimeoutMs?: number;
+  nonGatingSwapTimeoutMs?: number;
   onDegrade?: (i: RouterDegradeInfo) => void;
   onResolved?: (component: string, framework: string) => void;
 }): IntelligenceRouter {
@@ -87,6 +88,7 @@ function build(opts: {
     buildProvider: (fw) => opts.providers[fw] ?? null,
     ...(opts.nonGating !== undefined ? { nonGatingFailureSwap: opts.nonGating } : {}),
     ...(opts.swapAttemptTimeoutMs !== undefined ? { swapAttemptTimeoutMs: opts.swapAttemptTimeoutMs } : {}),
+    ...(opts.nonGatingSwapTimeoutMs !== undefined ? { nonGatingSwapTimeoutMs: opts.nonGatingSwapTimeoutMs } : {}),
     ...(opts.onDegrade ? { onDegrade: opts.onDegrade } : {}),
     ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
   });
@@ -256,7 +258,7 @@ describe('non-gating failure-swap — bounded (maxAttempts) + tier preserved', (
     const router = build({
       providers: { 'codex-cli': invocationFailProvider(), 'pi-cli': capturing },
       nonGating: { enabled: true },
-      swapAttemptTimeoutMs: 5000,
+      nonGatingSwapTimeoutMs: 5000,
     });
     expect(await router.evaluate('x', NON_GATING)).toBe('pi-answer');
     expect(sawTimeout).toBe(5000);
@@ -267,6 +269,52 @@ describe('non-gating failure-swap — slow target abandoned at the cap', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
+  function latencyProvider(label: string, latencyMs: number): IntelligenceProvider & { calls: number; sawTimeoutMs?: number } {
+    return {
+      calls: 0,
+      evaluate(this: { calls: number; sawTimeoutMs?: number }, _p: string, opts?: IntelligenceOptions) {
+        this.calls++;
+        this.sawTimeoutMs = opts?.timeoutMs;
+        return new Promise<string>((res) => { setTimeout(() => res(label), latencyMs); });
+      },
+    };
+  }
+
+  it('non-gating swaps use the dedicated 15s cap, so a 6s cold-start provider succeeds', async () => {
+    const pi = latencyProvider('pi-answer', 6000);
+    const router = build({
+      providers: { 'codex-cli': invocationFailProvider(), 'pi-cli': pi },
+      nonGating: { enabled: true },
+      swapAttemptTimeoutMs: 5000,
+      nonGatingSwapTimeoutMs: 15000,
+    });
+
+    const p = router.evaluate('x', NON_GATING);
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(await p).toBe('pi-answer');
+    expect(pi.calls).toBe(1);
+    expect(pi.sawTimeoutMs).toBe(15000);
+  });
+
+  it('gating swaps still use the global 5s cap, unchanged by the non-gating timeout', async () => {
+    const pi = latencyProvider('pi-answer', 6000);
+    const router = build({
+      providers: { 'codex-cli': invocationFailProvider(), 'pi-cli': pi },
+      nonGating: { enabled: true },
+      swapAttemptTimeoutMs: 5000,
+      nonGatingSwapTimeoutMs: 15000,
+    });
+
+    const p = router.evaluate('x', GATING);
+    const rejection = expect(p).rejects.toThrow('codex exec failed');
+    await vi.advanceTimersByTimeAsync(5001);
+
+    await rejection;
+    expect(pi.calls).toBe(1);
+    expect(pi.sawTimeoutMs).toBe(5000);
+  });
+
   it('a SLOW (never-erroring) swap target is abandoned at the cap; a later target serves', async () => {
     const gate = new Promise<void>(() => { /* never resolves — a hung provider */ });
     const slowPi: IntelligenceProvider = { async evaluate() { await gate; return 'too-late'; } };
@@ -274,7 +322,7 @@ describe('non-gating failure-swap — slow target abandoned at the cap', () => {
     const router = build({
       providers: { 'codex-cli': invocationFailProvider(), 'pi-cli': slowPi, 'gemini-cli': gemini },
       nonGating: { enabled: true, maxAttempts: 2 },
-      swapAttemptTimeoutMs: 5000,
+      nonGatingSwapTimeoutMs: 5000,
     });
     const p = router.evaluate('x', NON_GATING);
     // pi hangs; the cap fires at 5s → pi is abandoned → gemini serves (proving the cap fired

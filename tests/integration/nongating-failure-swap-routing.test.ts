@@ -9,7 +9,7 @@
  *     site (computed default + nonGatingFailureSwap enabled) SWAPS when the primary invocation
  *     fails, instead of hard-erroring — and with { enabled:false } it keeps today's behavior.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
@@ -60,6 +60,7 @@ function productionShapedRouter(opts: {
   activeSet: IntelligenceFramework[];
   providers?: Partial<Record<IntelligenceFramework, IntelligenceProvider>>;
   nonGatingEnabled: boolean;
+  nonGatingSwapTimeoutMs?: number;
 }): IntelligenceRouter {
   const computedDefault = resolveInternalFrameworkDefault(opts.activeSet);
   const built: Partial<Record<IntelligenceFramework, IntelligenceProvider>> = {
@@ -74,6 +75,7 @@ function productionShapedRouter(opts: {
     resolveConfig: () => computedDefault,
     buildProvider: (fw) => built[fw] ?? null,
     swapAttemptTimeoutMs: 5000,
+    nonGatingSwapTimeoutMs: opts.nonGatingSwapTimeoutMs ?? 15000,
     nonGatingFailureSwap: { enabled: opts.nonGatingEnabled },
   });
 }
@@ -92,6 +94,17 @@ describe('non-gating failure-swap — routing surface regression (integration)',
 });
 
 describe('non-gating failure-swap — behavior through a production-shaped router (integration)', () => {
+  function latencyProvider(label: string, latencyMs: number): IntelligenceProvider & { calls: number; sawTimeoutMs?: number } {
+    return {
+      calls: 0,
+      evaluate(this: { calls: number; sawTimeoutMs?: number }, _p: string, opts?: IntelligenceOptions) {
+        this.calls++;
+        this.sawTimeoutMs = opts?.timeoutMs;
+        return new Promise<string>((res) => { setTimeout(() => res(label), latencyMs); });
+      },
+    };
+  }
+
   it('non-gating primary invocation failure SWAPS to the next active off-Claude framework', async () => {
     const pi = okProvider('pi');
     const router = productionShapedRouter({
@@ -102,6 +115,25 @@ describe('non-gating failure-swap — behavior through a production-shaped route
     const result = await router.evaluate('classify this', NON_GATING);
     expect(result).toBe('pi'); // served by the swap instead of hard-erroring (the 28% class)
     expect(pi.calls).toBe(1);
+  });
+
+  it('server-shaped non-gating swap uses the 15s cap and serves a 6s cold-start target', async () => {
+    vi.useFakeTimers();
+    try {
+      const pi = latencyProvider('pi', 6000);
+      const router = productionShapedRouter({
+        activeSet: ['codex-cli', 'pi-cli', 'gemini-cli', 'claude-code'],
+        providers: { 'codex-cli': invocationFailProvider(), 'pi-cli': pi },
+        nonGatingEnabled: true,
+      });
+      const p = router.evaluate('classify this', NON_GATING);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await p).toBe('pi');
+      expect(pi.calls).toBe(1);
+      expect(pi.sawTimeoutMs).toBe(15000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('with { enabled:false } the same non-gating failure hard-errors (today\'s behavior)', async () => {

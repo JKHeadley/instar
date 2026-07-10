@@ -34,6 +34,23 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(true);
     });
 
+    it('seeds the non-gating swap timeout default on init and migration without overwriting overrides', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        expect((getInitDefaults(t).intelligence as any).nonGatingSwapTimeoutMs).toBe(15000);
+        expect((getMigrationDefaults(t).intelligence as any).nonGatingSwapTimeoutMs).toBe(15000);
+      }
+
+      const missing: any = { intelligence: {} };
+      const { patched, changes } = applyDefaults(missing, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(missing.intelligence.nonGatingSwapTimeoutMs).toBe(15000);
+      expect(changes.some((c: string) => c.includes('intelligence.nonGatingSwapTimeoutMs'))).toBe(true);
+
+      const tuned: any = { intelligence: { nonGatingSwapTimeoutMs: 22000 } };
+      applyDefaults(tuned, getMigrationDefaults('managed-project'));
+      expect(tuned.intelligence.nonGatingSwapTimeoutMs).toBe(22000);
+    });
+
     it('ships SessionReaper OFF + dry-run by default (the only kill-on-heuristic monitor)', () => {
       for (const t of ['managed-project', 'standalone'] as const) {
         const sr = (getInitDefaults(t).monitoring as any).sessionReaper;

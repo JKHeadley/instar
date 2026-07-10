@@ -100,6 +100,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxConcurrent: 1,
       acquireWaitMs: 120000,
     },
+    // Non-gating provider failure-swap timeout. This is deliberately longer than the
+    // safety-gating swap cap (`intelligence.swapAttemptTimeoutMs`, default 5s inline)
+    // because advisory/background calls can wait through a cold-start provider without
+    // slowing fail-closed gates. applyDefaults seeds missing config only; operator
+    // overrides are preserved on migration.
+    nonGatingSwapTimeoutMs: 15000,
   },
   monitoring: {
     memoryMonitoring: true,

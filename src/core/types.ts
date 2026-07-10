@@ -3523,6 +3523,14 @@ export interface InstarConfig {
      */
     swapAttemptTimeoutMs?: number;
     /**
+     * Per-attempt swap timeout (ms) for NON-GATING failure-swap attempts only.
+     * Defaults to 15000ms via ConfigDefaults/migrateConfig so cold-start
+     * providers have enough time to serve advisory/background calls. Safety-gating
+     * swaps deliberately keep using `swapAttemptTimeoutMs` (default 5000ms) so
+     * fail-closed gates stay responsive.
+     */
+    nonGatingSwapTimeoutMs?: number;
+    /**
      * Per-TARGET-framework swap-attempt caps in ms for the failure-swap loop
      * (docs/specs/per-target-swap-timeout-spec.md). Resolution per swap target:
      * `byFramework[target]` (if a valid finite number > 0) → the global
@@ -3575,9 +3583,7 @@ export interface InstarConfig {
      * claude-code / the default framework (the §6.2 "non-gating never herds onto the
      * Claude tail" invariant), and NEVER on a content/parse error that carried tokens
      * (the caller fail-opens that, §6.4). INLINE-DEFAULTED at the router construction
-     * site (`enabled` default TRUE — a strict, bounded error reduction; the
-     * codexExecJson/swapAttemptTimeoutMs precedent) so it is deliberately kept out of
-     * ConfigDefaults/migrateConfig; absence ⇒ the enabled default. Set
+     * site (`enabled` default TRUE — a strict, bounded error reduction). Set
      * `{ enabled: false }` to restore today's behavior (a non-gating failure re-throws
      * to the heuristic with no swap).
      */

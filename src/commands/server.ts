@@ -6157,6 +6157,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §4.5: per-attempt swap timeout, inline-defaulted to 5s (no ConfigDefaults
           // entry — codexExecJson precedent; absent ⇒ 5s, present ⇒ operator's value).
           swapAttemptTimeoutMs: config.intelligence?.swapAttemptTimeoutMs ?? 5000,
+          // Non-gating failure-swap uses its own longer cap so cold-start providers can
+          // serve advisory/background calls without slowing safety-gating fail-closed paths.
+          nonGatingSwapTimeoutMs: config.intelligence?.nonGatingSwapTimeoutMs ?? 15000,
           // Per-target swap caps + clamp + total budget (docs/specs/
           // per-target-swap-timeout-spec.md): all three thread through UNSET by
           // default — dark ship, byte-identical routing behavior until the operator

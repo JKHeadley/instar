@@ -109,6 +109,14 @@ export interface IntelligenceRouterOptions {
    */
   swapAttemptTimeoutMs?: number;
   /**
+   * Per-attempt swap timeout in ms for NON-GATING failure-swap attempts only.
+   * Non-gating swaps are not safety gates; cold-start providers may legitimately
+   * exceed the safety-gating 5s fail-closed bound. Resolution in the non-gating
+   * helper uses this cap as its global fallback while the gating/deferrable swap
+   * loop continues to use `swapAttemptTimeoutMs`.
+   */
+  nonGatingSwapTimeoutMs?: number;
+  /**
    * Per-TARGET-framework swap-attempt caps in ms (per-target-swap-timeout-spec.md).
    * Resolution per swap target: `byFramework[target]` (if valid: finite number > 0)
    * → the global `swapAttemptTimeoutMs` (if valid) → undefined (no cap). An INVALID
@@ -1484,7 +1492,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
       .slice(0, maxAttempts);
     if (targets.length === 0) return { ok: false };
 
-    const globalCapMs = this.opts.swapAttemptTimeoutMs;
+    const globalCapMs = this.opts.nonGatingSwapTimeoutMs;
     const byFramework = this.opts.swapAttemptTimeoutMsByFramework;
     this.warnUnknownSwapCapKeys(byFramework);
     const maxCapMs = this.opts.swapAttemptTimeoutMsMax;
