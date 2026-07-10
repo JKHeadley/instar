@@ -135,6 +135,26 @@ export interface TelegramConfig {
     /** Suppress a same-key re-escalation posted within this window. Default 30 min. */
     dedupWindowMs?: number;
   };
+  /**
+   * Attention-item routing (2026-07-09 single-alerts-topic directive). In
+   * 'single-topic' mode — the DEFAULT — EVERY attention item, all priorities
+   * included (HIGH/URGENT too), is posted as one message into the single
+   * durable "🔔 Attention" hub topic instead of spawning a forum topic per
+   * item. 'per-item' restores the legacy topic-per-item behavior (still
+   * shaped by attentionTopicGuard + topicCreationBudget). The agent-health
+   * lane is unaffected in either mode.
+   */
+  attentionRouting?: {
+    mode?: 'single-topic' | 'per-item';
+  };
+  /**
+   * Hot-reloadable accessor for the durable Attention hub topic id created at
+   * boot (StateManager key 'agent-attention-topic'). server.ts injects
+   * `() => state.get('agent-attention-topic') ?? null`; when absent or null,
+   * single-topic mode finds-or-creates the hub itself — never a per-item
+   * topic.
+   */
+  getAttentionHubTopicId?: () => number | null | undefined;
 }
 
 /** Tracks a pending text reply for a Prompt Gate relay (no-button prompts) */
@@ -493,6 +513,13 @@ export class TelegramAdapter implements MessagingAdapter {
   private agentHealthPending: Promise<number | null> | null = null;
   /** entity key -> last-posted epoch ms (suppression-dedup ring, insertion-ordered). */
   private agentHealthKeyRing: Map<string, number> = new Map();
+  // ── Single-alerts-topic routing (2026-07-09 directive) ─────────────────────
+  /** Resolved routing mode ('single-topic' unless config opts into legacy). */
+  private attentionRoutingMode!: 'single-topic' | 'per-item';
+  /** Self-healed hub topic id (used when no injected boot-hub id resolves). */
+  private attentionHubTopicId: number | null = null;
+  /** In-flight single hub creation guard (no double-create race). */
+  private attentionHubPending: Promise<number | null> | null = null;
 
   // Stall detection
   private pendingMessages: Map<string, PendingMessage> = new Map(); // key = topicId-timestamp
@@ -832,6 +859,7 @@ export class TelegramAdapter implements MessagingAdapter {
       maxTrackedKeys: Number.isFinite(alc.maxTrackedKeys) && (alc.maxTrackedKeys as number) > 0 ? Math.floor(alc.maxTrackedKeys as number) : 256,
       dedupWindowMs: Number.isFinite(alc.dedupWindowMs) && (alc.dedupWindowMs as number) > 0 ? (alc.dedupWindowMs as number) : 30 * 60 * 1000,
     };
+    this.attentionRoutingMode = config.attentionRouting?.mode === 'per-item' ? 'per-item' : 'single-topic';
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
@@ -3839,6 +3867,22 @@ export class TelegramAdapter implements MessagingAdapter {
       return attention;
     }
 
+    // ── Single-alerts-topic routing (2026-07-09 directive) ──────────────
+    // Default mode: EVERY attention item — all priorities, HIGH/URGENT
+    // included — lands as ONE message in the durable "🔔 Attention" hub topic.
+    // No per-item forum topic is ever spawned; the 'per-item' legacy mode
+    // below is the opt-out. Deliberately NOT registered in the per-item topic
+    // maps (many items share the hub — see the coalesce-path comment below);
+    // hub items are managed via /attention (PATCH / dashboard), not /ack.
+    if (this.attentionRoutingMode === 'single-topic') {
+      const hubTopicId = await this.routeToAttentionHub(attention);
+      attention.coalesced = true;
+      if (hubTopicId !== null) attention.topicId = hubTopicId;
+      this.attentionItems.set(item.id, attention);
+      this.saveAttentionItems();
+      return attention;
+    }
+
     // ── Topic-flood circuit breaker (2026-05-28 lockdown) ──────────────
     // Before spawning a per-item forum topic, consult the per-source guard.
     // HIGH/URGENT always pass (critical items must always be visible). A
@@ -4166,6 +4210,90 @@ export class TelegramAdapter implements MessagingAdapter {
       return await creation;
     } finally {
       this.floodNoticePending.delete(bucket);
+    }
+  }
+
+  /**
+   * Route an attention item into the ONE durable "🔔 Attention" hub topic
+   * (single-topic mode — the default). The hub id comes from the injected
+   * boot-topic accessor when available; otherwise (fresh install, deleted hub,
+   * failed send) the hub is found-or-created once and reused — NEVER a
+   * per-item topic. Returns the hub topic id, or null if Telegram is
+   * unavailable (the item is still recorded in the store).
+   */
+  private async routeToAttentionHub(item: AttentionItem): Promise<number | null> {
+    const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;
+    const detail = [
+      `${emoji} <b>${this.escapeHtml(item.title)}</b>`,
+      `${this.escapeHtml(item.category)} | Priority: ${item.priority}`,
+      ``,
+      this.escapeHtml(item.summary),
+      item.description ? `\n${this.escapeHtml(item.description.slice(0, 500))}` : '',
+      item.sourceContext ? `\n<i>Source: ${this.escapeHtml(item.sourceContext)}</i>` : '',
+    ].filter(Boolean).join('\n');
+
+    let injected: number | null | undefined;
+    try {
+      injected = this.config.getAttentionHubTopicId?.();
+    } catch {
+      // @silent-fallback-ok — a throwing injected accessor must never block
+      // delivery; the self-heal path below owns the fallback.
+      injected = null;
+    }
+    if (typeof injected === 'number' && injected > 0) {
+      try {
+        await this.sendToTopic(injected, detail);
+        return injected;
+      } catch (err) {
+        console.warn(`[telegram] attention hub send to injected topic ${injected} failed (${err}); self-healing a hub topic`);
+      }
+    }
+
+    let topicId: number | null;
+    try {
+      topicId = await this.ensureAttentionHubTopic();
+    } catch (err) {
+      console.error(`[telegram] attention hub topic creation failed: ${err}`);
+      topicId = this.attentionHubTopicId;
+    }
+    if (topicId === null) {
+      DegradationReporter.getInstance().report({
+        feature: 'TelegramAdapter.routeToAttentionHub',
+        primary: 'Post attention item into the single Attention hub topic',
+        fallback: 'Item recorded in the attention store only (no Telegram notice)',
+        reason: 'Why: no hub topic id resolved and hub self-heal creation failed',
+        impact: 'User not notified of important escalation',
+      });
+      return null;
+    }
+    // Best-effort hub post; the item is already recorded in the attention
+    // store. If the hub was deleted out from under us, drop the cached id so
+    // it's recreated next time.
+    await this.sendToTopic(topicId, detail).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
+    return topicId;
+  }
+
+  /** Lazily find-or-create (once) and return the reused Attention hub topic id. */
+  private async ensureAttentionHubTopic(): Promise<number | null> {
+    if (this.attentionHubTopicId !== null) return this.attentionHubTopicId;
+    if (this.attentionHubPending) return this.attentionHubPending;
+
+    this.attentionHubPending = (async (): Promise<number | null> => {
+      // 'system' + bounded: the single hub topic, create-once-then-reuse by
+      // design — an exempt overflow surface the flood ceiling must never
+      // refuse. Same name + label as the boot-created hub
+      // (ensureAgentAttentionTopic in server.ts) so a registry match reuses
+      // the existing hub instead of duplicating it.
+      const topic = await this.findOrCreateForumTopic(`${TOPIC_STYLE.ALERT.emoji} Attention`, TOPIC_STYLE.ALERT.color, { origin: 'system', bounded: true, label: 'boot-attention' });
+      this.attentionHubTopicId = topic.topicId;
+      this.topicToName.set(topic.topicId, `${TOPIC_STYLE.ALERT.emoji} Attention`);
+      return this.attentionHubTopicId;
+    })();
+
+    try {
+      return await this.attentionHubPending;
+    } finally {
+      this.attentionHubPending = null;
     }
   }
 

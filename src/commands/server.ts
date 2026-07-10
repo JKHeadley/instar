@@ -3077,15 +3077,20 @@ async function ensureAgentAttentionTopic(
   }
 
   try {
-    const topic = await telegram.createForumTopic(
+    // find-or-create: on a fresh install an attention item raised BEFORE this
+    // boot path completes may have self-healed the hub already (single-topic
+    // routing) — reuse it by name instead of minting a duplicate.
+    const topic = await telegram.findOrCreateForumTopic(
       `${TOPIC_STYLE.ALERT.emoji} Attention`,
       TOPIC_STYLE.ALERT.color, // Yellow — needs user action
       { origin: 'system', bounded: true, label: 'boot-attention' }, // bounded create-once boot topic
     );
     state.set('agent-attention-topic', topic.topicId);
-    await telegram.sendToTopic(topic.topicId,
-      `This is your agent's direct line to you — for things that genuinely need your attention.\n\nBlocked tasks, critical errors, memory pressure, quota alerts, and anything where your agent can't proceed without you.`
-    );
+    if (!topic.reused) {
+      await telegram.sendToTopic(topic.topicId,
+        `This is your agent's direct line to you — for things that genuinely need your attention.\n\nBlocked tasks, critical errors, memory pressure, quota alerts, and anything where your agent can't proceed without you.`
+      );
+    }
     console.log(pc.green(`  Created Agent Attention topic: ${topic.topicId}`));
   } catch (err) {
     console.error(`  Failed to create Agent Attention topic: ${err}`);
@@ -6881,6 +6886,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               .telegramFormatMode,
           getLintStrict: () =>
             (config as unknown as { telegramLintStrict?: boolean }).telegramLintStrict,
+          // Single-alerts-topic routing: resolve the boot-created Attention hub
+          // live from state so attention items land there (never per-item topics).
+          getAttentionHubTopicId: () => state.get<number>('agent-attention-topic') ?? null,
         },
         config.stateDir,
       );
@@ -6973,6 +6981,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               .telegramFormatMode,
           getLintStrict: () =>
             (config as unknown as { telegramLintStrict?: boolean }).telegramLintStrict,
+          // Single-alerts-topic routing: resolve the boot-created Attention hub
+          // live from state so attention items land there (never per-item topics).
+          getAttentionHubTopicId: () => state.get<number>('agent-attention-topic') ?? null,
         },
         config.stateDir,
       );

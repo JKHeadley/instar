@@ -71,4 +71,42 @@ describe('PostUpdateMigrator — Topic-Flood Guard CLAUDE.md section', () => {
     expect(occurrences).toBe(1);
     expect(result2.upgraded.some((u) => u.includes('Topic-Flood Guard'))).toBe(false);
   });
+
+  it('a fresh insert carries the single-alerts-topic wording (2026-07-09 default), never the stale per-item lead', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nMy existing CLAUDE.md.\n');
+    runClaudeMdMigration(newMigrator());
+    const content = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(content).toContain('single durable "🔔 Attention" hub topic by default');
+    expect(content).not.toContain('The attention queue spawns ONE Telegram forum topic per item');
+    expect(content).not.toContain('HIGH/URGENT items are NEVER coalesced');
+  });
+
+  it('rewrites the STALE pre-flip lead paragraph + bullet in place on already-migrated agents (single-alerts-topic parity)', () => {
+    const staleSection = [
+      '# CLAUDE.md',
+      '',
+      '## Topic-Flood Guard (attention queue circuit breaker)',
+      '',
+      'The attention queue spawns ONE Telegram forum topic per item — right for a genuine /ack-able to-do, catastrophic when a HOUSEKEEPING feature raises items at volume. A per-source circuit breaker now sits at the topic-creation chokepoint (`TelegramAdapter.createAttentionItem`): further NON-critical items are COALESCED and recorded in `state/attention-suppressed.jsonl`. HIGH/URGENT items are NEVER coalesced (critical messages always get their own topic).',
+      '',
+      '- Default-ON, no config required (it ships in code). Tune via `messaging[].config.attentionTopicGuard` = `{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }`.',
+      '- If a user asks "why are my notices grouped together" — read `state/attention-suppressed.jsonl`.',
+      '',
+    ].join('\n');
+    fs.writeFileSync(claudeMdPath, staleSection);
+
+    const result = runClaudeMdMigration(newMigrator());
+    const content = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(content).not.toContain('The attention queue spawns ONE Telegram forum topic per item');
+    expect(content).not.toContain('- Default-ON, no config required');
+    expect(content).toContain('single durable "🔔 Attention" hub topic by default');
+    expect(content).toContain('- Single-topic routing is the code default');
+    expect(result.upgraded.some((u) => u.includes('single-alerts-topic'))).toBe(true);
+
+    // Idempotent: a second run leaves the section byte-for-byte unchanged.
+    const result2 = runClaudeMdMigration(newMigrator());
+    const after2 = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after2).toBe(content);
+    expect(result2.upgraded.some((u) => u.includes('single-alerts-topic'))).toBe(false);
+  });
 });
