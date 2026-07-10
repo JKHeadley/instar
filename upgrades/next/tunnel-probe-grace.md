@@ -1,0 +1,21 @@
+# fix(tunnel): reachability probe retries across a grace window — healthy named tunnels no longer get killed by edge-propagation 530s
+
+## What Changed
+
+`TunnelManager.probeReachability` (the "can the world reach my public URL?" check that runs before a freshly-started tunnel is declared active) was a single-shot HTTP probe. Cloudflare's edge routinely serves 530 for a few seconds after a named tunnel's connector registers, so the one immediate probe kept landing inside that propagation window: the manager declared `reachability-failed`, tore down the healthy tunnel, fell through to quick tunnels (rate-limited, error 1015), and stranded the lifecycle in `exhausted` — where the 15-minute post-exhausted retry replayed the identical race forever. Observed live on the instar-codey agent 2026-07-09: link-less for hours with a perfectly working tunnel config (a hand-started connector served HTTP 200 within ~6s), its dashboard-link-refresh job failing every ~80s and flooding `/health` with truncated-run-record degradations.
+
+The probe now retries across a bounded grace window — delays of 2s/4s/6s between attempts (4 attempts total), first success returns immediately, and a manager shutdown bails out of the window instantly. The single-shot probe moved to `probeReachabilityOnce`, byte-identical. A new `TunnelManagerInjections.reachabilityRetryDelaysMs` constructor seam lets tests drive the loop with millisecond delays (no user-facing config knob). All three probe call sites (`driveTier1`, `runSelfHealCheck`, the consent-grant relay start) inherit the grace window uniformly.
+
+## Evidence
+
+- Root-cause reproduction on instar-codey (port 4044): `GET /tunnel` stuck at `{state: "exhausted", lastFailureReason: "reachability-failed"}` while a manually-run `cloudflared tunnel --config .instar/cloudflared-named.yml run` registered 4 connections in ~2s and the public `/health` served HTTP 200 within ~6s of spawn — the config, credentials, and DNS were all healthy; only the probe timing was wrong.
+- 2 new unit regression tests in `tests/unit/tunnel-manager-rewrite.test.ts`: a probe that fails twice then recovers within the window keeps the tunnel (provider never torn down, lifecycle `active`); an always-failing probe is declared `reachability-failed` only after `delays.length + 1` attempts and the handle is torn down exactly once.
+- Full tunnel unit suite green: 160 tests across 10 files in ~2.5s (failing-probe paths in existing tests now inject 1ms delays via the new seam, so no real sleeps entered the suite).
+
+## What to Tell Your User
+
+If my public link (dashboard, private views) ever seemed to die after a restart or a brief Cloudflare hiccup and not come back, this was likely why: I used to check my own public URL exactly once, a moment too early, and treat Cloudflare's few-second warm-up as "the tunnel is dead." Now I give that check a short grace window (up to ~20 seconds of patience) before concluding anything, so a healthy tunnel survives its own startup and a stuck "exhausted, retrying forever" state heals itself on the next retry. Nothing changes when the tunnel is genuinely down — I still detect that and fall back exactly as before, just a few seconds later.
+
+## Summary of New Capabilities
+
+- None user-facing — this is a resilience fix. Named/quick tunnel startup and the self-heal probe now tolerate Cloudflare edge-propagation delay instead of killing healthy tunnels.

@@ -136,7 +136,8 @@ describe('TunnelManager (rewrite) — reachability probe', () => {
     });
     const mgr = new TunnelManager(
       { ...baseConfig, stateDir },
-      { providers: [named, quick], fetch },
+      // 1ms probe-retry delays: keep the reachability grace window fast.
+      { providers: [named, quick], fetch, reachabilityRetryDelaysMs: [1] },
     );
     const url = await mgr.start();
     expect(url).toBe('https://quick.example');
@@ -152,10 +153,49 @@ describe('TunnelManager (rewrite) — reachability probe', () => {
       req.includes('broken.example') ? badResponse() : okResponse());
     const mgr = new TunnelManager(
       { ...baseConfig, stateDir },
-      { providers: [named, quick], fetch },
+      // 1ms probe-retry delays: keep the reachability grace window fast.
+      { providers: [named, quick], fetch, reachabilityRetryDelaysMs: [1] },
     );
     await mgr.start();
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('tolerates edge-propagation failures: a probe that fails then recovers within the grace window keeps the tunnel', async () => {
+    // Regression: a named tunnel's edge can serve 530 for a few seconds
+    // right after connector registration. A single-shot probe used to
+    // kill the healthy tunnel (reachability-failed → quick-tunnel
+    // rate-limit → permanently exhausted). The probe must retry within
+    // the grace window and keep the provider once the edge catches up.
+    const stop = vi.fn(async () => undefined);
+    const named = mockProvider({ name: 'cloudflare-named', url: 'https://propagating.example', stop });
+    let probes = 0;
+    const fetch = vi.fn(async () => {
+      probes += 1;
+      return probes <= 2 ? badResponse() : okResponse(); // 530-ish, 530-ish, then healthy
+    });
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [named], fetch, reachabilityRetryDelaysMs: [1, 1, 1] },
+    );
+    const url = await mgr.start();
+    expect(url).toBe('https://propagating.example');
+    expect(stop).not.toHaveBeenCalled(); // the healthy tunnel was never torn down
+    expect(fetch).toHaveBeenCalledTimes(3); // failed twice, recovered on the third attempt
+    expect(mgr.lifecycleState.lastState).toBe('active');
+  });
+
+  it('declares reachability-failed only after exhausting the full grace window', async () => {
+    const stop = vi.fn(async () => undefined);
+    const named = mockProvider({ name: 'cloudflare-named', url: 'https://dead.example', stop });
+    const fetch = vi.fn(async () => badResponse());
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [named], fetch, reachabilityRetryDelaysMs: [1, 1] },
+    );
+    mgr.disableAutoReconnect();
+    await expect(mgr.start()).rejects.toThrow(/reachability-failed/);
+    expect(fetch).toHaveBeenCalledTimes(3); // delays.length + 1 attempts
+    expect(stop).toHaveBeenCalledTimes(1); // torn down only after the window closed
   });
 });
 

@@ -203,7 +203,8 @@ describe('TunnelManager — grantConsent', () => {
     const tier2 = mockProvider({ name: 'localtunnel', tier: 2, available: true, url: 'https://broken.example' });
     const mgr = new TunnelManager(
       { ...baseConfig, stateDir },
-      { providers: [tier1, tier2], fetch: badFetch },
+      // 1ms probe-retry delays: keep the reachability grace window fast.
+      { providers: [tier1, tier2], fetch: badFetch, reachabilityRetryDelaysMs: [1] },
     );
     await expect(mgr.start()).rejects.toBeInstanceOf(Error);
 
