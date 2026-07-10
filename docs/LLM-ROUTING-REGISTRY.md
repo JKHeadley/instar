@@ -199,6 +199,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | **MentorStageBForensics** ⚠ | src/scheduler/MentorStageBForensics.ts:141 | classify mentor signals → findings | B | **AD(capable) → Claude** | ❌ not in map |
 | **server:correction-learning** ⚠ | src/commands/server.ts:11380 | distill corrections → preference | D | **AD(fast) → Claude** | ❌ strips to unmapped name |
 | **SelfKnowledgeTree** ⚠ | src/knowledge/SelfKnowledgeTree.ts | synthesize self-knowledge tree nodes | D | **AD → Claude** | ❌ not in map (bench pending wave-3) |
+| DashboardInsightEngine | src/monitoring/DashboardInsightEngine.ts:315 | summarize a dashboard page's data → Insight Strip | A (declared; FAST) | OC(fast) | ✅ intentional — awareness-only, non-gating; declares `nature:'A'` + `model:'fast'` so it rides the router's FAST tier (bench `{exempt}` — no `LLM_ROUTING_NATURE` row until an insight-summary bench task is authored, per cite-the-bench). Degrades to a deterministic floor. |
 
 ### Jobs (router-backed, cost-bearing)
 | Component | file:line | Decision | Route | Note |

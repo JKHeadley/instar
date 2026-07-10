@@ -508,6 +508,46 @@ export function migrateConfigRoutingSpendDark(config: Record<string, unknown>): 
 }
 
 /**
+ * Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md, § Migration
+ * parity): the `dashboard.liveInsights` block is a developmentAgent dark feature —
+ * `enabled` must be OMITTED so resolveDevAgentGate resolves it (live-on-dev, dark
+ * fleet; /insights routes 503 when dark). Two idempotent, existence-checked jobs:
+ *   1. SEED the block on existing agents (add-missing only, never clobbering an
+ *      operator's `dashboard.fileViewer`/`poolStream` or any override), so the
+ *      update path reaches deployed agents — NOT only new agents via init.
+ *   2. STRIP a default-shaped literal `enabled:false` (the #1001 mechanism — it
+ *      would force-dark even a dev agent). An explicit `true` (operator fleet-flip)
+ *      is PRESERVED. This migration NEVER writes `enabled` (pinned by a unit test).
+ * Idempotent — a second run finds the block present and nothing to strip.
+ */
+export function migrateConfigDashboardLiveInsightsDevGate(config: Record<string, unknown>): boolean {
+  let changed = false;
+  let dashboard = config.dashboard as Record<string, unknown> | undefined;
+  if (!dashboard || typeof dashboard !== 'object' || Array.isArray(dashboard)) {
+    dashboard = {};
+    config.dashboard = dashboard;
+  }
+  if (!Object.prototype.hasOwnProperty.call(dashboard, 'liveInsights')) {
+    dashboard.liveInsights = {
+      // `enabled` OMITTED so resolveDevAgentGate decides (live on a dev agent, dark fleet).
+      dryRun: true,
+      ttlSeconds: 300,
+      maxLines: 3,
+      llmTimeoutMs: 12000,
+    };
+    changed = true;
+  } else {
+    // Existence-checked #1001 strip: only a default-shaped `false` is removed.
+    const li = dashboard.liveInsights as Record<string, unknown> | undefined;
+    if (li && typeof li === 'object' && !Array.isArray(li) && li.enabled === false) {
+      delete li.enabled;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
  * "Self-Unblock Before Escalating" (docs/specs/self-unblock-before-escalating.md):
  * the two nested blockerLedger sub-features — selfUnblockChecklist + durableVaultSession
  * — are dev-gated dark features resolved via resolveDevAgentGate, so the config must
@@ -9192,6 +9232,18 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: seeded dark routingSpend (tokenRollupRetentionDays:400; enabled omitted for the developmentAgent gate)');
     } else {
       result.skipped.push('config.json: routingSpend already present (no seed)');
+    }
+
+    // Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md): SEED
+    // dashboard.liveInsights DARK (dryRun:true, ttl/maxLines/timeout; `enabled`
+    // OMITTED so the developmentAgent gate resolves it live-on-dev / dark-fleet)
+    // AND strip a default-shaped `enabled:false`. Existence-checked, never clobbers
+    // dashboard.fileViewer/poolStream or an operator override.
+    if (migrateConfigDashboardLiveInsightsDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded/normalized dark dashboard.liveInsights (dryRun:true; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: dashboard.liveInsights already present + correct (no seed/strip)');
     }
 
     // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger

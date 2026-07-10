@@ -4476,6 +4476,30 @@ export interface DashboardConfig {
   /** Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3) — cross-machine
    *  session streaming from one dashboard. */
   poolStream?: PoolStreamConfig;
+  /** Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md) — the
+   *  per-page Insight Strip: a plain-English headline + supporting lines over a
+   *  page's own data, an LLM insight routed through the shared nature-router
+   *  (FAST lane), cached + awareness-only. Dev-gated dark: `enabled` is OMITTED
+   *  so resolveDevAgentGate resolves it (LIVE on a dev agent, DARK on the fleet;
+   *  /insights routes 503 when dark). */
+  liveInsights?: LiveInsightsConfig;
+}
+
+export interface LiveInsightsConfig {
+  /** Dev-agent dark gate. OMITTED from ConfigDefaults so resolveDevAgentGate
+   *  resolves it (live-on-dev, dark-fleet). An explicit `true` fleet-flips it. */
+  enabled?: boolean;
+  /** The spend canary. Default true (dev): the LLM layer is INERT (deterministic
+   *  floor served, "would generate" logged). A deliberate `false` activates the
+   *  actual LLM insight generation. */
+  dryRun?: boolean;
+  /** Insight cache TTL (seconds). Default 300 (5 min). Unchanged page data serves
+   *  the cached insight with no re-spend. */
+  ttlSeconds?: number;
+  /** Max supporting lines per page (default 3, clamped 1..5). */
+  maxLines?: number;
+  /** Per-call LLM timeout (ms). Default 12000. */
+  llmTimeoutMs?: number;
 }
 
 export interface PoolStreamConfig {

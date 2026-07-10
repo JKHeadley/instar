@@ -100,6 +100,12 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   RelationshipManager: 'reflector',
   StandardsConformanceReviewer: 'reflector',
   DiscoveryEvaluator: 'reflector',
+  // DashboardInsightEngine — the Live-LLM-Insights read surface
+  // (docs/specs/dashboard-live-insights.md). Summarizes a dashboard page's own
+  // data into a plain-English Insight Strip. Category 'reflector' so it runs
+  // OFF Claude by default (Provider-Fallback Default Policy) — awareness-only
+  // background summarization should never spend Anthropic quota.
+  DashboardInsightEngine: 'reflector',
 
   // ── Jobs (scheduled work) ──
   PipeSessionSpawner: 'job',

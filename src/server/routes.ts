@@ -1102,6 +1102,11 @@ export interface RouteContext {
   /** Mentor-onboarding runner (§19.4). Null when not wired. Ships dormant
    *  (mentor.enabled=false); powers GET /mentor/status + POST /mentor/tick. */
   mentorRunner?: import('../scheduler/MentorOnboardingRunner.js').MentorOnboardingRunner | null;
+  /** Dashboard Live-LLM-Insights engine (docs/specs/dashboard-live-insights.md).
+   *  Null/absent when the feature is dark (dashboard.liveInsights.enabled resolves
+   *  false via the developmentAgent gate) → /insights* 503s. Powers GET /insights,
+   *  GET /insights/:page, GET /insights/status. Awareness-only — never gates. */
+  dashboardInsightEngine?: import('../monitoring/DashboardInsightEngine.js').DashboardInsightEngine | null;
   /** Failure-Learning Loop ledger + attribution engine (instar dev-process
    *  forensics). Null/absent when the feature is disabled (default) → /failures 503s. */
   failureLedger?: import('../monitoring/FailureLedger.js').FailureLedger | null;
@@ -10913,6 +10918,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const ms = Date.parse(raw);
     return Number.isNaN(ms) ? { ok: false } : { ok: true, ms };
   };
+
+  // ── Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md) ──
+  // Awareness-only read surface: the per-page Insight Strip. 503 when the feature
+  // is dark (dashboard.liveInsights.enabled resolves false via the dev-agent gate).
+  // Never mutates, never gates — the strip observes and phrases only.
+  router.get('/insights', async (_req, res) => {
+    if (!ctx.dashboardInsightEngine) { res.status(503).json({ error: 'live-insights disabled' }); return; }
+    try {
+      res.json(await ctx.dashboardInsightEngine.getAll());
+    } catch {
+      // Awareness-only: an unexpected engine error must never 500 the dashboard.
+      res.json({ pages: [], asOf: new Date().toISOString() });
+    }
+  });
+
+  router.get('/insights/status', (_req, res) => {
+    if (!ctx.dashboardInsightEngine) { res.status(503).json({ error: 'live-insights disabled' }); return; }
+    res.json(ctx.dashboardInsightEngine.status());
+  });
+
+  router.get('/insights/:page', async (req, res) => {
+    if (!ctx.dashboardInsightEngine) { res.status(503).json({ error: 'live-insights disabled' }); return; }
+    try {
+      const insight = await ctx.dashboardInsightEngine.getInsight(String(req.params.page));
+      if (!insight) { res.status(404).json({ error: 'unknown insight page' }); return; }
+      res.json(insight);
+    } catch {
+      res.status(404).json({ error: 'unknown insight page' });
+    }
+  });
 
   router.get('/failures', (req, res) => {
     if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }

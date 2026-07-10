@@ -55,6 +55,13 @@ const EXEMPT_BASELINE = [
   // src/data/llmBenchCoverage.ts; evidence trail in the bench harness's
   // tasks-wave2/SKIPPED.md (grep-verified delegation/alias/unwired claims).
   'IntegrationGate', 'CoherenceGate', 'AutoApprover', 'InputDetector', 'PromiseBeacon',
+  // DashboardInsightEngine (2026-07-09): awareness-only dashboard read surface
+  // (docs/specs/dashboard-live-insights.md). Its LLM insight is never a gate and
+  // always degrades to a deterministic per-page one-liner floor, so its LLM
+  // quality is not safety-load-bearing. NOT in LLM_ROUTING_NATURE (cite-the-bench
+  // forbids a nature row for an exempt component); it rides the shared router's
+  // fast tier. Argued in src/data/llmBenchCoverage.ts.
+  'DashboardInsightEngine',
 ].sort();
 
 describe('llm-bench-coverage ratchet', () => {

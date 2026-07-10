@@ -1,0 +1,23 @@
+# Dashboard Live-LLM-Insights — the plain-English version
+
+The dashboard grew to 25 tabs of raw numbers, and a raw number rarely tells you what to *do*. A tab might say "732 errors" — but most of those turn out to be harmless network retries, and buried inside is one real problem you'd never spot. The earlier Dashboard UX Standard fixed the *structure* (every tab reachable, labelled, responsive). This change adds the layer on top of that: an **Insight Strip** — a short, plain-English read of what actually stands out on a page, with a button to open the page it came from. It turns "here are 40 numbers" into "here's the one thing worth a look, and where to look."
+
+Concretely, this PR ships a new **Insights** tab (first in the Runtime group). It reads each dashboard page's own data and produces one calm card per page: a single ELI16 headline (the most important thing) plus up to three short supporting lines, each ending with an "Open this page" button. There are two ways a card gets written. First, a **deterministic one-liner** computed straight from the numbers — this always works, even with the AI turned off, so the dashboard is never blank or confusing. Second, when the feature is switched on for real, an **AI insight** written by a language model. The clever part is that we don't pick a model by hand: the AI call rides the agent's existing "nature-router," which was already tuned by our benchmarks to send cheap, quick summarization work down its FAST lane. So the right model is chosen by the routing chains, never hardcoded — and the whole call is metered like every other AI call, so its cost is visible in the LLM Activity tab.
+
+The insight only ever *observes and explains* — it can never press a button, send a message, or change anything (every action it offers is a plain link into a normal, already-guarded tab). It's generated only when you open the tab and then cached for five minutes, so it never quietly burns money in the background, and if the AI call is slow or fails it silently falls back to the deterministic one-liner — the page never breaks and never makes something up. It ships **dark on the fleet and live on a development agent**, and even there the actual AI spend stays behind one more switch (`dryRun`) so we can watch it work before spending a cent.
+
+## What shipped in this increment
+- **`DashboardInsightEngine`** — the deterministic per-page one-liner floor (Increment A) + the LLM insight layer (Increment B): routed through the shared nature-router (FAST lane, model chosen by the benchmark-derived chains), generated on view and cached per page by a snapshot fingerprint, awareness-only, degrade-to-floor on any failure.
+- **Routes** `GET /insights`, `GET /insights/:page`, `GET /insights/status` (503 when the feature is dark on the fleet), classified in the CapabilityIndex.
+- The **Insights dashboard tab** — the per-page Insight Strip UI (F1–F8 compliant: purpose line, honest empty/paused states, drill-in buttons, no horizontal scroll).
+- The **LLM Activity page collector** — the spec's motivating example, wired end-to-end: it separates real routing errors from noise and flags a genuinely failing check.
+- Config `dashboard.liveInsights` (dev-gated dark, `dryRun:true` spend canary), the migration, the CLAUDE.md template capability section, and three tiers of tests (unit / integration / e2e-alive).
+
+## Open questions / decisions
+- **None blocking.** The operator approved the design as-is (topic 29723). Two of the three open questions in the design doc are resolved by this build's choices, exactly as recommended: refresh is **on-view + a 5-minute cache** (Q1), and insights ride **off-Claude by default** via the router's FAST lane (Q3). Q2 — whether the cross-page Attention digest becomes the dashboard's *default landing view* — is deliberately deferred to Increment C (this PR delivers the per-page engine the digest will build on; the Insights tab is already a natural home for it), and is the operator's call when C is built.
+
+## What comes next (out of scope here)
+- **Increment C** — the cross-page "what needs you" Attention digest (a JUDGE-lane synthesis) + optionally making it the default landing view.
+- **Increment D** — gate-guarded action buttons (deep-links that trigger an already-PIN/gate-guarded operation, never a new unguarded power).
+- **More page collectors** — Spend, Machines, Sessions, Attention. The engine, route, and UI are page-generic, so each is a small additive collector; this ship wires LLM Activity as the proven end-to-end example.
+- **Graduation** — the operator flips `dryRun:false` on the dev agent to activate real AI insights after a soak, then fleet-enables when ready.

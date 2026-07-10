@@ -432,6 +432,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Dev-gated under the Maturation Path standard. CAN send a user-facing Telegram line, so it does not ship LIVE on dev: its persisted ConfigDefaults default is `dryRun: true` (the route + tick run, but the final send is swapped for a "would emit" log, gated on the SAME cooldown/budget as live — no per-tick flood). So enabling on dev makes only the READ surface + dry-run observation live; an actual send requires a deliberate `dryRun: false` after the dev soak. Signal-only (never gates/blocks/rewrites); every predicate fails CLOSED on uncertainty; bounded by a long user-silence gate + a corroborated recent-output-change + per-topic cooldown + widening per-run backoff + a hard per-run cap + the shared one-voice ProxyCoordinator lease. No spend (no LLM), no destructive action.',
   },
   {
+    name: 'dashboardLiveInsights',
+    configPath: 'dashboard.liveInsights.enabled',
+    description:
+      'Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md) — the per-page Insight Strip: a plain-English headline + supporting lines over a dashboard page\'s own data, an LLM insight routed through the shared nature-router (FAST lane, model selection from the benchmark-derived chains), cached per page (TTL) + awareness-only. Powers GET /insights, GET /insights/:page, GET /insights/status.',
+    justification:
+      'Awareness-ONLY read surface: the insight OBSERVES and PHRASES — it carries ZERO action authority (no field it emits can arm a door, send a message, or mutate state; every drill-in is a plain deep-link gated by that tab\'s own controls). Ships dryRun:true (the spend canary): on a dev agent the routes are live and the DETERMINISTIC per-page one-liner floor renders, but the LLM layer is INERT (logs "would generate", spends nothing) until a deliberate dryRun:false. The LLM call rides the shared IntelligenceRouter funnel (host spawn-cap + circuit breaker + feature_metrics attribution under component DashboardInsightEngine — Token-Audit Completeness), is generated ON VIEW + snapshot-fingerprint-CACHED (never a background poll, never per-poll re-spend), non-gating, and DEGRADES to the deterministic floor on any failure/timeout/unparseable output (never blocks the page, never fabricates). Page data is untrusted → the call is injection-exposed so a non-injection door is never chosen. Routes 503 when dark. Same dogfooding posture as topicProfiles / growthAnalyst.',
+  },
+  {
     name: 'failureLearning',
     configPath: 'monitoring.failureLearning.enabled',
     description: 'Failure-Learning Loop — append-only failure ledger + pattern surface (/failures).',

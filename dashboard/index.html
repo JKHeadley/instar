@@ -2823,6 +2823,7 @@
         <nav class="tab-bar" id="tabBar" aria-label="Dashboard sections">
           <div class="tab-group" role="group" aria-label="Runtime">
             <div class="tab-group-label">Runtime</div>
+            <button class="tab" data-tab="insights" onclick="switchTab('insights')">Insights</button>
             <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
             <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
             <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
@@ -3530,6 +3531,38 @@
     <!-- Evidence Tab (WikiClaim Phase 4) — per-entity evidence + reverse "what cites this?" view.
          Spec: docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Phase 4 (line 343). -->
     <!-- process-health tab -->
+    <!-- insights tab (Dashboard Live-LLM-Insights — docs/specs/dashboard-live-insights.md) -->
+    <style>
+      .ins-strip { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:16px 18px; margin-bottom:14px; display:flex; flex-direction:column; gap:10px; }
+      .ins-strip-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
+      .ins-strip-title { font-weight:600; font-size:14px; opacity:.75; }
+      .ins-strip-stamp { font-size:11px; opacity:.55; }
+      .ins-headline { font-size:16px; line-height:1.4; }
+      .ins-line { display:flex; gap:8px; align-items:flex-start; font-size:13px; line-height:1.45; }
+      .ins-dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; margin-top:6px; background:#8a8a8a; }
+      .ins-dot.watch { background:#e0a83a; }
+      .ins-dot.alert { background:#e0533a; }
+      .ins-line-body { flex:1; }
+      .ins-line-action { opacity:.6; }
+      .ins-drill { align-self:flex-start; font-size:12px; background:transparent; color:var(--text); border:1px solid var(--border,#2a2a2a); border-radius:6px; padding:5px 10px; cursor:pointer; }
+      .ins-badge { font-size:10px; text-transform:uppercase; letter-spacing:.04em; opacity:.55; border:1px solid var(--border,#2a2a2a); border-radius:4px; padding:1px 6px; }
+      .ins-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; }
+      .ins-metric { font-size:12px; }
+      .ins-metric-val { font-size:15px; font-weight:600; }
+      .ins-metric-label { opacity:.6; }
+      .ins-empty, .ins-disabled { font-size:13px; opacity:.7; padding:8px 0; }
+    </style>
+    <div id="insightsPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:20px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Insights</h2>
+        <div id="insStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">A plain-English read of what stands out across your dashboard right now — one short takeaway per page, with a button to open the page it came from. Insights only observe and explain; they never change anything.</p>
+      <div id="insBody" aria-live="polite">
+        <div class="ins-empty">Loading insights…</div>
+      </div>
+    </div>
+
     <div id="processHealthPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
         <h2 class="ph-title">Process Health</h2>
@@ -5100,6 +5133,12 @@
     let currentTab = 'sessions';
 
     const TAB_REGISTRY = [
+      {
+        id: 'insights',
+        panels: ['insightsPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadInsights === 'function') loadInsights(); },
+      },
       {
         id: 'sessions',
         panels: ['sessionsTab', 'mainPanel'],
@@ -9547,6 +9586,66 @@
       if (d > 0) return d + 'd ' + h + 'h';
       if (h > 0) return h + 'h ' + m + 'm';
       return m + 'm';
+    }
+
+    // ── Insights tab (Dashboard Live-LLM-Insights — docs/specs/dashboard-live-insights.md) ──
+    // Awareness-only: renders the per-page Insight Strip. On 503 (feature dark on
+    // the fleet) it shows a friendly "not turned on" message, never an error.
+    function insSourceBadge(source, cacheHit) {
+      if (source === 'llm') return cacheHit ? 'AI · cached' : 'AI';
+      if (source === 'deterministic') return 'summary';
+      if (source === 'paused') return 'paused';
+      if (source === 'empty') return 'no data';
+      return source || '';
+    }
+    function renderInsightStrip(p) {
+      const stamp = p.asOf ? new Date(p.asOf).toLocaleTimeString() : '';
+      const lines = (p.lines || []).map(function(l) {
+        const sev = l.severity === 'alert' ? 'alert' : l.severity === 'watch' ? 'watch' : '';
+        const action = l.action ? '<span class="ins-line-action"> — ' + escapeHtml(l.action) + '</span>' : '';
+        return '<div class="ins-line"><span class="ins-dot ' + sev + '"></span>' +
+          '<span class="ins-line-body">' + escapeHtml(l.text) + action + '</span></div>';
+      }).join('');
+      const metrics = (p.metrics || []).length
+        ? '<details style="margin-top:2px"><summary class="ins-drill">Show the data</summary>' +
+            '<div class="ins-metrics" style="margin-top:10px">' +
+            p.metrics.map(function(m) {
+              return '<div class="ins-metric"><div class="ins-metric-val">' + escapeHtml(String(m.value)) +
+                '</div><div class="ins-metric-label">' + escapeHtml(m.label) + '</div></div>';
+            }).join('') + '</div></details>'
+        : '';
+      const drill = p.tab
+        ? '<button class="ins-drill" onclick="switchTab(\'' + escapeHtml(p.tab) + '\')">Open ' + escapeHtml(p.title) + '</button>'
+        : '';
+      return '<div class="ins-strip">' +
+        '<div class="ins-strip-head"><span class="ins-strip-title">' + escapeHtml(p.title) + '</span>' +
+          '<span class="ins-strip-stamp"><span class="ins-badge">' + escapeHtml(insSourceBadge(p.source, p.cacheHit)) + '</span>' +
+          (stamp ? ' · as of ' + escapeHtml(stamp) : '') + '</span></div>' +
+        '<div class="ins-headline">' + escapeHtml(p.headline) + '</div>' +
+        (lines ? '<div>' + lines + '</div>' : '') +
+        metrics + drill + '</div>';
+    }
+    async function loadInsights() {
+      const body = document.getElementById('insBody');
+      const stamp = document.getElementById('insStamp');
+      try {
+        const data = await apiFetch('/insights');
+        stamp.textContent = data.asOf ? 'updated ' + new Date(data.asOf).toLocaleTimeString() : '';
+        const pages = data.pages || [];
+        if (pages.length === 0) {
+          body.innerHTML = '<div class="ins-empty">No pages have insights to show yet. As your dashboard collects data, takeaways will appear here.</div>';
+          return;
+        }
+        body.innerHTML = pages.map(renderInsightStrip).join('');
+      } catch (e) {
+        stamp.textContent = '';
+        const msg = (e && e.message) || '';
+        if (/disabled/i.test(msg)) {
+          body.innerHTML = '<div class="ins-disabled">Live insights aren’t turned on for this agent yet. They light up automatically on a development agent, and can be enabled fleet-wide when ready.</div>';
+        } else {
+          body.innerHTML = '<div class="ins-empty">Couldn’t load insights just now — ' + escapeHtml(msg) + '. Check back shortly.</div>';
+        }
+      }
     }
 
     // ── Process Health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC) ──

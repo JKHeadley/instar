@@ -369,14 +369,24 @@ describe('lint-dev-agent-dark-gate', () => {
       // paths); RE-VERIFIED by hand against the edited ConfigDefaults (each shifted
       // line remains a real `enabled: false,` in its named block; uniform +28 shift,
       // no new/removed entries).
-      '271': 'monitoring.sessionReaper.enabled',
-      '329': 'monitoring.agentWorktreeReaper.enabled',
-      '448': 'monitoring.mcpProcessReaper.enabled',
-      '462': 'monitoring.agentSleep.enabled',
-      '533': 'monitoring.correctionLearning.enabled',
-      '636': 'monitoring.apprenticeshipCycleSla.enabled',
-      '644': 'monitoring.geminiCapacityEscalation.enabled',
-      '668': 'monitoring.greenPrAutoMerge.enabled',
+      // dashboard-live-insights (2026-07-09, this PR): the `dashboard.liveInsights`
+      // default sub-block (17 lines: 9 comment + `dashboard:{ liveInsights:{ dryRun,
+      // ttlSeconds, maxLines, llmTimeoutMs } }`) was inserted at the TOP of
+      // SHARED_DEFAULTS (right after `maintenance`), ABOVE every attributed row. It
+      // OMITS `enabled` (it rides resolveDevAgentGate — a hardcoded `false` would
+      // dark dev agents, the #1001 anti-pattern), so it adds NO attributed path — it
+      // only shifts every `enabled: false` line below it DOWN by +17. Path SET
+      // unchanged (still 25 entries, same dotted paths); RE-VERIFIED via
+      // attributeRealConfigDefaults on the edited ConfigDefaults (uniform +17 shift,
+      // no new/removed entries).
+      '288': 'monitoring.sessionReaper.enabled',
+      '346': 'monitoring.agentWorktreeReaper.enabled',
+      '465': 'monitoring.mcpProcessReaper.enabled',
+      '479': 'monitoring.agentSleep.enabled',
+      '550': 'monitoring.correctionLearning.enabled',
+      '653': 'monitoring.apprenticeshipCycleSla.enabled',
+      '661': 'monitoring.geminiCapacityEscalation.enabled',
+      '685': 'monitoring.greenPrAutoMerge.enabled',
       // red-pr-watchdog (2026-07-09): a 4-line `redPrWatchdog` default sub-block
       // (3 comment lines + `redPrWatchdog: { enabled: true, ... }`) was inserted
       // INSIDE the greenPrAutoMerge block, BELOW its `enabled: false` (668). It
@@ -385,30 +395,30 @@ describe('lint-dev-agent-dark-gate', () => {
       // line below it DOWN by +4. Path SET unchanged (still 25 entries, same dotted
       // paths); RE-VERIFIED via attributeEnabledFalsePaths on the edited
       // ConfigDefaults (uniform +4 shift, no new/removed entries).
-      '722': 'threadline.a2aCheckIn.enabled',
-      '853': 'mentor.enabled',
-      '864': 'mentor.autonomousFix.enabled',
-      '879': 'mentee.enabled',
-      '939': 'prGate.classClosure.enabled',
+      '739': 'threadline.a2aCheckIn.enabled',
+      '870': 'mentor.enabled',
+      '881': 'mentor.autonomousFix.enabled',
+      '896': 'mentee.enabled',
+      '956': 'prGate.classClosure.enabled',
       // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
       // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
       // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
       // adds no map row, and shifts every subsequent `enabled:` line by +21.
-      '1023': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '1027': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '1034': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1044': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1281': 'multiMachine.sessionPool.enabled',
+      '1040': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1044': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1051': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1061': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1298': 'multiMachine.sessionPool.enabled',
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1325': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1335': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1364': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1559': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1700': 'cartographer.freshnessSweep.enabled',
-      '1745': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1770': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1342': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1352': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1381': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1576': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1717': 'cartographer.freshnessSweep.enabled',
+      '1762': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1787': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

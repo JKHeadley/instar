@@ -91,6 +91,8 @@ import { DurableVaultSession } from '../monitoring/DurableVaultSession.js';
 import { buildProductionProbeProviders, deriveBitwardenSession } from '../monitoring/SelfUnblockProbeProviders.js';
 import { BitwardenProvider } from '../core/BitwardenProvider.js';
 import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
+import { DashboardInsightEngine } from '../monitoring/DashboardInsightEngine.js';
+import { buildBuiltinInsightPages } from '../monitoring/dashboardInsightCollectors.js';
 import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
@@ -370,6 +372,10 @@ export class AgentServer {
   private selfUnblockChecklist: SelfUnblockChecklist | null = null;
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
+  /** Dashboard Live-LLM-Insights engine (docs/specs/dashboard-live-insights.md).
+   *  Null when the feature is dark (dashboard.liveInsights.enabled resolves false
+   *  via the developmentAgent gate) → /insights* 503s. */
+  private dashboardInsightEngine: DashboardInsightEngine | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
@@ -2180,6 +2186,38 @@ export class AgentServer {
       this.growthMilestoneAnalyst = null;
     }
 
+    // Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md) — the
+    // per-page Insight Strip. Dev-gated dark: `dashboard.liveInsights.enabled` is
+    // OMITTED so resolveDevAgentGate resolves it (LIVE on a dev agent, DARK on the
+    // fleet; /insights* 503 when null). `dryRun:true` (dev default) is the spend
+    // canary — the deterministic floor renders live, the LLM layer is inert until a
+    // deliberate dryRun:false. Own try/catch so init can never cascade.
+    const liveInsightsEnabled = resolveDevAgentGate(
+      options.config.dashboard?.liveInsights?.enabled,
+      options.config,
+    );
+    try {
+      if (liveInsightsEnabled) {
+        const li = options.config.dashboard?.liveInsights ?? {};
+        const pages = buildBuiltinInsightPages({ featureMetricsLedger: this.featureMetricsLedger });
+        this.dashboardInsightEngine = new DashboardInsightEngine({
+          pages,
+          intelligence: options.intelligence ?? null,
+          enabled: liveInsightsEnabled,
+          dryRun: li.dryRun ?? true,
+          ttlMs: (li.ttlSeconds ?? 300) * 1000,
+          maxLines: li.maxLines ?? 3,
+          llmTimeoutMs: li.llmTimeoutMs ?? 12000,
+          recordEvent: (outcome, page) =>
+            this.featureMetricsLedger?.record({ feature: 'dashboard-insights', kind: 'event', outcome, verdictId: page }),
+          logger: (line) => console.log(line),
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] dashboard-insight-engine init failed (non-fatal):', err);
+      this.dashboardInsightEngine = null;
+    }
+
     // GrowthDigestPublisher (Slice 2 — docs/specs/PROACTIVE-GROWTH-DIGEST-PUBLISHER-SLICE2-SPEC.md)
     // — the cadence + delivery VOICE for the analyst above. Constructed ONLY when
     // the analyst exists AND digestDelivery !== 'off' (the default 'off' means
@@ -2787,6 +2825,7 @@ export class AgentServer {
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
+      dashboardInsightEngine: this.dashboardInsightEngine,
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,

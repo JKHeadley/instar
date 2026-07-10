@@ -108,6 +108,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
     exempt:
       'no live LLM prompt — generateStatusLine/classifyProgress hooks are unwired at the construction site (server.ts); the enqueue path resolves templated strings; revisit if a generator is wired',
   },
+  DashboardInsightEngine: {
+    exempt:
+      'awareness-only dashboard read surface (docs/specs/dashboard-live-insights.md) — its LLM insight is NEVER a gate and ALWAYS degrades to a deterministic per-page one-liner floor on any failure, so its LLM quality is not safety-load-bearing and a generic bench task measures nothing that gates anything. When a routing NATURE row is later cited for it, this graduates to a real { task } (cite-the-bench forbids a nature row for a merely-exempt component).',
+  },
 
   // ── Wave 3 (reflectors + background/job tasks) ──
   // ProfileIntentClassifier — the offender #1 LLM conversion
@@ -220,6 +224,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   'a2a-checkin': true, // A2A peer-authored threads
   'correction-learning': true,
   'mentor-stage-b': true,
+  DashboardInsightEngine: true, // summarizes page data incl. user/peer-authored rows (relationships/threadline/commitments)
 
   // ── Jobs authoring over untrusted file/code content → true ──
   PipeSessionSpawner: true, // spawns from task descriptions that may be user-authored
@@ -319,6 +324,10 @@ export const CLAIM_KINDS: ReadonlyArray<ClaimKind> = [
 export type JudgesClaimsFlag = { claimKind: ClaimKind } | false | { false: string };
 
 export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
+  // The dashboard insight engine summarizes a page's own data into awareness-only
+  // observations; it never credits or refuses a completion/progress/health claim
+  // asserted by an agent or session → does not judge claims.
+  DashboardInsightEngine: false,
   // The external-hog classifier judges a process's DISPOSITION (dead-weight zombie vs busy),
   // not a completion/health/scored-credit claim asserted by another party → does not judge claims.
   ExternalHogClassifier: false,
@@ -445,6 +454,10 @@ export type ParserContractFlag =
   | { false: string };
 
 export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> = {
+  DashboardInsightEngine: {
+    false:
+      'output is free-text insight lines (parseInsightResponse extracts/clamps 1-3 plain-English lines, degrade-to-deterministic-floor on unparseable) — no closed verdict vocabulary is parsed',
+  },
   // The external-hog classifier's output is machine-parsed into a closed verdict vocabulary
   // (kill|leave|alert via parseClassifierVerdict, strict allowlist, fail-safe to alert).
   ExternalHogClassifier: { pending: 'contract-wave-2' },
@@ -815,6 +828,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   'correction-learning': exposed(EXPOSED_USER_MODEL),
   'mentor-stage-b': exposed(EXPOSED_MODEL_TOOL), // mentor signals over mentee output
   ResumeValidator: exposed(EXPOSED_TOOL), // matches a resume UUID against topic/session state
+  DashboardInsightEngine: exposed(EXPOSED_ALL), // summarizes page data that can embed user + model + tool content (fail-safe: never onto a non-injection door)
 
   // ── Jobs ──
   PipeSessionSpawner: exposed(EXPOSED_USER_TOOL), // spawns from (possibly user-authored) task descriptions

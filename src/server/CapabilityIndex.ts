@@ -904,6 +904,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'dashboardLiveInsights',
+    prefixes: ['/insights'],
+    description: 'Dashboard Live-LLM-Insights — the per-page Insight Strip: a plain-English headline + supporting lines over a dashboard page\'s own data, an LLM insight routed through the shared nature-router (FAST lane), cached + awareness-only (never gates, never mutates)',
+    build: ({ ctx }) => ({
+      // DEV-GATED: resolve through the funnel so the capability report matches the
+      // construction gate — LIVE on a dev agent, DARK on the fleet.
+      enabled: resolveDevAgentGate(ctx.config.dashboard?.liveInsights?.enabled, ctx.config),
+      endpoints: [
+        'GET /insights — every registered page\'s Insight Strip (the cross-page digest surface)',
+        'GET /insights/:page — one page\'s Insight Strip',
+        'GET /insights/status — content-free posture (enabled/dryRun/ttl/pageCount)',
+      ],
+      hint: 'Dev-gated dark (dashboard.liveInsights.enabled); routes 503 when dark. dryRun:true (dev default) serves the deterministic floor; a deliberate dryRun:false activates the LLM insight. Point the user at the dashboard Insights tab, not curl.',
+    }),
+  },
+  {
     key: 'failureLearning',
     prefixes: ['/failures'],
     description: 'Failure-Learning Loop — instar dev-process failure forensics (which spec/tool produced a failure; what process gaps recur)',

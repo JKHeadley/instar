@@ -51,6 +51,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       budgetCapUsd: 0,
     },
   },
+  // Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md) — the
+  // per-page Insight Strip. `enabled` is DELIBERATELY OMITTED so
+  // resolveDevAgentGate resolves it (LIVE on a development agent, DARK on the
+  // fleet; /insights routes 503 when dark) — the standard maturation ladder, not
+  // a flat default-false (a seeded `enabled:false` is the #1001 mechanism that
+  // would force-dark even a dev agent). `dryRun:true` is the SPEND canary: the
+  // LLM layer is inert (deterministic floor served, "would generate" logged)
+  // until a deliberate `dryRun:false`. applyDefaults is add-missing-only, so an
+  // operator's existing overrides are never clobbered (Migration Parity).
+  dashboard: {
+    liveInsights: {
+      dryRun: true,
+      ttlSeconds: 300,
+      maxLines: 3,
+      llmTimeoutMs: 12000,
+    },
+  },
   // Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE
   // design, docs/specs/forkbomb-prevention-simple.md §D-CAP). A SAFETY FLOOR:
   // ON by default fleet-wide — a safety floor that ships dark is no floor. The

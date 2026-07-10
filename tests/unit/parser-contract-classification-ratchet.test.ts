@@ -96,6 +96,7 @@ const PENDING_BASELINE = [
 // a component has NO closed-vocabulary verdict parse — argue the reason in
 // src/data/llmBenchCoverage.ts AND add it here (a visible, reviewed act). ──
 const ARGUED_FALSE_BASELINE = [
+  'DashboardInsightEngine',
   'InputDetector',
   'SessionActivitySentinel',
   'PromiseBeacon',
