@@ -229,6 +229,18 @@
       background: #3a2a1b;
       color: #fbbf24;
     }
+    /* Genuine cross-machine duplicate (CMT-1936 part c): the SAME conversation
+       has a live session on 2+ machines at once — the real incoherency, loud
+       and red. (The same recurring job on each machine is benign and never
+       gets this badge.) */
+    .duplicate-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #4e1b1b;
+      color: #f87171;
+    }
     /* A session running on ANOTHER machine — now clickable; selecting it
        streams its terminal here via the cross-machine relay (§2.2). The badge
        already names the machine, so a slightly dimmed row is enough hint. */
@@ -4016,6 +4028,11 @@
     // per-machine empty-state strip. Populated only when the pool is enabled with
     // 2+ machines — single-machine agents never see the strip (strict no-op).
     let poolMachinesView = [];
+    // Session-listing hygiene (CMT-1936 part c): names of sessions the server
+    // flagged as GENUINE cross-machine duplicates (the SAME conversation live on
+    // >=2 machines at once). Same recurring job on each machine is benign and is
+    // never flagged. Fed by pool.duplicateTopics from /sessions?scope=pool.
+    let poolDuplicateSessionNames = new Set();
     let selfMachineNickname = null;
     let activeSession = null;
     let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
@@ -4370,6 +4387,7 @@
             <span class="model-badge ${model}">${model}</span>
             <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
             ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
+            ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
             <span>${elapsed}</span>
           </div>
           ${telemetryHtml}
@@ -4977,6 +4995,13 @@
         poolMachinesView = (j.pool && j.pool.enabled && Array.isArray(j.pool.machines) && j.pool.machines.length >= 2)
           ? j.pool.machines
           : [];
+        // Genuine cross-machine duplicates (server-computed): collect the flagged
+        // session NAMES so both local (WS-fed) and remote tiles can badge — the
+        // local row never carries the flag itself (it arrives via WebSocket).
+        poolDuplicateSessionNames = new Set(
+          (j.pool && Array.isArray(j.pool.duplicateTopics) ? j.pool.duplicateTopics : [])
+            .flatMap(d => Array.isArray(d.sessions) ? d.sessions : [])
+        );
         renderSessionList();
       } catch { /* best-effort — peers may be offline; next tick retries */ }
     }

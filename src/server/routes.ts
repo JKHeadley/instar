@@ -7255,9 +7255,24 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/sessions', async (req, res) => {
     const status = req.query.status as string | undefined;
     const validStatuses = ['starting', 'running', 'completed', 'failed', 'killed'];
-    const sessions = status && validStatuses.includes(status)
-      ? ctx.state.listSessions({ status: status as 'starting' | 'running' | 'completed' | 'failed' | 'killed' })
+    // Session-listing hygiene (CMT-1936): the DEFAULT listing is ACTIVE
+    // sessions only (starting/running). Finished runs (completed/failed/
+    // killed) stay fully readable behind an explicit opt-in — `?include=all`
+    // for the whole registry, or `?status=<terminal>` for one class — so the
+    // ~50 retained finished mentor/job records never read as "50 running
+    // sessions" on the dashboard / pool / agent surfaces (the 2026-07-05
+    // "duplicate sessions" operator misread).
+    const explicitStatus = status && validStatuses.includes(status)
+      ? (status as 'starting' | 'running' | 'completed' | 'failed' | 'killed')
+      : undefined;
+    const includeAll = req.query.include === 'all';
+    const isActiveStatus = (s: unknown): boolean => s === 'running' || s === 'starting';
+    let sessions = explicitStatus
+      ? ctx.state.listSessions({ status: explicitStatus })
       : ctx.state.listSessions();
+    if (!explicitStatus && !includeAll) {
+      sessions = sessions.filter((s) => isActiveStatus(s.status));
+    }
 
     // Which machine answered — so a session row can say where it runs. Absent
     // on single-machine installs (no pool wired), so the dashboard hides the badge.
@@ -7340,9 +7355,14 @@ export function createRoutes(ctx: RouteContext): Router {
       // classifier so an idle peer reads "online — no active sessions" but a
       // dark peer reads "unreachable", never a fabricated state).
       const peerFetchReason = new Map<string, string | null>();
+      // Forward the caller's visibility opt-in to each peer so the pool view
+      // keeps ONE semantic (active-only by default, everything on include=all,
+      // one class on ?status=). explicitStatus comes from the validated
+      // allowlist above, so it is URL-safe by construction.
+      const peerQuery = includeAll ? '?include=all' : explicitStatus ? `?status=${explicitStatus}` : '';
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.url}/sessions`, {
+          const r = await fetch(`${p.url}/sessions${peerQuery}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });
@@ -7355,6 +7375,14 @@ export function createRoutes(ctx: RouteContext): Router {
           peerFetchReason.set(p.machineId, null);
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const s of list) {
+            // Defensive mirror of the default-visibility filter for OLDER
+            // peers that still answer the plain route with their FULL registry
+            // (the exact client-side filter dashboard/index.html carries for
+            // the same reason — 2026-06-11: five closed Mac Mini sessions
+            // reappeared as live tiles). Without this, one stale peer
+            // re-introduces the finished-session wall into the pool view.
+            if (!includeAll && !explicitStatus && !isActiveStatus(s.status)) continue;
+            if (explicitStatus && s.status !== explicitStatus) continue;
             remote.push({
               ...s,
               machineId: s.machineId ?? p.machineId,
@@ -7428,6 +7456,61 @@ export function createRoutes(ctx: RouteContext): Router {
         machines.push(entry);
       }
 
+      // GENUINE cross-machine duplicate detection (CMT-1936 part c): the SAME
+      // conversation (platform + platformId) with a LIVE session on two or
+      // more machines at once is the real incoherency. Each machine running
+      // its OWN copy of a recurring job is benign, BY DESIGN, and never flags
+      // here — job/headless sessions carry no platform binding (they enrich as
+      // platform:'headless', which is excluded), so identical `job-*` names on
+      // two machines stay unflagged. Only ACTIVE rows count: a finished record
+      // on one machine + a live session on another is the normal topic-move
+      // case, not a duplicate.
+      const byConversation = new Map<string, {
+        platform: string;
+        platformId: string | number;
+        machineIds: Set<string>;
+        sessions: string[];
+      }>();
+      for (const s of allSessionsMerged) {
+        if (!isActiveStatus(s.status)) continue;
+        const platform = typeof s.platform === 'string' ? s.platform : '';
+        const platformId = s.platformId;
+        if (!platform || platform === 'headless' || platformId == null) continue;
+        const key = `${platform}:${String(platformId)}`;
+        const mid = typeof s.machineId === 'string' ? s.machineId : (selfMachineId ?? '__local__');
+        const entry = byConversation.get(key)
+          ?? { platform, platformId: platformId as string | number, machineIds: new Set<string>(), sessions: [] };
+        entry.machineIds.add(mid);
+        entry.sessions.push(String(s.name ?? s.tmuxSession ?? s.id ?? ''));
+        byConversation.set(key, entry);
+      }
+      const duplicateTopics: Array<{
+        platform: string;
+        platformId: string | number;
+        machineIds: string[];
+        sessions: string[];
+      }> = [];
+      const duplicateKeys = new Set<string>();
+      for (const [key, e] of byConversation) {
+        if (e.machineIds.size >= 2) {
+          duplicateKeys.add(key);
+          duplicateTopics.push({
+            platform: e.platform,
+            platformId: e.platformId,
+            machineIds: [...e.machineIds],
+            sessions: e.sessions,
+          });
+        }
+      }
+      if (duplicateKeys.size > 0) {
+        for (const s of allSessionsMerged) {
+          if (!isActiveStatus(s.status)) continue;
+          const platform = typeof s.platform === 'string' ? s.platform : '';
+          if (!platform || s.platformId == null) continue;
+          if (duplicateKeys.has(`${platform}:${String(s.platformId)}`)) s.duplicateTopic = true;
+        }
+      }
+
       res.json({
         sessions: allSessionsMerged,
         pool: {
@@ -7442,6 +7525,9 @@ export function createRoutes(ctx: RouteContext): Router {
           // multi-machine case the dashboard renders; single-machine installs
           // still get the (lone) self row, harmlessly.
           machines,
+          // Always an array (usually empty) — additive, never breaking. Each
+          // entry is one conversation with a live session on >=2 machines.
+          duplicateTopics,
         },
       });
       return;

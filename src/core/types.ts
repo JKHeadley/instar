@@ -320,6 +320,28 @@ export interface SessionManagerConfig {
   maxSessions: number;
   /** Protected session names that should never be reaped */
   protectedSessions: string[];
+  /**
+   * Finished-session registry retention (session-listing hygiene, CMT-1936).
+   * Bounds how long TERMINAL session records (completed / failed / killed)
+   * stay in the on-disk registry after they end, and hard-caps how many are
+   * retained at once. All optional; absence preserves the shipped defaults
+   * (killed/failed 60 min, completed background 60 min, completed interactive
+   * 24 h, cap 50). SessionManager snapshots config at boot — a change here
+   * takes effect at the next server restart.
+   */
+  retention?: {
+    /** Minutes a killed OR failed record is retained (default 60). */
+    killedTtlMinutes?: number;
+    /** Minutes a completed BACKGROUND record is retained — a scheduler job
+     *  (`jobSlug`) or a headless one-shot (`launchLane === 'headless'`, e.g.
+     *  the mentor Stage-A compose runs). Default 60. */
+    completedJobTtlMinutes?: number;
+    /** Hours a completed INTERACTIVE record is retained (default 24). */
+    completedTtlHours?: number;
+    /** Hard cap on retained terminal records regardless of age — oldest-ended
+     *  pruned first (default 50). The unbounded-accumulation backstop. */
+    maxFinished?: number;
+  };
   /** Patterns in tmux output that indicate session completion */
   completionPatterns: string[];
   /** Auth token for the Instar server — passed to sessions as INSTAR_AUTH_TOKEN

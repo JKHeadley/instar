@@ -1,0 +1,35 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Session-listing hygiene (CMT-1936; live evidence 2026-07-09: the Mac Mini's `GET /sessions` answered 53 rows of which 52 were finished background runs — 22 `mentor-stage-a-*` headless one-shots + 28 `job-*` records — read by the operator as "duplicate sessions running across both machines"). Three parts:
+
+1. **Bounded finished-session retention** (`SessionManager.cleanupStaleSessions`): `failed` records are now pruned (previously retained FOREVER); a terminal record with a missing/unparseable `endedAt` falls back to `startedAt` instead of being skipped forever (the second unbounded hole); headless one-shots (`launchLane:'headless'` — the mentor Stage-A shape) get the 60-min background TTL instead of the 24-h interactive TTL; the hard cap (default 50, oldest-ended first) now counts every terminal class. All knobs config-tunable via `sessions.retention` (`killedTtlMinutes` / `completedJobTtlMinutes` / `completedTtlHours` / `maxFinished`), applied at the next server restart (SessionManager snapshots config at boot) — absence preserves shipped defaults.
+2. **Active-by-default listing** (`GET /sessions`): the default answer is ACTIVE sessions only (`starting`/`running`); `?include=all` returns the full registry; `?status=<valid>` keeps its exact prior semantics. The `scope=pool` fan-out forwards the caller's opt-in to peers and defensively filters a LEGACY peer's full-registry answer (the server-side twin of the dashboard's 2026-06-11 client-side filter), and `pool.machines[].sessionCount` now counts the requested view — no more finished-record-inflated machine counts.
+3. **Genuine cross-machine duplicate flag**: the pool view computes `pool.duplicateTopics` — the SAME conversation (platform + platformId) with a LIVE session on ≥2 machines at once — tags each such row `duplicateTopic: true`, and the dashboard badges it red. The same recurring job on each machine (benign, by design) is never flagged.
+
+Agent Awareness + Migration Parity: new `Session Listing Hygiene` CLAUDE.md section shipped in `generateClaudeMd` and appended to existing agents via `migrateClaudeMd` (content-sniffed, idempotent).
+
+## What to Tell Your User
+
+- Your session list now shows what is actually RUNNING. Finished background chores no longer pile up in the view — on 2026-07-09 one machine showed "53 sessions" when only 1 was really running; that misread is structurally gone.
+- Finished session records are cleaned up on a real schedule now (background runs after an hour, conversations after a day, hard cap 50) — and you can tune every window in config if you want longer history.
+- If the SAME conversation is ever genuinely live on two of your machines at once — the real incoherency — the dashboard flags it with a red "duplicate" badge instead of leaving you to guess. Matching job names across machines are each machine's own scheduled copy and are deliberately not flagged.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| Active-only session listing (default) | `GET /sessions` (Bearer) — running/starting only |
+| Full registry incl. finished runs | `GET /sessions?include=all` (or `?status=completed|failed|killed`) |
+| Genuine cross-machine duplicate flag | `GET /sessions?scope=pool` → `pool.duplicateTopics` + per-row `duplicateTopic:true`; red badge on the dashboard sessions list |
+| Finished-record retention knobs | `.instar/config.json` → `sessions.retention` (`killedTtlMinutes`, `completedJobTtlMinutes`, `completedTtlHours`, `maxFinished`) — applies at the next server restart |
+
+## Evidence
+
+- Tier 1: `tests/unit/SessionManager-retention.test.ts` (9 behavioral tests — both sides of every TTL boundary, failed/killed pruning, endedAt→startedAt fallback, unparseable-timestamp expiry, running never touched, maxFinished oldest-first cap, config knobs live, nonsensical config falls back to defaults); `tests/unit/SessionManager-injection.test.ts` hard-cap block updated to the new implementation.
+- Tier 2: `tests/integration/sessions-listing-hygiene.test.ts` (8 tests — default active-only, include=all, status semantics preserved, invalid status → default, legacy-peer defensive filter + honest machine counts, include=all forwarding, genuine duplicate flagged both rows, benign shapes NOT flagged even under include=all).
+- Tier 3: `tests/e2e/sessions-listing-hygiene-lifecycle.test.ts` (5 tests — real AgentServer + real on-disk records on the production init path: default view, include=all, status filter, additive `pool.duplicateTopics`, Bearer auth).
+- Regression sweep: sessions-pool-scope (integration + e2e), remote-session-close, sessions-launch-lane, dashboard poolTileStatusFilter/sessionMachineBadge, route-validation-edge, route-completeness, all PostUpdateMigrator suites, scaffold-templates, capabilities-discoverability, server-full — green.
