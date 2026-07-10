@@ -1,0 +1,65 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+**A standby machine no longer freezes its whole server when it records an evolution
+action item or a learning.** On a multi-machine setup, `EvolutionManager.saveActions`
+and `saveLearnings` re-emitted the cross-machine replication record for **every**
+surviving record on **every** write, and each emit's witness lookup re-scans the entire
+replication journal for that store. That made one write cost O(records × journalBytes) of
+**synchronous** file reads on the event loop.
+
+It also fed itself into a doom loop: re-emitting every unchanged record on every save
+bloated the journal, and a bigger journal made the next write's scan slower. On a real
+agent the evolution-action journal had grown to ~53 MB / ~61,000 records for only 632
+distinct items — each item re-emitted ~112 times — and the local queue held ~1,200
+actions. One `POST /evolution/actions` on that machine did tens of gigabytes of
+synchronous reads at once, starving the event loop until the supervisor killed and
+respawned the process. Because a slow request has a wide window to overlap one of these
+background-job-triggered freezes, `POST /attention` timed out the same way even though it
+does not touch that store.
+
+The save now re-emits **only records whose content changed** since their last emit,
+tracked by a small in-memory content fingerprint per record id. A genuine change (e.g. a
+status flip to `completed`) still re-emits so peers see the latest state — the
+load-bearing "a peer must see the new status" property is preserved and tested — but the
+redundant re-emits that caused both the freeze and the journal bloat are gone. The
+fingerprint map is seeded from on-disk state when the emitter is attached, so the first
+write after a restart does not re-emit everything once. The fix lives entirely in the
+manager's caller-side emit loop; the generic replication journal, emitter, and reader are
+untouched.
+
+## What to Tell Your User
+
+Nothing to configure. If you run your agent across more than one machine, its standby
+machine no longer freezes for tens of seconds (and get killed and restarted by its own
+supervisor) whenever it records a self-improvement to-do or a lesson. Messages you send to
+that machine during those moments stop getting swallowed. The cross-machine sharing of
+your to-dos and lessons works exactly as before, just without the wasteful repetition that
+was quietly bloating the internal log and freezing the server.
+
+## Summary of New Capabilities
+
+- Evolution action and learning replication re-emit only records whose content actually
+  changed, instead of every surviving record on every write — turning an
+  O(records × journalBytes) synchronous burst into a single small emit.
+- The change-detector is seeded from on-disk state when the replication emitter is
+  attached, so a restart with a large existing queue does not re-emit everything on the
+  first write (no cold-start freeze).
+- Status-change replication is preserved and covered by tests: a changed record still
+  re-emits so peers see the latest state; only redundant re-emits of unchanged records are
+  dropped.
+
+## Evidence
+
+- `tests/unit/evolution-manager-emit-wedge.test.ts` — new: pins the emit COUNT (the wedge
+  multiplier). 40 adds emit 40 puts (not 820); `updateAction` re-emits only the changed
+  action carrying its new status (not all survivors); an unchanged record emits nothing; a
+  simulated restart with a populated queue emits 1 (not N+1); learnings behave the same.
+  Proven failing-first against the pre-fix code (820 / 5 / 1 / 31 / 325).
+- `tests/unit/evolution-manager-action-replication.test.ts`,
+  `tests/unit/evolution-manager-learning-replication.test.ts`,
+  `tests/e2e/ws2-evolution-actions-cross-instance.test.ts` — unchanged and green: the
+  status-change-propagation and prune-tombstone guarantees still hold.
