@@ -4098,30 +4098,58 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * Remove stale session state files for sessions that have been
-   * killed or completed beyond the retention period.
-   * Killed sessions: removed after 1 hour.
-   * Completed sessions: removed after 24 hours.
+   * Remove stale session state files for sessions that reached a TERMINAL
+   * status (completed / failed / killed) beyond the retention period.
+   *
+   * Defaults — config-tunable via `sessions.retention` (session-listing
+   * hygiene, CMT-1936; the SessionManager snapshots config at boot, so a
+   * retention change takes effect at the next server restart):
+   *   - killed / failed records: 60 min (`killedTtlMinutes`)
+   *   - completed BACKGROUND records — a scheduler job (`jobSlug`) or a
+   *     headless one-shot (`launchLane === 'headless'`, e.g. the 15-min-cadence
+   *     mentor Stage-A compose runs that walled the Mini's session list):
+   *     60 min (`completedJobTtlMinutes`)
+   *   - completed INTERACTIVE records: 24 h (`completedTtlHours`)
+   *   - hard cap: at most `maxFinished` (default 50) terminal records retained
+   *     regardless of age — oldest-ended pruned first. The cap now counts
+   *     EVERY terminal record (completed AND failed AND killed), so no
+   *     terminal class can accumulate without bound.
+   *
+   * Timestamp honesty: a terminal record whose `endedAt` is missing or
+   * unparseable falls back to `startedAt`; a record with NEITHER parseable is
+   * treated as expired. (Pre-fix, a missing `endedAt` skipped the record
+   * forever — an unbounded hole — and `failed` records were never pruned.)
    */
   cleanupStaleSessions(): string[] {
     const allSessions = this.state.listSessions();
     const now = Date.now();
-    const KILLED_TTL_MS = 60 * 60 * 1000;            // 1 hour
-    const COMPLETED_JOB_TTL_MS = 60 * 60 * 1000;     // 1 hour for jobs
-    const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;    // 24 hours for interactive
+    const retention = this.config.retention;
+    // Nullish-safe positive-number read (0 is a valid, immediate-prune TTL).
+    const posNum = (v: unknown, dflt: number): number =>
+      typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : dflt;
+    const KILLED_TTL_MS = posNum(retention?.killedTtlMinutes, 60) * 60 * 1000;
+    const COMPLETED_JOB_TTL_MS = posNum(retention?.completedJobTtlMinutes, 60) * 60 * 1000;
+    const COMPLETED_TTL_MS = posNum(retention?.completedTtlHours, 24) * 60 * 60 * 1000;
+    const MAX_FINISHED = Math.floor(posNum(retention?.maxFinished, 50));
     const cleaned: string[] = [];
-    const completed: { id: string; endedAt: number }[] = [];
+    const retained: { id: string; endedAt: number }[] = [];
+
+    const parseTs = (iso: string | undefined): number => {
+      if (!iso) return Number.NaN;
+      const t = new Date(iso).getTime();
+      return Number.isFinite(t) ? t : Number.NaN;
+    };
 
     for (const session of allSessions) {
-      if (session.status !== 'killed' && session.status !== 'completed') continue;
-      const endedAt = session.endedAt ? new Date(session.endedAt).getTime() : 0;
-      if (!endedAt) continue;
-
-      const age = now - endedAt;
+      if (session.status !== 'killed' && session.status !== 'completed' && session.status !== 'failed') continue;
+      const endedAtRaw = parseTs(session.endedAt);
+      const endedAt = Number.isNaN(endedAtRaw) ? parseTs(session.startedAt) : endedAtRaw;
+      // Neither timestamp parseable → malformed terminal record → expired now.
+      const age = Number.isNaN(endedAt) ? Number.POSITIVE_INFINITY : now - endedAt;
       let ttl: number;
-      if (session.status === 'killed') {
+      if (session.status === 'killed' || session.status === 'failed') {
         ttl = KILLED_TTL_MS;
-      } else if (session.jobSlug) {
+      } else if (session.jobSlug || session.launchLane === 'headless') {
         ttl = COMPLETED_JOB_TTL_MS;
       } else {
         ttl = COMPLETED_TTL_MS;
@@ -4132,16 +4160,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
           cleaned.push(session.id);
           this.idleKillBackoff?.clear(session.id); // map-leak eviction (Fix A finding 1)
         }
-      } else if (session.status === 'completed') {
-        completed.push({ id: session.id, endedAt });
+      } else {
+        retained.push({ id: session.id, endedAt: Number.isNaN(endedAt) ? 0 : endedAt });
       }
     }
 
-    // Hard cap: prune oldest completed sessions if more than 50 remain
-    const MAX_COMPLETED = 50;
-    if (completed.length > MAX_COMPLETED) {
-      completed.sort((a, b) => a.endedAt - b.endedAt);
-      const excess = completed.slice(0, completed.length - MAX_COMPLETED);
+    // Hard cap: prune the oldest-ended terminal records beyond maxFinished.
+    if (retained.length > MAX_FINISHED) {
+      retained.sort((a, b) => a.endedAt - b.endedAt);
+      const excess = retained.slice(0, retained.length - MAX_FINISHED);
       for (const s of excess) {
         if (this.state.removeSession(s.id)) {
           cleaned.push(s.id);

@@ -228,6 +228,23 @@ Increment B of the Routing Control Room (docs/specs/routing-control-room-spend-a
 }
 
 /**
+ * CLAUDE.md awareness block for session-listing hygiene (CMT-1936): the
+ * active-by-default GET /sessions view, the `?include=all` opt-in, bounded
+ * finished-record retention, and the pool view's genuine cross-machine
+ * duplicate flag. The unique heading substring `Session Listing Hygiene` is
+ * the content-sniff marker used by migrateClaudeMd (Migration Parity).
+ */
+export function SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Session Listing Hygiene (GET /sessions shows ACTIVE sessions by default)
+
+\`GET /sessions\` returns ACTIVE sessions only (status \`starting\`/\`running\`) by default — finished runs (completed/failed/killed) are NOT in the default listing, so a wall of retained background-job records never reads as "50 running sessions". The full registry is one flag away: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/sessions?include=all"\` (or \`?status=completed\` / \`?status=failed\` / \`?status=killed\` for one class). The same semantics apply to the pool view (\`GET /sessions\` with \`scope=pool\`) across every machine.
+- **Finished records are bounded**: terminal session records auto-prune on TTLs (killed/failed 60 min; completed background jobs + headless one-shots 60 min; completed interactive 24 h; hard cap 50 retained) — tune via \`sessions.retention\` in \`.instar/config.json\` (\`killedTtlMinutes\` / \`completedJobTtlMinutes\` / \`completedTtlHours\` / \`maxFinished\`; applies at the next server restart).
+- **Genuine cross-machine duplicates are flagged loudly**: the pool view computes \`pool.duplicateTopics\` — the SAME conversation (platform + topic/channel id) with a LIVE session on 2+ machines at once, each such row tagged \`duplicateTopic: true\` and badged red on the dashboard. The SAME recurring job running on each machine is benign, BY DESIGN, and is never flagged.
+- **When to use** (PROACTIVE — these are the triggers): user asks "why do I see duplicate sessions across my machines?" → read \`pool.duplicateTopics\` first — an EMPTY array means there is no genuine duplicate (matching job names per machine are each machine's own scheduled copy; finished records are excluded by default). "Where did the finished runs go?" → \`?include=all\` (bounded retention prunes older ones). Do NOT count sessions from an \`include=all\` listing when answering "what is running?" — the default view IS the running view.
+`;
+}
+
+/**
  * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
  * incident) + the API fresh-respawn lever. Appended to NEW installs as part of
  * the Stuck-Context Recovery section, and patched onto agents that already
@@ -4819,6 +4836,18 @@ setTimeout(() => process.exit(0), 2000);
       content += PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Playwright Profile Registry section');
+    }
+
+    // Session Listing Hygiene (CMT-1936) — Agent Awareness Standard + Migration
+    // Parity item 3: existing agents learn that GET /sessions defaults to ACTIVE
+    // sessions (?include=all for the registry), that finished records are bounded
+    // by sessions.retention, and that pool.duplicateTopics flags only GENUINE
+    // cross-machine duplicates (same recurring job per machine is benign). Same
+    // text as generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('Session Listing Hygiene')) {
+      content += SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Session Listing Hygiene section');
     }
 
     // Mesh Self-Healing (U4.2 stale-owner release + U4.4 lease hand-back —

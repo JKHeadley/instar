@@ -68,20 +68,22 @@ describe('routes.ts — failed message persistence', () => {
 });
 
 describe('SessionManager — cleanupStaleSessions hard cap', () => {
-  it('prunes oldest completed sessions first when over the 50-session cap', () => {
+  it('prunes oldest terminal sessions first when over the maxFinished cap (default 50)', () => {
     const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
     const methodStart = source.indexOf('cleanupStaleSessions(): string[]');
     const methodEnd = source.indexOf('\n  /**', methodStart + 1);
     const method = source.slice(methodStart, methodEnd > -1 ? methodEnd : undefined);
 
-    // Hard cap constant
-    expect(method).toContain('MAX_COMPLETED');
-    expect(method).toContain('50');
+    // Hard cap (config-tunable via sessions.retention.maxFinished, default 50 —
+    // session-listing hygiene, CMT-1936; behavioral coverage lives in
+    // tests/unit/SessionManager-retention.test.ts)
+    expect(method).toContain('MAX_FINISHED');
+    expect(method).toContain("posNum(retention?.maxFinished, 50)");
 
     // Sort ascending by endedAt so oldest come first
     expect(method).toContain('a.endedAt - b.endedAt');
 
     // Slice the excess (oldest end of the sorted array)
-    expect(method).toContain('slice(0, completed.length - MAX_COMPLETED)');
+    expect(method).toContain('slice(0, retained.length - MAX_FINISHED)');
   });
 });
