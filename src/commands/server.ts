@@ -4459,6 +4459,19 @@ export async function startServer(options: StartOptions): Promise<void> {
           selfMachineId: cjOwnMachineId,
           logger: (m) => console.log(pc.dim(`  [ws2-witness-index] ${m}`)),
         });
+        const compactionConfig = config.multiMachine?.coherenceJournal?.replication?.compaction;
+        if (compactionConfig?.run === true) {
+          const { ReplicatedJournalCompactor } = await import('../core/ReplicatedJournalCompactor.js');
+          new ReplicatedJournalCompactor({
+            stateDir: config.stateDir,
+            registry: replicatedKindRegistry,
+            enabled: true,
+            dryRun: compactionConfig.dryRun ?? true,
+            logger: (m) => console.log(pc.dim(`  ${m}`)),
+          }).run();
+          // A real run replaced streams atomically; rebuild from the committed files.
+          if (compactionConfig.dryRun === false) replicatedPeerStreamReader.rebuildWitnessIndex();
+        }
         coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
         });

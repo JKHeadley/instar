@@ -420,15 +420,18 @@ describe('lint-dev-agent-dark-gate', () => {
       '1348': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
       '1358': 'multiMachine.sessionPool.inboundQueue.enabled',
       '1387': 'multiMachine.sessionPool.holdForStability.enabled',
-      '1582': 'multiMachine.stateSync.threadlinePairing.enabled',
+      // replicated-journal-compaction adds a 5-line compaction default block
+      // above stateSync. It uses `run:false` (not an `enabled` gate), so the
+      // attributed path set is unchanged and the four rows below shift by +5.
+      '1587': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
       // default, so it adds NO attributed dark-gate row; it shifts the cartographer
       // `enabled: false` rows below it DOWN by +6.
-      '1729': 'cartographer.freshnessSweep.enabled',
-      '1774': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1799': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1734': 'cartographer.freshnessSweep.enabled',
+      '1779': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1804': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

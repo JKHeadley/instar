@@ -1,0 +1,24 @@
+# Replicated-record journal compaction
+
+## What Changed
+
+- An explicit `multiMachine.coherenceJournal.replication.compaction` one-shot path for registered replicated-record streams.
+- Dry-run-first reporting of record and byte reduction.
+- Atomic temp-file, fdatasync, parity-check, rename, and parent-directory fsync commit discipline.
+
+## What to Tell Your User
+
+The replicated-record journal now has a controlled cleanup path that can reclaim old superseded versions without risking the live journal. It reports what it would change first, and a real run proceeds only after the replacement file proves it answers every witness exactly like the original.
+
+## Summary of New Capabilities
+
+- `run` defaults to `false`.
+- `dryRun` defaults to `true`.
+- Journal input is streamed in fixed-size chunks; memory is bounded by the number and size of live keys, not total journal history.
+- Invalid rows are preserved rather than silently deleted.
+- A real replacement is forbidden unless the witness map rebuilt from the compacted temp stream equals the original witness map.
+- An interrupted run before rename retains the original journal.
+
+## Operator note
+
+Enable the one-shot path in dry-run first and inspect its aggregate `N -> M` report. Set dry-run false only for the controlled compaction run, then turn the run flag back off after completion.

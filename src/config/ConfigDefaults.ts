@@ -1419,7 +1419,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     coherenceJournal: {
       flushIntervalMs: 250,
       scannerIntervalMs: 60000,
-      replication: { maxBatchBytes: 262144 },
+      replication: {
+        maxBatchBytes: 262144,
+        // One-shot replicated-record journal compaction. Explicit opt-in only;
+        // first activation reports N -> M without touching disk.
+        compaction: { run: false, dryRun: true },
+      },
       // Working-Set Handoff (WORKING-SET-HANDOFF-SPEC §3.7). NO enable flag
       // here — the feature activates IFF replication.enabled === true (the
       // pull is meaningless without replication's mesh path and must never

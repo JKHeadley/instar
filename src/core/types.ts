@@ -2784,7 +2784,13 @@ export interface CoherenceJournalUserConfig {
    * (WORKING-SET-HANDOFF-SPEC §3.7: the pull is meaningless without
    * replication's mesh path and must never out-activate it).
    */
-  replication?: { enabled?: boolean; maxBatchBytes?: number };
+  replication?: {
+    enabled?: boolean;
+    maxBatchBytes?: number;
+    /** Explicit one-shot replicated-record journal compaction. Disabled by default;
+     * when enabled it still defaults to dry-run until deliberately flipped. */
+    compaction?: { run?: boolean; dryRun?: boolean };
+  };
   /**
    * Working-Set Handoff tunables (WORKING-SET-HANDOFF-SPEC §3.7). All
    * optional; ConfigDefaults carries the shipped literal. Gated on

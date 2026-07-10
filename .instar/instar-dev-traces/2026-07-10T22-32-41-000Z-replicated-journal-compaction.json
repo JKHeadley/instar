@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "sessionId": "telegram-458-replicated-journal-compaction",
+  "timestamp": "2026-07-10T22:32:41.000Z",
+  "artifactPath": "upgrades/side-effects/replicated-journal-compaction.md",
+  "artifactSha256": "ca8580b4522851ded314e120f5bfb201c0431ed758db2204bb3b96032e940e5b",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/ReplicatedJournalCompactor.ts",
+    "src/core/types.ts",
+    "tests/unit/ReplicatedJournalCompactor.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "tests/integration/replicated-journal-compaction.integration.test.ts",
+    "tests/e2e/replicated-journal-compaction-crash.test.ts",
+    "tests/support/replicatedJournalCompactionFixture.ts",
+    "upgrades/eli16/replicated-journal-compaction.md",
+    "upgrades/next/replicated-journal-compaction.md",
+    "upgrades/side-effects/replicated-journal-compaction.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Explicit dry-run-first maintenance path for shared replicated-store disk state. The source journal remains authoritative until an fsynced compacted stream rebuilds an identical witness map and crosses the atomic rename commit point. Three-tier coverage includes interruption before rename.",
+  "eli16Path": "upgrades/eli16/replicated-journal-compaction.md",
+  "sideEffectsPath": "upgrades/side-effects/replicated-journal-compaction.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
