@@ -503,7 +503,7 @@ assumed complete).
     callers. The §9 lint additionally forbids any in-repo caller outside the
     sanctioned relay module from constructing the `{relayed: true}` marker
     (mesh-signing the marker is the tracked hardening
-    <!-- tracked: 11960 -->). Honesty note for the inverse skew: a
+    <!-- tracked: CMT-1950 -->). Honesty note for the inverse skew: a
     NEW-version sender relaying to a LEGACY holder degrades toward push (the
     legacy holder has no gate) — harmless while the fleet is dark/dryRun,
     gone once Increment D lands, and stated here so nobody mistakes it for a
@@ -592,7 +592,7 @@ Increment D until its operator turns the category off — the flip changes the
 DEFAULT, never a standing effective choice (the ELI16 decision list carries
 this). Increment D's "logs-only default everywhere" claim holds because the
 snapshot preserves choices, not defaults. Full consolidation (retiring the
-legacy keys entirely) remains tracked <!-- tracked: 11960 -->. The dashboard
+legacy keys entirely) remains tracked <!-- tracked: CMT-1941 -->. The dashboard
 toggle is never dead: the §4.2 sole-writer route sets BOTH the category key
 and (when declared) the category's legacyGate key, so one toggle is one
 lever.
@@ -714,7 +714,7 @@ self-knowledge boot blocks). Hard rules:
   fail a session spawn. Items on an offline owner are missed-not-lost: they
   resurface at the next boot once the owner returns, and meanwhile they age
   through the owning machine's unread-aging counter + digest. Riding the
-  working-set carrier is the tracked richer path <!-- tracked: 11960 -->.
+  working-set carrier is the tracked richer path <!-- tracked: CMT-1947 -->.
 - **Unbound items don't rot silently (Close the Loop):** items with NO
   topic/project binding are re-surfaced to the AGENT — aged unread items
   (>72h) appear as one summary line in the lifeline session's boot block, and
@@ -822,7 +822,7 @@ the gate (FD-15). Pinned semantics:
   stated, with P17's delivery-layer bounds as the backstop. The status route
   reports the pool-wide theoretical maximum (budget × online machines); a
   lease-holder-coordinated global budget is a tracked follow-up
-  <!-- tracked: 11960 -->.
+  <!-- tracked: CMT-1951 -->.
 - **Key-space bounds (the unique-sourceContext storm — the 2026-06-05 dodge
   shape):** the §4.2 coalescing accumulator and the §5 episode-dedup map are
   both keyed on emitter-supplied `sourceContext`, so both carry a TTL + a
@@ -990,7 +990,7 @@ mid-build stop.
 - **FD-3 — Digest defaults OFF, daily, to the hub** (D-11); content pinned to
   counts + inventory, never item text (§4.5).
 - **FD-4 — Opt-in granularity is per-category** in v1; per-source/per-topic
-  granularity deferred <!-- tracked: 11960 -->.
+  granularity deferred <!-- tracked: CMT-1943 -->.
 - **FD-5 — Opted-in pushes land at the category's declared destination**
   (hub, or 🩺 for agent-health; conversation for conversation-serving).
   Never a new topic (P23).
@@ -1011,12 +1011,12 @@ mid-build stop.
   state is shown on the status route; the LEASE-HOLDER runs the divergence
   comparison, and divergence persisting >24h raises ONE deduped attention
   item (loud, not a silent footnote). Durable REPLICATION of the whole
-  preferences block remains tracked <!-- tracked: 11960 -->.
+  preferences block remains tracked <!-- tracked: CMT-1945 -->.
 - **FD-8 — Rollout keeps a lever until the cleanup increment** (see DEV-1):
   `enabled`/`dryRun` exist through the maturation ladder; the June-13 "no
   break-glass" (D-9) is honored as the END state — a tracked final increment
   removes the legacy always-push path after fleet soak
-  <!-- tracked: 11960 -->. Flipping `enabled: false` post-Increment-D emits
+  <!-- tracked: CMT-1948 -->. Flipping `enabled: false` post-Increment-D emits
   an operator-visible warning naming the blast radius ("push-everything
   behavior restored"); `dryRun: true` is the preferred lever short of
   emergencies.
@@ -1028,7 +1028,7 @@ mid-build stop.
 - **FD-10 — The gate is Telegram-first.** Slack/WhatsApp/iMessage adapters
   gain the same gate at their send funnels in a follow-up; the envelope type
   and registry are adapter-agnostic by construction
-  <!-- tracked: 11960 -->.
+  <!-- tracked: CMT-1944 -->.
 - **FD-11 — Opt-in write authority:** the §4.2 route is the SOLE writer;
   every write carries `confirmedBy` (`dashboard-pin` |
   `operator-conversational-confirm`) + an audit row; unregistered ids are
@@ -1254,7 +1254,7 @@ user's explicit confirmation."
    blast-radius warning.
 5. **Increment E (end-state, D-9):** after fleet soak, remove the legacy
    always-push path so quiet-by-default is structural, not configured
-   <!-- tracked: 11960 -->. Operator-ratified at that increment, not before.
+   <!-- tracked: CMT-1948 -->. Operator-ratified at that increment, not before.
 
 ## Alternatives considered
 
@@ -1290,22 +1290,26 @@ with follow-through cadence; the topic marker is the reconstruction-time
 anchor, not the final tracking grain.
 
 - Legacy-lever full consolidation into `notifications.push.categories`
-  <!-- tracked: 11960 -->
+  <!-- tracked: CMT-1941 -->
 - Live-turn quiet-notice injection into running sessions (v1 is session-start
-  only) <!-- tracked: 11960 -->
-- Per-source / per-topic opt-in granularity <!-- tracked: 11960 -->
+  only) <!-- tracked: CMT-1942 -->
+- Per-source / per-topic opt-in granularity <!-- tracked: CMT-1943 -->
 - Slack/WhatsApp/iMessage adapter parity for the gate
-  <!-- tracked: 11960 -->
+  <!-- tracked: CMT-1944 -->
 - Durable cross-machine replication of the notification-preferences block
-  (FD-7's fan-out is the unified surface meanwhile) <!-- tracked: 11960 -->
+  (FD-7's fan-out is the unified surface meanwhile) <!-- tracked: CMT-1945 -->
 - Promotion of the recent-inbound reply corroboration to demotion authority
-  (FD-9 exit criteria) <!-- tracked: 11960 -->
+  (FD-9 exit criteria) <!-- tracked: CMT-1946 -->
 - Working-set-carrier transport for quiet items on topic transfer (§4.3's
-  pool read is the v1 path) <!-- tracked: 11960 -->
-- Increment E legacy-path removal (D-9 end state) <!-- tracked: 11960 -->
+  pool read is the v1 path) <!-- tracked: CMT-1947 -->
+- Increment E legacy-path removal (D-9 end state) <!-- tracked: CMT-1948 -->
 - Emission-authority confidence gating for status claims (the PA-9 brief's
   lane — converges separately, plugs into the registry)
-  <!-- tracked: 11960 -->
+  <!-- tracked: CMT-1949 -->
+- Mesh-signed relayed-marker hardening (§9 relay-marker lint)
+  <!-- tracked: CMT-1950 -->
+- Lease-holder-coordinated pool-global push budget (§5.2)
+  <!-- tracked: CMT-1951 -->
 
 ## Resolution note (why Open questions is empty)
 
