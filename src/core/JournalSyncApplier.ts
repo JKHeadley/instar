@@ -211,6 +211,12 @@ export interface JournalSyncApplierConfig {
    * journal writer + the stateSyncReceive advert read (one source of truth).
    */
   replicatedRegistry?: ReplicatedKindRegistry;
+  /**
+   * Optional derived-index observer for replicated records. Called only after a
+   * peer replica batch has been written and fdatasync has returned, so the index
+   * tracks durable bytes, never uncommitted inbound data.
+   */
+  onReplicatedRecordsCommitted?: (senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void;
 }
 
 function realFs(): JournalFs {
@@ -246,6 +252,7 @@ export class JournalSyncApplier {
    *  applier is constructed before the registry is populated (server.ts boot order);
    *  the config option is for tests that have the registry up front. */
   private replicatedRegistry?: ReplicatedKindRegistry;
+  private replicatedCommitObserver?: (senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void;
 
   /** In-memory meta cache per peer machine (keyed by RAW machineId). */
   private metaCache = new Map<string, PeerMeta>();
@@ -272,6 +279,7 @@ export class JournalSyncApplier {
     this.io = config.fsImpl ?? realFs();
     this.maxEntryBytes = config.maxEntryBytes ?? APPLIER_MAX_ENTRY_BYTES;
     this.replicatedRegistry = config.replicatedRegistry;
+    this.replicatedCommitObserver = config.onReplicatedRecordsCommitted;
   }
 
   /** The per-entry byte cap for a kind — RAISED for replicated `*-record` kinds so
@@ -292,6 +300,15 @@ export class JournalSyncApplier {
    *  validates + applies instead of suspect-flagging the stream. Idempotent. */
   setReplicatedKindRegistry(registry: ReplicatedKindRegistry | undefined): void {
     this.replicatedRegistry = registry;
+  }
+
+  /**
+   * Attach/replace the derived-index observer after boot wiring has constructed
+   * the peer-stream reader. The replica files remain authoritative; this observer
+   * is only an incremental cache update.
+   */
+  setReplicatedRecordCommitObserver(observer: ((senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void) | undefined): void {
+    this.replicatedCommitObserver = observer;
   }
 
   // ---- advert state (for delta requests) ---------------------------------
@@ -830,8 +847,27 @@ export class JournalSyncApplier {
     if (committed > 0) {
       this.degradation.applied += committed;
       result.applied += committed;
+      this.notifyReplicatedRecordsCommitted(senderMachineId, kind, lines.slice(0, committed));
     }
     return committed;
+  }
+
+  private notifyReplicatedRecordsCommitted(senderMachineId: string, kind: JournalKind, lines: string[]): void {
+    if (!this.replicatedRegistry?.isReplicatedKind(kind) || !this.replicatedCommitObserver) return;
+    const entries: JournalEntry[] = [];
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as JournalEntry;
+        if (entry && entry.kind === kind && typeof entry.seq === 'number') entries.push(entry);
+      } catch { /* @silent-fallback-ok: observer notification is derived-index maintenance; replica files remain authoritative and rebuildable. */
+      }
+    }
+    if (entries.length === 0) return;
+    try {
+      this.replicatedCommitObserver(senderMachineId, kind, entries);
+    } catch (e) { /* @silent-fallback-ok: derived-index observer failure must never endanger replica durability or ack accounting; parity/rebuild falls back to disk. */
+      this.log('replicated-commit-observer', `[journal-sync] replicated commit observer failed for ${kind}: ${(e as Error)?.message}`);
+    }
   }
 
   // ---- SERVE side (§3.4 rule 5/7 — own stream only, durably-flushed only) -

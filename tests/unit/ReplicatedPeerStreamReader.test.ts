@@ -27,9 +27,11 @@ import {
   deriveLearningRecordKey,
 } from '../../src/core/LearningsReplicatedStore.js';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
-import type { JournalEntry } from '../../src/core/CoherenceJournal.js';
+import type { JournalEntry, JournalFs } from '../../src/core/CoherenceJournal.js';
 import type { LearningEntry, LearningSource } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ReplicatedRecordEmitter, type ReplicatedRecordEmitterClock } from '../../src/core/ReplicatedRecordEmitter.js';
+import type { OriginRecord } from '../../src/core/UnionReader.js';
 
 const SELF = 'm_self';
 const PEER = 'm_peer';
@@ -58,6 +60,39 @@ function applyPeerRecord(applier: JournalSyncApplier, data: Record<string, unkno
   applier.apply(PEER, batch);
 }
 
+function attachWitnessObservers(
+  journal: CoherenceJournal,
+  applier: JournalSyncApplier,
+  readerRef: () => ReplicatedPeerStreamReader,
+): void {
+  journal.setReplicatedRecordCommitObserver((kind, entries) => readerRef().observeCommittedEntries(kind, entries));
+  applier.setReplicatedRecordCommitObserver((_sender, kind, entries) => readerRef().observeCommittedEntries(kind, entries));
+}
+
+function maxHlc(records: OriginRecord[]): HlcTimestamp | undefined {
+  let max: HlcTimestamp | undefined;
+  for (const r of records) {
+    if (!max || r.envelope.hlc.physical > max.physical || (r.envelope.hlc.physical === max.physical && r.envelope.hlc.logical > max.logical)) {
+      max = r.envelope.hlc;
+    }
+  }
+  return max;
+}
+
+function countingFs(): { io: JournalFs; reads: () => number; reset: () => void } {
+  let readCount = 0;
+  const io = { ...fs } as unknown as JournalFs;
+  io.readSync = (...args: Parameters<typeof fs.readSync>) => {
+    readCount++;
+    return fs.readSync(...args);
+  };
+  return {
+    io,
+    reads: () => readCount,
+    reset: () => { readCount = 0; },
+  };
+}
+
 describe('ReplicatedPeerStreamReader', () => {
   let dir: string;
   let journal: CoherenceJournal;
@@ -72,6 +107,7 @@ describe('ReplicatedPeerStreamReader', () => {
     journal.setReplicatedKindRegistry(registry);
     applier = new JournalSyncApplier({ stateDir: dir, replicatedRegistry: registry });
     reader = new ReplicatedPeerStreamReader({ stateDir: dir, registry, selfMachineId: SELF });
+    attachWitnessObservers(journal, applier, () => reader);
   });
   afterEach(() => {
     try { journal.close(); } catch { /* best-effort */ }
@@ -127,6 +163,62 @@ describe('ReplicatedPeerStreamReader', () => {
 
   it('loadWitness is undefined for an unheld key (first write)', () => {
     expect(reader.loadWitness(LEARNING_STORE_KEY, 'never-seen')).toBeUndefined();
+  });
+
+  it('keeps the derived witness index correct across own and peer updates', () => {
+    const rk = deriveLearningRecordKey('tmux colon', 'ops', SRC)!;
+    journal.emitReplicatedRecord(LEARNING_RECORD_KIND, buildLearningRecordData({ record: learning({ applied: false }), hlc: hlc(1000, SELF), origin: SELF })!);
+    journal.flush();
+    expect(reader.loadWitness(LEARNING_STORE_KEY, rk)).toEqual(maxHlc(reader.loadOriginRecords(LEARNING_STORE_KEY, rk)));
+    expect(reader.loadWitness(LEARNING_STORE_KEY, rk)?.physical).toBe(1000);
+
+    applyPeerRecord(applier, buildLearningRecordData({ record: learning({ applied: false }), hlc: hlc(2500, PEER), origin: PEER })!, 1);
+    expect(reader.loadWitness(LEARNING_STORE_KEY, rk)).toEqual(maxHlc(reader.loadOriginRecords(LEARNING_STORE_KEY, rk)));
+    expect(reader.loadWitness(LEARNING_STORE_KEY, rk)?.physical).toBe(2500);
+
+    journal.emitReplicatedRecord(LEARNING_RECORD_KIND, buildLearningRecordData({ record: learning({ applied: true }), hlc: hlc(3000, SELF), origin: SELF })!);
+    journal.flush();
+    expect(reader.loadWitness(LEARNING_STORE_KEY, rk)).toEqual(maxHlc(reader.loadOriginRecords(LEARNING_STORE_KEY, rk)));
+    expect(reader.loadWitness(LEARNING_STORE_KEY, rk)?.physical).toBe(3000);
+  });
+
+  it('does not read journal bytes during an emit witness lookup once the index is built', () => {
+    const rk = deriveLearningRecordKey('tmux colon', 'ops', SRC)!;
+    journal.emitReplicatedRecord(LEARNING_RECORD_KIND, buildLearningRecordData({ record: learning(), hlc: hlc(1000, SELF), origin: SELF })!);
+    journal.flush();
+
+    const counted = countingFs();
+    const indexedReader = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF, fsImpl: counted.io });
+    expect(counted.reads()).toBeGreaterThan(0);
+    counted.reset();
+
+    const emitted: Record<string, unknown>[] = [];
+    const emitter = new ReplicatedRecordEmitter({
+      journal: { emitReplicatedRecord: (_kind, data) => { emitted.push(data); } },
+      clock: { tick: () => hlc(2000, SELF) } satisfies ReplicatedRecordEmitterClock,
+      registry: reg(),
+      origin: SELF,
+      stores: () => ({ learnings: { enabled: true } }),
+      loadWitness: (store, recordKey) => indexedReader.loadWitness(store, recordKey),
+    });
+    emitter.emit(LEARNING_STORE_KEY, rk, (nextHlc, origin, observed) => ({
+      ...buildLearningRecordData({ record: learning({ applied: true }), hlc: nextHlc, origin })!,
+      ...(observed ? { observed } : {}),
+    }));
+
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0].observed as HlcTimestamp).physical).toBe(1000);
+    expect(counted.reads()).toBe(0);
+  });
+
+  it('rebuilds the witness index from authoritative journal streams after in-memory loss', () => {
+    const rk = deriveLearningRecordKey('tmux colon', 'ops', SRC)!;
+    journal.emitReplicatedRecord(LEARNING_RECORD_KIND, buildLearningRecordData({ record: learning(), hlc: hlc(1000, SELF), origin: SELF })!);
+    journal.flush();
+    applyPeerRecord(applier, buildLearningRecordData({ record: learning(), hlc: hlc(2500, PEER), origin: PEER })!, 1);
+
+    const rebuilt = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF });
+    expect(rebuilt.loadWitness(LEARNING_STORE_KEY, rk)?.physical).toBe(2500);
   });
 
   it('loadOwnEntries serves only THIS machine\'s own entries; {} for a foreign origin', () => {

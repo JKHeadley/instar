@@ -375,6 +375,12 @@ export interface CoherenceJournalConfig {
   /** Optional logger; called once per failure class. */
   logger?: (msg: string) => void;
   /**
+   * Optional derived-index observer for replicated records. Called only after a
+   * replicated-kind batch has been written and fdatasync has returned, so callers
+   * never witness data that is merely queued in memory.
+   */
+  onReplicatedRecordsCommitted?: (kind: JournalKind, entries: JournalEntry[]) => void;
+  /**
    * Optional fs seam for fault-injection tests (wedge the flusher). Defaults to
    * node:fs primitives. Only the primitives the flusher uses are seamed.
    */
@@ -498,6 +504,7 @@ export class CoherenceJournal {
   private readonly guardWrite?: (filePath: string) => void;
   private readonly now: () => Date;
   private readonly logger?: (msg: string) => void;
+  private replicatedCommitObserver?: (kind: JournalKind, entries: JournalEntry[]) => void;
   private readonly io: JournalFs;
   /**
    * The replicated-kind registry (WS2 send-side). Injected via
@@ -620,6 +627,7 @@ export class CoherenceJournal {
     this.guardWrite = config.guardWrite;
     this.now = config.now ?? (() => new Date());
     this.logger = config.logger;
+    this.replicatedCommitObserver = config.onReplicatedRecordsCommitted;
     this.io = config.fsImpl ?? realFs();
     const initMs = this.now().getTime();
     this.rateBuckets = {
@@ -815,6 +823,15 @@ export class CoherenceJournal {
    */
   setReplicatedKindRegistry(registry: ReplicatedKindRegistry | undefined): void {
     this.replicatedRegistry = registry;
+  }
+
+  /**
+   * Attach/replace the derived-index observer after boot wiring has constructed
+   * the reader. This observer is NOT authoritative: the journal remains the source
+   * of truth and the observer can always rebuild from disk.
+   */
+  setReplicatedRecordCommitObserver(observer: ((kind: JournalKind, entries: JournalEntry[]) => void) | undefined): void {
+    this.replicatedCommitObserver = observer;
   }
 
   /**
@@ -1232,6 +1249,7 @@ export class CoherenceJournal {
           const top = appended[appended.length - 1].seq;
           this.highWaterSeq[kind] = Math.max(this.highWaterSeq[kind], top);
           this.persistMeta();
+          this.notifyReplicatedRecordsCommitted(kind, appended);
         }
       }
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
@@ -1239,6 +1257,24 @@ export class CoherenceJournal {
       this.log('flush', `[coherence-journal] flush failed (swallowed): ${(e as Error)?.message}`);
     } finally {
       this.flushing = false;
+    }
+  }
+
+  private notifyReplicatedRecordsCommitted(kind: JournalKind, appended: QueuedEntry[]): void {
+    if (!this.replicatedRegistry?.isReplicatedKind(kind) || !this.replicatedCommitObserver) return;
+    const entries: JournalEntry[] = [];
+    for (const it of appended) {
+      try {
+        const entry = JSON.parse(it.line) as JournalEntry;
+        if (entry && entry.kind === kind && typeof entry.seq === 'number') entries.push(entry);
+      } catch { /* @silent-fallback-ok: observer notification is derived-index maintenance; the durable journal line remains authoritative and can be rebuilt from disk. */
+      }
+    }
+    if (entries.length === 0) return;
+    try {
+      this.replicatedCommitObserver(kind, entries);
+    } catch (e) { /* @silent-fallback-ok: derived-index observer failure must never endanger journal durability; reader parity/rebuild falls back to the authoritative stream. */
+      this.log('replicated-commit-observer', `[coherence-journal] replicated commit observer failed for ${kind}: ${(e as Error)?.message}`);
     }
   }
 

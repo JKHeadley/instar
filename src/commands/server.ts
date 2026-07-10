@@ -4457,6 +4457,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           stateDir: config.stateDir,
           registry: replicatedKindRegistry,
           selfMachineId: cjOwnMachineId,
+          logger: (m) => console.log(pc.dim(`  [ws2-witness-index] ${m}`)),
+        });
+        coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
+          replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
+        });
+        journalSyncApplier?.setReplicatedRecordCommitObserver((_senderMachineId, kind, entries) => {
+          replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
         });
 
         // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
