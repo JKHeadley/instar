@@ -92,9 +92,10 @@ one of them is genuinely yours, and saying "change #N" is enough.
 2. **One real tension needs your eyes (new since June 13):** the day AFTER
    you approved this design, we ratified a standard saying a genuinely-stuck
    promise I own should surface to you ONCE. This spec resolves it your
-   June-13 way: stuck-promise notices stay QUIET (dashboard + unread badge +
-   my own boot context + the digest), with a `commitment-deadletter` category
-   you can opt into push anytime. Confirm that's still what you want.
+   June-13 way: stuck-promise notices stay QUIET — dashboard + unread badge +
+   my own boot context (and the daily digest, but ONLY if you've turned that
+   on; it's off by default) — with a `commitment-deadletter` category you can
+   opt into push anytime. Confirm that's still what you want.
 3. **Which messages keep flowing as "part of the conversation"?** Default:
    only messages that answer a live action of yours — real replies, the
    unanswered-message receipt, "couldn't start your session", "your message
@@ -110,7 +111,11 @@ one of them is genuinely yours, and saying "change #N" is enough.
 6. **Where opted-in pushes land.** Default: the one Attention topic (Agent
    Health items keep their 🩺 topic). Never a new topic — already law.
 7. **The push volume cap.** Default: 3 pushes per category per 10 minutes,
-   overflow folds into one summary. Tunable down, never off.
+   plus a global ceiling of 10 per 10 minutes across everything; overflow
+   folds into one summary. Genuinely-significant alerts have their own
+   protected lane, so routine noise can never crowd one out — and an
+   overflowing significant alert is always labeled as what it is. Tunable
+   down, never off.
 8. **How long the quiet inbox remembers.** Default: 30 days / 20,000 entries,
    storm-proof (a repeating notice becomes one row with a count, so a bug
    can't wash out real history).
@@ -135,6 +140,19 @@ one of them is genuinely yours, and saying "change #N" is enough.
     is the final cleanup increment after the fleet has soaked quiet —
     honoring your June-13 call as the end state, not skipping the staged
     rollout's safety.
+14. **One safety check on replies stays advisory at first.** The gate could
+    additionally demand every "reply" correlate to a recent message of yours
+    before it delivers. Eating a slow, legitimate reply would be worse than
+    letting one automated message slip, so at launch this check only MEASURES
+    (every mismatch is logged and audited); it gains blocking power in a
+    later PR only after 14 days of enforcement, 200+ real replies, and zero
+    false alarms — all server-side, nothing changes about how I reply.
+15. **Existing notice settings are grandfathered, not force-quieted.** A
+    couple of today's notices (like reap notices) are effectively ON by
+    default. At the fleet flip, whatever is effectively on for you STAYS on
+    (recorded as your opt-in) — the flip changes the default for everything
+    new, it never silently revokes a standing behavior you may rely on. Turn
+    any of them off with one toggle afterwards.
 
 ## What this is NOT
 
