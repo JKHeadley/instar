@@ -27,3 +27,5 @@ The whole enrollment machinery (PIN gate, mandate, sign-in driving, the fail-clo
 ## What you need to decide
 
 Nothing — these are defect fixes to an existing flow, on by wherever the account-follow-me feature is already on (your dev agents; dark on the fleet). The one follow-up left open: rolling the new never-clobber refresh rule out to the OTHER dashboard tabs (Mandates, Process Health, Preferences) is tracked in the standard rather than crammed into this fix.
+
+_Follow-up (same PR): the pane-liveness check's "couldn't look at the window" handler is deliberately conservative — it treats an unreadable window as dead and refuses the code rather than typing blind. A code-quality checker mistook that refusal for a silent failure; it now carries a note explaining itself. No behavior change._

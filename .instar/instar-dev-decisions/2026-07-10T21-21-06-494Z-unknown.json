@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-10T21:21:06.494Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The account-machine-matrix + ws52 code-paste-back features shipped functionally correct but UX-blind: the poll-rebuild renderer predated any interaction-hold rule (no F9 floor existed), the flow was split across two panels by construction, the S7 gate verdict was never surfaced to the UI, and the record-vs-pane liveness gap (D5) was a latent seam in the enrollment lifecycle exposed the first time an operator drove a re-auth on a slot whose pane had died (2026-07-10 justin-gmail incident). Root cause class: operator-surface defects invisible to the 3-tier tests then in place because no floor asserted interaction survival or record-pane coherence."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

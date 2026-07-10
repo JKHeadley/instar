@@ -73,3 +73,7 @@ Low. No config/schema/migration surface; no state format change (pending-login r
 ---
 
 **Second-pass response:** not required (no new blocking authority; the touched gates keep their exact refusal sets — see Decision-point inventory).
+
+## Follow-up (same PR): no-silent-fallbacks ratchet exemption
+
+The D5 pane-liveness guard's `captureOutput` catch (`src/server/routes.ts`, follow-me submit-code route) sets `rawFrame = null` on capture failure, which the ratchet's `hasStateReset` heuristic counted as a new silent fallback (493 > 492 baseline, Unit shard 3/4 red). It is a refusal path, not a degradation — null flows to the explicit `pane-dead` 409 refusal (fails closed; the code is never blind-typed). Marked `@silent-fallback-ok` in place on the same line (no detection-window reshaping of neighboring catch blocks). Side effects: none — comment-only; behavior byte-identical.

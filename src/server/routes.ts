@@ -24637,7 +24637,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     let rawFrame: string | null = null;
     try { rawFrame = ctx.sessionManager.captureOutput(paneSession, 12); }
-    catch { rawFrame = null; /* capture failed → treated as dead below (fail closed) */ }
+    catch { rawFrame = null; /* @silent-fallback-ok — refusal path, not degradation: null → explicit pane-dead 409 below (fails closed, never blind-types) */ }
     const frame = rawFrame || '';
     const lastLine = frame.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0).pop() ?? '';
     // POSITIVE: the paste-code prompt is present (last ~12 lines, near the live prompt, so old
