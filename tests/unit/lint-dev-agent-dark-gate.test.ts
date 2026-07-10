@@ -421,9 +421,14 @@ describe('lint-dev-agent-dark-gate', () => {
       '1358': 'multiMachine.sessionPool.inboundQueue.enabled',
       '1387': 'multiMachine.sessionPool.holdForStability.enabled',
       '1582': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1723': 'cartographer.freshnessSweep.enabled',
-      '1768': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1793': 'cartographer.subtreeNav.llmRerank.enabled',
+      // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
+      // default sub-block was inserted above `promiseBeacon`/`cartographer`.
+      // Its `enabled: true` literal is an explicit fleet-on default, not a dark
+      // default, so it adds NO attributed dark-gate row; it shifts the cartographer
+      // `enabled: false` rows below it DOWN by +6.
+      '1729': 'cartographer.freshnessSweep.enabled',
+      '1774': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1799': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

@@ -12411,6 +12411,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const commitmentTracker = new CommitmentTracker({
       stateDir: config.stateDir,
       liveConfig,
+      autoExpiry: config.commitments?.autoExpiry,
       // P1.5 §3.1: the creator stamp — (originMachineId, id) is the
       // cross-machine identity (ids are per-machine sequential counters).
       ...(cjOwnMachineId ? { originMachineId: cjOwnMachineId } : {}),

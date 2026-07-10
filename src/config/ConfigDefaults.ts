@@ -1701,6 +1701,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // dev-gate lesson). These are the operator's tuning/opt-out dials; dryRun
   // defaults true so the dark→live promotion is the operator's deliberate flip.
   commitments: {
+    autoExpiry: {
+      enabled: true,
+      maxAgeDays: 21,
+      sweepIntervalMs: 21_600_000,
+      dryRun: true,
+    },
     agentOwnedFollowthrough: {
       dryRun: true,
       // externalBlockWindowMs / externalBlockCeilingMs / externalBlockSweepMs:

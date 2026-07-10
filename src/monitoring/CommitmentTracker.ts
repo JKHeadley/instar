@@ -364,6 +364,8 @@ export interface CommitmentTrackerConfig {
   originMachineId?: string;
   /** Check interval in ms. Default: 60_000 (1 minute) */
   checkIntervalMs?: number;
+  /** Auto-expire old agent-owned open commitments. Defaults: enabled, 21d, 6h, dry-run. */
+  autoExpiry?: CommitmentAutoExpiryConfig;
   /** Callback when a violation is detected */
   onViolation?: (commitment: Commitment, detail: string) => void;
   /** Callback when a commitment is verified for the first time */
@@ -376,12 +378,33 @@ export interface CommitmentTrackerConfig {
   escalationWindowMs?: number;
 }
 
+export interface CommitmentAutoExpiryConfig {
+  enabled?: boolean;
+  maxAgeDays?: number;
+  sweepIntervalMs?: number;
+  dryRun?: boolean;
+}
+
+export interface CommitmentAutoExpirySweepReport {
+  timestamp: string;
+  dryRun: boolean;
+  enabled: boolean;
+  maxAgeDays: number;
+  scanned: number;
+  eligible: number;
+  expired: number;
+  capped: boolean;
+}
+
 // ── Implementation ────────────────────────────────────────────────
 
 /** Max depth of the per-id mutate queue. Enqueue beyond this rejects. */
 const MUTATE_QUEUE_MAX_DEPTH = 256;
 /** Max CAS retries when the version drifts under an apply. */
 const MUTATE_CAS_MAX_RETRIES = 5;
+const DEFAULT_AUTO_EXPIRY_MAX_AGE_DAYS = 21;
+const DEFAULT_AUTO_EXPIRY_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const AUTO_EXPIRY_SWEEP_CAP = 500;
 
 type MutateFn = (c: Commitment) => Commitment | Promise<Commitment>;
 interface MutateQueueEntry {
@@ -396,6 +419,8 @@ export class CommitmentTracker extends EventEmitter {
   private storePath: string;
   private rulesPath: string;
   private interval: ReturnType<typeof setInterval> | null = null;
+  private autoExpiryInterval: ReturnType<typeof setInterval> | null = null;
+  private autoExpiryInitialTimeout: ReturnType<typeof setTimeout> | null = null;
   private nextId: number;
   /**
    * Coalesce the per-mutation full-store writes of a synchronous sweep into ONE
@@ -490,12 +515,25 @@ export class CommitmentTracker extends EventEmitter {
     if (this.interval) return;
 
     const intervalMs = this.config.checkIntervalMs ?? 60_000;
+    const autoExpiry = this.resolveAutoExpiryConfig();
 
     // First verification after a short delay
     setTimeout(() => this.verify(), 15_000);
 
     this.interval = setInterval(() => this.verify(), intervalMs);
     this.interval.unref();
+
+    if (autoExpiry.enabled) {
+      this.autoExpiryInitialTimeout = setTimeout(() => {
+        this.autoExpiryInitialTimeout = null;
+        this.sweepAutoExpiry();
+      }, 30_000);
+      this.autoExpiryInitialTimeout.unref();
+      this.autoExpiryInterval = setInterval(() => {
+        this.sweepAutoExpiry();
+      }, autoExpiry.sweepIntervalMs);
+      this.autoExpiryInterval.unref();
+    }
 
     const active = this.getActive().length;
     if (active > 0) {
@@ -509,6 +547,14 @@ export class CommitmentTracker extends EventEmitter {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
+    }
+    if (this.autoExpiryInitialTimeout) {
+      clearTimeout(this.autoExpiryInitialTimeout);
+      this.autoExpiryInitialTimeout = null;
+    }
+    if (this.autoExpiryInterval) {
+      clearInterval(this.autoExpiryInterval);
+      this.autoExpiryInterval = null;
     }
   }
 
@@ -767,6 +813,19 @@ export class CommitmentTracker extends EventEmitter {
 
     console.log(`[CommitmentTracker] Delivered ${id}`);
     this.emit('delivered', updated);
+    return updated;
+  }
+
+  /**
+   * Expire a commitment through the same terminal transition used by sweeps.
+   */
+  expire(id: string, reason = 'Expired'): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing) return null;
+    if (['expired', 'withdrawn', 'delivered'].includes(existing.status)) return null;
+    const updated = this.expireSync(id, reason, new Date().toISOString());
+    this.refreshThreadIdIndex(updated);
+    this.emit('expired', updated);
     return updated;
   }
 
@@ -1541,6 +1600,60 @@ export class CommitmentTracker extends EventEmitter {
 
   // ── Expiration ─────────────────────────────────────────────────
 
+  sweepAutoExpiry(now = new Date()): CommitmentAutoExpirySweepReport {
+    const config = this.resolveAutoExpiryConfig();
+    const timestamp = now.toISOString();
+    const report: CommitmentAutoExpirySweepReport = {
+      timestamp,
+      dryRun: config.dryRun,
+      enabled: config.enabled,
+      maxAgeDays: config.maxAgeDays,
+      scanned: 0,
+      eligible: 0,
+      expired: 0,
+      capped: false,
+    };
+
+    if (!config.enabled) return report;
+
+    const targets: string[] = [];
+    for (const commitment of this.store.commitments) {
+      report.scanned++;
+      if (!this.isAutoExpiryEligible(commitment, now, config.maxAgeDays)) continue;
+      report.eligible++;
+      if (targets.length < AUTO_EXPIRY_SWEEP_CAP) {
+        targets.push(commitment.id);
+      } else {
+        report.capped = true;
+      }
+    }
+
+    if (!config.dryRun && targets.length > 0) {
+      const reason = `auto-expired: aged out >${config.maxAgeDays}d, presumed completed-but-unclosed`;
+      this.batchingSaves = true;
+      try {
+        for (const id of targets) {
+          const updated = this.expireSync(id, reason, timestamp);
+          this.refreshThreadIdIndex(updated);
+          this.emit('expired', updated);
+          report.expired++;
+        }
+        if (report.expired > 0) this.writeBehavioralRules();
+      } finally {
+        this.batchingSaves = false;
+        if (this.pendingSave) {
+          this.pendingSave = false;
+          this.saveStore();
+        }
+      }
+    }
+
+    console.log(
+      `[CommitmentTracker] Auto-expiry sweep: scanned=${report.scanned} eligible=${report.eligible} expired=${report.expired} dryRun=${report.dryRun} maxAgeDays=${report.maxAgeDays} capped=${report.capped}`,
+    );
+    return report;
+  }
+
   private expireCommitments(): void {
     const now = new Date().toISOString();
     let changed = false;
@@ -1552,12 +1665,7 @@ export class CommitmentTracker extends EventEmitter {
       .map(c => c.id);
 
     for (const id of targets) {
-      this.mutateSync(id, c => ({
-        ...c,
-        status: 'expired',
-        resolvedAt: now,
-        resolution: 'Expired',
-      }));
+      this.expireSync(id, 'Expired', now);
       changed = true;
       const c = this.get(id);
       if (c) console.log(`[CommitmentTracker] Expired ${c.id}: "${c.userRequest}"`);
@@ -1566,6 +1674,48 @@ export class CommitmentTracker extends EventEmitter {
     if (changed) {
       this.writeBehavioralRules();
     }
+  }
+
+  private expireSync(id: string, reason: string, resolvedAt: string): Commitment {
+    return this.mutateSync(id, c => ({
+      ...c,
+      status: 'expired',
+      resolvedAt,
+      resolution: reason,
+    }));
+  }
+
+  private resolveAutoExpiryConfig(): Required<CommitmentAutoExpiryConfig> {
+    return {
+      enabled: this.config.autoExpiry?.enabled ?? true,
+      maxAgeDays: this.positiveNumberOrDefault(
+        this.config.autoExpiry?.maxAgeDays,
+        DEFAULT_AUTO_EXPIRY_MAX_AGE_DAYS,
+      ),
+      sweepIntervalMs: this.positiveNumberOrDefault(
+        this.config.autoExpiry?.sweepIntervalMs,
+        DEFAULT_AUTO_EXPIRY_SWEEP_INTERVAL_MS,
+      ),
+      dryRun: this.config.autoExpiry?.dryRun ?? true,
+    };
+  }
+
+  private positiveNumberOrDefault(value: number | undefined, fallback: number): number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+  }
+
+  private isAutoExpiryEligible(commitment: Commitment, now: Date, maxAgeDays: number): boolean {
+    if (commitment.owner !== 'agent') return false;
+    if (commitment.status !== 'pending' && commitment.status !== 'violated') return false;
+    const createdAtMs = Date.parse(commitment.createdAt);
+    if (!Number.isFinite(createdAtMs)) return false;
+    const ageMs = now.getTime() - createdAtMs;
+    if (ageMs <= maxAgeDays * 24 * 60 * 60 * 1000) return false;
+    if (commitment.hardDeadlineAt) {
+      const hardDeadlineMs = Date.parse(commitment.hardDeadlineAt);
+      if (Number.isFinite(hardDeadlineMs) && hardDeadlineMs > now.getTime()) return false;
+    }
+    return true;
   }
 
   // ── Single-writer mutation ─────────────────────────────────────

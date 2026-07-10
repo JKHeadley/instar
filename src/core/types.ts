@@ -3191,6 +3191,21 @@ export interface InstarConfig {
      */
     operationalFacts?: Array<string | { fact: string; updatedAt?: string; machine?: string }>;
   };
+  commitments?: {
+    autoExpiry?: {
+      enabled?: boolean;
+      maxAgeDays?: number;
+      sweepIntervalMs?: number;
+      dryRun?: boolean;
+    };
+    agentOwnedFollowthrough?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      externalBlockWindowMs?: number;
+      externalBlockCeilingMs?: number;
+      externalBlockSweepMs?: number;
+    };
+  };
   /**
    * Feedback-factory operated-instance config (docs/specs/feedback-factory-migration.md).
    * `receiverPersistence` is the Option-B receiving end: the canonical front (Vercel)

@@ -1,0 +1,26 @@
+# Commitment auto-expiry
+
+## What Changed
+
+Commitment auto-expiry addresses the live backlog shape from 2026-07-10: 652 open commitments, 626 agent-owned and older than 7 days, mostly completed work that was never explicitly closed. `CommitmentTracker` now has a bounded periodic sweep controlled by `commitments.autoExpiry` (`enabled:true`, `maxAgeDays:21`, `sweepIntervalMs:21600000`, `dryRun:true` by default). It targets only old agent-owned open commitments, never `owner:"user"`, never young commitments, and never a commitment with an unmet future `hardDeadlineAt`. Eligible rows move through the existing terminal `expired` state with resolution `auto-expired: aged out >Nd, presumed completed-but-unclosed`.
+
+The sweep copies the existing verify-sweep write discipline: every per-commitment transition marks the store dirty under `batchingSaves`, then flushes exactly one commitments-store write at the end. It is capped at 500 expirations per pass and logs one aggregate line per sweep (`scanned`, `eligible`, `expired`, `dryRun`, `maxAgeDays`, `capped`) rather than one line per row. Dry-run mode logs eligibility without mutating, so this release proves the candidate count and log shape before any cleanup is armed.
+
+## What to Tell Your User
+
+- Old agent-owned follow-up promises now have a cleanup path. By default the system only reports how many stale rows it would expire; when dry-run is later turned off, it will close old agent-owned commitments automatically instead of letting the backlog drown current promises.
+- The cleanup is deliberately conservative: it never touches commitments owned by you, never touches recent commitments, and respects future hard deadlines. The first live cleanup after promotion is expected to catch the existing stale backlog in capped batches and report one aggregate count.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| Commitment auto-expiry dry run | Config defaults enable the sweep in dry-run mode; watch the aggregate `CommitmentTracker` sweep log |
+| Stale commitment cleanup promotion | Turn off `commitments.autoExpiry.dryRun` after reviewing dry-run counts; rows expire through the existing terminal `expired` state |
+
+## Evidence
+
+- Tier 1: `tests/unit/CommitmentTracker-auto-expiry.test.ts` (8 tests — old agent-owned pending expires; user-owned old row does not; young row does not; future hard deadline does not; dry-run logs without mutation; second sweep is idempotent; persistence coalesces to one store write; ConfigDefaults add-missing migration preserves operator choices).
+- Tier 2: `tests/integration/commitment-auto-expiry-lifecycle.test.ts` (persist expired row, reload tracker, verify it is terminal/inactive and a second sweep changes zero rows).
+- Tier 3: `tests/e2e/commitment-auto-expiry-api-lifecycle.test.ts` (real AgentServer commitments API: expired row disappears from active view but remains inspectable with the auto-expiry resolution).
+- Regression sweep: `tests/unit/CommitmentTracker.test.ts`, `tests/unit/CommitmentTracker-verify-batches-saves.test.ts`, `tests/unit/ConfigDefaults.test.ts`, and `npx tsc --noEmit` are green.
