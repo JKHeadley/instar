@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-10T02:15:03.648Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 167,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot, per-call child-process reap: when a single codex exec-json call's turn completes but its OWN child lingers past the grace, that one child is reaped once (SIGTERM + a single unref'd SIGKILL backstop) at that call's settlement. No loop, respawn, retry, or feedback controller — the reap count equals the call count, itself bounded by the host spawn-cap. Not a self-triggered control loop."
+  },
+  "verdict": "blocked"
+}

@@ -209,6 +209,55 @@ export function _resetUsageDriftEmissionForTest(): void {
   warnedConfigParseFailure = false;
 }
 
+/**
+ * Parse one `codex exec --json` line for the two fields the exec-json result
+ * path needs to settle EARLY under the codex 0.144 shutdown-linger regression
+ * (see codexSpawn.ts `settleOnTerminalLine`): the agent's final answer text
+ * (`item.completed` → `agent_message` → `text`) and whether the turn terminally
+ * completed (`turn.completed`).
+ *
+ * SECURITY / SIGNAL-vs-AUTHORITY: this is a TYPED, top-level `JSON.parse` with
+ * explicit shape checks — the SAME trust surface the usage parser already
+ * applies to `turn.completed.usage` (never substring/regex matching, which
+ * model content embedded in a string field could match). The `agent_message`
+ * `text` field is codex's OWN structured final-answer channel — it carries the
+ * IDENTICAL bytes codex writes to `--output-last-message` (codex writes that
+ * file FROM the same last message). It is used as the result ONLY on the
+ * early-terminal-settle path (when the child lingered past the grace and the
+ * file has not yet been written); a promptly-exiting CLI still reads the file
+ * as the authority, unchanged.
+ */
+function tryParseCodexResultEvent(
+  line: string,
+): { agentMessageText?: string; turnCompleted?: boolean } | null {
+  const t = line.trim();
+  if (!t.startsWith('{') || !t.endsWith('}')) return null;
+  // Perf pre-filter — decides only whether to ATTEMPT the parse; it cannot
+  // extract values (extraction is strictly the top-level JSON.parse below).
+  if (!t.includes('turn.completed') && !t.includes('agent_message')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(t);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const p = parsed as Record<string, unknown>;
+  if (p['type'] === 'turn.completed') return { turnCompleted: true };
+  if (p['type'] === 'item.completed') {
+    const item = p['item'];
+    if (
+      typeof item === 'object' &&
+      item !== null &&
+      (item as Record<string, unknown>)['type'] === 'agent_message' &&
+      typeof (item as Record<string, unknown>)['text'] === 'string'
+    ) {
+      return { agentMessageText: (item as Record<string, unknown>)['text'] as string };
+    }
+  }
+  return null;
+}
+
 export interface CodexCliIntelligenceProviderOptions {
   /** Absolute path to the `codex` CLI binary. */
   codexPath: string;
@@ -408,6 +457,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     const outFile = join(outDir, 'last-message.txt');
     const acc = new CodexUsageAccumulator();
     let exitedZero = false;
+    // Early-terminal-settle capture (codex 0.144 shutdown-linger regression):
+    // codex writes --output-last-message and exits ~16-30s AFTER emitting
+    // turn.completed, which trips the 30s timeout on an ALREADY-COMPLETED call.
+    // We capture the agent's final answer from the structured event stream so
+    // the call can settle on the result it already holds. See
+    // spawnCodexExecJson `settleOnTerminalLine` + `tryParseCodexResultEvent`.
+    let agentMessageText: string | null = null;
+    let sawTerminalTurn = false;
 
     try {
       const args = [
@@ -426,9 +483,31 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         env: buildCodexChildEnv(), // Spec 12 Rule 1a — both modes
         prompt,
-        onLine: (line) => acc.feedLine(line),
+        onLine: (line) => {
+          acc.feedLine(line);
+          const ev = tryParseCodexResultEvent(line);
+          if (ev?.agentMessageText != null) agentMessageText = ev.agentMessageText;
+          if (ev?.turnCompleted) sawTerminalTurn = true;
+        },
         onOversizedLine: () => acc.noteOversizedDiscard(),
+        // Settle EARLY once the terminal turn completed AND we hold its final
+        // message — the codex 0.144 process may then linger ~16-30s before
+        // writing the file and exiting. Requiring BOTH signals means a turn
+        // that produced no message never early-settles (it falls through to
+        // the file/exit path below), and a turn.failed (never turn.completed)
+        // is still a genuine failure.
+        settleOnTerminalLine: () => sawTerminalTurn && agentMessageText !== null,
       });
+
+      if (result.terminalCompletion) {
+        // The turn terminally completed and we hold its result via the
+        // structured agent_message event; the child was reaped instead of
+        // waiting for codex 0.144 to write the file and exit (which trips the
+        // timeout on an already-completed call and holds the spawn-cap slot).
+        // The turn completed successfully → finalize usage as a success.
+        exitedZero = true;
+        return (agentMessageText ?? '').trim();
+      }
 
       if (result.exitCode === 0) exitedZero = true;
       if (result.exitCode !== 0) {

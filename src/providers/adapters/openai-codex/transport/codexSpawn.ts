@@ -344,6 +344,30 @@ export interface SpawnCodexExecJsonOptions {
   onLine: (line: string) => void;
   /** An over-cap line was discarded unparsed (counted for the drift tripwire). */
   onOversizedLine?: () => void;
+  /**
+   * Optional early-terminal-settle predicate. Called after `onLine` for each
+   * complete line; return true once the stream has delivered a terminal result
+   * the caller already holds (codex emits its final `agent_message` item, then
+   * `turn.completed`). On the FIRST true return the child is given
+   * `terminalSettleGraceMs` to exit on its own; if it is STILL running after
+   * the grace, the promise settles immediately (`terminalCompletion: true`) and
+   * the lingering child is reaped (SIGTERM → sigkillGrace → SIGKILL).
+   *
+   * WHY (codex 0.144 shutdown-linger regression, 2026-07-09): `codex exec
+   * --json` on 0.144 writes `--output-last-message` and exits ~16-30s AFTER
+   * emitting `turn.completed` (empirically measured; the linger scales with
+   * host concurrency). Waiting for that deferred exit trips the caller's
+   * timeout on an ALREADY-COMPLETED call AND holds the host spawn-cap slot for
+   * the entire linger — which is exactly the ~92% internal-call failure the
+   * upgrade produced. This lets the caller settle on the result it already
+   * holds via the structured event stream. A CLI that exits PROMPTLY (no
+   * linger) settles via `close` BEFORE the grace elapses, so its behavior is
+   * byte-for-byte unchanged (`terminalCompletion` stays false) — the divergence
+   * is confined to the linger regime.
+   */
+  settleOnTerminalLine?: (line: string) => boolean;
+  /** Grace before reaping a lingering child after the terminal line (default 750ms). */
+  terminalSettleGraceMs?: number;
   /** Test seams. */
   spawnImpl?: typeof spawn;
   /** Bounded post-exit grace before forced settlement (default 5000 ms). */
@@ -356,6 +380,15 @@ export interface ExecJsonResult {
   exitCode: number | null;
   /** Rolling tail (last 600 chars) of the child's stderr. */
   stderrTail: string;
+  /**
+   * True when the promise settled via the early-terminal-settle path (the turn
+   * terminally completed but the child was still lingering past
+   * `terminalSettleGraceMs`, so it was reaped). `exitCode` is then whatever the
+   * child had reported by then (usually null — it had not exited yet). When
+   * false/absent, settlement came from the child's own exit/close (or timeout),
+   * exactly as before. See `settleOnTerminalLine`.
+   */
+  terminalCompletion?: boolean;
 }
 
 export class CodexExecJsonTimeoutError extends Error {
@@ -392,6 +425,7 @@ export async function spawnCodexExecJson(
   const spawnFn = options.spawnImpl ?? spawn;
   const postExitGraceMs = options.postExitGraceMs ?? 5000;
   const sigkillGraceMs = options.sigkillGraceMs ?? 2000;
+  const terminalSettleGraceMs = options.terminalSettleGraceMs ?? 750;
 
   return new Promise<ExecJsonResult>((resolve, reject) => {
     const child = spawnFn(binary, args, {
@@ -408,12 +442,26 @@ export async function spawnCodexExecJson(
     let discardingOversized = false;
     let graceTimer: NodeJS.Timeout | undefined;
     let killEscalation: NodeJS.Timeout | undefined;
+    let terminalArmed = false;
+    let terminalGraceTimer: NodeJS.Timeout | undefined;
 
     const emitLine = (line: string): void => {
       try {
         options.onLine(line);
       } catch {
         /* @silent-fallback-ok: a consumer throw must never wedge the stream */
+      }
+      // Early-terminal-settle detection runs AFTER onLine so the usage
+      // accumulator (and any result capture) has already seen this line —
+      // e.g. turn.completed's usage is parsed before we consider reaping.
+      if (!terminalArmed && !settled && options.settleOnTerminalLine) {
+        let hit = false;
+        try {
+          hit = options.settleOnTerminalLine(line);
+        } catch {
+          /* @silent-fallback-ok: a predicate throw must never wedge the stream */
+        }
+        if (hit) armTerminalReap();
       }
     };
 
@@ -465,12 +513,13 @@ export async function spawnCodexExecJson(
       carry = '';
     };
 
-    const settle = (): void => {
+    const settle = (opts?: { terminal?: boolean }): void => {
       if (settled) return;
       settled = true;
       clearTimeout(killTimer);
       if (graceTimer) clearTimeout(graceTimer);
       if (killEscalation) clearTimeout(killEscalation);
+      if (terminalGraceTimer) clearTimeout(terminalGraceTimer);
       // Final accounting BEFORE settlement — the post-SIGTERM token_count
       // flush must reach the consumer before any reject is observable.
       flushCarry();
@@ -484,7 +533,40 @@ export async function spawnCodexExecJson(
       }
       if (spawnError) return reject(spawnError);
       if (timedOut) return reject(new CodexExecJsonTimeoutError(options.timeoutMs, stderrTail));
-      resolve({ exitCode: exitCode ?? null, stderrTail });
+      resolve({ exitCode: exitCode ?? null, stderrTail, terminalCompletion: opts?.terminal === true });
+    };
+
+    // Early-terminal-settle: the caller signalled (via settleOnTerminalLine)
+    // that the stream delivered a terminal result it already holds. Give the
+    // child a brief grace to exit on its own (preserving the normal exit/close
+    // path for a prompt-exiting CLI); if it is still lingering after the grace
+    // (the codex 0.144 shutdown-linger regression), settle NOW with the result
+    // in hand and reap the child so the spawn-cap slot + process free
+    // immediately instead of stalling the caller's timeout.
+    const armTerminalReap = (): void => {
+      if (terminalArmed || settled) return;
+      terminalArmed = true;
+      terminalGraceTimer = setTimeout(() => {
+        if (settled) return; // child exited on its own within the grace
+        // Resolve FIRST (settle() runs the final flush, so turn.completed's
+        // usage has already reached the accumulator), THEN reap the lingering
+        // child. The reap timers are unref'd so they never hold the event loop.
+        settle({ terminal: true });
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          /* @silent-fallback-ok */
+        }
+        const esc = setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* @silent-fallback-ok */
+          }
+        }, sigkillGraceMs);
+        esc.unref();
+      }, terminalSettleGraceMs);
+      terminalGraceTimer.unref();
     };
 
     // Timeout: the timer only INITIATES the kill sequence; settlement waits

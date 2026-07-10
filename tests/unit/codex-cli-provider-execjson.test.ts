@@ -304,3 +304,116 @@ i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
     expect(errorRow!.framework).toBe('codex-cli');
   }, 20000);
 });
+
+// ── codex 0.144 shutdown-linger regression (2026-07-09) ─────────────────────
+//
+// codex 0.144 `exec --json` emits agent_message + turn.completed, then LINGERS
+// ~16-30s before writing --output-last-message and exiting. Instar's 30s
+// timeout used to kill the ALREADY-COMPLETED process → the call was recorded as
+// an error (many WITH usage, since turn.completed had been parsed). The fix
+// settles on the terminal turn using the structured agent_message event as the
+// result, reaping the lingering child. This is the ~92% internal-call failure.
+describe('codex 0.144 shutdown-linger — early terminal settle', () => {
+  /**
+   * Fake codex 0.144: emits the agent_message + turn.completed events, then
+   * LINGERS (sleep) WITHOUT writing --output-last-message — proving the result
+   * is sourced from the structured event, not the (not-yet-written) file. The
+   * lingering sleep far exceeds the provider's timeout; the fix must settle
+   * long before it.
+   */
+  function writeLingerFakeCodex(resultText = 'EVENT-RESULT'): string {
+    const p = path.join(fixtureDir, 'linger-codex.sh');
+    fs.writeFileSync(
+      p,
+      `#!/bin/sh
+cat > /dev/null
+printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"${resultText}"}}'
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":90,"output_tokens":8,"total_tokens":128}}'
+# shutdown-linger: NEVER write the --output-last-message file; sleep past the timeout.
+sleep 30
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    return p;
+  }
+
+  it('settles from the agent_message event (not the deferred file) and returns the result fast', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: writeLingerFakeCodex('LINGER-OK') });
+    const usages: Array<{ inputTokens: number; outputTokens: number; cachedTokens?: number }> = [];
+    const started = Date.now();
+    // timeoutMs 30s (the real default). WITHOUT the fix this would linger past
+    // it and reject as a timeout; WITH the fix it settles in well under a second.
+    const result = await provider.evaluate('p', {
+      timeoutMs: 30000,
+      onUsage: (u) => usages.push(u),
+    });
+    const elapsed = Date.now() - started;
+    expect(result).toBe('LINGER-OK');
+    expect(elapsed).toBeLessThan(3000); // did NOT wait out the 30s linger
+    // Usage from turn.completed was parsed and reported (success carries usage).
+    expect(usages).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
+  }, 15000);
+
+  it('records a SUCCESS (noop) row WITH usage through the funnel — not an error', async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    setFeatureMetricsRecorder({ record: (e) => captured.push(e as Record<string, unknown>) });
+    const provider = new CircuitBreakingIntelligenceProvider(
+      new CodexCliIntelligenceProvider({ codexPath: writeLingerFakeCodex('OK') }),
+      new LlmCircuitBreaker(),
+    );
+    const result = await provider.evaluate('p', {
+      timeoutMs: 30000,
+      attribution: { component: 'TopicIntentExtractor' },
+    });
+    expect(result).toBe('OK');
+    expect(captured.find((r) => r.outcome === 'error')).toBeUndefined();
+    const okRow = captured.find((r) => r.outcome === 'noop');
+    expect(okRow).toBeDefined();
+    expect(okRow!.feature).toBe('TopicIntentExtractor');
+    expect(okRow!.framework).toBe('codex-cli');
+    expect(okRow!.tokensIn).toBe(120);
+  }, 15000);
+
+  it('a turn.failed stream is STILL a failure (the fix cannot mask real failures)', async () => {
+    // Emits turn.failed (NOT turn.completed) then exits non-zero: no terminal
+    // completion → no early settle → the existing error path throws.
+    const script = path.join(fixtureDir, 'failed-codex.sh');
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+cat > /dev/null
+printf '%s\\n' '{"type":"turn.failed","error":{"message":"model refused"}}'
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: script });
+    await expect(provider.evaluate('p', { timeoutMs: 5000 })).rejects.toThrow(/Codex CLI error/);
+  }, 10000);
+
+  it('turn.completed WITHOUT an agent_message does NOT early-settle (falls through to the file path)', async () => {
+    // No agent_message ⇒ settleOnTerminalLine never fires ⇒ the call waits for
+    // exit and reads the file as authority (unchanged behavior). Here the
+    // process exits promptly and writes the file.
+    const script = path.join(fixtureDir, 'nomsg-codex.sh');
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+OUTFILE=""
+PREV=""
+for a in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then OUTFILE="$a"; fi
+  PREV="$a"
+done
+cat > /dev/null
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}'
+printf '%s' 'FILE-AUTHORITY' > "$OUTFILE"
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: script });
+    await expect(provider.evaluate('p', { timeoutMs: 5000 })).resolves.toBe('FILE-AUTHORITY');
+  }, 10000);
+});
