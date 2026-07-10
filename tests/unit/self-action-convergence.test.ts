@@ -31,6 +31,7 @@ import {
   SELF_ACTION_EMIT,
 } from '../../scripts/lib/self-action-detect.mjs';
 import { classifyFileGuard } from '../../scripts/lib/class-closure-grader.mjs';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -225,6 +226,91 @@ describe("grader parity — #1347's grader classifies the three new guards truth
       'src/testing/selfActionRegistry.ts',
     ]) {
       expect(fs.existsSync(path.join(REPO_ROOT, rel)), `${rel} missing`).toBe(true);
+    }
+  });
+});
+
+// ── RATCHET GENERALIZED over the runtime governor (unified-self-action-
+//    backpressure companion §13 Tier 1 / spec §Testing) — every REGISTERED
+//    controller's worst-case emissions are driven THROUGH SelfActionGovernor
+//    admit() in ENFORCE mode, asserting the governor honors its COUNT ceiling
+//    (never looser than the ratchet it generalizes: an entry the model bounds
+//    at K can never pass the governor unbounded). Eternal sentinels ride the
+//    rate-floor lane (never count-bounded) — the governor must ALLOW their
+//    model's rate-floored emissions, not starve them (FD7). ──
+describe('governor generalization — every registered controller honors its count ceiling through admit()', () => {
+  it('drives each registry model sink through the governor in enforce mode', async () => {
+    const os = await import('node:os');
+    const { initSelfActionGovernor, resetSelfActionGovernorModuleForTest } = await import(
+      '../../src/monitoring/selfaction/governor.js'
+    );
+    const { resetAnchorForTest } = await import('../../src/monitoring/selfaction/anchor.js');
+
+    for (const controller of SELF_ACTION_CONTROLLERS) {
+      resetSelfActionGovernorModuleForTest();
+      resetAnchorForTest();
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sag-ratchet-'));
+      let vnow = 0;
+      try {
+        const gov = initSelfActionGovernor({
+          stateDir: tmp,
+          readEmergencyDisable: () => false,
+          readClassesConfig: () => ({ [controller.id]: { mode: 'enforce' } }),
+          now: () => vnow,
+        });
+        gov.setModeForTest(controller.id, 'enforce');
+        const handle = gov.for(controller.id);
+
+        const fixture = makePressureFixture();
+        const sink = makeActionSink();
+        const instance = controller.makeUnderPressure(fixture, sink);
+        let governorAllows = 0;
+        const baseEmit = sink.emit.bind(sink);
+        sink.emit = (action: { verb: string; target: string }) => {
+          // The runtime arm of the SAME contract: each model emission asks the
+          // governor first. The derived target mirrors the model's own target
+          // identity (stable key — the registry models already collapse
+          // volatile incarnations onto stable recurrence identities).
+          const admission = handle.admitSync(
+            { key: action.target, classId: controller.actionVerb, keyIsVolatile: false },
+            { nowMs: vnow },
+          );
+          if (admission.outcome === 'allow') {
+            governorAllows++;
+            baseEmit(action);
+          }
+          // A non-allow is a queue/coalesce — bounded, never a silent drop.
+        };
+
+        for (let i = 0; i < controller.ticks; i++) {
+          instance.tick();
+          fixture.clock.advance(controller.tickMs);
+          vnow += controller.tickMs;
+        }
+
+        if (controller.eternalSentinel) {
+          // FD7: rate-floored, never count-bounded — the governor must not
+          // starve a declared sentinel's already-rate-floored emissions.
+          expect(
+            governorAllows,
+            `${controller.id}: the governor starved a rate-floored eternal sentinel`,
+          ).toBe(sink.count);
+        } else {
+          // The governor is NEVER LOOSER than the proven model bound: what the
+          // brake lets through, the governor also admits (the model's own brake
+          // already settles ≤ boundK) — and the governor's own conservative
+          // ceiling would bind even if the brake were removed.
+          expect(
+            governorAllows,
+            `${controller.id}: governor admits exceed the model's proven bound`,
+          ).toBeLessThanOrEqual(controller.boundK);
+          expect(sink.count).toBeLessThanOrEqual(controller.boundK);
+        }
+      } finally {
+        resetSelfActionGovernorModuleForTest();
+        resetAnchorForTest();
+        SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/self-action-convergence.test.ts' });
+      }
     }
   });
 });

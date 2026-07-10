@@ -54,6 +54,29 @@ import {
 import type { SubscriptionAccount } from './SubscriptionPool.js';
 import type { SwapAntiThrashEngine, AntiThrashKnobs } from './SwapAntiThrash.js';
 import type { WorkProbeResult } from './SwapWorkGate.js';
+import { governor, consumeAdmissionToken } from '../monitoring/selfaction/governor.js';
+import type { DerivedTarget } from '../monitoring/selfaction/types.js';
+
+/* @self-action-controller: proactive-swap-monitor */
+// Unified self-action backpressure (Increment B, OBSERVE-ONLY): every executed
+// proactive swap rides the SelfActionGovernor chokepoint ADDITIVELY — none of
+// the incident-earned anti-thrash brakes above is removed (retrofit is
+// additive at every rung; the tightest bound wins). Observe mode records the
+// would-verdict and always allows.
+const proactiveSwapGov = governor.for('proactive-swap-monitor');
+
+/** Canonical target derivation for the swap controller: the DESTINATION
+ *  account is the anti-ping-pong recurrence identity (A→B→A collapses onto
+ *  the per-account ceiling); the legacy path — where the scheduler picks the
+ *  destination at execute time — keys on the vacated account (stable, never
+ *  a per-incarnation id). */
+export function deriveTargetKey(ctx: { targetAccountId?: string; exhaustedAccountId: string }): DerivedTarget {
+  return {
+    key: `account:${ctx.targetAccountId ?? ctx.exhaustedAccountId}`,
+    classId: 'subscription-account',
+    keyIsVolatile: false,
+  };
+}
 
 /** A running, swap-eligible session as the monitor sees it. */
 export interface ProactiveSwapSession {
@@ -447,6 +470,14 @@ export class ProactiveSwapMonitor {
       // Execute — the checked target IS the executed target (I1); the
       // scheduler revalidates the WHOLE decision at execute time (§3.3).
       try {
+        // Self-action backpressure admission (observe-only: always allows).
+        // An enforce-mode non-allow stands down this candidate — the pressure
+        // condition re-fires on the next tick (level-triggered).
+        const swapTarget = deriveTargetKey({ targetAccountId: verdict.targetAccountId, exhaustedAccountId: c.accountId });
+        const swapAdmission = await proactiveSwapGov.admit(swapTarget, { incarnation: c.sessionName, lane: 'job' });
+        if (swapAdmission.outcome !== 'allow') continue;
+        const swapSink = consumeAdmissionToken(swapAdmission.token, 'proactive-swap-monitor', { targetKey: swapTarget.key });
+        if (!swapSink.proceed) continue;
         const outcome = await this.cfg.swap({
           sessionName: c.sessionName,
           exhaustedAccountId: c.accountId,
@@ -573,6 +604,13 @@ export class ProactiveSwapMonitor {
     for (const c of toSwap) {
       let outcome: ProactiveSwapOutcome;
       try {
+        // Self-action backpressure admission (observe-only; legacy path keys
+        // on the vacated account — the scheduler picks the destination).
+        const legacySwapTarget = deriveTargetKey({ exhaustedAccountId: c.accountId });
+        const legacySwapAdmission = await proactiveSwapGov.admit(legacySwapTarget, { incarnation: c.sessionName, lane: 'job' });
+        if (legacySwapAdmission.outcome !== 'allow') continue;
+        const legacySwapSink = consumeAdmissionToken(legacySwapAdmission.token, 'proactive-swap-monitor', { targetKey: legacySwapTarget.key });
+        if (!legacySwapSink.proceed) continue;
         outcome = await this.cfg.swap({
           sessionName: c.sessionName,
           exhaustedAccountId: c.accountId,

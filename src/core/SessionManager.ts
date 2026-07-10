@@ -88,8 +88,25 @@ import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { AgeKillBackoff } from './AgeKillBackoff.js';
+import { governor, consumeAdmissionToken } from '../monitoring/selfaction/governor.js';
+import type { DerivedTarget } from '../monitoring/selfaction/types.js';
 import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS } from './VetoedKillBackoff.js';
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
+
+/* @self-action-controller: age-kill-backoff */
+// Unified self-action backpressure (Increment B, OBSERVE-ONLY): the age-limit
+// kill request rides the SelfActionGovernor chokepoint. The handle is minted
+// ONCE at module scope (companion §2); in observe mode admit records the
+// would-verdict and always allows — behavior is unchanged until the operator
+// flips this class to enforce (FD8).
+const ageKillGov = governor.for('age-kill-backoff');
+
+/** The canonical target derivation for the age-kill controller (companion §1):
+ *  instar session ids are stable per topic across respawns, so the session id
+ *  IS the recurrence identity — a stable key, never a per-incarnation pid. */
+export function deriveTargetKey(sessionId: string): DerivedTarget {
+  return { key: `session:${sessionId}`, classId: 'session', keyIsVolatile: false };
+}
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
 const DEFAULT_MAX_DURATION_MINUTES = 240;
@@ -1822,6 +1839,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 });
               }
               console.warn(`[SessionManager] Session "${session.name}" exceeded timeout (${Math.round(elapsed)}m > ${maxMinutes}m) and is idle. Requesting kill via ReapAuthority.`);
+              // Unified self-action backpressure: admit the age-kill through the
+              // governor BEFORE the ReapAuthority funnel (observe-only: always
+              // allows + records the would-verdict; an enforce-mode non-allow
+              // stands down this tick — the level-triggered over-age condition
+              // re-fires on the next monitor pass).
+              const ageKillTarget = deriveTargetKey(session.id);
+              const ageKillAdmission = ageKillGov.admitSync(ageKillTarget, { incarnation: session.id, lane: 'job' });
+              if (ageKillAdmission.outcome !== 'allow') {
+                continue;
+              }
+              const ageKillSink = consumeAdmissionToken(ageKillAdmission.token, 'age-kill-backoff', { targetKey: ageKillTarget.key });
+              if (!ageKillSink.proceed) {
+                continue;
+              }
               // Route through the single ReapAuthority (§P0) instead of an inline
               // kill: this restores the beforeSessionKill/sessionComplete emission,
               // adds the sessionReaped signal + reap-log entry, applies the lease

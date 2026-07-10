@@ -41,6 +41,14 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // it to another machine would resurrect a stale lease as "live" — a regression.
   // Safe to lose (reconstructed on demand). stateDir-relative prefix.
   'state/pr-hand-leases.json',
+  // SelfActionGovernor durable admission-state snapshot + telemetry aggregates
+  // (unified-self-action-backpressure FD14/INT7-3): per-machine count-window
+  // state. Backups replicate to paired machines, where a RECENT foreign
+  // snapshot passes recency-validation while carrying the WRONG machine's
+  // counts, and a foreign aggregates file fabricates prior-flush evidence +
+  // pollutes the FD12 soak counters. The `state/self-action-governor` prefix
+  // covers the snapshot, the aggregates file, and their tmp siblings.
+  'state/self-action-governor',
 ]);
 
 /**

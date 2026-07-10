@@ -38,6 +38,25 @@ import { LlmAbortedError } from './LlmQueue.js';
 import type { ProxyCoordinator } from './ProxyCoordinator.js';
 import { sanitizeTmuxOutput, guardProxyOutput } from './PresenceProxy.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
+import { governor, consumeAdmissionToken } from './selfaction/governor.js';
+import type { DerivedTarget } from './selfaction/types.js';
+
+/* @self-action-controller: promise-beacon-notify */
+/* @self-action-controller: liveness-heartbeat */
+// Unified self-action backpressure (Increment B, OBSERVE-ONLY): this file
+// hosts TWO controllers (the registry's multi-marker precedent) — the progress
+// heartbeat (promise-beacon-notify) and the sparse liveness line
+// (liveness-heartbeat, a declared eternal sentinel rate-floored per FD7).
+// Handles are minted ONCE at module scope; observe mode records would-verdicts
+// and always allows — none of the shipped suppression brakes is removed.
+const beaconNotifyGov = governor.for('promise-beacon-notify');
+const livenessHeartbeatGov = governor.for('liveness-heartbeat');
+
+/** Canonical target derivation for BOTH beacon controllers: the conversation
+ *  (topic) is the recurrence identity — stable across sessions/respawns. */
+export function deriveTargetKey(ctx: { topicId: number | null | undefined }): DerivedTarget {
+  return { key: `topic:${ctx.topicId ?? 'none'}`, classId: 'topic', keyIsVolatile: false };
+}
 
 // ─── Config & types ─────────────────────────────────────────────────────────
 
@@ -867,12 +886,32 @@ export class PromiseBeacon extends EventEmitter {
       }
 
       // ── Send (only if there is something true to say — B1) ──
-      const sent = text != null;
+      let sent = text != null;
       let sendResult: BeaconSendResult = 'skipped';
       if (sent) {
-        sendResult = await this.emitUserSend(c, text!, 'heartbeat');
-        if (livenessFired) hot.lastLivenessAt = nowIso;
-        if (sendResult === 'sent') hot.heartbeatCount += 1;
+        // Self-action backpressure admission (observe-only: always allows).
+        // Liveness lines ride the eternal-sentinel controller (rate-floored);
+        // progress heartbeats ride the notify controller. An enforce-mode
+        // non-allow COALESCES the line (the P17 fold) — this tick stays quiet.
+        const notifyTarget = deriveTargetKey({ topicId: c.topicId });
+        const notifyAdmission = livenessFired
+          ? livenessHeartbeatGov.admitSync(notifyTarget, { lane: 'interactive' })
+          : beaconNotifyGov.admitSync(notifyTarget, { lane: 'interactive' });
+        // The sink pins its expected controller identity MODULE-SIDE as a
+        // LITERAL per branch (never a caller-substitutable variable — FD6).
+        const notifySink =
+          notifyAdmission.outcome === 'allow'
+            ? livenessFired
+              ? consumeAdmissionToken(notifyAdmission.token, 'liveness-heartbeat', { targetKey: notifyTarget.key })
+              : consumeAdmissionToken(notifyAdmission.token, 'promise-beacon-notify', { targetKey: notifyTarget.key })
+            : null;
+        if (notifyAdmission.outcome === 'allow' && notifySink?.proceed) {
+          sendResult = await this.emitUserSend(c, text!, 'heartbeat');
+          if (livenessFired) hot.lastLivenessAt = nowIso;
+          if (sendResult === 'sent') hot.heartbeatCount += 1;
+        } else {
+          sent = false; // enforce-mode fold: coalesced, never a silent drop (audited)
+        }
       }
       // §5 stand-down / §5.1 permanent dead-letter already persisted their
       // markers + stopped the timer inside applyDeliveryOutcome.

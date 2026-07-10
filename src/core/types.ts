@@ -3561,6 +3561,37 @@ export interface InstarConfig {
      */
     nonGatingFailureSwap?: { enabled?: boolean; maxAttempts?: number };
     /**
+     * Unified self-action backpressure — the SelfActionGovernor (Increment B,
+     * docs/specs/unified-self-action-backpressure.md; the companion doc is the
+     * implementation authority). Ships OBSERVE-ONLY on every class,
+     * fleet-dark per the FD1 ladder. Defaults are CODE constants; this block
+     * carries ONLY the kill-switch + sparse per-class overrides (validated at
+     * LOAD — a malformed override falls back to the code default with an
+     * audit row; `migrateConfig` writes NOTHING here by design).
+     */
+    selfActionGovernor?: {
+      /**
+       * The ONE master kill-switch (read live; deliberately NO env override —
+       * an env-only disable would be posture-INVISIBLE to /guards + the
+       * Guard-Posture Tripwire). `true` degrades EVERY class to unconditional
+       * allow-token pass-through; the flip (either direction) is itself an
+       * immediately-audited attention event. The DISABLE direction on the
+       * PATCH /config API path is dashboard-PIN-gated; re-enable is Bearer-OK;
+       * a raw config-file edit remains the verifier-independent floor.
+       */
+      emergencyDisable?: boolean;
+      /**
+       * Sparse per-class overrides keyed by controllerId. Overridable numeric
+       * fields: perTargetCountCeiling, totalCountCeiling, windowMs,
+       * queueMaxDepth, queueMaxTargets, staleTtlMs; plus `mode`
+       * ('observe' | 'enforce' — the FD8 per-class flip; pool-shared classes
+       * auto-demote when the registered machine count > 1 per FD9). The
+       * last-resort errored floor is NOT overridable (hard code constant);
+       * censusAbsoluteMax may only TIGHTEN below the code ceiling.
+       */
+      classes?: Record<string, Record<string, unknown>>;
+    };
+    /**
      * Pinned-callsite model overrides (docs/LLM-ROUTING-REGISTRY.md "Risk items"
      * #3/#5/#6/#7 — the hardcoded-model callsites that bypass the router).
      * INLINE-DEFAULTED at each callsite (the codexExecJson/swapAttemptTimeoutMs

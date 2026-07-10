@@ -83,6 +83,31 @@ export function extractGuardPosture(config: unknown): GuardPosture {
     }
   }
 
+  // Computed SYNTHETIC enabled-polarity posture for the SelfActionGovernor
+  // (unified-self-action-backpressure §Fail-direction, deliverable 2 — the
+  // PermissionPromptAutoResolver precedent verbatim). The governor's only
+  // switch is INVERTED (`intelligence.selfActionGovernor.emergencyDisable`,
+  // true = OFF); naming that configPath directly would render a HEALTHY
+  // governor as `off` (a false loadBearingGap on every agent) and a DISABLED
+  // one as on-confirmed — the 2026-06-05 blind spot re-created. So the
+  // posture key is COMPUTED as `enabled = emergencyDisable !== true`
+  // (absent ⇒ on), same real-agent sentinel as the floor above.
+  {
+    const mon = cfg.monitoring;
+    if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+      const intel = cfg.intelligence;
+      const sag =
+        intel && typeof intel === 'object' && !Array.isArray(intel)
+          ? (intel as Record<string, unknown>).selfActionGovernor
+          : undefined;
+      const emergencyDisable =
+        sag && typeof sag === 'object' && !Array.isArray(sag)
+          ? (sag as Record<string, unknown>).emergencyDisable
+          : undefined;
+      posture['intelligence.selfActionGovernor.enabled'] = emergencyDisable !== true;
+    }
+  }
+
   const scheduler = cfg.scheduler;
   if (scheduler && typeof scheduler === 'object' && !Array.isArray(scheduler)) {
     const enabled = (scheduler as Record<string, unknown>).enabled;

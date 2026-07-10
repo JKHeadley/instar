@@ -17753,6 +17753,61 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // ── OrphanedWorkSentinel (the silent-uncommitted-death backstop) ──────────
+    // ── SelfActionGovernor (unified-self-action-backpressure Increment B) ──
+    // ONE in-process admission chokepoint every registered self-triggered
+    // action rides (age-kill, external-hog kill, proactive swap, beacon
+    // notify/liveness). Ships OBSERVE-ONLY on every class, fleet-wide (FD1):
+    // admit() records would-deny verdicts and always allows; the per-class
+    // enforce flip is the operator's later action. INIT-ONCE process-global
+    // anchor; emergencyDisable is read LIVE (PATCH /config applies with no
+    // restart). Construction is guarded — a failure leaves the module-level
+    // governor uninitialized (disabled-passthrough admits), never a dead boot.
+    let _selfActionGovernor: import('../monitoring/selfaction/governor.js').SelfActionGovernorCore | undefined;
+    try {
+      const { initSelfActionGovernor } = await import('../monitoring/selfaction/governor.js');
+      _selfActionGovernor = initSelfActionGovernor({
+        stateDir: config.stateDir,
+        readEmergencyDisable: () =>
+          liveConfig.get(
+            'intelligence.selfActionGovernor.emergencyDisable',
+            config.intelligence?.selfActionGovernor?.emergencyDisable ?? false,
+          ) === true,
+        readClassesConfig: () =>
+          liveConfig.get(
+            'intelligence.selfActionGovernor.classes',
+            (config.intelligence?.selfActionGovernor?.classes ?? undefined) as Record<string, unknown> | undefined,
+          ),
+        // Census discipline (spec SC6-1): governor-owned, sampled OFF the hot
+        // path (the governor's own slow tick), INDEPENDENT of any governed
+        // controller's candidate enumeration — the STATE-store read, never the
+        // reaper's own listRunningSessions.
+        readCensus: () => ({
+          value: state.listSessions({ status: 'running' }).length,
+          asOf: Date.now(),
+          confidence: 'high' as const,
+        }),
+        configuredSessionCap: () => (config as { sessions?: { maxSessions?: number } }).sessions?.maxSessions,
+        // FD9 level gate input: the REGISTERED machine count (not online peers).
+        registeredMachineCount: () => Math.max(1, machinePoolRegistry?.getCapacities().length ?? 1),
+        emitAttention: (item) => {
+          void telegram?.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.body.slice(0, 160),
+            description: item.body,
+            category: 'self-action-governor',
+            priority: item.priority,
+            sourceContext: item.sourceContext,
+          });
+        },
+      });
+      guardRegistry.register('intelligence.selfActionGovernor.enabled', () => _selfActionGovernor!.guardRuntimeStatus());
+      console.log(pc.dim('  SelfActionGovernor initialized (observe-only — unified self-action backpressure)'));
+    } catch (err) {
+      console.error('[self-action-governor] init failed (admits pass through this boot):', err instanceof Error ? err.message : String(err));
+      _selfActionGovernor = undefined;
+    }
+
     // Detects agent worktrees with uncommitted work whose owning session is dead
     // + settled, records them durably, and raises ONE deduped agent-health notice
     // — the case the PromiseBeacon escalation ladder can't see (nothing registered
@@ -18522,7 +18577,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                   try {
                     return {
                       coherenceAdvert: buildCoherenceAdvert(
-                        { boot: config as unknown as Record<string, unknown>, liveGet: (path, fallback) => liveConfig.get(path, fallback) },
+                        {
+                          boot: config as unknown as Record<string, unknown>,
+                          liveGet: (path, fallback) => liveConfig.get(path, fallback),
+                          // unified-self-action-backpressure INT7-1: the mode
+                          // rows read `demoted` from governor RUNTIME state —
+                          // a config-only read would advertise `enforce` on a
+                          // runtime-demoted machine and defeat the skew alarm.
+                          governorClassMode: (controllerId) => _selfActionGovernor?.getClassMode(controllerId) ?? 'observe',
+                        },
                         { instarVersion: ProcessIntegrity.getInstance()?.runningVersion ?? 'unknown', beatSeq: _coherenceBeatSeq++ },
                       ),
                     };

@@ -82,6 +82,22 @@ export interface SelfActionController {
   actionVerb: string;
   /** Real source this models (documentation + audit trail). */
   models: string;
+  /**
+   * PARSEABLE path binding for the emit-without-admit usage-scan lint
+   * (unified-self-action-backpressure companion §9): the registry-named
+   * source FILE licensed to declare this controller's marker + mint its
+   * governor handle. Unlike `models:` (prose-annotated), this field is a
+   * bare repo-relative path the lint greps — the promotion of the models:
+   * pointer from documentation to a lint-asserted binding (spec SEC6-4).
+   */
+  modelsPath: string;
+  /**
+   * The named EXTERNAL give-up authority for an exempt-lane member (the
+   * respawn-recovery / eternalSentinel count-exempt lanes — spec ADV5-3):
+   * the cap that owns this controller's give-up, which the ratchet fixture
+   * drives to its trip point. Required for every eternalSentinel entry.
+   */
+  delegatedGiveUp?: string;
   /** Build the controller under a fixture + sink; returns something with tick(). */
   makeUnderPressure(f: PressureFixture, sink: ActionSink): { tick(): void };
   /** Proven max total actions over `ticks` under the pinned pressure. */
@@ -112,6 +128,7 @@ const proactiveSwapMonitor: SelfActionController = {
   id: 'proactive-swap-monitor',
   actionVerb: 'account-swap',
   models: 'src/monitoring/SubscriptionPool.ts (proactive pre-limit swap, antiThrash all-hot + projected-load brake)',
+  modelsPath: 'src/core/ProactiveSwapMonitor.ts',
   boundK: 1,
   perTargetBoundK: 1,
   ticks: 20,
@@ -153,6 +170,7 @@ const ageKillBackoff: SelfActionController = {
   id: 'age-kill-backoff',
   actionVerb: 'age-kill',
   models: 'src/monitoring/SessionReaper.ts (age-limit kill-request; AgeKillBackoff — P19 backoff + breaker)',
+  modelsPath: 'src/core/SessionManager.ts',
   boundK: 5,
   perTargetBoundK: 5, // legitimately the SAME session, bounded by the breaker (not a ping-pong)
   // Horizon chosen so N ticks FULLY reaches the breaker cap (cumulative
@@ -198,6 +216,7 @@ const promiseBeaconNotify: SelfActionController = {
   id: 'promise-beacon-notify',
   actionVerb: 'beacon-notify',
   models: 'src/monitoring/PromiseBeacon.ts (suppressUnchangedHeartbeats — progress-only heartbeat)',
+  modelsPath: 'src/monitoring/PromiseBeacon.ts',
   boundK: 1,
   perTargetBoundK: 1,
   ticks: 20,
@@ -232,6 +251,8 @@ const livenessHeartbeat: SelfActionController = {
   id: 'liveness-heartbeat',
   actionVerb: 'liveness-notify',
   models: 'src/monitoring/PromiseBeacon.ts (beaconLivenessIntervalMs — sparse once-per-interval liveness line)',
+  modelsPath: 'src/monitoring/PromiseBeacon.ts',
+  delegatedGiveUp: 'the hard rateFloorMs (60 min) — emits can never exceed elapsed/rateFloorMs',
   boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor, not a total count
   perTargetBoundK: Number.POSITIVE_INFINITY,
   ticks: 24,
@@ -277,6 +298,7 @@ const externalHogKillBreaker: SelfActionController = {
   id: 'external-hog-kill-breaker',
   actionVerb: 'kill',
   models: 'src/monitoring/ExternalHogKillLedger.ts (respawn breaker driven by the ExternalHogScanTick kill path — real pure functions, not a re-model)',
+  modelsPath: 'src/monitoring/ExternalHogSentinel.ts',
   boundK: 3,
   perTargetBoundK: 3, // legitimately the SAME respawning signature, bounded by the window breaker (not a ping-pong)
   ticks: 30,
@@ -317,6 +339,7 @@ const meteredReserveExpirySweep: SelfActionController = {
   id: 'metered-reserve-expiry-sweep',
   actionVerb: 'expire-reserve-kill', // 'kill' detector token; the swept reserve is terminally closed
   models: 'src/core/MeteredSpendLedger.ts (sweepExpired; idempotent terminal reserve→expired) + src/server/AgentServer.ts 5-min cadence',
+  modelsPath: 'src/core/MeteredSpendLedger.ts',
   boundK: 3, // exactly the 3 stale reserves in the fixture — never more
   perTargetBoundK: 1, // terminal: one expire per reserveId, ever
   ticks: 50,
@@ -355,6 +378,8 @@ const spendStalePriceAlert: SelfActionController = {
   id: 'spend-stale-price-alert',
   actionVerb: 'stale-price-notify',
   models: 'src/core/SpendAlertResolver.ts (emit — edge latch on CONFIRMED delivery, 24h re-arm) + src/server/AgentServer.ts 6h staleCheck cadence',
+  modelsPath: 'src/core/SpendAlertResolver.ts',
+  delegatedGiveUp: 'the 24h confirmed-delivery edge latch (dispatcher re-arm window)',
   boundK: 3, // 3 emissions across the ~2.1-day horizon = 1 per 24h window (rate floor), one door
   perTargetBoundK: 3,
   ticks: 8, // 8 × 6h = 48h+2 ticks horizon; 2N=16 ticks (~4 days) still settles at the daily rate
@@ -391,6 +416,8 @@ const spendDoorDarkBrakes: SelfActionController = {
   id: 'spend-door-dark-brakes',
   actionVerb: 'door-dark-notify',
   models: 'src/core/SpendAlertEmitters.ts (onChainExhausted — episode budget = chain length, widening backoff, flapping wording)',
+  modelsPath: 'src/core/SpendAlertEmitters.ts',
+  delegatedGiveUp: 'the per-episode-bucket attempt budget (= chain length) + widening backoff',
   boundK: 6, // 2 episode buckets × chain length 3 over the horizon
   perTargetBoundK: 6, // same chain each time — bounded by the episode budgets, not a ping-pong
   ticks: 145, // 145 × 5min ≈ 12.1h — crosses one 6h episode-bucket boundary
@@ -439,6 +466,8 @@ const spendFallbackSpike: SelfActionController = {
   id: 'spend-fallback-spike',
   actionVerb: 'fallback-spike-notify',
   models: 'src/core/SpendAlertEmitters.ts (onFallbackServed — hourly ceiling edge, one per hour bucket)',
+  modelsPath: 'src/core/SpendAlertEmitters.ts',
+  delegatedGiveUp: 'the hourly ceiling-crossing bucket edge (one digest line per hour bucket)',
   boundK: 3, // 3 hour-buckets over the horizon → at most one each
   perTargetBoundK: 3,
   ticks: 180, // 180 × 1min = 3h of sustained churn
@@ -482,6 +511,7 @@ const spendCapApproach: SelfActionController = {
     'src/core/SpendAlertEmitters.ts (checkCapApproach — 50/80 on both caps, per-window dedupe via the dispatcher latch). ' +
     'The FEEDBACK-driven surface is the edge latch (modeled here, horizon-independent); the daily window additionally ' +
     're-arms on the CALENDAR day boundary — clock-driven, not feedback-driven, bounded at 2 notices/key/day by construction.',
+  modelsPath: 'src/core/SpendAlertEmitters.ts',
   boundK: 4, // 2 kinds × 2 thresholds — the latch bound, horizon-independent
   perTargetBoundK: 1, // each (kind, threshold, window) key emits ONCE, ever
   ticks: 96, // 96 × 5min = 8h of admits with committed parked ≥80% (inside one window)
@@ -520,6 +550,8 @@ const spendReconSweep: SelfActionController = {
   id: 'spend-recon-sweep',
   actionVerb: 'recon-drift-notify',
   models: 'src/monitoring/ProviderReconciliationSweep.ts (cadenced read-only comparator) + the Increment-C dispatcher latch (24h re-arm per (keyRef, door, driftBucket))',
+  modelsPath: 'src/monitoring/ProviderReconciliationSweep.ts',
+  delegatedGiveUp: 'the dispatcher 24h latch per (keyRef, door, driftBucket)',
   boundK: 3, // 3 re-arm windows over the horizon → one each
   perTargetBoundK: 3,
   ticks: 12, // 12 × 6h sweep cadence = 3 days of permanent drift

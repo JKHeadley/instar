@@ -151,6 +151,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'selfActionGovernor',
+    prefixes: ['/self-action-governor'],
+    description: 'Unified self-action backpressure — the SelfActionGovernor (docs/specs/unified-self-action-backpressure.md, Increment B). ONE in-process admission chokepoint every registered self-triggered action (reaper age-kill, external-hog kill, proactive account-swap, beacon notify/liveness) rides via admit(), keyed on a controller id: per-target + census-scaled total count ceilings, rate buckets, P19 brakes, a bounded coalescing queue, durable admission state that survives restarts (a crash/bounce never refills a runaway loop\'s count budget), and an ALWAYS-ALLOW audited principal lane (a human action always wins). Ships OBSERVE-ONLY on every class (records would-deny verdicts, blocks nothing); the per-class enforce flip is the operator\'s later FD8 action. GET /self-action-governor is a lock-free scrubbed read of per-class mode/counters/deciding-sub-mechanism aggregates (`?scope=pool` merges pool-shared class counters across machines). Kill switch: intelligence.selfActionGovernor.emergencyDisable (read live; the flip itself is audited + surfaced). When asked "why did my respawn get held / my swap get queued / my notify get folded?" → read this route\'s per-class reasons.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.selfActionGovernor,
+      endpoints: ['GET /self-action-governor'],
+    }),
+  },
+  {
     key: 'testRunnerLimiter',
     prefixes: ['/test-runner-limiter'],
     description: 'Test-Runner Concurrency Bound — the spawn cap\'s sibling for vitest roots (docs/specs/test-runner-concurrency-bound.md). A per-machine ticket counter bounds how many test SUITES run at once across every actor on the host (full suites one-at-a-time by default; small targeted runs get a roomier ≤6-slot lane, each clamped to ≤4 workers) — the structural answer to the 2026-07-02 test-storm load-stall kill cascade. Ships WATCH-ONLY (dry-run posture, 14-day soak): it logs would-blocks but admits every run until the enforce flip. GET /test-runner-limiter reports cap/targetedCap/posture/ttlSignalArmed, live holders per lane, per-lane saturation, admitted-open (lock-wedge) runs, the recent event tail, and a skip-reason histogram — cap + posture resolve through the SAME resolvers the chokepoint uses (env → host tuning file → code default), never from config (no-lie constraint). POST /test-runner-limiter/prune is the recovery lever: forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of hand-editing the holders JSON. When asked "why is my test run waiting?" / "did the limiter block something?" / a git push rejected that might be CONTENTION not red tests → read the GET route first. Kill switch: env INSTAR_HOST_TEST_SEMAPHORE=off (config intelligence.testRunnerCap is NOT the chokepoint lever).',

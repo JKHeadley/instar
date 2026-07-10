@@ -174,6 +174,36 @@ export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
     readSource: 'boot',
     guarantee: 'the machine-coherence guard itself (a half-dark pool has halved its own alarm redundancy)',
   },
+  // ── SelfActionGovernor (unified-self-action-backpressure §Resource scope,
+  //    INT5-4/INT6-1/INT7-1): (a) an INVERTED-resolution governor row (the
+  //    meshTransport.enabled inverted-default precedent) and (b) per-class
+  //    scalar MODE rows for `resource: pool-shared` classes, read LIVE via
+  //    the governor-state accessor on the caller-injected view — a config-only
+  //    read would advertise `enforce` on a runtime-demoted machine and defeat
+  //    the mode-skew alarm. Cross-machine mode skew on a pool-shared class
+  //    (enforce on A, observe on B against ONE shared account) silently halves
+  //    the sum-of-leases guarantee — the exact F4 shape. ──
+  {
+    key: 'selfActionGovernor.emergencyDisable',
+    configPath: 'intelligence.selfActionGovernor.emergencyDisable',
+    resolution: 'raw',
+    readSource: 'live',
+    guarantee: 'the self-action flood brake itself (a machine with the governor disarmed admits unboundedly)',
+  },
+  {
+    key: 'selfActionGovernor.class.proactive-swap-monitor.mode',
+    configPath: 'intelligence.selfActionGovernor.classes.proactive-swap-monitor.mode',
+    resolution: 'raw',
+    readSource: 'live',
+    guarantee: 'pool-shared swap ceiling coherence — a machine enforcing while a peer observes halves the shared-account bound',
+  },
+  {
+    key: 'selfActionGovernor.class.promise-beacon-notify.mode',
+    configPath: 'intelligence.selfActionGovernor.classes.promise-beacon-notify.mode',
+    resolution: 'raw',
+    readSource: 'live',
+    guarantee: 'pool-shared notify ceiling coherence — a machine enforcing while a peer observes halves the shared-account bound',
+  },
 ];
 
 /**
@@ -257,6 +287,16 @@ export interface CoherenceConfigView {
    * restart. Absent → live entries fall back to the boot value.
    */
   liveGet?: (path: string, fallback: unknown) => unknown;
+  /**
+   * Governor-state accessor (unified-self-action-backpressure INT7-1/LA7-2 —
+   * the view-seam extension): resolves a self-action class's LIVE runtime mode
+   * (`observe` | `enforce` | `demoted`) for the per-class coherence rows. The
+   * `demoted` value is governor RUNTIME latch state no config path resolves —
+   * a config-only read would advertise `enforce` on a runtime-demoted machine.
+   * Absent → the class-mode rows fall back to the config value ('observe'
+   * default), honestly weaker but never throwing.
+   */
+  governorClassMode?: (controllerId: string) => string;
 }
 
 function clampValue(v: string): string {
@@ -275,6 +315,32 @@ export function resolveFlagValue(entry: CoherenceCriticalFlag, view: CoherenceCo
   switch (entry.key) {
     case 'developmentAgent':
       return cfg?.developmentAgent === true ? 'true' : 'false';
+    case 'selfActionGovernor.emergencyDisable': {
+      // INVERTED resolution (the meshTransport precedent): the governor ships
+      // default-ON; `emergencyDisable === true` is the OFF direction.
+      const raw = view.liveGet
+        ? view.liveGet(entry.configPath, getByPath(cfg, entry.configPath))
+        : getByPath(cfg, entry.configPath);
+      return raw === true ? 'off' : 'live';
+    }
+    case 'selfActionGovernor.class.proactive-swap-monitor.mode':
+    case 'selfActionGovernor.class.promise-beacon-notify.mode': {
+      // readSource 'live' against the governor-state accessor: only the
+      // runtime knows `demoted` (a latch, not a config value).
+      const controllerId = entry.key.split('.')[2];
+      if (view.governorClassMode) {
+        try {
+          const mode = view.governorClassMode(controllerId);
+          if (mode === 'observe' || mode === 'enforce' || mode === 'demoted') return mode;
+        } catch {
+          /* fall through to the config read — never throw in the advert */
+        }
+      }
+      const raw = view.liveGet
+        ? view.liveGet(entry.configPath, getByPath(cfg, entry.configPath))
+        : getByPath(cfg, entry.configPath);
+      return raw === 'enforce' ? 'enforce' : 'observe';
+    }
     case 'meshTransport.enabled': {
       const raw = getByPath(cfg, 'multiMachine.meshTransport.enabled');
       // meshTransport ships ENABLED by default (Layers 0-2 additive).

@@ -25,6 +25,25 @@ import {
 } from './ExternalHogKillLedger.js';
 import { coalesceNotices, type Notice, type CoalesceResult } from './ExternalHogNoticeCoalescer.js';
 import { advanceSustained, isSustained, candidateSignature, type SustainedState } from './ExternalHogSustained.js';
+import { governor, consumeAdmissionToken } from './selfaction/governor.js';
+import type { DerivedTarget } from './selfaction/types.js';
+
+/* @self-action-controller: external-hog-kill-breaker */
+// Unified self-action backpressure (Increment B, OBSERVE-ONLY): the live kill
+// path rides the SelfActionGovernor ADDITIVELY — the shipped P19 kill-ledger
+// breaker below stays exactly as it is (the tightest bound wins). This is the
+// multi-file half of the `external-hog-kill-breaker` controller (marker also
+// on ExternalHogSentinel.ts; both files ride the per-controller allowlist —
+// the handle is minted ONCE, here, at the emit site).
+const externalHogKillGov = governor.for('external-hog-kill-breaker');
+
+/** Canonical target derivation: the ledger key IS the recurrence SIGNATURE
+ *  (stable across respawns — a new pid, same signature, collapses to ONE
+ *  target), with the allowlist class as the stable classId — mirroring the
+ *  deployed ExternalHogKillLedger (key, classId, keyIsVolatile) triple. */
+export function deriveTargetKey(ctx: { ledgerKey: string; classId: string }): DerivedTarget {
+  return { key: ctx.ledgerKey, classId: ctx.classId, keyIsVolatile: false };
+}
 
 export interface ScanState {
   readonly sampler: SamplerState;
@@ -170,6 +189,21 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
     if (tripped) {
       outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only' });
       surfaceLeftAlive(); // shielded from KILL only, never from surfacing
+      continue;
+    }
+
+    // Self-action backpressure admission (observe-only: always allows; an
+    // enforce-mode non-allow downgrades to alert-only — the observability
+    // floor still surfaces the hog, never a silent stand-down).
+    const hogTarget = deriveTargetKey({ ledgerKey: cand.id.ledgerKey, classId: cand.id.classId });
+    const hogAdmission = externalHogKillGov.admitSync(hogTarget, { incarnation: String(cand.c.pid), lane: 'job' });
+    const hogSink =
+      hogAdmission.outcome === 'allow'
+        ? consumeAdmissionToken(hogAdmission.token, 'external-hog-kill-breaker', { targetKey: hogTarget.key })
+        : null;
+    if (hogAdmission.outcome !== 'allow' || !hogSink?.proceed) {
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only' });
+      surfaceLeftAlive();
       continue;
     }
 

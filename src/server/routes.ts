@@ -9,6 +9,7 @@ import { Router } from 'express';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
+import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
 import { classifyActionClaim } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
 import { getHostSpawnSemaphore, configuredSpawnAcquireMs, configuredSpawnWaitersMax } from '../core/hostSpawnSemaphore.js';
@@ -721,6 +722,10 @@ export interface RouteContext {
    *  /mcp/* routes 503. Powers GET /mcp/session/:topicId, POST /mcp/load,
    *  POST /mcp/offload. */
   dynamicMcpService?: import('../core/DynamicMcpService.js').DynamicMcpService | null;
+  /** SelfActionGovernor (unified-self-action-backpressure Increment B) — the
+   *  lock-free posture read behind GET /self-action-governor. Absent/null =>
+   *  the route 503s (governor not initialized on this build). */
+  selfActionGovernor?: import('../monitoring/selfaction/governor.js').SelfActionGovernorCore | null;
   telegram: TelegramAdapter | null;
   relationships: RelationshipManager | null;
   feedback: FeedbackManager | null;
@@ -8048,6 +8053,24 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
+  /** FD13 (unified-self-action-backpressure §4): verify the optional
+   *  `x-instar-principal-pin` proof and — when it is the operator's dashboard
+   *  PIN — record the principal admission on the ALWAYS-ALLOW audited lane.
+   *  Never blocks; never throws (a throwing principalAdmit resolves OPEN). */
+  const recordPrincipalKillProvenance = (req: import('express').Request, target: string): void => {
+    try {
+      const proof = req.headers['x-instar-principal-pin'];
+      if (typeof proof !== 'string' || !ctx.config.dashboardPin) return;
+      const ha = createHash('sha256').update(proof).digest();
+      const hb = createHash('sha256').update(ctx.config.dashboardPin).digest();
+      if (ha.length === hb.length && timingSafeEqual(ha, hb)) {
+        selfActionGovernorSurface.principalAdmit('dashboard-pin-session', { actionVerb: 'session-kill', target });
+      }
+    } catch {
+      /* provenance recording is observability — never blocks the kill */
+    }
+  };
+
   router.delete('/sessions/:id', async (req, res) => {
     if (!SESSION_NAME_RE.test(req.params.id)) {
       res.status(400).json({ error: 'Invalid session ID format' });
@@ -8076,6 +8099,14 @@ export function createRoutes(ctx: RouteContext): Router {
       // those read the route-stamped `origin` below. Sanitized + bounded.
       const viaHeader = req.headers['x-instar-close-via'];
       const via = typeof viaHeader === 'string' && /^[a-z0-9-]{1,40}$/.test(viaHeader) ? viaHeader : undefined;
+      // FD13 principal provenance (unified-self-action-backpressure §4): a
+      // PIN-proof header distinguishes the OPERATOR's dashboard session from a
+      // bare Bearer call (the agent itself holds Bearer, so Bearer alone is
+      // structurally insufficient — Know Your Principal). A valid proof rides
+      // the ALWAYS-ALLOW, always-audited principal lane; absent/invalid stays
+      // agent-origin ('self') and rides the normal governor ceilings once the
+      // kill sink enforces.
+      recordPrincipalKillProvenance(req, req.params.id);
       const result = await ctx.sessionManager.terminateSession(target.id, 'operator-kill', {
         origin: 'operator',
         finalStatus: 'killed',
@@ -8131,6 +8162,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(502).json({ error: 'url-rejected', machineId });
       return;
     }
+    // FD13 principal provenance (same PIN-proof distinguishability as the
+    // local DELETE route — a bare Bearer relay stays agent-origin 'self').
+    recordPrincipalKillProvenance(req, sessionUuid);
     try {
       // The peer's PLAIN local close — no relay params forwarded (single-hop
       // by construction, §2.1); UUID-targeted (the peer's existing route is
@@ -8844,6 +8878,81 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     return out;
   };
+
+  // ── SelfActionGovernor (unified-self-action-backpressure Increment B) ──
+  // LOCK-FREE + WRITE-FREE pure read of the in-memory aggregates (the
+  // /test-runner-limiter PURE-read precedent — never /spawn-limiter's
+  // lock-taking status()). Projection is SCRUBBED: aggregate per-class counts
+  // + verdict/breaker state ONLY — no target identities (account ids,
+  // session/topic names) and no absolute quota values (spec SEC6).
+  // `?scope=pool` merges pool-shared class counters from online peers
+  // (dark-peer-tolerant: a failed peer is a named row, never a 500).
+  const selfActionPoolLimiter = rateLimiter(60_000, 6);
+  router.get('/self-action-governor', (req, res) => {
+    const gov = ctx.selfActionGovernor;
+    if (!gov) {
+      res.status(503).json({ error: 'self-action governor unavailable (not initialized on this build)' });
+      return;
+    }
+    let posture: ReturnType<typeof gov.getPosture>;
+    try {
+      posture = gov.getPosture();
+    } catch (err) {
+      res.status(500).json({ error: `self-action governor read failed: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const body: Record<string, unknown> = {
+      machineId: selfMachineId,
+      generatedAt: new Date().toISOString(),
+      emergencyDisable: posture.emergencyDisable,
+      initialized: posture.initialized,
+      classes: posture.classes,
+    };
+    if (req.query.scope !== 'pool') {
+      res.json(body);
+      return;
+    }
+    // Pool scope: pool-shared class counters are answerable POOL-WIDE (the
+    // observability boundary matches the resource boundary); hardware-bound
+    // counters stay machine-local. Non-recursive (peers get the plain route),
+    // rate-limited (anti-amplification).
+    selfActionPoolLimiter(req, res, async () => {
+      const known = (ctx.listPoolMachines?.() ?? []).filter((m) => m.machineId !== selfMachineId);
+      const machines: Record<string, unknown>[] = [];
+      const failed: Array<{ machineId: string; reason: string }> = [];
+      let peersQueried = 0;
+      await Promise.all(known.map(async (m) => {
+        const capacity = ctx.machinePoolRegistry?.getCapacity(m.machineId) ?? null;
+        if (!m.lastKnownUrl) { failed.push({ machineId: m.machineId, reason: 'no-known-url' }); return; }
+        if (capacity && capacity.online === false) { failed.push({ machineId: m.machineId, reason: 'offline' }); return; }
+        const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        const verdict = isPeerUrlAllowedForCredentials(m.lastKnownUrl, extraAllowlist);
+        if (!verdict.ok) { failed.push({ machineId: m.machineId, reason: 'url-rejected' }); return; }
+        peersQueried++;
+        try {
+          const r = await fetch(`${m.lastKnownUrl}/self-action-governor`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (r.status === 404) { failed.push({ machineId: m.machineId, reason: 'route-missing' }); return; }
+          if (!r.ok) { failed.push({ machineId: m.machineId, reason: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' }); return; }
+          const peerBody = (await r.json()) as { classes?: Array<Record<string, unknown>> };
+          machines.push({
+            machineId: m.machineId,
+            nickname: capacity?.nickname ?? m.nickname,
+            emergencyDisable: (peerBody as Record<string, unknown>).emergencyDisable ?? null,
+            // Pool-shared classes ONLY (the resource boundary IS the
+            // observability boundary — hardware-bound stays machine-local).
+            classes: (peerBody.classes ?? []).filter((c) => c.resource === 'pool-shared'),
+          });
+        } catch {
+          failed.push({ machineId: m.machineId, reason: 'unreachable' });
+        }
+      }));
+      res.json({ ...body, scope: 'pool', pool: { selfMachineId, peersQueried, peersOk: machines.length, machines, failed } });
+    });
+  });
 
   router.get('/test-runner-limiter', (_req, res) => {
     try {
@@ -22506,6 +22615,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // test stays in lock-step with what the API actually accepts.
     const allowedKeys = PATCHABLE_CONFIG_KEYS;
 
+    // ── NESTED-PATH validator for the SelfActionGovernor subtree
+    // (unified-self-action-backpressure INT9-1): top-level `intelligence` is
+    // deliberately NOT allowlisted (that would Bearer-expose spawnCap etc.);
+    // EXACTLY `intelligence.selfActionGovernor` is patchable, with DEEP merge
+    // for this subtree (the generic one-level-deep merge would clobber
+    // sibling per-class overrides — the full-block hazard). The DISABLE
+    // direction (`emergencyDisable: true`) on this API path is
+    // dashboard-PIN-gated (ADV9-4 — two verifier-independent valves remain:
+    // the conversational config edit and the raw file edit, so this costs no
+    // emergency availability); re-enable is Bearer-OK.
+    let sagPatch: Record<string, unknown> | null = null;
+    if ('intelligence' in patch) {
+      const intel = (patch as Record<string, unknown>).intelligence;
+      const intelKeys = intel && typeof intel === 'object' && !Array.isArray(intel) ? Object.keys(intel) : null;
+      if (!intelKeys || intelKeys.some((k) => k !== 'selfActionGovernor')) {
+        res.status(400).json({
+          error: 'Only intelligence.selfActionGovernor is patchable under `intelligence` via API (nested-path validator; other intelligence.* keys are not Bearer-exposed)',
+        });
+        return;
+      }
+      const sag = (intel as Record<string, unknown>).selfActionGovernor;
+      if (!sag || typeof sag !== 'object' || Array.isArray(sag)) {
+        res.status(400).json({ error: 'intelligence.selfActionGovernor must be an object' });
+        return;
+      }
+      if ((sag as Record<string, unknown>).emergencyDisable === true) {
+        // Know Your Principal: disarming the flood brake over the API needs
+        // the operator's PIN — a Bearer token is structurally insufficient.
+        if (!checkMandatePin(req, res)) return; // response already sent
+      }
+      sagPatch = sag as Record<string, unknown>;
+      delete (patch as Record<string, unknown>).intelligence;
+      delete (patch as Record<string, unknown>).pin; // PIN is auth, never config
+    }
+
     const disallowed = Object.keys(patch).filter(k => !allowedKeys.has(k));
     if (disallowed.length > 0) {
       res.status(400).json({
@@ -22520,6 +22664,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let fileConfig: Record<string, any> = {};
       if (fs.existsSync(configPath)) {
         fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      }
+
+      // Deep merge for the validated selfActionGovernor subtree (multi-level
+      // by design — INT9-1's one-level-deep-merge hazard note).
+      if (sagPatch) {
+        const deepMerge = (base: Record<string, any>, overlay: Record<string, unknown>): Record<string, any> => {
+          for (const [k, v] of Object.entries(overlay)) {
+            if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
+              deepMerge(base[k], v as Record<string, unknown>);
+            } else {
+              base[k] = v;
+            }
+          }
+          return base;
+        };
+        fileConfig.intelligence = fileConfig.intelligence && typeof fileConfig.intelligence === 'object' ? fileConfig.intelligence : {};
+        fileConfig.intelligence.selfActionGovernor = deepMerge(
+          fileConfig.intelligence.selfActionGovernor && typeof fileConfig.intelligence.selfActionGovernor === 'object'
+            ? fileConfig.intelligence.selfActionGovernor
+            : {},
+          sagPatch,
+        );
+        const rt = ctx.config as any;
+        rt.intelligence = rt.intelligence && typeof rt.intelligence === 'object' ? rt.intelligence : {};
+        rt.intelligence.selfActionGovernor = deepMerge(
+          rt.intelligence.selfActionGovernor && typeof rt.intelligence.selfActionGovernor === 'object'
+            ? rt.intelligence.selfActionGovernor
+            : {},
+        sagPatch,
+        );
+        if (Object.keys(patch).length === 0) {
+          fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
+          res.json({ success: true, patched: ['intelligence.selfActionGovernor'], note: 'emergencyDisable is read live by the governor; per-class overrides apply on its next slow tick.' });
+          return;
+        }
       }
 
       // Deep merge (one level deep — sufficient for feature toggles)

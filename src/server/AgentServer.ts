@@ -72,6 +72,7 @@ import type { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js
 import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import { createRoutes } from './routes.js';
+import { getSelfActionGovernor } from '../monitoring/selfaction/governor.js';
 import { createFileRoutes } from './fileRoutes.js';
 import { mountWhatsAppWebhooks } from '../messaging/backends/WhatsAppWebhookRoutes.js';
 import { createMachineRoutes } from './machineRoutes.js';
@@ -2657,6 +2658,11 @@ export class AgentServer {
       state: options.state,
       scheduler: options.scheduler ?? null,
       dynamicMcpService,
+      // SelfActionGovernor (unified-self-action-backpressure Increment B):
+      // the module-level core — process-global anchored, so this is the SAME
+      // instance server boot initialized (or an uninitialized core reporting
+      // `initialized: false` honestly on a build that never wired it).
+      selfActionGovernor: getSelfActionGovernor(),
       telegram: options.telegram ?? null,
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,

@@ -8063,6 +8063,18 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('CLAUDE.md: added Fork-Bomb Spawn Cap section');
     }
 
+    // Self-Action Backpressure Governor (unified-self-action-backpressure §11 /
+    // LA9-1) — Agent Awareness + Migration Parity: existing agents learn the
+    // GET /self-action-governor read surface, the three proactive "why was my
+    // respawn held / swap queued / notify folded?" triggers, AND the
+    // emergencyDisable valve with the CONVERSATIONAL flip as the operator's
+    // mass-incident path. Content-sniffed on a stable heading -> idempotent.
+    if (!content.includes('Self-Action Backpressure Governor')) {
+      content += `\n**Self-Action Backpressure Governor (unified self-action chokepoint)** — Every registered self-triggered action I take (reaper age-kills, external-hog kills, proactive account swaps, beacon notify/liveness lines) rides ONE admission chokepoint (\`SelfActionGovernor\`) carrying per-target + census-scaled total count ceilings, rate buckets, P19 brakes, and a bounded coalescing queue — the runtime arm of the "Capacity Safety — No Unbounded Self-Action" standard (the 17,503-kills/day reaper flood + the 72-swaps/day thrash are the ancestor incidents). It ships OBSERVE-ONLY on every class: it measures would-deny verdicts and blocks NOTHING; a class only enforces after the operator's deliberate per-class flip (and pool-shared classes never enforce on a multi-machine pool until the pool-wide ceiling exists).\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-action-governor\` → per-class \`{ mode, counters, bySubMechanism, queueDepth }\`; every non-allow NAMES its deciding layer (per-target-ceiling / total-ceiling / census-scale / rate-bucket / breaker / ...). \`?scope=pool\` merges pool-shared class counters across my machines.\n- **When to use** (PROACTIVE — these are the triggers): "why did my respawn get held?" / "why did my swap get queued?" / "why did my notify get folded?" → read that class's \`bySubMechanism\` reasons on \`GET /self-action-governor\` — the deciding layer is named, never guessed.\n- **Mass-incident valve (the operator's path)**: in a real fire (a mass cleanup the ceilings would pace), the PRIMARY path is CONVERSATIONAL — the operator tells me and I set \`intelligence.selfActionGovernor.emergencyDisable: true\` in \`.instar/config.json\` (read live, no restart; every class degrades to unconditional pass-through). The flip itself is audited AND raises an attention item in both directions. Disabling via \`PATCH /config\` additionally requires the dashboard PIN (re-enable is Bearer-OK); a raw config-file edit remains the deliberate verifier-independent floor.\n- A human action always wins: operator kill routes carry an ALWAYS-ALLOW, always-audited principal lane — an enforcing class can never count-deny or queue an emergency stop. (Spec: \`docs/specs/unified-self-action-backpressure.md\`.)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Self-Action Backpressure Governor section');
+    }
+
     // Test-Runner Concurrency Bound (test-runner-concurrency-bound §2.9) — Agent
     // Awareness + Migration Parity: existing agents learn the host-wide vitest cap
     // (watch-only 14-day soak), the /test-runner-limiter read surface + /prune
