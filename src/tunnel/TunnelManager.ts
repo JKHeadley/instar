@@ -111,6 +111,11 @@ export interface TunnelManagerInjections {
   providers?: TunnelProvider[];
   notifierSink?: NotifierSink;
   fetch?: typeof fetch;
+  /**
+   * Test seam: override the reachability-probe retry schedule (see
+   * REACHABILITY_RETRY_DELAYS_MS) so unit tests don't sleep real seconds.
+   */
+  reachabilityRetryDelaysMs?: number[];
 }
 
 /**
@@ -145,6 +150,20 @@ const MAX_BACKOFF_MS = 5 * 60_000;
 const MAX_BACKOFF_ATTEMPTS = 10;
 const REACHABILITY_TIMEOUT_MS = 8_000;
 /**
+ * Reachability-probe grace window. Right after cloudflared registers a
+ * named-tunnel connection, the Cloudflare edge can keep serving 530 for
+ * a few seconds while the route propagates. A single immediate probe
+ * mistakes that propagation window for a dead link, kills the healthy
+ * tunnel, falls through to quick tunnels (which can be rate-limited),
+ * and strands the lifecycle in `exhausted` — where the 15-min retry
+ * replays the exact same race indefinitely (observed on instar-codey
+ * 2026-07-09: a manually-started connector served HTTP 200 within ~6s
+ * while the manager kept declaring reachability-failed). Probe up to
+ * `delays.length + 1` times, sleeping the next delay between attempts,
+ * before declaring reachability-failed.
+ */
+const REACHABILITY_RETRY_DELAYS_MS = [2_000, 4_000, 6_000];
+/**
  * Post-exhausted retry cadence — the minimum-viable "self-heal"
  * placeholder for PR 2. After the bounded startup-reconnect ladder
  * exhausts (MAX_BACKOFF_ATTEMPTS), the manager keeps probing the
@@ -178,6 +197,7 @@ export class TunnelManager extends EventEmitter {
   private readonly providers: TunnelProvider[];
   private notifier: TunnelNotifier | null;
   private readonly fetcher: typeof fetch;
+  private readonly reachabilityRetryDelaysMs: number[];
 
   private currentHandle: TunnelProviderHandle | null = null;
   private currentProviderName: ProviderName | null = null;
@@ -229,6 +249,8 @@ export class TunnelManager extends EventEmitter {
       ? new TunnelNotifier({ sink: injections.notifierSink })
       : null;
     this.fetcher = injections?.fetch ?? globalThis.fetch.bind(globalThis);
+    this.reachabilityRetryDelaysMs =
+      injections?.reachabilityRetryDelaysMs ?? REACHABILITY_RETRY_DELAYS_MS;
 
     this._legacyState = {
       url: null,
@@ -1025,8 +1047,26 @@ export class TunnelManager extends EventEmitter {
     }, POST_EXHAUSTED_RETRY_INTERVAL_MS);
   }
 
-  /** HTTP probe through the public URL — confirms the link actually serves. */
+  /**
+   * HTTP probe through the public URL — confirms the link actually
+   * serves. Retries across a bounded grace window (see
+   * REACHABILITY_RETRY_DELAYS_MS) so the edge-propagation 530s that
+   * follow connector registration don't get a healthy tunnel killed.
+   * A shutdown mid-window bails immediately instead of sleeping it out.
+   */
   private async probeReachability(url: string): Promise<boolean> {
+    const delays = this.reachabilityRetryDelaysMs;
+    for (let attempt = 0; ; attempt++) {
+      if (await this.probeReachabilityOnce(url)) return true;
+      if (this._stopped) return false; // shutting down — don't wait out the grace window
+      const delayMs = delays[attempt];
+      if (delayMs === undefined) return false; // grace window exhausted — genuinely unreachable
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  /** One probe attempt — a non-ok response or any fetch error reads as "not reachable yet". */
+  private async probeReachabilityOnce(url: string): Promise<boolean> {
     try {
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), REACHABILITY_TIMEOUT_MS);
@@ -1036,6 +1076,9 @@ export class TunnelManager extends EventEmitter {
       clearTimeout(t);
       return res.ok;
     } catch {
+      // @silent-fallback-ok: probe failure IS the signal — `false` is the
+      // datum the retry loop and callers act on (recordAttempt with
+      // reachability-failed); nothing is swallowed.
       return false;
     }
   }
