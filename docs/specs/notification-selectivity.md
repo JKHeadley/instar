@@ -6,7 +6,7 @@ tier: 2
 created: "2026-07-10"
 author: "echo"
 parent-principle: "Near-Silent Notifications"
-eli16-overview: "docs/specs/notification-selectivity.eli16.md"
+eli16-overview: "notification-selectivity.eli16.md"
 provenance:
   - "Design approved by operator 2026-06-13 13:59 PDT (topic 11960, verbatim: 'Approved') after three review rounds — recorded here as DESIGN provenance only. The converged spec artifact was LOST: the build session was reaped at max runtime the same day and the spec file died with its worktree; only the design conversation survives."
   - "Reconstructed 2026-07-10 against canonical main (v1.3.802) after operator reaffirmation (topic 11960, 2026-07-10, verbatim): 'we need to be VERY selective about what gets actually sent to the user (most should be internal logs)'."
@@ -40,6 +40,15 @@ lessons-engaged:
   - "Mobile-Complete Operator Actions — category opt-in is conversational + a dashboard toggle through ONE sole-writer surface; never a hand-built curl (engaged, §4.4)"
   - "Close the Loop — the opt-in digest + unread-aging counters + agent-facing re-surfacing + tracked deferrals keep quiet items from rotting unseen (engaged, §4.3, §4.5)"
   - "Cross-Machine Coherence — every new surface declares its posture; the opt-in surface is unified via a durable sole-writer fan-out (engaged, §Multi-machine)"
+review-convergence: "2026-07-10T20:02:56.648Z"
+review-iterations: 3
+review-completed-at: "2026-07-10T20:02:56.648Z"
+review-report: "docs/specs/reports/notification-selectivity-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 15
+cheap-to-change-tags: 2
+contested-then-cleared: 3
 ---
 
 # Notification Selectivity — Quiet by Default
@@ -56,6 +65,16 @@ enveloped) and the durable cross-machine ack (queued intent, revalidated at
 apply time); **the lifeline** = the always-alive guaranteed-reachable session;
 **working-set carrier** = the mechanism that moves a topic's files between
 machines; **guardian-pulse** = the daily meta-monitor digest job.
+
+How it fits together, in five lines: (1) a code-defined **registry** names
+every automated-message category and its default (quiet); (2) every outbound
+send carries a provenance **envelope** stamped at its origin; (3) a
+deterministic **gate** at the delivery funnel routes each send — replies
+deliver, automated messages record unless opted-in or genuinely significant,
+and every push is volume-budgeted; (4) recorded items land in a **quiet
+store** + dashboard Notifications tab + logs, and route into the owning
+project's session context; (5) the whole thing rolls out dark → observe →
+operator-flipped enforcement, with a zero-stray CI test holding it forever.
 
 ## Problem statement
 
@@ -293,8 +312,11 @@ there is no ambient "stamp any category" API to misuse — each emitter module
 receives, at composition-root wiring time, a stamper handle bound to exactly
 its registry-declared categories (the capability-object pattern), so stamping
 outside your declaration requires changing the wiring, which is the lint's
-and the PR review's jurisdiction. No reflection-based runtime module-identity
-check is claimed (JavaScript offers none for free).
+and the PR review's jurisdiction. Stampers are narrow TYPED factories
+exported only from the wiring module — the §9 lint forbids importing the
+generic envelope constructor anywhere else, so a handle cannot drift into
+general circulation. No reflection-based runtime module-identity check is
+claimed (JavaScript offers none for free).
 
 ### 2.1 The provenance envelope
 
@@ -377,7 +399,9 @@ the delivery layer.** A send is `verified-reply` iff ALL of:
    bounded, not an open-ended manual chore: each incident row carries the
    topic, the send, and the map state needed to judge it, and the metric is
    expected to be rare — the review is a per-incident checklist over a small
-   set, presented with the FD-12 evidence. **The promotion mechanism is
+   set, presented with the FD-12 evidence (automating the incident
+   classification is named future work, after the manual pass establishes
+   the ground truth). **The promotion mechanism is
    server-minted, zero client-contract change:** the route already tracks the
    topic's current inbound (`currentInboundByTopic`, routes.ts:12595) and the
    §2.5 map; promotion means the `verified-reply` stamp additionally requires
@@ -424,7 +448,11 @@ callers that branch on a Telegram message id (delivery-retry, dedup
 reservation, relay ACK paths) to handle `recorded` explicitly. A recorded
 send is SUCCESS for the emitter (the notice reached its governed surface);
 it must not trigger delivery retries, and it must not mark "user was
-notified" state anywhere. §9 requires tests per caller class.
+notified" state anywhere. §9 requires tests per caller class, and through
+Increments A–C a transitional shim LOGS every caller observed consuming a
+`recorded` result (the highest practical breakage risk is a caller silently
+assuming Telegram delivery — the sweep is verified by observation, not
+assumed complete).
 
 ### 2.4 Fail directions (explicit, per class)
 
@@ -465,12 +493,18 @@ notified" state anywhere. §9 requires tests per caller class.
     `record` would EAT a conversational reply — the unsafe direction. So an
     envelope-less relayed send falls back to the already-riding
     `kindMetadata.messageKind` (`reply` → deliver; `automated`/absent →
-    record), for a bounded skew window (enforcement on relayed sends
-    additionally gates on the peer's advertised protocol version). Honesty
-    note for the inverse skew: a NEW-version sender relaying to a LEGACY
-    holder degrades toward push (the legacy holder has no gate) — harmless
-    while the fleet is dark/dryRun, gone once Increment D lands, and stated
-    here so nobody mistakes it for a guarantee.
+    record). **The fallback has a pinned closure condition:** it applies ONLY
+    while an identified REGISTERED peer advertises a legacy protocol version,
+    and it is DEAD the moment no such peer exists — so the relay entry can
+    never linger as a standing reply-disguise for local Bearer-authed
+    callers. The §9 lint additionally forbids any in-repo caller outside the
+    sanctioned relay module from constructing the `{relayed: true}` marker
+    (mesh-signing the marker is the tracked hardening
+    <!-- tracked: 11960 -->). Honesty note for the inverse skew: a
+    NEW-version sender relaying to a LEGACY holder degrades toward push (the
+    legacy holder has no gate) — harmless while the fleet is dark/dryRun,
+    gone once Increment D lands, and stated here so nobody mistakes it for a
+    guarantee.
 
 ### 2.5 The inbound recency map (no hot-path disk I/O)
 
@@ -637,12 +671,16 @@ merge is a documented hazard for nested keys).
     legacyGate key (§3.5). **The conversational rung is deterministic, not
     attested:** a `confirmedBy: operator-conversational-confirm` write MUST
     cite `confirmingMessageId` — the operator's confirming inbound message —
-    verified against the §2.5 recency map (≤15 min); a write without a
-    resolvable citation is REFUSED (400), so the agent structurally cannot
-    self-grant push by claiming a conversation that didn't happen. The
-    confirmation reply the agent then sends ("Done — reap notices will now
-    push here") is conversation-serving, bound to that same message — the
-    change is always visible at the moment it happens. Belt on top: >2
+    verified against the §2.5 recency map (≤15 min) AND resolved to the
+    topic's VERIFIED operator binding (Know Your Principal — in a multi-user
+    topic, another registered user's message is not the operator's consent);
+    a write without a resolvable, operator-bound citation is REFUSED (400),
+    so the agent structurally cannot self-grant push by claiming a
+    conversation that didn't happen. **The confirmation reply is
+    server-minted, not agent-remembered:** the sole-writer route itself emits
+    the conversation-serving confirmation ("Done — reap notices will now push
+    here") into the cited message's topic, so the change is ALWAYS visible at
+    the moment it happens — by structure, not willpower. Belt on top: >2
     category changes inside 10 minutes raises ONE deduped attention item, and
     the current opt-in inventory is printed on the status route AND in every
     digest — a quietly-flipped key cannot stay invisible.
@@ -768,13 +806,27 @@ the gate (FD-15). Pinned semantics:
   P17 criticals-stay-visible precedent).
 - **Global ceiling:** at most **10 pushes per 10 minutes across ALL
   categories** (the cross-category analog of the P17 global topic ceiling);
-  overflow folds into ONE cross-category summary.
+  overflow folds into ONE cross-category summary. The global ceiling applies
+  to ROUTINE (opted-in) pushes; significant-lane pushes are bounded by their
+  own lanes and are never displaced or folded by routine volume — routine
+  storms across many categories cannot consume the headroom a significant
+  push rides on.
 - **Summary content is pinned** like the digest (§4.5): count + category/
   class name + the dashboard link — never `sourceContext`, titles, or item
   text.
 - **Scope honesty:** budgets are per-machine and in-memory (a restart resets
   the window; pool-wide worst case is budget × machines) — accepted and
-  stated, with P17's delivery-layer bounds as the backstop.
+  stated, with P17's delivery-layer bounds as the backstop. The status route
+  reports the pool-wide theoretical maximum (budget × online machines); a
+  lease-holder-coordinated global budget is a tracked follow-up
+  <!-- tracked: 11960 -->.
+- **Key-space bounds (the unique-sourceContext storm — the 2026-06-05 dodge
+  shape):** the §4.2 coalescing accumulator and the §5 episode-dedup map are
+  both keyed on emitter-supplied `sourceContext`, so both carry a TTL + a
+  per-category key cap (the §2.5 recency-map precedent); when a category
+  exceeds its key cap inside a window, further keys coalesce at CATEGORY
+  level (one row/summary for "N distinct sources") — a storm of unique labels
+  buys category-level coalescing, never O(storm) rows or pushes.
 - Everything coalesced or over-budget is individually recorded in the quiet
   store — a budget never loses an item, it only bounds pushes.
 
@@ -947,7 +999,9 @@ mid-build stop.
   offline peers via a durably queued write replayed on their return (the
   WS4.1 durable-ack precedent, INCLUDING its load-bearing half:
   **apply-time revalidation**). Every write carries a per-key monotonic
-  version stamped by the sole-writer; a queued replay applies ONLY-IF-NEWER,
+  version stamped by the sole-writer, machine-qualified (version +
+  machineId tiebreak) so two machines' concurrent writes can never mint
+  colliding versions; a queued replay applies ONLY-IF-NEWER,
   so a stale queued opt-in can never resurrect a since-reverted choice. The
   queue is bounded (per-peer cap; entries expire after 7 days — a
   permanently-dark peer cannot accumulate forever). Per-machine application
@@ -1136,8 +1190,9 @@ mid-build stop.
      pre-decided pass-through);
   2. callsite→category fit: a module may stamp only categories naming it in
      `emitterModules`;
-  3. NO new raw `apiCall('sendMessage')` callsites (the existing seven are
-     enumerated with in-code justifications);
+  3. NO new raw `apiCall('sendMessage')` callsites (the existing
+     grep-enumerated set — ~nine at reconstruction time, re-enumerated at
+     lint-baseline per §2.1 — carries in-code justifications);
   4. NO new in-repo `POST /telegram/reply` callers outside the sanctioned
      relay scripts;
   5. every `legacyGate` key defaults false in ConfigDefaults.
@@ -1153,7 +1208,10 @@ mid-build stop.
   flips to quiet. **Idempotency pinned:** the snapshot writes a key ONLY IF
   ABSENT (an operator's Increment-B/C sole-writer choice always beats the
   legacy lever value) and records a one-time durable migration marker (the
-  `_instar_migrations` precedent), so re-runs are no-ops.
+  `_instar_migrations` precedent), so re-runs are no-ops. The Increment-D
+  announcement (§4.4) explicitly LISTS any grandfathered push categories the
+  agent carried over, with a one-tap disable-all in the dashboard tab — a
+  never-knowingly-chosen default-true lever must not survive invisibly.
 - CLAUDE.md template (`generateClaudeMd`) gains a "Quiet by Default
   notifications" awareness block (the pull surface, the opt-in trigger
   phrases, the status route) + `migrateClaudeMd` content-sniffed patch.
@@ -1206,10 +1264,18 @@ user's explicit confirmation."
 - **Priority-keyed gating (HIGH/URGENT always push):** rejected in the
   June-13 round 1 — the trapdoor: features mark everything critical. Classes
   are registry-bound per (category, module) instead (§5).
+- **SQLite / an embedded event store for the quiet store:** considered — the
+  repo already runs SQLite for `PendingRelayStore`, and the quiet store is
+  admittedly a small event log (append rows + ack rows + an index). JSONL is
+  chosen for v1 because it matches the file-based-state doctrine, the write
+  path is single-process append-only (no concurrent-writer problem SQLite
+  would solve), and the read path is index-only; the store sits behind an
+  interface, so migrating to SQLite if concurrency or indexing outgrows JSONL
+  is an implementation swap, not a spec change.
 - **A second gate at the attention layer only:** rejected — attention is one
   emitter family; the disguise hole, the ~40 direct `sendToTopic` callers,
-  and the seven raw `sendMessage` callsites require the funnel-level last
-  hop plus lint closure of the bypasses.
+  and the grep-enumerated raw `sendMessage` callsites (§2.1) require the
+  funnel-level last hop plus lint closure of the bypasses.
 - **Blocking at the tone gate:** rejected — route-scoped (in-process callers
   bypass it), content-judging (wrong key), and its fail-closed direction is
   wrong for replies.
@@ -1238,14 +1304,18 @@ anchor, not the final tracking grain.
   lane — converges separately, plugs into the registry)
   <!-- tracked: 11960 -->
 
+## Resolution note (why Open questions is empty)
+
+All operator decisions are resolved into Frontloaded Decisions above
+(FD-1 … FD-15), each restated in plain English in the ELI16 companion for
+the operator to confirm or override at approval time. The items that
+genuinely bend or postdate a June-13 decision are flagged as DEV-1 (rollout
+lever vs "no break-glass"), DEV-6/FD-14 (The Agent Carries the Loop
+collision), and FD-9 (advisory-first reply corroboration).
+
 ## Open questions
 
-None — all resolved into Frontloaded Decisions above (FD-1 … FD-15), each
-restated in plain English in the ELI16 companion for the operator to confirm
-or override at approval time. The items that genuinely bend or postdate a
-June-13 decision are flagged as DEV-1 (rollout lever vs "no break-glass"),
-DEV-6/FD-14 (The Agent Carries the Loop collision), and FD-9 (advisory-first
-reply corroboration).
+*(none)*
 
 ## History
 
@@ -1255,4 +1325,5 @@ reply corroboration).
 | 2026-06-13 | Build session `Topic spam` reaped at max runtime (~16:02 PDT); worktree + converged spec artifact lost. Only the conversation survived. |
 | 2026-07-09/10 | Operator returns to topic 11960 (fresh spam screenshot); urgent slice ships as PR #1417 (single-alerts-topic routing). Operator reaffirms the selectivity direction verbatim. |
 | 2026-07-10 | This reconstruction authored against main v1.3.802 and committed to a branch at authoring time (the artifact-loss lesson applied); round-1 convergence findings folded (9 reviewers). |
-| 2026-07-10 | Round-2 findings folded (8 reviewers + conformance gate): corrected raw-send census incl. `TelegramAdapter.send()`, deterministic opt-in confirmation citation, relay carrier + fresh holder classification, pinned coalesce/durability mechanics, split significant/routine push lanes + global ceiling, FD-7 apply-time revalidation, FD-15. Awaiting round-3 confirmation + fresh operator approval. |
+| 2026-07-10 | Round-2 findings folded (8 reviewers + conformance gate): corrected raw-send census incl. `TelegramAdapter.send()`, deterministic opt-in confirmation citation, relay carrier + fresh holder classification, pinned coalesce/durability mechanics, split significant/routine push lanes + global ceiling, FD-7 apply-time revalidation, FD-15. |
+| 2026-07-10 | Round 3 (confirmation): every round-2 fold verified genuine by all six internal reviewers + codex gpt-5.5 + gemini; ZERO material new findings — CONVERGED at iteration 3. Round-3 one-clause minors folded editorially (operator-bound confirmation citations, server-minted confirmation reply, relay-fallback closure condition + marker lint, significant-lane reservation in the global ceiling, sourceContext key caps + category-level coalesce, machine-qualified opt-in versions, grandfathered-category listing + disable-all, record-contract transitional shim, typed stamper factories, SQLite alternative recorded, census-echo fixes, ELI16 item 16). Awaiting fresh operator approval. |

@@ -150,9 +150,14 @@ one of them is genuinely yours, and saying "change #N" is enough.
 15. **Existing notice settings are grandfathered, not force-quieted.** A
     couple of today's notices (like reap notices) are effectively ON by
     default. At the fleet flip, whatever is effectively on for you STAYS on
-    (recorded as your opt-in) — the flip changes the default for everything
-    new, it never silently revokes a standing behavior you may rely on. Turn
-    any of them off with one toggle afterwards.
+    (recorded as your opt-in), the flip announcement LISTS exactly what got
+    carried over, and the dashboard offers one-tap disable-all — the flip
+    changes the default for everything new, it never silently revokes a
+    standing behavior you may rely on.
+16. **Telegram first.** This ships on Telegram (where all the noise lives
+    today); Slack/WhatsApp/iMessage get the same gate as a tracked follow-up
+    — the machinery is built channel-agnostic so that's a bolt-on, not a
+    redesign.
 
 ## What this is NOT
 
