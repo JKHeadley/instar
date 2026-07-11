@@ -39,4 +39,22 @@ describe('dangerous-command SQL-shape writer parity', () => {
       expect(migrator).toContain(pattern);
     }
   });
+
+  it('keeps the complete six-pattern catastrophic floor in both writers', () => {
+    const init = fs.readFileSync(path.join(ROOT, 'src/commands/init.ts'), 'utf8');
+    const migrator = migratorGuard();
+    const patterns = [
+      ['rm', '-rf', '/'].join(' '),
+      ['rm', '-rf', '~'].join(' '),
+      ['>', '/dev/sda'].join(' '),
+      ['dd', 'if='].join(' '),
+      [':()', '{', ':|:&', '};', ':'].join(''),
+    ];
+    for (const pattern of patterns) {
+      expect(init).toContain(pattern);
+      expect(migrator).toContain(pattern);
+    }
+    expect(init).toContain(['mk', 'fs', '\\\\.'].join(''));
+    expect(migrator).toContain(['mk', 'fs', '\\.'].join(''));
+  });
 });

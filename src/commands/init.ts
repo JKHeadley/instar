@@ -4158,7 +4158,7 @@ if [ -f "\$INSTAR_DIR/config.json" ]; then
 fi
 
 # ALWAYS blocked (catastrophic, irreversible)
-for pattern in "rm -rf /" "rm -rf ~"; do
+for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:"; do
   if echo "\$INPUT" | grep -qi "\$pattern"; then
     echo "BLOCKED: Catastrophic command detected: \$pattern" >&2
     echo "Always blocked regardless of safety level. User must execute directly." >&2

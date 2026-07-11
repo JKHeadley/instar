@@ -101,6 +101,12 @@ describe('Codex dangerous-command-guard (stdin payload)', () => {
   };
 
   it.each([
+    ['catastrophic root removal', ['rm', '-rf', '/'].join(' ')],
+    ['catastrophic home removal', ['rm', '-rf', '~'].join(' ')],
+    ['disk overwrite redirect', ['>', '/dev/sda'].join(' ')],
+    ['filesystem format', `${['mk', 'fs.ext4'].join('')} /dev/sda`],
+    ['raw disk copy', ['dd', 'if=/dev/zero', 'of=/dev/sda'].join(' ')],
+    ['fork bomb', [':()', '{', ':|:&', '};', ':'].join('')],
     ['recursive removal', ['rm', '-rf', '.'].join(' ')],
     ['long force push', ['git', 'push', '--force'].join(' ')],
     ['short force push', ['git', 'push', '-f'].join(' ')],

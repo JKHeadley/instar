@@ -64,6 +64,8 @@ Pure code/template rollback with no data migration.
 
 Clear to ship. This removes demonstrated prose over-blocks while retaining conservative blocking for real and ambiguous destructive statement shapes.
 
+Review correction: the complete six-pattern catastrophic floor was restored byte-for-byte from fresh main after an over-broad mechanical edit removed four entries. The executable positive table now covers all six, preventing recurrence.
+
 ## Evidence pointers
 
 - `tests/integration/codex-dangerous-command-block.test.ts`

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "sessionId": "46e7cabc-4f2b-439e-a7a2-a88f6a73f395",
+  "timestamp": "2026-07-11T11:43:04.422Z",
+  "artifactPath": "upgrades/side-effects/dangerous-command-sql-shape.md",
+  "artifactSha256": "c9b019d5b23378cd2760aabc5d2f9d457f43fd76a83170880d412880a0a5c794",
+  "specPath": "docs/specs/codex-enforcement-hook-layer.md",
+  "coveredFiles": [
+    ".instar/hooks/instar/dangerous-command-guard.sh",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Restore byte-identical catastrophic safety floor while retaining SQL-only precision change",
+  "secondPass": "false",
+  "reviewerConcurred": false
+}
