@@ -9,6 +9,8 @@
 
 `AgentServer.deliverA2aMessage` accepts an optional observability-only visible echo. On confirmed `a2a-inbox-local` success, mentor delivery mirrors the original body through the existing mentor bot/topic. `MentorVisibleEcho` provides bounded line-aware chunking and one-shot failure reporting. `mentor.visibleEcho` defaults on inside the already-dark mentor system and can be disabled.
 
+CI repair: adding that fleet-on child shifted later line numbers in the dark-gate lint's hand-authored golden attribution map by one. The map was updated by hand; its 25 dotted paths remain unchanged.
+
 ## Decision-point inventory
 
 - Canonical a2a delivery — pass-through — remains authoritative and byte-identical.
