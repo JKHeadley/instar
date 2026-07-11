@@ -71,6 +71,7 @@ Not required: this does not touch messaging, dispatch, session lifecycle, compac
 - `tests/integration/evolution-action-auto-expiry.integration.test.ts`
 - `tests/e2e/ws2-evolution-actions-cross-instance.test.ts`
 - `tests/unit/self-action-convergence.test.ts`
+- `tests/unit/feature-delivery-completeness.test.ts` (new awareness section registered for Claude, Codex, and Gemini parity)
 
 ## Class-Closure Declaration
 
