@@ -227,8 +227,13 @@ describe('intended-owner evidence ladder (§3.2.2)', () => {
         { machineId: 'laptop', owner: 'laptop', epoch: 7, admissible: true },
       ]),
     });
-    await new DuplicateSessionReconciler(cfg(), deps).tick();
-    expect(deps.casConverge).toHaveBeenCalledWith('12345', 'laptop');
+    const rep = await new DuplicateSessionReconciler(cfg(), deps).tick();
+    // The verdict fell through to rule 2 and named laptop; the self view
+    // ALREADY says laptop, so the no-epoch-burn skip handles it (no CAS).
+    expect(rep.reconciled).toBe(1);
+    expect(deps.casConverge).not.toHaveBeenCalled();
+    const row = deps.rows.find((x) => x.kind === 'record-already-converged');
+    expect(row).toMatchObject({ owner: 'laptop', rule: 'highest-epoch' });
   });
 
   it('rule 2: highest ADMISSIBLE epoch wins; inadmissible rows never count', async () => {
@@ -238,9 +243,12 @@ describe('intended-owner evidence ladder (§3.2.2)', () => {
         { machineId: 'mini', owner: 'mini', epoch: 999, admissible: false }, // forged/unstamped — OUT
       ]),
     });
-    await new DuplicateSessionReconciler(cfg(), deps).tick();
-    expect(deps.casConverge).toHaveBeenCalledWith('12345', 'laptop');
-    expect(deps.rows.some((r) => r.kind === 'converged-record' && r.rule === 'highest-epoch')).toBe(true);
+    const rep = await new DuplicateSessionReconciler(cfg(), deps).tick();
+    // laptop wins rule 2 (the inadmissible 999 never counts); the self view
+    // already agrees → handled via the already-converged skip, no CAS.
+    expect(rep.reconciled).toBe(1);
+    expect(deps.casConverge).not.toHaveBeenCalled();
+    expect(deps.rows.some((r) => r.kind === 'record-already-converged' && r.rule === 'highest-epoch' && r.owner === 'laptop')).toBe(true);
   });
 
   it('rule 2: equal epochs naming DIFFERENT owners → symmetric-divergence escalate', async () => {
@@ -285,8 +293,11 @@ describe('intended-owner evidence ladder (§3.2.2)', () => {
         { machineId: 'laptop', owner: 'laptop', epoch: 8, admissible: true },
       ]),
     });
-    await new DuplicateSessionReconciler(cfg(), deps).tick();
-    expect(deps.casConverge).toHaveBeenCalledWith('12345', 'laptop');
+    const rep = await new DuplicateSessionReconciler(cfg(), deps).tick();
+    // Epoch height (8 > 3) decides — and the self view already names the
+    // winner, so the skip path records it without a CAS.
+    expect(rep.reconciled).toBe(1);
+    expect(deps.rows.some((r) => r.kind === 'record-already-converged' && r.owner === 'laptop')).toBe(true);
   });
 });
 
@@ -349,6 +360,57 @@ describe('dry-run posture (Increment-1 default)', () => {
 });
 
 // ── live convergence + peer echo ──────────────────────────────────────────
+
+describe('already-converged record (the 2026-07-10 incident shape)', () => {
+  it('local record already names the intended owner → NO CAS (no epoch burn), straight to the echo window, closeout arms on echo', async () => {
+    // The bootleg-spawn shape: the duplicate exists at the SESSION layer only;
+    // the record is already right. A claim would be refused by the FSM
+    // (claim-out-of-sequence) — the reconciler must skip the write entirely.
+    const deps = makeDeps({
+      selfMachineId: vi.fn(() => 'laptop'),
+      readOwnershipViews: vi.fn(() => [
+        { machineId: 'laptop', owner: 'laptop', epoch: 4, admissible: true },
+      ]),
+    });
+    const r = new DuplicateSessionReconciler(cfg(), deps);
+    const t1 = await r.tick();
+    expect(t1.reconciled).toBe(1);
+    expect(deps.casConverge).not.toHaveBeenCalled();
+    expect(deps.rows.some((x) => x.kind === 'record-already-converged')).toBe(true);
+    expect(r.status().openEpisodes).toBe(1); // echo window open
+
+    // Echo confirms on the next tick → the existing closeout is armed.
+    (deps.discoverCandidates as ReturnType<typeof vi.fn>).mockResolvedValue({ candidates: [] });
+    const t2 = await r.tick();
+    expect(t2.echoConfirmed).toBe(1);
+    expect(deps.armCloseout).toHaveBeenCalledWith('12345', 'laptop');
+  });
+
+  it('local record names a DIFFERENT machine than the verdict → the CAS still runs (repair genuinely needed)', async () => {
+    const deps = makeDeps({
+      selfMachineId: vi.fn(() => 'laptop'),
+      readPin: vi.fn(() => ({ pinned: true, preferredMachine: 'mini' })), // rule 1 names mini
+      readOwnershipViews: vi.fn(() => [
+        { machineId: 'laptop', owner: 'laptop', epoch: 4, admissible: true }, // record says laptop
+      ]),
+    });
+    const t1 = await new DuplicateSessionReconciler(cfg(), deps).tick();
+    expect(deps.casConverge).toHaveBeenCalledWith('12345', 'mini');
+    expect(t1.reconciled).toBe(1);
+  });
+
+  it('an INADMISSIBLE self view never triggers the skip (the CAS runs)', async () => {
+    const deps = makeDeps({
+      selfMachineId: vi.fn(() => 'laptop'),
+      readPin: vi.fn(() => ({ pinned: true, preferredMachine: 'laptop' })),
+      readOwnershipViews: vi.fn(() => [
+        { machineId: 'laptop', owner: 'laptop', epoch: 4, admissible: false },
+      ]),
+    });
+    await new DuplicateSessionReconciler(cfg(), deps).tick();
+    expect(deps.casConverge).toHaveBeenCalledWith('12345', 'laptop');
+  });
+});
 
 describe('live convergence (§3.2.3)', () => {
   it('CAS refused (409/conflict) → escalate, never a blind retry', async () => {

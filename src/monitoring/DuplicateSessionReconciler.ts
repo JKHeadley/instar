@@ -369,6 +369,39 @@ export class DuplicateSessionReconciler {
       return { consumed: true, wrote: false };
     }
 
+    // ── Already-converged record (the 2026-07-10 incident's OWN shape) ──
+    // A bootleg spawn is exactly the un-gated path: it creates a duplicate
+    // SESSION without ever touching the ownership RECORD, so the record
+    // frequently already names the intended owner. The FSM refuses a claim
+    // on an active self-owned record BY DESIGN ("claiming what you already
+    // own... would burn an epoch for nothing and masks a reconciler bug"),
+    // so a CAS here would land at `claim-out-of-sequence` → escalate — the
+    // incident shape would page the operator instead of self-healing.
+    // The record needs no repair: go straight to the peer-echo window (the
+    // MISSING piece may be replication/materialization on the peer), and the
+    // echo-confirmed path arms the existing closeout as usual. No epoch burn.
+    const selfView = this.deps
+      .readOwnershipViews(sessionKey)
+      .find((v) => v.admissible && v.machineId === (this.deps.selfMachineId() ?? 'self'));
+    if (selfView && selfView.owner === verdict.owner) {
+      this.counters.converged++;
+      report.reconciled++;
+      this.journalRow({
+        kind: 'record-already-converged',
+        key: cand.key,
+        owner: verdict.owner,
+        rule: verdict.rule,
+        detail: verdict.detail,
+        attempts: ep.convergenceAttempts,
+      });
+      ep.echoPending = {
+        owner: verdict.owner,
+        machines: liveMachines.map((m) => m.machineId).filter((m) => m !== verdict.owner),
+        ticksLeft: this.cfg.echoConfirmTicks,
+      };
+      return { consumed: true, wrote: false };
+    }
+
     // ── LIVE convergence ──
     const cas = this.deps.casConverge(sessionKey, verdict.owner);
     if (!cas.ok) {
