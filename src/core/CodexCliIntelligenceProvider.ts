@@ -23,7 +23,12 @@ import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
-import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
+import {
+  CODEX_CHATGPT_FALLBACK_MODEL,
+  resolveCliModelFlag,
+} from '../providers/adapters/openai-codex/models.js';
+import { classifyCodexErrorMessage } from '../providers/adapters/openai-codex/observability/eventNormalizer.js';
+import { KNOWN_CODEX_MODEL_IDS } from './ModelTierEscalation.js';
 import {
   buildCodexChildEnv,
   spawnCodexExecJson,
@@ -356,10 +361,38 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     } catch {
       execJson = execJsonEnvDefault(); // a throwing resolver must not take the call down
     }
-    if (execJson) {
-      return this.evaluateExecJson(prompt, options, model);
+    try {
+      return await this.evaluateWithModel(prompt, options, model, execJson);
+    } catch (error) {
+      if (
+        model !== CODEX_CHATGPT_FALLBACK_MODEL &&
+        classifyCodexErrorMessage((error as Error).message) === 'unsupported' &&
+        KNOWN_CODEX_MODEL_IDS.includes(CODEX_CHATGPT_FALLBACK_MODEL)
+      ) {
+        // @silent-fallback-ok — deliberate, bounded self-heal for Codex's
+        // exact ChatGPT-account model-retirement signature. The retry uses a
+        // live-verified known-good floor and is never recursively retried.
+        try { options?.onModel?.({ model: CODEX_CHATGPT_FALLBACK_MODEL, framework: 'codex-cli' }); } catch { /* @silent-fallback-ok: onModel is pure observability */ }
+        return this.evaluateWithModel(
+          prompt,
+          options,
+          CODEX_CHATGPT_FALLBACK_MODEL,
+          execJson,
+        );
+      }
+      throw error;
     }
-    return this.evaluatePlain(prompt, options, model);
+  }
+
+  private evaluateWithModel(
+    prompt: string,
+    options: IntelligenceOptions | undefined,
+    model: string,
+    execJson: boolean,
+  ): Promise<string> {
+    return execJson
+      ? this.evaluateExecJson(prompt, options, model)
+      : this.evaluatePlain(prompt, options, model);
   }
 
   /**

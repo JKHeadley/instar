@@ -87,6 +87,36 @@ afterEach(() => {
 });
 
 describe('exec-json mode (default)', () => {
+  it('self-heals a retired model through the real exec-json spawn path', async () => {
+    const calls = path.join(fixtureDir, 'fallback-calls.txt');
+    const script = path.join(fixtureDir, 'retired-model.sh');
+    fs.writeFileSync(script, `#!/bin/sh
+OUTFILE=""
+MODEL=""
+PREV=""
+for a in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then OUTFILE="$a"; fi
+  if [ "$PREV" = "--model" ]; then MODEL="$a"; fi
+  PREV="$a"
+done
+cat > /dev/null
+echo "$MODEL" >> "${calls}"
+if [ "$MODEL" != "gpt-5.4-mini" ]; then
+  echo "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account." >&2
+  exit 1
+fi
+printf '%s' 'RECOVERED-JSON' > "$OUTFILE"
+exit 0
+`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: script });
+
+    await expect(provider.evaluate('p', { model: 'gpt-5.5' })).resolves.toBe('RECOVERED-JSON');
+    expect(fs.readFileSync(calls, 'utf-8').trim().split('\n')).toEqual([
+      'gpt-5.5',
+      'gpt-5.4-mini',
+    ]);
+  });
+
   it('passes --json + absolute --output-last-message, keeps ALL hygiene args, moves the prompt to stdin', async () => {
     const provider = new CodexCliIntelligenceProvider({ codexPath: writeFakeCodex() });
     const usages: Array<{ inputTokens: number; outputTokens: number; cachedTokens?: number }> = [];

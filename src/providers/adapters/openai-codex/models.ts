@@ -47,10 +47,9 @@ import type { ModelTier } from '../../types.js';
  * burns ~50–70x more than the old gpt-5.2 on a trivial prompt). This is an
  * unavoidable cost regression — a working model beats a 400-ing one — but it
  * is worth surfacing for the codex rate-limit picture (cf the self-inflicted
- * cheap-call 429 volume). The structural fix (validate the resolved model
- * against a known-good set + auto-fall-back on a "not supported" 400, so the
- * NEXT retirement self-heals instead of breaking the fleet) is a follow-up —
- * see the Drift-risk note below; this change just stops the active bleeding.
+ * cheap-call 429 volume). The structural fix now lives in
+ * CodexCliIntelligenceProvider: the exact ChatGPT-account model-retirement
+ * response retries once on the known-good floor declared below.
  *
  * TOKEN-BURN observation (same trivial "reply OK" prompt, 2026-05-23):
  *   gpt-5.2 = 103 tokens · gpt-5.3-codex = 5,574 · gpt-5.5 = 7,399.
@@ -93,10 +92,8 @@ import type { ModelTier } from '../../types.js';
  * 2026-06-03 is the second such break after the 2026-04-14 `-codex` retirement).
  * This map is a Rule-3 surface and the codex event-normalizer canary catches the
  * resulting upstream errors (auth-classified error events), but the authoritative
- * fix — validate the resolved name against a known-good set and auto-fall-back on
- * a "not supported" 400 so a retirement self-heals — belongs in a dedicated
- * canary/fallback. Follow-up (the structural companion to this stop-the-bleeding
- * re-point).
+ * fix is the bounded retirement fallback in CodexCliIntelligenceProvider. Its
+ * target is validated against KNOWN_CODEX_MODEL_IDS at the retry authority.
  */
 const TIER_TO_MODEL: Record<ModelTier, string> = {
   // fast — cheapest model accepted on the ChatGPT account. Was non-reasoning
@@ -110,6 +107,14 @@ const TIER_TO_MODEL: Record<ModelTier, string> = {
   // heavy — frontier reasoning model; hard problems + the user's main chat.
   capable: 'gpt-5.5',
 };
+
+/**
+ * Live-verified ChatGPT-subscription floor used only when Codex reports that
+ * the requested model has been retired from that surface. Keep this explicit:
+ * changing normal tier defaults and changing the retirement safety floor are
+ * separate operational decisions.
+ */
+export const CODEX_CHATGPT_FALLBACK_MODEL = 'gpt-5.4-mini';
 
 /**
  * Resolve a tier or raw model string to a concrete model name to pass to

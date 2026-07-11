@@ -98,7 +98,7 @@ export function normalizeCodexJsonlEvent(line: string): CanonicalEvent | null {
         type: 'error',
         message,
         recoverable: false,
-        errorKind: classifyErrorMessage(message),
+        errorKind: classifyCodexErrorMessage(message),
       };
     }
 
@@ -109,7 +109,7 @@ export function normalizeCodexJsonlEvent(line: string): CanonicalEvent | null {
         type: 'error',
         message,
         recoverable: true,
-        errorKind: classifyErrorMessage(message),
+        errorKind: classifyCodexErrorMessage(message),
       };
     }
 
@@ -187,8 +187,13 @@ export function normalizeCodexJsonlEvent(line: string): CanonicalEvent | null {
   }
 }
 
-function classifyErrorMessage(message: string): 'auth' | 'quota' | 'rate-limit' | 'timeout' | 'network' | 'malformed-response' | 'unsupported' | 'unknown' {
-  if (/unauthorized|forbidden|401|403|invalid.*token|not supported.*ChatGPT account/i.test(message)) return 'auth';
+export function classifyCodexErrorMessage(message: string): 'auth' | 'quota' | 'rate-limit' | 'timeout' | 'network' | 'malformed-response' | 'unsupported' | 'unknown' {
+  // This is Codex's specific ChatGPT-account model-retirement response. Keep
+  // it ahead of generic auth classification: callers may safely retry this
+  // one condition with a known-good model, but must surface every neighboring
+  // 400/auth/rate-limit/network failure unchanged.
+  if (/The '[^']+' model is not supported when using Codex with a ChatGPT account\.?/i.test(message)) return 'unsupported';
+  if (/unauthorized|forbidden|401|403|invalid.*token/i.test(message)) return 'auth';
   if (/quota|insufficient_quota/i.test(message)) return 'quota';
   if (/rate.?limit|429/i.test(message)) return 'rate-limit';
   if (/timeout|408|504/i.test(message)) return 'timeout';

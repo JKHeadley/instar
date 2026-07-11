@@ -165,6 +165,71 @@ describe('CodexCliIntelligenceProvider — per-call timeout (IntelligenceOptions
   });
 });
 
+describe('CodexCliIntelligenceProvider — retired-model fallback', () => {
+  function fallbackFixture(firstError: string, fallbackAlsoFails = false): { binary: string; calls: string } {
+    const fixture = fs.mkdtempSync(path.join(tmpDir, 'retired-model-'));
+    const calls = path.join(fixture, 'calls');
+    const binary = path.join(fixture, 'fake-codex');
+    fs.writeFileSync(binary, `#!/bin/sh
+model=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--model" ]; then model="$arg"; fi
+  prev="$arg"
+done
+echo "$model" >> "${calls}"
+if [ "$model" != "gpt-5.4-mini" ]; then
+  echo "${firstError}" >&2
+  exit 1
+fi
+${fallbackAlsoFails ? 'echo "fallback failed" >&2\nexit 1' : 'echo "RECOVERED"\nexit 0'}
+`, { mode: 0o755 });
+    return { binary, calls };
+  }
+
+  function callsFrom(file: string): string[] {
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8').trim().split('\n') : [];
+  }
+
+  it('retries the exact ChatGPT model-retirement failure once on the known-good floor', async () => {
+    const fixture = fallbackFixture(
+      "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+    );
+    const models: string[] = [];
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', {
+      model: 'gpt-5.5',
+      onModel: ({ model }) => models.push(model),
+    })).resolves.toBe('RECOVERED');
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+    expect(models).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+  });
+
+  it.each([
+    ['rate limit', 'Error 429: rate limit exceeded'],
+    ['auth', 'Error 401: unauthorized'],
+    ['different 400', 'Error 400: invalid request body'],
+  ])('does not fall back on %s failures', async (_label, message) => {
+    const fixture = fallbackFixture(message);
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', { model: 'gpt-5.5' })).rejects.toThrow(message);
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5']);
+  });
+
+  it('surfaces a fallback failure after exactly one retry', async () => {
+    const fixture = fallbackFixture(
+      "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+      true,
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', { model: 'gpt-5.5' })).rejects.toThrow('fallback failed');
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+  });
+});
+
 describe('CodexCliIntelligenceProvider — clean-call (no identity, no hooks)', () => {
   // Regression: judgment calls must NOT run in the agent's project dir, or
   // codex loads the full ~26 KB AGENTS.md identity and fires the project's
