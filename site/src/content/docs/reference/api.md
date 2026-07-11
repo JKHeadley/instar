@@ -624,6 +624,9 @@ never the agent. With no mandate issued, every evaluation denies. Every decision
 - `POST /pool/lease-handback/latch` — write the operator-flip latch marker (the captain-flip playbook's POST step; suppresses automated hand-back — the human always wins)
 - `DELETE /pool/lease-handback/latch` — clear the latch early (PIN-gated: re-enables automation against a human decision, so the dashboard PIN is required)
 - `GET /pool/poll-cache` — the shared per-peer pool-scope poll cache (WS4.4(f))
+- `GET /pool/duplicate-reconciler` — ownership-gated-spawn unified status: duplicate-reconciler posture + substrate readiness, owner-dark notice episodes, spawn-admission counters, breaker state, audit-log locations (503 while dark; see [Ownership-Gated Spawn](/features/ownership-gated-spawn/))
+- `GET /pool/ownership-view?key=<topic>` — THIS machine's own ownership record for a conversation (proxy-free; the reconciler's peer-echo verification read)
+- `GET /judgment-provenance` — redacted judgment-provenance decision rows (`?limit=`, `?sinceHours=`, `?scope=pool` merges peers' redacted rows as clamped untrusted data; full context never leaves the deciding machine)
 
 ## /project-map
 - `GET /project-map`
