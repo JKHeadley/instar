@@ -657,6 +657,15 @@
       color: var(--text); cursor: pointer;
     }
     .glance-record-action:hover { border-color: var(--accent-dim); }
+    /* Phase 3: the #1429 editable nickname field (in a machine's Layer-3 record) and
+       the warn-toned Layer-2 rows (a machine or safety check that needs a look). */
+    .glance-record-input {
+      padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg); color: var(--text); font-size: 13px; max-width: 260px;
+    }
+    .glance-record-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+    .glance-record-input[data-rename-error] { border-color: var(--orange); }
+    .glance-list-row[data-tone="warn"] { border-left: 3px solid var(--orange); }
 
     .terminal-header {
       display: flex;
@@ -3529,28 +3538,15 @@
         <button onclick="loadRoutingMap()" style="padding:6px 12px">Refresh</button>
       </div>
       <div class="tab-purpose">
-        Where each internal job-kind sends its AI calls. Every background check, gate, and
-        sentinel has a <b>lane</b> (its "nature") and a fallback list of <b>doors</b> — the ways
-        it can reach a model. This shows, per lane, the ordered door + model list it tries, and
-        flags a door that's <b>metered</b> (a paid API, skipped for now), <b>money-gated</b>, or
-        that must never take untrusted input. Read-only: it shows the map, it changes nothing.
+        Where the agent's background AI work runs — the headline says which model it uses first
+        and what backs it up; tap a tile to see a job group's ordered list of models, tap one for
+        the full setup. Read-only: it shows the map, it changes nothing.
       </div>
 
-      <!-- The four lanes (chains) -->
-      <div id="routingMapChainsCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px">
-        <div style="font-weight:600">Lanes (fallback order)</div>
-        <div id="routingMapChainsBody" style="font-size:13px;overflow-x:auto">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Per job-kind mapping -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">By job-kind</div>
-        <div id="routingMapComponentsBody" style="font-size:13px;overflow-x:auto">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
+      <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders the
+           headline + per-lane tiles + drill-down here. "Lane / nature / door" became plain
+           words at the glance; the ordered model lists and full config moved one drill down. -->
+      <div id="routingMapGlance" class="glance-root"></div>
     </div>
 
     <!-- Spend tab — the read-only Routing Control Room spend/caps view (Increment A,
@@ -3579,28 +3575,11 @@
         go-live control are a later increment.
       </div>
 
-      <!-- Headline totals -->
-      <div id="spendHeadlineCard" style="border:1px solid var(--border);border-radius:8px;padding:16px">
-        <div id="spendHeadlineBody" style="font-size:13px;overflow-x:auto">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Per door/model spend -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">By door &amp; model</div>
-        <div id="spendRowsBody" style="font-size:13px;overflow-x:auto">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Paid-door caps -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Paid-door caps</div>
-        <div id="spendCapsBody" style="font-size:13px;overflow-x:auto">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
+      <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders
+           the headline + totals tiles + drill-down here. "Metered / paid door / reflows"
+           became plain words at the glance ("pay-per-use"); the per-model math and the
+           paid-door caps moved one drill down. -->
+      <div id="spendGlance" class="glance-root"></div>
     </div>
 
     <!-- Evidence Tab (WikiClaim Phase 4) — per-entity evidence + reverse "what cites this?" view.
@@ -3842,13 +3821,11 @@
         <h2 class="ph-title">Machines</h2>
         <div id="machinesStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
-      <p class="ph-intro">Every computer this agent is set up on. Each one gets a friendly name you can change — and once it has a name, you can tell the agent "move this conversation to the mini" and it knows which machine you mean. The agent shares its conversations across these machines so it can handle more at once.</p>
-      <div id="machinesHeadline" class="ph-headline-wrap" aria-live="polite"></div>
-      <section class="ph-section">
-        <h3 class="ph-h">The machines</h3>
-        <p class="ph-h-sub">Click a name to rename it. The "dispatcher" is the one machine currently handing out new conversations.</p>
-        <div id="machinesList"></div>
-      </section>
+      <p class="tab-purpose ph-intro">Every computer this agent runs on, at a glance — the headline says whether they're all online and healthy; tap a tile to see which machines, tap one for its full detail (and to rename it). The "dispatcher" is the one machine currently handing out new conversations.</p>
+      <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders the
+           headline + tiles + drill-down here. Rebuilt from the old insider "guards" line.
+           Nickname editing (issue #1429) lives one drill down, commits on Enter/blur. -->
+      <div id="machinesGlance" class="glance-root"></div>
     </div>
 
     <div id="evidenceTab" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
@@ -4003,28 +3980,18 @@
       </div>
     </div>
 
-    <!-- Health Tab (was Systems) -->
+    <!-- Health Tab (was Systems) — glance floors F10/F11 (topic 29836, Phase 3).
+         The old ~390-word subsystem prose became a plain headline + tiles; each
+         subsystem's full description / processes / metrics live one drill down.
+         The shared component renders the headline + tiles + drill-down here. -->
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
-        <!-- Overview (card grid) -->
-        <div id="systemsOverview">
-          <div class="systems-header">
-            <h2>Health</h2>
-            <button class="systems-refresh" onclick="loadSystems()">Refresh</button>
-          </div>
-          <div class="tab-purpose" style="margin-bottom:16px">Your agent's health and running processes — the server and each running session at a glance.</div>
-          <div id="systemsBanner">
-            <div style="padding:20px;color:var(--text-dim);text-align:center">Loading...</div>
-          </div>
-          <div id="systemsIssues"></div>
-          <div id="systemsCapabilities"></div>
-          <div id="systemsEvents"></div>
+        <div class="systems-header">
+          <h2>Health</h2>
+          <button class="systems-refresh" onclick="loadSystems()">Refresh</button>
         </div>
-        <!-- Detail view (single capability) -->
-        <div class="cap-detail-view" id="systemsDetailView">
-          <button class="cap-detail-back" onclick="showSystemsOverview()">&#9664; Back to Health</button>
-          <div id="systemsDetailContent"></div>
-        </div>
+        <div class="tab-purpose" style="margin-bottom:16px">Your agent's health at a glance — the headline says whether everything's operational; tap a tile to see which subsystems, tap one for its full detail.</div>
+        <div id="systemsGlance" class="glance-root"></div>
       </div>
     </div>
 
@@ -5562,107 +5529,77 @@
       return resp.json();
     }
 
-    // ── Machines Tab (Multi-Machine Session Pool §L2) ─────────────────
+    // ── Machines Tab — glance floors F10/F11 (topic 29836, Phase 3) + issue #1429 ──
+    // Rebuilt on the shared glance component: a plain headline over Online /
+    // Attention needed / Dispatcher / Safety-checks tiles (Layer 1); each drills into
+    // the machines or the named safety checks in plain words (Layer 2); each row opens
+    // the full record (Layer 3) where the raw guard posture used to sit on the front
+    // page. Nicknames are user-authored → they NEVER appear at Layer 1; the editable
+    // field lives in the machine record and commits only on Enter/blur with optimistic
+    // echo (#1429). The 15s poll HOLDS an open drill (F9) so a rename in progress is
+    // never clobbered; when the drill closes the next poll reloads server authority.
     let __machinesTimer = null;
     function startMachines() { loadMachines(); if (!__machinesTimer) __machinesTimer = setInterval(loadMachines, 15000); }
     function stopMachines() { if (__machinesTimer) { clearInterval(__machinesTimer); __machinesTimer = null; } }
-    function machineSpecLine(hw) {
-      if (!hw) return 'specs not reported yet';
-      const chip = (hw.cpuModel && hw.cpuModel !== 'unknown') ? hw.cpuModel : ((hw.platform || '') + (hw.arch ? ' ' + hw.arch : '')).trim();
-      const cores = hw.cpuCores ? hw.cpuCores + ' cores' : '';
-      const ram = hw.totalMemBytes ? Math.round(hw.totalMemBytes / 1073741824) + ' GB' : '';
-      return [chip, cores, ram].filter(Boolean).join(' · ') || 'specs not reported yet';
-    }
-    function machineBusyWord(m) {
-      if (m.loadAvg == null) return '';
-      if (m.loadAvg < 1) return 'idle';
-      if (m.loadAvg < 4) return 'working';
-      return 'busy';
-    }
-    function machineGuardsLine(m) {
-      // Guard posture (GUARD-POSTURE-ENDPOINT-SPEC §2.3): last-known summary
-      // with RECEIVER-side age. No posture ever received → honest "unknown",
-      // never "0 on / 0 off". Only problem classes get named; dark-default
-      // offs stay quiet (alarm-fatigue is how the next Mini stays off while
-      // displayed).
-      const p = m.guardPosture;
-      if (!p) return 'guards: unknown';
-      const problems = [];
-      if (p.offDeviant) problems.push(p.offDeviant + ' off that should be on');
-      if (p.offRuntimeDivergent) problems.push(p.offRuntimeDivergent + ' off despite settings');
-      if (p.onStale) problems.push(p.onStale + ' frozen');
-      if (p.missing) problems.push(p.missing + ' missing');
-      if (p.errored) problems.push(p.errored + ' erroring');
-      if (p.divergedPendingRestart) problems.push(p.divergedPendingRestart + ' awaiting restart');
-      const okPart = 'guards: ' + ((p.onConfirmed ?? 0) + (p.onUnverified ?? 0) + (p.onDryRun ?? 0)) + ' on' +
-        (p.onConfirmed ? ' (' + p.onConfirmed + ' confirmed)' : '');
-      let age = '';
-      if (m.guardPostureReceivedAt) {
-        const ms = Date.now() - Date.parse(m.guardPostureReceivedAt);
-        if (isFinite(ms) && ms >= 0) {
-          const mins = Math.round(ms / 60000);
-          age = mins < 2 ? 'just now' : mins < 90 ? 'as of ' + mins + 'm ago'
-            : mins < 2880 ? 'as of ' + Math.round(mins / 60) + 'h ago'
-            : 'as of ' + Math.round(mins / 1440) + 'd ago';
-        }
-      }
-      return [okPart, problems.length ? '⚠ ' + problems.join(', ') : '', age].filter(Boolean).join(' · ');
-    }
-    function renderMachineCard(m, routerHolder) {
-      const online = !!m.online;
-      const dot = !online ? 'off' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'warn' : 'ok');
-      const statusWord = !online ? 'offline' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'clock out of sync — paused for new conversations' : 'online');
-      const isRouter = !!(routerHolder && m.machineId === routerHolder);
-      const nick = m.nickname || m.machineId;
-      const busy = machineBusyWord(m);
-      const sessions = (m.activeSessionCount != null) ? (m.activeSessionCount + (m.maxSessions ? '/' + m.maxSessions : '') + ' conversation' + (m.activeSessionCount === 1 ? '' : 's')) : '';
-      const tail = [statusWord, busy, sessions].filter(Boolean).map(s => escapeHtml(s)).join(' · ');
-      return '<div class="machine-card">' +
-        '<div class="machine-head">' +
-          '<span class="machine-dot ' + dot + '" title="' + escapeHtml(statusWord) + '"></span>' +
-          '<input class="machine-nick" value="' + escapeHtml(nick) + '" data-mid="' + escapeHtml(m.machineId) + '" ' +
-            'onkeydown="if(event.key===\'Enter\'){this.blur();}" onblur="saveMachineNickname(this)" aria-label="machine nickname" />' +
-          (isRouter ? '<span class="machine-badge">dispatcher</span>' : '') +
-        '</div>' +
-        '<div class="machine-meta">' + escapeHtml(machineSpecLine(m.hardware)) + '</div>' +
-        '<div class="machine-meta">' + tail + '</div>' +
-        '<div class="machine-meta">' + escapeHtml(machineGuardsLine(m)) + '</div>' +
-      '</div>';
-    }
-    async function saveMachineNickname(input) {
-      const mid = input.getAttribute('data-mid');
-      const nickname = input.value.trim();
+
+    async function saveMachineNickname(machineId, nickname, input, prev) {
+      // Optimistic: the input already shows the typed value. PATCH the registry; on
+      // failure revert the optimistic echo and surface an honest inline note.
       try {
-        await apiFetch('/pool/machines/' + encodeURIComponent(mid), {
+        await apiFetch('/pool/machines/' + encodeURIComponent(machineId), {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nickname }),
         });
-        loadMachines();
+        if (input) { input.removeAttribute('data-rename-error'); input.removeAttribute('title'); }
       } catch (e) {
-        const hl = document.getElementById('machinesHeadline');
-        if (hl) hl.innerHTML = '<div class="ph-headline">Couldn\'t rename that machine: ' + escapeHtml(e.message) + '</div>';
+        if (input) {
+          if (prev != null) input.value = prev; // revert the optimistic echo
+          const msg = (e && e.message) ? e.message : 'rename failed';
+          input.setAttribute('data-rename-error', msg);
+          input.setAttribute('title', 'Rename failed — ' + msg);
+        }
       }
     }
+
     async function loadMachines() {
+      const glanceRoot = document.getElementById('machinesGlance');
       const stamp = document.getElementById('machinesStamp');
-      const list = document.getElementById('machinesList');
-      const headline = document.getElementById('machinesHeadline');
-      if (!list) return;
+      if (!glanceRoot) return;
+
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+
+      let pool = null;
       try {
-        const data = await apiFetch('/pool');
-        if (stamp) stamp.textContent = new Date().toLocaleTimeString();
-        if (!data.enabled) {
-          if (headline) headline.innerHTML = '<div class="ph-headline">Running on a single machine right now — nothing to spread across yet.</div>';
-          list.innerHTML = '';
-          return;
-        }
-        const machines = data.machines || [];
-        const onlineCount = machines.filter(m => m.online).length;
-        if (headline) headline.innerHTML = '<div class="ph-headline">' + onlineCount + ' of ' + machines.length + ' machine' + (machines.length === 1 ? '' : 's') + ' online</div>';
-        const routerHolder = data.router && data.router.holder;
-        list.innerHTML = machines.length ? machines.map(m => renderMachineCard(m, routerHolder)).join('') : '<div class="machine-meta">No machines paired yet.</div>';
+        pool = await apiFetch('/pool');
       } catch (e) {
-        if (headline) headline.innerHTML = '<div class="ph-headline">Couldn\'t load machines: ' + escapeHtml(e.message) + '</div>';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Could not load machines right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
       }
+      if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+
+      if (!pool.enabled) {
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Running on a single machine right now — nothing to spread across yet.';
+        glanceRoot.appendChild(note);
+        return;
+      }
+
+      // Named safety checks (GET /guards, this machine) enrich the "Safety checks"
+      // tile; a failure omits that tile — it never blocks the machines view.
+      let guards = null;
+      try { guards = await apiFetch('/guards'); }
+      catch { /* @silent-fallback-ok — guards only enrich the glance; on failure the Safety-checks tile is omitted and machines still render */ }
+
+      const spec = glance.machinesGlanceSpec(document, pool, guards, {
+        onRename: (id, nickname, input, prev) => saveMachineNickname(id, nickname, input, prev),
+      });
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     // ── Tokens Tab ──────────────────────────────────────────────────
@@ -6023,213 +5960,75 @@
       }
     }
 
+    // ── Routing Map Tab — glance floors F10/F11 (topic 29836, Phase 3) ──
+    // The nature-axis routing map rebuilt on the shared glance component. "Lane /
+    // nature / door" became plain words at the glance: a headline naming the primary
+    // model + backup, one tile per job group + a Job-types tile (Layer 1); each lane
+    // drills into its ordered fallback list of plain model names (Layer 2); each row
+    // opens the full door/model config (Layer 3). Data from /intelligence/routing/chains;
+    // 503 = no AI provider configured → an honest note, never a crash.
     async function loadRoutingMap() {
-      const chainsEl = document.getElementById('routingMapChainsBody');
-      const compsEl = document.getElementById('routingMapComponentsBody');
-      // Render one door+model position as a compact chip line.
-      const flags = (p) => {
-        const f = [];
-        if (p.doorClass === 'metered') f.push('metered' + (p.skippedInIncrementA ? ' · skipped now' : ''));
-        if (p.moneyGated) f.push('money-gated');
-        if (p.injectionSafe === false) f.push('unsafe for untrusted input');
-        if (p.claudeBanned) f.push('no-Claude');
-        return f.length ? ' <span style="color:var(--text-dim)">(' + f.map(escapeHtml).join(' · ') + ')</span>' : '';
-      };
-      const posLine = (p, i) => '<div style="padding:2px 0">' +
-        '<span style="color:var(--text-dim)">' + (i + 1) + '.</span> ' +
-        '<b>' + escapeHtml(p.door) + '</b> → ' + escapeHtml(p.modelId) + flags(p) + '</div>';
-      const th = (t, right) => '<th style="padding:6px 8px;' + (right ? 'text-align:right' : 'text-align:left') + '">' + t + '</th>';
-      const td = (v, right) => '<td style="padding:6px 8px;vertical-align:top;' + (right ? 'text-align:right' : '') + '">' + v + '</td>';
-      try {
-        const data = await apiFetch('/intelligence/routing/chains');
-        const chains = data.chains || [];
-        chainsEl.innerHTML =
-          '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Enforced default framework: <b>' +
-            escapeHtml(String(data.defaultFramework || '—')) + '</b> · injection signal: ' +
-            escapeHtml(String(data.injectionExposureSource || '—')) + '</div>' +
-          '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">' +
-          chains.map((c) =>
-            '<div style="border:1px solid var(--border);border-radius:6px;padding:10px">' +
-            '<div style="font-weight:600;margin-bottom:4px">' + escapeHtml(c.chain) + '</div>' +
-            (c.positions || []).map(posLine).join('') +
-            '</div>').join('') +
-          '</div>';
+      const glanceRoot = document.getElementById('routingMapGlance');
+      if (!glanceRoot) return;
 
-        const comps = (data.components || []).slice().sort((a, b) => {
-          // Mapped (has a chain) first, then by component name.
-          if (!!a.chain !== !!b.chain) return a.chain ? -1 : 1;
-          return String(a.component).localeCompare(String(b.component));
-        });
-        if (comps.length === 0) {
-          compsEl.innerHTML = '<div style="color:var(--text-dim)">No components mapped.</div>';
-          return;
-        }
-        const yn = (v) => v === true ? 'yes' : (v === false ? 'no' : '—');
-        compsEl.innerHTML =
-          '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:760px">' +
-          '<thead><tr style="color:var(--text-dim)">' +
-            th('Job-kind') + th('Category') + th('Lane') + th('Enforced now') +
-            th('Critical gate') + th('Injection exposure') + th('Fallback order') +
-          '</tr></thead><tbody>' +
-          comps.map((c) => {
-            const route = (c.route && c.route.length)
-              ? c.route.map(posLine).join('')
-              : '<span style="color:var(--text-dim)">legacy category routing (no nature lane)</span>';
-            const lane = c.chain
-              ? escapeHtml(c.chain) + ' <span style="color:var(--text-dim)">(' + escapeHtml(String(c.nature)) + ')</span>'
-              : '<span style="color:var(--text-dim)">—</span>';
-            // Prefer the richer FD5b exposure classification; fall back to the untrusted-input flag.
-            let exposure;
-            if (c.injectionExposure) {
-              const ch = c.injectionExposure.channels || {};
-              const chans = ['user', 'model', 'tool'].filter((k) => ch[k]);
-              exposure = c.injectionExposure.exposed
-                ? 'exposed' + (chans.length ? ' <span style="color:var(--text-dim)">(' + chans.join('/') + ')</span>' : '')
-                : 'not exposed' + (c.injectionExposure.reason ? ' <span style="color:var(--text-dim)">(' + escapeHtml(c.injectionExposure.reason) + ')</span>' : '');
-            } else if (c.untrustedInput === true) {
-              exposure = 'exposed';
-            } else if (c.untrustedInput === false) {
-              exposure = 'not exposed' + (c.untrustedInputReason ? ' <span style="color:var(--text-dim)">(' + escapeHtml(c.untrustedInputReason) + ')</span>' : '');
-            } else {
-              exposure = '—';
-            }
-            return '<tr style="border-top:1px solid var(--border)">' +
-              td('<b>' + escapeHtml(c.component) + '</b>') +
-              td(escapeHtml(String(c.category || '—'))) +
-              td(lane) +
-              td(escapeHtml(String(c.enforcedFramework || '—'))) +
-              td(c.criticalGate ? '<b>yes</b>' : 'no') +
-              td(exposure) +
-              td(route) +
-            '</tr>';
-          }).join('') +
-          '</tbody></table>';
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+
+      let map = null;
+      try {
+        map = await apiFetch('/intelligence/routing/chains');
       } catch (err) {
         const m = err && err.message ? String(err.message) : String(err);
-        if (/503|unavailable|not initialized/i.test(m)) {
-          chainsEl.innerHTML = '<div style="color:var(--text-dim)">The routing map isn\'t available on this agent (no AI provider configured).</div>';
-        } else {
-          chainsEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
-        }
-        compsEl.innerHTML = '';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|not initialized/i.test(m)
+          ? 'The routing map isn’t available on this agent (no AI provider configured).'
+          : 'Could not load the routing map right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
       }
+
+      const spec = glance.routingMapGlanceSpec(document, map);
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
-    // Routing Control Room — read-only spend/caps view (Increment A). Data from
-    // /routing-spend/summary + /routing-spend/caps. Honest $0 / not-live-yet labelling.
+    // ── Spend Tab — glance floors F10/F11 (topic 29836, Phase 3) ──
+    // The Routing Control Room read-only spend/caps view rebuilt on the shared glance
+    // component. "Metered / paid door / reflows" became plain words at the glance:
+    // "pay-per-use", a plain headline, and totals tiles (Layer 1); the per-model cost
+    // + usage rows and the paid-door caps drill down (Layer 2), full pricing/caps
+    // detail at Layer 3. Data from /routing-spend/summary + /routing-spend/caps;
+    // 503 = the dev-gated view is dark on the fleet → an honest note, never a crash.
     async function loadRoutingSpend() {
-      const headEl = document.getElementById('spendHeadlineBody');
-      const rowsEl = document.getElementById('spendRowsBody');
-      const capsEl = document.getElementById('spendCapsBody');
+      const glanceRoot = document.getElementById('spendGlance');
+      if (!glanceRoot) return;
       const grain = (document.getElementById('spendGrain') || {}).value || 'day';
-      const usd = (n) => '$' + (Number(n) || 0).toFixed(4);
-      const num = (n) => (Number(n) || 0).toLocaleString();
-      const th = (t, right) => '<th style="padding:6px 8px;' + (right ? 'text-align:right' : 'text-align:left') + '">' + t + '</th>';
-      const td = (v, right) => '<td style="padding:6px 8px;vertical-align:top;' + (right ? 'text-align:right' : '') + '">' + v + '</td>';
+
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+
+      let summary = null;
+      let caps = null;
       try {
-        const [summary, caps] = await Promise.all([
+        [summary, caps] = await Promise.all([
           apiFetch('/routing-spend/summary?grain=' + encodeURIComponent(grain)),
           apiFetch('/routing-spend/caps'),
         ]);
-
-        // Headline totals
-        const t = summary.totals || {};
-        const unpriced = (Number(t.unpricedTokensIn) || 0) + (Number(t.unpricedTokensOut) || 0);
-        const stat = (label, val) => '<div style="min-width:120px"><div style="font-size:11px;color:var(--text-dim)">' + label + '</div><div style="font-size:18px;font-weight:600">' + val + '</div></div>';
-        headEl.innerHTML =
-          '<div style="display:flex;gap:20px;flex-wrap:wrap">' +
-            stat('Gross', usd(t.grossUsd)) +
-            stat('Net (of subsidy/credits)', usd(t.netUsd)) +
-            stat('Committed (cap-enforced)', usd(t.committedUsd)) +
-            (typeof t.amortizedSubscriptionUsd === 'number' ? stat('Subscriptions (amortized)', '~' + usd(t.amortizedSubscriptionUsd)) : '') +
-            stat('Tokens in', num(t.tokensIn)) +
-            stat('Tokens out', num(t.tokensOut)) +
-            (unpriced > 0 ? stat('Unpriced tokens', num(unpriced)) : '') +
-          '</div>' +
-          '<div style="font-size:11px;color:var(--text-dim);margin-top:10px;line-height:1.4">' +
-            escapeHtml(String(summary.note || '')) + '<br>' +
-            escapeHtml(String(summary.horizonNote || '')) +
-            (summary.providerGroundingNote ? '<br>' + escapeHtml(String(summary.providerGroundingNote)) : '') +
-            (summary.reportingBasis ? '<br>Basis: ' + escapeHtml(String(summary.reportingBasis.note || '')) : '') +
-          '</div>';
-
-        // Per door/model rows
-        const rows = summary.rows || [];
-        if (rows.length === 0) {
-          rowsEl.innerHTML = '<div style="color:var(--text-dim)">No internal-LLM usage recorded in this window yet.</div>';
-        } else {
-          rowsEl.innerHTML =
-            '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:720px">' +
-            '<thead><tr style="color:var(--text-dim)">' +
-              th('Door') + th('Model') + th('Class') + th('Tokens in', true) + th('Tokens out', true) +
-              th('Gross', true) + th('Net', true) + th('Price basis') +
-            '</tr></thead><tbody>' +
-            rows.map((r) => {
-              const cls = r.doorClass === 'metered'
-                ? 'metered' + (r.notLiveYet ? ' · not live' : '')
-                : escapeHtml(String(r.doorClass));
-              let basis;
-              if (r.priceBasis === 'subscription-zero') basis = '<span style="color:var(--text-dim)">subscription — not per-token billed</span>';
-              else if (r.priceBasis === 'no-matching-point') basis = '<span style="color:var(--red)">unpriced (no matching price)</span>';
-              else basis = escapeHtml(String(r.priceBasis)) + (r.priceStale ? ' <span style="color:var(--red)">(stale)</span>' : '');
-              const netCell = r.priceBasis === 'subscription-zero'
-                ? (typeof r.amortizedSubscriptionUsd === 'number'
-                    ? '<span title="' + escapeHtml(String(r.amortizationDerivation || '')) + '">~' + usd(r.amortizedSubscriptionUsd) + ' <span style="color:var(--text-dim);font-size:10px">amortized ⓘ</span></span>'
-                    : '<span style="color:var(--text-dim)">$0 (subscription)</span>')
-                : usd(r.netUsd);
-              return '<tr style="border-top:1px solid var(--border)">' +
-                td('<b>' + escapeHtml(String(r.door)) + '</b>') +
-                td(escapeHtml(String(r.modelId))) +
-                td(escapeHtml(cls)) +
-                td(num(r.tokensIn), true) +
-                td(num(r.tokensOut), true) +
-                td(usd(r.grossUsd), true) +
-                td(netCell, true) +
-                td(basis) +
-              '</tr>';
-            }).join('') +
-            '</tbody></table>' +
-            (function () {
-              // "Show the math": each door's amortization derivation, verbatim, once.
-              const der = {}; rows.forEach((r) => { if (r.amortizationDerivation) der[r.door] = r.amortizationDerivation; });
-              const lines = Object.values(der);
-              return lines.length
-                ? '<div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.5"><b>Amortization math:</b><br>' + lines.map((l) => escapeHtml(String(l))).join('<br>') + '</div>'
-                : '';
-            })();
-        }
-
-        // Paid-door caps
-        const keys = caps.keys || [];
-        capsEl.innerHTML =
-          '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">' + escapeHtml(String(caps.note || '')) + '</div>' +
-          '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:640px">' +
-          '<thead><tr style="color:var(--text-dim)">' +
-            th('Key') + th('Provider') + th('Door') + th('Daily cap', true) + th('Lifetime cap', true) +
-            th('Committed', true) + th('Status') +
-          '</tr></thead><tbody>' +
-          keys.map((k) =>
-            '<tr style="border-top:1px solid var(--border)">' +
-            td('<b>' + escapeHtml(String(k.keyRef)) + '</b>') +
-            td(escapeHtml(String(k.provider))) +
-            td(escapeHtml(String(k.door))) +
-            td(usd(k.dailyCapUsd), true) +
-            td(usd(k.lifetimeCapUsd), true) +
-            td(usd(k.committedDayUsd) + ' / ' + usd(k.committedLifetimeUsd), true) +
-            td('<span style="color:var(--text-dim)">' + escapeHtml(String(k.goLiveState)) + (k.frozen ? ' · frozen' : '') + '</span>') +
-            '</tr>').join('') +
-          '</tbody></table>' +
-          '<div style="font-size:11px;color:var(--text-dim);margin-top:8px">' + escapeHtml(String(caps.singleMachineNote || '')) + '</div>';
       } catch (err) {
         const m = err && err.message ? String(err.message) : String(err);
-        if (/503|not enabled|unavailable/i.test(m)) {
-          headEl.innerHTML = '<div style="color:var(--text-dim)">The spend view isn\'t enabled on this agent (it\'s a development-agent surface, dark on the fleet).</div>';
-        } else {
-          headEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
-        }
-        rowsEl.innerHTML = '';
-        capsEl.innerHTML = '';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|not enabled|unavailable/i.test(m)
+          ? 'The spend view isn’t enabled on this agent (it’s a development-agent surface, dark on the fleet).'
+          : 'Could not load spend right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
       }
+
+      const spec = glance.spendGlanceSpec(document, summary, caps);
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     async function loadResources() {
@@ -9281,313 +9080,29 @@
       }
     }
 
-    // ── Systems Tab ──────────────────────────────────────────────
-    let systemsData = null;
-
+    // ── Health Tab (was Systems) — glance floors F10/F11 (topic 29836, Phase 3) ──
+    // The 390-word subsystem prose became a plain headline over Subsystems / Need
+    // attention / Recent events tiles (Layer 1); each subsystem drills into its full
+    // description, processes, and metrics (Layer 3). All /systems/status data is
+    // preserved — it moved one or two clicks down instead of dumping on the front page.
     async function loadSystems() {
+      const glanceRoot = document.getElementById('systemsGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+      let systems = null;
       try {
-        systemsData = await apiFetch('/systems/status');
-        showSystemsOverview();
-        renderSystemsOverview();
+        systems = await apiFetch('/systems/status');
       } catch (e) {
-        document.getElementById('systemsBanner').innerHTML =
-          '<div style="padding:20px;color:var(--red);text-align:center">Failed to load systems status</div>';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Could not load the health view right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
       }
-    }
-
-    function renderSystemsOverview() {
-      if (!systemsData) return;
-      const { uptime, health, healthSummary, activeCapabilities, issues, recentEvents } = systemsData;
-      const uptimeStr = formatUptimeClient(uptime);
-
-      // Health Banner
-      const bannerClass = health === 'healthy' ? 'healthy' : health === 'error' ? 'error' : 'degraded';
-      const bannerIcon = health === 'healthy' ? '&#10003;' : '&#9888;';
-      document.getElementById('systemsBanner').innerHTML = `
-        <div class="health-banner ${bannerClass}">
-          <span class="health-icon">${bannerIcon}</span>
-          <div class="health-text">
-            <div class="health-title">${esc(healthSummary)}</div>
-            <div class="health-meta">Uptime: ${esc(uptimeStr)}  &middot;  ${activeCapabilities.length} capabilities active${issues.length > 0 ? '  &middot;  ' + issues.length + ' issue' + (issues.length > 1 ? 's' : '') : ''}</div>
-          </div>
-        </div>`;
-
-      // Issues (only if any)
-      const issuesEl = document.getElementById('systemsIssues');
-      if (issues.length > 0) {
-        issuesEl.innerHTML = '<div class="issues-panel">' + issues.map(iss => {
-          const cls = iss.severity === 'warning' ? ' warning' : '';
-          const ic = iss.severity === 'warning' ? '&#9888;' : '&#10060;';
-          return `<div class="issue-card${cls}">
-            <span class="issue-card-icon">${ic}</span>
-            <div class="issue-card-content">
-              <div class="issue-card-label">${esc(iss.label)}</div>
-              <div class="issue-card-desc">${esc(iss.description)}</div>
-            </div>
-          </div>`;
-        }).join('') + '</div>';
-      } else {
-        issuesEl.innerHTML = '';
-      }
-
-      // Card Grid
-      const capsEl = document.getElementById('systemsCapabilities');
-      if (activeCapabilities.length > 0) {
-        const cards = activeCapabilities.map(cap => {
-          const dotClass = cap.status === 'error' ? 'error' : 'active';
-          const statusClass = cap.status === 'error' ? ' error' : '';
-          const previewStats = buildPreviewStats(cap.stats || {});
-          return `<div class="cap-card${statusClass}" onclick="showCapabilityDetail('${esc(cap.id)}')">
-            <div class="cap-card-top">
-              <span class="cap-dot ${dotClass}"></span>
-              <span class="cap-card-name">${esc(cap.label)}</span>
-              <span class="cap-card-arrow">&#9654;</span>
-            </div>
-            <div class="cap-card-desc">${esc(cap.description)}</div>
-            ${previewStats ? '<div class="cap-card-stats">' + previewStats + '</div>' : ''}
-            <div class="cap-card-metric">${esc(cap.metric)}</div>
-          </div>`;
-        }).join('');
-        capsEl.innerHTML = `<div class="cap-section-title">Active Subsystems</div><div class="cap-grid">${cards}</div>`;
-      } else {
-        capsEl.innerHTML = '';
-      }
-
-      // Events
-      const eventsEl = document.getElementById('systemsEvents');
-      if (recentEvents.length > 0) {
-        const rows = recentEvents.map(e => {
-          const time = e.timestamp ? new Date(e.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-          return `<div class="systems-event-row"><span class="systems-event-time">${esc(time)}</span><span class="systems-event-text">${esc(e.narrative || e.subsystem || '')}</span></div>`;
-        }).join('');
-        eventsEl.innerHTML = `<div class="events-disclosure" id="eventsDisclosure">
-          <button class="events-disclosure-toggle" onclick="document.getElementById('eventsDisclosure').classList.toggle('expanded')">
-            <span class="events-disclosure-arrow">&#9654;</span> Recent Events (${recentEvents.length})
-          </button>
-          <div class="events-disclosure-body">${rows}</div></div>`;
-      } else {
-        eventsEl.innerHTML = '';
-      }
-    }
-
-    function buildPreviewStats(stats) {
-      if (!stats || typeof stats !== 'object') return '';
-      const map = {
-        recoveries: 'Recovered', interventions: 'Auto-fixed', activeCases: 'Active',
-        coherencePassed: 'Checks OK', coherenceFailed: 'Issues', memoryPercent: 'Memory',
-        enabledJobs: 'Jobs', activeJobSessions: 'Running', queueLength: 'Queued',
-        weeklyUsage: 'Weekly', fiveHourRate: '5h Rate',
-        topicMappings: 'Topics', totalMessages: 'Messages',
-        proposals: 'Proposals', gaps: 'Gaps', learningsApplied: 'Applied',
-      };
-      const chips = [];
-      for (const [key, label] of Object.entries(map)) {
-        if (stats[key] != null && stats[key] !== 0 && stats[key] !== false) {
-          const suf = ['weeklyUsage','fiveHourRate','memoryPercent'].includes(key) ? '%' : '';
-          chips.push(`<span class="cap-stat"><span class="cap-stat-value">${esc(String(stats[key]))}${suf}</span>${esc(label)}</span>`);
-        }
-        if (chips.length >= 3) break;
-      }
-      return chips.join('');
-    }
-
-    function showCapabilityDetail(capId) {
-      if (!systemsData) return;
-      const cap = systemsData.activeCapabilities.find(c => c.id === capId);
-      if (!cap) return;
-      document.getElementById('systemsOverview').style.display = 'none';
-      document.getElementById('systemsDetailView').classList.add('active');
-      const content = document.getElementById('systemsDetailContent');
-
-      const statCards = buildStatCards(cap.stats || {}, capId);
-      const processRows = (cap.processes || []).map(p => {
-        const dotColor = p.status === 'running' ? 'var(--accent)' : 'var(--red)';
-        return `<div class="cap-process-row">
-          <span class="cap-process-dot" style="background:${dotColor}"></span>
-          <span class="cap-process-name">${esc(p.name)}</span>
-          <span class="cap-process-status">${esc(p.status === 'running' ? 'Running' : 'Error')}</span>
-        </div>`;
-      }).join('');
-
-      const lastAct = cap.lastActivity
-        ? '<div class="cap-last-activity">Last activity: ' + esc(timeAgo(cap.lastActivity)) + '</div>' : '';
-
-      content.innerHTML = `
-        <div class="cap-detail-header">
-          <div class="cap-detail-title">
-            <span class="cap-dot ${cap.status === 'error' ? 'error' : 'active'}"></span>
-            <h3>${esc(cap.label)}</h3>
-          </div>
-          <div class="cap-detail-description">${esc(cap.description)}</div>
-          ${lastAct}
-        </div>
-        ${statCards ? '<div class="cap-detail-section"><div class="cap-detail-section-title">Metrics</div><div class="cap-stats-grid">' + statCards + '</div><div id="capContentBrowser"></div></div>' : ''}
-        <div class="cap-detail-section">
-          <div class="cap-detail-section-title">Components (${(cap.processes || []).length})</div>
-          <div class="cap-process-list">${processRows}</div>
-        </div>
-        <div class="cap-detail-section">
-          <div class="cap-detail-section-title">Status</div>
-          <div style="font-size:13px;color:var(--accent);font-weight:500;padding:8px 0">${esc(cap.metric)}</div>
-        </div>`;
-    }
-
-    // Map stat keys to browsable content endpoints
-    const BROWSABLE_STATS = {
-      // Evolution
-      learnings: { endpoint: '/evolution/learnings', label: 'Learnings', renderer: 'renderLearnings' },
-      proposals: { endpoint: '/evolution/proposals', label: 'Proposals', renderer: 'renderProposals' },
-      gaps: { endpoint: '/evolution/gaps', label: 'Capability Gaps', renderer: 'renderGaps' },
-      actions: { endpoint: '/evolution/actions', label: 'Actions', renderer: 'renderActions' },
-      overdueActions: { endpoint: '/evolution/actions/overdue', label: 'Overdue Actions', renderer: 'renderActions' },
-      // Health
-      coherenceChecks: { endpoint: '/health/coherence', label: 'Coherence Report', renderer: 'renderCoherence' },
-      coherencePassed: { endpoint: '/health/coherence', label: 'Coherence Report', renderer: 'renderCoherence' },
-      coherenceFailed: { endpoint: '/health/coherence', label: 'Coherence Report', renderer: 'renderCoherence' },
-      // Recovery
-      totalTriages: { endpoint: '/triage/history?limit=20', label: 'Triage History', renderer: 'renderTriageHistory' },
-      interventions: { endpoint: '/watchdog/status', label: 'Watchdog Status', renderer: 'renderWatchdog' },
-      recoveries: { endpoint: '/watchdog/status', label: 'Watchdog Status', renderer: 'renderWatchdog' },
-      // Jobs
-      totalJobs: { endpoint: '/jobs', label: 'Jobs', renderer: 'renderJobs' },
-      enabledJobs: { endpoint: '/jobs', label: 'Jobs', renderer: 'renderJobs' },
-      // Telegram
-      totalMessages: { endpoint: '/telegram/log-stats', label: 'Message Stats', renderer: 'renderTelegramStats' },
-      topicMappings: { endpoint: '/telegram/log-stats', label: 'Message Stats', renderer: 'renderTelegramStats' },
-    };
-
-    function buildStatCards(stats, capId) {
-      if (!stats || typeof stats !== 'object') return '';
-      const map = {
-        interventions: 'Auto-fixes', recoveries: 'Recovered', sessionDeaths: 'Crashes',
-        llmOverrides: 'AI Decisions', activeCases: 'Active Issues', totalTriages: 'Investigated',
-        cooldowns: 'Cooldowns',
-        coherenceChecks: 'Consistency Checks', coherencePassed: 'Passed', coherenceFailed: 'Issues Found', coherenceCorrected: 'Auto-corrected',
-        memoryPercent: 'Memory %', memoryFreeGB: 'Free GB', memoryTotalGB: 'Total GB',
-        trackedProcesses: 'Processes', orphanProcesses: 'Cleanup Needed', totalMemoryMB: 'Memory MB',
-        totalJobs: 'Total Jobs', enabledJobs: 'Enabled', queueLength: 'Queued', activeJobSessions: 'Running',
-        weeklyUsage: 'Weekly %', fiveHourRate: '5h Rate %',
-        topicMappings: 'Topics', pendingStalls: 'Needs Attention', totalMessages: 'Messages',
-        proposals: 'Proposals', learnings: 'Learnings', learningsApplied: 'Applied',
-        gaps: 'Gaps', actions: 'Actions', overdueActions: 'Overdue',
-      };
-      const cards = [];
-      for (const [key, label] of Object.entries(map)) {
-        if (stats[key] != null && typeof stats[key] === 'number') {
-          const browsable = BROWSABLE_STATS[key];
-          const clickAttr = browsable ? ` onclick="browseStatContent('${key}')" style="cursor:pointer"` : '';
-          const browseHint = browsable ? '<div style="font-size:9px;color:var(--accent);margin-top:2px">click to view</div>' : '';
-          cards.push(`<div class="cap-stat-card"${clickAttr}><div class="cap-stat-card-value">${stats[key]}</div><div class="cap-stat-card-label">${esc(label)}</div>${browseHint}</div>`);
-        }
-      }
-      return cards.join('');
-    }
-
-    async function browseStatContent(statKey) {
-      const info = BROWSABLE_STATS[statKey];
-      if (!info) return;
-      const panel = document.getElementById('capContentBrowser');
-      if (!panel) return;
-      panel.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:12px">Loading ' + esc(info.label) + '...</div>';
-      try {
-        const data = await apiFetch(info.endpoint);
-        panel.innerHTML = '<div class="cap-content-panel">' +
-          '<div class="cap-content-header"><span>' + esc(info.label) + '</span><button onclick="document.getElementById(\'capContentBrowser\').innerHTML=\'\'" style="border:none;background:none;color:var(--text-dim);cursor:pointer;font-size:14px" title="Close" aria-label="Close">&times;</button></div>' +
-          '<div class="cap-content-body">' + renderBrowsableContent(info.renderer, data) + '</div></div>';
-      } catch (e) {
-        panel.innerHTML = '<div style="padding:12px;color:var(--red);font-size:12px">Failed to load: ' + esc(e.message) + '</div>';
-      }
-    }
-
-    function renderBrowsableContent(renderer, data) {
-      switch (renderer) {
-        case 'renderLearnings': {
-          const items = data.learnings || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No learnings recorded</div>';
-          return items.map(l => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(l.title || l.insight || l.id || 'Untitled')}</div>
-            ${l.description || l.context ? '<div class="cap-content-item-body">' + esc(l.description || l.context || '') + '</div>' : ''}
-            ${l.category ? '<span class="cap-content-tag">' + esc(l.category) + '</span>' : ''}
-            ${l.applied ? '<span class="cap-content-tag applied">Applied</span>' : ''}
-            ${l.createdAt ? '<div class="cap-content-item-time">' + esc(timeAgo(l.createdAt)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderProposals': {
-          const items = data.proposals || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No proposals</div>';
-          return items.map(p => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(p.title || p.id || 'Untitled')}</div>
-            ${p.description ? '<div class="cap-content-item-body">' + esc(p.description) + '</div>' : ''}
-            ${p.status ? '<span class="cap-content-tag">' + esc(p.status) + '</span>' : ''}
-            ${p.type ? '<span class="cap-content-tag">' + esc(p.type) + '</span>' : ''}
-          </div>`).join('');
-        }
-        case 'renderGaps': {
-          const items = data.gaps || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No gaps detected</div>';
-          return items.map(g => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(g.title || g.capability || g.id || 'Untitled')}</div>
-            ${g.description ? '<div class="cap-content-item-body">' + esc(g.description) + '</div>' : ''}
-            ${g.severity ? '<span class="cap-content-tag">' + esc(g.severity) + '</span>' : ''}
-          </div>`).join('');
-        }
-        case 'renderActions': {
-          const items = data.actions || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No actions</div>';
-          return items.map(a => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(a.title || a.action || a.id || 'Untitled')}</div>
-            ${a.status ? '<span class="cap-content-tag">' + esc(a.status) + '</span>' : ''}
-            ${a.dueAt ? '<div class="cap-content-item-time">Due: ' + esc(timeAgo(a.dueAt)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderCoherence': {
-          const report = data.lastReport || data;
-          if (!report || !report.checks) return '<div class="cap-content-empty">No coherence data</div>';
-          return report.checks.map(c => `<div class="cap-content-item" style="border-left:3px solid ${c.passed ? 'var(--accent)' : 'var(--red)'}">
-            <div class="cap-content-item-title">${c.passed ? '&check;' : '&cross;'} ${esc(c.name)}</div>
-            <div class="cap-content-item-body">${esc(c.message)}</div>
-          </div>`).join('');
-        }
-        case 'renderTriageHistory': {
-          const items = data.history || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No triage history</div>';
-          return items.map(t => `<div class="cap-content-item">
-            <div class="cap-content-item-title">Topic ${t.topicId} — ${esc(t.sessionName || 'unknown')}</div>
-            <div class="cap-content-item-body">${t.result ? esc(JSON.stringify(t.result.actionsTaken || t.result, null, 0).substring(0, 200)) : ''}</div>
-            ${t.timestamp ? '<div class="cap-content-item-time">' + esc(timeAgo(t.timestamp)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderWatchdog': {
-          const hist = data.interventionHistory || [];
-          if (hist.length === 0) return '<div class="cap-content-empty">No interventions recorded</div>';
-          return hist.map(h => `<div class="cap-content-item">
-            <div class="cap-content-item-title">PID ${h.stuckPid || '?'} — ${esc(h.level || h.outcome || 'intervention')}</div>
-            ${h.outcome ? '<span class="cap-content-tag">' + esc(h.outcome) + '</span>' : ''}
-            ${h.timestamp ? '<div class="cap-content-item-time">' + esc(timeAgo(h.timestamp)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderJobs': {
-          const jobs = data.jobs || data || [];
-          if (!Array.isArray(jobs) || jobs.length === 0) return '<div class="cap-content-empty">No jobs</div>';
-          return jobs.slice(0, 20).map(j => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(j.slug || j.name || 'unnamed')}</div>
-            <div class="cap-content-item-body">${esc(j.cron || '')} ${j.enabled === false ? '(disabled)' : ''}</div>
-          </div>`).join('');
-        }
-        case 'renderTelegramStats': {
-          return `<div class="cap-content-item">
-            <div class="cap-content-item-title">Message Log</div>
-            <div class="cap-content-item-body">Total messages: ${data.totalMessages || '?'}<br>Log size: ${data.logSizeBytes ? Math.round(data.logSizeBytes / 1024) + ' KB' : '?'}</div>
-          </div>`;
-        }
-        default:
-          return '<div class="cap-content-empty">No viewer for this content</div>';
-      }
-    }
-
-    function showSystemsOverview() {
-      document.getElementById('systemsOverview').style.display = '';
-      document.getElementById('systemsDetailView').classList.remove('active');
+      const spec = glance.healthGlanceSpec(document, systems);
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     function timeAgo(isoStr) {

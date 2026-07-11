@@ -276,10 +276,10 @@ order for exactly this reason.
 | Process Health | 101 | ✅ plain | ⚠️ detail drawer only | grandfathered → Phase 4 |
 | Preferences | 120 | ✅ plain, first person | ✅ adequate | grandfathered → Phase 4 |
 | Threadline | 156 | ⚠️ over budget | ✅ adequate | grandfathered → Phase 4 |
-| Machines | ~200 | ⚠️ guards line is insider-speak | ❌ guards counts not clickable | grandfathered → Phase 3 |
-| Health | 390 | ⚠️ subsystem prose | ⚠️ expanders only | grandfathered → Phase 3 |
-| Spend | 400 | ⚠️ jargon ("paid door") | ⚠️ no per-row detail | grandfathered → Phase 3 |
-| Routing Map | (dense) | ⚠️ jargon ("lane", "door") | ❌ flat map, no drill | grandfathered → Phase 3 |
+| Machines | ~200 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — Online / Attention needed / Dispatcher / Safety-checks tiles; the insider guards line became named checks with plain explanations at Layer 2/3; folds issue #1429 nickname-edit + F9 hold)** |
+| Health | 390 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — Subsystems / Need attention / Recent events tiles; the 390-word subsystem prose moved to the Layer-3 records)** |
+| Spend | 400 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — "metered / paid door / reflows" became plain "pay-per-use" at the glance; per-model math + caps at Layer 2/3)** |
+| Routing Map | (dense) → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — "lane / nature / door" became plain per-lane tiles + a headline naming the primary model + backup; ordered door+model lists + full config at Layer 2/3)** |
 | Blockers | 7,035 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 2 — headline + Truly stuck / Being worked / Resolved tiles; the raw table moved to Layer 3)** |
 
 *(Files, Send Content, Evidence, PR Pipeline, Projects, Initiatives, Integrated-Being,
@@ -436,7 +436,11 @@ Phase 1** and nothing more:
 2. **Phase 2 (SHIPPED) — the two worst offenders.** Commitments' full rebuild (folding
    issue #1435) + Blockers, rebuilt on the template; both left the grandfather list
    (ceiling 25 → 24) and the subscriptions optimistic-cancel fix (issue #1428) rode along.
-3. **Phase 3 — the jargon belt.** Machines, Health, Spend, Routing Map. <!-- tracked: topic-29836 -->
+3. **Phase 3 (SHIPPED) — the jargon belt.** Machines, Health, Spend, Routing Map,
+   rebuilt on the template; all four left the grandfather list (ceiling 24 → 20) and
+   issue #1429 (Machines nickname commit-on-input + focus-steal) rode along, fixed by
+   committing the nickname only on Enter/blur with an optimistic echo and the F9
+   interaction-hold across the poll.
 4. **Phase 4 — the sweep.** Every remaining grandfathered view brought to conformance; each
    leaves the grandfather list as it lands. <!-- tracked: topic-29836 -->
 

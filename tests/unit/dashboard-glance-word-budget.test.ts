@@ -29,6 +29,13 @@ import {
   commitmentsOpenPopulation,
   buildBlockersGlance,
   blockersPopulation,
+  buildMachinesGlance,
+  machinesPopulation,
+  buildHealthGlance,
+  healthPopulation,
+  buildSpendGlance,
+  buildRoutingMapGlance,
+  friendlyModel,
   GLANCE_MAX_TILES,
   GLANCE_WORD_BUDGET,
   GLANCE_ADOPTED_TABS,
@@ -276,6 +283,164 @@ describe('F10 conformance — the real Blockers builder under adversarial fixtur
   });
 });
 
+describe('F10 conformance — the Phase-3 jargon-belt builders under adversarial fixtures', () => {
+  // Each builder is fed large-N, null/empty/error, and jargon-laden fixtures; the
+  // produced glance must ALWAYS pass F10 (≤5 tiles, ≤150 words, no insider vocab) —
+  // proving the jargon can never leak up from the raw data to the operator's glance.
+
+  describe('Machines', () => {
+    const mkMachine = (over: Record<string, unknown> = {}) => ({
+      machineId: 'm_4f3a9b1c', nickname: 'Laptop', online: true, clockSkewStatus: 'ok',
+      activeSessionCount: 2, maxSessions: 6,
+      hardware: { cpuModel: 'Apple M2', cpuCores: 8, totalMemBytes: 17179869184 },
+      guardPosture: { onConfirmed: 16, offDeviant: 6, offRuntimeDivergent: 0 }, ...over,
+    });
+    const fixtures: Array<[string, any]> = [
+      ['empty pool', { enabled: true, machines: [] }],
+      ['single machine', { enabled: true, router: { holder: 'm_4f3a9b1c' }, machines: [mkMachine()] }],
+      ['two healthy', { enabled: true, machines: [mkMachine(), mkMachine({ machineId: 'm_2', nickname: 'Mini' })] }],
+      ['offline + clock-skew + guard problems', { enabled: true, router: { holder: 'm_1' }, machines: [
+        mkMachine({ machineId: 'm_1', online: false }),
+        mkMachine({ machineId: 'm_2', clockSkewStatus: 'suspect-clock-removed' }),
+        mkMachine({ machineId: 'm_3', guardPosture: { onStale: 3, missing: 1, errored: 2 } }),
+      ] }],
+      ['jargon-laden nickname (must not leak to Layer 1)', { enabled: true, machines: [
+        mkMachine({ machineId: 'machine-4f3a', nickname: 'fix the atRisk cadence: 1800s for CMT-953' }),
+      ] }],
+      ['large N', { enabled: true, router: { holder: 'm_0' }, machines: Array.from({ length: 40 }, (_, i) =>
+        mkMachine({ machineId: 'm_' + i, nickname: 'node ' + i, online: i % 5 !== 0 })) }],
+    ];
+    const guards = { guards: [
+      { key: 'zombieCleanup', effective: 'on-confirmed', configEnabled: true, defaultEnabled: true, process: 'server' },
+      { key: 'sleepWakeDetector', effective: 'off-runtime-divergent', configEnabled: true, defaultEnabled: true, process: 'lifeline' },
+    ], summary: { onConfirmed: 1, offRuntimeDivergent: 1 } };
+    for (const [name, pool] of fixtures) {
+      it(`conforms for "${name}"`, () => {
+        for (const g of [null, guards]) {
+          const glance = buildMachinesGlance(pool, g);
+          const r = validateGlanceSpec(glance);
+          expect(r.ok, `violations: ${JSON.stringify(r.violations)}`).toBe(true);
+          expect(glance.tiles.length).toBeLessThanOrEqual(GLANCE_MAX_TILES);
+        }
+      });
+    }
+    it('TRUTHFULNESS — the Online tile count never exceeds the machine population', () => {
+      const pool = fixtures[5][1];
+      const glance = buildMachinesGlance(pool, null);
+      const online = Number(glance.tiles.find((t: any) => t.key === 'online').value);
+      expect(online).toBe(machinesPopulation(pool).filter((m: any) => m.online).length);
+      expect(online).toBeLessThanOrEqual(glance.population.length);
+    });
+  });
+
+  describe('Health', () => {
+    const mkCap = (over: Record<string, unknown> = {}) => ({
+      id: 'session-recovery', label: 'Session Recovery', description: 'Detects stuck sessions.',
+      status: 'active', metric: '12 recovered', stats: { recoveries: 12 }, lastActivity: null,
+      processes: [{ name: 'SessionWatchdog', status: 'running' }], ...over,
+    });
+    const fixtures: Array<[string, any]> = [
+      ['empty', { health: 'healthy', activeCapabilities: [], issues: [], recentEvents: [] }],
+      ['null-ish', { activeCapabilities: [null, undefined, {}, mkCap()], issues: [], recentEvents: [] }],
+      ['all healthy', { health: 'healthy', activeCapabilities: [mkCap(), mkCap({ id: 'telegram', label: 'Telegram' })], issues: [], recentEvents: [] }],
+      ['some errored', { health: 'error', activeCapabilities: [mkCap(), mkCap({ id: 'telegram', label: 'Telegram', status: 'error' })],
+        issues: [{ severity: 'error', label: 'Telegram issue', description: 'TelegramAdapter errored', capability: 'telegram', process: 'TelegramAdapter' }],
+        recentEvents: [{ narrative: 'Telegram reconnected after a blip', subsystem: 'telegram', timestamp: '2026-07-10T00:00:00Z' }] }],
+      ['jargon-laden narrative (Layer 2 only)', { health: 'error', activeCapabilities: [mkCap({ status: 'error' })], issues: [],
+        recentEvents: [{ narrative: 'the atRisk beacon cadence: 1800s tripped for CMT-953', subsystem: 'sess_4f3a', timestamp: '2026-07-10T00:00:00Z' }] }],
+      ['large N', { health: 'error', activeCapabilities: Array.from({ length: 30 }, (_, i) =>
+        mkCap({ id: 'cap-' + i, label: 'Subsystem ' + i, status: i % 4 === 0 ? 'error' : 'active' })),
+        issues: [], recentEvents: Array.from({ length: 20 }, (_, i) => ({ narrative: 'event ' + i, subsystem: 's' + i })) }],
+    ];
+    for (const [name, systems] of fixtures) {
+      it(`conforms for "${name}"`, () => {
+        const glance = buildHealthGlance(systems);
+        const r = validateGlanceSpec(glance);
+        expect(r.ok, `violations: ${JSON.stringify(r.violations)}`).toBe(true);
+        expect(glance.tiles.length).toBeLessThanOrEqual(GLANCE_MAX_TILES);
+      });
+    }
+    it('TRUTHFULNESS — the Subsystems tile equals the population length', () => {
+      const systems = fixtures[5][1];
+      const glance = buildHealthGlance(systems);
+      const subs = Number(glance.tiles.find((t: any) => t.key === 'subsystems').value);
+      expect(subs).toBe(healthPopulation(systems).length);
+    });
+  });
+
+  describe('Spend', () => {
+    const mkRow = (over: Record<string, unknown> = {}) => ({
+      door: 'claude-cli', modelId: 'claude-haiku-4-5-20251001', doorClass: 'cli',
+      tokensIn: 123456, tokensOut: 6543, grossUsd: 0, netUsd: 0, priceBasis: 'subscription-zero', ...over,
+    });
+    const fixtures: Array<[string, any, any]> = [
+      ['empty', { totals: {}, rows: [], meteredLiveYet: false }, { keys: [] }],
+      ['subscription-only ($0)', { totals: { netUsd: 0, tokensIn: 123456, tokensOut: 6543 }, rows: [mkRow()], meteredLiveYet: false },
+        { keys: [{ keyRef: 'k1', provider: 'openai', door: 'openai-metered', dailyCapUsd: 5, lifetimeCapUsd: 50, committedDayUsd: 0, committedLifetimeUsd: 0, goLiveState: 'not-live', frozen: false }] }],
+      ['metered live with cost', { totals: { netUsd: 12.34, tokensIn: 9_000_000, tokensOut: 400_000 }, rows: [mkRow({ door: 'openai-metered', modelId: 'gpt-5.5', doorClass: 'metered', netUsd: 12.34, priceBasis: 'internal-derived' })], meteredLiveYet: true },
+        { keys: [{ keyRef: 'k1', provider: 'openai', door: 'openai-metered', dailyCapUsd: 5, lifetimeCapUsd: 50, committedDayUsd: 1.2, committedLifetimeUsd: 12.34, goLiveState: 'live', frozen: false }], meteredLiveYet: true }],
+      ['jargon-laden model ids', { totals: { netUsd: 0.5, tokensIn: 1000, tokensOut: 500 }, rows: [
+        mkRow({ modelId: 'claude-opus-4-8-20260115' }), mkRow({ modelId: 'gpt-4o-2024-08-06', door: 'openai-metered', doorClass: 'metered' }),
+      ], meteredLiveYet: false }, { keys: [] }],
+      ['large N rows', { totals: { netUsd: 3.21, tokensIn: 5_000_000, tokensOut: 200_000 },
+        rows: Array.from({ length: 50 }, (_, i) => mkRow({ modelId: 'model-' + i })), meteredLiveYet: false }, { keys: [] }],
+    ];
+    for (const [name, summary, caps] of fixtures) {
+      it(`conforms for "${name}"`, () => {
+        const glance = buildSpendGlance(summary, caps);
+        const r = validateGlanceSpec(glance);
+        expect(r.ok, `violations: ${JSON.stringify(r.violations)}`).toBe(true);
+        expect(glance.tiles.length).toBeLessThanOrEqual(GLANCE_MAX_TILES);
+      });
+    }
+    it('honest headline: not-live → "Nothing is being billed", live → a dollar figure', () => {
+      expect(buildSpendGlance(fixtures[1][1], fixtures[1][2]).headline.toLowerCase()).toContain('nothing is being billed');
+      expect(buildSpendGlance(fixtures[2][1], fixtures[2][2]).headline).toMatch(/\$\d/);
+    });
+  });
+
+  describe('Routing Map', () => {
+    const pos = (over: Record<string, unknown> = {}) => ({
+      door: 'claude-cli', modelId: 'claude-haiku-4-5-20251001', doorClass: 'cli',
+      injectionSafe: true, moneyGated: false, claudeBanned: false, skippedInIncrementA: false, ...over,
+    });
+    const fixtures: Array<[string, any]> = [
+      ['no chains', { chains: [], components: [] }],
+      ['full four lanes', { defaultFramework: 'claude-code', injectionExposureSource: 'FD5b-exposure-map', chains: [
+        { chain: 'FAST', positions: [pos(), pos({ door: 'openai-metered', modelId: 'gpt-5.5', doorClass: 'metered', moneyGated: true, skippedInIncrementA: true })] },
+        { chain: 'SORT', positions: [pos({ modelId: 'claude-haiku-4-5-20251001' })] },
+        { chain: 'JUDGE', positions: [pos({ modelId: 'claude-sonnet-5' })] },
+        { chain: 'WRITE', positions: [pos({ modelId: 'claude-opus-4-8-20260115' })] },
+      ], components: [
+        { component: 'messageSentinel', category: 'gate', nature: 'A', chain: 'FAST', criticalGate: true, untrustedInput: true, route: [pos()] },
+        { component: 'toneGate', category: 'other', nature: null, chain: null, criticalGate: false, untrustedInput: false },
+      ] }],
+      ['weird/jargon model ids everywhere', { chains: [
+        { chain: 'FAST', positions: [pos({ modelId: 'm_4f3a9b1c2d' }), pos({ modelId: 'cmt953-model' })] },
+      ], components: Array.from({ length: 30 }, (_, i) => ({ component: 'component_' + i, category: 'other', chain: 'FAST', criticalGate: false, untrustedInput: false })) }],
+    ];
+    for (const [name, map] of fixtures) {
+      it(`conforms for "${name}"`, () => {
+        const glance = buildRoutingMapGlance(map);
+        const r = validateGlanceSpec(glance);
+        expect(r.ok, `violations: ${JSON.stringify(r.violations)}`).toBe(true);
+        expect(glance.tiles.length).toBeLessThanOrEqual(GLANCE_MAX_TILES);
+      });
+    }
+    it('headline names the primary model + backup in plain words', () => {
+      const g = buildRoutingMapGlance(fixtures[1][1]);
+      expect(g.headline).toMatch(/runs on Claude Haiku/);
+      expect(g.headline).toMatch(/backup/);
+    });
+    it('friendlyModel strips version/date noise and never emits jargon', () => {
+      expect(friendlyModel('claude-opus-4-8-20260115')).toBe('Claude Opus');
+      expect(findInsiderVocab(friendlyModel('claude-haiku-4-5-20251001'))).toEqual([]);
+      // an id that can't be plainly rendered falls back to '' (caller substitutes a phrase)
+      expect(friendlyModel('m_4f3a9b1c2d')).toBe('');
+    });
+  });
+});
+
 describe('F10/F11 grandfather ratchet — structural, not prose', () => {
   it('completeness: every registered tab is in exactly one of adopted ∪ grandfathered', () => {
     const ids = tabRegistryIds();
@@ -296,20 +461,27 @@ describe('F10/F11 grandfather ratchet — structural, not prose', () => {
     expect(GLANCE_GRANDFATHERED.length).toBeLessThanOrEqual(GLANCE_GRANDFATHERED_CEILING);
   });
 
-  it('population floor: every adopted tab has a real builder (commitments + blockers)', () => {
-    expect(GLANCE_ADOPTED_TABS.length).toBeGreaterThanOrEqual(2);
-    expect(GLANCE_ADOPTED_TABS).toContain('commitments');
-    expect(GLANCE_ADOPTED_TABS).toContain('blockers'); // adopted this PR (Phase 2)
-    // both reference builders are real (not stubs) and produce a conforming empty glance
-    expect(typeof buildCommitmentsGlance).toBe('function');
+  it('population floor: every adopted tab has a real builder (Phases 1–3)', () => {
+    expect(GLANCE_ADOPTED_TABS.length).toBeGreaterThanOrEqual(6);
+    for (const id of ['commitments', 'blockers', 'machines', 'systems', 'spend', 'routing-map']) {
+      expect(GLANCE_ADOPTED_TABS, `${id} must be adopted`).toContain(id);
+    }
+    // every reference builder is real (not a stub) and produces a conforming empty glance
     expect(validateGlanceSpec(buildCommitmentsGlance([])).ok).toBe(true);
-    expect(typeof buildBlockersGlance).toBe('function');
     expect(validateGlanceSpec(buildBlockersGlance([])).ok).toBe(true);
+    expect(validateGlanceSpec(buildMachinesGlance({ enabled: true, machines: [] })).ok).toBe(true);
+    expect(validateGlanceSpec(buildHealthGlance({ health: 'healthy', activeCapabilities: [], issues: [], recentEvents: [] })).ok).toBe(true);
+    expect(validateGlanceSpec(buildSpendGlance({ totals: {}, rows: [] }, { keys: [] })).ok).toBe(true);
+    expect(validateGlanceSpec(buildRoutingMapGlance({ chains: [], components: [] })).ok).toBe(true);
   });
 
-  it('the ratchet only shrinks: blockers is no longer grandfathered and the ceiling dropped', () => {
+  it('the ratchet only shrinks: the Phase-3 tabs left the grandfather list and the ceiling dropped', () => {
     expect(GLANCE_GRANDFATHERED).not.toContain('blockers');
     expect(GLANCE_GRANDFATHERED).not.toContain('commitments');
-    expect(GLANCE_GRANDFATHERED_CEILING).toBe(24); // was 25 before Phase 2
+    // Phase 3 — the jargon belt — retired four more tabs from the grandfather list.
+    for (const id of ['machines', 'systems', 'spend', 'routing-map']) {
+      expect(GLANCE_GRANDFATHERED, `${id} left the grandfather list`).not.toContain(id);
+    }
+    expect(GLANCE_GRANDFATHERED_CEILING).toBe(20); // 25 (P1) → 24 (P2) → 20 (P3)
   });
 });
