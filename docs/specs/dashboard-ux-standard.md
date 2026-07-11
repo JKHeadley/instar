@@ -3,11 +3,18 @@ title: "Dashboard UX Standard — Reachable, Self-Explanatory, Responsive"
 slug: "dashboard-ux-standard"
 author: "echo"
 status: "approved"
-parent-principle: "Structure > Willpower — a quality bar that lives only in a style guide is a wish; a floor enforced in CI is a guarantee."
+parent-principle: "Structure beats Willpower — a quality bar that lives only in a style guide is a wish; a floor enforced in CI is a guarantee."
 created: "2026-07-08"
 topic: 29723
-approved: "2026-07-08 (operator, topic 29723): the 8-floor bar + FD-1=grouped navigation ('Yes, please proceed as you see fit')"
-decisions: "FD-1=grouped nav (operator); FD-2=viewport smoke test as a browser-gated CI job, SKIP-honest when no browser; FD-3=F7 soft-lint-first; FD-4=purpose line is the floor, inline help nice-to-have"
+approved: true
+approved-provenance: "F1–F9: operator (Justin), topic 29723, 2026-07-08 — 'Yes, please proceed as you see fit'. F10–F11 (glance floors): operator (Justin), topic 29836, 2026-07-10 18:10 PDT — 'Perfect, yes approved', reacting to the three-layer / two-floor / 4-phase proposal (APPROVED-PROPOSAL.md)."
+decisions: "FD-1=grouped nav (operator); FD-2=viewport smoke test as a browser-gated CI job, SKIP-honest when no browser; FD-3=F7 soft-lint-first; FD-4=purpose line is the floor, inline help nice-to-have; FD-5=F10 glance floor = one headline + ≤5 tiles + ≤150 words + no insider vocab; FD-6=F11 universal drill-down = every tile/count/row/badge opens a detail layer (list → record), no dead-end summaries; FD-7=floors gate NEW/RETROFIT work, existing tabs grandfathered against the survey-scorecard baseline (ratchet: the grandfather list only shrinks)"
+review-convergence: "2026-07-11T01:45:40.702Z"
+review-iterations: 3
+review-completed-at: "2026-07-11T01:45:40.702Z"
+review-report: "docs/specs/reports/dashboard-ux-standard-convergence.md"
+cross-model-review: "gemini-cli (degraded: cli-routing-retries; direct-invoked, 2 findings incorporated)"
+cross-model-review-reason: "codex-not-installed; gemini-cli present but wrapper needs worktree dist build, so direct-invoked"
 ---
 
 # Dashboard UX Standard — Reachable, Self-Explanatory, Responsive
@@ -132,6 +139,214 @@ by tab; a floor never blocks an unrelated change.
   follow-up <!-- tracked: topic-29836 --> ; until then F9 is a hard floor for the
   Subscriptions tab and the rule of record for every NEW polling surface.
 
+## The glance floors — readable at a glance, details one click down (added 2026-07-10, topic 29836)
+
+The nine floors above make the dashboard reachable, labeled, and stable. They do
+not make a view *digestible*: a tab can pass every floor above and still dump 972
+words of raw internal records (IDs, `cadence: 1800s`, `atRisk`) on its front page.
+The operator directive that motivates F10/F11 (2026-07-10, topic 29836, paraphrased
+from the approved proposal): *every main view should be simple and digestible at a
+glance with almost no jargon, and every element should be clickable to drill into
+detail.* These two floors are the whole-view structural application of the
+constitution's **Operator-Surface Quality** standard (lead with the answer, expose
+zero raw internals as primary content, plain language) — extended from
+authorization surfaces to every standing dashboard view.
+
+The shape is three layers, and nothing is lost — the IDs and raw detail still
+exist, they just move one or two clicks down instead of living on the front page:
+
+- **Layer 1 — glance.** One plain-English headline sentence answering "what's the
+  state of this?", then at most 5 big labeled tiles (counts / states / trends) in
+  everyday words.
+- **Layer 2 — list.** Click a tile/count → the rows behind that number, each in
+  plain words ("Promised Justin a code — waiting on the vendor since June 2").
+- **Layer 3 — record.** Click a row → the full record, where the IDs, timestamps,
+  cadences, and raw JSON belong.
+
+**The load-bearing invariant (added after spec-converge round 1): Layer 1 is 100%
+component-authored.** The glance layer contains ONLY strings the component itself
+composes — the headline (assembled from counts) and each tile's label + value
+(a count, or a short component-authored state word). **No agent-authored or
+user-authored free text ever appears at Layer 1.** That free text (a commitment's
+summary, a promise's wording) lives at Layer 2/3, where it is *displayed* through
+the shared sanitizer, never *vocab-gated*. This invariant is what makes F10's
+jargon check safe: it scans component-authored text only, so a user phrasing a
+promise as "fix the atRisk cadence: 1800s" can never blank the operator's glance
+(it is Layer-2 content, sanitized-displayed) — and it is what makes the check
+*complete*: because Layer 1 is entirely component copy, scanning all of it (headline
++ every tile label + every tile value) leaves no free-text hole to hide jargon in.
+
+- **F10 — Glance floor (NEW, topic 29836).** Every main view's pre-interaction
+  front page is: **one plain-English headline sentence** + **at most 5 big labeled
+  tiles** in everyday words, **≤ 150 words total before user interaction**.
+  **Insider vocabulary may not appear anywhere at the glance layer** — the check
+  scans the concatenation of the headline + every tile label + every tile value,
+  after NFKC-normalising and tokenising (splitting on hyphen / underscore /
+  whitespace / punctuation, with a per-token max length so a glued
+  `carrying-664-open-cmt953` string can neither dodge the word count nor the ID
+  matcher). Banned, case-insensitively: **internal IDs** (a letter-run adjacent to
+  3+ digits — `CMT-953`, `CMT_953`, `cmt953`, `machine-4f3a`, `m_<hex>` — a
+  separator-agnostic heuristic, not a per-prefix literal); **machine-duration
+  cadences** (a bare number glued/spaced to a time unit — `1800s`, `1800 s`,
+  `1800sec`, `1800000ms`, `PT30M` — excluding 4-digit-year/decade prose like "the
+  1800s"); **config keys** (camelCase / snake_case identifiers); and a curated
+  **insider-TERM denylist** for concept-jargon the form heuristics miss (`atRisk` /
+  "at risk" / "at-risk", `suppressed`, `beacon`, `cadence`, `heartbeat`, `lane`,
+  `door`, `reflow`, `TTL`, `SLO`, and peers — extended as new jargon is found).
+  Enforced by `validateGlanceSpec` in `dashboard/glance.js` — the shared component
+  **refuses to build** an over-budget or jargon-carrying glance and renders an
+  **honest degraded glance** (the headline truncated to budget + a "See details"
+  drill), **never a raw-record fallback** — and by the F10 word-budget test
+  `tests/unit/dashboard-glance-word-budget.test.ts`, which (a) proves the validator
+  flags >5 tiles, >150 words, and every insider-vocab class *and its bypass
+  variants* (spaced / glued / snake / NFKC look-alike) with a negative control on
+  each side of the boundary; and (b) renders every glance-adopted tab's real builder
+  with **adversarial fixtures** (large N, null/empty/error states, a commitment
+  whose free text contains banned tokens) and asserts the produced glance conforms —
+  proving the jargon can't leak up from the data.
+
+- **F11 — Universal drill-down (NEW, topic 29836).** Every tile, count, row, and
+  status badge at the glance layer is clickable and opens the next layer of
+  detail — **no dead-end summaries**. Opening a tile must reveal a Layer-2 container
+  that is **non-empty and textually distinct from the glance** (≥1 receipt row for a
+  non-zero count), or — for a zero-count tile — an **honest F6 empty-state**
+  ("nothing here right now"), never a re-render of the same summary. Tapping a
+  receipt opens the full record (Layer 3). Enforced by the per-view conformance
+  checklist (the baseline table below) + the F11 walk-every-tile test
+  `tests/unit/dashboard-glance-drilldown.test.ts`, a jsdom test that activates
+  *every* tile of every glance-adopted tab and asserts the opened layer is
+  non-empty-and-distinct (or an honest empty-state), with negative controls proving
+  BOTH a dead-end tile (no drill handler) AND a "drill re-renders the same summary"
+  tile fail the walk. F11 composes with **F9**: the glance component holds an open
+  drill interaction (a focused field / in-progress episode marked
+  `data-interaction-open`, or a dirty field) across a background refresh, reusing the
+  shipped `hasOpenInteraction`; while held it patches the live tile counts via a
+  targeted `data-*` merge (mirroring `updateCountdowns`) instead of rebuilding over
+  the interaction. The drill container is a single **replaced** node (never appended
+  per open), so repeated open/close cannot leak detached DOM or listeners.
+
+- **XSS / display-safety (mandatory for the component, added round 1).** The glance
+  component renders agent- and user-authored text at Layer 2/3. It MUST reuse the
+  Subscriptions tab's load-bearing safety contract: all dynamic values through the
+  shared `sanitizeForDisplay` (NFKC-fold + strip control / bidi / confusable-chrome
+  glyphs + grapheme cap), **all DOM writes via `textContent`, never `innerHTML`**,
+  and any styled/attribute value from a fixed literal allowlist or a clamped number
+  only (tile state → literal colour; any id in an attribute or URL via
+  `encodeURIComponent`). `sanitizeForDisplay` is extracted from `subscriptions.js`
+  into a shared module so both surfaces share one bar. The F11 test carries an
+  XSS/attribute-injection negative control: a commitment summary / tile label
+  containing `<img onerror=...>`, a `"`-style-breakout, and an RLO bidi character
+  must render inert. (The jargon check is a readability floor, **not** a
+  secret-redaction boundary — secret handling stays at the API/data layer, which
+  this change does not touch.)
+
+### Conformance baseline — the survey scorecard (grandfathered, ratchet-style)
+
+F10/F11 gate **NEW and RETROFIT** work; they do not retroactively fail the 26
+existing tabs on the day they land. The initial conformance baseline is the live
+survey from the approved proposal (driven through the real dashboard, 2026-07-10).
+Existing tabs are **grandfathered with a tracked gap**; each retrofit
+<!-- tracked: topic-29836 --> happens in a later phase (2–4) and removes that tab
+from the grandfather list. **The grandfather list only ever shrinks** — removing a
+tab requires it to actually pass the F10/F11 tests; adding a tab back (or shipping a
+NEW tab grandfathered) requires a written justification and operator sign-off, the
+same ratchet discipline as the F3 purpose-line exempt list. A population floor in
+each test fails loudly if the registry sweep goes blind.
+
+This phased grandfathering is **not** a *No Deferrals* violation. That standard forbids
+shipping a partial fix with *untracked* deferrals that silently regress; here the FLOORS
+ship **complete** in Phase 1 (the component, both F10/F11 tests across all three tiers,
+and a live reference implementation), every grandfathered tab's retrofit is tracked
+<!-- tracked: topic-29836 -->, and the ratchet structurally guarantees the grandfather
+list only shrinks — so nothing regresses and no work is lost. Retrofitting 26 tabs in one
+PR is the big-bang the whole standard exists to avoid; the operator approved the four-phase
+order for exactly this reason.
+
+| View | Front-page words | Glance (F10) today | Drill-down (F11) today | Baseline |
+|---|---|---|---|---|
+| Insights | 86 | ✅ the model to copy | ✅ button per takeaway | conforming (reference pattern) |
+| Commitments | 972 → **glance** | ✅ **adopted this PR** | ✅ **adopted this PR** | **on the floor (reference impl)** |
+| Tokens | 28 | ✅ lean | ⚠️ summaries not clickable | grandfathered → Phase 4 |
+| Secrets | 36 | ✅ lean | ✅ adequate | grandfathered → Phase 4 |
+| Resource Usage | 40 | ✅ lean | ⚠️ summaries not clickable | grandfathered → Phase 4 |
+| Mandates | 49 | ✅ plain | ✅ adequate | grandfathered → Phase 4 |
+| Jobs | 51 | ✅ lean | ✅ select-a-job works | grandfathered → Phase 4 |
+| Sessions | 76 | ✅ lean | ✅ click-to-stream works | grandfathered → Phase 4 |
+| LLM Activity | 88 | ✅ plain | ⚠️ no per-row detail | grandfathered → Phase 4 |
+| Process Health | 101 | ✅ plain | ⚠️ detail drawer only | grandfathered → Phase 4 |
+| Preferences | 120 | ✅ plain, first person | ✅ adequate | grandfathered → Phase 4 |
+| Threadline | 156 | ⚠️ over budget | ✅ adequate | grandfathered → Phase 4 |
+| Machines | ~200 | ⚠️ guards line is insider-speak | ❌ guards counts not clickable | grandfathered → Phase 3 |
+| Health | 390 | ⚠️ subsystem prose | ⚠️ expanders only | grandfathered → Phase 3 |
+| Spend | 400 | ⚠️ jargon ("paid door") | ⚠️ no per-row detail | grandfathered → Phase 3 |
+| Routing Map | (dense) | ⚠️ jargon ("lane", "door") | ❌ flat map, no drill | grandfathered → Phase 3 |
+| Blockers | 7,035 | ❌ full DB table on one page | ❌ everything dumped at once | grandfathered → Phase 2 |
+
+*(Files, Send Content, Evidence, PR Pipeline, Projects, Initiatives, Integrated-Being,
+Features, Systems get the same treatment in the Phase-4 sweep; they are mid-pack and
+grandfathered until then.)*
+
+**Worked example — Commitments (the reference implementation in this PR).** Today the
+glance layer is 23 raw records: *"I will send the code as soon as I get it —
+suppressed: quiet-hours — id: CMT-953 — cadence: 1800s — heartbeats: 1…"*. On the
+floor it becomes a headline — *"I'm carrying N open promises; K need attention soon,
+none are overdue."* — over ≤5 tiles. Tapping a tile drills into the existing list,
+filtered to that tile (Layer 2); tapping a row opens the full record with every
+timestamp and ID (Layer 3). Its full rebuild is Phase 2; this PR ships the glance
+layer + the drill into the existing list/record.
+
+**One population, honest counts (frontloaded after spec-converge round 1).** The
+glance number must be *true*, not merely well-formed — a wrong headline count is the
+exact defect the floor exists to prevent. So the reference impl derives every tile
+and the headline from the **same single population** the drill-down shows: the
+beacon-watched open promises (`beaconEnabled && status === 'pending'`) — the identical
+set `loadCommitments` already renders. The headline count therefore equals the
+Layer-2 list length by construction (a test asserts this equality), so tapping
+"Open N" always drills into exactly N rows. Each tile maps to an **existing server
+field** on the `Commitment` record (no client-side re-derivation of state, no new
+endpoint), so the glance can never diverge from the server's own notion of at-risk:
+
+| Tile | Plain label | Server-field predicate (over the open-promises population) |
+|---|---|---|
+| Open | "Open" | the population itself: `beaconEnabled && status==='pending'` |
+| Due soon | "Due soon" | `atRisk === true` (the server's own at-risk flag) |
+| Waiting on you | "Waiting on you" | `blockedOn ∈ {'user-input','user-authorization'}` |
+| Quiet (paused) | "Quiet" | `beaconSuppressed === true` |
+| Overdue | (headline only) | `hardDeadlineAt` present and `< now` |
+
+The headline reads "none are overdue" when the overdue count is 0, "K need attention
+soon" from the Due-soon count. A zero-count tile is still rendered and clickable — it
+opens an honest F6 empty-state, composing F11 + F6. (These predicates are the
+reference impl's contract; the labels/shape were operator-approved, and pinning the
+exact field mapping is an implementation decision made here, not a deviation from the
+approved shape — the proposal's "664 / 3 / 2 / 12" were illustrative.)
+
+## Multi-machine posture (Cross-Machine Coherence)
+
+`dashboard/glance.js` is a **stateless client-side renderer** (posture: `unified` by
+construction). It persists nothing, reads no config, and holds no server state; it
+renders whatever data the adopting tab already fetches and inherits that endpoint's
+existing posture (the Commitments reference drills into `GET /commitments`, whose
+pool-scope posture is unchanged by this PR). It introduces **no new machine-divergent
+state**, so it needs no `machine-local-justification` marker — there is no
+machine-local surface to justify.
+
+## Migration Parity + Agent Awareness
+
+**Migration Parity — met by construction, no migration needed.** The dashboard is
+served wholesale via `express.static(dashboardDir)` from the installed package
+directory (`package.json` `files` includes `dashboard/`; `AgentServer.resolveDashboardDir`
+resolves to the package root, not the agent home). A package update replaces
+`dashboard/glance.js` + `dashboard/index.html` on the normal update path, exactly as
+`dashboard/subscriptions.js` shipped — so already-deployed agents receive the glance
+with no `PostUpdateMigrator` entry and no `init`-only templating. The Commitments tab
+loads `glance.js` through the same `try/catch` dynamic-import guard the other tabs use
+(`await import('/dashboard/glance.js')` — a missing/failed module degrades the tab
+gracefully instead of white-screening during a rolling update). **Agent Awareness —
+n/a:** this is an internal dashboard UX/dev standard (how a view *renders*), not a new
+operator-invocable capability, route, config, or hook — the awareness surface is
+`STANDARDS-REGISTRY.md` (bumped nine → eleven floors), not the CLAUDE.md template.
+
 ## Enforcement design
 
 Two tiers, mirroring the money-increment "static floor + smoke test" pattern:
@@ -150,11 +365,84 @@ Two tiers, mirroring the money-increment "static floor + smoke test" pattern:
    passing blind. **Open decision for the operator (FD-2): run this smoke test in CI on every
    PR (needs a browser in CI) or as a pre-merge manual gate?**
 
-3. **Constitution registry** — add "Dashboard UX Standard" to `docs/STANDARDS-REGISTRY.md`
-   with its enforcing guards named, so the Standards-Enforcement-Coverage audit tracks it
-   and flags if a guard ever goes missing (dangling-ref detection).
+3. **Glance floors (F10, F11) — a shared component + two jsdom tests, no browser.** The
+   glance floors are enforced at the **component boundary**, not by scanning bespoke
+   per-tab markup (the glance content is JS-rendered from live data, so a static grep of
+   `index.html` cannot see it). One shared component `dashboard/glance.js` renders the
+   three-layer template (headline + ≤5 labeled tiles + a drill-down container) and exports
+   the pure validator `validateGlanceSpec`. A tab adopts the floor by building its glance
+   through this component; the component refuses to render an over-budget or
+   jargon-carrying glance (*structure over willpower*). Two tests, both in the normal unit
+   shard (jsdom, no browser, auto-discovered — no CI-config change):
+   - **F10 word-budget** — `tests/unit/dashboard-glance-word-budget.test.ts`: proves
+     `validateGlanceSpec` flags >5 tiles, >150 words, and every insider-vocab class *and its
+     bypass variants* (spaced / glued / snake_case / NFKC look-alike / space-or-unit cadence)
+     with a negative control on each side of the boundary; then renders each glance-adopted
+     tab's real builder with **adversarial fixtures** (large N, null / empty / error states,
+     free text carrying banned tokens) and asserts the produced glance conforms — including
+     the **headline-count-equals-list-length** truthfulness assertion.
+   - **F11 walk-every-tile** — `tests/unit/dashboard-glance-drilldown.test.ts`: renders the
+     component, activates *every* tile, and asserts each opens a Layer-2 container that is
+     non-empty-and-distinct from the glance (or an honest empty-state for a zero-count tile).
+     The fixture is **non-vacuous**: it must produce ≥1 tile with a non-zero count, and the
+     test asserts at least one activated drill opened a real (non-empty) Layer-2 list — so a
+     walk over an all-zero fixture can't pass by doing nothing. The walk then continues one
+     layer deeper: it activates a representative Layer-2 row and asserts a **Layer-3 record**
+     opens (no dead-end lists — the full tile → list → record path is exercised, not just
+     1→2). Negative controls prove BOTH a dead-end tile (no handler) AND a "drill re-renders
+     the same summary" tile fail the walk; an F9 case proves a background re-render holds an
+     open drill interaction (patching counts via `data-*` merge) instead of clobbering it; and
+     an XSS negative control (`<img onerror>` / `"`-breakout / RLO bidi in commitment text)
+     must render inert. Then walks the real Commitments glance end-to-end.
+
+   The floor is proven across **all three test tiers** (Testing Integrity), all jsdom /
+   in-process, no browser, auto-discovered — no CI-config change: Tier 1 (unit) is the two
+   tests above; **Tier 2 (integration) — `tests/integration/glance-commitments-tab.test.ts`**
+   drives the shipped Commitments glance builder + `renderGlance` against a **real
+   `GET /commitments` HTTP response** (Express + `createRoutes` + a live `CommitmentTracker`),
+   asserting the glance renders, conforms to F10, and every tile drills into the real filtered
+   list; **Tier 3 (e2e) — `tests/e2e/glance-commitments-tab-lifecycle.test.ts`** is the
+   feature-is-alive proof (boots the production route path; `/commitments` returns 200 never
+   503 with the feature ON *and* OFF → the friendly empty glance, not a crash; the full glance
+   renders end-to-end from live data; no injected `<script>` survives).
+
+   All tiers read the **glance-adopted registry** (`GLANCE_ADOPTED_TABS`, initially
+   `['commitments']`) and skip the grandfathered tabs from the baseline table. The ratchet is
+   structural, not prose: the F10/F11 tests assert (a) **completeness** — every `TAB_REGISTRY`
+   id is in exactly one of adopted ∪ grandfathered, so a NEW tab in neither set fails the
+   build (reusing the F2 registry-completeness pattern); and (b) **monotonicity** — the
+   grandfather set's size is asserted `≤` a committed `GLANCE_GRANDFATHERED_CEILING` constant
+   that can only be *lowered*, so the list can never silently grow. The population floor is
+   derived from `GLANCE_ADOPTED_TABS.length` (every adopted tab must actually be walked), not
+   a magic lower bound. Layer-2 plainness (a jargon scan one click down) is a deliberate
+   later-phase tightening, not guaranteed in Phase 1 <!-- tracked: topic-29836 -->.
+
+4. **Constitution registry** — extend the "Dashboard UX Standard" entry in
+   `docs/STANDARDS-REGISTRY.md` (nine → eleven floors) with F10/F11's enforcing guards
+   named, so the Standards-Enforcement-Coverage audit tracks them and flags if a guard ever
+   goes missing (dangling-ref detection).
 
 ## Implementation sequencing (Increment 2b, after this is approved)
+
+### Glance floors — the four glance phases (topic 29836, approved 2026-07-10)
+
+The glance-floor rollout ships in four phases, each usable on its own; **this PR is
+Phase 1** and nothing more:
+
+1. **Phase 1 (THIS PR) — the standard + the shared component + the reference tab.** F10/F11
+   written into this standard with the two enforcement tests; the shared `dashboard/glance.js`
+   component; and ONE view (Commitments) wired onto it as the living example (glance layer +
+   drill into the existing list as Layer 2, full record as Layer 3).
+2. **Phase 2 — the two worst offenders.** Commitments' full rebuild + Blockers, rebuilt on
+   the template. <!-- tracked: topic-29836 -->
+3. **Phase 3 — the jargon belt.** Machines, Health, Spend, Routing Map. <!-- tracked: topic-29836 -->
+4. **Phase 4 — the sweep.** Every remaining grandfathered view brought to conformance; each
+   leaves the grandfather list as it lands. <!-- tracked: topic-29836 -->
+
+### Reachability / clarity floors (F1–F8)
+
+The standard is approved first (defines the bar); then the improvement pass applies it. To
+avoid a 9,600-line-file big-bang and keep each step reviewable:
 
 The standard is approved first (defines the bar); then the improvement pass applies it. To
 avoid a 9,600-line-file big-bang and keep each step reviewable:

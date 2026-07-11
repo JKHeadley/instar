@@ -4,14 +4,30 @@ The operator opened the dashboard on 2026-07-08 and found it hard to use: tabs s
 
 **Added 2026-07-10 (topic 29836): F9 — a background refresh never clobbers an open interaction.** The Subscriptions tab's self-refresh was wiping a half-typed PIN back into a button and swapping the paste-your-code step for a spinner mid-paste. F9 makes it a rule for every tab that refreshes itself: anything the operator is in the middle of using (an open step, a focused box, a half-typed field) keeps its exact place on screen until it finishes, fails, expires, or the operator backs out — the refresh may only update things around it, like a live countdown. Shipped first on the Subscriptions tab (shared helpers + tests, including a control proving the old behavior really destroyed typed input); rolling the helpers out to the other self-refreshing tabs is the tracked follow-up in the spec.
 
-This change implements **F3 — every tab carries a plain-language purpose line**. Concretely: each of the dashboard's tabs now shows one muted, jargon-free sentence near the top saying what the tab is for and what you can do there (for example, the Secrets tab now reads "create one-time links so someone can hand you a password or API key safely, never pasted into chat"). We added a shared `.tab-purpose` style so these lines look consistent, converted the tabs that already had a description to use it, wrote fresh lines for the two tabs that had none (Sessions and Files), and added a test that fails if any tab ever ships without a purpose line. Nothing about how the dashboard *works* changes — this is display-only text and styling, so there is no risk to the server, no data touched, and rolling it back is just reverting the commit.
+**Added 2026-07-10 (topic 29836): F10 + F11 — the "glance floors".** You looked at the dashboard and said, roughly, "every main view should be simple and digestible at a glance with almost no jargon, and everything should be clickable to drill into detail." The nine earlier rules make the dashboard reachable and stable, but a tab can pass all of them and still dump a wall of raw records on its front page — the Commitments tab literally showed 23 internal records with IDs, "cadence: 1800s", and "atRisk" as the *first thing you see*. F10 and F11 fix that with a three-layer shape that every main view will share:
 
-## What shipped in this increment
-- The `.tab-purpose` CSS class + purpose lines on all 25 registered tabs.
-- The F3 floor test (`tests/unit/dashboard-tab-purpose.test.ts`).
+- **Layer 1, the glance:** one plain-English headline ("I'm carrying 664 open promises; 3 need attention soon, none are overdue.") plus at most five big labeled tiles in everyday words. No insider vocabulary at this layer — no internal IDs, no state-machine words like "atRisk", no config field names, no "1800s" cadences. And the whole front page has to fit in 150 words before you touch anything.
+- **Layer 2, the list:** click a tile or a number and you see the actual rows behind it, still in plain words ("Promised Justin a code — waiting on the vendor since June 2").
+- **Layer 3, the record:** click a row and you get everything, including the raw technical detail — the IDs, timestamps, and JSON. Nothing is deleted; the jargon just moves one or two clicks down instead of living on the front page.
+
+**F10 (glance floor)** is the "≤ 150 words, ≤ 5 tiles, no jargon" rule. **F11 (universal drill-down)** is the "every tile/number/row is clickable and opens the next layer — no dead ends" rule.
+
+**How they're enforced so they can't rot:** one shared piece of code (`dashboard/glance.js`) builds the headline-plus-tiles template, and it *refuses* to build a glance that breaks the budget or sneaks in jargon — so the rule is baked into the component, not left to anyone remembering it. Two automatic tests back it up: one checks the word/tile/jargon budget, the other clicks every single tile and fails the build if any tile is a dead end that doesn't open a detail view.
+
+**What actually ships in THIS change (Phase 1 only):** the two rules written into the standard, the shared component, the two tests, and ONE real example — the Commitments tab gets its new glance layer (headline + tiles) that drills down into the list it already had. The 26 other tabs are "grandfathered" (allowed to stay as-is for now) against a survey scorecard, and they get fixed in later phases (2–4). The grandfather list can only shrink — a tab leaves it only by actually passing the two tests, and no new tab is allowed to ship below the floor. You approved this exact shape (three layers, two floors, four phases) in topic 29836 on 2026-07-10.
+
+A note on how the dashboard *works*: none of the glance-floor change touches the server or your data. It is a new front-end component plus display wiring on one tab, so rolling it back is just reverting the commit. Behaviour is untouched — the Commitments tab shows the same promises, just headline-first with the raw detail one click down instead of dumped on the page.
+
+## What shipped in this increment (glance floors, Phase 1)
+- F10 + F11 written into the standard, with the survey scorecard as the grandfathered conformance baseline.
+- The shared `dashboard/glance.js` component (headline + ≤5 tiles + drill-down container; refuses an over-budget or jargon-carrying glance; honours the F9 interaction-hold rule).
+- Two enforcement tests in the normal unit shard: `tests/unit/dashboard-glance-word-budget.test.ts` (F10) and `tests/unit/dashboard-glance-drilldown.test.ts` (F11).
+- The Commitments tab wired onto the component as the reference implementation (glance layer → existing list → full record).
+
+*(Earlier increment, for history: **F3 — every tab carries a plain-language purpose line** — added the shared `.tab-purpose` class + purpose lines on all registered tabs and the `tests/unit/dashboard-tab-purpose.test.ts` floor.)*
 
 ## Open questions / decisions
-- **None blocking.** The four accepted purpose-line classes (`tab-purpose`, `ph-intro`, `features-subtitle`, `dropzone-subtitle`) are the dashboard's existing conventions; floor **F7** (shared component vocabulary), a later increment, will consolidate them into one. The nav model (grouped dropdown vs a persistent sidebar rail) remains the operator's open call from #1404 and is independent of F3.
+- **None blocking.** The three-layer shape, the two floors (F10/F11), and the four-phase order were approved by the operator in topic 29836 on 2026-07-10. This PR is Phase 1 only; Phases 2–4 (the retrofit of the grandfathered tabs) are tracked in the spec.
 
 ## What comes next (out of scope here)
 - **F4** — the body must never scroll sideways, especially on a phone (ships next, with a browser-gated viewport check).

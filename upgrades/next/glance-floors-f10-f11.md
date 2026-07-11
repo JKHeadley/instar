@@ -1,0 +1,52 @@
+# Dashboard glance floors (F10/F11) — readable at a glance, details one click down
+
+change_type: feature
+
+## What Changed
+
+Added two new floors to the Dashboard UX Standard and shipped their enforcement plus
+the first reference view:
+
+- **F10 (glance floor):** every main view's front page is one plain-English headline +
+  at most 5 big labeled tiles, under 150 words, with no insider vocabulary (internal IDs,
+  state-machine names, config keys, seconds-cadences).
+- **F11 (universal drill-down):** every tile/count/row is clickable and opens the next
+  detail layer — a filtered list, then the full record — with no dead-end summaries.
+- A shared component `dashboard/glance.js` renders the three-layer template (headline +
+  tiles + drill-down) and *refuses* to build an over-budget or jargon-carrying glance, so
+  the rule is baked into the code, not left to memory.
+- Enforcement across all three test tiers (unit F10 + F11, integration against the real
+  `/commitments` route, e2e feature-alive), with the 25 other tabs grandfathered against a
+  survey scorecard whose list can only shrink (a NEW tab can't ship below the floor).
+- The **Commitments tab** is the reference implementation: its old wall of raw records
+  (IDs, `cadence: 1800s`, `atRisk`) is now a headline ("I'm carrying N open promises; K
+  need attention soon, none overdue.") over tiles (Open · Due soon · Waiting on you ·
+  Quiet); tap a tile to see which promises, tap one for the full record.
+
+This is Phase 1 of the operator-approved four-phase rollout (topic 29836). Phases 2–4
+retrofit the remaining tabs and are tracked in the spec.
+
+## What to Tell Your User
+
+Your dashboard's Commitments tab is now readable at a glance: instead of a wall of
+technical records, you'll see a one-sentence summary of where your open promises stand
+plus a few big tiles. Tap any tile to see exactly which promises are behind that number,
+and tap one of those to see its full detail. Nothing is lost — the IDs and timestamps
+just moved one or two taps down instead of crowding the front page. This is the first tab
+brought to the new "glance" standard; the rest follow in later updates.
+
+## Summary of New Capabilities
+
+- The Commitments dashboard tab now leads with a plain-English headline + tiles, with
+  every number tappable down to the full record.
+- A new dashboard-wide standard (F10/F11) that keeps future views readable at a glance and
+  fully drillable, enforced automatically in CI.
+
+## Evidence
+
+- Unit: `tests/unit/dashboard-glance-word-budget.test.ts` (31), `tests/unit/dashboard-glance-drilldown.test.ts` (8).
+- Integration: `tests/integration/glance-commitments-tab.test.ts`.
+- E2E: `tests/e2e/glance-commitments-tab-lifecycle.test.ts`.
+- Live browser render (Playwright): headline + 4 tiles render; tile → filtered list → full
+  record (`id: CMT-953`, `cadence: 1800s` shown only at the record layer).
+- Spec convergence: `docs/specs/reports/dashboard-ux-standard-convergence.md`.
