@@ -45,6 +45,35 @@ interface ServerHandle {
   close: () => Promise<void>;
 }
 
+async function runRelay(opts: {
+  cwd: string;
+  topicId: string;
+  message: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{ exit: number; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'bash',
+      [path.join(projectDir, '.claude', 'scripts', 'telegram-reply.sh'), opts.topicId, opts.message],
+      {
+        cwd: opts.cwd,
+        env: {
+          ...process.env,
+          INSTAR_PORT: '',
+          INSTAR_AUTH_TOKEN: '',
+          INSTAR_AGENT_HOME: '',
+          ...opts.env,
+        },
+      },
+    );
+    let stderr = '';
+    child.stdout.on('data', () => {/* swallow */});
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.on('close', (code) => resolve({ exit: code ?? 1, stderr }));
+    child.on('error', (err) => resolve({ exit: 1, stderr: String(err) }));
+  });
+}
+
 function buildServer(opts: {
   agentId: string;
   authToken: string;
@@ -195,5 +224,90 @@ describe('telegram-reply.sh ↔ /events/delivery-failed end-to-end', () => {
     expect(ev.topic_id).toBe(50);
     expect(ev.http_code).toBe(503);
     expect(ev.attempted_port).toBe(server.port);
+  }, 30_000);
+
+  it('resolves a .worktrees cwd to the owning agent home for config and recovery state', async () => {
+    const server = await buildServer({
+      agentId: 'worktree-agent',
+      authToken: 'worktree-token',
+      replyStatus: 503,
+      replyBody: JSON.stringify({ error: 'upstream' }),
+    });
+    fs.writeFileSync(
+      path.join(projectDir, '.instar', 'config.json'),
+      JSON.stringify({ port: server.port, projectName: 'worktree-agent', authToken: 'worktree-token' }),
+    );
+    const worktreeCwd = path.join(projectDir, '.worktrees', 'feature', 'nested');
+    fs.mkdirSync(worktreeCwd, { recursive: true });
+
+    const result = await runRelay({ cwd: worktreeCwd, topicId: '51', message: 'from worktree' });
+    await server.close();
+
+    expect(result.exit).toBe(1);
+    expect(server.replyHits[0]).toMatchObject({
+      authHeader: 'Bearer worktree-token',
+      agentIdHeader: 'worktree-agent',
+    });
+    expect(fs.existsSync(path.join(projectDir, '.instar', 'state', 'pending-relay.worktree-agent.sqlite'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, '.worktrees', 'feature', 'nested', '.instar', 'state'))).toBe(false);
+  }, 30_000);
+
+  it('honors INSTAR_AGENT_HOME ahead of the .worktrees cwd marker', async () => {
+    const server = await buildServer({
+      agentId: 'explicit-agent',
+      authToken: 'explicit-token',
+      replyStatus: 503,
+      replyBody: JSON.stringify({ error: 'upstream' }),
+    });
+    const explicitHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-reply-explicit-home-'));
+    fs.mkdirSync(path.join(explicitHome, '.instar'), { recursive: true });
+    fs.writeFileSync(
+      path.join(explicitHome, '.instar', 'config.json'),
+      JSON.stringify({ port: server.port, projectName: 'explicit-agent', authToken: 'explicit-token' }),
+    );
+    const worktreeCwd = path.join(projectDir, '.worktrees', 'wrong-owner');
+    fs.mkdirSync(worktreeCwd, { recursive: true });
+
+    try {
+      const result = await runRelay({
+        cwd: worktreeCwd,
+        topicId: '52',
+        message: 'explicit home wins',
+        env: { INSTAR_AGENT_HOME: explicitHome },
+      });
+      await server.close();
+
+      expect(result.exit).toBe(1);
+      expect(server.replyHits[0]).toMatchObject({
+        authHeader: 'Bearer explicit-token',
+        agentIdHeader: 'explicit-agent',
+      });
+      expect(fs.existsSync(path.join(explicitHome, '.instar', 'state', 'pending-relay.explicit-agent.sqlite'))).toBe(true);
+      expect(fs.existsSync(path.join(projectDir, '.instar', 'state', 'pending-relay.explicit-agent.sqlite'))).toBe(false);
+    } finally {
+      try { fs.rmSync(explicitHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }, 30_000);
+
+  it('refuses an unknown agent id loudly without creating an orphan queue', async () => {
+    const server = await buildServer({
+      agentId: 'server-agent',
+      authToken: 'unknown-token',
+      replyStatus: 503,
+      replyBody: JSON.stringify({ error: 'upstream' }),
+    });
+    fs.writeFileSync(
+      path.join(projectDir, '.instar', 'config.json'),
+      JSON.stringify({ port: server.port, authToken: 'unknown-token' }),
+    );
+    const unknownDb = path.join(projectDir, '.instar', 'state', 'pending-relay.unknown.sqlite');
+
+    const result = await runRelay({ cwd: projectDir, topicId: '53', message: 'must stay loud' });
+    await server.close();
+
+    expect(result.exit).toBe(1);
+    expect(result.stderr).toContain('agent id is unknown');
+    expect(result.stderr).toContain('refusing to create an undrainable pending-relay.unknown.sqlite store');
+    expect(fs.existsSync(unknownDb)).toBe(false);
   }, 30_000);
 });
