@@ -1,0 +1,19 @@
+# Plain enrollment cancellation
+
+## What Changed
+
+Pending subscription-pool logins can now be cancelled through `POST /subscription-pool/enroll/:id/cancel`. Cancellation marks the durable login abandoned before best-effort teardown of its raw tmux login pane. Malformed, unknown, completed, and already-abandoned logins are handled without unsafe teardown, and cancellation stands aside while completion is in flight.
+
+## Evidence
+
+- Integration coverage exercises pending, completed, malformed, unknown, concurrent-completion, and follow-me regression behavior.
+- Capability discovery and the installed enrollment briefing include the new endpoint.
+
+## What to Tell Your User
+
+A stuck account sign-in no longer has to sit until its 15-minute expiry. I can safely cancel it immediately and clean up its waiting login process.
+
+## Summary of New Capabilities
+
+- Cancel a pending subscription enrollment without waiting for expiry.
+- Repeated cancellation is safe and completed enrollments are preserved.
