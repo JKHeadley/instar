@@ -38,6 +38,10 @@ const COPY_FILES = [
   'scripts/lib/operator-surface.mjs',
   'scripts/lib/self-action-detect.mjs',
   'skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs',
+  // audit-convergence-enforcement §2: the precommit now imports these two sibling
+  // scripts (Step 1.5 audit gate) — copy them so the fixture hook resolves imports.
+  'scripts/write-audit-convergence.mjs',
+  'scripts/audit-secret-patterns.mjs',
   'docs/STANDARDS-REGISTRY.md',
 ];
 

@@ -92,6 +92,10 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
       { recursive: true },
     );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
+    // audit-convergence-enforcement §2: the hook now imports these two sibling
+    // scripts — copy them so the sandbox hook resolves its imports.
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'audit-secret-patterns.mjs'), path.join(sandbox, 'scripts', 'audit-secret-patterns.mjs'));
   });
 
   afterEach(() => {
@@ -290,6 +294,10 @@ describe('instar-dev pre-commit — causalAutopsy (advisory slice)', () => {
       { recursive: true },
     );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
+    // audit-convergence-enforcement §2: the hook now imports these two sibling
+    // scripts — copy them so the sandbox hook resolves its imports.
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'audit-secret-patterns.mjs'), path.join(sandbox, 'scripts', 'audit-secret-patterns.mjs'));
   });
 
   afterEach(() => {

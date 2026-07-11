@@ -1,0 +1,20 @@
+<!-- bump: minor -->
+
+## What Changed
+
+The "Iterative Audit to Convergence" standard is now structurally enforced instead of merely documented. An audit's `converged` claim is machine-earned: a validator (`scripts/write-audit-convergence.mjs`) stamps a canonical `docs/audits/<slug>.md` report only when its ledger genuinely shows ≥2 rounds ending in a zeroed, row-cross-checked final round, every finding closed (`fixed:` / `accepted:` / `deferred:<ref>`), and a tracked standing-guard (or a closed-enum exemption). A pre-commit gate refuses a hand-added or unearned stamp (and secret-scans staged audit reports); a CI ratchet re-verifies every committed stamp at merged state; and the constitution's own enforcement grader now classifies the standard `ratchet` (was `documented-only`). The converging-loop default route reaches every agent via a single-sourced skill update + a CLAUDE.md section (new installs and existing agents through the update path). Audit-report PRs also get arm-time protection from auto-merge so they route to a human.
+
+## What to Tell Your User
+
+When I run an audit now — a security sweep, a "find all instances of X", a compliance check — "done" means *converged*, not "I looked once": I audit, fix, and re-audit the full surface until a clean pass finds nothing new, and I record that in a report whose "converged" stamp the system verifies rather than takes my word for. A one-pass audit is reported as incomplete, never dressed up as thorough. Nothing changes in how you interact with me — this makes my thoroughness claims trustworthy.
+
+## Summary of New Capabilities
+
+- `docs/audits/<slug>.md` canonical audit reports with a machine-earned `converged:` stamp (`scripts/write-audit-convergence.mjs`; `--check` for CI/precommit).
+- Pre-commit gate + CI ratchet that refuse an unearned stamp, enforce canonical-path-only, and secret-scan audit reports.
+- Every agent learns the converging-audit default route (skill + CLAUDE.md section, delivered to new and existing agents).
+
+## Evidence
+
+- `tests/unit/write-audit-convergence.test.ts` (validator, 23), `tests/unit/audit-convergence-reports.test.ts` (CI ratchet), `tests/unit/audit-convergence-standard-conformance.test.ts` (proves the registry grade-flip to `ratchet`), `tests/unit/iterative-converging-audit-skill-single-source.test.ts` (single-source parity), `tests/unit/audit-convergence-protected-paths.test.ts` (arm-time auto-merge protection).
+- Converged spec (`/spec-converge`, 11 rounds, codex-cli:gpt-5.5 externals) + operator approval; 1141-test regression sweep green across the changed areas.

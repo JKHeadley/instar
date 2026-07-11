@@ -34,6 +34,8 @@ import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
 import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
 import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
+import { validateAuditReport, parseFrontmatter } from './write-audit-convergence.mjs';
+import { scanForSecrets } from './audit-secret-patterns.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -125,6 +127,74 @@ const staged = stagedOutput
 if (staged.length === 0) {
   // No staged files — nothing to check.
   process.exit(0);
+}
+
+// ─── Step 1.5: audit-convergence gate ─────────────────────────────────────
+// (audit-convergence-enforcement §2). Placed BEFORE the in-scope early-exit so
+// it fires for docs-only audit commits (a `docs/audits/*.md` commit is exactly
+// the dominant case and would be dead code after the in-scope filter). Validates
+// the STAGED blob (`git show :<path>`), never the worktree copy. FAIL-CLOSED on
+// any validator crash — the honest escape is to drop the `converged:` line.
+function stagedBlob(file) {
+  try {
+    return execSync(`git show :${JSON.stringify(file)}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  } catch {
+    return null; // deleted/renamed away — nothing to validate
+  }
+}
+function frontmatterHas(content, key) {
+  try { return !!parseFrontmatter(content).fields[key]; } catch { return false; }
+}
+const auditReports = staged.filter((f) => /^docs\/audits\/.+\.md$/.test(f));
+const otherDocsMd = staged.filter((f) => /^docs\/.+\.md$/.test(f) && !/^docs\/audits\//.test(f));
+
+// Canonical-path-only: a `converged:` audit stamp is legitimate ONLY under
+// docs/audits/. A staged docs/**/*.md OUTSIDE it carrying an `audit:` key is a
+// misplaced (or rogue) audit report — block. (Keyed on `audit:`, not a bare
+// `converged:`, to avoid colliding with generic doc vocabulary — codex-R3.)
+for (const f of otherDocsMd) {
+  const content = stagedBlob(f);
+  if (content && frontmatterHas(content, 'audit')) {
+    console.error(`[instar-dev-precommit] BLOCKED: ${f} carries an \`audit:\` frontmatter key outside docs/audits/.`);
+    console.error('  → an audit report + its `converged:` stamp are legitimate only at docs/audits/<slug>.md.');
+    process.exit(1);
+  }
+}
+
+for (const f of auditReports) {
+  const content = stagedBlob(f);
+  if (!content) continue;
+
+  // (1) secret scan — the one hard block (irreversible: git history + push).
+  const secrets = scanForSecrets(content);
+  if (secrets.length) {
+    console.error(`[instar-dev-precommit] BLOCKED: ${f} appears to contain credential material:`);
+    for (const s of secrets) console.error(`    line ${s.line}: matches ${s.name} — reference path+line, NEVER quote the secret`);
+    process.exit(1);
+  }
+
+  // (2) convergence validation — only when the report CLAIMS converged.
+  if (frontmatterHas(content, 'converged')) {
+    let result;
+    try {
+      const stagedNames = new Set(staged);
+      result = validateAuditReport(content, {
+        root: ROOT,
+        stagedSet: stagedNames,
+        basenameSlug: path.basename(f, '.md'),
+      });
+    } catch (err) {
+      // fail-CLOSED — never let a validator crash pass a stamp.
+      console.error(`[instar-dev-precommit] BLOCKED (fail-closed): validator crashed on ${f}: ${err.message}`);
+      console.error('  → honest escape: remove the `converged:` line and commit the audit as honestly-incomplete.');
+      process.exit(1);
+    }
+    if (!result.ok) {
+      console.error(`[instar-dev-precommit] BLOCKED: ${f} claims \`converged:\` but the ledger does not earn it: ${result.reason}`);
+      console.error('  → an honestly-incomplete audit is fine to commit; it just cannot carry a `converged:` stamp.');
+      process.exit(1);
+    }
+  }
 }
 
 // ─── Step 2: classify staged files ───────────────────────────────────────

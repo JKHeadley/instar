@@ -50,6 +50,17 @@ export const PROTECTED_PATH_PREFIXES = [
   'src/monitoring/greenPrLogic.ts',
   'src/monitoring/floorDriftCanary.ts',
   'src/monitoring/greenPrAutomergeWiring.ts',
+  // audit-convergence-enforcement §3: an audit-report PR gets a human eye instead
+  // of auto-merging (the ADV-3 shape≠depth mitigation), AND the validator's own
+  // enforcing machinery is protected from being neutered by an auto-merged PR
+  // (adversarial-R4 finding-2 — same precedent as protecting safe-merge above).
+  // (This is the ARM-TIME protection — the common case: a PR opened WITH the audit
+  // report is routed to the operator. The adversarial arm-then-push TOCTOU hardening
+  // — the gather() re-check + re-adoption — ships as a tracked follow-up: ACT-1192.)
+  'docs/audits/',
+  'scripts/write-audit-convergence.mjs',
+  'scripts/audit-secret-patterns.mjs',
+  'tests/unit/audit-convergence-reports.test.ts',
 ];
 /** Gate scripts the floor contexts execute (extend, never shrink). */
 export const PROTECTED_GATE_SCRIPTS = [
