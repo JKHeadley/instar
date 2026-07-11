@@ -18,7 +18,7 @@ Boot now constructs `QuotaCollector` for `codex-cli`, using the existing rollout
 
 ## 1. Over-block
 
-A Codex agent with no readable complete rollout pauses new jobs/sessions, including first boot before its first quota-bearing turn. This is intentional fail-safe behavior requested for a framework where unknown capacity may already be a hard wall. Existing live sessions are not killed. Claude missing data remains fail-open and Gemini behavior remains unchanged.
+A Codex agent with no readable complete rollout pauses new jobs/sessions, including first boot before its first quota-bearing turn. This is intentional fail-safe behavior requested for a framework where unknown capacity may already be a hard wall. Existing live sessions are not killed. Claude missing data remains fail-open. Gemini's provider-native capacity signal is now explicitly authoritative; at the normal 100% wall behavior is unchanged, while an implausible >100% provider value now sheds all priorities instead of entering bounded-degraded mode—the safe direction for a native capacity signal.
 
 ## 2. Under-block
 
@@ -42,6 +42,7 @@ Quota exhaustion and missing-data posture are constrained operational invariants
 - **Double-fire:** a solo Codex agent has one `QuotaManager` and one collector. Subscription-pool polling writes account metadata, not this global quota file.
 - **Races:** `QuotaTracker.updateState` retains its atomic temp-write/rename. Failed collection writes explicit uncertainty so a prior cached healthy state cannot survive invisibly.
 - **Feedback loops:** shedding prevents new spawns; it does not start retries, migrations, or swaps. The next successful scheduled collection overwrites uncertainty and reopens the gate from real headroom.
+- **Gemini scope:** `gemini-cli-capacity` joins the explicit authoritative-source set. A regression test locks its real-wall and over-wall behavior so this additive safety choice is deliberate rather than a silent ride-along.
 
 ## 6. External surfaces
 

@@ -158,6 +158,19 @@ describe('Codex quota load-shed parity', () => {
     expect(t.canRunJob('medium')).toBe(true);
   });
 
+  it('treats Gemini provider-native capacity as authoritative at and beyond the wall', () => {
+    const t = tracker('gemini-cli');
+    t.updateState({
+      usagePercent: 150,
+      fiveHourPercent: 100,
+      source: 'gemini-cli-capacity',
+      lastUpdated: new Date().toISOString(),
+    });
+
+    expect(t.canRunJob('low')).toBe(false);
+    expect(t.shouldSpawnSession('critical').allowed).toBe(false);
+  });
+
   it('preserves Claude missing-data fail-open behavior', () => {
     expect(tracker('claude-code').canRunJob('low')).toBe(true);
   });
