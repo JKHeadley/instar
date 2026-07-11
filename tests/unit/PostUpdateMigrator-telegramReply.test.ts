@@ -74,6 +74,8 @@ describe('PostUpdateMigrator — telegram-reply.sh 408 migration', () => {
     const script = (migrator as unknown as { getTelegramReplyScript(): string }).getTelegramReplyScript();
     expect(script).toContain('HTTP_CODE" = "408"');
     expect(script).toMatch(/ambiguous/i);
+    expect(script).toContain('INSTAR_AGENT_HOME');
+    expect(script).toContain('refusing to create an undrainable pending-relay.unknown.sqlite store');
   });
 
   it('installs telegram-reply.sh when file is missing', async () => {
@@ -98,6 +100,8 @@ describe('PostUpdateMigrator — telegram-reply.sh 408 migration', () => {
     expect(updated).toMatch(/ambiguous/i);
     expect(updated).toMatch(/X-Instar-AgentId/);
     expect(updated).toMatch(/config\.json/);
+    expect(updated).toContain('INSTAR_AGENT_HOME');
+    expect(updated).toContain('refusing to create an undrainable pending-relay.unknown.sqlite store');
     expect(
       result.upgraded.some(u =>
         u.includes('telegram-reply.sh') &&

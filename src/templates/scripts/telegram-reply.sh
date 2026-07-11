@@ -133,7 +133,21 @@ sys.stdout.write(base64.b64decode(raw, validate=True).decode("utf-8"))
   MSG="$DECODED_MSG"
 fi
 
-# Resolve config-derived values from .instar/config.json (single python3
+# Resolve the owning agent home before reading config or recovery state.
+# Explicit launcher context wins. Otherwise, ONLY the structural .worktrees
+# marker may move us upward; a general config search could cross tenant roots
+# on a multi-agent host. The ordinary agent-home cwd remains unchanged.
+if [ -n "${INSTAR_AGENT_HOME:-}" ]; then
+  AGENT_HOME="$INSTAR_AGENT_HOME"
+else
+  case "$PWD" in
+    */.worktrees/*) AGENT_HOME="${PWD%%/.worktrees/*}" ;;
+    *) AGENT_HOME="$PWD" ;;
+  esac
+fi
+CONFIG_PATH="$AGENT_HOME/.instar/config.json"
+
+# Resolve config-derived values from the owning agent's config (single python3
 # invocation). Env > config > 4040-warn for port. Auth: INSTAR_AUTH_TOKEN env
 # first (SessionManager injects it per spawned session; survives the
 # secret-externalization refactor that moved authToken out of config.json into
@@ -143,11 +157,11 @@ fi
 AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
 AGENT_ID=""
 CONFIG_PORT=""
-if [ -f ".instar/config.json" ]; then
+if [ -f "$CONFIG_PATH" ]; then
   CONFIG_VALUES=$(python3 -c "
 import json, sys
 try:
-    c = json.load(open('.instar/config.json'))
+    c = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
 v = c.get('authToken', '')
@@ -156,7 +170,7 @@ print(c.get('projectName', ''))
 print(c.get('port', ''))
 t = (((c.get('messaging') or {}).get('outboundAdvisory') or {}).get('timeoutMs', ''))
 print(t if isinstance(t, (int, float)) else '')
-" 2>/dev/null)
+" "$CONFIG_PATH" 2>/dev/null)
   CONFIG_AUTH=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '1p')
   [ -z "$AUTH_TOKEN" ] && AUTH_TOKEN="$CONFIG_AUTH"
   AGENT_ID=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '2p')
@@ -170,7 +184,7 @@ elif [ -n "$CONFIG_PORT" ]; then
   PORT="$CONFIG_PORT"
 else
   PORT=4040
-  echo "WARN: telegram-reply.sh — no INSTAR_PORT env and no port in .instar/config.json; falling back to 4040" >&2
+  echo "WARN: telegram-reply.sh — no INSTAR_PORT env and no port in $CONFIG_PATH; falling back to 4040" >&2
 fi
 
 # ── Outbound advisory preflight (inform-only; spec outbound-jargon-filepath-gap §2.4) ──
@@ -464,10 +478,15 @@ except Exception:
     # Enqueue (spec § Layer 2b). Path: <stateDir>/state/pending-relay.<agentId>.sqlite
     # Mode 0600 enforced by the Node-side store; the CLI inherits umask, so
     # we explicitly chmod after first create as well.
-    QUEUE_DIR=".instar/state"
-    mkdir -p "$QUEUE_DIR" 2>/dev/null
     # Sanitize agent-id for filename (mirrors src/messaging/pending-relay-store.ts).
     SAFE_AGENT_ID=$(printf '%s' "${AGENT_ID:-unknown}" | tr -c 'A-Za-z0-9._-' '_')
+    if [ "$SAFE_AGENT_ID" = "unknown" ]; then
+      echo "Failed (HTTP $HTTP_CODE): $BODY" >&2
+      echo "  (also: agent id is unknown; refusing to create an undrainable pending-relay.unknown.sqlite store)" >&2
+      exit 1
+    fi
+    QUEUE_DIR="$AGENT_HOME/.instar/state"
+    mkdir -p "$QUEUE_DIR" 2>/dev/null
     QUEUE_DB="${QUEUE_DIR}/pending-relay.${SAFE_AGENT_ID}.sqlite"
 
     # delivery_id — the id was minted BEFORE the initial POST and sent on it

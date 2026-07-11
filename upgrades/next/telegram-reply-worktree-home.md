@@ -1,0 +1,23 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Telegram replies launched from inside an Instar worktree now resolve the owning agent home before reading relay configuration or writing recovery state. Recovery also refuses loudly when the agent identity is unavailable instead of creating an orphan queue that a server cannot drain.
+
+## What to Tell Your User
+
+Replies sent while development is running inside a worktree now use the same live relay configuration as the owning agent. If identity is genuinely unavailable, the send fails visibly in the session instead of leaving a hidden message that might reappear days later.
+
+## Summary of New Capabilities
+
+- Honors `INSTAR_AGENT_HOME` as the authoritative relay home.
+- Constrains automatic walk-up to the structural `/.worktrees/` marker.
+- Writes recoverable messages into the owning agent's drainable queue.
+- Refuses `pending-relay.unknown.sqlite` creation with a clear non-zero failure.
+- Re-stamps the corrected script onto existing unmodified installs during update.
+
+## Evidence
+
+Real-script integration coverage proves normal agent-home behavior, worktree resolution, explicit-home precedence, and loud unknown-id refusal. Migration tests and the shipped-template SHA ratchet prove fresh installs and existing agents receive the same corrected script.

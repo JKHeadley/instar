@@ -13269,6 +13269,10 @@ process.stdin.on('end', async () => {
     // Recorded so deployed agents cleanly upgrade to the pre-POST-mint
     // template instead of getting a `.new` candidate.
     '63ca933e2d7c59d92c92d2799afa71b9c75e45caf3ab7c1cb06aa8eb95ba2900',
+    // Pre-worktree-home-resolution version. Shipped through v1.3.813.
+    // Existing agents must receive the constrained agent-home resolver and
+    // loud unknown-id queue refusal rather than an inert `.new` candidate.
+    '89849c10aa30cc83a07d6e7721aa3ebbfd07ab897250c0d0f3e234f079dba153',
   ]);
 
   /**
