@@ -74,6 +74,8 @@ The change closes the last solo-Codex fail-open path at the existing choke point
 
 **Final independent read: concur.** Fail-safe cache and timestamp handling are correct, Claude behavior is preserved, boot wiring is sound, and the reviewer’s focused suite passed 75/75.
 
+**CI follow-up:** The intentional framework-specific corrupt-file catch is classified inline with the repository's narrow `@silent-fallback-ok` annotation. This changes no runtime behavior; it makes the already-reviewed fail-safe fallback explicit to the no-silent-fallbacks enforcement test.
+
 ## Evidence pointers
 
 - `tests/unit/codex-quota-load-shed.test.ts`

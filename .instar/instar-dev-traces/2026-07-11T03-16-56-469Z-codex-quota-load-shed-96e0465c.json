@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "sessionId": "46e7cabc-4f2b-439e-a7a2-a88f6a73f395",
+  "timestamp": "2026-07-11T03:16:56.469Z",
+  "artifactPath": "upgrades/side-effects/codex-quota-load-shed.md",
+  "artifactSha256": "ddeeeaf44bcfde4a1c69b0f00ae8e866136993e97f8a107d3b7230eca4c770bf",
+  "slug": "codex-quota-load-shed-ci-fix",
+  "specPath": "docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md",
+  "coveredFiles": [
+    "src/monitoring/QuotaTracker.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI identified the intentional framework-specific corrupt-file fallback as unannotated; this adds the required narrow @silent-fallback-ok classification with the fail-safe behavior already proven.",
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The compaction change added an intentional catch fallback without the repository-required inline classification, causing no-silent-fallbacks CI to reject it."
+  },
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "framework_guard_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

@@ -134,7 +134,7 @@ export class QuotaTracker {
       this.cachedState = state;
       this.lastRead = now;
       return state;
-    } catch {
+    } catch { // @silent-fallback-ok — Codex clears cached headroom and sheds; Claude preserves established last-known-good behavior.
       this.lastRead = Date.now(); // Prevent hammering a corrupt file
       if (this.config.framework === 'codex-cli') {
         // A previously healthy cache must not survive a broken Codex state
