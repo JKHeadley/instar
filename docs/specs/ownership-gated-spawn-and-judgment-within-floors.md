@@ -1,3 +1,9 @@
+---
+title: "Ownership-Gated Spawn, Duplicate Reconciliation & Judgment-Within-Floors"
+slug: "ownership-gated-spawn-and-judgment-within-floors"
+author: "echo"
+---
+
 # Ownership-Gated Spawn, Duplicate Reconciliation & Judgment-Within-Floors
 
 **Status:** DRAFT — pre-convergence.
@@ -23,7 +29,7 @@
 
 Per Part B, approval of this spec ratifies the three standards; their registry text is §7.
 
-## 1. The incident (evidence-grounded)
+## 1. Problem statement — the incident (evidence-grounded)
 
 2026-07-10, times UTC. The Laptop — owner of topics 29723 (live apprenticeship autonomous run) and 29836 (postmortem, hard-pinned to Laptop) — crash-looped ~23:15–23:49 (bloated 50MB replicated journal × new boot-time scan × supervisor kill cadence; fixed separately). Inbound messages for both topics arrived at the Mac Mini (lease holder / front door):
 
@@ -61,7 +67,7 @@ So the unguarded creation paths are exactly: **the interactive inbound spawn/res
 ### 2.5 Reap immunity
 The authority skip ladder (`SessionManager.terminateSession`, `src/core/SessionManager.ts:1311-1430`): protected → not-lease-holder (`:1344-1348`) → ReapGuard cascade (`src/core/ReapGuard.ts:131-224`: spawn-grace, recovery-in-flight, pending-injection, relay-lease, recent-user-message, open-commitment, active-subagent, structural-long-work, active-process; guard-error → KEEP) → in-flight. The Laptop's copies were shielded by `not-lease-holder`, the Mini's by `open-commitment`. Each guard is individually correct; jointly they make a duplicate immortal. The existing precedent for a narrow bypass is `bypassLeaseForTopicMovedCloseout` (`SessionManager.ts:1280-1294`).
 
-## 3. Design
+## 3. Proposed design
 
 Four deterministic layers (A–D) + two LLM judgment points (J1, J2) inside them.
 
@@ -136,7 +142,7 @@ Two insertion points, both existing gates:
 - **E2E:** feature-alive (routes 200 not 503 where surfaced); **the burst invariant:** a non-owner machine receiving N inbound messages for owned-elsewhere topics creates ZERO local sessions and exactly the queued/notice artifacts (mirrors the notification-flood burst test); duplicate-reconciliation lifecycle on a two-node harness.
 - **Ratchets joined:** llm-attribution, bench-coverage, routing-registry freshness, no-unbounded-llm-spawn (arbiters ride `buildIntelligenceProvider`).
 
-## 6. Decision points touched (per §3.6, eating our own cooking)
+## Decision points touched (per §3.6, eating our own cooking)
 
 | Decision | Classification | Why |
 |---|---|---|
@@ -167,6 +173,32 @@ Two insertion points, both existing gates:
 **Earned from.** 2026-07-10: the Mini spawned sessions for Laptop-owned topics 6ms after its own router said not to; 2026-06-25: topic-28730 ownership-split stall.
 **Traces to the goal.** One agent, many machines — exactly one voice and one owner per conversation.
 
-## 8. Open questions
+## Multi-machine posture (Standard A)
+
+This spec is multi-machine BY SUBJECT — every surface below declares its posture explicitly.
+
+| Surface | Posture | Mechanism / defense |
+|---|---|---|
+| SpawnAdmission verdicts | unified (derived, not stored) | computed per-call from the replicated ownership registry + pin store; no new durable state |
+| Ownership records the reconciler writes | unified | the EXISTING `SessionOwnershipRegistry` CAS + replication path — this spec adds writers, not a new store |
+| Pin-store coherence repairs (§3.2 step 2) | unified | existing pin replication; repairs go through the same CAS verbs |
+| `JudgmentProvenanceLog` full bodies | machine-local write, proxied-on-read | full-context rows are written by the deciding machine only; the HTTP read surface serves REDACTED rows and supports `?scope=pool` merge (same shape as `/guards?scope=pool`); full bodies never cross the wire — they may quote session tails, which are that machine's live data. This is a redaction boundary, not a locality assumption: the unified READ is the redacted view. |
+| Reconciler P19 breaker counters | lease-holder-durable, survives handover | keyed per-topic in the lease holder's durable store; on lease move, in-flight counts reset — worst case is ONE extra reconcile cycle, never a kill storm (the closeout path's own confirm ticks + veto breaker still gate every close). Accepted and stated. |
+| Owner-dark ladder hold state | machine-local BY DESIGN — `physical-credential-locality` | machine-local-justification: physical-credential-locality — the hold exists only on the machine whose inbound adapter (its own Telegram bot long-poll / Slack socket) received the message; the hold IS that delivery attempt's state. A durable-queue custody handoff (when the queue is live) replicates via the queue's own mechanism. |
+| Arbiter bench batteries / routing registry rows | unified | git-tracked files, ride the repo |
+
+User-facing notices (owner-dark rung 3) route through the one-voice speaker election — the notice comes from the machine that holds the topic's voice, exactly once.
+
+## Frontloaded Decisions
+
+1. **Part-B ratification path** — operator directed (topic 11960, 2026-07-10 19:40 PDT) that the three standards ship in this cycle; approval of this spec ratifies them. Their exact registry text is §7 — the approval surface shows it verbatim.
+2. **No new killer** (§3.2): the reconciler converges the ownership RECORD; the existing gated closeout does every close. A separate reap carve-out is deliberately NOT built. Reviewers: challenge, don't assume.
+3. **J1 proposes, never authorizes** (§3.3–3.4): the stale-owner claim evidence bar stays fully mechanical. Non-negotiable floor, not a tunable.
+4. **Deterministic defaults are complete** (§3.4): every judgment point functions with the arbiter absent (static rung). Increment 2 runs this way on purpose.
+5. **Rollout is dryRun-first per flag** (§4): each of the three flags (`ownershipGatedSpawn`, `duplicateReconciler`, arbiters) is independently reversible; fleet flips only after quiet dev-pool soak. Cheap-to-change-after: every behavior change ships behind a named dark/dry-run stage.
+6. **Provenance bodies: machine-local full / HTTP redacted** (§3.5), 30-day default retention. Cheap-to-change-after: retention + redaction depth are config, and the log is observe-only (nothing gates on it).
+7. **Graded-review job ships OFF** (§3.5), operator-enabled like `bench-refresh`. Cheap-to-change-after: dark job manifest.
+
+## Open questions
 
 _(none yet — convergence reviewers populate; author's candidate challenges: is Layer D truly subsumed by B (§3.2.6)? J2 tail-slice size vs PII (§3.4)? pool-shared vs per-machine breaker counters (§3.2.5)? sequencing against the inboundQueue rollout ladder?)_
