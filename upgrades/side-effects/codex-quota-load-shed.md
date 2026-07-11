@@ -76,6 +76,8 @@ The change closes the last solo-Codex fail-open path at the existing choke point
 
 **CI follow-up:** The intentional framework-specific corrupt-file catch is classified inline with the repository's narrow `@silent-fallback-ok` annotation. This changes no runtime behavior; it makes the already-reviewed fail-safe fallback explicit to the no-silent-fallbacks enforcement test.
 
+**E2E clock follow-up:** The live Codex pool fixture now injects a fixed clock matching its recorded rollout. Its five-hour reset timestamp had crossed during CI, so the real poller correctly zeroed that expired window while the assertion still expected the pre-reset value. Freezing the fixture clock removes the wall-clock time bomb without changing production expiry behavior.
+
 ## Evidence pointers
 
 - `tests/unit/codex-quota-load-shed.test.ts`

@@ -92,7 +92,8 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
     );
     const pool = new SubscriptionPool({ stateDir: dir });
     pool.add({ id: 'codex-primary', nickname: 'Codex', provider: 'openai', framework: 'codex-cli', configHome: codexHome });
-    const quotaPoller = new QuotaPoller({ pool });
+    // Keep the fixture's reset windows live independent of wall-clock time.
+    const quotaPoller = new QuotaPoller({ pool, now: () => Date.parse('2026-07-10T19:00:00.000Z') });
     server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, quotaPoller });
 
     const poll = await fetch(server.url + '/subscription-pool/poll', { method: 'POST' });
