@@ -75,6 +75,7 @@ import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
+import { sendRespawnCollisionNotice } from '../messaging/ColdStartFallbackReply.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker, getFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
@@ -2707,6 +2708,9 @@ export function wireTelegramRouting(
           if (!admitLocalSpawn('telegram-respawn-context-exhausted')) return;
           if (spawningTopics.has(topicId)) {
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
+            void sendRespawnCollisionNotice(telegram.sendToTopic.bind(telegram), topicId).catch((err) => {
+              console.error(`[telegram→session] Failed to send respawn-collision loss notice for topic ${topicId}:`, err);
+            });
             return;
           }
           const _spawnTokA = spawningTopics.add(topicId);
@@ -2729,6 +2733,9 @@ export function wireTelegramRouting(
           // message triggers a new respawn → multiple concurrent spawns → chaos.
           if (spawningTopics.has(topicId)) {
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
+            void sendRespawnCollisionNotice(telegram.sendToTopic.bind(telegram), topicId).catch((err) => {
+              console.error(`[telegram→session] Failed to send respawn-collision loss notice for topic ${topicId}:`, err);
+            });
             return;
           }
           const _spawnTokB = spawningTopics.add(topicId);

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "sessionId": "46e7cabc-4f2b-439e-a7a2-a88f6a73f395",
+  "timestamp": "2026-07-11T10:40:52.587Z",
+  "artifactPath": "upgrades/side-effects/silent-respawn-collision-notice.md",
+  "artifactSha256": "b290d7bff18dcb965ca1c4d8b1544b8afcd4b87c908f22cf5995b9a34dfd9fba",
+  "specPath": "docs/specs/durable-inbound-message-queue.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/ColdStartFallbackReply.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Messaging custody change in respawn routing; narrow notice-only behavior with existing safety gates unchanged",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven custody notice emitted only when an inbound message collides with an already-running respawn; not a self-triggered loop"
+  }
+}

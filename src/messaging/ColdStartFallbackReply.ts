@@ -52,6 +52,22 @@ export interface ColdStartFallbackReply {
   lifelineTopicId: number | null;
 }
 
+/** Honest custody notice for a message that collided with an active respawn. */
+export const RESPAWN_COLLISION_NOTICE =
+  `I got this message while the session was already restarting, so it was not queued or delivered. ` +
+  `Please resend it once the restart finishes.`;
+
+/**
+ * Route the collision notice through the adapter's deterministic topic-send
+ * funnel. Kept injectable so the exact user-visible send is behaviorally tested.
+ */
+export async function sendRespawnCollisionNotice(
+  sendToTopic: (topicId: number, text: string) => Promise<unknown>,
+  topicId: number,
+): Promise<void> {
+  await sendToTopic(topicId, RESPAWN_COLLISION_NOTICE);
+}
+
 /**
  * Classify a spawn/restart error into a user-facing reason. String inspection is
  * acceptable here because this is a SIGNAL (a help message), not an authority gate —
