@@ -19,20 +19,30 @@ type WorkerJob =
   | { mode: 'detect'; input: DetectInput }
   | { mode: 'apply-deltas'; input: ApplyDeltasInput };
 
-function main(): void {
+let activeGitPid: number | null = null;
+parentPort?.on('message', (msg: { kind?: string }) => {
+  if (msg.kind !== 'cancel' || activeGitPid == null) return;
+  try { process.kill(activeGitPid, 'SIGKILL'); } catch { /* already exited */ }
+});
+
+async function main(): Promise<void> {
   const job = workerData as WorkerJob;
   if (!parentPort) return; // not run as a worker — nothing to post to
+  const port = parentPort;
   try {
     if (job.mode === 'detect') {
-      parentPort.postMessage({ ok: true, result: runDetect(job.input) });
+      port.postMessage({ ok: true, result: await runDetect(job.input, undefined, {
+        onGitSpawn: (pid) => { activeGitPid = pid; port.postMessage({ kind: 'git-child-spawned', pid }); },
+        onGitClose: (pid) => { activeGitPid = null; port.postMessage({ kind: 'git-child-closed', pid }); },
+      }) });
     } else if (job.mode === 'apply-deltas') {
-      parentPort.postMessage({ ok: true, result: applyIndexDeltas(job.input) });
+      port.postMessage({ ok: true, result: applyIndexDeltas(job.input) });
     } else {
-      parentPort.postMessage({ ok: false, error: `unknown worker mode` });
+      port.postMessage({ ok: false, error: `unknown worker mode` });
     }
   } catch (err) {
-    parentPort.postMessage({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    port.postMessage({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
 }
 
-main();
+void main();

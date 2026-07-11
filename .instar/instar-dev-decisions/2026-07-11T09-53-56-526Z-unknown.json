@@ -1,0 +1,21 @@
+{
+  "ts": "2026-07-11T09:53:56.526Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 207,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One bounded kill attempt tied to a single detect worker timeout; no autonomous retry, respawn, notification, or recurring control loop is added."
+  },
+  "verdict": "pass"
+}

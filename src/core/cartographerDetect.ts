@@ -13,8 +13,8 @@
  *     of the storage class), so a `worker_threads` worker can load the compiled
  *     `.js` without dragging the whole server in.
  *   - `runDetect()` reads + parses the index, derives staleness from ONE batched
- *     `git ls-tree` (explicit large maxBuffer — never the 10MB default that throws
- *     on a big tree), orders a BOUNDED candidate set via bounded heaps (never a
+ *     streaming `git ls-tree` (incremental NUL parsing, with no whole-output
+ *     buffer), orders a BOUNDED candidate set via bounded heaps (never a
  *     full sort of a full materialized array), computes the freshness aggregate,
  *     applies the pass's anti-starvation defer increments, and writes the index
  *     ONCE. It reads ZERO per-node files (every field it needs — including the
@@ -25,14 +25,16 @@
  *     authoring N nodes is ONE off-thread 67MB write, not N per-node main-thread
  *     parse+serialize (closes the sixth starver).
  *
- * Both functions are shared VERBATIM by the worker wrapper AND the synchronous
+ * Both functions are shared VERBATIM by the worker wrapper AND the in-process
  * rollback path (`freshnessSweep.detectInWorker: false`): the byte-guard, the
- * explicit git maxBuffer, the bounded heap ordering, and the refusal taxonomy are
+ * streaming git reader, the bounded heap ordering, and the refusal taxonomy are
  * properties of THIS module, so the rollback runs the same bounded logic on the
  * main thread (bounded — never the legacy `tree.staleNodes()` full walk).
  */
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
+import type { ChildProcess } from 'node:child_process';
 import type {
   CartographerIndex,
   CartographerIndexEntry,
@@ -74,7 +76,7 @@ export interface DetectInput {
   revalidateSamplePerPass: number;
   /** Grace window for the never-authored-past-grace freshness split. */
   graceMs: number;
-  /** Explicit git ls-tree maxBuffer (≥64MB) so a big tree never throws ENOBUFS. */
+  /** @deprecated Compatibility-only; streaming ls-tree has no output buffer ceiling. */
   gitMaxBuffer: number;
   /** Cap on the published stale sample written to the snapshot (the /stale surface). */
   snapshotSampleMax: number;
@@ -200,26 +202,90 @@ function atomicWrite(filePath: string, contents: string): void {
   fs.renameSync(tmp, filePath);
 }
 
-// ── git plumbing (explicit large maxBuffer; failure → caller refuses) ────────
+// ── git plumbing (streaming NUL parse; failure → caller refuses) ─────────────
 
-/** Throws on git failure so the caller can map it to a `detect-git-error` refusal. */
-function readCurrentOids(projectDir: string, gitMaxBuffer: number): Map<string, string> {
+type GitStreamSpawner = (args: readonly string[], projectDir: string) => ChildProcess;
+export interface DetectRuntimeHooks {
+  onGitSpawn?: (pid: number) => void;
+  onGitClose?: (pid: number) => void;
+}
+
+/** Incrementally consumes complete NUL-delimited records and retains only the carry. */
+// RULE 3: EXEMPT — deterministic framing of trusted local git plumbing output;
+// it observes no provider/UI state and malformed framing refuses the whole read.
+export class LsTreeNulParser {
+  private readonly decoder = new StringDecoder('utf8');
+  private carry = '';
+
+  constructor(private readonly onRecord: (record: string) => void) {}
+
+  push(chunk: Buffer): void {
+    this.consume(this.decoder.write(chunk));
+  }
+
+  finish(): void {
+    this.consume(this.decoder.end());
+    if (this.carry.length > 0) throw new Error('git ls-tree ended with an unterminated record');
+  }
+
+  private consume(text: string): void {
+    this.carry += text;
+    let nul: number;
+    while ((nul = this.carry.indexOf('\0')) >= 0) {
+      const record = this.carry.slice(0, nul);
+      this.carry = this.carry.slice(nul + 1);
+      if (record) this.onRecord(record);
+    }
+  }
+}
+
+function addLsTreeRecord(map: Map<string, string>, entry: string): void {
+  const tab = entry.indexOf('\t');
+  if (tab < 0) return;
+  const meta = entry.slice(0, tab).split(' ');
+  const p = entry.slice(tab + 1);
+  const oid = meta[2];
+  if (oid && p) map.set(p, oid);
+}
+
+/** Resolves only after a clean exit; partial stdout is discarded on every failure shape. */
+export async function readCurrentOids(
+  projectDir: string,
+  _deprecatedGitMaxBuffer: number,
+  spawnGit: GitStreamSpawner = (args, cwd) => SafeGitExecutor.readStream(args, {
+    cwd, operation: GIT_OP, timeout: 30000,
+  }),
+  hooks?: DetectRuntimeHooks,
+): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   const rootTree = SafeGitExecutor.readSync(['rev-parse', 'HEAD^{tree}'], {
-    cwd: projectDir, operation: GIT_OP, maxBuffer: gitMaxBuffer,
+    cwd: projectDir, operation: GIT_OP, maxBuffer: 1024 * 1024,
   });
   if (rootTree) map.set('', rootTree.trim());
-  const out = SafeGitExecutor.readSync(['ls-tree', '-r', '-t', '-z', 'HEAD'], {
-    cwd: projectDir, operation: GIT_OP, maxBuffer: gitMaxBuffer,
+  const child = spawnGit(['ls-tree', '-r', '-t', '-z', 'HEAD'], projectDir);
+  if (!child.stdout) throw new Error('git ls-tree stdout unavailable');
+  const childPid = child.pid;
+  if (childPid != null) hooks?.onGitSpawn?.(childPid);
+  const parser = new LsTreeNulParser((record) => addLsTreeRecord(map, record));
+  let stderr = '';
+  child.stdout.on('data', (chunk: Buffer) => parser.push(chunk));
+  child.stderr?.on('data', (chunk: Buffer) => {
+    if (stderr.length < 8192) stderr += chunk.toString('utf8', 0, 8192 - stderr.length);
   });
-  for (const entry of out.split('\0')) {
-    if (!entry) continue;
-    const tab = entry.indexOf('\t');
-    if (tab < 0) continue;
-    const meta = entry.slice(0, tab).split(' ');
-    const p = entry.slice(tab + 1);
-    const oid = meta[2];
-    if (oid && p) map.set(p, oid);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let spawnError: Error | null = null;
+      child.once('error', (err) => { spawnError = err; });
+      child.once('close', (code, signal) => {
+        if (spawnError) return reject(spawnError);
+        if (code !== 0 || signal) {
+          return reject(new Error(`git ls-tree failed (${signal ?? `exit ${code}`}): ${stderr.trim()}`));
+        }
+        try { parser.finish(); resolve(); } catch (err) { reject(err); }
+      });
+    });
+  } finally {
+    if (childPid != null) hooks?.onGitClose?.(childPid);
   }
   return map;
 }
@@ -310,7 +376,11 @@ export interface DetectInstrumentation {
   nodeFileReads: number;
 }
 
-export function runDetect(input: DetectInput, instr?: DetectInstrumentation): DetectResult {
+export async function runDetect(
+  input: DetectInput,
+  instr?: DetectInstrumentation,
+  hooks?: DetectRuntimeHooks,
+): Promise<DetectResult> {
   const startedAt = Date.now();
   const emptyCounts: DetectCounts = {
     nodeCount: 0, authoredCount: 0, neverAuthored: 0, stale: 0, pathGone: 0,
@@ -352,7 +422,7 @@ export function runDetect(input: DetectInput, instr?: DetectInstrumentation): De
 
   let current: Map<string, string>;
   try {
-    current = readCurrentOids(input.projectDir, input.gitMaxBuffer);
+    current = await readCurrentOids(input.projectDir, input.gitMaxBuffer, undefined, hooks);
   } catch {
     // A git read failure must be a NAMED refusal — never "every node path-gone"
     // (that would silently mark the whole tree stale and author churn).

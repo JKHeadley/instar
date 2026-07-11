@@ -67,8 +67,8 @@ const bearer = (r: request.Test) => r.set('Authorization', `Bearer ${AUTH}`);
 // sweep's detect), never a lazy scaffold. This helper runs the SAME bounded detect
 // the engine runs and persists the snapshot the routes read — so this E2E exercises
 // the real snapshot-backed contract end-to-end.
-function refreshSnapshot(): void {
-  const r = runDetect({
+async function refreshSnapshot(): Promise<void> {
+  const r = await runDetect({
     indexPath: carto.indexFilePath(), projectDir: repo, maxIndexBytes: 256 * 1024 * 1024,
     maxCandidates: 100, maxNodesPerPass: 25, maxDeferredPasses: 5, revalidateSamplePerPass: 0,
     graceMs: 0, gitMaxBuffer: 64 * 1024 * 1024, snapshotSampleMax: 500, nowMs: Date.now(),
@@ -84,7 +84,7 @@ function refreshSnapshot(): void {
 describe('Cartographer doc-tree — feature is alive (Tier 3 E2E)', () => {
   it('health route is wired and returns 200 with a real nodeCount from the snapshot (not 503)', async () => {
     carto.scaffold();
-    refreshSnapshot();
+    await refreshSnapshot();
     const res = await bearer(request(app()).get('/cartographer/health'));
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(true);
@@ -96,7 +96,7 @@ describe('Cartographer doc-tree — feature is alive (Tier 3 E2E)', () => {
     const a = app();
     carto.scaffold();
     carto.setSummary('src/index.ts', 'entry point exporting `a`');
-    refreshSnapshot();
+    await refreshSnapshot();
 
     // freshly authored → not in the stale snapshot sample as 'stale'
     let res = await bearer(request(a).get('/cartographer/stale'));
@@ -113,7 +113,7 @@ describe('Cartographer doc-tree — feature is alive (Tier 3 E2E)', () => {
     git(repo, ['commit', '-q', '-m', 'change index']);
 
     // re-run detect (the sweep's job) → the snapshot now reflects the stale node.
-    refreshSnapshot();
+    await refreshSnapshot();
     res = await bearer(request(a).get('/cartographer/stale'));
     const stalePaths = res.body.nodes
       .filter((n: { status: string }) => n.status === 'stale')
