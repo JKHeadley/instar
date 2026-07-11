@@ -13,6 +13,8 @@ single-run-completable: true
 frontloaded-decisions: 15
 cheap-to-change-tags: 4
 contested-then-cleared: 4
+approved: true
+approved-by: "operator conversational approval — Justin, topic 11960, 2026-07-10 ~21:15 PDT ('approved', all three standards ratified), following the round-5 convergence handoff"
 ---
 
 # Ownership-Gated Spawn, Duplicate Reconciliation & Judgment-Within-Floors
