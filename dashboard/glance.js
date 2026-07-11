@@ -41,22 +41,27 @@ export const GLANCE_MAX_TOKEN_LEN = 40; // a longer token is a glued-word budget
 // (same discipline as the F3 purpose-line exempt list). The completeness test
 // asserts adopted ∪ grandfathered == every TAB_REGISTRY id, so a NEW tab in NEITHER
 // set fails the build; the monotonicity test asserts the grandfather size ≤ ceiling.
-export const GLANCE_ADOPTED_TABS = ['commitments', 'blockers'];
+export const GLANCE_ADOPTED_TABS = [
+  'commitments', 'blockers', // Phases 1–2
+  'machines', 'systems', 'spend', 'routing-map', // Phase 3 (the jargon belt); 'systems' is the Health tab
+];
 
 export const GLANCE_GRANDFATHERED = [
-  'insights', 'sessions', 'files', 'dropzone', 'jobs', 'features', 'systems',
+  'insights', 'sessions', 'files', 'dropzone', 'jobs', 'features',
   'integrated-being', 'pr-pipeline', 'projects', 'initiatives', 'tokens',
-  'resources', 'llm-activity', 'routing-map', 'spend', 'threadline', 'evidence',
-  'process-health', 'subscriptions', 'preferences-learning', 'machines', 'mandates',
+  'resources', 'llm-activity', 'threadline', 'evidence',
+  'process-health', 'subscriptions', 'preferences-learning', 'mandates',
   'secrets',
-]; // 'blockers' left the list this PR (Phase 2) — it now builds through this component.
+]; // Phase 3 removed machines / systems (Health) / spend / routing-map — they now
+   // build through this component. 'blockers' left in Phase 2.
 
 // The committed ceiling on grandfathered-tab count. Only ever LOWER this (each
 // lowering marks a tab retrofitted onto the floor). Never raise it without an
 // operator-signed justification — raising it is how a NEW tab would silently ship
 // below the floor, the exact regression the ratchet exists to prevent.
-// Lowered 25 → 24 (Phase 2): Blockers retrofitted onto the glance floor.
-export const GLANCE_GRANDFATHERED_CEILING = 24;
+// Lowered 25 → 24 (Phase 2): Blockers retrofitted.
+// Lowered 24 → 20 (Phase 3): Machines, Health (systems), Spend, Routing Map retrofitted.
+export const GLANCE_GRANDFATHERED_CEILING = 20;
 
 // ── F10 — insider-vocab detection ────────────────────────────────────────────
 // A readability floor, NOT a secret-redaction boundary (secret handling stays at
@@ -679,6 +684,682 @@ export function blockersGlanceSpec(doc, entries, opts = {}) {
         row.addEventListener('click', () => openRecord(blockerRecordNode(d, e, { fmtTs: opts.fmtTs })));
         list.appendChild(row);
       }
+      drilldown.appendChild(list);
+    },
+  }));
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PHASE 3 — the jargon belt: Machines, Health, Spend, Routing Map (topic 29836).
+// Each of the four tabs was ≥200 words of insider vocabulary on its front page
+// (guards lines, "paid door / metered", "lane / nature / door"). Rebuilt on the
+// SAME three-layer template: a component-authored, jargon-free headline + ≤5 tiles
+// (Layer 1); each tile drills into the rows behind that number in plain words
+// (Layer 2); each row opens the full record where the IDs/config/raw detail live
+// (Layer 3). Nothing is lost — the insider fields move one or two clicks down.
+// Every builder maps its counts to ONE population so the headline stays honest, and
+// every dynamic value is displayed through the shared sanitizer + textContent.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── Shared plain-language helpers ────────────────────────────────────────────
+// Acronyms that should stay upper-cased when a token is humanized for display.
+const KNOWN_ACRONYMS = {
+  gpt: 'GPT', llm: 'LLM', cli: 'CLI', ai: 'AI', cpu: 'CPU', ram: 'RAM',
+  api: 'API', url: 'URL', id: 'ID', ok: 'OK',
+};
+function titleCaseWord(w) {
+  const lw = String(w).toLowerCase();
+  if (KNOWN_ACRONYMS[lw]) return KNOWN_ACRONYMS[lw];
+  return lw.charAt(0).toUpperCase() + lw.slice(1);
+}
+
+/**
+ * Turn an identifier-ish token into a plain, sentence-cased phrase: split
+ * camelCase + separators, drop empties, cap only the first word.
+ * 'zombieCleanup' → 'Zombie cleanup'; 'session_watchdog' → 'Session watchdog'.
+ */
+export function humanizeToken(token) {
+  const words = String(token == null ? '' : token)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[\s\-_/.]+/)
+    .filter(Boolean);
+  if (words.length === 0) return '';
+  return words
+    .map((w, i) => (i === 0 ? titleCaseWord(w) : (KNOWN_ACRONYMS[w.toLowerCase()] || w.toLowerCase())))
+    .join(' ');
+}
+
+/**
+ * A plain, jargon-safe display name for a model id — drops every version/date
+ * segment (any part containing a digit) and title-cases the words that remain.
+ * 'claude-opus-4-8-20260115' → 'Claude Opus'; 'gpt-5.5' → 'GPT'. Returns '' when
+ * nothing plain survives OR the result would still trip the F10 jargon check — the
+ * caller substitutes a plain phrase, so a raw model id can NEVER leak to Layer 1.
+ */
+export function friendlyModel(modelId) {
+  // Drop any version/date segment (a part with a digit) AND single-letter fragments
+  // (a lone 'm' from 'm_<hex>' is meaningless as a name) — so a hex/opaque id yields
+  // '' and the caller substitutes a plain phrase.
+  const words = String(modelId == null ? '' : modelId)
+    .split(/[\s\-_./]+/)
+    .filter((w) => w && w.length >= 2 && !/\d/.test(w));
+  const name = words.map(titleCaseWord).join(' ').trim();
+  if (!name) return '';
+  return findInsiderVocab(name).length === 0 ? name : '';
+}
+
+/** The plain model phrase for a routing/spend position, with a door-class fallback. */
+function modelPhrase(pos) {
+  if (!pos) return '';
+  return friendlyModel(pos.modelId) || (pos.doorClass === 'metered' ? 'a paid model' : 'the built-in model');
+}
+
+/** Plain words for a routing/spend door class. */
+function doorClassWord(doorClass) {
+  return doorClass === 'metered' ? 'pay-per-use' : 'built-in (no per-use charge)';
+}
+
+function fmtUsd(n, dp = 2) {
+  const v = Number(n);
+  return '$' + (Number.isFinite(v) ? v : 0).toFixed(dp);
+}
+function fmtCount(n) {
+  const v = Number(n);
+  return (Number.isFinite(v) ? v : 0).toLocaleString('en-US');
+}
+
+/** Build a Layer-3 record node from an ordered [key, value] list (all XSS-safe). */
+function recordFields(doc, rows) {
+  const wrap = el(doc, 'div', 'glance-record-fields');
+  for (const [k, v] of rows) {
+    if (v == null || v === '') continue;
+    const row = el(doc, 'div', 'glance-record-row');
+    row.appendChild(el(doc, 'span', 'glance-record-key', String(k)));
+    row.appendChild(el(doc, 'span', 'glance-record-val', String(v)));
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+/**
+ * Shared tile→list→record wiring: map buildX's { rows, ... } tiles into glance
+ * tiles whose onActivate renders each row as a plain Layer-2 line that opens a
+ * Layer-3 record. `rowText(item)` → the plain summary; `recordNode(doc, item)` →
+ * the full record. Mirrors commitmentsGlanceSpec/blockersGlanceSpec exactly.
+ */
+function wireTiles(doc, baseTiles, rowText, recordNode) {
+  return baseTiles.map((t) => ({
+    key: t.key,
+    label: t.label,
+    value: t.value,
+    tone: t.tone,
+    onActivate: ({ doc: d, drilldown, openRecord }) => {
+      const rows = t.rows || [];
+      if (rows.length === 0) return; // component renders the honest F6 empty-state
+      const list = el(d, 'div', 'glance-list');
+      for (const item of rows) {
+        const row = d.createElement('button');
+        row.type = 'button';
+        row.className = 'glance-list-row';
+        row.setAttribute('aria-label', 'Open the full record');
+        row.appendChild(el(d, 'span', 'glance-list-summary', rowText(item)));
+        row.addEventListener('click', () => openRecord(recordNode(d, item)));
+        list.appendChild(row);
+      }
+      drilldown.appendChild(list);
+    },
+  }));
+}
+
+// ── Machines glance (F10/F11) + issue #1429 nickname edit ────────────────────
+// The old front page showed a per-machine insider "guards" line ("67 on (16
+// confirmed) · ⚠ 6 off that should be on… as of 3m ago"). On the floor: a plain
+// headline over Online / Attention needed / Dispatcher / Safety-checks tiles. The
+// named safety checks (from GET /guards) drill down with a one-line plain-English
+// explanation each (Layer 2), full posture at Layer 3. Machine NICKNAMES are
+// user-authored, so they NEVER appear at Layer 1 — they live at Layer 2/3, shown
+// through the sanitizer. #1429: the editable nickname lives in the Layer-2 machine
+// row and commits only on Enter/blur; the drill holds it across the 15s poll (F9).
+
+function guardPostureProblems(p) {
+  if (!p) return 0;
+  return (p.offDeviant || 0) + (p.offRuntimeDivergent || 0) + (p.onStale || 0)
+    + (p.missing || 0) + (p.errored || 0) + (p.divergedPendingRestart || 0);
+}
+function machineNeedsAttention(m) {
+  if (!m) return false;
+  return !m.online
+    || m.clockSkewStatus === 'suspect-clock-removed'
+    || guardPostureProblems(m.guardPosture) > 0;
+}
+
+/** The single population: the machines GET /pool returns. */
+export function machinesPopulation(pool) {
+  const machines = pool && Array.isArray(pool.machines) ? pool.machines : [];
+  return machines.filter((m) => m && typeof m.machineId === 'string');
+}
+
+export function buildMachinesGlance(pool, guards = null) {
+  const machines = machinesPopulation(pool);
+  const online = machines.filter((m) => m.online);
+  const attention = machines.filter(machineNeedsAttention);
+  const holder = pool && pool.router && pool.router.holder;
+  const dispatcher = holder ? machines.find((m) => m.machineId === holder) : null;
+
+  let headline;
+  if (machines.length === 0) {
+    headline = 'No machines are paired yet.';
+  } else if (online.length === machines.length && attention.length === 0) {
+    headline = machines.length === 1 ? 'This machine is online and healthy.'
+      : machines.length === 2 ? 'Both machines are online and healthy.'
+      : `All ${machines.length} machines are online and healthy.`;
+  } else {
+    const lookClause = attention.length === 1 ? '1 needs a look' : `${attention.length} need a look`;
+    headline = `${online.length} of ${machines.length} machines online; ${lookClause}.`;
+  }
+
+  const tiles = [
+    { key: 'online', label: 'Online', value: String(online.length), tone: online.length === machines.length ? 'neutral' : 'warn', rows: online },
+    { key: 'attention', label: 'Attention needed', value: String(attention.length), tone: attention.length ? 'warn' : 'neutral', rows: attention },
+    { key: 'dispatcher', label: 'Dispatcher', value: dispatcher ? 'Assigned' : 'None', tone: 'muted', rows: dispatcher ? [dispatcher] : [] },
+  ];
+
+  // The named safety checks come from the LOCAL /guards view (the only place guard
+  // NAMES exist without the rate-limited pool-scoped call). Omit the tile when the
+  // guards view is unavailable rather than invent an empty one.
+  const guardRows = guards && Array.isArray(guards.guards) ? guards.guards : null;
+  if (guardRows) {
+    const problems = guards.summary ? (
+      (guards.summary.offDeviant || 0) + (guards.summary.offRuntimeDivergent || 0)
+      + (guards.summary.onStale || 0) + (guards.summary.missing || 0)
+      + (guards.summary.errored || 0) + (guards.summary.divergedPendingRestart || 0)
+    ) : 0;
+    tiles.push({ key: 'guards', label: 'Safety checks', value: String(guardRows.length), tone: problems ? 'warn' : 'neutral', rows: guardRows });
+  }
+
+  return { headline, tiles, population: machines };
+}
+
+const MACHINE_STATUS_WORD = {
+  offline: 'Offline',
+  'suspect-clock-removed': 'Clock out of sync — paused for new conversations',
+};
+function machineStatusWord(m) {
+  if (!m.online) return 'Offline';
+  if (m.clockSkewStatus === 'suspect-clock-removed') return MACHINE_STATUS_WORD['suspect-clock-removed'];
+  if (machineNeedsAttention(m)) return 'Online — needs a look';
+  return 'Online and healthy';
+}
+function machineSpecLine(hw) {
+  if (!hw) return 'specs not reported yet';
+  const chip = (hw.cpuModel && hw.cpuModel !== 'unknown') ? hw.cpuModel
+    : ((hw.platform || '') + (hw.arch ? ' ' + hw.arch : '')).trim();
+  const cores = hw.cpuCores ? hw.cpuCores + ' cores' : '';
+  const ram = hw.totalMemBytes ? Math.round(hw.totalMemBytes / 1073741824) + ' GB' : '';
+  return [chip, cores, ram].filter(Boolean).join(' · ') || 'specs not reported yet';
+}
+
+/** Plain one-line explanation of a guard's effective state — no per-key dictionary. */
+const GUARD_EFFECTIVE_WORD = {
+  'on-confirmed': 'On and verified working',
+  'on-unverified': 'On (not yet verified this run)',
+  'on-stale': 'On, but its last check is stale — worth a look',
+  'on-dry-run': 'On in practice-only mode (not acting for real yet)',
+  'off-runtime-divergent': 'Off even though the settings say on — needs a look',
+  'diverged-pending-restart': 'Changed; waiting for a restart to take effect',
+  'errored': 'Hit an error — needs a look',
+  'missing': 'Expected but not found — needs a look',
+};
+function guardExplanation(g) {
+  if (g.effective === 'off') {
+    return g.offClass === 'diverged-from-default'
+      ? 'Off, though the default is on — worth a look'
+      : 'Off by default — intentionally quiet';
+  }
+  return GUARD_EFFECTIVE_WORD[g.effective] || String(g.effective || 'unknown');
+}
+function guardNeedsLook(g) {
+  return ['on-stale', 'off-runtime-divergent', 'diverged-pending-restart', 'errored', 'missing'].includes(g.effective)
+    || (g.effective === 'off' && g.offClass === 'diverged-from-default');
+}
+
+export function machineRowText(m) {
+  const nick = sanitizeForDisplay(m.nickname || m.machineId || 'A machine', 'label');
+  return `${nick} — ${machineStatusWord(m)}`;
+}
+
+/** Layer-3 machine record — specs, sessions, and this machine's guard posture in
+ *  plain words. The raw counts that used to sit on the front page live here. */
+export function machineRecordNode(doc, m, opts = {}) {
+  const online = !!m.online;
+  const sessions = (m.activeSessionCount != null)
+    ? `${m.activeSessionCount}${m.maxSessions ? ' / ' + m.maxSessions : ''} conversation${m.activeSessionCount === 1 ? '' : 's'}`
+    : '—';
+  const rows = [
+    ['Name', m.nickname || m.machineId || '—'],
+    ['Status', machineStatusWord(m)],
+    ['Specs', machineSpecLine(m.hardware)],
+    ['Conversations', online ? sessions : '—'],
+  ];
+  const p = m.guardPosture;
+  if (p) {
+    const on = (p.onConfirmed || 0) + (p.onUnverified || 0) + (p.onDryRun || 0);
+    rows.push(['Safety checks on', String(on)]);
+    const problems = guardPostureProblems(p);
+    if (problems > 0) rows.push(['Safety checks needing a look', String(problems)]);
+  } else {
+    rows.push(['Safety checks', 'not reported yet']);
+  }
+  const wrap = recordFields(doc, rows);
+  // #1429: the editable nickname commits ONLY on Enter/blur, with optimistic local
+  // echo; the poll stays authority for external renames. The drill holds it (F9).
+  if (typeof opts.onRename === 'function' && m.machineId) {
+    const editRow = el(doc, 'div', 'glance-record-row');
+    editRow.appendChild(el(doc, 'span', 'glance-record-key', 'Rename'));
+    const input = doc.createElement('input');
+    input.type = 'text';
+    input.className = 'glance-record-input machine-nick';
+    input.value = m.nickname || m.machineId;
+    input.setAttribute('data-mid', m.machineId);
+    input.setAttribute('aria-label', 'Machine nickname — press Enter or click away to save');
+    let last = input.value;
+    const commit = () => {
+      const next = input.value.trim();
+      if (next === '' || next === last) { input.value = last; return; }
+      const prev = last;
+      last = next; // optimistic local echo — keep the typed value
+      // prev lets the caller revert this optimistic echo if the save fails.
+      opts.onRename(m.machineId, next, input, prev);
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+    input.addEventListener('blur', commit);
+    editRow.appendChild(input);
+    wrap.appendChild(editRow);
+  }
+  return wrap;
+}
+
+export function guardRowText(g) {
+  return `${humanizeToken(g.key)} — ${guardExplanation(g)}`;
+}
+export function guardRecordNode(doc, g) {
+  const rt = g.runtime;
+  const rows = [
+    ['Check', humanizeToken(g.key)],
+    ['In plain words', guardExplanation(g)],
+    ['Turned on in settings', g.configEnabled == null ? 'not set' : (g.configEnabled ? 'yes' : 'no')],
+    ['On by default', g.defaultEnabled == null ? '—' : (g.defaultEnabled ? 'yes' : 'no')],
+    ['Runs in', g.process === 'lifeline' ? 'the always-on lifeline' : 'the main server'],
+  ];
+  if (g.loadBearing) rows.push(['Load-bearing', 'yes — a safety-critical check']);
+  if (rt && typeof rt === 'object') {
+    if (rt.dryRun) rows.push(['Mode', 'practice-only (not acting for real yet)']);
+    if (typeof rt.jobCount === 'number') rows.push(['Watched items', String(rt.jobCount)]);
+  }
+  if (g.error) rows.push(['Error', g.error]);
+  return recordFields(doc, rows);
+}
+
+/**
+ * Build the Machines glance spec with drill wiring. `guards` is the LOCAL /guards
+ * view ({ guards, summary }) or null. `opts.onRename(machineId, nickname, input)`
+ * wires the #1429 nickname edit onto each machine's Layer-3 record.
+ */
+export function machinesGlanceSpec(doc, pool, guards = null, opts = {}) {
+  const base = buildMachinesGlance(pool, guards);
+  const tiles = base.tiles.map((t) => {
+    if (t.key === 'guards') {
+      return {
+        key: t.key, label: t.label, value: t.value, tone: t.tone,
+        onActivate: ({ doc: d, drilldown, openRecord }) => {
+          const rows = (t.rows || []).slice().sort((a, b) => (guardNeedsLook(b) ? 1 : 0) - (guardNeedsLook(a) ? 1 : 0));
+          if (rows.length === 0) return;
+          const list = el(d, 'div', 'glance-list');
+          for (const g of rows) {
+            const row = d.createElement('button');
+            row.type = 'button';
+            row.className = 'glance-list-row';
+            if (guardNeedsLook(g)) row.setAttribute('data-tone', 'warn');
+            row.setAttribute('aria-label', 'Open the full record');
+            row.appendChild(el(d, 'span', 'glance-list-summary', guardRowText(g)));
+            row.addEventListener('click', () => openRecord(guardRecordNode(d, g)));
+            list.appendChild(row);
+          }
+          drilldown.appendChild(list);
+        },
+      };
+    }
+    return {
+      key: t.key, label: t.label, value: t.value, tone: t.tone,
+      onActivate: ({ doc: d, drilldown, openRecord }) => {
+        const rows = t.rows || [];
+        if (rows.length === 0) return;
+        const list = el(d, 'div', 'glance-list');
+        for (const m of rows) {
+          const row = d.createElement('button');
+          row.type = 'button';
+          row.className = 'glance-list-row';
+          if (machineNeedsAttention(m)) row.setAttribute('data-tone', 'warn');
+          row.setAttribute('aria-label', 'Open the full record');
+          row.appendChild(el(d, 'span', 'glance-list-summary', machineRowText(m)));
+          row.addEventListener('click', () => openRecord(machineRecordNode(d, m, { onRename: opts.onRename })));
+          list.appendChild(row);
+        }
+        drilldown.appendChild(list);
+      },
+    };
+  });
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Health glance (F10/F11) ──────────────────────────────────────────────────
+// The old front page dumped ~390 words of subsystem prose. On the floor: a plain
+// headline ("All systems are operational." / "N subsystems need attention.") over
+// Subsystems / Need attention / Recent events tiles. Each subsystem's full prose
+// description, processes, and metrics move to its Layer-3 record — nothing lost.
+
+/** The single population: the subsystems GET /systems/status reports as active. */
+export function healthPopulation(systems) {
+  const caps = systems && Array.isArray(systems.activeCapabilities) ? systems.activeCapabilities : [];
+  return caps.filter((c) => c && typeof c.id === 'string');
+}
+
+export function buildHealthGlance(systems) {
+  const caps = healthPopulation(systems);
+  const errored = caps.filter((c) => c.status === 'error');
+  const events = systems && Array.isArray(systems.recentEvents) ? systems.recentEvents : [];
+  const healthy = (systems && systems.health === 'healthy') && errored.length === 0;
+
+  let headline;
+  if (caps.length === 0) {
+    headline = 'No subsystems are reporting yet.';
+  } else if (healthy) {
+    headline = 'All systems are operational.';
+  } else {
+    headline = errored.length === 1
+      ? '1 subsystem needs attention.'
+      : `${errored.length} subsystems need attention.`;
+  }
+
+  const tiles = [
+    { key: 'subsystems', label: 'Subsystems', value: String(caps.length), tone: 'neutral', rows: caps },
+    { key: 'attention', label: 'Need attention', value: String(errored.length), tone: errored.length ? 'warn' : 'neutral', rows: errored },
+    { key: 'events', label: 'Recent events', value: String(events.length), tone: 'muted', rows: events },
+  ];
+
+  return { headline, tiles, population: caps };
+}
+
+const CAP_STAT_LABEL = {
+  recoveries: 'Recovered', interventions: 'Auto-fixed', activeCases: 'Active',
+  coherencePassed: 'Checks OK', coherenceFailed: 'Issues', memoryPercent: 'Memory %',
+  enabledJobs: 'Jobs', activeJobSessions: 'Running', queueLength: 'Queued',
+  weeklyUsage: 'Weekly %', fiveHourRate: '5h rate %', topicMappings: 'Topics',
+  totalMessages: 'Messages', proposals: 'Proposals', gaps: 'Gaps', learningsApplied: 'Applied',
+};
+
+export function healthCapRowText(c) {
+  const word = c.status === 'error' ? 'needs attention' : 'working';
+  return `${sanitizeForDisplay(c.label || c.id || 'A subsystem', 'label')} — ${word}`;
+}
+export function healthCapRecordNode(doc, c) {
+  const rows = [
+    ['Subsystem', c.label || c.id || '—'],
+    ['Status', c.status === 'error' ? 'Needs attention' : 'Working'],
+    ['What it does', c.description || '—'],
+    ['Right now', c.metric || '—'],
+  ];
+  for (const p of (c.processes || [])) {
+    rows.push([p.name, p.status === 'running' ? 'Running' : 'Error']);
+  }
+  for (const [key, label] of Object.entries(CAP_STAT_LABEL)) {
+    const v = c.stats ? c.stats[key] : undefined;
+    if (v != null && v !== 0 && v !== false) rows.push([label, String(v)]);
+  }
+  return recordFields(doc, rows);
+}
+export function healthEventRowText(e) {
+  return sanitizeForDisplay(e.narrative || e.subsystem || 'An event', 'summary');
+}
+export function healthEventRecordNode(doc, e) {
+  const when = e.timestamp ? defaultFmtTs(e.timestamp) : '—';
+  return recordFields(doc, [
+    ['What happened', e.narrative || '—'],
+    ['Part', e.subsystem || '—'],
+    ['When', when],
+  ]);
+}
+
+export function healthGlanceSpec(doc, systems) {
+  const base = buildHealthGlance(systems);
+  const tiles = base.tiles.map((t) => {
+    const rowText = t.key === 'events' ? healthEventRowText : healthCapRowText;
+    const recordNode = t.key === 'events' ? healthEventRecordNode : healthCapRecordNode;
+    return {
+      key: t.key, label: t.label, value: t.value, tone: t.tone,
+      onActivate: ({ doc: d, drilldown, openRecord }) => {
+        const rows = t.rows || [];
+        if (rows.length === 0) return;
+        const list = el(d, 'div', 'glance-list');
+        for (const item of rows) {
+          const row = d.createElement('button');
+          row.type = 'button';
+          row.className = 'glance-list-row';
+          if (t.key !== 'events' && item.status === 'error') row.setAttribute('data-tone', 'warn');
+          row.setAttribute('aria-label', 'Open the full record');
+          row.appendChild(el(d, 'span', 'glance-list-summary', rowText(item)));
+          row.addEventListener('click', () => openRecord(recordNode(d, item)));
+          list.appendChild(row);
+        }
+        drilldown.appendChild(list);
+      },
+    };
+  });
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Spend glance (F10/F11) ───────────────────────────────────────────────────
+// The old front page leaned on "paid door / metered / reflows". On the floor: a
+// plain headline ("Nothing is being billed per-call right now.") over Estimated
+// cost / Text processed / Pay-per-use access tiles. "Metered / paid door" reads as
+// "pay-per-use"; the price-reflow detail and per-model math move to Layer 3.
+
+export function buildSpendGlance(summary, caps = null) {
+  const totals = (summary && summary.totals) || {};
+  const rows = (summary && Array.isArray(summary.rows)) ? summary.rows : [];
+  const keys = (caps && Array.isArray(caps.keys)) ? caps.keys : [];
+  const meteredLiveYet = !!(summary && summary.meteredLiveYet) || !!(caps && caps.meteredLiveYet);
+
+  const netUsd = Number(totals.netUsd) || 0;
+  const headline = meteredLiveYet
+    ? `About ${fmtUsd(netUsd)} of pay-per-use AI so far.`
+    : 'Nothing is being billed per-call right now.';
+
+  const tokensTotal = (Number(totals.tokensIn) || 0) + (Number(totals.tokensOut) || 0);
+  const tiles = [
+    { key: 'cost', label: 'Estimated cost', value: fmtUsd(netUsd), tone: 'neutral', rows, mode: 'cost' },
+    { key: 'usage', label: 'Text processed', value: fmtCount(tokensTotal), tone: 'muted', rows, mode: 'usage' },
+    { key: 'access', label: 'Pay-per-use access', value: String(keys.length), tone: 'muted', rows: keys, mode: 'access' },
+  ];
+
+  return { headline, tiles, population: rows };
+}
+
+function plainPriceBasis(r) {
+  if (r.priceBasis === 'subscription-zero') return 'Subscription — not billed per use';
+  if (r.priceBasis === 'no-matching-point') return 'No price on file yet';
+  return String(r.priceBasis || '—') + (r.priceStale ? ' (out of date)' : '');
+}
+function plainGoLive(state) {
+  if (state === 'live') return 'Live';
+  if (state === 'disarmed') return 'Turned off';
+  return 'Not switched on yet';
+}
+
+export function spendRowCostText(r) {
+  return `${modelPhrase(r)} — ${fmtUsd(Number(r.netUsd) || 0)}`;
+}
+export function spendRowUsageText(r) {
+  const total = (Number(r.tokensIn) || 0) + (Number(r.tokensOut) || 0);
+  return `${modelPhrase(r)} — ${fmtCount(total)} pieces of text`;
+}
+export function spendKeyRowText(k) {
+  return `${humanizeToken(k.provider || k.door || 'A provider')} — pay-per-use · ${plainGoLive(k.goLiveState)}`;
+}
+export function spendRowRecordNode(doc, r) {
+  return recordFields(doc, [
+    ['Model', friendlyModel(r.modelId) || r.modelId || '—'],
+    ['How it is reached', humanizeToken(r.door)],
+    ['Access type', doorClassWord(r.doorClass)],
+    ['Text in', fmtCount(r.tokensIn)],
+    ['Text out', fmtCount(r.tokensOut)],
+    ['Gross cost', fmtUsd(r.grossUsd, 4)],
+    ['Net cost', fmtUsd(r.netUsd, 4)],
+    ['How it is priced', plainPriceBasis(r)],
+  ]);
+}
+export function spendKeyRecordNode(doc, k) {
+  return recordFields(doc, [
+    ['Provider', k.provider || '—'],
+    ['How it is reached', humanizeToken(k.door)],
+    ['Daily limit', fmtUsd(k.dailyCapUsd)],
+    ['Lifetime limit', fmtUsd(k.lifetimeCapUsd)],
+    ['Used today', fmtUsd(k.committedDayUsd)],
+    ['Used in total', fmtUsd(k.committedLifetimeUsd)],
+    ['Status', plainGoLive(k.goLiveState) + (k.frozen ? ' · paused' : '')],
+  ]);
+}
+
+export function spendGlanceSpec(doc, summary, caps = null) {
+  const base = buildSpendGlance(summary, caps);
+  const tiles = base.tiles.map((t) => ({
+    key: t.key, label: t.label, value: t.value, tone: t.tone,
+    onActivate: ({ doc: d, drilldown, openRecord }) => {
+      const rows = t.rows || [];
+      if (rows.length === 0) return;
+      const list = el(d, 'div', 'glance-list');
+      for (const item of rows) {
+        const row = d.createElement('button');
+        row.type = 'button';
+        row.className = 'glance-list-row';
+        row.setAttribute('aria-label', 'Open the full record');
+        const text = t.mode === 'access' ? spendKeyRowText(item)
+          : t.mode === 'usage' ? spendRowUsageText(item)
+          : spendRowCostText(item);
+        row.appendChild(el(d, 'span', 'glance-list-summary', text));
+        const recNode = t.mode === 'access' ? spendKeyRecordNode(d, item) : spendRowRecordNode(d, item);
+        row.addEventListener('click', () => openRecord(recNode));
+        list.appendChild(row);
+      }
+      drilldown.appendChild(list);
+    },
+  }));
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Routing Map glance (F10/F11) ─────────────────────────────────────────────
+// The old front page used "lane / nature / door". On the floor: a plain headline
+// ("Background AI work runs on X, with Y as backup.") over one tile per lane
+// (plain-named) + a Job-types tile. Each lane drills into its ordered fallback
+// list of plain model names (Layer 2); each opens the full door/model config
+// (Layer 3). The insider door flags live at Layer 3, not the front page.
+
+const CHAIN_ORDER = ['FAST', 'SORT', 'JUDGE', 'WRITE'];
+const CHAIN_LABEL = { FAST: 'Quick tasks', SORT: 'Sorting', JUDGE: 'Judging', WRITE: 'Writing' };
+
+/** The primary lane's first two positions drive the headline (X + backup Y). */
+function primaryLane(map) {
+  const chains = map && Array.isArray(map.chains) ? map.chains : [];
+  return chains.find((c) => c.chain === 'FAST') || chains[0] || null;
+}
+
+export function buildRoutingMapGlance(map) {
+  const chains = map && Array.isArray(map.chains) ? map.chains : [];
+  const components = map && Array.isArray(map.components) ? map.components : [];
+
+  const lead = primaryLane(map);
+  const positions = (lead && Array.isArray(lead.positions)) ? lead.positions : [];
+  let headline;
+  if (chains.length === 0) {
+    headline = 'No background AI routing is set up yet.';
+  } else {
+    const x = modelPhrase(positions[0]) || 'the built-in model';
+    const y = modelPhrase(positions[1]);
+    headline = y
+      ? `Background AI work runs on ${x}, with ${y} as backup.`
+      : `Background AI work runs on ${x}.`;
+  }
+
+  const tiles = [];
+  const ordered = chains.slice().sort((a, b) => CHAIN_ORDER.indexOf(a.chain) - CHAIN_ORDER.indexOf(b.chain));
+  for (const c of ordered) {
+    if (tiles.length >= GLANCE_MAX_TILES - 1) break; // leave room for the Job-types tile
+    const pos = Array.isArray(c.positions) ? c.positions : [];
+    tiles.push({
+      key: 'lane-' + String(c.chain || '').toLowerCase(),
+      label: CHAIN_LABEL[c.chain] || humanizeToken(c.chain),
+      value: String(pos.length),
+      tone: 'neutral',
+      rows: pos,
+      mode: 'lane',
+    });
+  }
+  tiles.push({ key: 'jobs', label: 'Job types', value: String(components.length), tone: 'muted', rows: components, mode: 'jobs' });
+
+  return { headline, tiles, population: components };
+}
+
+export function laneRowText(p, i) {
+  const rank = typeof i === 'number' ? `${i + 1}. ` : '';
+  return `${rank}${modelPhrase(p)}${p.doorClass === 'metered' ? ' (pay-per-use)' : ''}`;
+}
+export function laneRecordNode(doc, p) {
+  return recordFields(doc, [
+    ['Model', friendlyModel(p.modelId) || p.modelId || '—'],
+    ['How it is reached', humanizeToken(p.door)],
+    ['Access type', doorClassWord(p.doorClass)],
+    ['Safe for untrusted input', p.injectionSafe ? 'yes' : 'no'],
+    ['Pay-per-use', p.moneyGated ? 'yes' : 'no'],
+    ['Skipped for now', p.skippedInIncrementA ? 'yes' : 'no'],
+  ]);
+}
+export function jobRowText(c) {
+  const lane = CHAIN_LABEL[c.chain] || 'default routing';
+  return `${humanizeToken(c.component)} — ${lane}`;
+}
+export function jobRecordNode(doc, c) {
+  const exposure = c.injectionExposure
+    ? (c.injectionExposure.exposed ? 'yes' : 'no')
+    : (c.untrustedInput === true ? 'yes' : c.untrustedInput === false ? 'no' : '—');
+  return recordFields(doc, [
+    ['Job kind', humanizeToken(c.component)],
+    ['Type', humanizeToken(c.category)],
+    ['Lane', CHAIN_LABEL[c.chain] || 'default routing'],
+    ['Safety-critical', c.criticalGate ? 'yes' : 'no'],
+    ['Can see untrusted input', exposure],
+  ]);
+}
+
+export function routingMapGlanceSpec(doc, map) {
+  const base = buildRoutingMapGlance(map);
+  const tiles = base.tiles.map((t) => ({
+    key: t.key, label: t.label, value: t.value, tone: t.tone,
+    onActivate: ({ doc: d, drilldown, openRecord }) => {
+      const rows = t.rows || [];
+      if (rows.length === 0) return;
+      const list = el(d, 'div', 'glance-list');
+      rows.forEach((item, i) => {
+        const row = d.createElement('button');
+        row.type = 'button';
+        row.className = 'glance-list-row';
+        row.setAttribute('aria-label', 'Open the full record');
+        const text = t.mode === 'jobs' ? jobRowText(item) : laneRowText(item, i);
+        row.appendChild(el(d, 'span', 'glance-list-summary', text));
+        const recNode = t.mode === 'jobs' ? jobRecordNode(d, item) : laneRecordNode(d, item);
+        row.addEventListener('click', () => openRecord(recNode));
+        list.appendChild(row);
+      });
       drilldown.appendChild(list);
     },
   }));

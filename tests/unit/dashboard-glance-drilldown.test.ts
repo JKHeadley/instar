@@ -26,6 +26,10 @@ import {
   buildCommitmentsGlance,
   blockersGlanceSpec,
   buildBlockersGlance,
+  machinesGlanceSpec,
+  healthGlanceSpec,
+  spendGlanceSpec,
+  routingMapGlanceSpec,
 } from '../../dashboard/glance.js';
 
 let dom: JSDOM;
@@ -310,5 +314,220 @@ describe('F11 walk-every-tile — the Blockers glance (Phase 2)', () => {
     const rowText = handle.drilldown.querySelector('.glance-list-summary')!.textContent || '';
     expect(rowText).toContain('onerror');
     expect(rowText).not.toContain('‮');
+  });
+});
+
+// ── Phase 3 (topic 29836) — the jargon-belt tabs walked end-to-end ────────────
+// Each new glance-adopted tab walks every tile: it opens a non-empty, distinct
+// Layer-2 container (or an honest empty-state for a zero-count tile), and a
+// representative row opens a Layer-3 record. Non-vacuous: ≥1 tile drills into real
+// receipts. Mirrors the Commitments/Blockers walks so the F11 floor is proven for
+// every Phase-3 tab, not just asserted.
+
+/** Walk every tile; return the count that opened real receipts (a `.glance-list-row`). */
+function walkTiles(handle: any): number {
+  const glanceText = (handle.headline.textContent + ' ' + handle.tiles.map((b: any) => b.textContent).join(' ')).trim();
+  let realDrills = 0;
+  for (const btn of handle.tiles) {
+    const key = btn.getAttribute('data-glance-tile');
+    const { opened, text } = activate(handle, key);
+    expect(opened, `tile "${key}" opened a detail layer`).toBe(true);
+    expect(text.length, `tile "${key}" layer is non-empty`).toBeGreaterThan(0);
+    expect(text, `tile "${key}" is distinct from the glance`).not.toBe(glanceText);
+    if (!/nothing here right now/i.test(text)) {
+      realDrills++;
+      expect(handle.drilldown.querySelector('.glance-list-row'), `tile "${key}" shows receipts`).toBeTruthy();
+    }
+    activate(handle, key); // toggle closed
+  }
+  return realDrills;
+}
+
+describe('F11 walk-every-tile — the Machines glance (Phase 3) + issue #1429', () => {
+  const mkMachine = (over: Record<string, unknown> = {}) => ({
+    machineId: 'm_1', nickname: 'Laptop', online: true, clockSkewStatus: 'ok',
+    activeSessionCount: 2, maxSessions: 6,
+    hardware: { cpuModel: 'Apple M2', cpuCores: 8, totalMemBytes: 17179869184 },
+    guardPosture: { onConfirmed: 16, offDeviant: 6 }, ...over,
+  });
+  const guards = { guards: [
+    { key: 'zombieCleanup', effective: 'on-confirmed', configEnabled: true, defaultEnabled: true, process: 'server' },
+    { key: 'sleepWakeDetector', effective: 'off-runtime-divergent', configEnabled: true, defaultEnabled: true, process: 'lifeline' },
+  ], summary: { onConfirmed: 1, offRuntimeDivergent: 1 } };
+  const pool = { enabled: true, router: { holder: 'm_1' }, machines: [
+    mkMachine(), mkMachine({ machineId: 'm_2', nickname: 'Mini', online: false }),
+  ] };
+
+  it('every tile opens a non-empty, distinct Layer-2 (non-vacuous), rows → records', () => {
+    const handle = renderGlance(doc, root, machinesGlanceSpec(doc, pool, guards, {}));
+    expect(handle.headline.textContent).toMatch(/1 of 2 machines online/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    // tile → row → Layer-3 record (specs live at Layer 3)
+    activate(handle, 'online');
+    const row = handle.drilldown.querySelector('.glance-list-row')!;
+    row.dispatchEvent(new dom.window.Event('click'));
+    const record = handle.drilldown.querySelector('[data-glance-record]');
+    expect(record, 'a machine record opened').toBeTruthy();
+    expect(record!.textContent).toMatch(/Specs|Status/);
+  });
+
+  it('the Safety-checks tile drills into the NAMED guards with plain explanations', () => {
+    const handle = renderGlance(doc, root, machinesGlanceSpec(doc, pool, guards, {}));
+    const { opened, text } = activate(handle, 'guards');
+    expect(opened).toBe(true);
+    expect(text).toMatch(/Zombie cleanup|Sleep wake detector/i); // humanized key, no camelCase
+    expect(text).toMatch(/verified working|needs a look/i); // plain one-line explanation
+    const row = handle.drilldown.querySelector('.glance-list-row')!;
+    row.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/In plain words/);
+  });
+
+  it('#1429: the nickname edits commit ONLY on Enter/blur, with optimistic echo', () => {
+    let saved: any = null;
+    const handle = renderGlance(doc, root, machinesGlanceSpec(doc, pool, guards, {
+      onRename: (id: string, nickname: string, input: any, prev: string) => { saved = { id, nickname, prev }; },
+    }));
+    activate(handle, 'online');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    const input = handle.drilldown.querySelector('input.machine-nick') as HTMLInputElement;
+    expect(input, 'the machine record carries an editable nickname').toBeTruthy();
+    // Typing alone must NOT commit (the #1429 defect was commit-on-input).
+    input.value = 'Laptop-EDIT';
+    input.dispatchEvent(new dom.window.Event('input'));
+    expect(saved, 'typing an input event must not commit').toBeNull();
+    // Blur commits exactly once, with the prior value available for rollback.
+    input.dispatchEvent(new dom.window.Event('blur'));
+    expect(saved).toEqual({ id: 'm_1', nickname: 'Laptop-EDIT', prev: 'Laptop' });
+    // Optimistic echo: the input keeps the typed value (poll authority reloads later).
+    expect(input.value).toBe('Laptop-EDIT');
+  });
+
+  it('#1429: a background poll HOLDS an open rename drill (F9) instead of clobbering it', () => {
+    const handle = renderGlance(doc, root, machinesGlanceSpec(doc, pool, guards, { onRename: () => {} }));
+    activate(handle, 'online');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    const input = handle.drilldown.querySelector('input.machine-nick') as HTMLInputElement;
+    input.value = 'half-typed name'; // a dirty field mid-edit
+    // A 15s poll re-render arrives with fresh data.
+    const held = renderGlance(doc, root, machinesGlanceSpec(doc, pool, guards, { onRename: () => {} }));
+    expect(held.held, 'the re-render was held, not a rebuild').toBe(true);
+    // the half-typed value survived untouched
+    expect((root.querySelector('input.machine-nick') as HTMLInputElement).value).toBe('half-typed name');
+  });
+
+  it('a machine nickname with an XSS payload renders inert at Layer 2', () => {
+    const nasty = '<img src=x onerror=alert(1)> "><script>bad()</script> ‮evil';
+    const handle = renderGlance(doc, root, machinesGlanceSpec(doc, { enabled: true, machines: [
+      { machineId: 'm_9', nickname: nasty, online: true, clockSkewStatus: 'ok' },
+    ] }, null, {}));
+    activate(handle, 'online');
+    expect(handle.drilldown.querySelector('img')).toBeNull();
+    expect(handle.drilldown.querySelector('script')).toBeNull();
+    const rowText = handle.drilldown.querySelector('.glance-list-summary')!.textContent || '';
+    expect(rowText).toContain('onerror');
+    expect(rowText).not.toContain('‮');
+  });
+});
+
+describe('F11 walk-every-tile — the Health glance (Phase 3)', () => {
+  const systems = {
+    health: 'error', uptime: 123456,
+    activeCapabilities: [
+      { id: 'session-recovery', label: 'Session Recovery', description: 'Detects stuck sessions and recovers them.',
+        status: 'active', metric: '12 recovered', stats: { recoveries: 12 }, processes: [{ name: 'SessionWatchdog', status: 'running' }] },
+      { id: 'telegram', label: 'Telegram', description: 'Telegram messaging integration.',
+        status: 'error', metric: 'disconnected', stats: {}, processes: [{ name: 'TelegramAdapter', status: 'error' }] },
+    ],
+    issues: [{ severity: 'error', label: 'Telegram issue', description: 'TelegramAdapter errored', capability: 'telegram', process: 'TelegramAdapter' }],
+    recentEvents: [{ narrative: 'Telegram reconnected after a blip', subsystem: 'telegram', timestamp: '2026-07-10T00:00:00Z' }],
+  };
+
+  it('every tile opens a non-empty, distinct Layer-2 (non-vacuous), rows → records', () => {
+    const handle = renderGlance(doc, root, healthGlanceSpec(doc, systems));
+    expect(handle.headline.textContent).toMatch(/1 subsystem needs attention/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    // Subsystems tile → a subsystem row → a record with the full (formerly 390-word) prose
+    activate(handle, 'subsystems');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    const record = handle.drilldown.querySelector('[data-glance-record]');
+    expect(record!.textContent).toMatch(/What it does/);
+  });
+
+  it('a healthy agent reads "All systems are operational."', () => {
+    const handle = renderGlance(doc, root, healthGlanceSpec(doc, { health: 'healthy', activeCapabilities: [
+      { id: 'x', label: 'X', description: 'y', status: 'active', metric: 'ok', stats: {}, processes: [] },
+    ], issues: [], recentEvents: [] }));
+    expect(handle.headline.textContent).toBe('All systems are operational.');
+    // The "Need attention" tile is zero → honest empty-state, still clickable.
+    const { opened, text } = activate(handle, 'attention');
+    expect(opened).toBe(true);
+    expect(text.toLowerCase()).toContain('nothing here');
+  });
+});
+
+describe('F11 walk-every-tile — the Spend glance (Phase 3)', () => {
+  const summary = { totals: { netUsd: 0, tokensIn: 123456, tokensOut: 6543 }, meteredLiveYet: false,
+    rows: [{ door: 'claude-cli', modelId: 'claude-haiku-4-5-20251001', doorClass: 'cli', tokensIn: 123456, tokensOut: 6543, grossUsd: 0, netUsd: 0, priceBasis: 'subscription-zero' }] };
+  const caps = { keys: [{ keyRef: 'k1', provider: 'openai', door: 'openai-metered', dailyCapUsd: 5, lifetimeCapUsd: 50, committedDayUsd: 0, committedLifetimeUsd: 0, goLiveState: 'not-live', frozen: false }] };
+
+  it('every tile opens a non-empty, distinct Layer-2 (non-vacuous), rows → records', () => {
+    const handle = renderGlance(doc, root, spendGlanceSpec(doc, summary, caps));
+    expect(handle.headline.textContent!.toLowerCase()).toContain('nothing is being billed');
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    // Cost tile → a per-model row → a record with the plain pricing detail
+    activate(handle, 'cost');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/How it is priced|Subscription/);
+  });
+
+  it('the Pay-per-use access tile drills into the paid-door keys with plain caps', () => {
+    const handle = renderGlance(doc, root, spendGlanceSpec(doc, summary, caps));
+    const { opened, text } = activate(handle, 'access');
+    expect(opened).toBe(true);
+    expect(text.toLowerCase()).toContain('pay-per-use');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Daily limit|Not switched on/);
+  });
+
+  it('an empty spend view → zero tiles drill into honest empty-states', () => {
+    const handle = renderGlance(doc, root, spendGlanceSpec(doc, { totals: {}, rows: [], meteredLiveYet: false }, { keys: [] }));
+    const { opened, text } = activate(handle, 'access');
+    expect(opened).toBe(true);
+    expect(text.toLowerCase()).toContain('nothing here');
+  });
+});
+
+describe('F11 walk-every-tile — the Routing Map glance (Phase 3)', () => {
+  const pos = (over: Record<string, unknown> = {}) => ({
+    door: 'claude-cli', modelId: 'claude-haiku-4-5-20251001', doorClass: 'cli',
+    injectionSafe: true, moneyGated: false, claudeBanned: false, skippedInIncrementA: false, ...over,
+  });
+  const map = { defaultFramework: 'claude-code', chains: [
+    { chain: 'FAST', positions: [pos(), pos({ door: 'openai-metered', modelId: 'gpt-5.5', doorClass: 'metered', moneyGated: true, injectionSafe: false, skippedInIncrementA: true })] },
+    { chain: 'JUDGE', positions: [pos({ modelId: 'claude-sonnet-5' })] },
+  ], components: [
+    { component: 'messageSentinel', category: 'gate', nature: 'A', chain: 'FAST', criticalGate: true, untrustedInput: true, route: [pos()] },
+  ] };
+
+  it('every tile opens a non-empty, distinct Layer-2 (non-vacuous), rows → records', () => {
+    const handle = renderGlance(doc, root, routingMapGlanceSpec(doc, map));
+    expect(handle.headline.textContent).toMatch(/runs on Claude Haiku, with GPT as backup/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    // A lane tile → an ordered model row → a record with the full door/model config
+    activate(handle, 'lane-fast');
+    const rows = handle.drilldown.querySelectorAll('.glance-list-row');
+    expect(rows.length).toBe(2); // FAST has two positions (primary + backup)
+    rows[1].dispatchEvent(new dom.window.Event('click'));
+    const record = handle.drilldown.querySelector('[data-glance-record]');
+    expect(record!.textContent).toMatch(/Access type|pay-per-use/);
+  });
+
+  it('the Job-types tile drills into the components with plain lane names', () => {
+    const handle = renderGlance(doc, root, routingMapGlanceSpec(doc, map));
+    const { opened, text } = activate(handle, 'jobs');
+    expect(opened).toBe(true);
+    expect(text).toMatch(/Message sentinel/i); // humanized component, no camelCase
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Lane|Safety-critical/);
   });
 });
