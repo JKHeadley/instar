@@ -545,6 +545,8 @@ export class CartographerSweepEngine {
           env: this.workerEnv(),
         });
       } catch (err) {
+        // @silent-fallback-ok — failure is surfaced as structured startFailed;
+        // this is not a continuation with hidden degraded state.
         resolve({ ok: false, startFailed: true, error: err instanceof Error ? err.message : String(err), durationMs: this.now() - startedAt });
         return;
       }
@@ -558,10 +560,10 @@ export class CartographerSweepEngine {
         clearTimeout(timer);
         if (forceTerminateTimer) clearTimeout(forceTerminateTimer);
         if (gitChildPid != null) {
-          try { process.kill(gitChildPid, 'SIGKILL'); } catch { /* already exited */ }
+          try { process.kill(gitChildPid, 'SIGKILL'); } catch { /* @silent-fallback-ok — already exited is the desired terminal state */ }
           gitChildPid = null;
         }
-        worker.terminate().catch(() => { /* best-effort reap */ });
+        worker.terminate().catch(() => { /* @silent-fallback-ok — OS child was explicitly killed above; worker may already be gone */ });
         resolve({ ...r, durationMs: this.now() - startedAt });
       };
       const timer = setTimeout(() => {

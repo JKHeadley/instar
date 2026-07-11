@@ -22,7 +22,7 @@ type WorkerJob =
 let activeGitPid: number | null = null;
 parentPort?.on('message', (msg: { kind?: string }) => {
   if (msg.kind !== 'cancel' || activeGitPid == null) return;
-  try { process.kill(activeGitPid, 'SIGKILL'); } catch { /* already exited */ }
+  try { process.kill(activeGitPid, 'SIGKILL'); } catch { /* @silent-fallback-ok — already exited is the desired terminal state */ }
 });
 
 async function main(): Promise<void> {

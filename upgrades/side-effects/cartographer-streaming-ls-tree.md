@@ -71,6 +71,9 @@ The transport upgrade is contained to #1073 item 3 and preserves the existing au
 
 ## Evidence
 
+- CI correction: the no-silent-fallbacks heuristic initially counted four
+  intentional error-propagation/terminal-state catches. Each is now explicitly
+  annotated in place; the baseline remains 492 and the exact ratchet is green.
 - Unit: chunk-edge NUL, a Unicode record split across four chunks, real-tree parity, empty tree, output beyond a one-byte legacy setting, mid-stream SIGKILL refusal, and hung-stream timeout.
 - Funnel: read-only streaming succeeds; destructive use is rejected before spawn.
 - Dist worker: forced timeout against a fake hung Git process proves the pass refuses and the reported OS PID is no longer alive.
