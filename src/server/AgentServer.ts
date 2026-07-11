@@ -173,6 +173,7 @@ import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/Burn
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/MentorVisibleEcho.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
@@ -3501,6 +3502,8 @@ export class AgentServer {
     /** Telegram fallback bits (mentor→mentee only). */
     telegramBot?: { sendToTopic: (topicId: number, text: string) => Promise<{ messageId: number }> };
     botToken?: string;
+    /** Observability mirror only — never participates in delivery authority. */
+    visibleEcho?: MentorVisibleEchoOptions;
   }): Promise<boolean> {
     const ledger = this.getOrCreateA2aLedger();
     const id = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -3540,6 +3543,13 @@ export class AgentServer {
                 } as never);
               } catch { /* best-effort */ }
               console.log(`[a2a] delivered → ${opts.toAgent} via local /a2a/inbox (role=${opts.role}, corr=${opts.corr})`);
+              if (opts.visibleEcho) {
+                // Observability only: never delay or alter the canonical delivery
+                // return/ledger/outstanding state while Telegram is slow or down.
+                void sendMentorVisibleEcho(opts.body, opts.visibleEcho).catch((err) => {
+                  console.warn(`[mentor-echo] unexpected failure after delivery: ${err instanceof Error ? err.message : String(err)}`);
+                });
+              }
               return true;
             }
             console.warn(`[a2a] local /a2a/inbox refused (to=${opts.toAgent}, role=${opts.role}, reason=${result.reason ?? 'unknown'})`);
@@ -3963,6 +3973,23 @@ export class AgentServer {
               ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
               : undefined,
             botToken: cfg.botToken,
+            visibleEcho: {
+              enabled: cfg.visibleEcho !== false,
+              bot: telegramBot
+                ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
+                : undefined,
+              topicId: resolveMentorDeliveryTopic(cfg),
+              roleTag: '[mentor]',
+              reportFailure: (reason) => {
+                DegradationReporter.getInstance().report({
+                  feature: 'mentor.visible-echo',
+                  primary: 'successful inbox-local mentor delivery is mirrored visibly in Telegram',
+                  fallback: 'canonical /a2a/inbox delivery remains successful; operator may see a phantom prompt',
+                  reason,
+                  impact: 'mentor exchange was delivered but its visible chat mirror is partial or absent',
+                });
+              },
+            },
           });
           if (delivered) {
             self.appendMentorSent(options.config.stateDir, {

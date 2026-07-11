@@ -98,6 +98,8 @@ export interface MentorConfig {
    *  deliverA2aMessage, used both in the /a2a/inbox body and the Telegram
    *  fallback), so routing it here moves the entire exchange off the human topic. */
   mentorTopicId?: number;
+  /** Best-effort visible mirror of successful local-inbox mentor delivery. Default on. */
+  visibleEcho?: boolean;
   /**
    * Ordered onboarding backlog the mentor walks the mentee through (capability
    * checks, starter dev tasks). When set, an idle mentee gets the next concrete
@@ -136,6 +138,7 @@ export const DEFAULT_MENTOR_CONFIG: MentorConfig = {
   minIntervalMs: 600_000, // 10 min floor
   maxRoundsPerDay: 24,
   dailySpendCapUsd: 0.5,
+  visibleEcho: true,
   // botToken / menteeBotId / menteeTopicId default undefined → mentor wiring stays
   // dark until they are explicitly configured (per /mentor/bot-setup, future PR).
 };
