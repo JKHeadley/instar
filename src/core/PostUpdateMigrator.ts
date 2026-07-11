@@ -70,6 +70,7 @@ import {
   loadTestIdentityKey,
 } from '../users/testIdentityMarkers.js';
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -241,6 +242,22 @@ export function SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port: number): string {
 - **Finished records are bounded**: terminal session records auto-prune on TTLs (killed/failed 60 min; completed background jobs + headless one-shots 60 min; completed interactive 24 h; hard cap 50 retained) — tune via \`sessions.retention\` in \`.instar/config.json\` (\`killedTtlMinutes\` / \`completedJobTtlMinutes\` / \`completedTtlHours\` / \`maxFinished\`; applies at the next server restart).
 - **Genuine cross-machine duplicates are flagged loudly**: the pool view computes \`pool.duplicateTopics\` — the SAME conversation (platform + topic/channel id) with a LIVE session on 2+ machines at once, each such row tagged \`duplicateTopic: true\` and badged red on the dashboard. The SAME recurring job running on each machine is benign, BY DESIGN, and is never flagged.
 - **When to use** (PROACTIVE — these are the triggers): user asks "why do I see duplicate sessions across my machines?" → read \`pool.duplicateTopics\` first — an EMPTY array means there is no genuine duplicate (matching job names per machine are each machine's own scheduled copy; finished records are excluded by default). "Where did the finished runs go?" → \`?include=all\` (bounded retention prunes older ones). Do NOT count sessions from an \`include=all\` listing when answering "what is running?" — the default view IS the running view.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the audit-convergence default route
+ * (audit-convergence-enforcement §4). Proportionate (lessons-aware m6): a trigger
+ * + a pointer to the skill for the loop mechanics — NOT the whole loop inline.
+ * The unique heading substring `Audits run to convergence` is the content-sniff
+ * marker for migrateClaudeMd + the feature-delivery-completeness guard.
+ */
+export function AUDIT_CONVERGENCE_CLAUDEMD_SECTION(_port: number): string {
+  return `\n### Audits run to convergence (the default route)
+
+Any **audit-shaped** task — a SWEEP over a surface (find-all-X, a security/safety sweep, a compliance/coverage check, "review everything of kind K") — runs as the **converging loop**, not a single pass: audit → fix/classify each finding → RE-audit the FULL surface → repeat until a clean re-sweep finds **zero new**. A single-pass audit is INCOMPLETE by definition and must be reported as such — never dressed up as thorough. (A single-artifact review — one PR, one doc, one function — is NOT an audit and pays no convergence cost.)
+- **The mechanics live in the \`/iterative-converging-audit\` skill** — engage it whenever thoroughness matters. The durable ledger IS a canonical report at \`docs/audits/<slug>.md\`; in a repo carrying \`scripts/write-audit-convergence.mjs\` the \`converged\` claim is machine-EARNED (the validator refuses an unearned stamp; the commit gate + CI re-check it), never asserted.
+- **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to say "I checked, looks clean" after ONE pass, or a task says "find all / audit / sweep / make sure we got everything" → run the converging loop, not the pass. Constitution: "Iterative Audit to Convergence" (\`docs/STANDARDS-REGISTRY.md\`).
 `;
 }
 
@@ -1018,6 +1035,7 @@ export class PostUpdateMigrator {
     this.migrateBuildSkillMethodology(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
+    this.migrateIterativeConvergingAuditSkill(result);
     this.migrateInstarDevInternalOnlyReleaseNoteLane(result);
     this.migrateClassClosureTemplateSelfActionClause(result);
     this.migrateSpecConvergeFoundationAudit(result);
@@ -3293,6 +3311,34 @@ export class PostUpdateMigrator {
    * installed copy (a) lacks the build-location marker AND (b) still matches
    * the stock instar-dev fingerprint. A customized skill is left untouched.
    */
+  /**
+   * Deliver the updated iterative-converging-audit skill to EXISTING agents
+   * (audit-convergence-enforcement §4 / Integration-R2 M3). The installed copy
+   * came from init.ts's INLINE template, so this migration writes the SAME shared
+   * constant (`ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT`) that init.ts now consumes
+   * — single-source, so the two paths cannot drift. Idempotent (skip when the
+   * canonical-report marker is already present) + conservative (skip a customized
+   * copy that no longer looks like the stock skill).
+   */
+  private migrateIterativeConvergingAuditSkill(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'iterative-converging-audit', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'docs/audits/<slug>.md';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      // conservative stock fingerprint: the inline skill's stable header + loop
+      if (!current.includes('# /iterative-converging-audit') || !current.includes('## The loop')) {
+        result.skipped.push('skills/iterative-converging-audit/SKILL.md: customized — left untouched (no audit-convergence update)');
+        return;
+      }
+      fs.writeFileSync(skillFile, ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT);
+      result.upgraded.push('skills/iterative-converging-audit/SKILL.md (canonical docs/audits report + validator-earned convergence stamp)');
+    } catch (err) {
+      result.errors.push(`skills/iterative-converging-audit/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateInstarDevBuildLocationRegrounding(result: MigrationResult): void {
     try {
       const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'instar-dev', 'SKILL.md');
@@ -4959,6 +5005,17 @@ setTimeout(() => process.exit(0), 2000);
       content += SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Session Listing Hygiene section');
+    }
+
+    // Audits run to convergence (audit-convergence-enforcement §4) — Agent
+    // Awareness + Migration Parity item 3: existing agents learn the default-route
+    // rule (audit-shaped work runs as the converging loop; single-pass = incomplete)
+    // and that the canonical report at docs/audits/<slug>.md carries a machine-earned
+    // stamp. Same text as generateClaudeMd; content-sniffed on the heading.
+    if (!content.includes('Audits run to convergence')) {
+      content += AUDIT_CONVERGENCE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Audits-run-to-convergence default-route section');
     }
 
     // Duplicate-Session Prevention & Auto-Heal (ownership-gated-spawn §3.6) —

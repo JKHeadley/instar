@@ -4,8 +4,11 @@ npm run lint
 # The precommit script reads no config (it runs pre-compile), so we export the
 # specReview.requireConvergenceReport flag as an env var here. Fail-open: any read
 # error leaves the var unset → the precommit's report branch stays inert (today's
-# behavior). Reads .instar/config.json first, then instar.config.json.
-if node -e 'const fs=require("fs");for(const p of [".instar/config.json","instar.config.json"]){try{const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c&&c.specReview&&c.specReview.requireConvergenceReport===true)process.exit(0)}catch{}}process.exit(1)' 2>/dev/null; then
+# behavior). Read-point (audit-convergence-enforcement §6): commits happen in
+# WORKTREES, which do NOT carry .instar/config.json — resolve the MAIN checkout
+# root via `git rev-parse --git-common-dir` (worktree → main checkout, where the
+# live config sits) FIRST, then fall back to the local checkout paths.
+if node -e 'const fs=require("fs"),path=require("path"),cp=require("child_process");const paths=[];try{const gcd=cp.execSync("git rev-parse --git-common-dir",{encoding:"utf8"}).trim();const mainRoot=path.dirname(path.resolve(gcd));paths.push(path.join(mainRoot,".instar","config.json"),path.join(mainRoot,"instar.config.json"))}catch{}paths.push(".instar/config.json","instar.config.json");for(const p of paths){try{const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c&&c.specReview&&c.specReview.requireConvergenceReport===true)process.exit(0)}catch{}}process.exit(1)' 2>/dev/null; then
   export INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT=1
 fi
 
