@@ -150,16 +150,52 @@ describe('QuotaPoller', () => {
   });
 
   // ── pollAll persistence + filtering ───────────────────────────────
-  it('pollAll persists lastQuota and skips non-claude / disabled accounts', async () => {
-    const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });
+  it('pollAll persists Claude and Codex quota, while skipping disabled accounts', async () => {
+    const p = new QuotaPoller({
+      pool,
+      fetchImpl: okFetch(LIVE_USAGE_BODY),
+      tokenResolver: () => 'sk-ant-oat01-x',
+      now: () => Date.parse('2026-06-07T05:00:00Z'),
+      codexUsageReader: async () => ({
+        source: 'codex-rollout', rolloutPath: '/rollout.jsonl', threadId: 't',
+        capturedAt: '2026-06-07T05:00:00Z', model: 'gpt-5', planType: 'pro', rateLimitReachedType: null,
+        primary: { usedPercent: 37, remainingPercent: 63, windowMinutes: 300, resetsAt: 1780837200, resetsAtIso: '2026-06-07T13:00:00.000Z', resetsInSeconds: 1 },
+        secondary: { usedPercent: 64, remainingPercent: 36, windowMinutes: 10080, resetsAt: 1781269200, resetsAtIso: '2026-06-12T13:00:00.000Z', resetsInSeconds: 1 },
+      }),
+    });
     pool.add({ ...ACCT, id: 'claude-1' });
-    pool.add({ ...ACCT, id: 'codex-1', provider: 'openai', framework: 'codex-cli' }); // skipped (not claude)
+    pool.add({ ...ACCT, id: 'codex-1', provider: 'openai', framework: 'codex-cli' });
     pool.add({ ...ACCT, id: 'claude-off', status: 'disabled' }); // skipped (disabled)
     const res = await p.pollAll();
-    expect(res.polled).toBe(1);
+    expect(res.polled).toBe(2);
     expect(pool.get('claude-1')!.lastQuota?.sevenDay?.utilizationPct).toBe(71);
-    expect(pool.get('codex-1')!.lastQuota ?? null).toBeNull();
+    expect(pool.get('codex-1')!.lastQuota).toMatchObject({
+      source: 'codex-rollout',
+      fiveHour: { utilizationPct: 37 },
+      sevenDay: { utilizationPct: 64 },
+    });
     expect(pool.get('claude-off')!.lastQuota ?? null).toBeNull();
+  });
+
+  it('normalizes a Codex window to fresh 0% after its known reset passes', async () => {
+    const now = Date.parse('2026-06-08T00:00:00Z');
+    const p = new QuotaPoller({
+      pool,
+      now: () => now,
+      codexUsageReader: async () => ({
+        source: 'codex-rollout', rolloutPath: '/old.jsonl', threadId: 't', capturedAt: '2026-06-07T00:00:00Z',
+        model: 'gpt-5', planType: 'pro', rateLimitReachedType: null,
+        primary: { usedPercent: 99, remainingPercent: 1, windowMinutes: 300, resetsAt: 1, resetsAtIso: '2026-06-07T05:00:00Z', resetsInSeconds: 0 },
+        secondary: { usedPercent: 40, remainingPercent: 60, windowMinutes: 10080, resetsAt: 2, resetsAtIso: '2026-06-12T00:00:00Z', resetsInSeconds: 1 },
+      }),
+    });
+    pool.add({ ...ACCT, id: 'codex-reset', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    expect(pool.get('codex-reset')!.lastQuota).toMatchObject({
+      fiveHour: { utilizationPct: 0, resetsAt: '' },
+      sevenDay: { utilizationPct: 40 },
+      measuredAt: '2026-06-07T00:00:00Z',
+    });
   });
 
   it('pollAll restores a needs-reauth account to active on a clean read', async () => {

@@ -1,0 +1,17 @@
+## What Changed
+
+The subscription pool now polls Codex accounts from their real rollout rate-limit data and constrains all account placement and swapping to the session's own framework.
+
+## What to Tell Your User
+
+Codex accounts no longer appear permanently unused in the pool. A Codex session will never be moved onto a Claude login, and a Claude session will never be moved onto a Codex login.
+
+## Summary of New Capabilities
+
+- Real Codex five-hour and weekly quota snapshots in the live pool.
+- Framework-safe new-session placement, headroom, reactive swap, proactive swap, and anti-thrash selection.
+- Cross-machine preservation of Codex quota provenance.
+
+## Evidence
+
+Three-tier coverage includes real rollout-to-HTTP quota, persisted mixed-pool swaps, both selection directions, proactive target filtering, and unchanged pure-Claude behavior.

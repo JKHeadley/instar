@@ -46,6 +46,11 @@ import {
   type RefreshResult,
 } from './OAuthRefresher.js';
 import type { CredentialLocationGate } from './CredentialLocationGate.js';
+import {
+  readLatestCodexUsage,
+  type CodexUsageSnapshot,
+  type ReadCodexUsageOptions,
+} from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 
 /**
  * Injectable token resolver — returns an account's OAuth access token or null.
@@ -64,6 +69,7 @@ export type TokenResolver = (
  * file-backed refresh; tests inject a stub so the poller runs hermetically.
  */
 export type AccountRefresher = (account: SubscriptionAccount) => Promise<RefreshResult>;
+export type CodexUsageReader = (opts?: ReadCodexUsageOptions) => Promise<CodexUsageSnapshot | null>;
 
 /** Minimal fetch surface so tests inject a stub (no global fetch dependency). */
 export type FetchImpl = (
@@ -85,6 +91,10 @@ export interface QuotaPollerConfig {
    * so a routine access-token expiry recovers silently instead of crying wolf.
    */
   refresher?: AccountRefresher;
+  /** Injected for tests; defaults to the rollout-backed Codex usage reader. */
+  codexUsageReader?: CodexUsageReader;
+  /** Clock injection for Codex reset-boundary normalization. */
+  now?: () => number;
   /** Logger (defaults to console). */
   logger?: { log: (m: string) => void; warn: (m: string) => void };
   /**
@@ -223,6 +233,8 @@ export class QuotaPoller {
   private readonly fetchImpl: FetchImpl;
   private readonly tokenResolver: TokenResolver;
   private readonly refresher: AccountRefresher;
+  private readonly codexUsageReader: CodexUsageReader;
+  private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -240,6 +252,8 @@ export class QuotaPoller {
     this.tokenResolver = config.tokenResolver ?? defaultTokenResolver;
     this.refresher =
       config.refresher ?? ((account) => refreshClaudeToken(expandHome(account.configHome)));
+    this.codexUsageReader = config.codexUsageReader ?? readLatestCodexUsage;
+    this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
   }
@@ -327,6 +341,33 @@ export class QuotaPoller {
     // the slot home moves), so pool.update + logging still name the right account.
     const slotAccount = this.accountForReads(account);
 
+    if (account.provider === 'openai' && account.framework === 'codex-cli') {
+      const nowMs = this.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const usage = await this.codexUsageReader({ codexHome: slotAccount.configHome, nowMs });
+      if (!usage) return null;
+      const window = (value: CodexUsageSnapshot['primary']) => {
+        if (!value) return undefined;
+        const resetMs = value.resetsAtIso ? Date.parse(value.resetsAtIso) : NaN;
+        if (Number.isFinite(resetMs) && resetMs <= nowMs) {
+          return { utilizationPct: 0, resetsAt: '' };
+        }
+        return { utilizationPct: value.usedPercent, resetsAt: value.resetsAtIso ?? '' };
+      };
+      const fiveHour = window(usage.primary);
+      const sevenDay = window(usage.secondary);
+      const snap: AccountQuotaSnapshot = {
+        source: 'codex-rollout',
+        measuredAt: usage.capturedAt ?? nowIso,
+      };
+      if (fiveHour) snap.fiveHour = fiveHour;
+      if (sevenDay) snap.sevenDay = sevenDay;
+      const priorLast = this.lastByAccount.get(account.id);
+      if (priorLast) this.prevByAccount.set(account.id, priorLast);
+      this.lastByAccount.set(account.id, snap);
+      return snap;
+    }
+
     const token = await this.tokenResolver(slotAccount);
     if (!token) {
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
@@ -376,7 +417,7 @@ export class QuotaPoller {
 
     if (!body) return null;
 
-    const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date().toISOString());
+    const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date(this.now()).toISOString());
     // Shift the prior "last" down to "prev" so burnRate has a distinct baseline.
     const priorLast = this.lastByAccount.get(account.id);
     if (priorLast) this.prevByAccount.set(account.id, priorLast);
@@ -385,7 +426,7 @@ export class QuotaPoller {
   }
 
   /**
-   * Poll every claude-code/anthropic account in the pool and persist each
+   * Poll every supported claude-code/anthropic or codex-cli/openai account and persist each
    * account's latest snapshot (and a recovered status when a prior needs-reauth
    * account now reads cleanly).
    */
@@ -393,7 +434,10 @@ export class QuotaPoller {
     let polled = 0;
     let failed = 0;
     for (const account of this.pool.list()) {
-      if (account.provider !== 'anthropic' || account.framework !== 'claude-code') continue;
+      const supported =
+        (account.provider === 'anthropic' && account.framework === 'claude-code') ||
+        (account.provider === 'openai' && account.framework === 'codex-cli');
+      if (!supported) continue;
       if (account.status === 'disabled') continue;
       const snap = await this.pollAccount(account);
       if (!snap) {
@@ -410,7 +454,7 @@ export class QuotaPoller {
       // emails and poison the recovery probe's email→account map. So while the gate is enabled the
       // auto-patch is SUPPRESSED (the ledger + identity oracle own divergence detection now). With
       // the gate absent/off this is byte-for-byte today's behavior.
-      if (!this.locationGate?.isEnabled()) {
+      if (account.framework === 'claude-code' && !this.locationGate?.isEnabled()) {
         // Auto-populate the account email from the config home's own login record,
         // so the stored email always reflects which account actually authenticated
         // (a login into the wrong account surfaces here instead of hiding).

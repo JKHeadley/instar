@@ -154,6 +154,22 @@ describe('SwapAntiThrashEngine (brake pipeline)', () => {
       expect(v).toEqual({ action: 'refuse', reason: 'all-hot' });
     });
 
+    it('a different-framework account is not an alternate even when it is measured and cool', () => {
+      const codexCool = {
+        ...acct('codex-cool', 1),
+        provider: 'openai' as const,
+        framework: 'codex-cli' as const,
+        configHome: '/h/.codex-cool',
+        lastQuota: {
+          sevenDay: { utilizationPct: 1, resetsAt: '2026-07-03T00:00:00Z' },
+          source: 'codex-rollout' as const,
+          measuredAt: new Date(now - 60_000).toISOString(),
+        },
+      };
+      expect(intent(makeEngine().engine, [acct('hot', 85), codexCool]))
+        .toEqual({ action: 'refuse', reason: 'all-hot' });
+    });
+
     it('all-hot rows are state-transition rows: sustained state does not write per-tick rows', () => {
       const { engine } = makeEngine();
       const accounts = [acct('hot', 85), acct('b', 70)];

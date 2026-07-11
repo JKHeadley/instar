@@ -48,7 +48,7 @@ const MAX_FREETEXT = 256;
 const PROVIDERS = ['anthropic', 'openai', 'github-copilot', 'google'] as const;
 const FRAMEWORKS = ['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli'] as const;
 const STATUSES = ['active', 'warming', 'rate-limited', 'needs-reauth', 'disabled'] as const;
-const QUOTA_SOURCES = ['claude-code-usage-screen', 'oauth-usage-endpoint-fallback'] as const;
+const QUOTA_SOURCES = ['claude-code-usage-screen', 'oauth-usage-endpoint-fallback', 'codex-rollout'] as const;
 const ID_RE = /^[a-z0-9-]+$/;
 
 const VALUE_FIELDS = ['id', 'nickname', 'email', 'provider', 'framework', 'status', 'quota'] as const;

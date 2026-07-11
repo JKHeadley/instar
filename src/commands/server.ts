@@ -12512,7 +12512,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       // MOST-HEADROOM account (not the use-it-or-lose-it drain-first winner) — so
       // non-critical work runs whenever ANY account has room, while placement still
       // drains the soonest-to-reset account. Clamps + degraded signal are built in.
-      quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), { nowMs: Date.now() }));
+      quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), {
+        nowMs: Date.now(),
+        framework: config.sessions.framework ?? 'claude-code',
+      }));
       console.log(pc.green('  Pool-aware quota throttle: wired (placement-shared eligibility, most-headroom gating)'));
     }
 
@@ -17288,13 +17291,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (!sessionName) return;
           // Resolve which account this session is running under; only pool-managed
           // sessions are swap-eligible (others fall back to the existing back-off).
-          const accountId = state.listSessions({ status: 'running' })
-            .find(s => s.tmuxSession === sessionName)?.subscriptionAccountId;
+          const session = state.listSessions({ status: 'running' })
+            .find(s => s.tmuxSession === sessionName);
+          const accountId = session?.subscriptionAccountId;
           if (!accountId) return;
           void _quotaAwareScheduler?.onQuotaPressure({
             sessionName,
             exhaustedAccountId: accountId,
             nowMs: Date.now(),
+            framework: session?.framework ?? 'claude-code',
           });
         });
       }
@@ -17308,7 +17313,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (config.subscriptionPool?.pinSessionsToPool) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
         sessionManager.setSpawnAccountResolver(() => {
-          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now() });
+          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         });
         console.log(pc.green('  Subscription-pool session pinning enabled'));
