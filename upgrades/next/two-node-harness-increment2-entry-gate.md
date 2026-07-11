@@ -1,0 +1,13 @@
+# Two-node replication harness — the Increment-2 entry gate (ownership-gated spawn)
+
+<!-- internal-only -->
+
+## What Changed
+
+Adds the two-node ownership harness (`tests/support/twoNodeOwnershipHarness.ts`) and the Increment-2 entry-gate E2E (`tests/e2e/duplicate-reconciliation-two-node.test.ts`) named by `docs/specs/ownership-gated-spawn-and-judgment-within-floors.md` §4/§5: two in-process machines, each with the DURABLE ownership substrate (LocalSessionOwnershipStore + SessionOwnershipRegistry), the real signed journal-sync replication hop (CoherenceJournal → JournalSyncApplier → signed MeshRpc envelope → peer applier → OwnershipApplier materialization), and a real AgentServer per node (real Bearer auth). The E2E proves the L7 lifecycle (duplicate → heal on the lease holder → un-stubbed replication → the PEER's own registry view echoes the repair over real HTTP → peer-side sweeper armed) and the §5 delayed-journal-replay case (echo timeout → ONE aggregated escalation → late replay → self-completed heal), and the §5 partition-formed case (both nodes claimed self during a partition → both-ways replication → the higher-epoch claim wins via the epoch-gated fast-forward → heal with zero escalations). The remaining §5 two-node scenarios (registry-error episode, terminate-time probe, 2b custody) are spec-anchored `it.todo` entries — visibly pending, never silently green. No runtime code changes; no rollout flag moves (§4's prerequisite ladders explicitly stay their own features' decisions).
+
+## Evidence
+
+- `tests/e2e/duplicate-reconciliation-two-node.test.ts` — 3 passing scenarios + 3 spec-anchored todos; runs in the existing `e2e` CI job with zero workflow changes (the vitest e2e include already covers it).
+- The harness already caught a real pre-merge bug: the record-already-correct incident shape FSM-refused the healer's convergence CAS (claim-out-of-sequence) → escalate-instead-of-heal; fixed on the Increment-1 PR (record-already-converged skip) and proven healed on this rig.
+- FD15 calibration: each run logs measured journal-hop + applier latency (the echoConfirmTicks calibration input the spec assigns to the Increment-1 soak).
