@@ -10,6 +10,15 @@ import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { SessionManager } from '../../src/core/SessionManager.js';
 import type { Message } from '../../src/core/types.js';
 
+// The regression intentionally drives the real respawn wiring. Keep that path
+// real, but fence the production scaffold boundary: server.ts captures the
+// checkout cwd as its projectDir at module load, and a real spawn otherwise
+// renders identity shadows into the test runner's checkout.
+vi.mock('../../src/core/IdentityRenderer.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/core/IdentityRenderer.js')>(),
+  ensureFrameworkIdentityFile: vi.fn(() => null),
+}));
+
 describe('respawn collision custody notice', () => {
   it('reaches the deterministic topic-send funnel with honest loss wording', async () => {
     const sent: Array<{ topicId: number; text: string }> = [];
