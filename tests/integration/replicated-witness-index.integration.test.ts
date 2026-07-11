@@ -55,7 +55,7 @@ describe('replicated witness index integration', () => {
     dir = undefined;
   });
 
-  it('real emitter path reads the derived witness index instead of the journal stream', () => {
+  it('real emitter path reads the derived witness index instead of the journal stream', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'witness-index-int-'));
     const reg = registry();
     const journal = new CoherenceJournal({ stateDir: dir, machineId: SELF, flushIntervalMs: 1_000_000 });
@@ -68,7 +68,8 @@ describe('replicated witness index integration', () => {
       journal.flush();
 
       const counted = countingFs();
-      const reader = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg, selfMachineId: SELF, fsImpl: counted.io });
+      const reader = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg, selfMachineId: SELF, fsImpl: counted.io, autoRebuild: false });
+      await reader.rebuildWitnessIndexAsync();
       journal.setReplicatedRecordCommitObserver((kind, entries) => reader.observeCommittedEntries(kind, entries));
       counted.reset();
 

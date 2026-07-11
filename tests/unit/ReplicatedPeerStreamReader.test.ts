@@ -106,12 +106,29 @@ describe('ReplicatedPeerStreamReader', () => {
     journal.open();
     journal.setReplicatedKindRegistry(registry);
     applier = new JournalSyncApplier({ stateDir: dir, replicatedRegistry: registry });
-    reader = new ReplicatedPeerStreamReader({ stateDir: dir, registry, selfMachineId: SELF });
+    reader = new ReplicatedPeerStreamReader({ stateDir: dir, registry, selfMachineId: SELF, autoRebuild: false });
     attachWitnessObservers(journal, applier, () => reader);
   });
   afterEach(() => {
     try { journal.close(); } catch { /* best-effort */ }
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/ReplicatedPeerStreamReader.test.ts' });
+  });
+
+  it('does not scan a large journal on the boot-critical constructor path', () => {
+    const journalDir = path.join(dir, 'state', 'coherence-journal');
+    fs.mkdirSync(journalDir, { recursive: true });
+    const data = buildLearningRecordData({ record: learning(), hlc: hlc(1000, SELF), origin: SELF })!;
+    const line = `${JSON.stringify({ seq: 1, ts: '2026-07-10T00:00:00.000Z', machine: SELF, kind: LEARNING_RECORD_KIND, data })}\n`;
+    fs.writeFileSync(path.join(journalDir, `${SELF}.${LEARNING_RECORD_KIND}.jsonl`), line.repeat(25_000));
+    const counted = countingFs();
+
+    const started = performance.now();
+    const bootReader = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF, fsImpl: counted.io });
+    const elapsedMs = performance.now() - started;
+
+    expect(counted.reads()).toBe(0);
+    expect(elapsedMs).toBeLessThan(50);
+    void bootReader;
   });
 
   it('materializes OWN + PEER records as distinct origins for the same recordKey', () => {
@@ -182,13 +199,15 @@ describe('ReplicatedPeerStreamReader', () => {
     expect(reader.loadWitness(LEARNING_STORE_KEY, rk)?.physical).toBe(3000);
   });
 
-  it('does not read journal bytes during an emit witness lookup once the index is built', () => {
+  it('does not read journal bytes during an emit witness lookup once the index is built', async () => {
     const rk = deriveLearningRecordKey('tmux colon', 'ops', SRC)!;
     journal.emitReplicatedRecord(LEARNING_RECORD_KIND, buildLearningRecordData({ record: learning(), hlc: hlc(1000, SELF), origin: SELF })!);
     journal.flush();
 
     const counted = countingFs();
-    const indexedReader = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF, fsImpl: counted.io });
+    const indexedReader = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF, fsImpl: counted.io, autoRebuild: false });
+    expect(counted.reads()).toBe(0);
+    await indexedReader.rebuildWitnessIndexAsync();
     expect(counted.reads()).toBeGreaterThan(0);
     counted.reset();
 
@@ -211,13 +230,14 @@ describe('ReplicatedPeerStreamReader', () => {
     expect(counted.reads()).toBe(0);
   });
 
-  it('rebuilds the witness index from authoritative journal streams after in-memory loss', () => {
+  it('rebuilds the witness index from authoritative journal streams after in-memory loss', async () => {
     const rk = deriveLearningRecordKey('tmux colon', 'ops', SRC)!;
     journal.emitReplicatedRecord(LEARNING_RECORD_KIND, buildLearningRecordData({ record: learning(), hlc: hlc(1000, SELF), origin: SELF })!);
     journal.flush();
     applyPeerRecord(applier, buildLearningRecordData({ record: learning(), hlc: hlc(2500, PEER), origin: PEER })!, 1);
 
-    const rebuilt = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF });
+    const rebuilt = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF, autoRebuild: false });
+    await rebuilt.rebuildWitnessIndexAsync();
     expect(rebuilt.loadWitness(LEARNING_STORE_KEY, rk)?.physical).toBe(2500);
   });
 

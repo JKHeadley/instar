@@ -52,7 +52,7 @@ describe('replicated witness index lifecycle', () => {
     dir = undefined;
   });
 
-  it('rebuilds from own + peer journal streams after index loss', () => {
+  it('rebuilds from own + peer journal streams after index loss', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'witness-index-e2e-'));
     const reg = registry();
     const journal = new CoherenceJournal({ stateDir: dir, machineId: SELF, flushIntervalMs: 1_000_000 });
@@ -67,7 +67,8 @@ describe('replicated witness index lifecycle', () => {
       journal.flush();
       applyPeer(applier, buildLearningRecordData({ record, hlc: hlc(2500, PEER), origin: PEER })!);
 
-      const rebuilt = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg, selfMachineId: SELF });
+      const rebuilt = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg, selfMachineId: SELF, autoRebuild: false });
+      await rebuilt.rebuildWitnessIndexAsync();
       expect(rebuilt.loadWitness(LEARNING_STORE_KEY, rk)?.physical).toBe(2500);
       expect(rebuilt.loadOriginRecords(LEARNING_STORE_KEY, rk).map((r) => r.origin).sort()).toEqual([PEER, SELF].sort());
     } finally {

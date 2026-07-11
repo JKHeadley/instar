@@ -4470,7 +4470,6 @@ export async function startServer(options: StartOptions): Promise<void> {
             logger: (m) => console.log(pc.dim(`  ${m}`)),
           }).run();
           // A real run replaced streams atomically; rebuild from the committed files.
-          if (compactionConfig.dryRun === false) replicatedPeerStreamReader.rebuildWitnessIndex();
         }
         coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
@@ -22674,6 +22673,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.error('  Boot health beacon stop failed (continuing to bind real server):', err instanceof Error ? err.message : err);
     }
     await server.start();
+    // #1425 regression containment: only begin the cooperative witness-index +
+    // parity scans AFTER the HTTP server is listening. Until publication the
+    // reader serves the legacy witness path, never a partial candidate index.
+    void replicatedPeerStreamReader?.rebuildWitnessIndexAsync();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 
     // ── No-LOSS recovery: re-run inbound events stranded in 'processing' (spec §8 G3a) ──
