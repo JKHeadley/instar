@@ -257,6 +257,20 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
 
+  // Pending enrollment records + raw login panes belong to the machine driving
+  // the login. Pool-scope pending-logins merges the logical view across peers;
+  // the backing stateDir file remains inside the git-sync-excluded .instar jail.
+  const enrollmentStory: ConvergenceStory = {
+    logical: 'pool-scope-read-merge',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'GET /subscription-pool/pending-logins?scope=pool merges owning-machine records; pending-logins.json and its raw tmux pane remain target-local under the .instar git-sync exclusion',
+  };
+  reg.add({
+    kind: 'route', method: 'POST', pathPrefix: '/subscription-pool/enroll/',
+    domain: 'machine-local', story: enrollmentStory,
+  });
+
   // ── Routing Control Room MONEY surfaces (Increment B, §Surface 2) ────────
   // Single-writer BY DESIGN (FD-20): the whole cap lives on ONE PIN-designated
   // metered-lease machine until Increment D — the caps store + booking ledger are

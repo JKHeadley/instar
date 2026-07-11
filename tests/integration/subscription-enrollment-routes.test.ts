@@ -42,16 +42,20 @@ describe('/subscription-pool enrollment routes (integration)', () => {
   let dir: string;
   let store: PendingLoginStore;
   let clock: number;
+  let tmuxLog: string;
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-int-'));
     clock = Date.parse('2026-06-07T00:00:00Z');
     store = new PendingLoginStore({ stateDir: dir, now: () => clock });
+    tmuxLog = path.join(dir, 'tmux-calls.log');
+    const tmuxPath = path.join(dir, 'fake-tmux.sh');
+    fs.writeFileSync(tmuxPath, `#!/usr/bin/env bash\necho "$@" >> "${tmuxLog}"\n`, { mode: 0o755 });
     const wizard = new EnrollmentWizard({ store, driveLogin: async () => ARTIFACT, now: () => clock });
     const app = express();
     app.use(express.json());
     const ctx: any = {
-      config: { authToken: 't', stateDir: dir, port: 0 },
+      config: { authToken: 't', stateDir: dir, port: 0, sessions: { tmuxPath } },
       startTime: new Date(),
       enrollmentWizard: wizard,
     };
@@ -132,6 +136,60 @@ describe('/subscription-pool enrollment routes (integration)', () => {
     expect(done.body.login.status).toBe('completed');
     const list = await api('/subscription-pool/pending-logins');
     expect(list.body.logins).toEqual([]);
+  });
+
+  it('POST /enroll/:id/cancel abandons a pending login, kills its pane, and makes the id non-reusable', async () => {
+    await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' }),
+    });
+    const cancelled = await api('/subscription-pool/enroll/codex-1/cancel', { method: 'POST' });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body).toMatchObject({ cancelled: true, id: 'codex-1', status: 'abandoned' });
+    expect(store.get('codex-1')?.status).toBe('abandoned');
+    expect(fs.readFileSync(tmuxLog, 'utf8')).toContain('kill-session');
+    const pending = await api('/subscription-pool/pending-logins');
+    expect(pending.body.logins).toEqual([]);
+    const reuse = await api('/subscription-pool/enroll/codex-1/complete', { method: 'POST' });
+    expect(reuse.status).toBe(409);
+    const second = await api('/subscription-pool/enroll/codex-1/cancel', { method: 'POST' });
+    expect(second.body).toMatchObject({ cancelled: false, alreadyTerminal: true, terminalStatus: 'abandoned' });
+  });
+
+  it('POST /enroll/:id/cancel leaves a completed record byte-unchanged and never kills', async () => {
+    await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' }),
+    });
+    store.complete('codex-1');
+    const storePath = path.join(dir, 'pending-logins.json');
+    const before = fs.readFileSync(storePath);
+    const cancelled = await api('/subscription-pool/enroll/codex-1/cancel', { method: 'POST' });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body).toMatchObject({ cancelled: false, alreadyTerminal: true, terminalStatus: 'completed' });
+    expect(fs.readFileSync(storePath).equals(before)).toBe(true);
+    expect(fs.existsSync(tmuxLog)).toBe(false);
+  });
+
+  it('POST /enroll/:id/cancel returns 404 for malformed and unknown ids without tmux calls', async () => {
+    const malformed = await api('/subscription-pool/enroll/CODEX_1/cancel', { method: 'POST' });
+    expect(malformed.status).toBe(404);
+    const unknown = await api('/subscription-pool/enroll/codex-404/cancel', { method: 'POST' });
+    expect(unknown.status).toBe(404);
+    expect(fs.existsSync(tmuxLog)).toBe(false);
+  });
+
+  it('POST /enroll/:id/cancel stands aside while completion is in flight', async () => {
+    await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' }),
+    });
+    const completing = api('/subscription-pool/enroll/codex-1/complete', { method: 'POST' });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const cancelled = await api('/subscription-pool/enroll/codex-1/cancel', { method: 'POST' });
+    expect(cancelled.status).toBe(409);
+    expect((await completing).status).toBe(200);
+    expect(store.get('codex-1')?.status).toBe('completed');
   });
 
   it('POST /enroll/reissue-expired refreshes an expired login', async () => {

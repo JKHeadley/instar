@@ -297,8 +297,6 @@
     "POST /state/submit",
     "POST /subscription-pool",
     "POST /subscription-pool/enroll",
-    "POST /subscription-pool/enroll/:id/complete",
-    "POST /subscription-pool/enroll/reissue-expired",
     "POST /subscription-pool/follow-me/cancel",
     "POST /subscription-pool/follow-me/enroll/:id/cancel",
     "POST /subscription-pool/follow-me/enroll/:id/complete",

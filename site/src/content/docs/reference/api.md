@@ -949,6 +949,7 @@ user-usable.
 | POST | `/subscription-pool/proactive-swap/check` | Run one proactive pass now (refresh the poll if near the wall, then pre-emptively swap at-pressure sessions). The deterministic "show me it works" lever. |
 | POST | `/subscription-pool/enroll` | Start a mobile-first new-account login. Body: `id`, `label`, `provider`, `framework`, optional `kind`, `configHome`. Returns the pending login (public code/URL + TTL — never a token). |
 | GET | `/subscription-pool/pending-logins` | The "Pending Logins" surface — active logins awaiting approval (code/URL + TTL). |
+| POST | `/subscription-pool/enroll/:id/cancel` | Safely abandon a pending or expired login and best-effort stop its waiting login pane. Completed/already-abandoned logins return idempotently; an in-flight completion returns `409`. |
 | POST | `/subscription-pool/enroll/:id/complete` | Mark a login completed once the operator approved + the account enrolled. |
 | POST | `/subscription-pool/enroll/reissue-expired` | Sweep + auto-reissue every expired login with a fresh code/URL (the background tick calls the same path). |
 | GET | `/subscription-pool/in-use` | Which pooled accounts are currently serving a live session. |
@@ -1046,4 +1047,3 @@ The Slack org permission gate (dark/observe-only by default — these routes are
 
 ## /whoami
 - `GET /whoami`
-

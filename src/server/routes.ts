@@ -24564,6 +24564,52 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Per-login submit mutex for the paste-back route below (codex r2 #1) — process/instance
   // scoped so a concurrent double-tap can't interleave two codes into the same login pane.
   const followMeSubmitInFlight = new Set<string>();
+  const plainCompleteInFlight = new Set<string>();
+
+  /** Shared lifecycle core; route-specific gates and in-flight locks stay at call sites. */
+  const cancelEnrollment = (
+    id: string,
+    inFlight: ReadonlySet<string>,
+    logKey: 'enroll' | 'follow-me',
+    res: import('express').Response,
+  ): void => {
+    // Validate the store's ID_RE shape BEFORE lookup or tmux-target derivation.
+    if (!/^[a-z0-9-]+$/.test(id)) {
+      res.status(404).json({ error: 'no pending login to cancel', id });
+      return;
+    }
+    const login = ctx.enrollmentWizard!.getById(id);
+    if (!login) {
+      console.log(`[${logKey}] cancel outcome=not-found id=${id} paneKilled=false`);
+      res.status(404).json({ error: 'no pending login to cancel', id });
+      return;
+    }
+    if (login.status === 'completed' || login.status === 'abandoned') {
+      console.log(`[${logKey}] cancel outcome=already-terminal id=${id} paneKilled=false`);
+      res.json({ enabled: true, cancelled: false, alreadyTerminal: true, terminalStatus: login.status, id });
+      return;
+    }
+    if (inFlight.has(id)) {
+      res.status(409).json({ error: 'a sign-in is being completed for this login — try again in a moment' });
+      return;
+    }
+    // State first: authoritative non-reusability precedes best-effort process cleanup.
+    ctx.enrollmentWizard!.abandon(id);
+    const paneSession = enrollPaneSessionName(login.framework, login.configHome);
+    const tmuxPath = ctx.config.sessions?.tmuxPath;
+    let paneKilled = false;
+    if (tmuxPath) {
+      try {
+        execFileSync(tmuxPath, ['kill-session', '-t', `=${paneSession}`], { stdio: 'ignore' });
+        paneKilled = true;
+      } catch {
+        /* @silent-fallback-ok: pane teardown is best-effort cleanup; abandon() is
+           authoritative and a stale pane is pre-cleaned on the next enroll. */
+      }
+    }
+    console.log(`[${logKey}] cancel outcome=abandoned id=${id} paneKilled=${paneKilled}`);
+    res.json({ enabled: true, cancelled: true, id, status: 'abandoned' });
+  };
   // WS5.2 code paste-back (ws52-code-paste-back) — TARGET-LOCAL: type the operator's
   // verification CODE into the waiting `claude auth login` pane on THIS machine, then
   // finish enrollment. The Claude url-code-paste login is two-part (open URL+auth →
@@ -24738,57 +24784,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'enrollment wizard not configured' });
       return;
     }
-    const id = req.params.id;
-    // Validate the id shape (the store's ID_RE) BEFORE any lookup or tmux-target
-    // derivation — never let a malformed param reach the kill path.
-    if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) {
-      res.status(404).json({ error: 'no pending login to cancel', id });
-      return;
-    }
-    // Resolve INCLUDING terminal/expired records (getById, NOT pending()) — an expired
-    // login must still be found so its stale pane is torn down, not 404'd.
-    const login = ctx.enrollmentWizard.getById(id);
-    if (!login) {
-      console.log(`[follow-me] cancel outcome=not-found id=${id} paneKilled=false`);
-      res.status(404).json({ error: 'no pending login to cancel', id });
-      return;
-    }
-    // Idempotent terminal read: a completed/abandoned login is NOT cancelled here — a
-    // completed enrollment must never be clobbered. Calm 200, no kill, no mutation.
-    if (login.status === 'completed' || login.status === 'abandoned') {
-      console.log(`[follow-me] cancel outcome=already-terminal id=${id} paneKilled=false`);
-      res.json({ enabled: true, cancelled: false, alreadyTerminal: true, terminalStatus: login.status, id });
-      return;
-    }
-    // Stand aside while a code is actively being submitted for this login (submit-code's
-    // 30s credential-poll window): killing the pane mid-write would strand a partial
-    // credential. The operator can re-tap cancel once the submit settles.
-    if (followMeSubmitInFlight.has(id)) {
-      res.status(409).json({ error: 'a sign-in is being completed for this login — try again in a moment' });
-      return;
-    }
-    // State FIRST (D2): abandon the record so it's immediately non-reusable + the cell
-    // clears, THEN best-effort tear down the pane. A crash in between leaves an orphaned
-    // pane, but enroll-start pre-cleans the slot's pane before any re-spawn.
-    ctx.enrollmentWizard.abandon(id);
-    // RAW tmux kill — NOT sessionManager.killSession: the enroll pane is a bare
-    // `tmux new-session` (never registered in SessionManager), so killSession would
-    // no-op. Mirrors enroll-start's own spawn-time pre-clean.
-    const paneSession = enrollPaneSessionName(login.framework, login.configHome);
-    const tmuxPath = ctx.config.sessions?.tmuxPath;
-    let paneKilled = false;
-    if (tmuxPath) {
-      try {
-        execFileSync(tmuxPath, ['kill-session', '-t', `=${paneSession}`], { stdio: 'ignore' });
-        paneKilled = true;
-      } catch {
-        /* @silent-fallback-ok: pane teardown is best-effort cleanup; abandon() is the
-           authoritative state transition and already ran; a stale pane is pre-cleaned
-           on the next enroll. */
-      }
-    }
-    console.log(`[follow-me] cancel outcome=abandoned id=${id} paneKilled=${paneKilled}`);
-    res.json({ enabled: true, cancelled: true, id, status: 'abandoned' });
+    cancelEnrollment(req.params.id, followMeSubmitInFlight, 'follow-me', res);
   });
 
   // WS5.2 code paste-back — FRONTING RELAY: the operator's single dashboard calls this;
@@ -25069,17 +25065,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.post('/subscription-pool/enroll/:id/complete', (req, res) => {
+  router.post('/subscription-pool/enroll/:id/cancel', (req, res) => {
+    if (!ctx.enrollmentWizard) {
+      res.json({ enabled: false, cancelled: false, reason: 'enrollment wizard not configured' });
+      return;
+    }
+    cancelEnrollment(req.params.id, plainCompleteInFlight, 'enroll', res);
+  });
+
+  router.post('/subscription-pool/enroll/:id/complete', async (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, completed: false, reason: 'enrollment wizard not configured' });
       return;
     }
-    const login = ctx.enrollmentWizard.complete(req.params.id);
-    if (!login) {
-      res.status(404).json({ error: `pending login ${req.params.id} not found` });
+    const id = req.params.id;
+    const existing = ctx.enrollmentWizard.getById(id);
+    if (existing?.status === 'abandoned') {
+      res.status(409).json({ error: `pending login ${id} was cancelled and cannot be completed` });
       return;
     }
-    res.json({ enabled: true, login });
+    plainCompleteInFlight.add(id);
+    try {
+      // Keep a short observable critical section so a concurrent cancel stands aside.
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      const login = ctx.enrollmentWizard.complete(id);
+      if (!login) {
+        res.status(404).json({ error: `pending login ${id} not found` });
+        return;
+      }
+      res.json({ enabled: true, login });
+    } finally {
+      plainCompleteInFlight.delete(id);
+    }
   });
 
   // WS5.2 §5.3 step 3 / S7 — Account Follow-Me completion with the email-validation gate.

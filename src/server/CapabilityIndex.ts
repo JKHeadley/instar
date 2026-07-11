@@ -86,6 +86,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-pool/proactive-swap/check',
         'POST /subscription-pool/enroll',
         'GET /subscription-pool/pending-logins',
+        'POST /subscription-pool/enroll/:id/cancel',
         'POST /subscription-pool/enroll/:id/complete',
         'POST /subscription-pool/enroll/reissue-expired',
       ],
