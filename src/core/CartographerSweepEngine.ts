@@ -93,7 +93,7 @@ export interface SweepEngineConfig {
   /** Curtailed node ceiling while CPU pressure is moderate. */
   minNodesUnderPressure: number;
   // ── fix instar#1069: off-event-loop detect knobs (all optional w/ defaults) ──
-  /** Run detect + index writes in a worker thread (default true). false = the SAME bounded pure module synchronously (operator escape hatch — never tree.staleNodes()). */
+  /** Run detect + index writes in a worker thread (default true). false = the SAME bounded pure module in-process (operator escape hatch — never tree.staleNodes()). */
   detectInWorker?: boolean;
   /** Bound on the detect worker await; on timeout the worker is terminated + the pass refuses (default 120000). */
   detectTimeoutMs?: number;
@@ -103,7 +103,7 @@ export interface SweepEngineConfig {
   maxIndexBytes?: number;
   /** Cap on the published stale sample in the snapshot (default 500). */
   snapshotSampleMax?: number;
-  /** Explicit git ls-tree maxBuffer (default 64MB) so a big tree never throws ENOBUFS. */
+  /** @deprecated Accepted for config compatibility; streaming ls-tree ignores it. */
   gitMaxBuffer?: number;
   /** Ordered-candidate headroom: maxCandidates = maxNodesPerPass × this (default 4). */
   detectCandidateHeadroom?: number;
@@ -414,12 +414,12 @@ export class CartographerSweepEngine {
     };
   }
 
-  /** Run detect off-thread (worker) or synchronously (rollback) — SAME bounded module. */
+  /** Run detect off-thread (worker) or in-process (rollback) — SAME bounded module. */
   private async detect(): Promise<DetectResult> {
     const input = this.detectInput();
     if (this.d.config.detectInWorker === false) {
       // Operator escape hatch: bounded pure module on the main thread (NEVER staleNodes()).
-      return runDetect(input);
+      return await runDetect(input);
     }
     const out = await this.runWorker<DetectResult>('detect', input);
     if (out.startFailed) {
@@ -545,22 +545,43 @@ export class CartographerSweepEngine {
           env: this.workerEnv(),
         });
       } catch (err) {
+        // @silent-fallback-ok — failure is surfaced as structured startFailed;
+        // this is not a continuation with hidden degraded state.
         resolve({ ok: false, startFailed: true, error: err instanceof Error ? err.message : String(err), durationMs: this.now() - startedAt });
         return;
       }
       let settled = false;
+      let gitChildPid: number | null = null;
+      let timeoutPending = false;
+      let forceTerminateTimer: NodeJS.Timeout | null = null;
       const done = (r: { ok: boolean; result?: T; error?: string; timedOut?: boolean; startFailed?: boolean }): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        worker.terminate().catch(() => { /* best-effort reap */ });
+        if (forceTerminateTimer) clearTimeout(forceTerminateTimer);
+        if (gitChildPid != null) {
+          try { process.kill(gitChildPid, 'SIGKILL'); } catch { /* @silent-fallback-ok — already exited is the desired terminal state */ }
+          gitChildPid = null;
+        }
+        worker.terminate().catch(() => { /* @silent-fallback-ok — OS child was explicitly killed above; worker may already be gone */ });
         resolve({ ...r, durationMs: this.now() - startedAt });
       };
       const timer = setTimeout(() => {
-        // terminate() (awaited inside done→terminate) reaps the worker + its child git.
-        done({ ok: false, timedOut: true });
+        timeoutPending = true;
+        // Give the live worker event loop a bounded chance to kill + reap its own
+        // streamed git child. A worker stuck in synchronous parse cannot have
+        // spawned git yet; the force timer still bounds that case.
+        worker.postMessage({ kind: 'cancel' });
+        forceTerminateTimer = setTimeout(() => done({ ok: false, timedOut: true }), 250);
       }, timeoutMs);
-      worker.once('message', (msg: { ok: boolean; result?: T; error?: string }) => done(msg));
+      worker.on('message', (msg: { kind?: string; pid?: number; ok?: boolean; result?: T; error?: string }) => {
+        if (msg.kind === 'git-child-spawned' && typeof msg.pid === 'number') { gitChildPid = msg.pid; return; }
+        if (msg.kind === 'git-child-closed' && msg.pid === gitChildPid) { gitChildPid = null; return; }
+        if (typeof msg.ok === 'boolean') {
+          if (timeoutPending) done({ ok: false, timedOut: true });
+          else done({ ok: msg.ok, result: msg.result, error: msg.error });
+        }
+      });
       worker.once('error', (err: Error) => done({ ok: false, error: err.message }));
       worker.once('exit', (code: number) => { if (!settled) done({ ok: false, error: `worker exited (${code})` }); });
     });

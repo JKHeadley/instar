@@ -1,0 +1,21 @@
+# Stream cartographer Git tree reads
+
+## What Changed
+
+The cartographer freshness detector now consumes `git ls-tree` incrementally instead of buffering the complete command output. Large repositories no longer depend on a fixed subprocess buffer ceiling, while Git failures still refuse the pass without publishing partial results. Part of #1073 (item 3 only); items 1 and 2 remain open.
+
+## What to Tell Your User
+
+Cartographer sweeps now handle very large repositories with steadier memory use. Existing configuration continues to work without changes.
+
+## Summary of New Capabilities
+
+- Incremental NUL-delimited Git tree parsing.
+- Explicit streamed-child timeout and worker-timeout reaping.
+- Compatibility acceptance of the former `gitMaxBuffer` setting.
+
+## Evidence
+
+- Real-tree output parity with the former buffered parser.
+- Chunk-boundary, empty-tree, large-output, spawn-error, non-zero-exit, and signal-failure tests.
+- A real compiled-worker timeout test proves the hung Git child is no longer alive after refusal.

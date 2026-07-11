@@ -1147,6 +1147,44 @@ export class SafeGitExecutor {
   }
 
   /**
+   * Streaming read-only variant. It preserves the same classification, source-
+   * tree guard, environment scrubbing, and audit funnel as `readSync`, while
+   * leaving stdout consumption and process completion checks to the caller.
+   */
+  static readStream(args: readonly string[], opts: SafeGitOptions): ChildProcess {
+    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const verbArgs = sliceAfterVerb(args, verb);
+    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
+    if (ambiguousReadOnly === false) {
+      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-shape-via-readStream');
+      throw new SafeGitExecutorError(
+        `SafeGitExecutor.readStream called with destructive shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.spawn instead.`,
+      );
+    }
+    if (ambiguousReadOnly === null && !READONLY_GIT_VERBS.has(verb)) {
+      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-verb-via-readStream');
+      throw new SafeGitExecutorError(
+        `SafeGitExecutor.readStream called with destructive verb '${verb}' — use SafeGitExecutor.spawn instead.`,
+      );
+    }
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
+      runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    } else {
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
+    }
+
+    const env = sanitizeEnv(opts.env, opts.cwd);
+    audit('git', opts.operation, verb, targets[0], 'allowed');
+    return nodeSpawn('git', args as string[], {
+      cwd: opts.cwd,
+      stdio: opts.stdio ?? 'pipe',
+      env,
+      timeout: opts.timeout ?? 30000,
+      killSignal: 'SIGKILL',
+    });
+  }
+
+  /**
    * Read-only escape valve. Runs `git <args>` after verifying:
    *   - Verb is in READONLY_GIT_VERBS (or is an ambiguous verb in read-only shape).
    *   - assertNotInstarSourceTree passes against every target (defense-in-depth

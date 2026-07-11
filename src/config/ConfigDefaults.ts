@@ -1839,7 +1839,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       detectWorkerHeapMb: 1536,       // worker V8 heap cap, co-sized with maxIndexBytes (≈6× parse expansion + headroom)
       maxIndexBytes: 209715200,       // 200MB pre-parse byte guard (200×6 ≈ 1200MB < heap; refuse above this)
       snapshotSampleMax: 500,         // cap on the /stale snapshot sample
-      gitMaxBuffer: 67108864,         // 64MB explicit git ls-tree buffer (never the 10MB default that throws)
+      gitMaxBuffer: 67108864,         // deprecated compatibility knob; streaming ls-tree ignores it
       detectCandidateHeadroom: 4,     // maxCandidates = maxNodesPerPass × this
       maxRequestNodes: 50000,         // /cartographer/tree (full) ceiling → too-large-for-request above
       scaffoldChunkNodes: 500,        // boot-path chunked scaffold: node-ops per macrotask before yielding
