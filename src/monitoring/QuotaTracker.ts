@@ -52,6 +52,8 @@ export interface QuotaTrackerConfig {
   thresholds: JobSchedulerConfig['quotaThresholds'];
   /** How stale (in ms) the quota data can be before we treat it as unknown */
   maxStalenessMs?: number;
+  /** Active framework. Codex uses fail-safe missing-data semantics. */
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
 }
 
 export class QuotaTracker {
@@ -103,7 +105,9 @@ export class QuotaTracker {
     try {
       if (!fs.existsSync(this.config.quotaFile)) {
         if (!this.warnedNoFile) {
-          console.warn('[quota] No quota state file found — all jobs will run (fail-open)');
+          console.warn(this.config.framework === 'codex-cli'
+            ? '[quota] No Codex quota state file found — jobs will shed fail-safe until collection succeeds'
+            : '[quota] No quota state file found — all jobs will run (fail-open)');
           this.warnedNoFile = true;
         }
         return null;
@@ -118,7 +122,11 @@ export class QuotaTracker {
       const maxStale = this.config.maxStalenessMs ?? 30 * 60 * 1000; // 30 min default
       const lastUpdated = new Date(state.lastUpdated).getTime();
       if ((now - lastUpdated) > maxStale) {
-        console.warn(`[quota] Stale data (${Math.round((now - lastUpdated) / 60000)}m old) — discarding, will fail open`);
+        console.warn(
+          `[quota] Stale data (${Math.round((now - lastUpdated) / 60000)}m old) — discarding, ` +
+          (this.config.framework === 'codex-cli' ? 'Codex will shed fail-safe' : 'will fail open'),
+        );
+        if (this.config.framework === 'codex-cli') this.cachedState = null;
         this.lastRead = now; // Prevent re-reading stale file on every call
         return null;
       }
@@ -128,6 +136,12 @@ export class QuotaTracker {
       return state;
     } catch {
       this.lastRead = Date.now(); // Prevent hammering a corrupt file
+      if (this.config.framework === 'codex-cli') {
+        // A previously healthy cache must not survive a broken Codex state
+        // file: unreadable is uncertainty, and Codex uncertainty sheds.
+        this.cachedState = null;
+        return null;
+      }
       return this.cachedState; // Return last-known-good rather than null
     }
   }
@@ -213,7 +227,16 @@ export class QuotaTracker {
     }
 
     const state = this.getState();
-    if (!state) return { allowed: true, reason: 'No quota data — fail open' };
+    if (!state) {
+      if (this.config.framework === 'codex-cli') {
+        return { allowed: false, reason: 'Codex quota data unavailable — fail-safe load shed' };
+      }
+      return { allowed: true, reason: 'No quota data — fail open' };
+    }
+
+    if (state.source === 'codex-rollout' && state.quotaUnknown) {
+      return { allowed: false, reason: 'Codex quota reading is missing or incomplete — fail-safe load shed' };
+    }
 
     // DEGRADED-DATA HARDENING (bounded): a non-authoritative estimate (JSONL
     // token-counting) or an implausible >100% value must NOT slam the brake on the
@@ -222,7 +245,9 @@ export class QuotaTracker {
     // BOUNDED — we shed the lowest-priority work and still honor a genuine
     // authoritative 5-hour wall. An AUTHORITATIVE source (anthropic-oauth) is never
     // treated as degraded, so a real wall still stops. Spec §3.
-    const authoritative = state.source === 'anthropic-oauth';
+    const authoritative = state.source === 'anthropic-oauth' ||
+      state.source === 'gemini-cli-capacity' ||
+      state.source === 'codex-rollout';
     const degraded = !authoritative &&
       (state.source === 'claude-jsonl' || (typeof state.usagePercent === 'number' && state.usagePercent > 100));
     if (degraded) {

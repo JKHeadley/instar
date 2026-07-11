@@ -6444,6 +6444,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       quotaTracker = new QuotaTracker({
         quotaFile,
         thresholds: config.scheduler?.quotaThresholds ?? { normal: 50, elevated: 60, critical: 80, shutdown: 95 },
+        framework: resolvedFramework,
       });
       console.log(pc.green(`  Quota tracking enabled (${quotaFile})`));
     }
@@ -6816,6 +6817,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (resolvedFramework === 'claude-code') {
           const provider = createDefaultProvider();
           collector = new QuotaCollector(provider, quotaTracker);
+        } else if (resolvedFramework === 'codex-cli') {
+          collector = new QuotaCollector(null, quotaTracker, { framework: 'codex-cli' });
         } else {
           console.log(pc.yellow(`  QuotaCollector skipped for ${resolvedFramework} (no framework usage meter)`));
         }
