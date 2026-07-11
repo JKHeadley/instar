@@ -657,6 +657,10 @@
       color: var(--text); cursor: pointer;
     }
     .glance-record-action:hover { border-color: var(--accent-dim); }
+    .glance-record-action { text-decoration: none; } /* also covers anchor actions */
+    /* Phase 4: a row of actions on a Layer-3 record (e.g. a secret's open/copy/cancel). */
+    .glance-record-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .glance-record-actions .glance-record-action { margin-top: 0; }
     /* Phase 3: the #1429 editable nickname field (in a machine's Layer-3 record) and
        the warn-toned Layer-2 rows (a machine or safety check that needs a look). */
     .glance-record-input {
@@ -3309,11 +3313,7 @@
         </div>
       </div>
       <div class="tab-purpose">A live view of your open pull requests as they move through review and CI checks toward merge.</div>
-      <div id="prPipelinePhaseNotice" style="font-size:12px;color:var(--text-dim)"></div>
-      <div id="prPipelineEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No PR activity to display.
-      </div>
-      <div id="prPipelineList" style="display:flex;flex-direction:column;gap:12px"></div>
+      <div id="prPipelineGlance" class="glance-root"></div>
     </div>
 
     <!-- Projects Tab — PROJECT-SCOPE-SPEC Phase 1.10 read-only view -->
@@ -3350,16 +3350,9 @@
         </div>
       </div>
       <div class="tab-purpose">
-        Long-running work that spans multiple phases, with a status flag on each. Signals: <span style="color:#e27d3b">needs-user</span>,
-        <span style="color:#d65f5f">next-check-due</span>,
-        <span style="color:#4a9a4a">ready-to-advance</span>,
-        <span style="color:#888">stale (&gt;7d)</span>.
+        Long-running work that spans multiple phases — the headline says how many are in flight and how many need you; tap a tile to see which, tap one for the full record.
       </div>
-      <div id="initiativesDigest" style="display:none;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-dim)"></div>
-      <div id="initiativesEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No initiatives yet. Ask your agent to create one, and it'll appear here.
-      </div>
-      <div id="initiativesList" style="display:flex;flex-direction:column;gap:12px"></div>
+      <div id="initiativesGlance" class="glance-root"></div>
     </div>
 
     <!-- Commitments Tab (Open Promises) -->
@@ -3374,10 +3367,7 @@
       <div class="tab-purpose">
         Secret Drop — create one-time links so someone can hand you a password or API key safely, never pasted into chat. Each link expires and is destroyed the moment it's used.
       </div>
-      <div id="secretsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No pending secret requests.
-      </div>
-      <div id="secretsList" style="display:flex;flex-direction:column;gap:12px"></div>
+      <div id="secretsGlance" class="glance-root"></div>
     </div>
 
     <div id="commitmentsPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
@@ -3402,30 +3392,7 @@
       <div class="tab-purpose">
         Token usage rolled up from Claude Code session transcripts. Last 24 hours unless noted.
       </div>
-
-      <!-- Summary card -->
-      <div id="tokensSummaryCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Last 24h</div>
-        <div id="tokensSummaryBody" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Top sessions -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Top Sessions</div>
-        <div id="tokensSessionsBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Orphans -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Idle Sessions (&gt; 30 min)</div>
-        <div id="tokensOrphansBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
+      <div id="tokensGlance" class="glance-root"></div>
     </div>
 
     <!-- Resource Usage tab — per-agent CPU + memory (ResourceLedger Phase B).
@@ -3438,30 +3405,7 @@
       <div class="tab-purpose">
         How much CPU and memory this agent is using right now — the server process and each running session — sampled continuously. Last hour unless noted.
       </div>
-
-      <!-- Right-now headline (aggregate) -->
-      <div id="resourcesHeadlineCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Right now (all processes)</div>
-        <div id="resourcesHeadlineBody" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Per-source breakdown (server vs each session) -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">By process</div>
-        <div id="resourcesSourcesBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Recent trend (last samples of the aggregate) -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Recent trend</div>
-        <div id="resourcesTrendBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
+      <div id="resourcesGlance" class="glance-root"></div>
     </div>
 
     <!-- Blockers tab — Blocker Ledger read surface, rebuilt on the glance template
@@ -3510,21 +3454,7 @@
         only ever finds nothing is a quiet smoke detector; a row that's mostly skipped may be starved.
       </div>
 
-      <!-- Totals headline -->
-      <div id="llmActivityHeadlineCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">All components (selected window)</div>
-        <div id="llmActivityHeadlineBody" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Per-component breakdown -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">By component</div>
-        <div id="llmActivityBody" style="font-size:13px;overflow-x:auto">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
+      <div id="llmActivityGlance" class="glance-root"></div>
     </div>
 
     <!-- Routing Map tab — the read-only nature-axis routing map (FD11 readable canary,
@@ -4543,7 +4473,7 @@
       renderSessionList();
 
       // Persist session in URL for refresh
-      updateFileUrl();
+      updateUrlState();
 
       // Focus input
       document.getElementById('termInput').focus();
@@ -4779,7 +4709,7 @@
       document.getElementById('terminalView').style.display = 'none';
       document.getElementById('noSession').style.display = 'flex';
       renderSessionList();
-      updateFileUrl(); // Clear session from URL
+      updateUrlState(); // Clear session from URL
     }
 
     // ── Input ────────────────────────────────────────────────
@@ -5380,10 +5310,6 @@
         display: ['flex'],
         onActivate: () => {
           if (typeof loadSecrets === 'function') loadSecrets();
-          if (typeof startSecretsTicker === 'function') startSecretsTicker();
-        },
-        onDeactivate: () => {
-          if (typeof stopSecretsTicker === 'function') stopSecretsTicker();
         },
       },
     ];
@@ -5470,7 +5396,7 @@
         if (activeTab.onActivate) activeTab.onActivate();
       }
 
-      updateFileUrl();
+      updateUrlState();
     }
 
     // ── File Viewer ────────────────────────────────────────────
@@ -5796,71 +5722,29 @@
     }
 
     async function loadTokens() {
-      const summaryEl = document.getElementById('tokensSummaryBody');
-      const sessionsEl = document.getElementById('tokensSessionsBody');
-      const orphansEl = document.getElementById('tokensOrphansBody');
+      const glanceRoot = document.getElementById('tokensGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
       try {
         const [summaryResp, sessionsResp, orphansResp] = await Promise.all([
           apiFetch('/tokens/summary'),
           apiFetch('/tokens/sessions?limit=10'),
           apiFetch('/tokens/orphans?idleMs=' + (30 * 60 * 1000)),
         ]);
-        const s = summaryResp.summary || {};
-        summaryEl.innerHTML = `
-          <div><div style="color:var(--text-dim)">Total tokens</div><div style="font-size:18px;font-weight:600">${fmtTokens(s.totalTokens)}</div></div>
-          <div><div style="color:var(--text-dim)">Input</div><div>${fmtTokens(s.totalInput)}</div></div>
-          <div><div style="color:var(--text-dim)">Output</div><div>${fmtTokens(s.totalOutput)}</div></div>
-          <div><div style="color:var(--text-dim)">Cache read</div><div>${fmtTokens(s.totalCacheRead)}</div></div>
-          <div><div style="color:var(--text-dim)">Cache create</div><div>${fmtTokens(s.totalCacheCreate)}</div></div>
-          <div><div style="color:var(--text-dim)">Events</div><div>${fmtTokens(s.eventCount)}</div></div>
-          <div><div style="color:var(--text-dim)">Sessions</div><div>${fmtTokens(s.sessionsActive)}</div></div>
-        `;
-
-        const sessions = sessionsResp.sessions || [];
-        if (sessions.length === 0) {
-          sessionsEl.innerHTML = '<div style="color:var(--text-dim)">No sessions in window.</div>';
-        } else {
-          sessionsEl.innerHTML = `
-            <table style="width:100%;border-collapse:collapse;font-size:13px">
-              <thead><tr style="text-align:left;color:var(--text-dim)">
-                <th style="padding:6px 8px">Session</th>
-                <th style="padding:6px 8px">Project</th>
-                <th style="padding:6px 8px;text-align:right">Tokens</th>
-                <th style="padding:6px 8px;text-align:right">Events</th>
-                <th style="padding:6px 8px">Last activity</th>
-              </tr></thead>
-              <tbody>
-                ${sessions.map(r => `
-                  <tr style="border-top:1px solid var(--border)">
-                    <td style="padding:6px 8px;font-family:monospace">${escapeHtml((r.sessionId || '').slice(0, 8))}</td>
-                    <td style="padding:6px 8px">${escapeHtml(r.projectPath || '—')}</td>
-                    <td style="padding:6px 8px;text-align:right">${fmtTokens(r.totalTokens)}</td>
-                    <td style="padding:6px 8px;text-align:right">${fmtTokens(r.eventCount)}</td>
-                    <td style="padding:6px 8px">${fmtRelTime(r.lastTs)}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          `;
-        }
-
-        const orphans = orphansResp.orphans || [];
-        if (orphans.length === 0) {
-          orphansEl.innerHTML = '<div style="color:var(--text-dim)">No idle sessions.</div>';
-        } else {
-          orphansEl.innerHTML = orphans.map(o => `
-            <div style="padding:6px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-family:monospace;font-size:12px">
-              <span>${escapeHtml((o.sessionId || '').slice(0, 12))}</span>
-              <span style="color:var(--text-dim)">${escapeHtml(o.projectPath || '—')}</span>
-              <span>${fmtRelTime(o.lastTs)}</span>
-            </div>
-          `).join('');
-        }
+        const spec = glance.tokensGlanceSpec(
+          document, summaryResp, sessionsResp.sessions || [], orphansResp.orphans || [], { fmtTs: fmtRelTime },
+        );
+        glance.renderGlance(document, glanceRoot, spec);
       } catch (err) {
-        const msg = `<div style="color:var(--red)">Error: ${escapeHtml(err.message || String(err))}</div>`;
-        summaryEl.innerHTML = msg;
-        sessionsEl.innerHTML = '';
-        orphansEl.innerHTML = '';
+        const m = err && err.message ? String(err.message) : String(err);
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|not initialized/i.test(m)
+          ? 'Token tracking isn’t available on this agent yet.'
+          : 'Could not load token usage right now — refresh to retry.';
+        glanceRoot.appendChild(note);
       }
     }
 
@@ -5887,76 +5771,25 @@
       return String(src || '—');
     }
     async function loadLlmActivity() {
-      const headlineEl = document.getElementById('llmActivityHeadlineBody');
-      const bodyEl = document.getElementById('llmActivityBody');
+      const glanceRoot = document.getElementById('llmActivityGlance');
+      if (!glanceRoot) return;
       const winSel = document.getElementById('llmActivityWindow');
       const hours = Number((winSel && winSel.value) || 168);
-      const card = (label, val) =>
-        '<div><div style="color:var(--text-dim)">' + escapeHtml(label) + '</div>' +
-        '<div style="font-size:18px;font-weight:600">' + escapeHtml(String(val)) + '</div></div>';
-      const fmtNum = (n) => {
-        n = Number(n) || 0;
-        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
-        return String(n);
-      };
-      const pct = (num, den) => (den > 0 ? Math.round((100 * num) / den) + '%' : '—');
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
       try {
         const data = await apiFetch('/metrics/features?sinceHours=' + hours);
-        const totals = data.totals || {};
-        const features = (data.features || []).slice().sort((a, b) => (b.calls || 0) - (a.calls || 0));
-        const realCalls = totals.realCalls || 0;
-        headlineEl.innerHTML =
-          card('Components', features.length) +
-          card('Calls', totals.calls || 0) +
-          card('Real calls', realCalls) +
-          card('Acted', totals.fired || 0) +
-          card('Fire rate', pct(totals.fired || 0, realCalls)) +
-          card('Skipped', pct(totals.shed || 0, totals.calls || 0)) +
-          card('Errors', totals.errors || 0) +
-          card('Tokens', fmtNum((totals.tokensIn || 0) + (totals.tokensOut || 0)));
-
-        if (features.length === 0) {
-          bodyEl.innerHTML = '<div style="color:var(--text-dim)">No LLM activity recorded in this window yet.</div>';
-          return;
-        }
-        const th = (t, right) => '<th style="padding:6px 8px;' + (right ? 'text-align:right' : 'text-align:left') + '">' + t + '</th>';
-        const td = (v, right) => '<td style="padding:6px 8px;' + (right ? 'text-align:right' : '') + '">' + v + '</td>';
-        bodyEl.innerHTML =
-          '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:760px">' +
-          '<thead><tr style="color:var(--text-dim)">' +
-            th('Component') + th('Provider') + th('Model') +
-            th('Calls', true) + th('Real', true) + th('Acted', true) + th('Fire rate', true) +
-            th('Skipped', true) + th('Errors', true) + th('Tokens', true) + th('Latency p50/p95', true) +
-          '</tr></thead><tbody>' +
-          features.map((f) => {
-            const real = f.realCalls || 0;
-            const provider = (f.frameworks && f.frameworks.length) ? f.frameworks.join(', ') : '—';
-            const model = (f.models && f.models.length) ? f.models.join(', ') : '—';
-            const tokens = (f.tokensIn || 0) + (f.tokensOut || 0);
-            return '<tr style="border-top:1px solid var(--border)">' +
-              td(escapeHtml(f.feature)) +
-              td(escapeHtml(provider)) +
-              td(escapeHtml(model)) +
-              td(String(f.calls || 0), true) +
-              td(String(real), true) +
-              td(String(f.fired || 0), true) +
-              td(pct(f.fired || 0, real), true) +
-              td(pct(f.shed || 0, f.calls || 0), true) +
-              td(String(f.errors || 0), true) +
-              td(fmtNum(tokens), true) +
-              td((f.p50LatencyMs || 0) + '/' + (f.p95LatencyMs || 0) + 'ms', true) +
-            '</tr>';
-          }).join('') +
-          '</tbody></table>';
+        const spec = glance.llmActivityGlanceSpec(document, data);
+        glance.renderGlance(document, glanceRoot, spec);
       } catch (err) {
         const m = err && err.message ? String(err.message) : String(err);
-        if (/503|unavailable|not initialized/i.test(m)) {
-          headlineEl.innerHTML = '<div style="color:var(--text-dim)">LLM activity tracking isn\'t available on this agent yet.</div>';
-        } else {
-          headlineEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
-        }
-        bodyEl.innerHTML = '';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|not initialized/i.test(m)
+          ? 'LLM activity tracking isn’t available on this agent yet.'
+          : 'Could not load LLM activity right now — refresh to retry.';
+        glanceRoot.appendChild(note);
       }
     }
 
@@ -6032,77 +5865,23 @@
     }
 
     async function loadResources() {
-      const headlineEl = document.getElementById('resourcesHeadlineBody');
-      const sourcesEl = document.getElementById('resourcesSourcesBody');
-      const trendEl = document.getElementById('resourcesTrendBody');
+      const glanceRoot = document.getElementById('resourcesGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
       try {
-        const [summaryResp, samplesResp] = await Promise.all([
-          apiFetch('/resources/summary?sinceHours=1'),
-          apiFetch('/resources/samples?sinceHours=1&source=aggregate&limit=20'),
-        ]);
-        const sources = summaryResp.sources || [];
-        const agg = sources.find(s => s.source === 'aggregate');
-        if (agg) {
-          headlineEl.innerHTML =
-            '<div><div style="color:var(--text-dim)">CPU now</div><div style="font-size:18px;font-weight:600">' + escapeHtml(fmtCpu(agg.currentCpuPercent)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Memory now (RSS)</div><div style="font-size:18px;font-weight:600">' + escapeHtml(fmtBytes(agg.currentRssBytes)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Avg CPU (1h)</div><div>' + escapeHtml(fmtCpu(agg.avgCpuPercent)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Peak CPU (1h)</div><div>' + escapeHtml(fmtCpu(agg.peakCpuPercent)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Peak memory (1h)</div><div>' + escapeHtml(fmtBytes(agg.peakRssBytes)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Samples</div><div>' + escapeHtml(String(summaryResp.sampleCount || 0)) + '</div></div>';
-        } else {
-          headlineEl.innerHTML = '<div style="color:var(--text-dim)">No samples collected yet — give it a minute.</div>';
-        }
-
-        // Per-source breakdown (server + each session), aggregate listed last.
-        const breakdown = sources.filter(s => s.source !== 'aggregate');
-        if (breakdown.length === 0) {
-          sourcesEl.innerHTML = '<div style="color:var(--text-dim)">No process samples in the last hour.</div>';
-        } else {
-          sourcesEl.innerHTML =
-            '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-              '<thead><tr style="text-align:left;color:var(--text-dim)">' +
-                '<th style="padding:6px 8px">Process</th>' +
-                '<th style="padding:6px 8px;text-align:right">CPU now</th>' +
-                '<th style="padding:6px 8px;text-align:right">Avg CPU</th>' +
-                '<th style="padding:6px 8px;text-align:right">Memory (RSS)</th>' +
-                '<th style="padding:6px 8px;text-align:right">Peak CPU</th>' +
-              '</tr></thead><tbody>' +
-              breakdown.map(s =>
-                '<tr style="border-top:1px solid var(--border)">' +
-                  '<td style="padding:6px 8px">' + escapeHtml(resourceSourceLabel(s.source)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.currentCpuPercent)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.avgCpuPercent)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtBytes(s.currentRssBytes)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.peakCpuPercent)) + '</td>' +
-                '</tr>'
-              ).join('') +
-              '</tbody></table>';
-        }
-
-        // Recent trend: the last aggregate samples (newest first).
-        const samples = samplesResp.samples || [];
-        if (samples.length === 0) {
-          trendEl.innerHTML = '<div style="color:var(--text-dim)">No trend yet.</div>';
-        } else {
-          trendEl.innerHTML = samples.map(s =>
-            '<div style="padding:5px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px">' +
-              '<span style="color:var(--text-dim)">' + escapeHtml(fmtRelTime(s.ts)) + '</span>' +
-              '<span>' + escapeHtml(fmtCpu(s.cpuPercent)) + ' CPU</span>' +
-              '<span>' + escapeHtml(fmtBytes(s.rssBytes)) + ' RSS</span>' +
-            '</div>'
-          ).join('');
-        }
+        const summaryResp = await apiFetch('/resources/summary?sinceHours=1');
+        const spec = glance.resourcesGlanceSpec(document, summaryResp);
+        glance.renderGlance(document, glanceRoot, spec);
       } catch (err) {
         const m = err && err.message ? String(err.message) : String(err);
-        // 503 / "unavailable" → the sampler isn't turned on for this agent.
-        if (/503|unavailable|disabled|not initialized/i.test(m)) {
-          headlineEl.innerHTML = '<div style="color:var(--text-dim)">Resource tracking isn\'t turned on for this agent yet.</div>';
-        } else {
-          headlineEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
-        }
-        sourcesEl.innerHTML = '';
-        trendEl.innerHTML = '';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|disabled|not initialized/i.test(m)
+          ? 'Resource tracking isn’t turned on for this agent yet.'
+          : 'Could not load resource usage right now — refresh to retry.';
+        glanceRoot.appendChild(note);
       }
     }
 
@@ -6536,7 +6315,7 @@
           body.innerHTML = `<div class="file-empty"><div class="icon">&#x1F4E6;</div><p>Binary file (${formatFileSize(data.size)})<br>Preview not available</p></div>`;
           updateFileBadges(false);
           editModifiedTimestamp = '';
-          updateFileUrl();
+          updateUrlState();
           return;
         }
 
@@ -6553,7 +6332,7 @@
         }
 
         updateFileBadges(data.editable);
-        updateFileUrl();
+        updateUrlState();
       } catch (err) {
         body.innerHTML = `<div class="file-error">Failed to load file: ${escapeHtml(err.message)}</div>`;
       }
@@ -6727,7 +6506,7 @@
       document.getElementById('fileContentHeader').style.display = 'none';
       document.getElementById('fileContentBody').innerHTML =
         '<div class="file-empty"><div class="icon">&#x1F4C2;</div><p>Select a file to view its contents</p></div>';
-      updateFileUrl();
+      updateUrlState();
     }
 
     function formatFileSize(bytes) {
@@ -7015,25 +6794,34 @@
 
     // ── Deep linking via query params ──────────────────────────
 
-    function updateFileUrl() {
+    // #1442 — record the active tab (and its extras) in the URL so a page refresh
+    // restores the same tab. Before this, only Files wrote ?tab=; every other tab
+    // deleted the param, so any refresh dumped the operator back on Sessions.
+    // Named updateUrlState (was updateFileUrl) now that it is not Files-specific.
+    function updateUrlState() {
       const params = new URLSearchParams(window.location.search);
-      if (currentTab === 'files') {
-        params.set('tab', 'files');
-        if (currentFilePath) {
-          params.set('path', currentFilePath);
-        } else {
-          params.delete('path');
-        }
-        params.delete('session');
+      // The default Sessions tab omits ?tab= to keep bare URLs clean (and so a
+      // fresh visit with no query still lands on Sessions). Every other tab records
+      // its id, so a refresh returns to it.
+      if (currentTab && currentTab !== 'sessions') {
+        params.set('tab', currentTab);
       } else {
         params.delete('tab');
+      }
+      // Files keeps its deep-link path — existing ?tab=files&path=… links must keep
+      // working byte-for-byte.
+      if (currentTab === 'files' && currentFilePath) {
+        params.set('path', currentFilePath);
+      } else {
         params.delete('path');
-        // Persist active session in URL
-        if (activeSession) {
-          params.set('session', activeSession);
-        } else {
-          params.delete('session');
-        }
+      }
+      // Persist the active streamed session in the URL (unchanged behavior — set
+      // whenever a session is active except on Files; meaningful on Sessions,
+      // harmless elsewhere).
+      if (currentTab !== 'files' && activeSession) {
+        params.set('session', activeSession);
+      } else {
+        params.delete('session');
       }
       const qs = params.toString();
       const newUrl = window.location.pathname + (qs ? '?' + qs : '');
@@ -7046,6 +6834,11 @@
       const filePath = params.get('path');
       const sessionParam = params.get('session');
 
+      // #1442 — restore any registered tab on refresh, not just Files. An unknown
+      // or removed ?tab= value falls through to the default tab with no switchTab
+      // and no console error (validated against TAB_REGISTRY). The session restore
+      // below runs independently, so ?tab=X&session=Y both apply.
+      const isKnownTab = !!tab && TAB_REGISTRY.some(t => t.id === tab);
       if (tab === 'files') {
         switchTab('files');
         if (filePath) {
@@ -7066,7 +6859,11 @@
           };
           waitForTree();
         }
-      } else if (sessionParam) {
+      } else if (isKnownTab) {
+        switchTab(tab);
+      }
+
+      if (sessionParam) {
         // Restore active session from URL — wait for session list to populate
         let attempts = 0;
         const waitForSessions = () => {
@@ -8100,96 +7897,39 @@
     //   - On 404 (prGate.phase='off' — commit 8), render a disabled
     //     placeholder rather than erroring.
     async function loadPrPipeline() {
-      const list = document.getElementById('prPipelineList');
-      const notice = document.getElementById('prPipelinePhaseNotice');
-      const empty = document.getElementById('prPipelineEmpty');
-      // Reset view via DOM mutation, not innerHTML, to keep the
-      // "never inject content as HTML" invariant trivially true.
-      while (list.firstChild) list.removeChild(list.firstChild);
-      notice.textContent = 'Loading…';
-      empty.style.display = 'none';
+      const glanceRoot = document.getElementById('prPipelineGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
 
-      // Use raw fetch (not apiFetch) so we can distinguish 404 (gate
-      // disabled, expected during phase=off) from other errors without
-      // apiFetch's throw-on-non-ok behavior.
-      let res = null;
-      let httpStatus = 0;
+      // Raw fetch (not apiFetch) so we can distinguish 404 (gate disabled,
+      // expected during phase=off) from other errors without throw-on-non-ok.
+      let res = null, httpStatus = 0;
       try {
-        const raw = await fetch('/pr-gate/metrics', {
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
+        const raw = await fetch('/pr-gate/metrics', { headers: { 'Authorization': `Bearer ${token}` } });
         httpStatus = raw.status;
         if (raw.ok) res = await raw.json();
-      } catch {
-        res = null;
-      }
+      } catch { res = null; }
 
       if (httpStatus === 404 || (res && res.disabled === true)) {
-        notice.textContent = 'Gate disabled (phase=off). No pipeline activity recorded yet.';
-        empty.style.display = 'block';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'The auto-merge gate isn’t turned on for this agent yet.';
+        glanceRoot.appendChild(note);
         return;
       }
       if (!res) {
-        notice.textContent = 'PR Pipeline metrics unavailable. Endpoint did not respond.';
-        empty.style.display = 'block';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Could not load the merge gate right now — refresh to retry.';
+        glanceRoot.appendChild(note);
         return;
       }
 
-      const phase = typeof res.phase === 'string' ? res.phase : 'unknown';
-      notice.textContent = `Phase: ${phase}`;
-
-      const entries = Array.isArray(res.entries) ? res.entries : [];
-      if (entries.length === 0) {
-        empty.style.display = 'block';
-        return;
-      }
-
-      for (const entry of entries) {
-        const card = document.createElement('div');
-        card.style.background = 'var(--panel)';
-        card.style.padding = '12px';
-        card.style.borderRadius = '6px';
-        card.style.border = '1px solid var(--border)';
-
-        const header = document.createElement('div');
-        header.style.display = 'flex';
-        header.style.justifyContent = 'space-between';
-        header.style.marginBottom = '6px';
-
-        const left = document.createElement('div');
-        left.style.fontWeight = '600';
-        const pr = typeof entry.pr_number === 'number' ? `PR #${entry.pr_number}` : 'PR #—';
-        const sha = typeof entry.head_sha === 'string' ? ` @ ${entry.head_sha.slice(0, 8)}` : '';
-        left.textContent = pr + sha;
-
-        const right = document.createElement('div');
-        right.style.fontSize = '12px';
-        right.style.color = entry.eligible ? 'var(--accent)' : 'var(--text-dim)';
-        right.textContent = entry.eligible ? 'eligible' : 'not eligible';
-
-        header.appendChild(left);
-        header.appendChild(right);
-        card.appendChild(header);
-
-        if (typeof entry.reason === 'string' && entry.reason.length > 0) {
-          const reason = document.createElement('div');
-          reason.style.fontSize = '13px';
-          reason.style.color = 'var(--text-dim)';
-          reason.textContent = entry.reason;
-          card.appendChild(reason);
-        }
-
-        if (typeof entry.created_at === 'string') {
-          const time = document.createElement('div');
-          time.style.fontSize = '11px';
-          time.style.color = 'var(--text-dim)';
-          time.style.marginTop = '4px';
-          time.textContent = entry.created_at;
-          card.appendChild(time);
-        }
-
-        list.appendChild(card);
-      }
+      const spec = glance.prPipelineGlanceSpec(document, res);
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     // ── Projects Tab (PROJECT-SCOPE-SPEC Phase 1.10) ─────────────
@@ -8409,178 +8149,44 @@
     // through textContent; no innerHTML. Matches the PR Pipeline tab's
     // XSS-safe pattern.
     async function loadInitiatives() {
-      const list = document.getElementById('initiativesList');
-      const empty = document.getElementById('initiativesEmpty');
-      const digestBox = document.getElementById('initiativesDigest');
-      const filter = document.getElementById('initiativesFilter');
+      const glanceRoot = document.getElementById('initiativesGlance');
       const countBadge = document.getElementById('tabInitiativeCount');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
 
-      while (list.firstChild) list.removeChild(list.firstChild);
-      while (digestBox.firstChild) digestBox.removeChild(digestBox.firstChild);
-      digestBox.style.display = 'none';
-      empty.style.display = 'none';
+      // Keep the status filter + showAll controls — they re-query and the glance
+      // renders whatever comes back (behavior preserved).
+      const filter = document.getElementById('initiativesFilter');
+      const showAll = document.getElementById('initiativesShowAll');
+      const params = [];
+      if (filter && filter.value) params.push(`status=${encodeURIComponent(filter.value)}`);
+      if (!showAll || !showAll.checked) { params.push('excludeKind=project'); params.push('excludeParented=true'); }
+      const q = params.length ? '?' + params.join('&') : '';
 
-      let itemsRes = null;
-      let digestRes = null;
+      let itemsRes = null, digestRes = null;
       try {
-        // PROJECT-SCOPE-SPEC Phase 1.10 — by default hide project-kind
-        // records (shown in the Projects tab) and parented children
-        // (shown inside their parent's card). Server-side filter so
-        // we don't ship them over the wire.
-        const showAll = document.getElementById('initiativesShowAll');
-        const params = [];
-        if (filter && filter.value) params.push(`status=${encodeURIComponent(filter.value)}`);
-        if (!showAll || !showAll.checked) {
-          params.push('excludeKind=project');
-          params.push('excludeParented=true');
-        }
-        const q = params.length ? '?' + params.join('&') : '';
         const [a, b] = await Promise.all([
           apiFetch('/initiatives' + q).catch(() => null),
           apiFetch('/initiatives/digest').catch(() => null),
         ]);
-        itemsRes = a;
-        digestRes = b;
-      } catch { /* handled by null check below */ }
+        itemsRes = a; digestRes = b;
+      } catch { /* handled by the null check below */ }
 
-      if (!itemsRes) {
-        empty.style.display = 'block';
-        empty.textContent = 'Initiative tracker unavailable.';
-        if (countBadge) countBadge.textContent = '0';
-        return;
-      }
-
-      const items = Array.isArray(itemsRes.items) ? itemsRes.items : [];
+      const items = (itemsRes && Array.isArray(itemsRes.items)) ? itemsRes.items : [];
       if (countBadge) countBadge.textContent = String(items.length);
 
-      // Digest summary (actionable signals)
-      if (digestRes && Array.isArray(digestRes.items) && digestRes.items.length > 0) {
-        const title = document.createElement('div');
-        title.style.fontWeight = '600';
-        title.style.marginBottom = '6px';
-        title.textContent = `${digestRes.items.length} signal${digestRes.items.length === 1 ? '' : 's'}`;
-        digestBox.appendChild(title);
-        for (const d of digestRes.items) {
-          const row = document.createElement('div');
-          row.style.fontSize = '13px';
-          row.style.padding = '3px 0';
-          const colorMap = {
-            'needs-user': '#e27d3b',
-            'next-check-due': '#d65f5f',
-            'ready-to-advance': '#4a9a4a',
-            'stale': '#888',
-          };
-          const tag = document.createElement('span');
-          tag.style.color = colorMap[d.reason] || 'var(--text-dim)';
-          tag.style.marginRight = '6px';
-          tag.textContent = `[${d.reason}]`;
-          const label = document.createElement('span');
-          label.textContent = `${d.title} — ${d.detail}`;
-          row.appendChild(tag);
-          row.appendChild(label);
-          digestBox.appendChild(row);
-        }
-        digestBox.style.display = 'block';
-      }
-
-      if (items.length === 0) {
-        empty.style.display = 'block';
-        empty.textContent = 'No initiatives to display. Create one via POST /initiatives.';
+      if (!itemsRes) {
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'The initiative tracker isn’t available on this agent yet.';
+        glanceRoot.appendChild(note);
         return;
       }
 
-      for (const ini of items) {
-        const card = document.createElement('div');
-        card.style.background = 'var(--panel)';
-        card.style.padding = '12px';
-        card.style.borderRadius = '6px';
-        card.style.border = '1px solid var(--border)';
-
-        const header = document.createElement('div');
-        header.style.display = 'flex';
-        header.style.justifyContent = 'space-between';
-        header.style.alignItems = 'center';
-        header.style.marginBottom = '6px';
-
-        const titleEl = document.createElement('div');
-        titleEl.style.fontWeight = '600';
-        titleEl.textContent = ini.title || ini.id || '(untitled)';
-        header.appendChild(titleEl);
-
-        const status = document.createElement('span');
-        status.style.fontSize = '11px';
-        status.style.padding = '2px 8px';
-        status.style.borderRadius = '999px';
-        const statusColors = {
-          active: 'var(--accent)',
-          completed: '#4a9a4a',
-          archived: 'var(--text-dim)',
-          abandoned: '#d65f5f',
-        };
-        status.style.background = statusColors[ini.status] || 'var(--text-dim)';
-        status.style.color = '#fff';
-        status.textContent = ini.status || 'unknown';
-        header.appendChild(status);
-        card.appendChild(header);
-
-        if (ini.description) {
-          const desc = document.createElement('div');
-          desc.style.fontSize = '13px';
-          desc.style.color = 'var(--text-dim)';
-          desc.style.marginBottom = '8px';
-          desc.textContent = ini.description;
-          card.appendChild(desc);
-        }
-
-        // Phase pills
-        if (Array.isArray(ini.phases) && ini.phases.length > 0) {
-          const phaseRow = document.createElement('div');
-          phaseRow.style.display = 'flex';
-          phaseRow.style.gap = '6px';
-          phaseRow.style.flexWrap = 'wrap';
-          phaseRow.style.marginBottom = '8px';
-          const phaseColors = {
-            pending: 'var(--text-dim)',
-            'in-progress': 'var(--accent)',
-            done: '#4a9a4a',
-            blocked: '#d65f5f',
-          };
-          for (const p of ini.phases) {
-            const pill = document.createElement('span');
-            pill.style.fontSize = '11px';
-            pill.style.padding = '2px 8px';
-            pill.style.borderRadius = '4px';
-            pill.style.border = `1px solid ${phaseColors[p.status] || 'var(--border)'}`;
-            pill.style.color = phaseColors[p.status] || 'var(--text)';
-            pill.textContent = `${p.name} · ${p.status}`;
-            phaseRow.appendChild(pill);
-          }
-          card.appendChild(phaseRow);
-        }
-
-        // Meta row
-        const meta = document.createElement('div');
-        meta.style.fontSize = '11px';
-        meta.style.color = 'var(--text-dim)';
-        const lastTouched = ini.lastTouchedAt ? ini.lastTouchedAt.slice(0, 10) : '';
-        const needsUser = ini.needsUser ? ' · needs you' : '';
-        const blockerCount = Array.isArray(ini.blockers) && ini.blockers.length > 0
-          ? ` · ${ini.blockers.length} blocker${ini.blockers.length === 1 ? '' : 's'}`
-          : '';
-        meta.textContent = `Last touched: ${lastTouched}${needsUser}${blockerCount}`;
-        card.appendChild(meta);
-
-        if (ini.needsUser && ini.needsUserReason) {
-          const reason = document.createElement('div');
-          reason.style.fontSize = '12px';
-          reason.style.marginTop = '4px';
-          reason.style.color = '#e27d3b';
-          reason.textContent = `→ ${ini.needsUserReason}`;
-          card.appendChild(reason);
-        }
-
-        list.appendChild(card);
-      }
+      const spec = glance.initiativesGlanceSpec(document, itemsRes, digestRes, { fmtTs: fmtRelTime });
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     // ── Commitments Tab — glance floors F10/F11 (topic 29836) ────
@@ -8689,139 +8295,39 @@
       }
     }
 
+    async function cancelSecretRequest(token) {
+      try {
+        await apiFetch(`/secrets/pending/${encodeURIComponent(token)}`, { method: 'DELETE' });
+        await loadSecrets();
+      } catch (err) {
+        alert('Cancel failed: ' + (err && err.message ? err.message : String(err)));
+      }
+    }
+
     async function loadSecrets() {
-      const list = document.getElementById('secretsList');
-      const empty = document.getElementById('secretsEmpty');
+      const glanceRoot = document.getElementById('secretsGlance');
+      if (!glanceRoot) return;
       const countBadge = document.getElementById('tabSecretCount');
-      while (list.firstChild) list.removeChild(list.firstChild);
-      empty.style.display = 'none';
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
 
       let res = null;
       try {
         res = await apiFetch('/secrets/pending');
-      } catch { /* fall through */ }
+      } catch { /* fall through — an empty glance is the honest state */ }
 
       const pending = (res && Array.isArray(res.pending)) ? res.pending : [];
       secretsLastPending = pending;
 
-      // Badge shows non-expired count.
+      // Badge shows non-expired count (unchanged behavior).
       const now = Date.now();
       const liveCount = pending.filter(p => p.expiresAt > now).length;
       if (countBadge) countBadge.textContent = String(liveCount);
 
-      if (pending.length === 0) {
-        empty.style.display = 'block';
-        empty.textContent = 'No pending secret requests.';
-        return;
-      }
-
-      const fmtTs = (ms) => {
-        if (!ms) return '—';
-        try { return new Date(ms).toLocaleString(); } catch { return String(ms); }
-      };
-
-      for (const p of pending) {
-        const card = document.createElement('div');
-        card.style.cssText = 'padding:14px;border:1px solid var(--border);border-radius:6px;background:var(--bg-dim);display:flex;flex-direction:column;gap:8px';
-
-        const header = document.createElement('div');
-        header.style.cssText = 'display:flex;justify-content:space-between;gap:12px;align-items:flex-start';
-        const label = document.createElement('div');
-        label.style.cssText = 'flex:1;font-weight:600;line-height:1.3';
-        label.textContent = p.label || '(no label)';
-        header.appendChild(label);
-
-        const badge = document.createElement('span');
-        const expired = !!p.expired;
-        badge.textContent = expired ? 'expired' : 'pending';
-        badge.style.cssText = `font-size:11px;padding:3px 8px;border-radius:4px;background:${expired ? '#c66' : '#4a9a4a'};color:#fff;white-space:nowrap`;
-        header.appendChild(badge);
-        card.appendChild(header);
-
-        const meta = document.createElement('div');
-        meta.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;font-size:12px;color:var(--text-dim)';
-
-        const rows = [
-          ['token', (p.token || '').slice(0, 12) + '…'],
-          ['topic', p.topicId != null ? String(p.topicId) : '—'],
-          ['created', fmtTs(p.createdAt)],
-          ['expires', fmtTs(p.expiresAt)],
-        ];
-        for (const [k, v] of rows) {
-          const cell = document.createElement('div');
-          const kEl = document.createElement('span');
-          kEl.textContent = `${k}: `;
-          kEl.style.opacity = '0.7';
-          const vEl = document.createElement('span');
-          vEl.textContent = v;
-          vEl.style.color = 'var(--text)';
-          cell.appendChild(kEl);
-          cell.appendChild(vEl);
-          meta.appendChild(cell);
-        }
-
-        const countdownCell = document.createElement('div');
-        const cLabel = document.createElement('span');
-        cLabel.textContent = 'expires in: ';
-        cLabel.style.opacity = '0.7';
-        const cVal = document.createElement('span');
-        cVal.id = `secretCountdown-${p.token}`;
-        cVal.style.color = 'var(--text)';
-        cVal.style.fontVariantNumeric = 'tabular-nums';
-        cVal.textContent = formatCountdown(p.expiresAt - now);
-        countdownCell.appendChild(cLabel);
-        countdownCell.appendChild(cVal);
-        meta.appendChild(countdownCell);
-
-        card.appendChild(meta);
-
-        // Links and actions.
-        const actions = document.createElement('div');
-        actions.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
-
-        const url = p.tunnelUrl || p.localUrl;
-        if (url) {
-          const openBtn = document.createElement('a');
-          openBtn.textContent = 'Open drop link';
-          openBtn.href = url;
-          openBtn.target = '_blank';
-          openBtn.rel = 'noopener noreferrer';
-          openBtn.style.cssText = 'padding:6px 10px;border:1px solid var(--border);border-radius:4px;text-decoration:none;color:var(--text);cursor:pointer';
-          actions.appendChild(openBtn);
-
-          const copyBtn = document.createElement('button');
-          copyBtn.textContent = 'Copy link';
-          copyBtn.style.cssText = 'padding:6px 10px;cursor:pointer';
-          copyBtn.addEventListener('click', async () => {
-            try {
-              await navigator.clipboard.writeText(url);
-              copyBtn.textContent = 'Copied';
-              setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1200);
-            } catch {
-              copyBtn.textContent = 'Copy failed';
-            }
-          });
-          actions.appendChild(copyBtn);
-        }
-
-        const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = 'Cancel';
-        cancelBtn.style.cssText = 'padding:6px 10px;cursor:pointer';
-        cancelBtn.addEventListener('click', async () => {
-          cancelBtn.disabled = true;
-          try {
-            await apiFetch(`/secrets/pending/${encodeURIComponent(p.token)}`, { method: 'DELETE' });
-            await loadSecrets();
-          } catch (err) {
-            cancelBtn.disabled = false;
-            alert('Cancel failed: ' + (err && err.message ? err.message : String(err)));
-          }
-        });
-        actions.appendChild(cancelBtn);
-
-        card.appendChild(actions);
-        list.appendChild(card);
-      }
+      // The open / copy / cancel actions are preserved on each request's Layer-3
+      // record (glance.js secretRecordNode) — behavior untouched, moved one tap down.
+      const spec = glance.secretsGlanceSpec(document, { pending }, { now, onCancel: cancelSecretRequest });
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     async function createTestSecretRequest() {

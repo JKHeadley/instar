@@ -254,7 +254,7 @@ same ratchet discipline as the F3 purpose-line exempt list. A population floor i
 each test fails loudly if the registry sweep goes blind.
 
 This phased grandfathering is **not** a *No Deferrals* violation. That standard forbids
-shipping a partial fix with *untracked* deferrals that silently regress; here the FLOORS
+shipping a partial fix with *untracked* deferrals <!-- tracked: topic-29836 --> that silently regress; here the FLOORS
 ship **complete** in Phase 1 (the component, both F10/F11 tests across all three tiers,
 and a live reference implementation), every grandfathered tab's retrofit is tracked
 <!-- tracked: topic-29836 -->, and the ratchet structurally guarantees the grandfather
@@ -266,25 +266,48 @@ order for exactly this reason.
 |---|---|---|---|---|
 | Insights | 86 | ✅ the model to copy | ✅ button per takeaway | conforming (reference pattern) |
 | Commitments | 972 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (full rebuild, Phase 2 — folds #1435: Overdue tile, plural grammar, overdue≠due-soon)** |
-| Tokens | 28 | ✅ lean | ⚠️ summaries not clickable | grandfathered → Phase 4 |
-| Secrets | 36 | ✅ lean | ✅ adequate | grandfathered → Phase 4 |
-| Resource Usage | 40 | ✅ lean | ⚠️ summaries not clickable | grandfathered → Phase 4 |
-| Mandates | 49 | ✅ plain | ✅ adequate | grandfathered → Phase 4 |
-| Jobs | 51 | ✅ lean | ✅ select-a-job works | grandfathered → Phase 4 |
-| Sessions | 76 | ✅ lean | ✅ click-to-stream works | grandfathered → Phase 4 |
-| LLM Activity | 88 | ✅ plain | ⚠️ no per-row detail | grandfathered → Phase 4 |
-| Process Health | 101 | ✅ plain | ⚠️ detail drawer only | grandfathered → Phase 4 |
-| Preferences | 120 | ✅ plain, first person | ✅ adequate | grandfathered → Phase 4 |
-| Threadline | 156 | ⚠️ over budget | ✅ adequate | grandfathered → Phase 4 |
+| Tokens | 28 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 4 — Text-processed / Recent-conversations / Idle tiles; session ids + counts at Layer 3)** |
+| Secrets | 36 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 4 — Waiting / Expired tiles; the open/copy/cancel actions preserved on the Layer-3 record)** |
+| Resource Usage | 40 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 4 — CPU-now / Memory-now / Processes tiles; per-process averages + peaks at Layer 3)** |
+| Mandates | 49 | ✅ plain | ✅ adequate | grandfathered — **exception** (issue/revoke/approve console w/ inline PIN inputs + issuance form) |
+| Jobs | 51 | ✅ lean | ✅ select-a-job works | grandfathered — **exception** (master-detail job console: run / toggle / filter / SSE) |
+| Sessions | 76 | ✅ lean | ✅ click-to-stream works | grandfathered — **exception** (the live WS chat SPA + composer) |
+| LLM Activity | 88 (366 loaded) → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 4 — Components / AI-calls / Acted / Errors tiles; providers + latencies at Layer 3)** |
+| Process Health | 101 (386 loaded) | ✅ plain | ⚠️ detail drawer only | grandfathered — **exception** (bespoke ETag/visibility-gated polling module) |
+| Preferences | 120 | ✅ plain, first person | ✅ adequate | grandfathered — **exception** (bespoke polling module) |
+| Threadline | 156 (1,993 loaded) | ⚠️ over budget | ✅ adequate | grandfathered — **exception** (bridge settings form + thread browser + search) |
 | Machines | ~200 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — Online / Attention needed / Dispatcher / Safety-checks tiles; the insider guards line became named checks with plain explanations at Layer 2/3; folds issue #1429 nickname-edit + F9 hold)** |
 | Health | 390 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — Subsystems / Need attention / Recent events tiles; the 390-word subsystem prose moved to the Layer-3 records)** |
 | Spend | 400 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — "metered / paid door / reflows" became plain "pay-per-use" at the glance; per-model math + caps at Layer 2/3)** |
 | Routing Map | (dense) → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 3 — "lane / nature / door" became plain per-lane tiles + a headline naming the primary model + backup; ordered door+model lists + full config at Layer 2/3)** |
 | Blockers | 7,035 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 2 — headline + Truly stuck / Being worked / Resolved tiles; the raw table moved to Layer 3)** |
+| PR Pipeline | (list) → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 4 — Ready-to-merge / Not-ready tiles; commit sha + gate reason at Layer 3)** |
+| Initiatives | (digest+list) → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 4 — In-progress / Needs-you / Ready / Check-in / Idle tiles; the digest reasons became plain words)** |
 
-*(Files, Send Content, Evidence, PR Pipeline, Projects, Initiatives, Integrated-Being,
-Features, Systems get the same treatment in the Phase-4 sweep; they are mid-pack and
-grandfathered until then.)*
+**Phase-4 sweep result.** The six **data-summary views** above (Tokens, Secrets,
+Resource Usage, LLM Activity, PR Pipeline, Initiatives) left the grandfather list
+(ceiling 20 → 14). The remaining fourteen tabs are **operator-ratified exceptions** —
+interactive consoles / forms / browsers / bespoke-polling modules where a read-only
+glance would strip the tab's actions and change what it *does* (a non-goal):
+
+- **Consoles (inline actions):** Jobs (run/toggle/filter/SSE), Features (toggle + detail
+  modal + autonomy card), Projects (halt/ack + per-round progress), Mandates
+  (issue/revoke/approve + PIN inputs), Subscriptions (the F9 account×machine
+  provisioning matrix with per-cell PIN + code inputs).
+- **Forms / browsers / lookups:** Files (file-tree browser + editor), Send Content
+  (compose-and-send form), Evidence (two lookup forms, no ambient population),
+  Threadline (bridge settings form + thread browser + search), Sessions (the live
+  WebSocket chat SPA + composer).
+- **Bespoke polling modules:** Process Health and Preferences-Learning are their own
+  ETag/visibility-gated controllers; a glance rebuild that preserves their poll
+  lifecycle is a tracked follow-up <!-- tracked: topic-29836 -->.
+- **Reference pattern:** Insights already satisfies the glance shape by hand (it is the
+  original pattern the shared component was extracted from); rewriting the reference
+  onto its own generalization is churn with regression risk and no user benefit.
+
+A future glance rebuild that re-homes each console's actions to Layer-3 records (the
+proven Machines-nickname / Secrets-cancel pattern) can retire more of these; until then
+the ratchet holds them at ceiling 14 and no NEW tab may ship below the floor.
 
 **Worked example — Commitments (the reference implementation in this PR).** Today the
 glance layer is 23 raw records: *"I will send the code as soon as I get it —
@@ -441,8 +464,21 @@ Phase 1** and nothing more:
    issue #1429 (Machines nickname commit-on-input + focus-steal) rode along, fixed by
    committing the nickname only on Enter/blur with an optimistic echo and the F9
    interaction-hold across the poll.
-4. **Phase 4 — the sweep.** Every remaining grandfathered view brought to conformance; each
-   leaves the grandfather list as it lands. <!-- tracked: topic-29836 -->
+4. **Phase 4 (SHIPPED) — the sweep.** Every remaining grandfathered **data-summary
+   view** brought to conformance: PR Pipeline, Tokens, LLM Activity, Secrets, Resource
+   Usage, and Initiatives, rebuilt on the template; all six left the grandfather list
+   (ceiling 20 → 14). Two operator issues rode along: **#1441** (dashboard statics now
+   serve `Cache-Control: no-cache` + ETag so a deploy can't pair a fresh index.html
+   with a stale glance.js) and **#1442** (the selected tab now survives a page refresh
+   via `?tab=<id>`, validated against `TAB_REGISTRY`). The remaining 14 tabs are
+   interactive **consoles / forms / browsers / bespoke-polling modules**, not
+   read-only summary views — the glance model (a read-at-a-glance headline + count
+   tiles) would strip their inline actions (run a job, toggle a feature, approve a
+   mandate, provision a subscription, browse/edit files) and change what the tab
+   *does*, which this standard's non-goals forbid. They stay grandfathered as
+   **operator-ratified exceptions** (enumerated in the Phase-4 PR body); a future
+   glance rebuild that re-homes each surface's actions to Layer-3 records is a tracked
+   follow-up. <!-- tracked: topic-29836 -->
 
 ### Reachability / clarity floors (F1–F8)
 

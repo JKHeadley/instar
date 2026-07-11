@@ -105,7 +105,7 @@ import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
-import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, duplicateResponseGuard } from './middleware.js';
+import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { assertSqliteAvailable, PendingRelayStore } from '../messaging/pending-relay-store.js';
 import { getOrCreateBootId } from './boot-id.js';
@@ -842,10 +842,21 @@ export class AgentServer {
     // Dashboard static files — served BEFORE auth middleware so the page loads
     // without a token. Auth happens via WebSocket/API calls from the page itself.
     const dashboardDir = this.resolveDashboardDir();
+    // #1441 — dashboard statics must revalidate every load so a deploy can't pair a
+    // fresh index.html with a stale glance.js. Header logic lives in
+    // dashboardCacheControl / DASHBOARD_STATIC_OPTIONS (middleware.ts), exercised by
+    // the same object in the integration test (no wiring drift).
     this.app.get('/dashboard', (_req, res) => {
-      res.sendFile(path.join(dashboardDir, 'index.html'));
+      dashboardCacheControl(res);
+      // cacheControl:false so send() does not re-stamp `public, max-age=0` over the
+      // no-cache header above; etag/lastModified stay on for cheap 304 revalidation.
+      res.sendFile(path.join(dashboardDir, 'index.html'), {
+        cacheControl: false,
+        etag: true,
+        lastModified: true,
+      });
     });
-    this.app.use('/dashboard', express.static(dashboardDir));
+    this.app.use('/dashboard', express.static(dashboardDir, DASHBOARD_STATIC_OPTIONS));
 
     // PIN-based dashboard unlock — exchanges a short PIN for the auth token.
     // Placed before auth middleware so the dashboard can call it without a token.

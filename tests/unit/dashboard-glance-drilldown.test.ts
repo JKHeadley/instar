@@ -30,6 +30,13 @@ import {
   healthGlanceSpec,
   spendGlanceSpec,
   routingMapGlanceSpec,
+  // Phase 4 — the sweep
+  prPipelineGlanceSpec,
+  tokensGlanceSpec,
+  llmActivityGlanceSpec,
+  secretsGlanceSpec,
+  resourcesGlanceSpec,
+  initiativesGlanceSpec,
 } from '../../dashboard/glance.js';
 
 let dom: JSDOM;
@@ -529,5 +536,116 @@ describe('F11 walk-every-tile — the Routing Map glance (Phase 3)', () => {
     expect(text).toMatch(/Message sentinel/i); // humanized component, no camelCase
     handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
     expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Lane|Safety-critical/);
+  });
+});
+
+// ── Phase 4 (topic 29836) — the sweep tabs walked end-to-end ──────────────────
+// Each newly-adopted data-summary tab walks every tile (non-empty + distinct, or an
+// honest empty-state), lands ≥1 real drill, and opens a Layer-3 record from a row.
+
+describe('F11 walk-every-tile — the Phase-4 sweep tabs', () => {
+  it('PR Pipeline: tiles drill into PRs → a record with the commit + reason', () => {
+    const metrics = { phase: 'enforce', entries: [
+      { pr_number: 12, head_sha: 'abcdef1234567890', eligible: true, reason: 'all checks green', created_at: '2026-07-01T00:00:00Z' },
+      { pr_number: 13, head_sha: 'cafebabe', eligible: false, reason: 'checks pending', created_at: '2026-07-02T00:00:00Z' },
+    ] };
+    const handle = renderGlance(doc, root, prPipelineGlanceSpec(doc, metrics));
+    expect(handle.headline.textContent).toMatch(/1 of 2 open pull requests/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    activate(handle, 'ready');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    const rec = handle.drilldown.querySelector('[data-glance-record]');
+    expect(rec!.textContent).toMatch(/Commit|Why/);
+  });
+
+  it('Tokens: tiles drill into conversations → a record with the session + counts', () => {
+    const spec = tokensGlanceSpec(doc, { summary: { totalTokens: 1234567 } },
+      [{ sessionId: 'abc123', projectPath: '/a/b/ai-guy', totalTokens: 900000, eventCount: 12, lastTs: 1720000000000 }],
+      [{ sessionId: 'z', projectPath: '/a/idle', lastTs: 1719000000000 }]);
+    const handle = renderGlance(doc, root, spec);
+    expect(handle.headline.textContent).toMatch(/pieces of text/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    activate(handle, 'conversations');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Conversation|Pieces of text/);
+  });
+
+  it('LLM Activity: tiles drill into components → a record with providers + latency', () => {
+    const data = { totals: { calls: 1234, fired: 900, errors: 2, tokensIn: 5e6, tokensOut: 2e5 }, features: [
+      { feature: 'messageSentinel', frameworks: ['claude-code'], models: ['claude-haiku-4-5-20251001'], calls: 1000, fired: 800, shed: 50, errors: 2, tokensIn: 4e6, tokensOut: 1e5, p50LatencyMs: 523, p95LatencyMs: 1899 },
+    ] };
+    const handle = renderGlance(doc, root, llmActivityGlanceSpec(doc, data));
+    expect(handle.headline.textContent).toMatch(/background AI calls/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    activate(handle, 'components');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Runs on|Component/);
+  });
+
+  it('Secrets: tiles drill into requests → a record with the preserved actions', () => {
+    let cancelled: string | null = null;
+    const now = Date.parse('2026-07-10T00:00:00Z');
+    const spec = secretsGlanceSpec(doc, { pending: [
+      { label: 'GitHub token', token: 'drop_abc', topicId: 1, createdAt: now - 1000, expiresAt: now + 100000, tunnelUrl: 'https://x.trycloudflare.com/drop/abc' },
+    ] }, { now, onCancel: (t: string) => { cancelled = t; } });
+    const handle = renderGlance(doc, root, spec);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    activate(handle, 'waiting');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    const rec = handle.drilldown.querySelector('[data-glance-record]')!;
+    // the tab's actions are preserved at Layer 3 (behavior untouched)
+    const cancelBtn = Array.from(rec.querySelectorAll('button')).find((b) => /Cancel/.test(b.textContent || ''));
+    expect(cancelBtn, 'the cancel action is preserved on the record').toBeTruthy();
+    cancelBtn!.dispatchEvent(new dom.window.Event('click'));
+    expect(cancelled).toBe('drop_abc');
+    // and it renders an <a> open link, not raw HTML
+    expect(rec.querySelector('a[href^="https://"]')).toBeTruthy();
+  });
+
+  it('Secrets XSS: a jargon/HTML label renders inert at Layer 2', () => {
+    const now = Date.parse('2026-07-10T00:00:00Z');
+    const nasty = '<img src=x onerror=alert(1)> ‮evil';
+    const spec = secretsGlanceSpec(doc, { pending: [{ label: nasty, token: 't', expiresAt: now + 5000 }] }, { now });
+    const handle = renderGlance(doc, root, spec);
+    activate(handle, 'waiting');
+    expect(handle.drilldown.querySelector('img')).toBeNull();
+    const rowText = handle.drilldown.querySelector('.glance-list-summary')!.textContent || '';
+    expect(rowText).toContain('onerror');
+    expect(rowText).not.toContain('‮');
+  });
+
+  it('Resources: tiles drill into processes → a record with CPU/memory detail', () => {
+    const summary = { sampleCount: 120, sources: [
+      { source: 'aggregate', currentCpuPercent: 45, currentRssBytes: 2.5e9, avgCpuPercent: 30, peakCpuPercent: 163, peakRssBytes: 3e9 },
+      { source: 'agent-server', currentCpuPercent: 12, currentRssBytes: 5e8, avgCpuPercent: 10, peakCpuPercent: 40, peakRssBytes: 6e8 },
+    ] };
+    const handle = renderGlance(doc, root, resourcesGlanceSpec(doc, summary));
+    expect(handle.headline.textContent).toMatch(/CPU/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    activate(handle, 'processes');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/CPU right now|Process/);
+  });
+
+  it('Initiatives: tiles drill into items + signals → a record', () => {
+    const items = { items: [
+      { id: 'i1', title: 'Migrate the mesh', status: 'active', description: 'x', phases: [{ status: 'done' }], lastTouchedAt: '2026-07-01T00:00:00Z' },
+    ] };
+    const digest = { items: [{ reason: 'needs-user', title: 'Approve the plan', detail: 'waiting on you' }] };
+    const handle = renderGlance(doc, root, initiativesGlanceSpec(doc, items, digest));
+    expect(handle.headline.textContent).toMatch(/in flight/);
+    expect(walkTiles(handle)).toBeGreaterThanOrEqual(1);
+    // the In-progress tile drills into initiative records
+    activate(handle, 'in-progress');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Initiative|What it is/);
+    // the Needs-you tile drills into a signal record (distinct row type) — fresh root
+    // so the still-open drill above doesn't trigger the F9 hold on this render.
+    const root2 = doc.createElement('div');
+    doc.body.appendChild(root2);
+    const h2 = renderGlance(doc, root2, initiativesGlanceSpec(doc, items, digest));
+    activate(h2, 'needs-you');
+    h2.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    expect(h2.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Why it needs a look|Waiting on you/);
   });
 });

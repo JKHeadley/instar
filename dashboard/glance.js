@@ -44,16 +44,18 @@ export const GLANCE_MAX_TOKEN_LEN = 40; // a longer token is a glued-word budget
 export const GLANCE_ADOPTED_TABS = [
   'commitments', 'blockers', // Phases 1–2
   'machines', 'systems', 'spend', 'routing-map', // Phase 3 (the jargon belt); 'systems' is the Health tab
+  // Phase 4 — the sweep: every remaining data-summary view on the floor.
+  'pr-pipeline', 'tokens', 'llm-activity', 'secrets', 'resources', 'initiatives',
 ];
 
 export const GLANCE_GRANDFATHERED = [
   'insights', 'sessions', 'files', 'dropzone', 'jobs', 'features',
-  'integrated-being', 'pr-pipeline', 'projects', 'initiatives', 'tokens',
-  'resources', 'llm-activity', 'threadline', 'evidence',
+  'integrated-being', 'projects', 'threadline', 'evidence',
   'process-health', 'subscriptions', 'preferences-learning', 'mandates',
-  'secrets',
-]; // Phase 3 removed machines / systems (Health) / spend / routing-map — they now
-   // build through this component. 'blockers' left in Phase 2.
+]; // Phase 3 removed machines / systems (Health) / spend / routing-map.
+   // Phase 4 removed pr-pipeline / tokens / llm-activity / secrets / resources /
+   // initiatives. The remainder are interactive/console/module surfaces where the
+   // read-only glance model does not fit — enumerated as ratified exceptions (PR body).
 
 // The committed ceiling on grandfathered-tab count. Only ever LOWER this (each
 // lowering marks a tab retrofitted onto the floor). Never raise it without an
@@ -61,7 +63,10 @@ export const GLANCE_GRANDFATHERED = [
 // below the floor, the exact regression the ratchet exists to prevent.
 // Lowered 25 → 24 (Phase 2): Blockers retrofitted.
 // Lowered 24 → 20 (Phase 3): Machines, Health (systems), Spend, Routing Map retrofitted.
-export const GLANCE_GRANDFATHERED_CEILING = 20;
+// Lowered 20 → 14 (Phase 4 — the sweep): pr-pipeline, tokens, llm-activity, secrets,
+//   resources, initiatives retrofitted. The 14 remaining are interactive/console/
+//   module surfaces enumerated for operator ratification (see the Phase-4 PR body).
+export const GLANCE_GRANDFATHERED_CEILING = 14;
 
 // ── F10 — insider-vocab detection ────────────────────────────────────────────
 // A readability floor, NOT a secret-redaction boundary (secret handling stays at
@@ -768,6 +773,18 @@ function fmtCount(n) {
   const v = Number(n);
   return (Number.isFinite(v) ? v : 0).toLocaleString('en-US');
 }
+function fmtPct(n) {
+  const v = Number(n);
+  return (Number.isFinite(v) ? Math.round(v) : 0) + '%';
+}
+function fmtBytes(n) {
+  let v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '0 MB';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + units[i];
+}
 
 /** Build a Layer-3 record node from an ordered [key, value] list (all XSS-safe). */
 function recordFields(doc, rows) {
@@ -1360,6 +1377,487 @@ export function routingMapGlanceSpec(doc, map) {
         row.addEventListener('click', () => openRecord(recNode));
         list.appendChild(row);
       });
+      drilldown.appendChild(list);
+    },
+  }));
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PHASE 4 — the sweep: every remaining grandfathered data-summary view brought to
+// the glance floor (topic 29836). Each builder maps its ONE population to a
+// jargon-free headline + ≤5 tiles (Layer 1), each tile drills into the rows behind
+// that number in plain words (Layer 2), each row opens the full record where the
+// IDs/config/raw detail live (Layer 3). Single-population tabs reuse wireTiles;
+// mixed-population tabs (tokens, initiatives) wire per-tile modes like spend/routing.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── PR Pipeline glance (F10/F11) — GET /pr-gate/metrics ──────────────────────
+// The old front page listed raw PR cards (`PR #n @ <sha>` · eligible/not). On the
+// floor: a plain headline over Ready-to-merge / Not-ready tiles; the commit sha +
+// gate reason move to the Layer-3 record.
+
+/** The single population: the PR-gate metric entries. */
+export function prPipelinePopulation(metrics) {
+  const entries = metrics && Array.isArray(metrics.entries) ? metrics.entries : [];
+  return entries.filter((e) => e && typeof e === 'object');
+}
+
+export function buildPrPipelineGlance(metrics) {
+  const entries = prPipelinePopulation(metrics);
+  const ready = entries.filter((e) => e.eligible === true);
+  const notReady = entries.filter((e) => e.eligible !== true);
+  let headline;
+  if (entries.length === 0) {
+    headline = 'No pull requests are waiting in the merge gate right now.';
+  } else {
+    const noun = entries.length === 1 ? 'open pull request' : 'open pull requests';
+    const verb = ready.length === 1 ? 'is' : 'are';
+    headline = `${ready.length} of ${entries.length} ${noun} ${verb} ready to merge.`;
+  }
+  const tiles = [
+    { key: 'ready', label: 'Ready to merge', value: String(ready.length), tone: ready.length ? 'neutral' : 'muted', rows: ready },
+    { key: 'not-ready', label: 'Not ready yet', value: String(notReady.length), tone: notReady.length ? 'warn' : 'neutral', rows: notReady },
+  ];
+  return { headline, tiles, population: entries };
+}
+
+export function prRowText(e) {
+  const n = e.pr_number != null ? `#${e.pr_number}` : '#—';
+  return `Pull request ${n} — ${e.eligible === true ? 'ready to merge' : 'not ready yet'}`;
+}
+export function prRecordNode(doc, e, opts = {}) {
+  const fmtTs = opts.fmtTs || defaultFmtTs;
+  return recordFields(doc, [
+    ['Pull request', e.pr_number != null ? `#${e.pr_number}` : '—'],
+    ['Ready to merge', e.eligible === true ? 'yes' : 'no'],
+    ['Why', e.reason || '—'],
+    ['Commit', typeof e.head_sha === 'string' ? e.head_sha.slice(0, 8) : '—'],
+    ['First seen', fmtTs(e.created_at)],
+  ]);
+}
+export function prPipelineGlanceSpec(doc, metrics, opts = {}) {
+  const base = buildPrPipelineGlance(metrics);
+  const tiles = wireTiles(doc, base.tiles, prRowText, (d, e) => prRecordNode(d, e, opts));
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── LLM Activity glance (F10/F11) — GET /metrics/features ────────────────────
+// The old front page was an 8-metric row + a wide 11-column per-component table.
+// On the floor: a plain headline over Components / Calls / Acted / Errors tiles;
+// the per-component providers, models, fire rate, and latencies move to Layer 3.
+
+/** The single population: the per-component metrics GET /metrics/features returns. */
+export function llmActivityPopulation(data) {
+  const features = data && Array.isArray(data.features) ? data.features : [];
+  return features.filter((f) => f && typeof f.feature === 'string');
+}
+
+export function buildLlmActivityGlance(data) {
+  const features = llmActivityPopulation(data);
+  const totals = (data && data.totals) || {};
+  const calls = Number(totals.calls) || 0;
+  const fired = Number(totals.fired) || 0;
+  const errors = Number(totals.errors) || 0;
+  const withErrors = features.filter((f) => (Number(f.errors) || 0) > 0);
+  const acted = features.filter((f) => (Number(f.fired) || 0) > 0);
+
+  let headline;
+  if (features.length === 0) {
+    headline = 'No background AI activity has been recorded in this window.';
+  } else {
+    const comp = features.length === 1 ? '1 component' : `${features.length} components`;
+    const errClause = errors === 0 ? 'none hit an error'
+      : errors === 1 ? '1 call hit an error' : `${fmtCount(errors)} calls hit an error`;
+    headline = `${comp} made ${fmtCount(calls)} background AI calls; ${errClause}.`;
+  }
+
+  const tiles = [
+    { key: 'components', label: 'Components', value: String(features.length), tone: 'neutral', rows: features },
+    { key: 'calls', label: 'AI calls', value: fmtCount(calls), tone: 'muted', rows: features.slice().sort((a, b) => (Number(b.calls) || 0) - (Number(a.calls) || 0)) },
+    { key: 'acted', label: 'Acted', value: String(acted.length), tone: 'neutral', rows: acted },
+    { key: 'errors', label: 'Errors', value: fmtCount(errors), tone: errors ? 'warn' : 'neutral', rows: withErrors },
+  ];
+  return { headline, tiles, population: features };
+}
+
+function llmProviderPhrase(f) {
+  const fw = Array.isArray(f.frameworks) ? f.frameworks.filter(Boolean) : [];
+  if (fw.length) return fw.map(humanizeToken).join(', ');
+  const models = Array.isArray(f.models) ? f.models.filter(Boolean) : [];
+  const friendly = models.map(friendlyModel).filter(Boolean);
+  return friendly.length ? friendly.join(', ') : 'the built-in model';
+}
+export function llmActivityRowText(f) {
+  return `${humanizeToken(f.feature)} — ${fmtCount(Number(f.calls) || 0)} AI calls`;
+}
+export function llmActivityRecordNode(doc, f) {
+  const rows = [
+    ['Component', humanizeToken(f.feature)],
+    ['Runs on', llmProviderPhrase(f)],
+    ['AI calls', fmtCount(Number(f.calls) || 0)],
+    ['Acted', fmtCount(Number(f.fired) || 0)],
+    ['Skipped', fmtCount(Number(f.shed) || 0)],
+    ['Errors', fmtCount(Number(f.errors) || 0)],
+    ['Text in', fmtCount(Number(f.tokensIn) || 0)],
+    ['Text out', fmtCount(Number(f.tokensOut) || 0)],
+  ];
+  if (f.p50LatencyMs != null) rows.push(['Typical speed', `${Math.round(Number(f.p50LatencyMs))} ms`]);
+  if (f.p95LatencyMs != null) rows.push(['Slowest 1 in 20', `${Math.round(Number(f.p95LatencyMs))} ms`]);
+  return recordFields(doc, rows);
+}
+export function llmActivityGlanceSpec(doc, data) {
+  const base = buildLlmActivityGlance(data);
+  const tiles = wireTiles(doc, base.tiles, llmActivityRowText, llmActivityRecordNode);
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Secrets glance (F10/F11) — GET /secrets/pending ──────────────────────────
+// The old front page listed pending secret-drop cards with a live countdown. On
+// the floor: a plain headline over Waiting / Expired tiles; the drop link, topic,
+// and exact expiry time move to the Layer-3 record. (The token is a request
+// reference the drop UI already exposes — it lives at Layer 3, not the glance.)
+
+/** The single population: the pending secret requests GET /secrets/pending returns. */
+export function secretsPopulation(data) {
+  const pending = data && Array.isArray(data.pending) ? data.pending : [];
+  return pending.filter((p) => p && typeof p === 'object');
+}
+
+function secretExpired(p, now) {
+  if (p.expired === true) return true;
+  if (p.expiresAt == null) return false;
+  const t = typeof p.expiresAt === 'number' ? p.expiresAt : Date.parse(p.expiresAt);
+  return Number.isFinite(t) ? t <= now : false;
+}
+
+export function buildSecretsGlance(data, now = Date.now()) {
+  const pending = secretsPopulation(data);
+  const expired = pending.filter((p) => secretExpired(p, now));
+  const waiting = pending.filter((p) => !secretExpired(p, now));
+
+  let headline;
+  if (pending.length === 0) {
+    headline = 'No secret requests are waiting right now.';
+  } else if (waiting.length === 0) {
+    headline = 'All secret requests have expired.';
+  } else {
+    const noun = waiting.length === 1 ? 'secret request is' : 'secret requests are';
+    headline = `${waiting.length} ${noun} waiting for you.`;
+  }
+  const tiles = [
+    { key: 'waiting', label: 'Waiting for you', value: String(waiting.length), tone: waiting.length ? 'warn' : 'neutral', rows: waiting },
+    { key: 'expired', label: 'Expired', value: String(expired.length), tone: 'muted', rows: expired },
+  ];
+  return { headline, tiles, population: pending };
+}
+
+export function secretRowText(p, now = Date.now()) {
+  const label = sanitizeForDisplay(p.label || 'A secret request', 'label');
+  return `${label} — ${secretExpired(p, now) ? 'expired' : 'waiting for you'}`;
+}
+export function secretRecordNode(doc, p, opts = {}) {
+  const fmtTs = opts.fmtTs || defaultFmtTs;
+  const rows = [
+    ['Requested', p.label || '—'],
+    ['In conversation', p.topicId != null ? String(p.topicId) : '—'],
+    ['Asked', fmtTs(p.createdAt)],
+    ['Expires', fmtTs(p.expiresAt)],
+  ];
+  const wrap = recordFields(doc, rows);
+  // Preserve the tab's actions (open / copy / cancel) at Layer 3 — behavior is
+  // untouched, only its placement moved one click down.
+  const actions = el(doc, 'div', 'glance-record-actions');
+  const link = p.tunnelUrl || p.localUrl;
+  if (typeof link === 'string' && /^https?:\/\//.test(link)) {
+    const a = doc.createElement('a');
+    a.className = 'glance-record-action';
+    a.href = link; // a fixed http(s) literal from the server; textContent stays plain
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = 'Open the secure drop';
+    actions.appendChild(a);
+
+    const copy = doc.createElement('button');
+    copy.type = 'button';
+    copy.className = 'glance-record-action';
+    copy.textContent = 'Copy link';
+    copy.addEventListener('click', () => {
+      try {
+        if (doc.defaultView && doc.defaultView.navigator && doc.defaultView.navigator.clipboard) {
+          doc.defaultView.navigator.clipboard.writeText(link);
+          copy.textContent = 'Copied';
+        }
+      } catch { /* @silent-fallback-ok — clipboard denied, leave the label */ }
+    });
+    actions.appendChild(copy);
+  }
+  if (typeof opts.onCancel === 'function' && p.token) {
+    const cancel = doc.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'glance-record-action';
+    cancel.textContent = 'Cancel request';
+    cancel.addEventListener('click', () => { cancel.disabled = true; opts.onCancel(p.token); });
+    actions.appendChild(cancel);
+  }
+  if (actions.childNodes.length) wrap.appendChild(actions);
+  return wrap;
+}
+export function secretsGlanceSpec(doc, data, opts = {}) {
+  const now = opts.now ?? Date.now();
+  const base = buildSecretsGlance(data, now);
+  const tiles = wireTiles(doc, base.tiles, (p) => secretRowText(p, now), (d, p) => secretRecordNode(d, p, opts));
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Tokens glance (F10/F11) — GET /tokens/summary + /sessions + /orphans ─────
+// The old front page was a 7-metric grid + a per-session table + an idle list. On
+// the floor: a plain headline over Text-processed / Recent-conversations / Idle
+// tiles; the session ids, event counts, and full paths move to the Layer-3 record.
+// "Tokens" reads as "pieces of text" (matching the Spend tab's plain vocabulary).
+
+/** A plain, short conversation name from a project path (its last segment). */
+function projectName(p) {
+  const parts = String(p == null ? '' : p).split('/').filter(Boolean);
+  return sanitizeForDisplay(parts.length ? parts[parts.length - 1] : (p || 'a conversation'), 'label');
+}
+
+export function buildTokensGlance(summary, sessions, orphans) {
+  const s = (summary && summary.summary) || summary || {};
+  const active = (Array.isArray(sessions) ? sessions : []).filter((r) => r && typeof r === 'object');
+  const idle = (Array.isArray(orphans) ? orphans : []).filter((o) => o && typeof o === 'object');
+  const total = Number(s.totalTokens) || 0;
+  const byTokens = active.slice().sort((a, b) => (Number(b.totalTokens) || 0) - (Number(a.totalTokens) || 0));
+
+  let headline;
+  if (active.length === 0 && total === 0) {
+    headline = 'No conversation activity has been recorded in this window.';
+  } else {
+    const noun = active.length === 1 ? 'conversation' : 'conversations';
+    const idleClause = idle.length === 0 ? '' : `; ${idle.length} idle`;
+    headline = `I've processed ${fmtCount(total)} pieces of text across ${active.length} ${noun}${idleClause}.`;
+  }
+
+  const tiles = [
+    { key: 'processed', label: 'Text processed', value: fmtCount(total), tone: 'muted', rows: byTokens, mode: 'session' },
+    { key: 'conversations', label: 'Recent conversations', value: String(active.length), tone: 'neutral', rows: active, mode: 'session' },
+    { key: 'idle', label: 'Idle conversations', value: String(idle.length), tone: idle.length ? 'warn' : 'neutral', rows: idle, mode: 'orphan' },
+  ];
+  return { headline, tiles, population: active };
+}
+
+export function tokenSessionRowText(r) {
+  return `${projectName(r.projectPath)} — ${fmtCount(Number(r.totalTokens) || 0)} pieces of text`;
+}
+export function tokenOrphanRowText(o, opts = {}) {
+  const fmtTs = opts.fmtTs || defaultFmtTs;
+  return `${projectName(o.projectPath)} — idle since ${fmtTs(o.lastTs)}`;
+}
+export function tokenSessionRecordNode(doc, r, opts = {}) {
+  const fmtTs = opts.fmtTs || defaultFmtTs;
+  return recordFields(doc, [
+    ['Conversation', projectName(r.projectPath)],
+    ['Full path', r.projectPath || '—'],
+    ['Session', r.sessionId || '—'],
+    ['Pieces of text', fmtCount(Number(r.totalTokens) || 0)],
+    ['Messages', fmtCount(Number(r.eventCount) || 0)],
+    ['Last seen', fmtTs(r.lastTs)],
+  ]);
+}
+export function tokenOrphanRecordNode(doc, o, opts = {}) {
+  const fmtTs = opts.fmtTs || defaultFmtTs;
+  return recordFields(doc, [
+    ['Conversation', projectName(o.projectPath)],
+    ['Full path', o.projectPath || '—'],
+    ['Session', o.sessionId || '—'],
+    ['Idle since', fmtTs(o.lastTs)],
+  ]);
+}
+
+export function tokensGlanceSpec(doc, summary, sessions, orphans, opts = {}) {
+  const base = buildTokensGlance(summary, sessions, orphans);
+  const tiles = base.tiles.map((t) => ({
+    key: t.key, label: t.label, value: t.value, tone: t.tone,
+    onActivate: ({ doc: d, drilldown, openRecord }) => {
+      const rows = t.rows || [];
+      if (rows.length === 0) return;
+      const list = el(d, 'div', 'glance-list');
+      for (const item of rows) {
+        const row = d.createElement('button');
+        row.type = 'button';
+        row.className = 'glance-list-row';
+        row.setAttribute('aria-label', 'Open the full record');
+        const text = t.mode === 'orphan' ? tokenOrphanRowText(item, opts) : tokenSessionRowText(item);
+        row.appendChild(el(d, 'span', 'glance-list-summary', text));
+        const recNode = t.mode === 'orphan' ? tokenOrphanRecordNode(d, item, opts) : tokenSessionRecordNode(d, item, opts);
+        row.addEventListener('click', () => openRecord(recNode));
+        list.appendChild(row);
+      }
+      drilldown.appendChild(list);
+    },
+  }));
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Resource Usage glance (F10/F11) — GET /resources/summary ─────────────────
+// The old front page was a 6-gauge headline + a per-process table + a trend list.
+// On the floor: a plain headline over CPU-now / Memory-now / Processes tiles; the
+// per-process averages and peaks move to the Layer-3 record.
+
+/** Plain, jargon-free name for a resource source id. */
+function resourceSourceName(source) {
+  const s = String(source == null ? '' : source);
+  if (s === 'agent-server') return 'The server';
+  if (s === 'aggregate') return 'Everything together';
+  if (s.startsWith('session:')) return 'Conversation ' + sanitizeForDisplay(s.slice('session:'.length).slice(0, 8), 'label');
+  return humanizeToken(s) || 'A process';
+}
+
+/** The single population: the non-aggregate per-process sources. */
+export function resourcesPopulation(summary) {
+  const sources = summary && Array.isArray(summary.sources) ? summary.sources : [];
+  return sources.filter((s) => s && typeof s.source === 'string' && s.source !== 'aggregate');
+}
+
+export function buildResourcesGlance(summary) {
+  const sources = summary && Array.isArray(summary.sources) ? summary.sources : [];
+  const agg = sources.find((s) => s && s.source === 'aggregate');
+  const processes = resourcesPopulation(summary);
+
+  let headline;
+  if (!agg && processes.length === 0) {
+    headline = 'No resource samples have been collected yet.';
+  } else if (agg) {
+    headline = `Using ${fmtPct(agg.currentCpuPercent)} CPU and ${fmtBytes(agg.currentRssBytes)} of memory right now.`;
+  } else {
+    headline = `Watching ${processes.length} process${processes.length === 1 ? '' : 'es'} right now.`;
+  }
+
+  const byCpu = processes.slice().sort((a, b) => (Number(b.currentCpuPercent) || 0) - (Number(a.currentCpuPercent) || 0));
+  const byMem = processes.slice().sort((a, b) => (Number(b.currentRssBytes) || 0) - (Number(a.currentRssBytes) || 0));
+  const tiles = [
+    { key: 'cpu', label: 'CPU right now', value: agg ? fmtPct(agg.currentCpuPercent) : '—', tone: 'muted', rows: byCpu },
+    { key: 'memory', label: 'Memory right now', value: agg ? fmtBytes(agg.currentRssBytes) : '—', tone: 'muted', rows: byMem },
+    { key: 'processes', label: 'Processes', value: String(processes.length), tone: 'neutral', rows: processes },
+  ];
+  return { headline, tiles, population: processes };
+}
+
+export function resourceRowText(s) {
+  return `${resourceSourceName(s.source)} — ${fmtPct(s.currentCpuPercent)} CPU, ${fmtBytes(s.currentRssBytes)}`;
+}
+export function resourceRecordNode(doc, s) {
+  return recordFields(doc, [
+    ['Process', resourceSourceName(s.source)],
+    ['CPU right now', fmtPct(s.currentCpuPercent)],
+    ['Average CPU (last hour)', fmtPct(s.avgCpuPercent)],
+    ['Highest CPU (last hour)', fmtPct(s.peakCpuPercent)],
+    ['Memory right now', fmtBytes(s.currentRssBytes)],
+    ['Highest memory (last hour)', fmtBytes(s.peakRssBytes)],
+  ]);
+}
+export function resourcesGlanceSpec(doc, summary) {
+  const base = buildResourcesGlance(summary);
+  const tiles = wireTiles(doc, base.tiles, resourceRowText, resourceRecordNode);
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Initiatives glance (F10/F11) — GET /initiatives + /initiatives/digest ────
+// The old front page was a signal digest + a list of initiative cards. On the
+// floor: a plain headline over In-progress / Needs-you / Ready / Check-in / Idle
+// tiles; the phases, descriptions, and timestamps move to the Layer-3 record. The
+// In-progress tile drills into the (filtered) initiatives; the attention tiles
+// drill into the matching digest signals.
+
+const INITIATIVE_STATUS_WORD = {
+  active: 'in progress', completed: 'done', archived: 'archived', abandoned: 'stopped',
+};
+const SIGNAL_REASON_WORD = {
+  'needs-user': 'Waiting on you', 'next-check-due': 'Time for a check-in',
+  'ready-to-advance': 'Ready to move forward', 'stale': "Hasn't moved in a while",
+};
+
+/** The single population for the list tile: the (already server-filtered) items. */
+export function initiativesPopulation(itemsRes) {
+  const items = itemsRes && Array.isArray(itemsRes.items) ? itemsRes.items : [];
+  return items.filter((i) => i && typeof i === 'object');
+}
+
+export function buildInitiativesGlance(itemsRes, digestRes) {
+  const items = initiativesPopulation(itemsRes);
+  const signals = (digestRes && Array.isArray(digestRes.items)) ? digestRes.items.filter(Boolean) : [];
+  const byReason = (r) => signals.filter((s) => s.reason === r);
+  const needsYou = byReason('needs-user');
+  const ready = byReason('ready-to-advance');
+  const checkDue = byReason('next-check-due');
+  const idle = byReason('stale');
+
+  let headline;
+  if (items.length === 0) {
+    headline = 'No initiatives are in flight right now.';
+  } else {
+    const noun = items.length === 1 ? 'initiative' : 'initiatives';
+    const needClause = needsYou.length === 0 ? ''
+      : `; ${needsYou.length} need${needsYou.length === 1 ? 's' : ''} you`;
+    headline = `${items.length} ${noun} in flight${needClause}.`;
+  }
+
+  const tiles = [
+    { key: 'in-progress', label: 'In progress', value: String(items.length), tone: 'neutral', rows: items, mode: 'item' },
+    { key: 'needs-you', label: 'Needs you', value: String(needsYou.length), tone: needsYou.length ? 'warn' : 'neutral', rows: needsYou, mode: 'signal' },
+    { key: 'ready', label: 'Ready to move on', value: String(ready.length), tone: ready.length ? 'neutral' : 'muted', rows: ready, mode: 'signal' },
+    { key: 'check-due', label: 'Check-in due', value: String(checkDue.length), tone: checkDue.length ? 'warn' : 'muted', rows: checkDue, mode: 'signal' },
+    { key: 'idle', label: 'Idle', value: String(idle.length), tone: 'muted', rows: idle, mode: 'signal' },
+  ];
+  return { headline, tiles, population: items };
+}
+
+export function initiativeRowText(i) {
+  const title = sanitizeForDisplay(i.title || i.id || 'An initiative', 'summary');
+  return `${title} — ${INITIATIVE_STATUS_WORD[i.status] || (i.status || 'unknown')}`;
+}
+export function initiativeRecordNode(doc, i, opts = {}) {
+  const fmtTs = opts.fmtTs || defaultFmtTs;
+  const phases = Array.isArray(i.phases) ? i.phases : [];
+  const done = phases.filter((p) => p && p.status === 'done').length;
+  const rows = [
+    ['Initiative', i.title || i.id || '—'],
+    ['Status', INITIATIVE_STATUS_WORD[i.status] || (i.status || '—')],
+    ['What it is', i.description || '—'],
+  ];
+  if (phases.length) rows.push(['Steps done', `${done} of ${phases.length}`]);
+  if (i.lastTouchedAt) rows.push(['Last worked on', fmtTs(i.lastTouchedAt)]);
+  return recordFields(doc, rows);
+}
+export function initiativeSignalRowText(s) {
+  return sanitizeForDisplay(s.title || SIGNAL_REASON_WORD[s.reason] || 'A signal', 'summary');
+}
+export function initiativeSignalRecordNode(doc, s) {
+  return recordFields(doc, [
+    ['Initiative', s.title || '—'],
+    ['Why it needs a look', SIGNAL_REASON_WORD[s.reason] || (s.reason || '—')],
+    ['Detail', s.detail || '—'],
+  ]);
+}
+export function initiativesGlanceSpec(doc, itemsRes, digestRes, opts = {}) {
+  const base = buildInitiativesGlance(itemsRes, digestRes);
+  const tiles = base.tiles.map((t) => ({
+    key: t.key, label: t.label, value: t.value, tone: t.tone,
+    onActivate: ({ doc: d, drilldown, openRecord }) => {
+      const rows = t.rows || [];
+      if (rows.length === 0) return;
+      const list = el(d, 'div', 'glance-list');
+      for (const item of rows) {
+        const row = d.createElement('button');
+        row.type = 'button';
+        row.className = 'glance-list-row';
+        row.setAttribute('aria-label', 'Open the full record');
+        const text = t.mode === 'signal' ? initiativeSignalRowText(item) : initiativeRowText(item);
+        row.appendChild(el(d, 'span', 'glance-list-summary', text));
+        const recNode = t.mode === 'signal' ? initiativeSignalRecordNode(d, item) : initiativeRecordNode(d, item, opts);
+        row.addEventListener('click', () => openRecord(recNode));
+        list.appendChild(row);
+      }
       drilldown.appendChild(list);
     },
   }));

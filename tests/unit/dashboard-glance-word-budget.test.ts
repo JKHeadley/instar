@@ -36,6 +36,13 @@ import {
   buildSpendGlance,
   buildRoutingMapGlance,
   friendlyModel,
+  // Phase 4 — the sweep
+  buildPrPipelineGlance, prPipelinePopulation,
+  buildTokensGlance,
+  buildLlmActivityGlance, llmActivityPopulation,
+  buildSecretsGlance, secretsPopulation,
+  buildResourcesGlance, resourcesPopulation,
+  buildInitiativesGlance, initiativesPopulation,
   GLANCE_MAX_TILES,
   GLANCE_WORD_BUDGET,
   GLANCE_ADOPTED_TABS,
@@ -475,13 +482,138 @@ describe('F10/F11 grandfather ratchet — structural, not prose', () => {
     expect(validateGlanceSpec(buildRoutingMapGlance({ chains: [], components: [] })).ok).toBe(true);
   });
 
-  it('the ratchet only shrinks: the Phase-3 tabs left the grandfather list and the ceiling dropped', () => {
+  it('the ratchet only shrinks: the Phase-3 + Phase-4 tabs left the grandfather list and the ceiling dropped', () => {
     expect(GLANCE_GRANDFATHERED).not.toContain('blockers');
     expect(GLANCE_GRANDFATHERED).not.toContain('commitments');
     // Phase 3 — the jargon belt — retired four more tabs from the grandfather list.
     for (const id of ['machines', 'systems', 'spend', 'routing-map']) {
       expect(GLANCE_GRANDFATHERED, `${id} left the grandfather list`).not.toContain(id);
     }
-    expect(GLANCE_GRANDFATHERED_CEILING).toBe(20); // 25 (P1) → 24 (P2) → 20 (P3)
+    // Phase 4 — the sweep — retired every remaining data-summary view.
+    for (const id of ['pr-pipeline', 'tokens', 'llm-activity', 'secrets', 'resources', 'initiatives']) {
+      expect(GLANCE_GRANDFATHERED, `${id} left the grandfather list`).not.toContain(id);
+    }
+    expect(GLANCE_GRANDFATHERED_CEILING).toBe(14); // 25 (P1) → 24 (P2) → 20 (P3) → 14 (P4)
+  });
+});
+
+describe('F10 conformance — the Phase-4 sweep builders under adversarial fixtures', () => {
+  // Each builder is fed empty / null-ish / large-N / jargon-laden fixtures; the
+  // produced glance must ALWAYS pass F10 (≤5 tiles, ≤150 words, no insider vocab) —
+  // proving the raw data (IDs, camelCase, hex, cadences) can never leak to the glance.
+  const conforms = (glance: any) => {
+    const r = validateGlanceSpec(glance);
+    expect(r.ok, `violations: ${JSON.stringify(r.violations)}`).toBe(true);
+    expect(glance.tiles.length).toBeLessThanOrEqual(GLANCE_MAX_TILES);
+  };
+
+  describe('PR Pipeline', () => {
+    const fixtures: Array<[string, any]> = [
+      ['empty', {}],
+      ['disabled', { disabled: true, phase: 'off' }],
+      ['null-ish entries', { entries: [null, undefined, {}, 5] }],
+      ['jargon-laden reason/sha', { phase: 'enforce', entries: [
+        { pr_number: 42, head_sha: 'deadBEEF1234cafe', eligible: false, reason: 'checks pending; atRisk cadence: 1800s for CMT-953', created_at: '2026-07-01T00:00:00Z' },
+      ] }],
+      ['large N', { phase: 'shadow', entries: Array.from({ length: 60 }, (_, i) => ({ pr_number: i, head_sha: 'a'.repeat(40), eligible: i % 3 === 0, reason: 'r' + i })) }],
+    ];
+    for (const [name, m] of fixtures) it(`conforms for "${name}"`, () => conforms(buildPrPipelineGlance(m)));
+    it('TRUTHFULNESS — Ready + Not-ready partition the whole population', () => {
+      const m = fixtures[4][1];
+      const g = buildPrPipelineGlance(m);
+      const sum = g.tiles.reduce((n: number, t: any) => n + Number(t.value), 0);
+      expect(sum).toBe(prPipelinePopulation(m).length);
+    });
+  });
+
+  describe('Tokens', () => {
+    const fixtures: Array<[string, any, any[], any[]]> = [
+      ['empty', { summary: {} }, [], []],
+      ['null-ish', { summary: { totalTokens: 0 } }, [null, {}], [undefined]],
+      ['live', { summary: { totalTokens: 1234567, sessionsActive: 3 } },
+        [{ sessionId: 'abc123def', projectPath: '/Users/justin/Documents/Projects/ai-guy', totalTokens: 900000, eventCount: 120, lastTs: 1720000000000 }],
+        [{ sessionId: 'z9', projectPath: '/Users/justin/x', lastTs: 1719000000000 }]],
+      ['jargon-laden paths (never leak to Layer 1)', { summary: { totalTokens: 999 } },
+        [{ sessionId: 'CMT-953', projectPath: '/srv/atRisk_cadence-1800s/m_4f3a9b', totalTokens: 5, eventCount: 1, lastTs: 1720000000000 }], []],
+      ['large N', { summary: { totalTokens: 5e9 } }, Array.from({ length: 50 }, (_, i) => ({ sessionId: 's' + i, projectPath: '/p/proj-' + i, totalTokens: i * 1000, eventCount: i, lastTs: 1720000000000 })), []],
+    ];
+    for (const [name, s, sess, orph] of fixtures) it(`conforms for "${name}"`, () => conforms(buildTokensGlance(s, sess, orph)));
+  });
+
+  describe('LLM Activity', () => {
+    const mkF = (over: Record<string, unknown> = {}) => ({ feature: 'messageSentinel', frameworks: ['claude-code'], models: ['claude-haiku-4-5-20251001'], calls: 100, realCalls: 90, fired: 40, shed: 5, errors: 0, tokensIn: 1e6, tokensOut: 5e4, p50LatencyMs: 500, p95LatencyMs: 1800, ...over });
+    const fixtures: Array<[string, any]> = [
+      ['empty', {}],
+      ['null-ish', { totals: {}, features: [null, {}, mkF()] }],
+      ['live with errors', { totals: { calls: 1234, fired: 900, errors: 3, tokensIn: 5e6, tokensOut: 2e5 }, features: [mkF(), mkF({ feature: 'toneGate', errors: 3, models: ['gpt-5.5'] })] }],
+      ['jargon-laden feature names', { totals: { calls: 5, errors: 0 }, features: [mkF({ feature: 'apprenticeshipCycleSla_v2', models: ['m_4f3a9b1c2d'] })] }],
+      ['large N', { totals: { calls: 99999, errors: 12 }, features: Array.from({ length: 40 }, (_, i) => mkF({ feature: 'component_' + i, calls: i * 10, errors: i % 5 })) }],
+    ];
+    for (const [name, d] of fixtures) it(`conforms for "${name}"`, () => conforms(buildLlmActivityGlance(d)));
+    it('TRUTHFULNESS — the Components tile equals the population length', () => {
+      const d = fixtures[4][1];
+      const g = buildLlmActivityGlance(d);
+      expect(Number(g.tiles.find((t: any) => t.key === 'components').value)).toBe(llmActivityPopulation(d).length);
+    });
+  });
+
+  describe('Secrets', () => {
+    const now = Date.parse('2026-07-10T00:00:00Z');
+    const fixtures: Array<[string, any]> = [
+      ['empty', {}],
+      ['null-ish', { pending: [null, undefined, {}] }],
+      ['waiting + expired', { pending: [
+        { label: 'GitHub token', token: 'drop_abc', topicId: 12143, createdAt: now - 1000, expiresAt: now + 100000, expired: false, tunnelUrl: 'https://x.trycloudflare.com/drop/abc' },
+        { label: 'Old key', token: 'drop_old', expired: true, expiresAt: now - 1000 },
+      ] }],
+      ['jargon-laden label (never leaks to Layer 1)', { pending: [{ label: 'fix the atRisk cadence: 1800s for CMT-953', token: 'drop_x', expiresAt: now + 5000 }] }],
+      ['large N', { pending: Array.from({ length: 30 }, (_, i) => ({ label: 'req ' + i, token: 'd' + i, expiresAt: now + (i % 2 ? 5000 : -5000) })) }],
+    ];
+    for (const [name, d] of fixtures) it(`conforms for "${name}"`, () => conforms(buildSecretsGlance(d, now)));
+    it('TRUTHFULNESS — Waiting + Expired partition the population', () => {
+      const d = fixtures[4][1];
+      const g = buildSecretsGlance(d, now);
+      const sum = g.tiles.reduce((n: number, t: any) => n + Number(t.value), 0);
+      expect(sum).toBe(secretsPopulation(d).length);
+    });
+  });
+
+  describe('Resources', () => {
+    const mkS = (over: Record<string, unknown> = {}) => ({ source: 'agent-server', currentCpuPercent: 12, currentRssBytes: 5e8, avgCpuPercent: 10, peakCpuPercent: 40, peakRssBytes: 6e8, ...over });
+    const fixtures: Array<[string, any]> = [
+      ['empty', { sources: [] }],
+      ['null-ish', { sources: [null, {}, mkS()] }],
+      ['aggregate + processes', { sampleCount: 120, sources: [
+        mkS({ source: 'aggregate', currentCpuPercent: 45.3, currentRssBytes: 2.5e9, peakCpuPercent: 163 }),
+        mkS(), mkS({ source: 'session:abc123def456', currentCpuPercent: 33, currentRssBytes: 1.5e9 }),
+      ] }],
+      ['large N', { sources: [mkS({ source: 'aggregate' })].concat(Array.from({ length: 40 }, (_, i) => mkS({ source: 'session:s' + i, currentCpuPercent: i }))) }],
+    ];
+    for (const [name, d] of fixtures) it(`conforms for "${name}"`, () => conforms(buildResourcesGlance(d)));
+    it('TRUTHFULNESS — the Processes tile equals the non-aggregate population', () => {
+      const d = fixtures[3][1];
+      const g = buildResourcesGlance(d);
+      expect(Number(g.tiles.find((t: any) => t.key === 'processes').value)).toBe(resourcesPopulation(d).length);
+    });
+  });
+
+  describe('Initiatives', () => {
+    const mkI = (over: Record<string, unknown> = {}) => ({ id: 'i1', title: 'Migrate the mesh', status: 'active', description: 'x', phases: [{ status: 'done' }, { status: 'in-progress' }], lastTouchedAt: '2026-07-01T00:00:00Z', ...over });
+    const fixtures: Array<[string, any, any]> = [
+      ['empty', { items: [] }, { items: [] }],
+      ['null-ish', { items: [null, {}, mkI()] }, { items: [null, { reason: 'stale', title: 't', detail: 'd' }] }],
+      ['live with signals', { items: [mkI(), mkI({ id: 'i2', title: 'Ship v2' })] },
+        { items: [{ reason: 'needs-user', title: 'Approve the plan', detail: 'waiting since June 2' }, { reason: 'ready-to-advance', title: 'Ready', detail: 'go' }] }],
+      ['jargon-laden title (never leaks to Layer 1)', { items: [mkI({ title: 'fix the atRisk cadence: 1800s for CMT-953' })] },
+        { items: [{ reason: 'stale', title: 'the beaconEnabled m_4f3a flag', detail: 'x' }] }],
+      ['large N', { items: Array.from({ length: 40 }, (_, i) => mkI({ id: 'i' + i, title: 'Init ' + i })) },
+        { items: Array.from({ length: 20 }, (_, i) => ({ reason: ['needs-user', 'next-check-due', 'ready-to-advance', 'stale'][i % 4], title: 'sig ' + i, detail: 'd' })) }],
+    ];
+    for (const [name, items, digest] of fixtures) it(`conforms for "${name}"`, () => conforms(buildInitiativesGlance(items, digest)));
+    it('TRUTHFULNESS — the In-progress tile equals the item population', () => {
+      const items = fixtures[4][1], digest = fixtures[4][2];
+      const g = buildInitiativesGlance(items, digest);
+      expect(Number(g.tiles.find((t: any) => t.key === 'in-progress').value)).toBe(initiativesPopulation(items).length);
+    });
   });
 });
