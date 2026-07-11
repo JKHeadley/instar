@@ -42,8 +42,16 @@ describe('dashboard empty-state floor (F6)', () => {
     const html = fs.readFileSync(DASHBOARD_HTML, 'utf-8');
 
     const ids = [...html.matchAll(EMPTY_ID_RE)].map(m => m[1]);
-    // Population floor: the known empty-state containers must be visible.
-    expect(new Set(ids).size, 'empty-state containers visible to the F6 floor').toBeGreaterThanOrEqual(6);
+    // Population floor: the known static empty-state containers must be visible.
+    // As tabs adopt the shared glance component (Phase 4: pr-pipeline, tokens,
+    // llm-activity, secrets, resources, initiatives), their bespoke `*Empty*`
+    // containers move INTO the component — the glance renders its own honest
+    // empty-state (`.glance-empty` "Nothing here right now"), enforced at the
+    // component boundary by tests/unit/dashboard-glance-drilldown.test.ts (every
+    // zero-count tile opens an honest empty-state) rather than by this static
+    // scan. So the static population ratchets DOWN as views migrate; the floor
+    // still fails loudly (→ 0) if the matcher regex regresses.
+    expect(new Set(ids).size, 'static empty-state containers visible to the F6 floor').toBeGreaterThanOrEqual(4);
 
     const bare: string[] = [];
     const jargon: string[] = [];

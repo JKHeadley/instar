@@ -20,8 +20,9 @@ describe('dashboard: Initiatives tab', () => {
     expect(HTML).toContain(`switchTab('initiatives')`);
   });
 
-  it('has an initiativesPanel container', () => {
+  it('has an initiativesPanel that renders through the shared glance component (Phase 4)', () => {
     expect(HTML).toContain('id="initiativesPanel"');
+    expect(HTML).toMatch(/id="initiativesGlance"[^>]*class="glance-root"/);
   });
 
   it('registers the initiatives tab in TAB_REGISTRY', () => {
@@ -54,21 +55,24 @@ describe('dashboard: Initiatives tab', () => {
     expect(body).not.toMatch(/\.innerHTML\s*=/);
   });
 
-  it('renders phase pills with known status values', () => {
+  it('builds its glance via the shared component and keeps the status filter (Phase 4)', () => {
     const start = HTML.indexOf('async function loadInitiatives()');
-    const body = HTML.slice(start, start + 8000);
-    expect(body).toContain('pending');
-    expect(body).toContain('in-progress');
-    expect(body).toContain('done');
-    expect(body).toContain('blocked');
+    const body = HTML.slice(start, start + 2000);
+    // Phase 4: the phase pills + digest-reason tags moved into glance.js
+    // (buildInitiativesGlance / initiativeRecordNode, covered by the glance tests);
+    // the loader now feeds items + digest to the shared component. The status
+    // filter is preserved (behavior untouched).
+    expect(body).toContain('initiativesGlanceSpec');
+    expect(body).toContain('renderGlance');
+    expect(body).toContain('initiativesFilter');
   });
 
-  it('renders digest signals with known reason tags', () => {
-    const start = HTML.indexOf('async function loadInitiatives()');
-    const body = HTML.slice(start, start + 8000);
-    expect(body).toContain(`'needs-user'`);
-    expect(body).toContain(`'next-check-due'`);
-    expect(body).toContain(`'ready-to-advance'`);
-    expect(body).toContain(`'stale'`);
+  it('the glance component (glance.js) carries the plain-word status + digest-reason mapping', () => {
+    const glance = fs.readFileSync(path.resolve(__dirname, '../../dashboard/glance.js'), 'utf-8');
+    // The digest reasons are humanized to plain words at the glance/record layer.
+    for (const reason of ['needs-user', 'next-check-due', 'ready-to-advance', 'stale']) {
+      expect(glance, `${reason} handled in glance.js`).toContain(`'${reason}'`);
+    }
+    expect(glance).toContain('INITIATIVE_STATUS_WORD');
   });
 });

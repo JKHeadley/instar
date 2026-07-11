@@ -19,8 +19,9 @@ describe('dashboard: Secrets tab', () => {
     expect(HTML).toContain(`switchTab('secrets')`);
   });
 
-  it('has a secretsPanel container', () => {
+  it('has a secretsPanel that renders through the shared glance component (Phase 4)', () => {
     expect(HTML).toContain('id="secretsPanel"');
+    expect(HTML).toMatch(/id="secretsGlance"[^>]*class="glance-root"/);
   });
 
   it('has a tabSecretCount badge on the tab button', () => {
@@ -31,10 +32,12 @@ describe('dashboard: Secrets tab', () => {
     expect(HTML).toMatch(/id:\s*'secrets'[\s\S]{0,200}panels:\s*\['secretsPanel'\]/);
   });
 
-  it('calls loadSecrets on activation and stops the ticker on deactivation', () => {
+  it('calls loadSecrets on activation (Phase 4 retired the live countdown ticker)', () => {
     expect(HTML).toContain(`loadSecrets === 'function'`);
-    expect(HTML).toContain('startSecretsTicker()');
-    expect(HTML).toContain('stopSecretsTicker()');
+    // The glance shows a static expiry at Layer 3, so the secrets tab no longer
+    // starts a 1s countdown ticker on activate.
+    const reg = HTML.match(/id:\s*'secrets'[\s\S]{0,300}/)![0];
+    expect(reg).not.toContain('startSecretsTicker()');
   });
 
   it('defines async function loadSecrets', () => {
@@ -56,10 +59,16 @@ describe('dashboard: Secrets tab', () => {
   });
 
   it('supports cancelling a pending request via DELETE /secrets/pending/:token', () => {
-    const start = HTML.indexOf('async function loadSecrets()');
-    const body = HTML.slice(start, start + 6000);
-    expect(body).toMatch(/\/secrets\/pending\/\$\{encodeURIComponent\(p\.token\)\}/);
+    // Phase 4: the cancel action moved to the shared cancelSecretRequest helper,
+    // wired onto the glance's Layer-3 record via onCancel (behavior preserved).
+    const start = HTML.indexOf('async function cancelSecretRequest(');
+    expect(start).toBeGreaterThan(-1);
+    const body = HTML.slice(start, start + 800);
+    expect(body).toMatch(/\/secrets\/pending\/\$\{encodeURIComponent\(token\)\}/);
     expect(body).toMatch(/method:\s*'DELETE'/);
+    // loadSecrets passes cancelSecretRequest through as onCancel.
+    const lsStart = HTML.indexOf('async function loadSecrets()');
+    expect(HTML.slice(lsStart, lsStart + 1200)).toContain('onCancel: cancelSecretRequest');
   });
 
   it('does not use innerHTML inside loadSecrets (XSS invariant)', () => {
@@ -78,9 +87,12 @@ describe('dashboard: Secrets tab', () => {
     expect(body).toContain('setInterval');
   });
 
-  it('renders an expires-in countdown element per pending item', () => {
+  it('renders through the glance component (Phase 4 — static expiry replaces the live countdown)', () => {
     const start = HTML.indexOf('async function loadSecrets()');
-    const body = HTML.slice(start, start + 6000);
-    expect(body).toContain('secretCountdown-');
+    const body = HTML.slice(start, start + 1200);
+    // The tab builds its glance via the shared component; the exact expiry time
+    // is shown at Layer 3 (a static timestamp), so no per-item live countdown.
+    expect(body).toContain('secretsGlanceSpec');
+    expect(body).toContain('renderGlance');
   });
 });
