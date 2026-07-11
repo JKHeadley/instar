@@ -263,6 +263,12 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 
 ---
 
+### Ownership-Gated Side Effects
+**Rule.** On a multi-machine pool, any actor that creates, revives, or re-binds a session — or fires topic-scoped side effects — must prove current conversation ownership at fire time; routing and ownership verdicts are binding, not advisory; a non-owner forwards, queues, or claims deliberately, never acts locally; ownership-resolution error fails toward action loudly and boundedly, never silently.
+**In practice.** Applied through `src/core/SpawnAdmission.ts` and the burst-invariant E2E test; the revival actors' existing `topic-owner-elsewhere` invalidation is the precedent generalized. The duplicate-reconciler carve-out's terminate-time re-probe is this rule applied to the CLOSE side. Full spec: `docs/specs/ownership-gated-spawn-and-judgment-within-floors.md`.
+**Earned from.** 2026-07-10: the Mini spawned sessions for Laptop-owned topics 6ms after its own router said not to (verdict computed, then discarded — the inbound handler keyed on durable-queue custody instead of ownership); 2026-06-25: topic-28730 ownership-split stall.
+**Traces to the goal.** One agent, many machines — exactly one voice and one owner per conversation.
+
 ## Building — engineering discipline
 
 ### Framework-Agnostic — and Framework-Optimizing
@@ -504,6 +510,20 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 **Applied through.** The recurring **doorway-scan job** (`src/scaffold/templates/jobs/instar/doorway-scan.md` + the deterministic `scripts/doorway-scan.mjs`) + the strict **freshness lint** (`scripts/lint-model-registry-freshness.mjs`, #1359 — now `enforcement: "strict"`, gating in the `npm run lint` chain) + the enriched **Doorway/Model Knowledge Registry** (`scripts/model-registry-freshness.manifest.json`) + the human routing narrative (`docs/LLM-ROUTING-REGISTRY.md`). Full spec: `docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md`. **Parent principle:** *Structure beats Willpower*.
 
 ---
+
+### Judgment Within Floors
+**Rule.** A decision point with competing signals or non-enumerable context may be delegated to an LLM arbiter only inside a deterministic floor: the floor defines the complete safe action space and a conservative default; invariants are never delegated; the arbiter can narrow but never widen; an arbiter choice with irreversible consequence requires mechanical corroboration, never free-text evidence alone; fallback follows the bench-ranked ladder and always ends at a deterministic rung; and an arbiter may begin ACTING (beyond shadow) only after shadow-phase evidence shows it beats the deterministic default on the decision point's named success criteria — evidence before authority. A new static heuristic at such a point must state why it is not a judgment point.
+**Derives from.** *Signal vs. Authority* and *The Body and the Mind* — and sharpens rather than inverts them: floors are the documented exemption class (`docs/signal-vs-authority.md` §"When this principle does NOT apply" — enumerable-domain invariants and safety guards on irreversible actions) where deterministic blocking is sanctioned; ABOVE the floor the mind holds the choice, exactly as The Body and the Mind requires. Coexists with *Tiered Development*'s audited below-floor authority: a JWF floor is a per-decision-point action-space bound, not a tier gate; Tiered Development governs who may change the floor, JWF governs what runs inside it.
+**In practice.** Applied through `src/core/SpawnAdmission.ts` (the owner-dark arbiter's floor) and the duplicate reconciler survivor floor; contested per-spec via the spec-converge decision-point classification and per-change via the side-effects question; arbiters join the four routing registries and carry parity-checked batteries. Full spec: `docs/specs/ownership-gated-spawn-and-judgment-within-floors.md`.
+**Earned from.** 2026-07-10 duplicate-session incident: the static reap heuristics (`open-commitment`, `not-lease-holder`) made duplicates immortal, while the missing enforcement of an already-computed verdict caused them.
+**Traces to the goal.** The mind decides within the body's constraints; neither substitutes for the other.
+
+### Decision Provenance & Outcome Review
+**Rule.** Every LLM judgment call durably logs the full context it was handed and the decision it made — scrubbed, retention-bounded, machine-local-full/HTTP-redacted — and every judgment point is outcome-annotated where ground truth exists and periodically graded against outcomes, with graded real cases feeding its bench battery. An unlogged judgment call is an unaccountable one.
+**Derives from.** *Observable Intelligence* — and extends it from call METADATA to decision CONTENT (the handed context, the choice, the outcome). A separate article because the obligations differ in kind: metadata is cheap and always-on; content carries disclosure risk and therefore carries the redaction/locality/retention contract as part of the rule itself.
+**In practice.** Applied through `src/core/JudgmentProvenanceLog.ts` and the graded-review job; extends **Token-Audit Completeness** from cost to content. Full spec: `docs/specs/ownership-gated-spawn-and-judgment-within-floors.md`.
+**Earned from.** The 2026-07-10 investigation reconstructed decisions from scattered logs by hand; provenance rows would have made the root cause a read, and real incidents are the only honest battery cases.
+**Traces to the goal.** Observable Intelligence — no autonomous decision is invisible, and the system's judgment measurably improves.
 
 ## Shipping — truthfulness and completeness
 

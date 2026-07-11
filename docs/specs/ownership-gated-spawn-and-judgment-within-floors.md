@@ -84,7 +84,7 @@ The authority skip ladder (`SessionManager.terminateSession`, `src/core/SessionM
 ### 2.6 Substrate honesty (verified — the preconditions in §3.2.0 and §4 exist because of these)
 - **The fleet-default ownership store is in-memory.** `InMemorySessionOwnershipStore` (records wiped on restart — regenerating §2.3's "no record" state); the durable `LocalSessionOwnershipStore` + cross-machine materialization activate only under the replication/dev gates (`src/commands/server.ts:18966-18979`), with pool-consistent activation added after the 2026-06-16 seat-died-on-arrival incident (`:18952-18963`).
 - **Cross-machine convergence rides journal replication.** `OwnershipApplier` materializes peer records from the REPLICATED placement journal (`server.ts:18940-18990`) — the same channel class whose bloat triggered the ancestor incident. There is also a documented false-positive history for cross-machine ownership claims (memory: "cross-machine transfer not wired", 2026-06-15).
-- **The one-voice election is owner-liveness-blind.** `SpeakerElection.decideInner` rule 1 returns `speak=false (owner-other)` from the ownership record with no liveness input (`src/monitoring/SpeakerElection.ts:122-127`) — the incident's own log line. A dark owner therefore holds the topic's voice while being unable to use it. This spec carves out ONLY the rung-3 notice (§3.3); the general gap — every OTHER suppressed send deferring to a dark owner indefinitely — is declared a **tracked follow-up** (`speaker-election-owner-liveness`), registered under Close the Loop with the Increment-1 PR.
+- **The one-voice election is owner-liveness-blind.** `SpeakerElection.decideInner` rule 1 returns `speak=false (owner-other)` from the ownership record with no liveness input (`src/monitoring/SpeakerElection.ts:122-127`) — the incident's own log line. A dark owner therefore holds the topic's voice while being unable to use it. This spec carves out ONLY the rung-3 notice (§3.3); the general gap — every OTHER suppressed send deferring to a dark owner indefinitely — is declared a **tracked follow-up** (`speaker-election-owner-liveness`), registered under Close the Loop with the Increment-1 PR. <!-- tracked: ACT-1190 -->
 - **The hold rung's current shape lives inside the dark queue block.** `holdVerdict` is constructed only when the inbound queue is enabled (`server.ts:21255-21270`); on the fleet there is no hold machinery at all. **And the hold policy trails the queue by one rollout stage by that spec's own design** (`docs/specs/durable-inbound-message-queue.md` — "hold policy trails one rollout stage behind") — queue-live does NOT imply hold-live.
 - **The claim rung's engine ships dry.** `StaleOwnerReleaseEngine.actForceClaim` (U4.2) is dev-gated dryRun — would-claims logged, no authority moves.
 - **Pin-store writes are NOT ownership-registry CAS.** The pin store replicates via the U4.1 HLC fold with skew-quarantine + PIN-gated readmit — different conflict semantics from `SessionOwnershipRegistry.cas` (`src/core/SessionOwnershipRegistry.ts:182`).
@@ -238,7 +238,7 @@ All three: escalation is structurally downstream of the heal attempt; flapping a
 ## 4. Rollout (graduated; substrate-sequenced)
 
 0. **Preconditions for any enforcement:** durable + replicated ownership substrate live pool-wide (§3.2.0), pool-consistent activation signal, all three pool-behavior flags in the machine-coherence coherence-critical set, `standards.selfHealBeforeNotify.recoverableLatencyCeiling` landed in the registry (§3.8).
-1. **Increment 1:** `resolveOwnershipSafe` + SpawnAdmission seam + reconciler, ALL dryRun. Provenance log ships with the seam. §3.6 gate questions + §7 registry text + **all THREE PostUpdateMigrator migrations (two skill-file patches + the gitignore patch — provenance rows are written from Increment 1, so the gitignore must land with it)** + `NEVER_SERVED_PREFIXES` + the `speaker-election-owner-liveness` tracked follow-up registration land HERE.
+1. **Increment 1:** `resolveOwnershipSafe` + SpawnAdmission seam + reconciler, ALL dryRun. Provenance log ships with the seam. §3.6 gate questions + §7 registry text + **all THREE PostUpdateMigrator migrations (two skill-file patches + the gitignore patch — provenance rows are written from Increment 1, so the gitignore must land with it)** + `NEVER_SERVED_PREFIXES` + the `speaker-election-owner-liveness` tracked follow-up registration <!-- tracked: ACT-1190 --> land HERE.
 2. **Increment 2:** flip A+B enforcing on the dev pool — which REQUIRES on that pool: inbound queue live, `holdForStability` live (it trails the queue by one stage — its own ladder is respected, §3.3 matrix), stale-owner-release live. **These are the prerequisite features' OWN graduation decisions (their ≥7-day-per-stage counter criteria, U4.2's soak call) — Increment 2 INHERITS those gates and stalls honestly behind them; this spec's flags are not the lever that flips them.** Deterministic defaults only. Entry gate: the two-node replication harness (§5) green **in CI** (it is an E2E under the ratchets, not a manual exercise). Provenance sampling steps down to 0.1.
    **Increment 2b:** `commitmentCustodyTransfer` enforcing on the dev pool (its own sub-flag, its own two-node E2E, independently reversible — round-3 boundary); until 2b, open-commitment duplicates escalate rather than auto-close.
 3. **Increment 3:** J1/J2 arbiters in shadow (decide-and-log, not act); batteries land; parity-check covers them.
@@ -257,7 +257,7 @@ All three: escalation is structurally downstream of the heal attempt; flapping a
 
 - **Unit:** tri-state resolver (each kind incl. thrown-registry → `error`, windowed breaker incl. interleaved-success flapping, hysteresis close, episode counting); admission table exhaustive incl. router-verdict consumption; ladder rung transitions + FULL stage matrix (queue × hold × release) + silence ceiling + notice dedupe + pre-send liveness re-check; intended-owner rules (admissible-epoch beats recency; origin-stamp rejection; both-self; rule-2/rule-3 contradiction → escalate; both-run → escalate; quarantined pin ignored; 409 → escalate; boot-time epoch re-seed); arbiter clamps (invalid/omitted/timeout/below-floor → default, action-space violation rejected, defer cap → escalate at 4, move without PRE-EPISODE corroboration rejected — incl. a post-episode-minted commitment); custody transfer (idempotent externalKey re-mint, ACK-gated supersede fenced to verified successor, no-ACK escalate, vetoed-close transfers nothing, sessionEpoch disarm, beacon-cap respected, custody-disabled → escalate); carve-out (disposition-appropriate fence required on BOTH legs — reason-string forgery rejected for `duplicate-reconciled` AND `topic-moved`; terminate-time probe fail → veto); episode-open backdating (post-spawn evidence rejected even when detection lags); provenance writer (schema, scrub, {redacted,full} split, byte clamps, async buffering, sampling); breaker (replicated counters survive lease move, type-clamped receive rejects NaN/2^53, flip + echoed-but-unhealed counting, transfer-traceable exclusion, TTL prune).
 - **Wiring-integrity (P4 — the incident's root cause WAS a no-op injected dep):** SpawnAdmission consulted at each named callsite with non-null, non-no-op deps; provenance writer wired at the seam (a verdict produces a row); reconciler's closeout trigger reaches the REAL sweeper config; `NEVER_SERVED_PREFIXES` enforced — GET/download `state/judgment-provenance/*` → 403 under default config (and via the WS4.4 proxy path).
-- **Integration:** inbound → owner-dark → notice path over real HTTP (queue dark AND live; wording matches stage; ONE notice under an N-message burst); duplicate formed → record converged → peer-echo observed → closeout closes non-owner copy → custody transferred (explicitly two-node: origin commitment on machine A, survivor on machine B, successor minted on B, A's record terminal-superseded); **EVERY `duplicate-reconciled`/`topic-moved` termination — shielded or not — closes ONLY with the terminate-time live-owner probe confirmed** (owner dies between record-write and terminate → veto + defer, zero-live-copies impossible); active-subagent still vetoes; topic-moved disposition gets the same carve-out + custody (mirror parity); work-gate deferral; arbiters stubbed to EVERY option proving floors hold; single-machine byte-identical short-circuit; registry-error freeze (reconciler + closeout refuse while spawn fail-open proceeds bounded); substrate-flap pause/resume.
+- **Integration:** inbound → owner-dark → notice path over real HTTP (queue dark AND live; wording matches stage; ONE notice under an N-message burst); duplicate formed → record converged → peer-echo observed → closeout closes non-owner copy → custody transferred (explicitly two-node: origin commitment on machine A, survivor on machine B, successor minted on B, A's record terminal-superseded); **EVERY `duplicate-reconciled`/`topic-moved` termination — shielded or not — closes ONLY with the terminate-time live-owner probe confirmed** (owner dies between record-write and terminate → veto + defer, zero-live-copies impossible); active-subagent still vetoes; topic-moved disposition gets the same carve-out + custody (mirror parity); the work-gate's hold-until-work-lands path; arbiters stubbed to EVERY option proving floors hold; single-machine byte-identical short-circuit; registry-error freeze (reconciler + closeout refuse while spawn fail-open proceeds bounded); substrate-flap pause/resume.
 - **E2E:** feature-alive (`GET /pool/duplicate-reconciler`, `GET /judgment-provenance` — 200 not 503 where surfaced); **the burst invariant:** a non-owner machine receiving N inbound messages for owned-elsewhere topics creates ZERO local sessions and EXACTLY ONE notice per topic-episode plus the queued artifacts, and a mass-heal tick folds `convergence-not-observed` into ONE item; duplicate-reconciliation lifecycle on a **real two-node harness in which the replication hop is NOT stubbed** — affirmative evidence that a lease-holder convergence write lands in the PEER machine's own registry view and arms the peer-side sweeper (L7). Runs in CI as the Increment-2 entry gate.
 - **Partition/delayed-replay matrix (§3.0):** two-node harness cases for partition-formed duplicates (heal on merge), delayed journal replay (echo timeout → escalate, then late convergence), and registry-error episodes (freeze + bounded fail-open + post-recovery convergence).
 - **Ratchets joined:** llm-attribution, bench-coverage, routing-registry freshness, no-unbounded-llm-spawn, lint-dev-agent-dark-gate (all four flags), lint-self-heal-fields (§3.8 blocks), **Capacity Safety** (the reconciler's converge-write/closeout-trigger/custody-mint and the ladder's notice/claim register in `selfActionRegistry` + the sustained-pressure convergence test — they are exactly the self-triggered action class it governs).
@@ -346,8 +346,47 @@ Grouped honestly (round-4, codex): items marked **[core]** are the duplicate-ses
 - **[core]** `.gitignore` delivery for `state/judgment-provenance/`: `ensureGitignore` (fresh installs) + idempotent `PostUpdateMigrator` gitignore patch (existing agents; `.worktrees/` precedent `PostUpdateMigrator.ts:2532-2549`).
 - **[core]** `DEV_GATED_FEATURES` rows (all FOUR flags incl. `commitmentCustodyTransfer`); `COHERENCE_CRITICAL_FLAGS` additions (all three pool-behavior flags); `/guards` loadBearing wiring for stale-owner-release when the ladder enforces; `standards.selfHealBeforeNotify.recoverableLatencyCeiling` registry landing per the §3.8 authority clause (lands at the converged value, else rides that spec's cycle under the fail-closed interim).
 - **[core]** Backup-manifest exclusions (provenance dir).
-- **[core]** lint-self-heal-fields declarations (§3.8) + the `speaker-election-owner-liveness` tracked follow-up registration (§2.6); **[eco]** bench batteries + registry rows (§3.4).
+- **[core]** lint-self-heal-fields declarations (§3.8) + the `speaker-election-owner-liveness` tracked follow-up registration (§2.6) <!-- tracked: ACT-1190 -->; **[eco]** bench batteries + registry rows (§3.4).
 - **[core]** Implementation docs: sequence diagrams for the three core flows (inbound-to-non-owner, duplicate reconcile, commitment-shielded closeout) — the implementer-facing map for the terminology the glossary defines.
+
+## Appendix — §3.8 self-heal declarations (lint-self-heal-fields blocks)
+
+*Machine-checkable restatement of the §3.8 table (one labeled block per watcher, validated by `scripts/lint-self-heal-fields.js`; the table remains the narrative authority). Added with the Increment-1 build (editorial — no semantic change to the converged text).*
+
+**Duplicate reconciler (per topic):**
+- remediation-actions: converge ownership record via fenced CAS; peer-echo verify; existing gated closeout closes the non-owner copy; post-close custody transfer (Increment 2b)
+- max-attempts: 3
+- max-wall-clock: 24h
+- backoff: tick-paced (60s reconciler cadence)
+- dedupe-key: `dup-reconcile:<topic>:<episode>`
+- breaker: ≥3 re-duplications or record-flips per topic per 24h → ONE attention item + owner-dark-ladder clamp to rung 3
+- max-notification-latency: 300s
+- audit-location: `logs/duplicate-reconciler.jsonl` (scrubbed, metadata-only)
+- class: recoverable
+
+**Owner-dark ladder (per outage episode):**
+- remediation-actions: hold (where hold-for-stability is live); fenced claim when the stale-owner-release evidence bar passes; durable-queue custody + honest rung-3 notice
+- max-attempts: 1
+- max-wall-clock: 10m
+- backoff: laddered (rungs 1→2→3, no retry loop)
+- dedupe-key: `owner-dark:<machine>:<episode>`
+- breaker: error-arm windowed breaker (§3.1 row e — code constants)
+- max-notification-latency: 300s
+- audit-location: `logs/owner-dark-ladder.jsonl`
+- class: recoverable
+
+**SpawnAdmission error arm (per registry-error episode):**
+- remediation-actions: fail-open local spawn (reachability wins over a broken store); windowed breaker degrades to the rung-3 notice floor
+- max-attempts: 1
+- max-wall-clock: 24h
+- backoff: episode-scoped hysteresis (10 consecutive clean resolutions close the episode)
+- dedupe-key: `spawn-admission-error:<machineId>:<episode>`
+- breaker: K=5 consecutive errors OR ≥8 errors in 10 min; ≥3 episodes/24h escalates HIGH
+- max-notification-latency: 300s
+- audit-location: `logs/owner-dark-ladder.jsonl`
+- class: recoverable
+
+*(Class honesty per the §3.8 table: the error arm's `recoverable` is ARGUED — duplicates formed mid-episode are unhealable until recovery and doubled external side effects are not reversible, but formation is bounded (once per topic per episode + the breaker) and convergence follows recovery; a SECURITY-class event (suspected record forgery) escalates same-tick.)*
 
 ## Open questions
 

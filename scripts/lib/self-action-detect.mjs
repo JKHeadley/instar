@@ -40,6 +40,8 @@ export const SELF_ACTION_VERB_TOKENS = Object.freeze([
   'notify', 'createForumTopic', 'createAttentionItem', 'sendToTopic',
   // re-drive / re-pin family
   'reDrive', 'redrive', 'rePin', 'repin',
+  // record-repair family (ownership-gated-spawn §3.2 — the reconciler's fenced CAS)
+  'converge',
   // retry / nudge / escalate family
   'retry', 'nudge', 'escalate',
 ]);

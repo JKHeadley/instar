@@ -44,6 +44,30 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'ownershipGatedSpawn',
+    configPath: 'multiMachine.sessionPool.ownershipGatedSpawn.enabled',
+    description: 'SpawnAdmission — the binding-verdict seam at every conversation-bound session-creating callsite (ownership-gated-spawn-and-judgment-within-floors §3.1, Layer A; the Ownership-Gated Side Effects standard). Consults resolveOwnershipSafe (tri-state, non-throwing) and the router verdict (TOCTOU consumption) before Telegram cold-spawn/respawn + Slack inbound/recovery spawns; never a bootleg local copy of an owned-elsewhere conversation.',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the seam runs the full admission table and JOURNALS would-block verdicts (logs/owner-dark-ladder.jsonl) + deterministic provenance rows, but every decision returns allow while dryRun holds — a real refusal needs a deliberate dryRun:false AND (structural invariant, §3.1 item 6) the durable inbound queue live on that machine, so notice-only refusal can never engage by accident. Single-machine / pool-dark short-circuits to allow with zero writes (byte-identical). Fail direction on registry error is TOWARD the spawn (reachability wins), bounded by a code-constant breaker. No LLM call, no spend, no egress.',
+  },
+  {
+    name: 'duplicateReconciler',
+    configPath: 'multiMachine.sessionPool.duplicateReconciler.enabled',
+    description: 'Duplicate-session reconciler (same spec §3.2, Layer B) — a 60s lease-holder tick that detects the SAME conversation live on ≥2 machines, determines the intended owner from evidence (pin → admissible epoch → registered live run → escalate), converges the OWNERSHIP RECORD via the existing CAS + fencing, confirms peer echo, and lets the existing gated closeout close the non-owner copy. Never a new killer.',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the reconciler runs detection + intended-owner determination and LOGS every convergence write it WOULD make (logs/duplicate-reconciler.jsonl), but lands NO CAS and triggers NO closeout while dryRun holds — real convergence needs a deliberate dryRun:false. Doubly inert on the fleet: it refuses to arm on the fleet-default in-memory ownership store (substrate-not-ready, §3.2.0) regardless of flags. All ambiguity (both-run, epoch-vs-run contradiction, 409) escalates to ONE attention item rather than acting. P17 per-tick caps + P19 per-topic breaker bound every path. No LLM call, no spend, no egress.',
+  },
+  {
+    name: 'judgmentArbiters',
+    configPath: 'multiMachine.sessionPool.judgmentArbiters.enabled',
+    description: 'J1 (owner-dark rung timing) + J2 (duplicate survivor) LLM arbiters inside deterministic floors (same spec §3.4 — the first live Judgment Within Floors instances). Increment 3 ships them SHADOW (decide-and-log); Increment 4 lets them act only after shadow evidence beats the static policy.',
+    justification: 'Ships dryRun:true AND shadowMode:true (double canary): the arbiters decide-and-log to the judgment-provenance log but every runtime path takes the deterministic floor default while either flag holds. The floors are complete without them (Increment 2 runs deterministic-only), so an arbiter failure/timeout/nonsense answer degrades to the same static behavior. Bounded per-episode invocation caps; rides buildIntelligenceProvider as non-gating traffic (spawn-cap + attribution + bench obligations enforced by the existing ratchets).',
+  },
+  {
+    name: 'commitmentCustodyTransfer',
+    configPath: 'multiMachine.sessionPool.commitmentCustodyTransfer.enabled',
+    description: 'Record-level commitment custody transfer after a duplicate-reconciled/topic-moved closeout (same spec §3.2.4a — Increment 2b): the owner machine mints a successor commitment (existing POST /commitments, idempotent externalKey custody:<topic>:<origin-id>), and on ACK the origin machine terminal-supersedes its record (superseded-by-ownership-move) through its own single-writer CAS — a promise to the user is never silently dropped.',
+    justification: 'Ships dryRun:true (the dry-run canary): the custody path computes + logs the successor mint and supersede it WOULD perform, but mutates nothing while dryRun holds. While the flag is dark/unavailable, an open-commitment duplicate is NOT auto-closed — it escalates (custody-transfer-unavailable), the safe degradation, so no promise can be lost by the flag being off. The supersede verb is fenced to a VERIFIED successor (externalKey + owner machineId + authenticated mesh-read existence check) — no bare Bearer caller can terminal-supersede a live commitment. Idempotent on externalKey; no-ACK leaves origin records untouched + escalates once.',
+  },
+  {
     name: 'sessionPoolMoveIntent',
     configPath: 'multiMachine.sessionPool.moveIntent.enabled',
     description: 'LLM-with-context move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md) — replaces the keyword verb-list that hijacked "keep the work on the laptop" (2026-07-03). Decides "move/run/pin this on <nickname>?" via MoveIntentClassifier over the message + recent conversation, guardrailed by structured enum output; the downstream TransferByNickname planner is unchanged.',

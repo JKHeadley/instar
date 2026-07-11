@@ -29,3 +29,7 @@ Two outside-reviewer dissents are recorded rather than adopted: they'd have pref
 ## What changes for you day-to-day
 
 Nothing until the staged rollout reaches each stage, and the visible changes are all improvements: duplicate sessions stop happening (and self-heal if they do), a dark machine gets you an honest notice instead of silence or a context-less answer from the wrong machine, and promises survive cleanup. Everything ships dark or dry-run first, on the dev machines before the fleet, with every stage independently reversible.
+
+## Build note (Increment 1, 2026-07-11)
+
+Increment 1 is built exactly as approved, with one editorial addition to the spec: an appendix restating the §3.8 self-healing table as machine-checkable declaration blocks (so a lint verifies the retry caps, breakers, and audit locations instead of anyone re-reading prose — no semantic change to the converged text). Two things surfaced during the build's independent second-pass review and were fixed in the code, not waved through: the observe-stage was missing its soak-data hookup (the honest-notice layer would have logged nothing during the observation period, leaving the eventual enforcement flip with no evidence to stand on), and the healer's ownership repair wasn't riding the replication journal (the other machine would never have seen the fix). Both are the kind of gap the observation stage exists to catch before anything enforces.

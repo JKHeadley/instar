@@ -716,6 +716,8 @@ const GITIGNORE_ENTRIES = [
   '.instar/pairing/',
   '# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)',
   '.worktrees/',
+  '# Judgment-call provenance rows (machine-local decision context — never commit)',
+  'state/judgment-provenance/',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

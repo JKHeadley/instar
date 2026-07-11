@@ -2939,6 +2939,59 @@ export interface SessionPoolConfig {
     selfFenceTtlMs?: number;
   };
   /**
+   * Ownership-gated spawn seam (ownership-gated-spawn-and-judgment-within-floors
+   * spec §3.1 — Layer A). `enabled` DELIBERATELY OMITTED from ConfigDefaults
+   * (developmentAgent gate; DEV_GATED_FEATURES). dryRun:true = observe-only
+   * (journal would-block verdicts, never refuse a spawn). Structural invariant
+   * (§3.1 item 6): enforcement additionally REQUIRES the durable inbound queue
+   * live on this machine — dryRun:false alone cannot block a spawn.
+   */
+  ownershipGatedSpawn?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
+  /**
+   * Duplicate-session reconciler (same spec §3.2 — Layer B). `enabled` OMITTED
+   * (dev gate; DEV_GATED_FEATURES). Runs on the serving-lease holder only;
+   * refuses to arm on an in-memory ownership store (§3.2.0 substrate gate).
+   */
+  duplicateReconciler?: {
+    enabled?: boolean;
+    /** Default true — logs intended convergence writes, lands no CAS. */
+    dryRun?: boolean;
+    /** Tick cadence on the lease holder. Default 60000. */
+    reconcilerTickMs?: number;
+    /** P17 per-tick cap on topics reconciled. Default 3. */
+    maxReconcilesPerTick?: number;
+    /** P17 per-tick cap on convergence record writes. Default 5. */
+    maxConvergenceWritesPerTick?: number;
+    /** Peer-echo confirmation window, in reconciler ticks. Default 4. */
+    echoConfirmTicks?: number;
+    /** P19: re-duplications per topic per window before the breaker trips. Default 3. */
+    breakerThreshold?: number;
+    /** P19 breaker window. Default 86400000 (24h). */
+    breakerWindowMs?: number;
+  };
+  /**
+   * J1/J2 LLM arbiters (same spec §3.4 — Increment 3+). `enabled` OMITTED
+   * (dev gate; DEV_GATED_FEATURES). shadowMode:true = decide-and-log, never act.
+   */
+  judgmentArbiters?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    shadowMode?: boolean;
+  };
+  /**
+   * Commitment custody transfer on reconciled/moved closeouts (same spec
+   * §3.2.4a — Increment 2b, independently reversible sub-flag). `enabled`
+   * OMITTED (dev gate; DEV_GATED_FEATURES). While unavailable, an
+   * open-commitment duplicate escalates rather than auto-closes.
+   */
+  commitmentCustodyTransfer?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
+  /**
    * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
    * timestamp is outside |now - ts| is rejected `stale-timestamp`. Default 30000.
    */
@@ -4094,6 +4147,40 @@ export interface InstarConfig {
   evolution?: EvolutionManagerConfig;
   /** Multi-machine coordination config */
   multiMachine?: MultiMachineConfig;
+  /**
+   * Owner-dark ladder user-facing bounds (ownership-gated-spawn-and-judgment-
+   * within-floors spec §3.3). Not feature flags — the ladder activates with
+   * `multiMachine.sessionPool.ownershipGatedSpawn`.
+   */
+  ownerDarkLadder?: {
+    /** Silence ceiling: first held/refused message → real answer or rung-3 notice. Default 600000 (10 min). */
+    maxUserSilenceMs?: number;
+    /** Per-machine cap on concurrent rung-1 holds; over-cap → rung 3 immediately. Default 20. */
+    maxConcurrentHolds?: number;
+    /** Per-topic cooldown between rung-3 notices. Default 1800000 (30 min). */
+    noticeCooldownMs?: number;
+  };
+  /**
+   * Judgment-call decision provenance (same spec §3.5). Retention + sampling
+   * ONLY — the redaction contract is an invariant in code, never config.
+   */
+  provenance?: {
+    /** Day-file retention. Default 14. */
+    retentionDays?: number;
+    /** Deterministic sampling for non-arbiter rows, [0,1]. Default 1.0 (0.1 from Increment 2). */
+    deterministicSampling?: number;
+  };
+  /**
+   * Constitutional ceilings carried by ratified standards (three-standards-
+   * enforcement spec). Read by watchers/lints; a missing/non-numeric value
+   * fails CLOSED (escalate-sooner).
+   */
+  standards?: {
+    selfHealBeforeNotify?: {
+      /** Recoverable-latency ceiling in SECONDS (converged value 300 = "300s"). */
+      recoverableLatencyCeiling?: number;
+    };
+  };
   /** Agent type -- standalone lives at ~/.instar/agents/<name>/, project-bound lives in a project */
   agentType?: AgentType;
   /** User registration policy */

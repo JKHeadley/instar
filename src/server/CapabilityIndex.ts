@@ -120,6 +120,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'judgmentProvenance',
+    prefixes: ['/judgment-provenance'],
+    description: 'Judgment-call decision provenance (ownership-gated-spawn-and-judgment-within-floors §3.5 — the Decision Provenance & Outcome Review standard). Every judgment call the ownership layer makes (SpawnAdmission verdicts, duplicate-reconciler intended-owner determinations; J1/J2 arbiter calls from Increment 3) is durably logged with the FULL context it was handed — machine-local under state/judgment-provenance/ (0700/0600, gitignored, backup-excluded, 14-day retention, NEVER HTTP-served raw: a hardcoded NEVER_SERVED_PREFIXES deny in the file routes covers read/download/edit/link incl. symlink evasion). GET /judgment-provenance serves REDACTED rows only (write-time credential-shape scrub + omission of the machine-local full context); ?limit / ?sinceHours filter; ?scope=pool merges peers\' redacted rows as clamped untrusted data. 503 when the layer is not constructed (single-machine / pool dark) — say so honestly. When asked "why did the system decide machine X owns this conversation?" / "what did the duplicate healer see?" → read this, never guess.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.judgmentProvenance,
+      endpoints: ['GET /judgment-provenance', 'GET /pool/duplicate-reconciler', 'GET /pool/ownership-view'],
+    }),
+  },
+  {
     key: 'conversationIdentity',
     prefixes: ['/conversations'],
     description: 'Durable Conversation Identity (durable-conversation-identity §8) — the read-only registry surface behind channel-agnostic conversation ids. Every conversation has ONE durable numeric identity: a Telegram topic IS its positive id (pass-through, never registered); a non-Telegram conversation (Slack channel/thread) is minted a stable NEGATIVE id at first inbound, so durable state (commitments, memory, notices) can attach to it and survive restarts. A negative topicId anywhere in state is a minted conversation id, not an error. GET /conversations lists entries + the alias table; GET /conversations/:id resolves one id (unknown negative → honest 404 "never minted on this machine"); GET /conversations/resolve?key=…|?sessionKey=… is the forward lookup that mints NOTHING; GET /conversations/health carries entry counts, origins, quarantine + snapshot-suspension state, and the growth tripwire. Recording is always-on foundation (kill-switch: conversationIdentity.recording.enabled=false degrades to legacy in-memory hashing); DELIVERY to minted ids is dev-gated (conversationIdentity.followThrough, dryRun-first). When asked "what is this negative topic id?" / "which Slack conversation is -N?" → read /conversations/:id, never guess.',

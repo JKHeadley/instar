@@ -51,6 +51,17 @@ const RECOMMENDATION_BY_CATEGORY: Record<FailureCategory, string> = {
   unknown: 'Recurring uncategorized failures — improve the failure-categorization step so these become actionable.',
 };
 
+/**
+ * Judgment Within Floors (ownership-gated-spawn spec §3.6): the paired
+ * recommendation for the filer-flagged `judgmentCandidate` cluster. Template
+ * text, never free LLM prose — same contract as RECOMMENDATION_BY_CATEGORY.
+ */
+const JUDGMENT_CANDIDATE_RECOMMENDATION =
+  'Recurring failures trace to static heuristics at competing-signals decision points — ' +
+  'evaluate each as a judgment point within a deterministic floor (bounded action space, ' +
+  'conservative default, bench-laddered arbiter) per the Judgment Within Floors standard ' +
+  'in docs/STANDARDS-REGISTRY.md.';
+
 export interface AnalyzeResult {
   insightsDiscovered: InsightRecord[];
   clustersConsidered: number;
@@ -111,9 +122,39 @@ export class FailureAnalyzer {
       if (insight) discovered.push(insight);
     }
 
+    // Judgment-candidate cluster (§3.6): filer-flagged records cluster ACROSS
+    // categories — the shared trait is "a static heuristic at a competing-signals
+    // decision point failed", not the failure category. Same diversity gates.
+    const jcCluster = records.filter((r) => r.judgmentCandidate === true);
+    let jcConsidered = 0;
+    if (jcCluster.length > 0) {
+      jcConsidered = 1;
+      const distinctSessions = new Set(jcCluster.map((r) => r.filedBy)).size;
+      const distinctCauseCommits = new Set(jcCluster.map((r) => r.causeCommitOid ?? r.id)).size;
+      const crosses =
+        jcCluster.length >= this.gates.minSupport &&
+        distinctSessions >= this.gates.minDistinctSessions &&
+        distinctCauseCommits >= this.gates.minDistinctCauseCommits;
+      if (crosses) {
+        const insight = this.ledger.upsertInsight({
+          identityKey: 'judgment-candidate',
+          summary: `${jcCluster.length} attributed judgment-candidate failures (static heuristics at competing-signals decision points) across ${distinctSessions} sessions / ${distinctCauseCommits} cause-commits`,
+          recommendation: JUDGMENT_CANDIDATE_RECOMMENDATION,
+          supportingFailureIds: jcCluster.map((r) => r.id),
+          distinctSessions,
+          distinctCauseCommits,
+          targetCategory: 'judgment-candidate',
+          baselineRate: jcCluster.length,
+        });
+        if (insight) discovered.push(insight);
+      } else {
+        belowThreshold++;
+      }
+    }
+
     return {
       insightsDiscovered: discovered,
-      clustersConsidered: byCategory.size,
+      clustersConsidered: byCategory.size + jcConsidered,
       clustersBelowThreshold: belowThreshold,
     };
   }

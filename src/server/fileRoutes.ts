@@ -78,6 +78,36 @@ function isBinaryFile(filePath: string, buffer?: Buffer): boolean {
   return false;
 }
 
+// ── Never-served paths (security invariant — read + edit deny) ───────
+
+/**
+ * Paths that are NEVER served over HTTP regardless of config — list, read,
+ * download, link, edit, and any proxy that lands on this machine's file routes
+ * (ownership-gated-spawn-and-judgment-within-floors spec §3.5).
+ *
+ * Distinct from NEVER_EDITABLE_PREFIXES (edit-only) and from
+ * `blockedFilenames` (config-mutable via PATCH /api/files/config): this list
+ * is HARDCODED and config-immune, and it is enforced inside validatePath
+ * against the FULLY-RESOLVED (realpath) project-relative path, so a symlink
+ * inside an allowed path cannot evade it. A never-served path is also
+ * never-editable by construction (isNeverEditable consults this list too —
+ * a confused session must not be able to poison provenance rows that the
+ * graded-review job replays into bench batteries).
+ */
+export const NEVER_SERVED_PREFIXES = [
+  // Judgment-call provenance rows: full decision context, machine-local only
+  // (0700/0600, gitignored, backup-excluded). The HTTP read surface for this
+  // data is GET /judgment-provenance (redacted rows only) — never the files.
+  'state/judgment-provenance/',
+];
+
+export function isNeverServed(relativePath: string): boolean {
+  const normalized = path.normalize(relativePath);
+  return NEVER_SERVED_PREFIXES.some(prefix =>
+    normalized.startsWith(prefix) || normalized === prefix.replace(/\/$/, ''),
+  );
+}
+
 // ── Path validation (6-layer defense) ────────────────────────────────
 
 interface PathValidationResult {
@@ -103,6 +133,12 @@ async function validatePath(
   // Layer 3: Reject path traversal
   if (normalized.includes('..')) {
     return { valid: false, error: 'Path traversal not allowed', status: 403 };
+  }
+
+  // Layer 3b: Never-served deny (fast path — the load-bearing check re-runs
+  // post-realpath at Layer 5e so a symlink cannot evade it).
+  if (isNeverServed(normalized)) {
+    return { valid: false, error: 'Access to this path is not permitted', status: 403 };
   }
 
   // Layer 4: Check against allowedPaths
@@ -146,6 +182,12 @@ async function validatePath(
     });
     if (!allowedAfterResolve) {
       return { valid: false, error: 'Resolved path not in allowed directories', status: 403 };
+    }
+    // Layer 5e: Never-served deny against the FULLY-RESOLVED project-relative
+    // path — a symlink inside an allowed path that dereferences into a
+    // never-served prefix is refused here (config-immune, spec §3.5).
+    if (isNeverServed(relativAfterResolve)) {
+      return { valid: false, error: 'Access to this path is not permitted', status: 403 };
     }
     return { valid: true, resolvedPath: realPath };
   } catch (err: unknown) {
@@ -199,6 +241,9 @@ const NEVER_EDITABLE_PREFIXES = [
 
 function isNeverEditable(relativePath: string): boolean {
   const normalized = path.normalize(relativePath);
+  // A never-served path is never-editable by construction (spec §3.5): the
+  // serve-deny implies the edit-deny at every chokepoint that consults this.
+  if (isNeverServed(normalized)) return true;
   return NEVER_EDITABLE_PREFIXES.some(prefix =>
     normalized.startsWith(prefix) || normalized === prefix.replace(/\/$/, ''),
   );
@@ -765,6 +810,13 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
 
     if (!inAllowed) {
       res.status(403).json({ error: 'Path not in allowed directories' });
+      return;
+    }
+
+    // Never-served deny (spec §3.5): the link route does not flow through
+    // validatePath, so it enforces the hardcoded deny explicitly.
+    if (isNeverServed(normalized)) {
+      res.status(403).json({ error: 'Access to this path is not permitted' });
       return;
     }
 

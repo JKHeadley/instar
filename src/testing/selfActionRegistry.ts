@@ -599,6 +599,92 @@ const evolutionActionExpirySweep: SelfActionController = {
   },
 };
 
+/**
+ * owner-dark-notice — the OwnerDarkLadder rung-3 notice under sustained
+ * pressure (ownership-gated-spawn §3.3/§5 Capacity Safety): an owner machine
+ * dark FOREVER while inbound messages keep arriving for 3 topics every tick.
+ * Convergence shape: ONE notice per (topic, outage-episode) + the per-topic
+ * cooldown — sustained pressure converges to exactly one emit per topic, and a
+ * longer horizon adds NOTHING while the episode persists (the episode set is
+ * the latch; owner recovery is the only re-arm).
+ */
+const ownerDarkNotice: SelfActionController = {
+  id: 'owner-dark-notice',
+  actionVerb: 'owner-dark-notify',
+  models: 'src/core/OwnerDarkLadder.ts (handleOwnerDark — episode dedupe + noticeCooldownMs)',
+  modelsPath: 'src/core/OwnerDarkLadder.ts',
+  boundK: 3, // 3 topics → at most one notice each while the episode persists
+  perTargetBoundK: 1,
+  ticks: 120,
+  tickMs: 60_000, // 2h of sustained inbound while the owner stays dark
+  makeUnderPressure(f, sink) {
+    const noticed = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        // The pressure: every tick, a message arrives for each of 3 topics
+        // whose owner is dark. The episode never closes (owner never recovers).
+        for (const topic of ['t1', 't2', 't3']) {
+          if (noticed.has(topic)) continue; // ONE per (topic, episode) — the latch
+          noticed.add(topic);
+          sink.emit({ verb: 'owner-dark-notify', target: topic });
+        }
+      },
+    };
+  },
+};
+
+/**
+ * duplicate-converge-write — the DuplicateSessionReconciler's convergence CAS
+ * under sustained pressure (ownership-gated-spawn §3.2/§5 Capacity Safety): a
+ * topic that RE-duplicates immediately after every repair (the pathological
+ * flap). Convergence shape: 3 convergence attempts per episode (then escalate,
+ * not retry) × the P19 breaker (3 episodes per 24h window → the topic stops
+ * being auto-reconciled entirely) — sustained flap converges to ≤9 writes and
+ * then silence + ONE attention item, never an unbounded repair loop.
+ */
+const duplicateConvergeWrite: SelfActionController = {
+  id: 'duplicate-converge-write',
+  actionVerb: 'record-converge',
+  models: 'src/monitoring/DuplicateSessionReconciler.ts (convergenceAttempts cap + breakerThreshold/breakerWindowMs clamp)',
+  modelsPath: 'src/monitoring/DuplicateSessionReconciler.ts',
+  boundK: 9, // 3 episodes × 3 attempts, then the breaker clamps the topic
+  perTargetBoundK: 9,
+  ticks: 90,
+  tickMs: 60_000, // 1.5h of sustained flap — well inside the 24h breaker window
+  makeUnderPressure(f, sink) {
+    const BREAKER_THRESHOLD = 3;
+    const ATTEMPTS_PER_EPISODE = 3;
+    let episodes = 0;
+    let attempts = 0;
+    let episodeOpen = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        // The pressure: the duplicate re-forms EVERY tick. Episode counting
+        // mirrors bumpBreaker (episodes bump at open); attempts mirror the
+        // per-episode convergence cap; the breaker clamps at the threshold.
+        if (episodes >= BREAKER_THRESHOLD && !episodeOpen) return; // clamped — the brake
+        if (!episodeOpen) {
+          episodes += 1;
+          episodeOpen = true;
+          attempts = 0;
+        }
+        if (attempts >= ATTEMPTS_PER_EPISODE) {
+          // attempts exhausted → escalate (not modeled as an emit) + episode closes
+          episodeOpen = false;
+          return;
+        }
+        attempts += 1;
+        sink.emit({ verb: 'record-converge', target: 'topic-flap' });
+        // The repair "succeeds" then the duplicate re-forms → episode closes,
+        // a fresh one opens next tick (until the breaker clamps).
+        if (attempts >= ATTEMPTS_PER_EPISODE) episodeOpen = false;
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -612,4 +698,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   externalHogKillBreaker,
   meteredReserveExpirySweep,
   spendStalePriceAlert,
+  ownerDarkNotice,
+  duplicateConvergeWrite,
 ];

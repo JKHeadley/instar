@@ -121,6 +121,52 @@ export function findOpenQuestions(specBody) {
     .filter((l) => !NONE_RE.test(l));
 }
 
+/**
+ * Decision-point classification gate (Judgment Within Floors standard,
+ * docs/specs/ownership-gated-spawn-and-judgment-within-floors.md §3.6 / FD12):
+ * a spec cannot converge unless `## Decision points touched` exists and every
+ * row/bullet in it carries a classification — `invariant` or
+ * `judgment-candidate`. The section's PRESENCE + per-row token is the cheap
+ * deterministic signal; the semantic correctness of each classification is the
+ * lessons-aware reviewer's authority (Signal vs. Authority).
+ *
+ * Grandfathering: specs already past round 1 when this gate landed are exempt
+ * via GRANDFATHERED_SLUGS — hardcoded in source, extended only by PR (the
+ * emergency-allowlist precedent: code can't add to it at runtime).
+ *
+ * Returns { ok: true } | { ok: false, reason: 'missing-section' } |
+ *         { ok: false, reason: 'unclassified', rows: string[] }.
+ */
+export const GRANDFATHERED_SLUGS = [
+  // Specs mid-review (past round 1) at gate-land time. Extend only by PR.
+];
+
+export function findDecisionPointGaps(specBody, slug) {
+  if (slug && GRANDFATHERED_SLUGS.includes(slug)) return { ok: true };
+  const m = specBody.match(/^##\s+Decision points touched\b[^\n]*$/im);
+  if (!m) return { ok: false, reason: 'missing-section' };
+  const start = m.index + m[0].length;
+  const restAfter = specBody.slice(start);
+  const nextHeading = restAfter.search(/^##\s+/m);
+  const section = nextHeading === -1 ? restAfter : restAfter.slice(0, nextHeading);
+  const NONE_RE = /^\s*[*_]*\(?\s*(none|n\/a)\s*\.?\)?[*_]*\s*$/i;
+  const CLASSIFIED_RE = /\binvariant\b|\bjudgment-candidate\b/i;
+  const lines = section
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .filter((l) => !l.startsWith('>')) // blockquote commentary
+    .filter((l) => !/^-{3,}$/.test(l)) // horizontal rule
+    // table header + separator rows carry no classification by design
+    .filter((l) => !/^\|[\s|:-]*$/.test(l))
+    .filter((l) => !/^\|\s*Decision\b/i.test(l));
+  if (lines.length === 0) return { ok: false, reason: 'missing-section' };
+  if (lines.length === 1 && NONE_RE.test(lines[0])) return { ok: true };
+  const unclassified = lines.filter((l) => !NONE_RE.test(l)).filter((l) => !CLASSIFIED_RE.test(l));
+  if (unclassified.length > 0) return { ok: false, reason: 'unclassified', rows: unclassified };
+  return { ok: true };
+}
+
 // ─── main (guarded so the module is importable for tests) ────────────────
 // fileURLToPath (not URL.pathname) so %-encoded paths (spaces) compare correctly,
 // and realpathSync so a symlinked invocation still matches — a mismatch here
@@ -208,6 +254,31 @@ if (openQuestions.length > 0) {
       `Resolve each into ## Frontloaded Decisions (or a contested-and-surviving\n` +
       `cheap-to-change-after tag), leave the section reading "*(none)*", then re-run.`,
   );
+  process.exit(1);
+}
+
+// ─── Decision-point classification gate (Judgment Within Floors, FD12) ────
+// Convergence cannot be stamped while `## Decision points touched` is missing
+// or carries an unclassified row. Structural — prose can't skip it.
+const specSlug = path.basename(specPath, '.md');
+const dpGate = findDecisionPointGaps(content, specSlug);
+if (!dpGate.ok) {
+  if (dpGate.reason === 'missing-section') {
+    console.error(
+      `Spec ${specArg} has no \`## Decision points touched\` section (or it is empty).\n` +
+        `Per the Judgment Within Floors standard, every spec must classify each decision\n` +
+        `point it touches as \`invariant\` (with justification) or \`judgment-candidate\`\n` +
+        `(floor + arbiter declared, or an argued exemption). A spec with no decision-point\n` +
+        `surface satisfies this with a section reading "*(none)*". Then re-run.`,
+    );
+  } else {
+    console.error(
+      `Spec ${specArg} has ${dpGate.rows.length} unclassified row(s) in ## Decision points touched:\n` +
+        dpGate.rows.map((r) => `  • ${r.slice(0, 120)}`).join('\n') +
+        `\n\nEach row must carry \`invariant\` or \`judgment-candidate\` (Judgment Within Floors).\n` +
+        `Classify each, then re-run.`,
+    );
+  }
   process.exit(1);
 }
 

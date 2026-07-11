@@ -76,6 +76,19 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
   '.instar/remediation/llm-raw-',
 ]);
 
+/**
+ * Path segments that are NEVER included in a backup snapshot, UNCONDITIONALLY
+ * (no feature-flag gate): judgment-call provenance rows are machine-local
+ * decision context (0700/0600, gitignored, never HTTP-served) — a backup that
+ * crosses machines must never carry them
+ * (ownership-gated-spawn-and-judgment-within-floors spec §3.5). Segment-matched
+ * (not prefix-matched) so a user-added includeFiles entry cannot smuggle the
+ * directory in under a different relative spelling.
+ */
+export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
+  'judgment-provenance',
+]);
+
 const DEFAULT_CONFIG: BackupConfig = {
   enabled: true,
   maxSnapshots: 20,
@@ -183,6 +196,10 @@ export class BackupManager {
     for (const entry of this.config.includeFiles) {
       // Gate: exclude the shared-state pattern when feature is disabled.
       if (sharedStateGateOff && entry.startsWith('shared-state.jsonl')) continue;
+      // UNCONDITIONAL never-backup segments (spec §3.5) — no flag gates this.
+      if (path.normalize(entry).split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg))) {
+        continue;
+      }
       // F-7 / A35 gate: drop remediation runtime paths from any
       // user-added includeFiles entry. Same prefix-string shape as
       // BLOCKED_PATH_PREFIXES — caller is expected to normalize paths

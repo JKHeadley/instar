@@ -1419,6 +1419,43 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         bootstrapNonObservationMultiple: 3,
         selfFenceTtlMs: 60000,
       },
+      // Ownership-gated spawn seam (ownership-gated-spawn-and-judgment-within-
+      // floors spec §3.1/§4 — Layer A). `enabled` DELIBERATELY OMITTED
+      // (resolveDevAgentGate — dev-live-in-dryRun, dark fleet; DEV_GATED_FEATURES).
+      // dryRun:true is the Increment-1 canary: the seam runs + journals
+      // would-block verdicts, never refuses a spawn. Structural invariant
+      // (§3.1 item 6): even dryRun:false cannot enforce until the durable
+      // inbound queue is live on this machine (durable custody).
+      ownershipGatedSpawn: {
+        dryRun: true,
+      },
+      // Duplicate-session reconciler (same spec §3.2 — Layer B). `enabled`
+      // OMITTED (dev gate; DEV_GATED_FEATURES). dryRun:true logs intended
+      // convergence writes without landing any CAS. Refuses to arm on an
+      // in-memory ownership store (substrate-not-ready — §3.2.0).
+      duplicateReconciler: {
+        dryRun: true,
+        reconcilerTickMs: 60000,
+        maxReconcilesPerTick: 3,
+        maxConvergenceWritesPerTick: 5,
+        echoConfirmTicks: 4,
+        breakerThreshold: 3,
+        breakerWindowMs: 86400000,
+      },
+      // J1/J2 LLM arbiters (same spec §3.4 — Increment 3+). `enabled` OMITTED
+      // (dev gate; DEV_GATED_FEATURES). shadowMode:true = decide-and-log, never
+      // act (the Increment-3 posture; acting is Increment 4's evidence-gated flip).
+      judgmentArbiters: {
+        dryRun: true,
+        shadowMode: true,
+      },
+      // Commitment custody transfer on reconciled/moved closeout (same spec
+      // §3.2.4a — Increment 2b, independently reversible). `enabled` OMITTED
+      // (dev gate; DEV_GATED_FEATURES). While unavailable, an open-commitment
+      // duplicate ESCALATES rather than auto-closes (the safe degradation).
+      commitmentCustodyTransfer: {
+        dryRun: true,
+      },
     },
     // Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7). DARK-SHIP: `enabled` is
     // deliberately OMITTED — the runtime resolves `enabled ?? !!developmentAgent`
@@ -1607,6 +1644,38 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // gate (`enabled ?? !!config.developmentAgent`) — live on the dev agent,
   // dark on the fleet; the live-fleet flip (registering `enabled: true` here)
   // is the tracked follow-up per the spec's rollout Resolution rule.
+  // Owner-dark ladder (ownership-gated-spawn-and-judgment-within-floors spec
+  // §3.3/§4). USER-facing bounds, not flags: the ladder itself activates with
+  // the ownershipGatedSpawn seam. maxUserSilenceMs is the silence CEILING
+  // (measured from an episode's first held/refused message to a real answer or
+  // the rung-3 notice; J1 may shorten but never extend past it).
+  ownerDarkLadder: {
+    maxUserSilenceMs: 600000,
+    maxConcurrentHolds: 20,
+    noticeCooldownMs: 1800000,
+  },
+  // Judgment-call decision provenance (same spec §3.5). Retention + sampling
+  // are the ONLY config here — the redaction contract is an INVARIANT in code.
+  // deterministicSampling 1.0 during the Increment-1 soak; the Increment-2
+  // entry gate steps the default down to 0.1. Arbiter rows are always written.
+  provenance: {
+    retentionDays: 14,
+    deterministicSampling: 1.0,
+  },
+  // Constitutional ceilings carried by ratified standards (three-standards-
+  // enforcement spec, converged 2026-07-03: Self-Heal Before Notify's
+  // recoverable-latency ceiling — a recoverable watcher must surface its
+  // low-noise observability line within this bound even while self-heal is
+  // still running; a watcher needing longer escalates instead of extending).
+  // Landed here at that spec's CONVERGED value per the §3.8 authority clause
+  // of ownership-gated-spawn-and-judgment-within-floors.
+  standards: {
+    selfHealBeforeNotify: {
+      // Numeric SECONDS (the converged proposed value "300s" = 5 min). A
+      // missing/non-numeric value fails CLOSED (escalate-sooner) per that spec.
+      recoverableLatencyCeiling: 300,
+    },
+  },
   // NOTE: `InstarConfig.selfKnowledge` is DISTINCT from the SelfKnowledgeTree
   // metadata field on AgentContextSnapshot — different type, different system.
   // applyDefaults add-missing semantics → migrateConfig backfills on update

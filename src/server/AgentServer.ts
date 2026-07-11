@@ -554,6 +554,11 @@ export class AgentServer {
     ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler;
     /** U4.2 — the stale-owner release engine (GET /pool/stale-owner-release; 503 when dark). */
     staleOwnerEngine?: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerReleaseEngine;
+    /** ownership-gated-spawn §3.8 — the unified watcher status surface + §3.5 provenance read. */
+    duplicateReconciler?: import('../monitoring/DuplicateSessionReconciler.js').DuplicateSessionReconciler;
+    ownerDarkLadder?: import('../core/OwnerDarkLadder.js').OwnerDarkLadder;
+    spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
+    judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
     /** U4.4 — the lease hand-back reconciler + the operator-flip latch levers. */
     leaseHandback?: {
       status(): import('../core/LeaseHandbackReconciler.js').LeaseHandbackStatus;
@@ -2908,6 +2913,10 @@ export class AgentServer {
       topicPinFoldView: options.topicPinFoldView ?? null,
       ownershipReconciler: options.ownershipReconciler ?? null,
       staleOwnerEngine: options.staleOwnerEngine ?? null,
+      duplicateReconciler: options.duplicateReconciler ?? null,
+      ownerDarkLadder: options.ownerDarkLadder ?? null,
+      spawnAdmission: options.spawnAdmission ?? null,
+      judgmentProvenance: options.judgmentProvenance ?? null,
       leaseHandback: options.leaseHandback ?? null,
       secretSync: options.secretSync ?? null,
       ropeHealthMonitor: options.ropeHealthMonitor ?? null,

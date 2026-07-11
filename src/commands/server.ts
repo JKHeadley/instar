@@ -824,6 +824,40 @@ let _ownershipReconciler: import('../core/OwnershipReconciler.js').OwnershipReco
 // GET /pool/stale-owner-release route + the reconciler dep can reach it. Null
 // until the pool block constructs it (single-machine / dark → the route 503s).
 let _staleOwnerEngine: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerReleaseEngine | null = null;
+// Ownership-gated spawn seam (ownership-gated-spawn-and-judgment-within-floors
+// §3.1 Layer A) + its owner-dark ladder + the judgment-provenance log — hoisted
+// so the inbound handlers (registered earlier in this function) and the status
+// routes can reach them. Null until the mesh block constructs them
+// (single-machine / pool-dark → the seam's own null-guard/short-circuit keeps
+// dispatch byte-identical; the provenance route 503s).
+let _spawnAdmission: import('../core/SpawnAdmission.js').SpawnAdmission | null = null;
+let _ownerDarkLadder: import('../core/OwnerDarkLadder.js').OwnerDarkLadder | null = null;
+let _judgmentProvenance: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog | null = null;
+let _duplicateReconciler: import('../monitoring/DuplicateSessionReconciler.js').DuplicateSessionReconciler | null = null;
+/**
+ * Increment-1 dry-run soak (ownership-gated-spawn §3.3): when the seam
+ * OBSERVES a would-refuse on a DARK owner (the spawn still proceeds —
+ * observe mode changes nothing), the ladder journals the would-notice.
+ * That journal is the soak evidence the eventual enforce flip requires;
+ * without this consult the ladder would sit dark through the whole
+ * observe stage and the flip would arrive with zero ladder data.
+ * mode 'dry-run' NEVER sends — it only journals + opens the episode.
+ */
+function _ladderDryRunConsult(
+  d: import('../core/SpawnAdmission.js').AdmissionDecision,
+  sessionKey: string,
+  topicId: number | null,
+): void {
+  if (!_ownerDarkLadder || !d.allow || !d.wouldBlock) return;
+  if (d.ownership?.kind !== 'other-dark') return;
+  void _ownerDarkLadder.handleOwnerDark({
+    sessionKey,
+    topicId,
+    ownerMachineId: d.ownership?.owner ?? 'unknown',
+    mode: 'dry-run',
+    custodyLive: false,
+  }).catch(() => { /* the ladder journals its own failures */ });
+}
 // U4.4 lease hand-back — the F4 reconciler, hoisted so the lease pull tick hook
 // (constructed early) and the /pool surfaces (constructed late) can reach it.
 let _leaseHandbackReconciler: import('../core/LeaseHandbackReconciler.js').LeaseHandbackReconciler | null = null;
@@ -2457,6 +2491,11 @@ export function wireTelegramRouting(
         console.warn(`[session-pool] nickname relocation error for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2): stash the
+    // router's verdict for THIS message so the seam at the spawn callsites below
+    // CONSUMES it instead of re-resolving — the admission decision and the
+    // routing decision cannot disagree mid-dispatch.
+    let _admissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
     if (_sessionRouter && _sessionPoolStage() !== 'dark') {
       // Ordering gate (Durable Inbound Message Queue §2.3): a live message for
       // a session with queued custody enqueues BEHIND the existing entries —
@@ -2493,6 +2532,7 @@ export function wireTelegramRouting(
         // box (the recognizer logs its pin, but route()'s actual placement/forward
         // decision was invisible; that hid the bug below from the first live test).
         console.log(`[session-pool] route topic ${topicId} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+        _admissionVerdict = { messageId: String(msg.id), action: outcome.action, acked: outcome.acked };
         // silent-loss-refusal-conservation §2.A/§2.C — a first-class terminal
         // `rejected` (the owner re-validated the sender and refused) is NOT a
         // successful forward: TELL the user via the ORIGINATING adapter and
@@ -2556,6 +2596,69 @@ export function wireTelegramRouting(
       }
     }
 
+    // ── SpawnAdmission — the binding-verdict seam (ownership-gated-spawn §3.1,
+    // Layer A / the Ownership-Gated Side Effects standard). Consulted before
+    // EVERY local session-creating action below. Increment-1 posture: dryRun
+    // (observe-only — allow is always true; would-block verdicts are journaled).
+    // Enforce mode (dryRun:false + durable custody live, §3.1 item 6) refuses a
+    // non-owner spawn: durable-queue custody where available, the rung-3 honest
+    // notice for a dark owner, and a loud fail-open for the residual edge —
+    // never a bootleg local copy, never silence.
+    const admitLocalSpawn = (
+      callsite: 'telegram-cold-spawn' | 'telegram-respawn-context-exhausted' | 'telegram-respawn-dead',
+    ): boolean => {
+      if (!_spawnAdmission) return true;
+      try {
+        const d = _spawnAdmission.admit({
+          sessionKey: String(topicId),
+          callsite,
+          routerVerdict: _admissionVerdict,
+        });
+        if (d.allow) {
+          _ladderDryRunConsult(d, String(topicId), topicId);
+          return true;
+        }
+        console.log(`[spawn-admission] topic ${topicId} ${callsite} REFUSED (row=${d.row}) — ${d.reason}`);
+        // Custody first: the durable queue is the forward-compatible floor
+        // (enforce mode structurally implies the queue is live, §3.1 item 6).
+        let custody = _admissionVerdict?.acked === true;
+        if (!custody && _inboundQueue) {
+          try {
+            const q = _inboundQueue.enqueueLive({
+              sessionKey: String(topicId),
+              messageId: String(msg.id),
+              payload: text,
+              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+              topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
+            }, 'spawn-admission-refusal');
+            custody = q.result === 'queued' || q.result === 'already-queued';
+          } catch { /* custody is best-effort; the ladder notice below stays honest about it */ }
+        }
+        if (d.refusalAction === 'forward' && !custody) {
+          // Owner ALIVE but the router fell through AND custody refused —
+          // refusing here would be silent loss. Reachability wins (the §0
+          // argued-exemption direction): allow the spawn, loudly.
+          console.warn(`[spawn-admission] topic ${topicId} owner-alive refusal without custody — failing OPEN to local spawn (reachability wins)`);
+          return true;
+        }
+        if ((d.refusalAction === 'owner-dark-ladder' || d.refusalAction === 'rung3-notice') && _ownerDarkLadder) {
+          void _ownerDarkLadder.handleOwnerDark({
+            sessionKey: String(topicId),
+            topicId,
+            ownerMachineId: d.ownership?.owner ?? 'unknown',
+            mode: 'enforce',
+            custodyLive: custody,
+          }).catch(() => { /* the ladder journals its own failures */ });
+        }
+        return false;
+      } catch (err) {
+        // The seam must never break dispatch — an admission ERROR fails open
+        // to today's behavior (the row-e direction, §3.1).
+        console.warn(`[spawn-admission] admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+        return true;
+      }
+    };
+
     if (targetSession) {
       // Session is mapped — check if it's alive, inject or respawn
       if (sessionManager.isSessionAlive(targetSession)) {
@@ -2601,6 +2704,7 @@ export function wireTelegramRouting(
           // Context exhaustion: respawn FRESH (no --resume) — the old conversation
           // is too large to continue. The respawn path will load telegram thread
           // history as context, giving the new session continuity.
+          if (!admitLocalSpawn('telegram-respawn-context-exhausted')) return;
           if (spawningTopics.has(topicId)) {
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
             return;
@@ -2619,6 +2723,7 @@ export function wireTelegramRouting(
               spawningTopics.clear(topicId, _spawnTokA);
             });
         } else if (!isQuotaDeath) {
+          if (!admitLocalSpawn('telegram-respawn-dead')) return;
           // Guard: skip respawn if one is already in progress for this topic.
           // Prevents the infinite respawn loop: dead session + rapid messages → each
           // message triggers a new respawn → multiple concurrent spawns → chaos.
@@ -2676,6 +2781,11 @@ export function wireTelegramRouting(
         }
         return;
       }
+
+      // The binding-verdict seam (ownership-gated-spawn §3.1) — the cold-spawn
+      // callsite is THE incident's fall-through (2026-07-10: verdict computed,
+      // then discarded 6ms later by this path's legacy reflex).
+      if (!admitLocalSpawn('telegram-cold-spawn')) return;
 
       const _spawnTokC = spawningTopics.add(topicId);
 
@@ -7975,7 +8085,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // mesh bridge replays when a Slack message was forwarded to this machine
         // because it owns the conversation. Sharing one function is "Structure >
         // Willpower": the forwarded path and the live path can never drift.
-        const slackInboundDispatch = async (message: Message): Promise<void> => {
+        const slackInboundDispatch = async (
+          message: Message,
+          // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2): the
+          // pool checkpoint below passes its router verdict through so the seam
+          // CONSUMES it rather than re-resolving.
+          admissionVerdict?: { messageId: string; action: string; acked: boolean },
+        ): Promise<void> => {
           const channelId = message.channel.identifier;
           const isDM = message.metadata?.isDM as boolean;
           const senderName = message.metadata?.senderName as string || 'User';
@@ -8170,6 +8286,53 @@ export async function startServer(options: StartOptions): Promise<void> {
           // A thread session NEVER folds into the DM lifeline — it is its own
           // isolated work session (DMs don't carry thread_ts anyway).
           const targetSession = (isDM && !isThreadSession) ? 'lifeline' : undefined;
+          // ── SpawnAdmission (ownership-gated-spawn §3.1) — the Slack inbound
+          // spawn callsite. Refusal floor: durable-queue custody where live;
+          // Slack has no telegram-topic notice surface, so the ladder records
+          // the episode journal-only (topicId null); no custody + owner-alive
+          // residual fails OPEN (reachability wins, loudly).
+          if (_spawnAdmission) {
+            try {
+              const d = _spawnAdmission.admit({
+                sessionKey: routingKey,
+                callsite: 'slack-inbound-spawn',
+                routerVerdict: admissionVerdict,
+              });
+              _ladderDryRunConsult(d, routingKey, null);
+              if (!d.allow) {
+                console.log(`[spawn-admission] slack key ${routingKey} spawn REFUSED (row=${d.row}) — ${d.reason}`);
+                let custody = admissionVerdict?.acked === true;
+                if (!custody && _inboundQueue) {
+                  try {
+                    const q = _inboundQueue.enqueueLive({
+                      sessionKey: routingKey,
+                      messageId: String(message.id),
+                      payload: message.content,
+                      senderEnvelope: null,
+                      topicMetadata: undefined,
+                    }, 'spawn-admission-refusal');
+                    custody = q.result === 'queued' || q.result === 'already-queued';
+                  } catch { /* custody best-effort */ }
+                }
+                if (!custody && d.refusalAction === 'forward') {
+                  console.warn(`[spawn-admission] slack key ${routingKey} owner-alive refusal without custody — failing OPEN to local spawn (reachability wins)`);
+                } else {
+                  if (_ownerDarkLadder && (d.refusalAction === 'owner-dark-ladder' || d.refusalAction === 'rung3-notice')) {
+                    void _ownerDarkLadder.handleOwnerDark({
+                      sessionKey: routingKey,
+                      topicId: null,
+                      ownerMachineId: d.ownership?.owner ?? 'unknown',
+                      mode: 'enforce',
+                      custodyLive: custody,
+                    }).catch(() => {});
+                  }
+                  return;
+                }
+              }
+            } catch (err) {
+              console.warn(`[spawn-admission] slack admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
           try {
             const newSessionName = await sessionManager.spawnInteractiveSession(
               bootstrapMessage,
@@ -8273,6 +8436,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // where a Slack channel pinned/transferred to a peer machine still injected
           // the next message into the already-running LOCAL session (Telegram's
           // inbound path already followed the transfer; Slack's never did).
+          // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2):
+          // stash the router verdict so the dispatch's seam consumes it.
+          let _slackAdmissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
           if (_sessionRouter && _sessionPoolStage() !== 'dark') {
             try {
               const outcome = await _sessionRouter.route({
@@ -8290,6 +8456,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 channel: { platform: 'slack', workspaceId: _slackAdapter?.getWorkspaceId(), channelId },
               });
               console.log(`[session-pool] slack route key=${routingKey} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+              _slackAdmissionVerdict = { messageId: String(message.id), action: outcome.action, acked: outcome.acked };
               // silent-loss-refusal-conservation §2.A/§2.C — a first-class terminal
               // `rejected` is NOT a successful forward: reply in-thread on the
               // originating Slack channel and terminal-return WITHOUT local dispatch,
@@ -8334,7 +8501,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           }
 
-          await slackInboundDispatch(message);
+          await slackInboundDispatch(message, _slackAdmissionVerdict);
         });
 
         await slackAdapter.start();
@@ -10692,6 +10859,22 @@ export async function startServer(options: StartOptions): Promise<void> {
 
               const bootstrapMessage = `[slack:${slackApiChannel}] ${contextData}`;
 
+              // SpawnAdmission (ownership-gated-spawn §3.1) — the Slack recovery
+              // spawn callsite (fresh ownership resolution; no router verdict on
+              // this path). Enforce-mode refusal: the conversation belongs to
+              // another machine — recovery there is that machine's job; skip.
+              if (_spawnAdmission) {
+                try {
+                  const d = _spawnAdmission.admit({ sessionKey: slackChId, callsite: 'slack-recovery-spawn' });
+                  _ladderDryRunConsult(d, slackChId, null);
+                  if (!d.allow) {
+                    console.log(`[spawn-admission] slack recovery spawn for ${slackChId} REFUSED (row=${d.row}) — ${d.reason}`);
+                    return;
+                  }
+                } catch (err) {
+                  console.warn(`[spawn-admission] slack recovery admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
               try {
                 // Spawn with the RAW channel (+ thread_ts) but register on the routing key.
                 const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackApiChannel, slackThreadTs: slackReplyThread });
@@ -21394,6 +21577,310 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.error(`[inbound-queue] engine construction failed (queue stays OFF): ${err instanceof Error ? err.message : String(err)}`);
           }
 
+          // ── Ownership-gated spawn seam (ownership-gated-spawn §3.1, Layer A) ──
+          // Constructed whenever the mesh block runs; the seam short-circuits
+          // itself on pool stage 'dark' / missing mesh identity (byte-identical
+          // dispatch, zero writes), so construction here is safe on every pool.
+          try {
+            const spawnAdmMod = await import('../core/SpawnAdmission.js');
+            const ladderMod = await import('../core/OwnerDarkLadder.js');
+            const jplMod = await import('../core/JudgmentProvenanceLog.js');
+            const audMod = await import('../core/BoundedJsonlAudit.js');
+            const ogsCfg = config.multiMachine?.sessionPool?.ownershipGatedSpawn ?? {};
+            const provCfg = config.provenance ?? {};
+            _judgmentProvenance = new jplMod.JudgmentProvenanceLog({
+              dir: path.join(config.stateDir, 'state', 'judgment-provenance'),
+              retentionDays: provCfg.retentionDays,
+              sampling: provCfg.deterministicSampling,
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            const ownerDarkAudit = new audMod.BoundedJsonlAudit({
+              file: path.join(config.stateDir, 'logs', 'owner-dark-ladder.jsonl'),
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            // Same liveness expression the router uses (§3.1: `other-dark`
+            // derives from the EXISTING isMachineAlive input — one authority).
+            const seamIsAlive = (m: string): boolean =>
+              m === meshSelfId ||
+              ((machinePoolRegistry?.getCapacity(m)?.online ?? false) && !ownerSuspectBreaker.isSuspect(m));
+            _ownerDarkLadder = new ladderMod.OwnerDarkLadder(config.ownerDarkLadder, {
+              isMachineAlive: seamIsAlive,
+              // The deterministic G1 path (telegram.sendToTopic — never the LLM
+              // tone gate), with the DECLARED owner-dark exception to speaker
+              // election (§3.3 rung 3; election rule 1 is owner-liveness-blind
+              // and would structurally silence the notice).
+              sendNotice: async (noticeTopicId, noticeText) => {
+                if (!telegram) return false;
+                try {
+                  await telegram.sendToTopic(noticeTopicId, noticeText);
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+              // Topic-scoped suppression (split-brain guard): a recent
+              // owner-dark notice visible in the topic's send history — from
+              // ANY machine — suppresses a second voice.
+              topicHistoryHasRecentNotice: (noticeTopicId) => {
+                try {
+                  return (telegram?.getTopicHistory(noticeTopicId, 10) ?? [])
+                    .some((e) => !e.fromUser && typeof e.text === 'string' && e.text.includes('temporarily unreachable'));
+                } catch {
+                  return false;
+                }
+              },
+              journal: ownerDarkAudit,
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            _spawnAdmission = new spawnAdmMod.SpawnAdmission(
+              {
+                enabled: resolveDevAgentGate(ogsCfg.enabled, config),
+                dryRun: ogsCfg.dryRun !== false,
+              },
+              {
+                selfMachineId: () => _meshSelfId,
+                poolStage: () => _sessionPoolStage(),
+                readOwnership: (sk) => {
+                  const r = ownReg.read(sk);
+                  if (!r) return null;
+                  return { owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, status: r.status ?? null };
+                },
+                isMachineAlive: seamIsAlive,
+                durableCustodyLive: () => !!_inboundQueue,
+                journal: (row) => ownerDarkAudit.append(row),
+                raiseAttention: (item) => {
+                  void telegram
+                    ?.createAttentionItem({
+                      id: item.id,
+                      title: item.title,
+                      summary: item.body,
+                      category: 'system',
+                      priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+                      sourceContext: 'spawn-admission',
+                    })
+                    .catch(() => { /* attention raise is observability — never affects admission */ });
+                },
+                provenance: (row) => {
+                  _judgmentProvenance?.recordDecision(row);
+                },
+                log: (m) => console.log(pc.dim(`  [spawn-admission] ${m}`)),
+              },
+            );
+            console.log(pc.dim(`  [spawn-admission] seam constructed (mode: ${_spawnAdmission.effectiveMode()})`));
+          } catch (err) {
+            console.error(`[spawn-admission] construction failed (seam stays off — legacy spawn behavior): ${err instanceof Error ? err.message : String(err)}`);
+          }
+
+          // ── Duplicate-session reconciler (ownership-gated-spawn §3.2, Layer B) ──
+          // Detection + evidence ladder + would-converge journaling run on the
+          // serving-lease holder; the substrate gate (§3.2.0) refuses to arm on
+          // the fleet-default in-memory ownership store regardless of flags,
+          // and dryRun (the Increment-1 canary) lands no CAS.
+          try {
+            const durMod = await import('../monitoring/DuplicateSessionReconciler.js');
+            const audMod2 = await import('../core/BoundedJsonlAudit.js');
+            const dupCfgRaw = (config.multiMachine?.sessionPool?.duplicateReconciler ?? {}) as {
+              enabled?: boolean; dryRun?: boolean; reconcilerTickMs?: number; maxReconcilesPerTick?: number;
+              maxConvergenceWritesPerTick?: number; echoConfirmTicks?: number; breakerThreshold?: number; breakerWindowMs?: number;
+            };
+            const dupAudit = new audMod2.BoundedJsonlAudit({
+              file: path.join(config.stateDir, 'logs', 'duplicate-reconciler.jsonl'),
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            const selfBase = `http://127.0.0.1:${config.port}`;
+            const meshAuthHeaders = { Authorization: `Bearer ${config.authToken ?? ''}` };
+            const fetchJson = async (url: string, timeoutMs: number): Promise<unknown> => {
+              const r = await fetch(url, { headers: meshAuthHeaders, signal: AbortSignal.timeout(timeoutMs) });
+              if (!r.ok) throw new Error(`HTTP ${r.status}`);
+              return r.json();
+            };
+            const dupCfgResolved = {
+              enabled: resolveDevAgentGate(dupCfgRaw.enabled, config),
+              dryRun: dupCfgRaw.dryRun !== false,
+              reconcilerTickMs: Math.max(5_000, dupCfgRaw.reconcilerTickMs ?? 60_000),
+              maxReconcilesPerTick: dupCfgRaw.maxReconcilesPerTick ?? 3,
+              maxConvergenceWritesPerTick: dupCfgRaw.maxConvergenceWritesPerTick ?? 5,
+              echoConfirmTicks: dupCfgRaw.echoConfirmTicks ?? 4,
+              breakerThreshold: dupCfgRaw.breakerThreshold ?? 3,
+              breakerWindowMs: dupCfgRaw.breakerWindowMs ?? 86_400_000,
+            };
+            _duplicateReconciler = new durMod.DuplicateSessionReconciler(dupCfgResolved, {
+              selfMachineId: () => _meshSelfId,
+              holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+              // §3.2.0: durable + replicated ownership substrate (the same two
+              // activation signals the store selection above resolved).
+              substrateReady: () =>
+                durableOwnershipOn && _replicationOn
+                  ? { ready: true }
+                  : {
+                      ready: false,
+                      reason: durableOwnershipOn
+                        ? 'placement replication not enabled (peer views unresolvable)'
+                        : 'in-memory ownership store (fleet default — records wiped on restart)',
+                    },
+              errorEpisodeOpen: () => _spawnAdmission?.isErrorEpisodeOpen() ?? false,
+              topicHasAuthorityInMotion: (sk) => {
+                try {
+                  const r = ownReg.read(sk);
+                  return r?.status === 'transferring' || r?.status === 'placing';
+                } catch {
+                  return true; // unreadable → treat as in-motion (defer — the safe direction)
+                }
+              },
+              // Lease-holder bounded fan-out at tick cadence (§3.2.1 — the
+              // declared fallback while the WS4.4(f) poll-cache is dev-gated):
+              // the pool sessions view already computes duplicateTopics from a
+              // bounded per-peer fetch; one detector, one implementation.
+              discoverCandidates: async () => {
+                const j = (await fetchJson(`${selfBase}/sessions?scope=pool`, 15_000)) as {
+                  pool?: { duplicateTopics?: Array<{ platform: string; platformId: string | number; machineIds: string[]; sessions: string[] }> };
+                };
+                const dups = j.pool?.duplicateTopics ?? [];
+                return {
+                  candidates: dups.map((d) => ({
+                    key: `${d.platform}:${String(d.platformId)}`,
+                    platform: d.platform,
+                    platformId: String(d.platformId),
+                    machines: d.machineIds.map((m) => ({ machineId: m, sessions: d.sessions })),
+                  })),
+                };
+              },
+              // Fresh direct probe (5s budget) — never acts on a cached row.
+              probeLiveCopy: async (machineId, key) => {
+                try {
+                  const sep = key.indexOf(':');
+                  const platform = key.slice(0, sep);
+                  const pid = key.slice(sep + 1);
+                  const base =
+                    machineId === _meshSelfId
+                      ? selfBase
+                      : (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
+                  if (!base) return { ok: false, live: false };
+                  const list = (await fetchJson(`${base}/sessions`, 5_000)) as Array<Record<string, unknown>>;
+                  const live = (Array.isArray(list) ? list : []).some(
+                    (s) => String(s.platform) === platform && String(s.platformId) === pid,
+                  );
+                  return { ok: true, live };
+                } catch {
+                  return { ok: false, live: false };
+                }
+              },
+              readPin: (sk) => {
+                try {
+                  const tp = _pinPlacementMetadata ? _pinPlacementMetadata(sk) : _topicPinStore?.asTopicMetadata(sk);
+                  // Quarantined pins never surface through the fold reads (U4.1).
+                  return tp ? { pinned: !!tp.pinned, preferredMachine: tp.preferredMachine ?? null, quarantined: false } : null;
+                } catch {
+                  return null;
+                }
+              },
+              readOwnershipViews: (sk) => {
+                try {
+                  const r = ownReg.read(sk);
+                  if (!r) return [];
+                  // The local view is journal-materialized (OwnershipApplier) —
+                  // epoch fast-forward means it already carries the highest
+                  // epoch this machine has SEEN; peers' own views are consulted
+                  // at echo time via /pool/ownership-view.
+                  return [{ machineId: _meshSelfId ?? 'self', owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, admissible: true }];
+                } catch {
+                  return [];
+                }
+              },
+              // §3.2.2 rule 3: run registration read from each machine's own
+              // authenticated surface — the fetch succeeding IS the live probe.
+              liveRunHosts: async (sk) => {
+                const out: Array<{ machineId: string; registeredAt: number; confirmed: boolean }> = [];
+                const targets = [
+                  { machineId: _meshSelfId ?? 'self', url: selfBase },
+                  ...(_resolvePeerUrls?.() ?? []),
+                ];
+                for (const t of targets) {
+                  try {
+                    const j = (await fetchJson(`${t.url}/autonomous/sessions`, 5_000)) as {
+                      sessions?: Array<{ topic: string | null; active: boolean; startedAt: string | null }>;
+                    };
+                    const run = (j.sessions ?? []).find((s) => s.active && s.topic === sk);
+                    if (run) {
+                      out.push({
+                        machineId: t.machineId,
+                        registeredAt: run.startedAt ? Date.parse(run.startedAt) : Date.now(),
+                        confirmed: true,
+                      });
+                    }
+                  } catch {
+                    /* @silent-fallback-ok: a dark peer's run is UNCONFIRMED — it never corroborates (§3.2.2). */
+                  }
+                }
+                return out;
+              },
+              // The fenced convergence CAS (§3.2.3 item 1): `claim` by the
+              // intended owner — the FSM's fenced epoch increment + journal
+              // fast-forward carry the repair to every peer's view.
+              casConverge: (sk, owner) => {
+                try {
+                  const prevOwner = ownReg.read(sk)?.ownerMachineId;
+                  const r = ownReg.cas(
+                    { type: 'claim', machineId: owner },
+                    { sessionKey: sk, sender: _meshSelfId ?? 'dup-reconciler', nonce: `dup-reconcile:${sk}:${Date.now().toString(36)}` },
+                  );
+                  // COHERENCE-JOURNAL-SPEC §3.3 pairing: the journal emit IS the
+                  // replication path that carries the repair to every peer's
+                  // materialized view — without it the peer-echo verify (§3.2.3
+                  // item 2) could never observe the converged owner.
+                  emitPlacement(sk, r, 'reconcile', prevOwner);
+                  return r.ok ? { ok: true } : { ok: false, reason: String((r as { reason?: string }).reason ?? 'cas-refused') };
+                } catch (err) {
+                  return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+                }
+              },
+              // Peer-echo (§3.2.3 item 2): the peer's OWN registry view via the
+              // proxy-free /pool/ownership-view read.
+              peerEchoObserved: async (sk, owner, machineId) => {
+                const base = (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
+                if (!base) return false;
+                const j = (await fetchJson(`${base}/pool/ownership-view?key=${encodeURIComponent(sk)}`, 5_000)) as {
+                  owner?: string | null;
+                };
+                return j.owner === owner;
+              },
+              // §3.2.3 item 3: the converged RECORD is the arming mechanism —
+              // each non-owner machine's own closeout sweeper fires off its
+              // (journal-materialized) topicOwnerElsewhere read. Journal intent.
+              armCloseout: (sk, owner) => {
+                dupAudit.append({ ts: new Date().toISOString(), kind: 'closeout-armed-via-record', key: sk, owner });
+              },
+              raiseAttention: (item) => {
+                void telegram
+                  ?.createAttentionItem({
+                    id: item.id,
+                    title: item.title,
+                    summary: item.body,
+                    category: 'system',
+                    priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+                    sourceContext: 'duplicate-reconciler',
+                  })
+                  .catch(() => { /* attention raise is observability */ });
+              },
+              journal: dupAudit,
+              provenance: (row) => {
+                _judgmentProvenance?.recordDecision(row);
+              },
+              log: (m) => console.log(pc.dim(`  [dup-reconciler] ${m}`)),
+            });
+            const dupTimer = setInterval(() => {
+              void _duplicateReconciler?.tick();
+            }, dupCfgResolved.reconcilerTickMs);
+            dupTimer.unref?.();
+            console.log(
+              pc.dim(
+                `  [dup-reconciler] constructed (enabled=${dupCfgResolved.enabled}, dryRun=${dupCfgResolved.dryRun}, tick=${dupCfgResolved.reconcilerTickMs}ms)`,
+              ),
+            );
+          } catch (err) {
+            console.error(`[dup-reconciler] construction failed (reconciler stays off): ${err instanceof Error ? err.message : String(err)}`);
+          }
+
           // ── B (HTTP presence transport): pull each peer's self-capacity over
           // the signed /mesh/rpc channel and record it into the pool registry.
           // This is the credential-less presence path — a standby that cannot
@@ -22355,7 +22842,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

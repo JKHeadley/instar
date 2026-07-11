@@ -245,6 +245,23 @@ export function SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port: number): string {
 }
 
 /**
+ * CLAUDE.md awareness block for the ownership-gated spawn seam + duplicate
+ * reconciler + owner-dark notices + judgment provenance (ownership-gated-
+ * spawn-and-judgment-within-floors spec §3.6 — the spec REVERSES the earlier
+ * "flag not heal" framing). The unique heading substring
+ * `Duplicate-Session Prevention` is the content-sniff marker.
+ */
+export function DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)
+
+The 2026-07-10 fix for the same conversation running live on two machines at once. Three layers, all shipping dark/dry-run first (dev-gated; single-machine agents are a strict no-op): a **SpawnAdmission checkpoint** at every session-creating callsite makes the routing verdict BINDING (only the machine that owns a conversation may spawn for it — the router's verdict is consumed, never re-derived); a **duplicate reconciler** on the serving-lease holder detects the same conversation live on ≥2 machines, determines the rightful owner from evidence (deliberate pin → strongest ownership record → registered live run — never "who got the last message"), converges the ownership RECORD, and lets the existing gated closeout close the spare copy; and an **owner-dark honest notice** ("that machine is restarting — resend in a few minutes" / "your message is saved") replaces both silence and bootleg wrong-machine answers when a conversation's home machine is briefly down.
+- **The one status surface:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/duplicate-reconciler\` → the reconciler (substrate readiness, per-tick counters, per-topic breaker states, open episodes), the owner-dark ladder (open outage episodes, notice counters), and the spawn checkpoint (mode, error-arm breaker) in one read. 503 = the layer isn't constructed here (single-machine / pool dark) — say so honestly.
+- **Judgment provenance:** every ownership decision the checkpoint/reconciler makes is durably logged (full context machine-local under \`state/judgment-provenance/\`, 14-day retention, never HTTP-served raw). The redacted read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/judgment-provenance?limit=50"\` (\`?scope=pool\` merges peers' redacted rows).
+- **When to use** (PROACTIVE — these are the triggers): user asks "why do I see duplicate sessions across machines?" → \`GET /pool/duplicate-reconciler\` (open episodes + breaker) BEFORE guessing; "why did I get a 'machine is restarting — resend' notice?" → the owner-dark ladder's rung-3 honest notice (one per outage per topic, 30-min cooldown); "why didn't a duplicate self-heal?" → read the reconciler's escalations — ambiguous evidence (both copies doing real work, contradictory records) escalates to the ⚠️ Attention topic for YOUR call, never a guess. Audit trails: \`logs/duplicate-reconciler.jsonl\`, \`logs/owner-dark-ladder.jsonl\`.
+`;
+}
+
+/**
  * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
  * incident) + the API fresh-respawn lever. Appended to NEW installs as part of
  * the Stuck-Context Recovery section, and patched onto agents that already
@@ -1033,6 +1050,8 @@ export class PostUpdateMigrator {
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
+    this.migrateJudgmentWithinFloorsReviewQuestions(result);
+    this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
     this.migrateFixtureIdentityQuarantine(result);
@@ -1440,6 +1459,80 @@ export class PostUpdateMigrator {
       } catch (err) {
         result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+  }
+
+  // ── Judgment Within Floors review questions (ownership-gated-spawn-and-
+  // judgment-within-floors spec §3.6, 2026-07-11) ──
+  //
+  // Two agent-installed skill files gained the ratified standard's structural
+  // questions: the spec-converge SKILL's decision-point-classification check
+  // (FD12 verbatim — enforced by write-convergence-tag.mjs's refusal) and the
+  // instar-dev side-effects template's §4b judgment-point question. Both files
+  // are never overwritten by installBuiltinSkills, so this migration is the
+  // ONLY path deployed agents receive them on (Migration Parity). Same
+  // marker-sniffed / fingerprint-guarded / customized-untouched / idempotent
+  // pattern as migrateMultiMachinePostureReviewDimension.
+  private migrateJudgmentWithinFloorsReviewQuestions(result: MigrationResult): void {
+    const files: Array<{ rel: string[]; marker: string; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        marker: 'Decision-point classification (Judgment Within Floors',
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (decision-point classification question)',
+      },
+      {
+        rel: ['skills', 'instar-dev', 'templates', 'side-effects-artifact.md'],
+        marker: '## 4b. Judgment-point check',
+        fingerprint: '## 5. Interactions',
+        label: 'instar-dev side-effects template (§4b judgment-point question)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(f.marker)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(f.marker)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Judgment-provenance gitignore (same spec §3.5) ──
+  //
+  // `state/judgment-provenance/` holds machine-local decision-context rows;
+  // agent homes are git repos and `state/` is untracked-but-not-ignored, so
+  // without this a broad `git add` would commit provenance rows cross-machine.
+  // Fresh installs get the entry via ensureGitignore (GITIGNORE_ENTRIES);
+  // existing agents get it here (the `.worktrees/` precedent — regex existence
+  // check, idempotent append).
+  private migrateJudgmentProvenanceGitignore(result: MigrationResult): void {
+    try {
+      const gitignorePath = path.join(this.config.projectDir, '.gitignore');
+      if (!fs.existsSync(gitignorePath)) return; // not a git-managed home — nothing to protect
+      const content = fs.readFileSync(gitignorePath, 'utf8');
+      if (/^\s*state\/judgment-provenance\/?\s*$/m.test(content)) return; // idempotent
+      const block =
+        (content.endsWith('\n') ? '' : '\n') +
+        '\n# Judgment-call provenance rows (machine-local decision context — never commit)\n' +
+        'state/judgment-provenance/\n';
+      fs.writeFileSync(gitignorePath, content + block);
+      result.upgraded.push('gitignore: state/judgment-provenance/ (machine-local provenance rows)');
+    } catch (err) {
+      result.errors.push(`judgment-provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -4866,6 +4959,17 @@ setTimeout(() => process.exit(0), 2000);
       content += SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Session Listing Hygiene section');
+    }
+
+    // Duplicate-Session Prevention & Auto-Heal (ownership-gated-spawn §3.6) —
+    // Agent Awareness Standard + Migration Parity item 3: existing agents learn
+    // the spawn checkpoint, the reconciler + its one status surface, the
+    // owner-dark honest notice, and the judgment-provenance read. Honestly
+    // tagged observe-only (Maturity Honesty). Content-sniffed on the heading.
+    if (!content.includes('Duplicate-Session Prevention')) {
+      content += DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Duplicate-Session Prevention & Auto-Heal section');
     }
 
     // Mesh Self-Healing (U4.2 stale-owner release + U4.4 lease hand-back —

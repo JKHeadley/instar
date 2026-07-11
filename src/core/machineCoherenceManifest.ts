@@ -145,6 +145,35 @@ export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
     readSource: 'live',
     guarantee: 'whether the pool routes real traffic at all (+ the exactlyOnceIngress default it drives)',
   },
+  // ownership-gated-spawn-and-judgment-within-floors §3.2.0: all three
+  // pool-behavior flags are coherence-critical — a pool split on any of them
+  // halves the one-owner-per-conversation guarantee (one machine enforcing the
+  // seam while another spawns freely re-creates the incident). Pool-consistent
+  // activation is the PRIMARY defense; this manifest is the alarm layer.
+  {
+    key: 'sessionPool.ownershipGatedSpawn',
+    configPath: 'multiMachine.sessionPool.ownershipGatedSpawn.enabled',
+    resolution: 'dev-gate+dryRun',
+    dryRunConfigPath: 'multiMachine.sessionPool.ownershipGatedSpawn.dryRun',
+    readSource: 'boot',
+    guarantee: 'binding ownership verdict at every session-creating callsite (one owner per conversation)',
+  },
+  {
+    key: 'sessionPool.duplicateReconciler',
+    configPath: 'multiMachine.sessionPool.duplicateReconciler.enabled',
+    resolution: 'dev-gate+dryRun',
+    dryRunConfigPath: 'multiMachine.sessionPool.duplicateReconciler.dryRun',
+    readSource: 'boot',
+    guarantee: 'duplicate sessions converge to the owner instead of living forever',
+  },
+  {
+    key: 'sessionPool.commitmentCustodyTransfer',
+    configPath: 'multiMachine.sessionPool.commitmentCustodyTransfer.enabled',
+    resolution: 'dev-gate+dryRun',
+    dryRunConfigPath: 'multiMachine.sessionPool.commitmentCustodyTransfer.dryRun',
+    readSource: 'boot',
+    guarantee: 'commitments ride ownership moves (custody skew degrades escalate-safe, still visible)',
+  },
   {
     key: 'exactlyOnceIngress',
     configPath: 'multiMachine.exactlyOnceIngress',
@@ -240,6 +269,7 @@ export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
   { configPath: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled', reason: 'lease self-heal reconciler; lease-layer owned + operator latch' },
   { configPath: 'multiMachine.stateSync.threadlinePairing.enabled', reason: 'verified-pairing store; a non-participant fails-closed on credential share (its own gate), not a silent memory-reach loss like the 7 WS2 stores' },
   { configPath: 'multiMachine.sessionPool.moveIntent.enabled', reason: 'per-machine inbound move-intent recognizer; fail-open + dry-run-first, a non-participant just passes the message through (never hijacks), no cross-machine data-loss guarantee it owns' },
+  { configPath: 'multiMachine.sessionPool.judgmentArbiters.enabled', reason: 'per-machine LLM arbiter layer (shadow-first) INSIDE deterministic floors; a non-participant runs the same floors\' static defaults — no cross-machine guarantee of its own (the three pool-behavior flags that DO halve a guarantee are in the manifest)' },
 ];
 
 // ─── Clamp + byte bounds (spec §3.1) ─────────────────────────────────────

@@ -428,15 +428,22 @@ describe('lint-dev-agent-dark-gate', () => {
       // replicated-journal-compaction adds a 5-line compaction default block
       // above stateSync. It uses `run:false` (not an `enabled` gate), so the
       // attributed path set is unchanged and the four rows below shift by +5.
-      '1598': 'multiMachine.stateSync.threadlinePairing.enabled',
+      // ownership-gated-spawn (2026-07-11): four dev-gated sub-blocks
+      // (ownershipGatedSpawn / duplicateReconciler / judgmentArbiters /
+      // commitmentCustodyTransfer) inserted under sessionPool — each OMITS
+      // `enabled` (rides resolveDevAgentGate), adds NO map row, and shifts
+      // stateSync.threadlinePairing by +37; the three top-level blocks
+      // (ownerDarkLadder / provenance / standards, +32 lines, no `enabled:`
+      // literals) shift the cartographer rows below by +69 total.
+      '1635': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
       // default, so it adds NO attributed dark-gate row; it shifts the cartographer
       // `enabled: false` rows below it DOWN by +6.
-      '1745': 'cartographer.freshnessSweep.enabled',
-      '1790': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1815': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1814': 'cartographer.freshnessSweep.enabled',
+      '1859': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1884': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

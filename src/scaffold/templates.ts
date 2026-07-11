@@ -14,7 +14,7 @@
 // existing-agent migration there) so the two can never drift. Imported as a runtime
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
-import { SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 
 export interface AgentIdentity {
   name: string;
@@ -887,6 +887,7 @@ ${WRITE_ADMISSION_CLAUDEMD_SECTION(port)}
 ${DOORWAY_REGISTRY_CLAUDEMD_SECTION(port)}
 ${ROUTING_SPEND_CLAUDEMD_SECTION(port)}
 ${SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port)}
+${DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port)}
 **Per-Feature LLM Metrics & LLM Activity (Observable Intelligence)** — Audit what each of your LLM-driven gates/sentinels actually does: WHICH provider + model ran it, how often it ACTED (fired) vs found nothing (noop), how often it was skipped to save rate limits (shed), cost, and latency. This is the *Observable Intelligence* standard — no autonomous AI action the system takes is allowed to be invisible. Read-only observability — it never gates anything.
 - Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
 - Returns \`{ totals, features: [{ feature, frameworks, models, byModel, calls, realCalls, tokensIn, tokensOut, tokensCached, fired, noop, shed, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, MessageSentinel). \`frameworks\`/\`models\` = which provider(s) actually served the call; \`fireRate\` = how often it acts; \`shed\` = skipped by the rate-limit guard. Filter with \`?feature=<name>\`.

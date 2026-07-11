@@ -1308,6 +1308,13 @@ export interface RouteContext {
   ownershipReconciler?: import('../core/OwnershipReconciler.js').OwnershipReconciler | null;
   /** U4.2 — stale-owner release engine (status route; 503 when dark/absent). */
   staleOwnerEngine?: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerReleaseEngine | null;
+  /** ownership-gated-spawn §3.8 — the unified watcher status surface
+   *  (GET /pool/duplicate-reconciler serves all three watchers' state). */
+  duplicateReconciler?: import('../monitoring/DuplicateSessionReconciler.js').DuplicateSessionReconciler | null;
+  ownerDarkLadder?: import('../core/OwnerDarkLadder.js').OwnerDarkLadder | null;
+  spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission | null;
+  /** ownership-gated-spawn §3.5 — GET /judgment-provenance (redacted rows only). */
+  judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog | null;
   /** U4.4 — lease hand-back status + the operator-flip latch levers. */
   leaseHandback?: {
     status(): import('../core/LeaseHandbackReconciler.js').LeaseHandbackStatus;
@@ -14944,6 +14951,106 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json(ctx.staleOwnerEngine.status());
+  });
+
+  // GET /pool/duplicate-reconciler — ownership-gated-spawn §3.8: the ONE status
+  // surface for all three watchers (duplicate reconciler, owner-dark ladder,
+  // SpawnAdmission error arm) — substrate readiness, per-tick counters, breaker
+  // states, open episodes, and each watcher's ≤300s observability line (the
+  // audit rows in logs/duplicate-reconciler.jsonl + logs/owner-dark-ladder.jsonl
+  // surfaced as status, NEVER a push send). 503 when the layer is absent
+  // (single-machine / pool dark).
+  router.get('/pool/duplicate-reconciler', (_req, res) => {
+    if (!ctx.duplicateReconciler && !ctx.spawnAdmission) {
+      res.status(503).json({ error: 'ownership-gated spawn layer not constructed (single-machine / pool dark)' });
+      return;
+    }
+    res.json({
+      reconciler: ctx.duplicateReconciler?.status() ?? null,
+      ownerDarkLadder: ctx.ownerDarkLadder?.status() ?? null,
+      spawnAdmission: ctx.spawnAdmission?.status() ?? null,
+      auditLocations: ['logs/duplicate-reconciler.jsonl', 'logs/owner-dark-ladder.jsonl'],
+    });
+  });
+
+  // GET /pool/ownership-view?key=<sessionKey> — THIS machine's OWN ownership
+  // registry read (deliberately proxy-free, unlike /pool/placement): the
+  // reconciler's peer-echo confirmation (§3.2.3) asks each non-owner machine
+  // whether ITS view now names the converged owner. Bearer-authed like every
+  // route; returns record fields only, never payloads.
+  router.get('/pool/ownership-view', (req, res) => {
+    const key = typeof req.query.key === 'string' ? req.query.key.trim() : '';
+    if (!key) {
+      res.status(400).json({ error: 'key (query param) is required' });
+      return;
+    }
+    if (!ctx.sessionOwnershipRegistry) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    try {
+      const rec = ctx.sessionOwnershipRegistry.read(key);
+      res.json({
+        key,
+        owner: rec ? ctx.sessionOwnershipRegistry.ownerOf(key) : null,
+        epoch: rec?.ownershipEpoch ?? 0,
+        status: rec?.status ?? null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: `ownership read failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // GET /judgment-provenance — ownership-gated-spawn §3.5: REDACTED judgment
+  // provenance rows only (the machine-local full context NEVER crosses this
+  // surface — redaction is an invariant, enforced at write + by field omission
+  // on read). ?limit= (default 100, max 1000), ?sinceHours=. ?scope=pool merges
+  // peers' redacted rows as type/length-clamped untrusted data.
+  router.get('/judgment-provenance', async (req, res) => {
+    if (!ctx.judgmentProvenance) {
+      res.status(503).json({ error: 'judgment-provenance log not constructed (single-machine / pool dark)' });
+      return;
+    }
+    try {
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '100'), 10) || 100, 1), 1000);
+      const sinceHours = parseFloat(String(req.query.sinceHours ?? '')) || 0;
+      const sinceMs = sinceHours > 0 ? Date.now() - sinceHours * 3_600_000 : undefined;
+      const rows = await ctx.judgmentProvenance.readRedacted({ limit, sinceMs });
+      if (req.query.scope !== 'pool') {
+        res.json({ rows, status: ctx.judgmentProvenance.status() });
+        return;
+      }
+      // Pool scope: merge peers' REDACTED rows (each peer redacts on its own
+      // serving machine) as clamped untrusted data — bounded per row + total.
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remote: Array<Record<string, unknown>> = [];
+      await Promise.all(
+        peers.map(async (p) => {
+          try {
+            const r = await fetch(`${p.url}/judgment-provenance?limit=${limit}${sinceHours ? `&sinceHours=${sinceHours}` : ''}`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!r.ok) {
+              failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` });
+              return;
+            }
+            const j = (await r.json()) as { rows?: Array<Record<string, unknown>> };
+            for (const row of (j.rows ?? []).slice(0, limit)) {
+              const serialized = JSON.stringify(row);
+              if (serialized.length > 8_192) continue; // clamp: oversized peer rows dropped
+              remote.push({ ...row, machineId: p.machineId, remote: true });
+            }
+          } catch (err) {
+            failed.push({ machineId: p.machineId, error: err instanceof Error ? err.name : 'unreachable' });
+          }
+        }),
+      );
+      res.json({ rows: [...rows, ...remote].slice(0, limit * (peers.length + 1)), pool: { peersQueried: peers.length, failed }, status: ctx.judgmentProvenance.status() });
+    } catch (err) {
+      res.status(500).json({ error: `provenance read failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
   });
 
   // GET /pool/lease-handback — U4.4 (docs/specs/u4-4-lease-handback.md §4): the

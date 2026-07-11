@@ -73,6 +73,14 @@
 
 ---
 
+## 4b. Judgment-point check (Judgment Within Floors standard)
+
+**Does this change add a static heuristic at a competing-signals decision point? If yes: why is it not a judgment point within a floor?**
+
+[A "competing-signals decision point" is one where multiple live signals (work evidence, liveness, recency, ownership, urgency) can genuinely conflict and the right answer is not statically enumerable. Per the **Judgment Within Floors** standard (`docs/STANDARDS-REGISTRY.md`), a new static heuristic at such a point must state why it is not a judgment point — valid answers include: the domain is enumerable (it's an invariant, name it), the choice is a safety guard on an irreversible action (deterministic by design), or a floor + arbiter is declared in the driving spec's `## Decision points touched` section. "No new static heuristic at a competing-signals decision point" is a valid answer and must be stated explicitly.]
+
+---
+
 ## 5. Interactions
 
 **Does this interact with existing checks, recovery paths, or infrastructure?**
