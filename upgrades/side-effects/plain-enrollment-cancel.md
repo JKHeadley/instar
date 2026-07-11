@@ -12,6 +12,7 @@ The subscription enrollment API gains a target-local cancel route backed by the 
 ## Decision-point inventory
 
 - Enrollment cancellation — add — authoritatively transitions pending/expired records to abandoned.
+- Write-domain classification — add — declares target-local ownership with pool-scope read-merge and git-sync-excluded persistence.
 - Terminal-state preservation — shared/modify — completed and abandoned records return idempotently without teardown.
 - Completion/cancellation exclusion — add — cancellation returns 409 during same-id completion.
 - Follow-me cancellation — refactor — behavior passes through the shared core unchanged.
@@ -26,7 +27,7 @@ Best-effort tmux teardown may fail after abandonment, leaving a stale pane until
 
 ## 3. Level-of-abstraction fit
 
-The shared helper is the correct route layer: it composes the existing store authority with the raw tmux primitive used by enrollment panes. Durable terminal guards remain enforced in `PendingLoginStore`; route-specific gates and in-flight registries remain outside the helper. Extraction avoids two kill paths drifting.
+The shared helper is the correct route layer: it composes the existing store authority with the raw tmux primitive used by enrollment panes. Durable terminal guards remain enforced in `PendingLoginStore`; route-specific gates and in-flight registries remain outside the helper. The WriteDomainRegistry owns standby admission classification rather than route-local logic. Extraction avoids two kill paths drifting.
 
 ## 4. Signal vs authority compliance
 
@@ -69,6 +70,8 @@ The change completes the ordinary enrollment API lifecycle while preserving the 
 **Independent read of the artifact:** concur
 
 Concur with the review. The shared cancel core preserves the required order—shape validation and lookup before any pane derivation, terminal idempotence before in-flight handling, durable abandon before best-effort raw tmux teardown—and both plain and follow-me callers retain their own gates and per-id registries. Malformed/unknown ids produce no tmux call; completed records are byte-preserved; abandoned ids cannot be completed; expired records remain cancellable. The plain completion lock is installed synchronously before its only await and removed in finally, so cancel observes 409 during the bounded 10 ms critical section; that delay is small, deterministic in purpose, and does not expose partial state. Signal-vs-authority treatment is correct for structural lifecycle invariants. Focused plain/follow-me integration suites are green (22/22), including follow-me regression coverage.
+
+CI-repair review also concurs: the `/subscription-pool/enroll/` POST prefix correctly covers cancel, complete, and reissue-expired while leaving the base `/subscription-pool/enroll` row on the down-only baseline. Machine-local ownership, pool-scope read convergence, the `.instar` file-level exclusion, and removal of only the two newly classified baseline rows satisfy I9 and preserve ratchet semantics. Registry plus lifecycle verification is green (38/38).
 
 ## Evidence pointers
 
