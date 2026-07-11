@@ -522,7 +522,16 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     for (const m of machineList) {
       const key = `${acct.accountId}::${m.machineId}`;
       const t = transient[key] || null;
-      const pendingLogin = inProgress.get(key) || null;
+      // OPTIMISTIC CANCEL (issue #1428): a confirmed cancel (2xx) drops a `cancelled`
+      // transient so the cell resets AT CLICK TIME instead of showing the stale
+      // in-flight flow for one poll cycle (~40s). It SUPPRESSES the cached
+      // pending-login (which the next poll hasn't dropped yet), letting the cell fall
+      // through to its true underlying state ("Sign in" / "Set up"). The transient is
+      // cleared on the very next poll (purgeTransients), so if the cancel actually
+      // FAILED server-side the fresh pending-login re-shows the flow — the poll stays
+      // the authority.
+      const cancelled = t && t.state === 'cancelled';
+      const pendingLogin = cancelled ? null : (inProgress.get(key) || null);
       let state;
       if (m.offline) state = 'offline';                              // whole column offline (FD6)
       else if (t && t.state === 'held') state = 'held';
@@ -849,6 +858,11 @@ export function createController(opts) {
       if (!entry || typeof entry.at !== 'number') continue;
       if (entry.state === 'just-verified' && t - entry.at > JUST_VERIFIED_TTL_MS) delete state.matrixTransient[key];
       if ((entry.state === 'expired' || entry.state === 'broken') && t - entry.at > EXPIRED_TTL_MS) delete state.matrixTransient[key];
+      // The optimistic `cancelled` bridge (issue #1428) lives for exactly one poll:
+      // purgeTransients runs inside render() with the FRESH server bodies in hand, so
+      // clearing it here hands authority back to the poll — a still-pending login
+      // (cancel actually failed) re-derives 'in-progress' on this same render.
+      if (entry.state === 'cancelled') delete state.matrixTransient[key];
     }
     state.recentOutcomes = state.recentOutcomes
       .filter((o) => o && typeof o.at === 'number' && now() - o.at <= OUTCOME_TTL_MS)
@@ -1328,13 +1342,19 @@ export function createController(opts) {
       try {
         const r = await postJson(URLS.cancel, { machineId, id: accountId });
         if (r.ok && r.json && (r.json.cancelled || r.json.alreadyTerminal)) {
-          // TERMINAL (cancelled): the episode is over — release the hold so the next
-          // rebuild replaces the flow with a fresh "Set up" from server state.
+          // TERMINAL (cancelled): the episode is over. OPTIMISTIC RESET (issue #1428):
+          // drop a `cancelled` transient + release the hold, then rebuild the cell NOW
+          // from cache so the operator sees the in-flight flow disappear immediately —
+          // not after the next ~40s poll. The transient suppresses the stale cached
+          // pending-login until the next real poll reconciles (and stays authority if
+          // the cancel actually failed). Keep a status line as the fallback for the
+          // rare case where another open interaction defers the full rebuild.
           const key = `${accountId}::${machineId}`;
-          delete state.matrixTransient[key];
           delete state.matrixEpisodes[key];
+          state.matrixTransient[key] = { state: 'cancelled', at: now() };
           cell.removeAttribute('data-interaction-open');
           setCellStatus(cell, 'Cancelled — you can set this up again.');
+          rerenderMatrixFromCache();
         } else {
           const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
           setCellStatus(cell, `Couldn’t cancel: ${msg}`);

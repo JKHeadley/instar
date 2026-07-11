@@ -325,6 +325,47 @@ describe('renderAccountMatrix', () => {
     expect(cell!.querySelector('.sub-matrix-setup')).toBeNull();
   });
 
+  it('#1428: a `cancelled` transient SUPPRESSES a still-cached pending login so the cell resets immediately', () => {
+    // A needs-reauth account with a still-cached in-flight login: after a confirmed
+    // cancel, the optimistic `cancelled` transient must drop the stale flow AT ONCE
+    // (not after the next ~40s poll) — the cell falls through to its true underlying
+    // "Sign in" state instead of rendering ◷ Signing in.
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a3', email: 'a3@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] },
+      scope: 'pool',
+    };
+    const pending = { enabled: true, logins: [{ id: 'a3', machineId: 'm1', verificationUrl: 'https://x/y', ttlExpiresAt: Date.now() + 60000 }] };
+
+    // Without the transient: the cached pending login renders the in-flight flow.
+    const before = el();
+    renderAccountMatrix(doc, before, pool, pending, {});
+    expect(before.querySelector('.sub-matrix-in-progress'), 'stale flow shows without the transient').toBeTruthy();
+
+    // With the `cancelled` transient: the flow is gone; the cell is the clean "Sign in".
+    const after = el();
+    renderAccountMatrix(doc, after, pool, pending, { 'a3::m1': { state: 'cancelled', at: Date.now() } });
+    expect(after.querySelector('.sub-matrix-in-progress'), 'no in-flight flow after cancel').toBeNull();
+    const btn = Array.from(after.querySelectorAll('.sub-matrix-setup'))
+      .find((b) => b.getAttribute('data-account-id') === 'a3' && b.getAttribute('data-machine-id') === 'm1');
+    expect(btn, 'the cell reset to an actionable Sign-in button').toBeTruthy();
+    expect(btn!.textContent).toBe('Sign in');
+  });
+
+  it('#1428: buildMatrixModel drops a stale pending login under a `cancelled` transient (poll stays authority)', () => {
+    // The model-level proof: with the transient the cell is NOT in-progress; the next
+    // poll clears the transient (tested in the controller) so a genuinely-failed cancel
+    // re-derives in-progress from the fresh server state.
+    const held = buildMatrixModel(poolScope, pendingScope, { 'a2::m1': { state: 'cancelled', at: Date.now() } });
+    const cell = held.rows.flatMap((r) => r.cells).find((c) => c.accountId === 'a2' && c.machineId === 'm1');
+    expect(cell!.state).not.toBe('in-progress');
+    // negative control: WITHOUT the transient the same cached login IS in-progress.
+    const live = buildMatrixModel(poolScope, pendingScope, {});
+    const liveCell = live.rows.flatMap((r) => r.cells).find((c) => c.accountId === 'a2' && c.machineId === 'm1');
+    expect(liveCell!.state).toBe('in-progress');
+  });
+
   it('renders a "Sign in" button (with the "Needs sign-in" word above it) for a needs-reauth cell', () => {
     // a3 exists on a reachable machine but its login expired (status needs-reauth) → the cell must
     // be ACTIONABLE: the status word AND a "Sign in" button carrying the (account, machine) ids.

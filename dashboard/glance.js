@@ -41,21 +41,22 @@ export const GLANCE_MAX_TOKEN_LEN = 40; // a longer token is a glued-word budget
 // (same discipline as the F3 purpose-line exempt list). The completeness test
 // asserts adopted ∪ grandfathered == every TAB_REGISTRY id, so a NEW tab in NEITHER
 // set fails the build; the monotonicity test asserts the grandfather size ≤ ceiling.
-export const GLANCE_ADOPTED_TABS = ['commitments'];
+export const GLANCE_ADOPTED_TABS = ['commitments', 'blockers'];
 
 export const GLANCE_GRANDFATHERED = [
   'insights', 'sessions', 'files', 'dropzone', 'jobs', 'features', 'systems',
   'integrated-being', 'pr-pipeline', 'projects', 'initiatives', 'tokens',
   'resources', 'llm-activity', 'routing-map', 'spend', 'threadline', 'evidence',
   'process-health', 'subscriptions', 'preferences-learning', 'machines', 'mandates',
-  'blockers', 'secrets',
-];
+  'secrets',
+]; // 'blockers' left the list this PR (Phase 2) — it now builds through this component.
 
 // The committed ceiling on grandfathered-tab count. Only ever LOWER this (each
 // lowering marks a tab retrofitted onto the floor). Never raise it without an
 // operator-signed justification — raising it is how a NEW tab would silently ship
 // below the floor, the exact regression the ratchet exists to prevent.
-export const GLANCE_GRANDFATHERED_CEILING = 25;
+// Lowered 25 → 24 (Phase 2): Blockers retrofitted onto the glance floor.
+export const GLANCE_GRANDFATHERED_CEILING = 24;
 
 // ── F10 — insider-vocab detection ────────────────────────────────────────────
 // A readability floor, NOT a secret-redaction boundary (secret handling stays at
@@ -425,25 +426,40 @@ export function commitmentsOpenPopulation(commitments) {
 
 export function buildCommitmentsGlance(commitments, now = Date.now()) {
   const open = commitmentsOpenPopulation(commitments);
-  const dueSoon = open.filter((c) => c.atRisk === true);
+  // OVERDUE TAKES PRECEDENCE over due-soon (issue #1435 §3): a promise whose HARD
+  // deadline is already in the past is OVERDUE, never merely "due soon". The old
+  // build classified due-soon purely from atRisk, so a stale beacon record a month
+  // past its hard deadline showed as "due soon" — the reported defect. Classify
+  // overdue FIRST, then take due-soon over the REMAINDER (atRisk but not overdue).
+  const overdue = open.filter((c) => c.hardDeadlineAt && Date.parse(c.hardDeadlineAt) < now);
+  const overdueSet = new Set(overdue);
+  const dueSoon = open.filter((c) => c.atRisk === true && !overdueSet.has(c));
   const waiting = open.filter((c) => c.blockedOn === 'user-input' || c.blockedOn === 'user-authorization');
   const quiet = open.filter((c) => c.beaconSuppressed === true);
-  const overdue = open.filter((c) => c.hardDeadlineAt && Date.parse(c.hardDeadlineAt) < now);
 
   // Component-authored, jargon-free headline — honest to the one population.
+  // Count-aware verb agreement (#1435 §2): "1 needs" / "2 need", "1 is" / "2 are".
   let headline;
   if (open.length === 0) {
     headline = "You have no open promises right now.";
   } else {
-    const soonClause = dueSoon.length > 0 ? `${dueSoon.length} need attention soon` : 'none need attention soon';
-    const overdueClause = overdue.length > 0 ? `${overdue.length} overdue` : 'none overdue';
+    const soonClause = dueSoon.length === 0 ? 'none need attention soon'
+      : dueSoon.length === 1 ? '1 needs attention soon'
+      : `${dueSoon.length} need attention soon`;
+    const overdueClause = overdue.length === 0 ? 'none are overdue'
+      : overdue.length === 1 ? '1 is overdue'
+      : `${overdue.length} are overdue`;
     const noun = open.length === 1 ? 'open promise' : 'open promises';
     headline = `I'm carrying ${open.length} ${noun}; ${soonClause}, ${overdueClause}.`;
   }
 
+  // Every number the headline states now has a tile to drill into (#1435 §1): the
+  // "overdue" count gets its own OVERDUE tile — the most actionable state, so we add
+  // the tile rather than dropping the clause. Five tiles = the F10 max.
   const tiles = [
     { key: 'open', label: 'Open', value: String(open.length), tone: 'neutral', rows: open },
     { key: 'due-soon', label: 'Due soon', value: String(dueSoon.length), tone: dueSoon.length ? 'warn' : 'neutral', rows: dueSoon },
+    { key: 'overdue', label: 'Overdue', value: String(overdue.length), tone: overdue.length ? 'warn' : 'neutral', rows: overdue },
     { key: 'waiting', label: 'Waiting on you', value: String(waiting.length), tone: waiting.length ? 'warn' : 'neutral', rows: waiting },
     { key: 'quiet', label: 'Quiet', value: String(quiet.length), tone: 'muted', rows: quiet },
   ];
@@ -524,6 +540,143 @@ export function commitmentsGlanceSpec(doc, commitments, opts = {}) {
         row.setAttribute('aria-label', 'Open the full record');
         row.appendChild(el(d, 'span', 'glance-list-summary', commitmentRowText(c)));
         row.addEventListener('click', () => openRecord(commitmentRecordNode(d, c, { onDeliver: opts.onDeliver })));
+        list.appendChild(row);
+      }
+      drilldown.appendChild(list);
+    },
+  }));
+  return { headline: base.headline, tiles, population: base.population };
+}
+
+// ── Blockers reference builder (the Phase-2 rebuild) ──────────────────────────
+// Turns the /blockers ledger entries into a glance spec. A blocker is a DECAYING
+// HYPOTHESIS, not a settled wall (docs/specs/dashboard-ux-standard.md): each entry
+// moves through a pipeline (candidate → authority-checked → access-requested →
+// dry-run → live-run) and terminates as either RESOLVED (it turned out not to be a
+// wall) or a TRUE-BLOCKER (the best current understanding, with a recheck date —
+// never "stop trying"). Every tile maps to a state predicate over ONE population
+// (the non-archived ledger entries GET /blockers returns), so the counts are honest
+// and each headline number has exactly one tile to drill into. The full record
+// (id, state, timestamps, terminal detail) lives at Layer 3, one click below the
+// plain-language row — the ~7,000-word raw table is gone from the front page but
+// nothing is lost, only moved down a layer.
+
+const BLOCKER_NON_TERMINAL = new Set([
+  'candidate', 'authority-checked', 'access-requested', 'dry-run', 'live-run',
+]);
+
+// Plain-word state names for the Layer-3 record (the raw state token stays honest to
+// the ledger but reads as everyday language, never insider jargon at the glance).
+const BLOCKER_STATE_WORD = {
+  'candidate': 'Just spotted',
+  'authority-checked': 'Checked who can clear it',
+  'access-requested': 'Asked you for access',
+  'dry-run': 'Trying it safely first',
+  'live-run': 'Attempting it for real',
+  'resolved': 'Resolved — not a wall after all',
+  'true-blocker': 'Truly stuck for now (recheck scheduled)',
+};
+
+/** The single population: the non-archived ledger entries GET /blockers returns. */
+export function blockersPopulation(entries) {
+  return (Array.isArray(entries) ? entries : []).filter((e) => e && typeof e.state === 'string');
+}
+
+export function buildBlockersGlance(entries) {
+  const all = blockersPopulation(entries);
+  const working = all.filter((e) => BLOCKER_NON_TERMINAL.has(e.state));
+  const stuck = all.filter((e) => e.state === 'true-blocker');
+  const resolved = all.filter((e) => e.state === 'resolved');
+
+  // Component-authored, jargon-free headline — honest to the one population, with
+  // count-aware verb agreement.
+  let headline;
+  if (all.length === 0) {
+    headline = 'No blockers are being tracked right now.';
+  } else {
+    const stuckClause = stuck.length === 0 ? 'Nothing is truly stuck right now'
+      : stuck.length === 1 ? '1 thing is truly stuck right now'
+      : `${stuck.length} things are truly stuck right now`;
+    const workClause = working.length === 0 ? 'none are being worked'
+      : working.length === 1 ? '1 is being worked'
+      : `${working.length} are being worked`;
+    headline = `${stuckClause}; ${workClause}.`;
+  }
+
+  const tiles = [
+    { key: 'stuck', label: 'Truly stuck', value: String(stuck.length), tone: stuck.length ? 'warn' : 'neutral', rows: stuck },
+    { key: 'working', label: 'Being worked', value: String(working.length), tone: 'neutral', rows: working },
+    { key: 'resolved', label: 'Resolved', value: String(resolved.length), tone: 'muted', rows: resolved },
+  ];
+
+  return { headline, tiles, population: all };
+}
+
+/** One plain-word Layer-2 row for a blocker — the plain-language framing that opened
+ *  it (its detectedText). IDs/timestamps/state machinery are Layer 3, not here. */
+export function blockerRowText(e) {
+  return sanitizeForDisplay(e.detectedText || e.origin || 'A blocker', 'summary');
+}
+
+/**
+ * Layer-3 full record for a blocker — every existing column plus terminal detail,
+ * one click below the plain Layer-2 row. All values via textContent (XSS-safe):
+ * detectedText / origin / terminal free text are UNTRUSTED and are displayed, never
+ * interpreted. This is where the raw state token, id, and timestamps legitimately
+ * live (they used to be dumped on the front page).
+ */
+export function blockerRecordNode(doc, e, opts = {}) {
+  const fmtTs = opts.fmtTs || defaultFmtTs;
+  const wrap = el(doc, 'div', 'glance-record-fields');
+  const rows = [
+    ['What looked stuck', e.detectedText || '—'],
+    ['state', BLOCKER_STATE_WORD[e.state] || e.state || '—'],
+    ['id', e.id || '—'],
+    ['opened by', e.origin || '—'],
+    ['first seen', fmtTs(e.createdAt)],
+    ['last update', fmtTs(e.updatedAt)],
+  ];
+  const t = e.terminal;
+  if (t && t.kind === 'resolved') {
+    rows.push(['outcome', 'Resolved — it turned out not to be a wall']);
+    if (t.playbookPath) rows.push(['playbook', t.playbookPath]);
+  } else if (t && t.kind === 'true-blocker') {
+    rows.push(['outcome', `Best current understanding (${t.reasonKind || 'reason unknown'}) — not "give up"`]);
+    if (t.recheckAfter) rows.push(['recheck after', fmtTs(t.recheckAfter)]);
+  }
+  for (const [k, v] of rows) {
+    const row = el(doc, 'div', 'glance-record-row');
+    row.appendChild(el(doc, 'span', 'glance-record-key', String(k)));
+    row.appendChild(el(doc, 'span', 'glance-record-val', String(v)));
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+/**
+ * Build the FULL Blockers glance spec with drill wiring — importable by index.html
+ * AND the three test tiers. Each tile's onActivate renders the filtered ledger
+ * entries as plain Layer-2 rows; each row opens the Layer-3 record. Population +
+ * counts come from buildBlockersGlance (one denominator, honest counts).
+ */
+export function blockersGlanceSpec(doc, entries, opts = {}) {
+  const base = buildBlockersGlance(entries);
+  const tiles = base.tiles.map((t) => ({
+    key: t.key,
+    label: t.label,
+    value: t.value,
+    tone: t.tone,
+    onActivate: ({ doc: d, drilldown, openRecord }) => {
+      const rows = t.rows || [];
+      if (rows.length === 0) return; // component renders the honest F6 empty-state
+      const list = el(d, 'div', 'glance-list');
+      for (const e of rows) {
+        const row = d.createElement('button');
+        row.type = 'button';
+        row.className = 'glance-list-row';
+        row.setAttribute('aria-label', 'Open the full record');
+        row.appendChild(el(d, 'span', 'glance-list-summary', blockerRowText(e)));
+        row.addEventListener('click', () => openRecord(blockerRecordNode(d, e, { fmtTs: opts.fmtTs })));
         list.appendChild(row);
       }
       drilldown.appendChild(list);

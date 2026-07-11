@@ -79,7 +79,7 @@ describe('Commitments glance — E2E feature-alive', () => {
 
     const { handle } = render(body.commitments);
     expect(validateGlanceSpec(handle.spec).ok).toBe(true);
-    expect(handle.tiles.length).toBe(4);
+    expect(handle.tiles.length).toBe(5); // Open · Due soon · Overdue · Waiting · Quiet (#1435 Overdue tile)
     expect(handle.headline.textContent).toMatch(/carrying 2 open promises/i);
 
     // Drill "Open" and confirm the XSS payload rendered inert (textContent, no element).

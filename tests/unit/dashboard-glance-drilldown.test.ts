@@ -24,6 +24,8 @@ import {
   patchGlanceCounts,
   commitmentsGlanceSpec,
   buildCommitmentsGlance,
+  blockersGlanceSpec,
+  buildBlockersGlance,
 } from '../../dashboard/glance.js';
 
 let dom: JSDOM;
@@ -195,11 +197,118 @@ describe('F11 — the real Commitments glance, walked end-to-end', () => {
     const spec = commitmentsGlanceSpec(doc, commitments, { now: NOW });
     const handle = renderGlance(doc, root, spec);
     expect(handle.headline.textContent).toContain('4');
-    expect(handle.tiles.length).toBe(4);
+    expect(handle.tiles.length).toBe(5); // Open · Due soon · Overdue · Waiting · Quiet (#1435 Overdue tile)
 
     // Walk: Open → 4 rows; each row → a record
     const open = activate(handle, 'open');
     expect(open.opened).toBe(true);
     expect(handle.drilldown.querySelectorAll('.glance-list-row').length).toBe(4);
+  });
+
+  it('#1435: an overdue promise gets its own Overdue tile that drills, and is NOT double-counted as due-soon', () => {
+    // A stale beacon record: atRisk AND a hard deadline a month in the past. It must
+    // classify as OVERDUE (not "due soon"), and the "overdue" headline number has a tile.
+    const commitments = [
+      mk({ id: 'CMT-9', agentResponse: 'send the code the moment it lands', atRisk: true,
+        hardDeadlineAt: new Date(NOW - 30 * 24 * 3600e3).toISOString() }),
+    ];
+    const counts = commitmentTileCounts(commitments);
+    expect(counts.overdue).toBe(1);
+    expect(counts.dueSoon).toBe(0); // overdue takes precedence — not double-counted
+
+    const spec = commitmentsGlanceSpec(doc, commitments, { now: NOW });
+    const handle = renderGlance(doc, root, spec);
+    expect(handle.headline.textContent).toMatch(/1 is overdue/);
+    expect(handle.headline.textContent).toMatch(/none needs? attention soon/);
+    // The Overdue tile exists and drills into the 1 overdue promise (F11: every
+    // headline number has a tile).
+    const { opened, text } = activate(handle, 'overdue');
+    expect(opened).toBe(true);
+    expect(text.toLowerCase()).not.toContain('nothing here');
+    expect(handle.drilldown.querySelector('.glance-list-row')).toBeTruthy();
+  });
+});
+
+// Small local helper: read the commitment tile counts from the real builder.
+function commitmentTileCounts(commitments: any[]) {
+  const g = buildCommitmentsGlance(commitments, NOW);
+  const val = (k: string) => Number(g.tiles.find((t: any) => t.key === k).value);
+  return { overdue: val('overdue'), dueSoon: val('due-soon'), open: val('open') };
+}
+
+describe('F11 walk-every-tile — the Blockers glance (Phase 2)', () => {
+  const bmk = (over: Record<string, unknown> = {}) => ({
+    id: 'BLK-x', version: 1, state: 'live-run', detectedText: 'a thing that looked stuck',
+    origin: 'sess-1', createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-09T00:00:00Z',
+    history: [], ...over,
+  });
+
+  it('every tile opens a non-empty, distinct Layer-2 container (non-vacuous walk)', () => {
+    const entries = [
+      bmk({ id: 'BLK-1', state: 'live-run', detectedText: 'the vendor has not sent the API key yet' }),
+      bmk({ id: 'BLK-2', state: 'candidate', detectedText: 'cannot reach the deploy host' }),
+      bmk({ id: 'BLK-3', state: 'resolved', detectedText: 'thought the token was missing',
+        terminal: { kind: 'resolved', playbookPath: '.claude/skills/x/SKILL.md', at: '2026-07-09T00:00:00Z' } }),
+      bmk({ id: 'BLK-4', state: 'true-blocker', detectedText: 'need the operator password for the bank portal',
+        terminal: { kind: 'true-blocker', reasonKind: 'operator-only-secret', recheckAfter: '2026-08-01T00:00:00Z' } }),
+    ];
+    const spec = blockersGlanceSpec(doc, entries);
+    const handle = renderGlance(doc, root, spec);
+
+    const glanceText = handle.headline.textContent + ' ' + handle.tiles.map((b: any) => b.textContent).join(' ');
+    let realDrills = 0;
+    for (const btn of handle.tiles) {
+      const key = btn.getAttribute('data-glance-tile');
+      const { opened, text } = activate(handle, key);
+      expect(opened, `tile "${key}" opened`).toBe(true);
+      expect(text.length, `tile "${key}" non-empty`).toBeGreaterThan(0);
+      expect(text).not.toBe(glanceText.trim());
+      if (!/nothing here right now/i.test(text)) {
+        realDrills++;
+        expect(handle.drilldown.querySelector('.glance-list-row'), `tile "${key}" shows receipts`).toBeTruthy();
+      }
+      activate(handle, key); // toggle closed
+    }
+    expect(realDrills, 'at least one blocker tile drilled into real receipts').toBeGreaterThanOrEqual(1);
+  });
+
+  it('drills tile → row → Layer-3 record with the raw state/id/recheck detail', () => {
+    const entries = [
+      bmk({ id: 'BLK-7', state: 'true-blocker', detectedText: 'need the bank portal password',
+        terminal: { kind: 'true-blocker', reasonKind: 'operator-only-secret', recheckAfter: '2026-08-01T00:00:00Z' } }),
+    ];
+    const spec = blockersGlanceSpec(doc, entries);
+    const handle = renderGlance(doc, root, spec);
+    activate(handle, 'stuck');
+    const row = handle.drilldown.querySelector('.glance-list-row');
+    expect(row, 'a Layer-2 row exists').toBeTruthy();
+    row!.dispatchEvent(new dom.window.Event('click'));
+    const record = handle.drilldown.querySelector('[data-glance-record]');
+    expect(record, 'a Layer-3 record opened').toBeTruthy();
+    expect(record!.textContent).toContain('BLK-7'); // raw id lives at Layer 3
+    expect(record!.textContent).toMatch(/recheck after/i); // decaying-hypothesis honesty preserved
+    expect(record!.textContent).not.toMatch(/give up/i); // never framed as "stop trying"
+  });
+
+  it('an empty ledger → conforming glance + zero-count tiles open honest empty-states', () => {
+    const spec = blockersGlanceSpec(doc, []);
+    const handle = renderGlance(doc, root, spec);
+    expect(handle.headline.textContent!.toLowerCase()).toContain('no blockers');
+    const { opened, text } = activate(handle, 'stuck');
+    expect(opened).toBe(true);
+    expect(text.toLowerCase()).toContain('nothing here');
+  });
+
+  it('XSS: an <img onerror> / RLO-bidi in detectedText renders inert', () => {
+    const nasty = '<img src=x onerror=alert(1)> "><script>bad()</script> ‮evil';
+    const spec = blockersGlanceSpec(doc, [{ id: 'BLK-9', state: 'candidate', detectedText: nasty,
+      origin: 's', createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', history: [] }]);
+    const handle = renderGlance(doc, root, spec);
+    activate(handle, 'working');
+    expect(handle.drilldown.querySelector('img')).toBeNull();
+    expect(handle.drilldown.querySelector('script')).toBeNull();
+    const rowText = handle.drilldown.querySelector('.glance-list-summary')!.textContent || '';
+    expect(rowText).toContain('onerror');
+    expect(rowText).not.toContain('‮');
   });
 });

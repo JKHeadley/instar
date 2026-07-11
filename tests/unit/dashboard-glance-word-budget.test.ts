@@ -27,6 +27,8 @@ import {
   countGlanceWords,
   buildCommitmentsGlance,
   commitmentsOpenPopulation,
+  buildBlockersGlance,
+  blockersPopulation,
   GLANCE_MAX_TILES,
   GLANCE_WORD_BUDGET,
   GLANCE_ADOPTED_TABS,
@@ -193,6 +195,87 @@ describe('F10 conformance — the real Commitments builder under adversarial fix
   });
 });
 
+describe('F10 #1435 folds — the Commitments builder', () => {
+  const mk = (over: Record<string, unknown>) => ({
+    beaconEnabled: true, status: 'pending', atRisk: false, beaconSuppressed: false,
+    blockedOn: 'none', ...over,
+  });
+  const now = Date.parse('2026-07-10T00:00:00Z');
+
+  it('adds an Overdue tile so every headline number has a drill-down (F11 gap #1435 §1)', () => {
+    const g = buildCommitmentsGlance([mk({ hardDeadlineAt: new Date(now - 1000).toISOString() })], now);
+    expect(g.tiles.map((t: any) => t.key)).toContain('overdue');
+    expect(g.tiles.length).toBe(5);
+    expect(validateGlanceSpec(g).ok).toBe(true);
+  });
+
+  it('a past HARD deadline is OVERDUE, never "due soon" (#1435 §3)', () => {
+    // atRisk AND a month-past hard deadline → overdue only, not double-counted as due-soon.
+    const stale = mk({ atRisk: true, hardDeadlineAt: new Date(now - 30 * 864e5).toISOString() });
+    const g = buildCommitmentsGlance([stale], now);
+    const val = (k: string) => Number(g.tiles.find((t: any) => t.key === k).value);
+    expect(val('overdue')).toBe(1);
+    expect(val('due-soon')).toBe(0);
+    expect(g.headline).toMatch(/1 is overdue/);
+  });
+
+  it('count-aware pluralization: "1 needs" / "2 need" (#1435 §2)', () => {
+    const one = buildCommitmentsGlance([mk({ atRisk: true })], now);
+    expect(one.headline).toMatch(/1 needs attention soon/);
+    const two = buildCommitmentsGlance([mk({ atRisk: true }), mk({ atRisk: true })], now);
+    expect(two.headline).toMatch(/2 need attention soon/);
+  });
+});
+
+describe('F10 conformance — the real Blockers builder under adversarial fixtures', () => {
+  const bmk = (over: Record<string, unknown>) => ({
+    id: 'BLK-x', version: 1, state: 'live-run', detectedText: 'a thing that looked stuck',
+    origin: 'sess-1', createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-09T00:00:00Z',
+    history: [], ...over,
+  });
+
+  const fixtures: Array<[string, any[]]> = [
+    ['empty', []],
+    ['null-ish', [null, undefined, {}, { id: 'x' /* no state */ }]],
+    ['large N', Array.from({ length: 500 }, (_, i) => bmk({
+      id: `BLK-${i}`,
+      state: ['candidate', 'authority-checked', 'access-requested', 'dry-run', 'live-run', 'resolved', 'true-blocker'][i % 7],
+      detectedText: `blocker number ${i} — the vendor has not replied since June ${1 + (i % 28)}`,
+    }))],
+    ['jargon-laden detectedText', [bmk({
+      state: 'true-blocker',
+      detectedText: 'fix the atRisk cadence: 1800s for CMT-953 — id m_4f3a9b',
+      terminal: { kind: 'true-blocker', reasonKind: 'operator-only-secret', recheckAfter: '2026-08-01T00:00:00Z' },
+    })]],
+    ['all truly stuck', Array.from({ length: 4 }, (_, i) => bmk({ id: `BLK-${i}`, state: 'true-blocker' }))],
+    ['all resolved', Array.from({ length: 3 }, (_, i) => bmk({ id: `BLK-${i}`, state: 'resolved' }))],
+  ];
+
+  for (const [name, entries] of fixtures) {
+    it(`produces a conforming glance for the "${name}" fixture`, () => {
+      const glance = buildBlockersGlance(entries);
+      const r = validateGlanceSpec(glance);
+      expect(r.ok, `violations: ${JSON.stringify(r.violations)}`).toBe(true);
+      expect(glance.tiles.length).toBeLessThanOrEqual(GLANCE_MAX_TILES);
+    });
+  }
+
+  it('TRUTHFULNESS — tile counts sum to the population and partition it', () => {
+    const entries = fixtures[2][1]; // large N
+    const glance = buildBlockersGlance(entries);
+    const pop = blockersPopulation(entries);
+    const sum = glance.tiles.reduce((n: number, t: any) => n + Number(t.value), 0);
+    expect(sum).toBe(pop.length); // every entry lands in exactly one tile — nothing lost
+    expect(glance.population.length).toBe(pop.length);
+  });
+
+  it('the headline leads with the "truly stuck" state in plain words', () => {
+    expect(buildBlockersGlance([]).headline.toLowerCase()).toContain('no blockers');
+    expect(buildBlockersGlance([bmk({ state: 'true-blocker' })]).headline).toMatch(/1 thing is truly stuck/);
+    expect(buildBlockersGlance([bmk({ state: 'live-run' })]).headline).toMatch(/nothing is truly stuck/i);
+  });
+});
+
 describe('F10/F11 grandfather ratchet — structural, not prose', () => {
   it('completeness: every registered tab is in exactly one of adopted ∪ grandfathered', () => {
     const ids = tabRegistryIds();
@@ -213,11 +296,20 @@ describe('F10/F11 grandfather ratchet — structural, not prose', () => {
     expect(GLANCE_GRANDFATHERED.length).toBeLessThanOrEqual(GLANCE_GRANDFATHERED_CEILING);
   });
 
-  it('population floor: at least one tab is on the glance floor with a real builder', () => {
-    expect(GLANCE_ADOPTED_TABS.length).toBeGreaterThanOrEqual(1);
+  it('population floor: every adopted tab has a real builder (commitments + blockers)', () => {
+    expect(GLANCE_ADOPTED_TABS.length).toBeGreaterThanOrEqual(2);
     expect(GLANCE_ADOPTED_TABS).toContain('commitments');
-    // the reference builder is real (not a stub)
+    expect(GLANCE_ADOPTED_TABS).toContain('blockers'); // adopted this PR (Phase 2)
+    // both reference builders are real (not stubs) and produce a conforming empty glance
     expect(typeof buildCommitmentsGlance).toBe('function');
     expect(validateGlanceSpec(buildCommitmentsGlance([])).ok).toBe(true);
+    expect(typeof buildBlockersGlance).toBe('function');
+    expect(validateGlanceSpec(buildBlockersGlance([])).ok).toBe(true);
+  });
+
+  it('the ratchet only shrinks: blockers is no longer grandfathered and the ceiling dropped', () => {
+    expect(GLANCE_GRANDFATHERED).not.toContain('blockers');
+    expect(GLANCE_GRANDFATHERED).not.toContain('commitments');
+    expect(GLANCE_GRANDFATHERED_CEILING).toBe(24); // was 25 before Phase 2
   });
 });
