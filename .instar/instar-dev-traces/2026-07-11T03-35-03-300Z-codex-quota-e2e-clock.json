@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "sessionId": "46e7cabc-4f2b-439e-a7a2-a88f6a73f395",
+  "timestamp": "2026-07-11T03:35:03.300Z",
+  "slug": "codex-quota-e2e-clock",
+  "artifactPath": "upgrades/side-effects/codex-quota-load-shed.md",
+  "artifactSha256": "2df1bd148b5dd2ea5afcb09c613889d77c82d58089e286b140a1f743665fa977",
+  "specPath": "docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md",
+  "coveredFiles": [
+    "tests/e2e/subscription-quota-lifecycle.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI exposed a wall-clock-dependent E2E fixture whose five-hour reset expired during the run; this freezes the injected poller clock while preserving production reset semantics.",
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The newly added Codex quota E2E used a real absolute reset time but the live wall clock, making its expected non-zero primary window expire shortly after merge."
+  },
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "framework_guard_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

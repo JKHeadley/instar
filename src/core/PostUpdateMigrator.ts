@@ -4778,6 +4778,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Codex subscription-pool quota and framework-safety awareness');
     }
 
+    if (!content.includes('Solo Codex load shedding is fail-safe:')) {
+      content += '\n- **Solo Codex load shedding is fail-safe:** the global quota brake consumes the real rollout 5-hour + weekly windows even without a subscription pool. A walled account stops new jobs/sessions; a missing, stale, unreadable, or incomplete Codex reading sheds rather than repeatedly spawning into an unknown wall. Claude keeps its existing OAuth-authoritative / JSONL-degraded behavior.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added solo Codex quota load-shed awareness');
+    }
+
     if (!content.includes('Evolution action auto-expiry:')) {
       content += '\n- **Evolution action auto-expiry:** `evolutionActions.autoExpiry` conservatively sweeps only stale ordinary `pending` items; `critical`, `pinned`, active, completed, cancelled, recent, invalid-dated, and future-deadline items are retained. It ships enabled in observation-only `dryRun:true` mode; turning dry-run off removes eligible items in one coalesced save and emits replication tombstones so peers cannot resurrect them.\n';
       patched = true;
@@ -8218,6 +8224,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
       '**Codex quota is first-class in the pool:',
+      '**Solo Codex load shedding is fail-safe:',
       '**Evolution action auto-expiry:',
       // Durable Inbound Message Queue (CMT-1118): a Codex/Gemini agent that
       // never learns /pool/queue + the loss-notice semantics will guess at
