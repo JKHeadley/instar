@@ -3455,25 +3455,27 @@
       </div>
     </div>
 
-    <!-- Blockers tab — Blocker Ledger read surface (Phase 1).
+    <!-- Blockers tab — Blocker Ledger read surface, rebuilt on the glance template
+         (Dashboard UX Standard F10/F11, topic 29836 Phase 2).
          A blocker is a DECAYING HYPOTHESIS, not a settled wall: each entry moves through
          candidate → authority-checked → access-requested → dry-run → live-run → resolved /
          true-blocker. A true-blocker is "best current understanding — recheck after <date>",
          never "stop trying". Read-only here; data from GET /blockers. detectedText and all
-         free-text are UNTRUSTED and HTML-escaped before render. 503 = feature off. -->
+         free-text are UNTRUSTED — the shared glance component renders every value through
+         sanitizeForDisplay + textContent (never innerHTML). 503 = feature off. -->
     <div id="blockersPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Blockers</h2>
         <button onclick="loadBlockers()" style="padding:6px 12px">Refresh</button>
       </div>
       <div class="tab-purpose">
-        Things that looked like they stopped progress, tracked as <b>decaying hypotheses</b> rather than settled walls.
-        Each one moves through verification states; a "true blocker" is the best current understanding with a recheck date —
-        never a permanent "give up".
+        Things that looked like they stopped progress, tracked as <b>decaying hypotheses</b> rather than settled walls —
+        the headline says where things stand; tap a tile to see which ones, tap one for the full record.
+        A "truly stuck" blocker is the best current understanding with a recheck date, never a permanent "give up".
       </div>
-      <div id="blockersBody" style="border:1px solid var(--border);border-radius:8px;padding:16px;font-size:13px">
-        <div style="color:var(--text-dim)">Loading...</div>
-      </div>
+      <!-- Glance floors F10/F11 (topic 29836): the shared component renders the
+           headline + tiles + drill-down here. -->
+      <div id="blockersGlance" class="glance-root"></div>
     </div>
 
     <!-- LLM Activity tab — Observable Intelligence (docs/specs/observable-intelligence.md).
@@ -6305,79 +6307,43 @@
       }
     }
 
-    // ── Blockers Tab (Blocker Ledger Phase 1 read surface) ──────────
-    // A blocker is a decaying hypothesis, not a settled wall. Read-only.
-    // detectedText + all free-text are UNTRUSTED → escapeHtml before render.
-    function blockerStateBadge(state) {
-      const colors = {
-        'candidate':         'var(--text-dim)',
-        'authority-checked': '#6ea8fe',
-        'access-requested':  '#6ea8fe',
-        'dry-run':           '#d6a700',
-        'live-run':          '#d6a700',
-        'resolved':          'var(--accent)',
-        'true-blocker':      'var(--red)',
-      };
-      const bg = colors[state] || 'var(--text-dim)';
-      return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;' +
-        'font-weight:600;color:#fff;white-space:nowrap;background:' + bg + '">' +
-        escapeHtml(String(state || 'unknown')) + '</span>';
-    }
-    function blockerTerminalLine(entry) {
-      const t = entry && entry.terminal;
-      if (!t) return '';
-      if (t.kind === 'resolved') {
-        const path = t.playbookPath ? ' · playbook: ' + escapeHtml(String(t.playbookPath)) : '';
-        return '<div style="font-size:12px;color:var(--accent);margin-top:4px">Resolved' + path + '</div>';
-      }
-      if (t.kind === 'true-blocker') {
-        // NEVER frame a true-blocker as settled / "stop trying" — it's a decaying hypothesis.
-        const reason = t.reasonKind ? escapeHtml(String(t.reasonKind)) : 'unknown reason';
-        const recheck = t.recheckAfter ? fmtRelTime(t.recheckAfter) : 'unscheduled';
-        return '<div style="font-size:12px;color:var(--red);margin-top:4px">Current hypothesis (' + reason +
-          ') — recheck after ' + escapeHtml(recheck) + '</div>';
-      }
-      return '';
-    }
+    // ── Blockers Tab — glance floors F10/F11 (topic 29836, Phase 2) ──
+    // A blocker is a decaying hypothesis, not a settled wall. Rebuilt on the shared
+    // glance component: a plain-English headline + tiles (Layer 1); each tile drills
+    // into the filtered ledger entries as plain sentences (Layer 2); each row opens
+    // the full record with state/id/timestamps/terminal detail (Layer 3). detectedText
+    // + all free text are UNTRUSTED → the component renders every value through
+    // sanitizeForDisplay + textContent (never innerHTML), so this is XSS-safe by
+    // construction (an improvement over the old escapeHtml-into-innerHTML table).
     async function loadBlockers() {
-      const bodyEl = document.getElementById('blockersBody');
+      const glanceRoot = document.getElementById('blockersGlance');
+      if (!glanceRoot) return;
+
+      const glance = await loadGlanceModule();
+      if (!glance) {
+        glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.';
+        return;
+      }
+
+      let resp = null;
       try {
-        const resp = await apiFetch('/blockers');
-        const entries = (resp && resp.entries) || [];
-        if (entries.length === 0) {
-          bodyEl.innerHTML = '<div style="color:var(--text-dim)">No blockers recorded' +
-            ((resp && resp.total != null) ? ' (total ' + escapeHtml(String(resp.total)) + ')' : '') + '.</div>';
-          return;
-        }
-        bodyEl.innerHTML =
-          '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-            '<thead><tr style="text-align:left;color:var(--text-dim)">' +
-              '<th style="padding:6px 8px">State</th>' +
-              '<th style="padding:6px 8px">ID</th>' +
-              '<th style="padding:6px 8px">Detected</th>' +
-              '<th style="padding:6px 8px">Origin</th>' +
-              '<th style="padding:6px 8px;text-align:right">Updated</th>' +
-            '</tr></thead><tbody>' +
-            entries.map(e =>
-              '<tr style="border-top:1px solid var(--border);vertical-align:top">' +
-                '<td style="padding:6px 8px">' + blockerStateBadge(e.state) + '</td>' +
-                '<td style="padding:6px 8px;font-family:monospace;color:var(--text-dim)">' + escapeHtml(String(e.id || '—')) + '</td>' +
-                '<td style="padding:6px 8px">' + escapeHtml(String(e.detectedText || '')) + blockerTerminalLine(e) + '</td>' +
-                '<td style="padding:6px 8px">' + escapeHtml(String(e.origin || '—')) + '</td>' +
-                '<td style="padding:6px 8px;text-align:right;white-space:nowrap">' + escapeHtml(fmtRelTime(e.updatedAt || e.createdAt)) + '</td>' +
-              '</tr>'
-            ).join('') +
-            '</tbody></table>';
+        resp = await apiFetch('/blockers');
       } catch (err) {
         const m = err && err.message ? String(err.message) : String(err);
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
         // 503 → the Blocker Ledger feature is off (monitoring.blockerLedger.enabled false, the default).
-        if (/503|unavailable|disabled|not initialized/i.test(m)) {
-          bodyEl.innerHTML = '<div style="color:var(--text-dim)">Blocker Ledger isn\'t turned on yet ' +
-            '(enable <code>monitoring.blockerLedger.enabled</code>).</div>';
-        } else {
-          bodyEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
-        }
+        note.textContent = /503|unavailable|disabled|not initialized/i.test(m)
+          ? 'Blocker tracking isn’t turned on for this agent yet.'
+          : 'Could not load blockers right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
       }
+
+      const entries = (resp && Array.isArray(resp.entries)) ? resp.entries : [];
+      const spec = glance.blockersGlanceSpec(document, entries, {});
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     // ── Threadline → Telegram bridge settings ──────────────────

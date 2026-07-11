@@ -1,0 +1,56 @@
+# Dashboard glance Phase 2 — Commitments rebuild + Blockers on the glance template
+
+change_type: feature
+
+## What Changed
+
+Phase 2 of the operator-approved four-phase glance rollout (topic 29836). The two worst
+"wall of raw records" tabs are rebuilt on the shared glance component (F10/F11), and two
+filed issues fold in:
+
+- **Commitments — full rebuild + issue #1435.** The headline now has a matching tile for
+  every number it states: an **Overdue** tile joins Open / Due soon / Waiting on you /
+  Quiet. Grammar is count-aware ("1 needs attention soon", "1 is overdue"). And the
+  classification is fixed: a promise whose **hard deadline has already passed is Overdue,
+  never "Due soon"** — a stale record a month past its deadline is no longer mislabelled.
+- **Blockers — rebuilt on the template.** The old ~7,000-word raw table that filled the
+  whole page is replaced by a one-sentence headline ("N things are truly stuck; K being
+  worked") over three tiles — **Truly stuck · Being worked · Resolved**. Tap a tile to see
+  which blockers (in plain sentences); tap one for the full record (state, id, timestamps,
+  recheck date). Nothing is lost — every column moved down a layer. The "decaying
+  hypothesis, not a wall" framing is preserved: a truly-stuck blocker is "the best current
+  understanding with a recheck date", never "give up".
+- **Subscriptions — issue #1428.** When you cancel an in-progress sign-in, the cell now
+  clears **immediately** instead of showing the stale sign-in flow for ~40 seconds until
+  the next refresh. If the cancel actually failed server-side, the next poll still corrects
+  it (the poll stays the authority).
+- Both rebuilt tabs left the grandfathered list (the ratchet ceiling dropped 25 → 24), so
+  they are now held to the same glance floor as every new view.
+
+## What to Tell Your User
+
+Two of your busiest dashboard tabs are now readable at a glance. **Commitments** leads with
+a plain sentence about where your promises stand, with a big tile for each state — including
+a new **Overdue** tile — and correctly separates "overdue" from "due soon" (a promise past
+its deadline is now shown as overdue). **Blockers** no longer dumps a giant table on the
+page: you get a one-line summary and a few tiles (Truly stuck / Being worked / Resolved), and
+you tap to drill into the details. And when you cancel a subscription sign-in, the tile
+resets right away instead of lingering for half a minute. Tap any tile to see which items are
+behind that number, and tap one for its full record — nothing was removed, it just moved a
+tap or two down.
+
+## Summary of New Capabilities
+
+- The **Commitments** dashboard tab now has an Overdue tile, count-aware grammar, and a
+  corrected overdue-vs-due-soon classification (issue #1435).
+- The **Blockers** dashboard tab is rebuilt as a glance (headline + Truly stuck / Being
+  worked / Resolved tiles → filtered rows → full record), replacing the old raw table.
+- A cancelled subscription sign-in now resets its cell immediately (issue #1428).
+
+## Evidence
+
+- Unit: `tests/unit/dashboard-glance-word-budget.test.ts` (43), `tests/unit/dashboard-glance-drilldown.test.ts` (13), `tests/unit/subscriptions-render.test.ts`, `tests/unit/follow-me-controller-wiring.test.ts`.
+- Integration: `tests/integration/glance-blockers-tab.test.ts` (real `/blockers` + BlockerLedger), `tests/integration/glance-commitments-tab.test.ts`.
+- E2E: `tests/e2e/glance-blockers-tab-lifecycle.test.ts`, `tests/e2e/glance-commitments-tab-lifecycle.test.ts` (feature-alive: 200 with the feature on, honest empty/503 with it off, no XSS survives).
+- Live browser render (Playwright): both tabs rendered end-to-end against realistic payloads — Commitments "I'm carrying 5 open promises; 1 needs attention soon, 1 is overdue." with the Overdue tile drilling into a past-deadline promise's record; Blockers "1 thing is truly stuck right now; 2 are being worked." drilling into the true-blocker's full record.
+- Spec: `docs/specs/dashboard-ux-standard.md` (F10/F11, conformance table updated — Commitments + Blockers now on the floor).

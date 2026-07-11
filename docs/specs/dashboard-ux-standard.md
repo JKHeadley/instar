@@ -265,7 +265,7 @@ order for exactly this reason.
 | View | Front-page words | Glance (F10) today | Drill-down (F11) today | Baseline |
 |---|---|---|---|---|
 | Insights | 86 | ✅ the model to copy | ✅ button per takeaway | conforming (reference pattern) |
-| Commitments | 972 → **glance** | ✅ **adopted this PR** | ✅ **adopted this PR** | **on the floor (reference impl)** |
+| Commitments | 972 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (full rebuild, Phase 2 — folds #1435: Overdue tile, plural grammar, overdue≠due-soon)** |
 | Tokens | 28 | ✅ lean | ⚠️ summaries not clickable | grandfathered → Phase 4 |
 | Secrets | 36 | ✅ lean | ✅ adequate | grandfathered → Phase 4 |
 | Resource Usage | 40 | ✅ lean | ⚠️ summaries not clickable | grandfathered → Phase 4 |
@@ -280,7 +280,7 @@ order for exactly this reason.
 | Health | 390 | ⚠️ subsystem prose | ⚠️ expanders only | grandfathered → Phase 3 |
 | Spend | 400 | ⚠️ jargon ("paid door") | ⚠️ no per-row detail | grandfathered → Phase 3 |
 | Routing Map | (dense) | ⚠️ jargon ("lane", "door") | ❌ flat map, no drill | grandfathered → Phase 3 |
-| Blockers | 7,035 | ❌ full DB table on one page | ❌ everything dumped at once | grandfathered → Phase 2 |
+| Blockers | 7,035 → **glance** | ✅ **on the floor** | ✅ **on the floor** | **on the floor (rebuilt Phase 2 — headline + Truly stuck / Being worked / Resolved tiles; the raw table moved to Layer 3)** |
 
 *(Files, Send Content, Evidence, PR Pipeline, Projects, Initiatives, Integrated-Being,
 Features, Systems get the same treatment in the Phase-4 sweep; they are mid-pack and
@@ -433,8 +433,9 @@ Phase 1** and nothing more:
    written into this standard with the two enforcement tests; the shared `dashboard/glance.js`
    component; and ONE view (Commitments) wired onto it as the living example (glance layer +
    drill into the existing list as Layer 2, full record as Layer 3).
-2. **Phase 2 — the two worst offenders.** Commitments' full rebuild + Blockers, rebuilt on
-   the template. <!-- tracked: topic-29836 -->
+2. **Phase 2 (SHIPPED) — the two worst offenders.** Commitments' full rebuild (folding
+   issue #1435) + Blockers, rebuilt on the template; both left the grandfather list
+   (ceiling 25 → 24) and the subscriptions optimistic-cancel fix (issue #1428) rode along.
 3. **Phase 3 — the jargon belt.** Machines, Health, Spend, Routing Map. <!-- tracked: topic-29836 -->
 4. **Phase 4 — the sweep.** Every remaining grandfathered view brought to conformance; each
    leaves the grandfather list as it lands. <!-- tracked: topic-29836 -->
