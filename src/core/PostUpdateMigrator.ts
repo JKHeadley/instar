@@ -11120,7 +11120,7 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "DROP TABLE" "DROP DATABASE" "TRUNCATE" "DELETE FROM"; do
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
   if echo "$INPUT" | grep -qi "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
@@ -11141,6 +11141,35 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+# SQL must look like a statement, not prose that merely names a keyword. Match
+# at input/statement start or immediately after a SQL-bearing quote/separator,
+# and require the following table/database identifier. Ambiguous statement
+# shapes still block; prose mentions in heredocs, echo text, JSON, or grep args
+# do not become destructive merely because the tool input contains the words.
+for sql_spec in \\
+  "D""ROP TABLE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Rr][Oo][Pp][[:space:]]+[Tt][Aa][Bb][Ll][Ee]([[:space:]]+[Ii][Ff][[:space:]]+[Ee][Xx][Ii][Ss][Tt][Ss])?[[:space:]]+[^[:space:];]+" \\
+  "D""ROP DATABASE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Rr][Oo][Pp][[:space:]]+[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]([[:space:]]+[Ii][Ff][[:space:]]+[Ee][Xx][Ii][Ss][Tt][Ss])?[[:space:]]+[^[:space:];]+" \\
+  "T""RUNCATE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee][[:space:]]+([Tt][Aa][Bb][Ll][Ee][[:space:]]+)?[^[:space:];]+" \\
+  "D""ELETE FROM|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Ee][Ll][Ee][Tt][Ee][[:space:]]+[Ff][Rr][Oo][Mm][[:space:]]+[^[:space:];]+"; do
+  pattern="\${sql_spec%%|*}"
+  sql_pattern="\${sql_spec#*|}"
+  if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ "\$SAFETY_LEVEL" -eq 1 ]; then
+      echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
+      echo "Authorization required: Ask the user whether to proceed with this operation." >&2
+      echo "Once they confirm, YOU execute the command — never ask the user to run it themselves." >&2
+      exit 2
+    else
+      IDENTITY=""
+      if [ -f "\$INSTAR_DIR/AGENT.md" ]; then
+        IDENTITY=\$(head -20 "\$INSTAR_DIR/AGENT.md" | tr '\\n' ' ')
+      fi
+      echo "{\\"decision\\":\\"approve\\",\\"additionalContext\\":\\"=== SELF-VERIFICATION REQUIRED ===\\\\nDestructive command detected: \$pattern\\\\n\\\\n1. Is this necessary for the current task?\\\\n2. What are the consequences if this goes wrong?\\\\n3. Is there a safer alternative?\\\\n4. Does this align with your principles?\\\\n\\\\nIdentity: \$IDENTITY\\\\n\\\\nIf ALL checks pass, proceed. If ANY fails, stop.\\\\n=== END SELF-VERIFICATION ===\\"}"
+      exit 0
+    fi
+  fi
+done
++
 # 'gh pr merge' watch-exit-merge gate — closes the PR #539 class.
 # Justin merged #539 on 'gh run watch' exit code (= success), but 'watch'
 # returns 0 on workflow COMPLETION regardless of conclusion; meanwhile the
