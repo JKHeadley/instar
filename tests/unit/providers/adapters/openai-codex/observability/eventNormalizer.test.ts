@@ -61,12 +61,20 @@ describe('normalizeCodexJsonlEvent', () => {
     }
   });
 
-  it('classifies auth-style errors as auth-kind', () => {
+  it('classifies the exact ChatGPT model-retirement signature as unsupported', () => {
     const result = normalizeCodexJsonlEvent(
-      '{"type":"error","message":"The model is not supported when using Codex with a ChatGPT account."}',
+      '{"type":"error","message":"The \'gpt-5.2\' model is not supported when using Codex with a ChatGPT account."}',
     );
     expect(result?.type).toBe('error');
-    if (result?.type === 'error') expect(result.errorKind).toBe('auth');
+    if (result?.type === 'error') expect(result.errorKind).toBe('unsupported');
+  });
+
+  it('does not classify a different 400 or an auth failure as model retirement', () => {
+    for (const message of ['400 invalid request body', '401 unauthorized']) {
+      const result = normalizeCodexJsonlEvent(JSON.stringify({ type: 'error', message }));
+      expect(result?.type).toBe('error');
+      if (result?.type === 'error') expect(result.errorKind).not.toBe('unsupported');
+    }
   });
 
   it('exports a stable set of recognized event types', () => {
