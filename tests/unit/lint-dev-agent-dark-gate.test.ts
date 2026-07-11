@@ -404,34 +404,36 @@ describe('lint-dev-agent-dark-gate', () => {
       '876': 'mentor.enabled',
       '887': 'mentor.autonomousFix.enabled',
       '902': 'mentee.enabled',
-      '962': 'prGate.classClosure.enabled',
+      // evolutionActions.autoExpiry adds a 10-line fleet-on/dry-run-first block;
+      // no dark row is added, and every later attribution shifts by +10.
+      '972': 'prGate.classClosure.enabled',
       // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
       // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
       // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
       // adds no map row, and shifts every subsequent `enabled:` line by +21.
-      '1046': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '1050': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '1057': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1067': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1304': 'multiMachine.sessionPool.enabled',
+      '1056': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1060': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1067': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1077': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1314': 'multiMachine.sessionPool.enabled',
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1348': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1358': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1387': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1358': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1368': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1397': 'multiMachine.sessionPool.holdForStability.enabled',
       // replicated-journal-compaction adds a 5-line compaction default block
       // above stateSync. It uses `run:false` (not an `enabled` gate), so the
       // attributed path set is unchanged and the four rows below shift by +5.
-      '1587': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1597': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
       // default, so it adds NO attributed dark-gate row; it shifts the cartographer
       // `enabled: false` rows below it DOWN by +6.
-      '1734': 'cartographer.freshnessSweep.enabled',
-      '1779': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1804': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1744': 'cartographer.freshnessSweep.enabled',
+      '1789': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1814': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

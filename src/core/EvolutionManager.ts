@@ -268,10 +268,18 @@ export class EvolutionManager {
    */
   private lastEmittedActionFp = new Map<string, string>();
   private lastEmittedLearningFp = new Map<string, string>();
+  /* @self-action-controller: evolution-action-expiry-sweep */
+  private actionAutoExpiryTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
+    if (config.autoExpiry?.enabled === true) {
+      const intervalMs = Math.max(60_000, config.autoExpiry.sweepIntervalMs ?? 21_600_000);
+      setImmediate(() => { this.runActionAutoExpirySweep(); });
+      this.actionAutoExpiryTimer = setInterval(() => { this.runActionAutoExpirySweep(); }, intervalMs);
+      this.actionAutoExpiryTimer.unref();
+    }
   }
 
   /**
@@ -1240,7 +1248,41 @@ export class EvolutionManager {
     });
   }
 
-  private saveActions(state: ActionState): void {
+  /**
+   * Expire only stale, ordinary PENDING actions. Removal is coalesced through one
+   * saveActions call, which also emits the existing replication tombstones for
+   * every removed record (the no-resurrection path).
+   */
+  runActionAutoExpirySweep(): { scanned: number; eligible: number; expired: number; dryRun: boolean } {
+    const cfg = this.config.autoExpiry;
+    const dryRun = cfg?.dryRun ?? true;
+    const state = this.loadActions();
+    const maxAgeDays = Math.max(1, cfg?.maxAgeDays ?? 21);
+    const cutoff = Date.now() - maxAgeDays * 86_400_000;
+    const eligibleIds = new Set<string>();
+    for (const action of state.actions) {
+      if (action.status !== 'pending') continue;
+      if (action.priority === 'critical') continue;
+      if (action.tags?.some((tag) => tag.toLowerCase() === 'pinned')) continue;
+      if (action.dueBy) {
+        const due = Date.parse(action.dueBy);
+        if (!Number.isFinite(due) || due > Date.now()) continue;
+      }
+      const created = Date.parse(action.createdAt);
+      if (!Number.isFinite(created) || created >= cutoff) continue;
+      eligibleIds.add(action.id);
+    }
+    if (!dryRun && eligibleIds.size > 0) {
+      const expiredActions = state.actions.filter((action) => eligibleIds.has(action.id));
+      state.actions = state.actions.filter((action) => !eligibleIds.has(action.id));
+      this.saveActions(state, expiredActions); // ONE durable write + existing tombstone funnel.
+    }
+    const expired = dryRun ? 0 : eligibleIds.size;
+    console.log(`[EvolutionManager] Action auto-expiry sweep: scanned=${state.actions.length + expired} eligible=${eligibleIds.size} expired=${expired} dryRun=${dryRun} maxAgeDays=${maxAgeDays}`);
+    return { scanned: state.actions.length + expired, eligible: eligibleIds.size, expired, dryRun };
+  }
+
+  private saveActions(state: ActionState, explicitlyRemoved: ActionItem[] = []): void {
     let pending = 0, completed = 0, overdue = 0;
     const now = new Date();
     for (const a of state.actions) {
@@ -1282,7 +1324,10 @@ export class EvolutionManager {
     if (emitter) {
       const survivors = new Set(state.actions.map(a => a.id));
       const deletedAt = this.now();
-      for (const pruned of beforePrune) {
+      const removedCandidates = new Map(
+        [...beforePrune, ...explicitlyRemoved].map(action => [action.id, action]),
+      );
+      for (const pruned of removedCandidates.values()) {
         if (survivors.has(pruned.id)) continue;
         try {
           emitter.emitDelete(pruned.title, pruned.commitTo, pruned.createdAt, deletedAt);

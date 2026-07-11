@@ -906,6 +906,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     replyTopicId: 0,
     sessionTimeoutMs: 300000, // 5 min bounded-wait per session
   },
+  // Evolution action-queue stale cleanup. Live in dry-run first: only ordinary
+  // pending actions are candidates; critical/pinned/future-deadline work is kept.
+  evolutionActions: {
+    autoExpiry: {
+      enabled: true,
+      maxAgeDays: 21,
+      sweepIntervalMs: 21600000,
+      dryRun: true,
+    },
+  },
   // Spec-review standards-conformance gate (rung-3 normative slice). Default-on:
   // the gate reads docs/STANDARDS-REGISTRY.md and signals possible standard
   // violations in a draft spec. Signal-only (never blocks); 503-stubs where the

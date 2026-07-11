@@ -4772,6 +4772,12 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    if (!content.includes('Evolution action auto-expiry:')) {
+      content += '\n- **Evolution action auto-expiry:** `evolutionActions.autoExpiry` conservatively sweeps only stale ordinary `pending` items; `critical`, `pinned`, active, completed, cancelled, recent, invalid-dated, and future-deadline items are retained. It ships enabled in observation-only `dryRun:true` mode; turning dry-run off removes eligible items in one coalesced save and emits replication tombstones so peers cannot resurrect them.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added evolution action auto-expiry awareness');
+    }
+
     // Real-check verification (ACT-152 / autonomous-completion-real-checks). The existing
     // "Autonomous Completion Discipline" section is never edited in place (migrateClaudeMd only
     // APPENDS), so an existing agent learns about `verification_command` only via this appended

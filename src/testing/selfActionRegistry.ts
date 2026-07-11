@@ -576,7 +576,31 @@ const spendReconSweep: SelfActionController = {
   },
 };
 
+const evolutionActionExpirySweep: SelfActionController = {
+  id: 'evolution-action-expiry-sweep',
+  actionVerb: 'reap-expired-actions',
+  models: 'src/core/EvolutionManager.ts (scheduled stale pending-action expiry; survivor-set brake)',
+  modelsPath: 'src/core/EvolutionManager.ts',
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 20,
+  tickMs: 6 * 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const eligible = new Set(['stale-a', 'stale-b', 'stale-c']);
+    return {
+      tick() {
+        sink.considered += 1;
+        for (const target of eligible) {
+          sink.emit({ verb: 'reap-expired-actions', target });
+        }
+        eligible.clear(); // Durable removal is the brake: later sweeps see no survivors.
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  evolutionActionExpirySweep,
   spendReconSweep,
   spendDoorDarkBrakes,
   spendFallbackSpike,

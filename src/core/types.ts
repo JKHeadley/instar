@@ -1561,6 +1561,13 @@ export interface EvolutionManagerConfig {
   maxGaps?: number;
   /** Maximum action items before oldest completed get archived */
   maxActions?: number;
+  /** Conservative stale pending-action cleanup. Server defaults are dry-run-first. */
+  autoExpiry?: {
+    enabled?: boolean;
+    maxAgeDays?: number;
+    sweepIntervalMs?: number;
+    dryRun?: boolean;
+  };
 }
 
 // ── Soul.md — Self-Authored Identity ─────────────────────────────────
@@ -3211,6 +3218,9 @@ export interface InstarConfig {
       externalBlockCeilingMs?: number;
       externalBlockSweepMs?: number;
     };
+  };
+  evolutionActions?: {
+    autoExpiry?: EvolutionManagerConfig['autoExpiry'];
   };
   /**
    * Feedback-factory operated-instance config (docs/specs/feedback-factory-migration.md).

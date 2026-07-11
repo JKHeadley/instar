@@ -46,6 +46,46 @@ function recorder(over: Partial<EvolutionActionReplicationEmitter> = {}): Record
 }
 
 describe('EvolutionManager evolution-action-record replication emit', () => {
+  it('auto-expiry removes only stale ordinary pending actions and emits tombstones', () => {
+    const dir = mkDir();
+    try {
+      const stateDir = path.join(dir, 'state', 'evolution');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const old = '2026-01-01T00:00:00.000Z';
+      const recent = new Date().toISOString();
+      const base = { description: 'd', priority: 'medium', status: 'pending', createdAt: old } as const;
+      const actions = [
+        { ...base, id: 'ACT-001', title: 'expire-me' },
+        { ...base, id: 'ACT-002', title: 'critical', priority: 'critical' },
+        { ...base, id: 'ACT-003', title: 'pinned', tags: ['pinned'] },
+        { ...base, id: 'ACT-004', title: 'in-progress', status: 'in_progress' },
+        { ...base, id: 'ACT-005', title: 'completed', status: 'completed' },
+        { ...base, id: 'ACT-006', title: 'cancelled', status: 'cancelled' },
+        { ...base, id: 'ACT-007', title: 'too-new', createdAt: recent },
+        { ...base, id: 'ACT-008', title: 'future-deadline', dueBy: '2099-01-01T00:00:00.000Z' },
+      ];
+      fs.writeFileSync(path.join(stateDir, 'action-queue.json'), JSON.stringify({ actions, stats: {} }));
+      const evo = new EvolutionManager({ stateDir: dir, autoExpiry: { enabled: false, maxAgeDays: 21, dryRun: false } });
+      const rec = recorder();
+      evo.setEvolutionActionReplicationEmitter(rec);
+      const result = evo.runActionAutoExpirySweep();
+      expect(result).toMatchObject({ eligible: 1, expired: 1, dryRun: false });
+      expect(evo.listActions().map((a) => a.title)).not.toContain('expire-me');
+      expect(evo.listActions()).toHaveLength(7);
+      expect(rec.deletes.map((d) => d.title)).toEqual(['expire-me']);
+    } finally { cleanup(dir); }
+  });
+
+  it('auto-expiry defaults to dry-run and writes nothing', () => {
+    const dir = mkDir();
+    try {
+      const evo = new EvolutionManager({ stateDir: dir, autoExpiry: { enabled: false, maxAgeDays: 1 } });
+      const action = evo.addAction({ title: 'kept', description: 'd' });
+      const result = evo.runActionAutoExpirySweep();
+      expect(result.dryRun).toBe(true);
+      expect(evo.listActions().map((a) => a.id)).toContain(action.id);
+    } finally { cleanup(dir); }
+  });
   it('dark by default: NO emitter ⇒ addAction/updateAction emit nothing (strict no-op)', () => {
     const dir = mkDir();
     try {

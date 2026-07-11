@@ -1,0 +1,18 @@
+## What Changed
+
+Evolution action queues now have conservative scheduled auto-expiry. The shipped defaults observe stale pending items without deleting them; operators can activate cleanup by turning off dry-run after review.
+
+## What to Tell Your User
+
+Old ordinary pending actions can be cleaned up automatically, while critical, pinned, active, completed, cancelled, recent, malformed-date, and future-deadline work remains protected. Nothing is deleted by default.
+
+## Summary of New Capabilities
+
+- Configure age and sweep cadence with `evolutionActions.autoExpiry`.
+- Preview eligible counts with the default `dryRun:true` posture.
+- Remove a batch through one durable write when explicitly activated.
+- Preserve deletions across machines through replication tombstones.
+
+## Evidence
+
+Unit eligibility/precedence and dry-run tests, integration coalesced-write coverage, end-to-end peer resync/no-resurrection coverage, self-action convergence ratchet, full lint, build, and three-tier test suite.

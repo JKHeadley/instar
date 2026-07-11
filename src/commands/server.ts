@@ -11159,6 +11159,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const evolution = new EvolutionManager({
       stateDir: config.stateDir,
       ...(config.evolution || {}),
+      autoExpiry: config.evolutionActions?.autoExpiry,
     });
     console.log(pc.green('  Evolution system enabled'));
 
