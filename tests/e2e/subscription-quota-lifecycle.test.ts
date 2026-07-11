@@ -74,6 +74,37 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
     expect(onDisk.accounts[0].lastQuota.sevenDay.utilizationPct).toBe(42);
   });
 
+  it('LIVE: a real Codex rollout becomes a non-zero pool quota snapshot over HTTP', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-codex-e2e-'));
+    const codexHome = path.join(dir, 'codex-home');
+    const rolloutDir = path.join(codexHome, 'sessions', '2026', '07', '10');
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(rolloutDir, 'rollout-2026-07-10T12-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl'),
+      JSON.stringify({
+        timestamp: '2026-07-10T19:00:00.000Z', type: 'event_msg',
+        payload: { type: 'token_count', rate_limits: {
+          primary: { used_percent: 31, window_minutes: 300, resets_at: 1783738800 },
+          secondary: { used_percent: 72, window_minutes: 10080, resets_at: 1784343600 },
+          plan_type: 'plus', rate_limit_reached_type: null,
+        } },
+      }) + '\n',
+    );
+    const pool = new SubscriptionPool({ stateDir: dir });
+    pool.add({ id: 'codex-primary', nickname: 'Codex', provider: 'openai', framework: 'codex-cli', configHome: codexHome });
+    const quotaPoller = new QuotaPoller({ pool });
+    server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, quotaPoller });
+
+    const poll = await fetch(server.url + '/subscription-pool/poll', { method: 'POST' });
+    expect(await poll.json()).toMatchObject({ enabled: true, polled: 1, failed: 0 });
+    const quota = await (await fetch(server.url + '/subscription-pool/codex-primary/quota')).json();
+    expect(quota.snapshot).toMatchObject({
+      source: 'codex-rollout',
+      fiveHour: { utilizationPct: 31 },
+      sevenDay: { utilizationPct: 72 },
+    });
+  });
+
   it('LIVE: an expired access token auto-refreshes end-to-end (account stays active, stamped on disk)', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-e2e-ref-'));
     const pool = new SubscriptionPool({ stateDir: dir });

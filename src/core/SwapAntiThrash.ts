@@ -565,8 +565,12 @@ export class SwapAntiThrashEngine {
     // 4. FILTER (§3.3 normative order): validity gate (bound 0) + absolute
     // ceiling (bound 1) over the alternate set, minus this tick's used targets.
     const ceiling = k.thresholdPct - k.targetHeadroomPct;
+    const sourceFramework = input.accounts.find((a) => a.id === input.fromAccountId)?.framework;
     const alternates = input.accounts.filter(
-      (a) => a.id !== input.fromAccountId && isLocallyExecutable(a),
+      (a) =>
+        a.id !== input.fromAccountId &&
+        isLocallyExecutable(a) &&
+        (sourceFramework === undefined || a.framework === sourceFramework),
     );
     let unmeasuredAlternates = 0;
     const filtered: Array<{ acct: SubscriptionAccount; utilPct: number }> = [];

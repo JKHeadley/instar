@@ -40,6 +40,16 @@ function acct(
   };
 }
 
+function codexAcct(id: string, util: number): SubscriptionAccount {
+  return {
+    ...acct(id, util, '2026-06-08T00:00:00Z'),
+    provider: 'openai',
+    framework: 'codex-cli',
+    configHome: `/h/.codex-${id}`,
+    lastQuota: { sevenDay: { utilizationPct: util, resetsAt: '2026-06-08T00:00:00Z' }, source: 'codex-rollout' },
+  };
+}
+
 describe('QuotaAwareScheduler — selection', () => {
   it('use-before-reset: among equal headroom, the sooner reset wins', () => {
     const soon = acct('soon', 40, '2026-06-07T06:00:00Z'); // resets in 6h
@@ -81,6 +91,19 @@ describe('QuotaAwareScheduler — selection', () => {
     expect(selectAccount([a, b], { nowMs: NOW }, 'a')?.id).toBe('b');
   });
 
+  it('framework-safe selection never crosses Codex and Claude accounts in either direction', () => {
+    const claude = acct('claude', 1, '2026-06-07T01:00:00Z');
+    const codex = codexAcct('codex', 2);
+    expect(selectAccount([claude, codex], { nowMs: NOW, framework: 'codex-cli' })?.id).toBe('codex');
+    expect(selectAccount([codex, claude], { nowMs: NOW, framework: 'claude-code' })?.id).toBe('claude');
+  });
+
+  it('pure-Claude selection is byte-for-byte unchanged when its framework is supplied', () => {
+    const accounts = [acct('a', 60, '2026-06-08T00:00:00Z'), acct('b', 20, '2026-06-07T06:00:00Z')];
+    expect(selectAccount(accounts, { nowMs: NOW, framework: 'claude-code' }))
+      .toEqual(selectAccount(accounts, { nowMs: NOW }));
+  });
+
   it('accountAtPressure reflects the soft threshold', () => {
     expect(accountAtPressure(acct('x', 92, 'r'), 90)).toBe(true);
     expect(accountAtPressure(acct('x', 88, 'r'), 90)).toBe(false);
@@ -88,6 +111,21 @@ describe('QuotaAwareScheduler — selection', () => {
 });
 
 describe('QuotaAwareScheduler — the continuity guarantee', () => {
+  it('reactive swap derives the source framework and refuses a cross-framework alternate', async () => {
+    const accounts = [codexAcct('codex-hot', 96), acct('claude-cool', 1, '2026-06-07T01:00:00Z')];
+    const sched = new QuotaAwareScheduler({ listAccounts: () => accounts, refreshFn: async () => true });
+    const result = await sched.onQuotaPressure({ sessionName: 'codex-session', exhaustedAccountId: 'codex-hot', nowMs: NOW });
+    expect(result).toEqual({ swapped: false, toAccountId: null, reason: 'no-eligible-alternate' });
+  });
+
+  it('fails closed when neither the session nor exhausted account identifies a framework', async () => {
+    const sched = new QuotaAwareScheduler({
+      listAccounts: () => [acct('claude', 1, '2026-06-07T01:00:00Z'), codexAcct('codex', 1)],
+      refreshFn: async () => true,
+    });
+    expect(await sched.onQuotaPressure({ sessionName: 'unknown', exhaustedAccountId: 'missing', nowMs: NOW }))
+      .toEqual({ swapped: false, toAccountId: null, reason: 'source-framework-unknown' });
+  });
   it('swaps a quota-walled session to another account and resumes it', async () => {
     const accounts = [acct('a', 96, '2026-06-12T00:00:00Z'), acct('b', 20, '2026-06-08T00:00:00Z')];
     const refreshed: any[] = [];

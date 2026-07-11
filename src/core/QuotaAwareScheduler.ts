@@ -26,6 +26,7 @@
 import type {
   SubscriptionAccount,
   AccountQuotaSnapshot,
+  SubscriptionFramework,
 } from './SubscriptionPool.js';
 import { isLocallyExecutable } from './SubscriptionPool.js';
 
@@ -36,6 +37,8 @@ export interface SelectionOptions {
   softThresholdPct?: number;
   /** ISO 'now' for deterministic urgency scoring (tests pass a fixed clock). */
   nowMs?: number;
+  /** Restrict placement/headroom to accounts usable by this session framework. */
+  framework?: SubscriptionFramework;
 }
 
 const DEFAULT_SOFT_THRESHOLD = 90;
@@ -106,6 +109,7 @@ export function selectAccount(
   const eligible = accounts.filter(
     (a) =>
       isLocallyExecutable(a) &&
+      (opts.framework === undefined || a.framework === opts.framework) &&
       a.id !== excludeId &&
       bindingUtilization(a.lastQuota) < soft,
   );
@@ -142,7 +146,10 @@ export function poolHeadroom(
 ): { placeable: boolean; weeklyPercent: number | null; fiveHourPercent: number | null; degraded: boolean } {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
   const eligible = accounts.filter(
-    (a) => isLocallyExecutable(a) && bindingUtilization(a.lastQuota) < soft,
+    (a) =>
+      isLocallyExecutable(a) &&
+      (opts.framework === undefined || a.framework === opts.framework) &&
+      bindingUtilization(a.lastQuota) < soft,
   );
   if (eligible.length === 0) {
     return { placeable: false, weeklyPercent: null, fiveHourPercent: null, degraded: false };
@@ -232,10 +239,11 @@ export class QuotaAwareScheduler {
   }
 
   /** Pick the best account for a NEW session (proactive placement). */
-  placeNewSession(nowMs: number): SubscriptionAccount | null {
+  placeNewSession(nowMs: number, framework?: SubscriptionFramework): SubscriptionAccount | null {
     return selectAccount(this.cfg.listAccounts(), {
       softThresholdPct: this.cfg.softThresholdPct,
       nowMs,
+      framework,
     });
   }
 
@@ -260,11 +268,21 @@ export class QuotaAwareScheduler {
      */
     targetAccountId?: string;
     callerClass?: 'proactive-swap' | 'reactive-swap';
+    /** Framework of the session being moved. Falls back to the exhausted account. */
+    framework?: SubscriptionFramework;
   }): Promise<SwapResult> {
     const { sessionName, exhaustedAccountId, nowMs, targetAccountId } = args;
     const isProactive = targetAccountId !== undefined;
     const callerClass = args.callerClass ?? (isProactive ? 'proactive-swap' : 'reactive-swap');
     const accounts = this.cfg.listAccounts();
+    const sourceAccount = accounts.find((a) => a.id === exhaustedAccountId);
+    const framework = args.framework ?? sourceAccount?.framework;
+    if (framework === undefined) {
+      this.cfg.logger?.warn(
+        `[QuotaAwareScheduler] ${sessionName}: source framework unknown for ${exhaustedAccountId} — refusing account selection`,
+      );
+      return { swapped: false, toAccountId: null, reason: 'source-framework-unknown' };
+    }
 
     let next: SubscriptionAccount | null;
     if (isProactive) {
@@ -273,6 +291,9 @@ export class QuotaAwareScheduler {
       next = accounts.find((a) => a.id === targetAccountId) ?? null;
       if (!next) {
         return { swapped: false, toAccountId: targetAccountId!, reason: 'target-revalidation-failed' };
+      }
+      if (framework !== undefined && next.framework !== framework) {
+        return { swapped: false, toAccountId: next.id, reason: 'target-framework-mismatch' };
       }
       if (at) {
         const k = at.getKnobs();
@@ -301,7 +322,7 @@ export class QuotaAwareScheduler {
       // ── Reactive semantics — byte-identical to v1.3.722 (I6) ──
       next = selectAccount(
         accounts,
-        { softThresholdPct: this.cfg.softThresholdPct, nowMs },
+        { softThresholdPct: this.cfg.softThresholdPct, nowMs, framework },
         exhaustedAccountId,
       );
       if (!next) {

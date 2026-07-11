@@ -85,7 +85,7 @@ export interface AccountQuotaSnapshot {
     monthlyLimit: number;
   };
   /** Which read path produced this snapshot (decision C provenance). */
-  source?: 'claude-code-usage-screen' | 'oauth-usage-endpoint-fallback';
+  source?: 'claude-code-usage-screen' | 'oauth-usage-endpoint-fallback' | 'codex-rollout';
   measuredAt?: string;
 }
 

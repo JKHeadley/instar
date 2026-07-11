@@ -567,7 +567,11 @@ export class ProactiveSwapMonitor {
       // move a session onto an account that is itself nearly full (anti-thrash).
       const alt = selectAccount(
         accounts,
-        { softThresholdPct: this.thresholdPct, nowMs },
+        {
+          softThresholdPct: this.thresholdPct,
+          nowMs,
+          framework: accounts.find((a) => a.id === c.accountId)?.framework,
+        },
         c.accountId,
       );
       return alt !== null;

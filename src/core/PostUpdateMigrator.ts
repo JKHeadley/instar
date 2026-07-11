@@ -4772,6 +4772,12 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    if (!content.includes('Codex quota is first-class in the pool:')) {
+      content += '\n- **Codex quota is first-class in the pool:** Codex accounts read the real 5-hour + weekly windows from their latest rollout instead of appearing permanently empty. Placement and every reactive/proactive swap are framework-safe: a Codex session can use only Codex accounts, and a Claude session only Claude accounts.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Codex subscription-pool quota and framework-safety awareness');
+    }
+
     if (!content.includes('Evolution action auto-expiry:')) {
       content += '\n- **Evolution action auto-expiry:** `evolutionActions.autoExpiry` conservatively sweeps only stale ordinary `pending` items; `critical`, `pinned`, active, completed, cancelled, recent, invalid-dated, and future-deadline items are retained. It ships enabled in observation-only `dryRun:true` mode; turning dry-run off removes eligible items in one coalesced save and emits replication tombstones so peers cannot resurrect them.\n';
       patched = true;
@@ -8211,6 +8217,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
+      '**Codex quota is first-class in the pool:',
       '**Evolution action auto-expiry:',
       // Durable Inbound Message Queue (CMT-1118): a Codex/Gemini agent that
       // never learns /pool/queue + the loss-notice semantics will guess at
