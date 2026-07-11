@@ -45,7 +45,7 @@ ID-shape validation is boundary validation, and terminal/in-flight checks are en
 
 ## 6. External surfaces
 
-The new authenticated HTTP endpoint and capability/briefing entries are visible to agents and API clients. It mutates the existing pending-login store and controls only the enrollment's raw tmux session. No secrets, URLs, external services, or new operator notification are involved. The dashboard cancel button is owned by GitHub issue #1203's parallel dashboard track. <!-- tracked: GitHub issue #1203 -->
+The new authenticated HTTP endpoint, API reference, and capability/briefing entries are visible to agents and API clients. It mutates the existing pending-login store and controls only the enrollment's raw tmux session. No secrets, URLs, external services, or new operator notification are involved. The dashboard cancel button is owned by GitHub issue #1203's parallel dashboard track. <!-- tracked: GitHub issue #1203 -->
 
 ## 6b. Operator-surface quality
 
