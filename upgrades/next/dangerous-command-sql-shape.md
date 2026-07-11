@@ -1,0 +1,22 @@
+# Dangerous-command SQL statement shaping
+
+## What Changed
+
+The dangerous-command guard now distinguishes executable-looking destructive SQL statements from prose that merely discusses their keywords. Genuine statement shapes and every existing filesystem/git pattern remain blocked.
+
+## What to Tell Your User
+
+You can write notes, heredocs, JSON, echo text, and search patterns that discuss destructive SQL vocabulary without the safety hook mistaking the prose for an executed database command. Ambiguous statement-shaped input still stops for confirmation.
+
+## Summary of New Capabilities
+
+- Requires a statement boundary and following table/database identifier for destructive SQL classification.
+- Preserves all existing non-SQL risky-command patterns and safety-level behavior.
+- Keeps fresh-install, always-overwrite migration, and deployed hook copies aligned.
+
+## Evidence
+
+- `tests/integration/codex-dangerous-command-block.test.ts`
+- `tests/unit/dangerous-command-guard-sql-parity.test.ts`
+- Existing force-with-lease and PR-merge guard suites remain green.
+

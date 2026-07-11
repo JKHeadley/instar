@@ -1,5 +1,7 @@
 # Codex Enforcement-Hook Layer — in plain terms
 
+This serves Instar's **Structure beats Willpower** principle: safety must be enforced by the runtime, not remembered by the agent.
+
 ## The problem
 instar has safety guardrails — things that check "is this action safe?" or "is this response coherent?" right before an agent does something, and can say **no, blocked**. On agents running **Claude**, these guardrails really work: they're wired into Claude's checkpoint system, so the agent literally can't skip them.
 

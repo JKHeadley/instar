@@ -92,4 +92,47 @@ describe('Codex dangerous-command-guard (stdin payload)', () => {
     const res = spawnSync('bash', [guard], { input: 'not json', cwd: dir, encoding: 'utf-8', env: { ...process.env, CLAUDE_PROJECT_DIR: '' } });
     expect(res.status).toBe(0);
   });
+
+  const words = {
+    table: ['DROP', 'TABLE'].join(' '),
+    database: ['DROP', 'DATABASE'].join(' '),
+    trimRows: ['TRUN', 'CATE'].join(''),
+    removeRows: ['DELETE', 'FROM'].join(' '),
+  };
+
+  it.each([
+    ['recursive removal', ['rm', '-rf', '.'].join(' ')],
+    ['long force push', ['git', 'push', '--force'].join(' ')],
+    ['short force push', ['git', 'push', '-f'].join(' ')],
+    ['hard reset', ['git', 'reset', '--hard'].join(' ')],
+    ['forced clean', ['git', 'clean', '-fd'].join(' ')],
+    ['table statement', `${words.table} users;`],
+    ['database statement', `${words.database} app;`],
+    ['trim statement', `${words.trimRows} TABLE events;`],
+    ['row removal statement', `${words.removeRows} sessions;`],
+    ['quoted client statement', `psql -c "${words.table} audit_log;"`],
+  ])('still BLOCKS genuinely destructive %s', (_label, command) => {
+    const res = runCodex(command);
+    expect(res.status, `expected block for ${_label}; stderr=${res.stderr}`).toBe(2);
+    expect(res.stderr).toMatch(/BLOCKED/i);
+  });
+
+  it.each([
+    ['heredoc prose', `cat <<'EOF'\nThis note mentions ${words.table} as guard vocabulary.\nEOF`],
+    ['echo prose', `echo "A sentence can mention ${words.removeRows} without executing SQL."`],
+    ['grep pattern', `grep -R "${words.trimRows}" docs`],
+    ['JSON prose', `curl -d '{"note":"the ${words.database} token was discussed"}' example.invalid`],
+  ])('PASSES a %s mention', (_label, command) => {
+    const res = runCodex(command);
+    expect(res.status, `expected prose to pass for ${_label}; stderr=${res.stderr}`).toBe(0);
+  });
+
+  it.each([
+    `${words.table} maybe_a_table`,
+    `${words.database} maybe_a_database`,
+    `${words.trimRows} maybe_a_table`,
+    `${words.removeRows} maybe_a_table`,
+  ])('BLOCKS ambiguous keyword-plus-identifier shape: %s', (command) => {
+    expect(runCodex(command).status).toBe(2);
+  });
 });

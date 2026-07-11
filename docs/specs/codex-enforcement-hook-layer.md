@@ -1,6 +1,7 @@
 ---
 review-convergence: internal-conformance-pass-2026-05-23
 approved: true
+parent-principle: "Structure beats Willpower"
 eli16-overview: codex-enforcement-hook-layer.eli16.md
 ---
 
@@ -182,7 +183,7 @@ Branch `echo/codex-enforcement-hooks` off main v1.2.53. Atomic commit per phase;
 - [~] **P6 — Awareness + release.** AGENTS.md briefing (Agent Awareness) + Codex-hook-disable canary + /crossreview (PermissionRequest autonomy-safety) + NEXT.md + full suite green + PR→release (v1.2.57). HARD CONSTRAINT: P5b + crossreview before merge/publish.
   - **PROGRESS (2026-05-25, this session — shipped as v1.2.69 candidate):**
     - ✅ **Hook-contract drift canary** (`codexHookContractCanary.ts`) — the spec's "Codex-hook-disable canary + payload-shape drift" item. Layer A: deterministic invariant lock (matcher `.*`, dangerous-command-guard on PreToolUse, full Stop review trio) — fails CI if a refactor regresses the P5c fixes. Layer B: best-effort probe of a resolvable codex binary's embedded hook-event schema; skip-not-fail when no binary present (e.g. behind the asdf shim, or on CI). 6 unit tests.
-    - ✅ **Stop-event parity** — `scope-coherence-checkpoint.js` added to Codex Stop (completes §4.1's "deferral / scope checkpoint → Stop"; only deferral was wired before). Migration-parity covered (ships via always-overwrite + `migrateHooks`→`installCodexHooks`).
+    - ✅ **Stop-event parity** — `scope-coherence-checkpoint.js` added to Codex Stop (completes §4.1's "deferral / scope checkpoint → Stop"; only deferral was wired before). <!-- tracked: codex-enforcement-hook-layer --> Migration-parity covered (ships via always-overwrite + `migrateHooks`→`installCodexHooks`).
     - ✅ **Awareness (shared layer)** — verified the safety-gate capability sections already mirror CLAUDE.md→AGENTS.md via `migrateFrameworkShadowCapabilities` (bodies copied, can't drift), so Codex agents already know they have gates.
   - **REMAINING:**
     - A Codex-SPECIFIC operational note in the briefing ("your guards run unprompted via `--dangerously-bypass-hook-trust`; you can't disable them"). Open question = the clean injection point for Codex-only briefing text (AGENTS.md is a deterministic AGENT.md shadow + mirrored capabilities; no obvious Codex-only section yet). Low urgency: enforcement is structural and fires regardless of agent awareness. <!-- tracked: codex-enforcement-hook-layer -->
