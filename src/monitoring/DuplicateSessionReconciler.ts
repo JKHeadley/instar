@@ -406,6 +406,8 @@ export class DuplicateSessionReconciler {
     try {
       runs = (await this.deps.liveRunHosts(sessionKey)).filter((r) => r.confirmed);
     } catch {
+      // @silent-fallback-ok: unreadable run registrations → rule 3 contributes
+      // no evidence; with no other evidence the verdict ESCALATES, never guesses.
       runs = [];
     }
     // Both-copies-carry-live-runs → always escalate (§3.2.2).

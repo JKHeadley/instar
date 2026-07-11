@@ -42,7 +42,9 @@ describe('thread→session: the live message path consults the routing key', () 
   // Anchor on the shared slackInboundDispatch function — the actual channel→session
   // dispatch body (WS1.1 split it out of the onMessage closure so the owner-side
   // mesh bridge can replay it). The window reaches past the spawn/register block.
-  const handlerStart = SERVER_TS.indexOf('const slackInboundDispatch = async (message');
+  // (Anchor loosened when ownership-gated-spawn threaded the router verdict
+  // through the signature — it is now multi-line.)
+  const handlerStart = SERVER_TS.indexOf('const slackInboundDispatch = async (');
   const handlerEnd = SERVER_TS.indexOf('_slackInboundDispatch = slackInboundDispatch;', handlerStart);
   const handlerBlock = SERVER_TS.slice(handlerStart, handlerEnd > handlerStart ? handlerEnd : handlerStart + 14000);
 
@@ -84,7 +86,9 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
 
   it('the onMessage handler exists and reaches slackInboundDispatch only after routing', () => {
     expect(onMsgStart).toBeGreaterThan(-1);
-    expect(onMsgBlock).toContain('await slackInboundDispatch(message)');
+    // ownership-gated-spawn threads the router verdict through the dispatch
+    // (the SpawnAdmission TOCTOU guard) — the call now carries a second arg.
+    expect(onMsgBlock).toContain('await slackInboundDispatch(message, _slackAdmissionVerdict)');
   });
 
   it('the handler consults the SessionRouter on the routing key (not bare channelId)', () => {

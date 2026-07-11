@@ -47,6 +47,9 @@ A thing.
 
 ## Proposed design
 Another thing.
+
+## Decision points touched
+*(none)*
 `;
 
 // ELI16 companion must be >= 800 chars or the script refuses to tag.

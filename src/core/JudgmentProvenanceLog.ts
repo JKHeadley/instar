@@ -148,6 +148,9 @@ export class JudgmentProvenanceLog {
       // mkdirSync's mode is ignored when the dir pre-exists — assert it anyway.
       fs.chmodSync(this.dir, 0o700);
     } catch (err) {
+      // @silent-fallback-ok: logged; provenance is observability — its dir init
+      // failing must never break the decision path it audits (writes will
+      // surface as writeErrors in status()).
       this.log(`[JudgmentProvenanceLog] dir init failed (observability only, non-fatal): ${(err as Error).message}`);
     }
   }
@@ -320,6 +323,8 @@ export class JudgmentProvenanceLog {
         .sort()
         .reverse();
     } catch {
+      // @silent-fallback-ok: no readable provenance dir → the honest empty
+      // read (a fresh install has no rows); status() carries writeErrors.
       return [];
     }
     for (const f of files) {

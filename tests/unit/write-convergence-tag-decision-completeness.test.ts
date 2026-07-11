@@ -57,6 +57,13 @@ function writeFixture(openQuestionsSection: string): { spec: string; report: str
       '## Open questions',
       openQuestionsSection,
       '',
+      // The decision-point classification gate (Judgment Within Floors,
+      // ownership-gated-spawn §3.6) also runs at stamp time — a fixture
+      // without this section would fail on THAT gate instead of the
+      // open-questions gate under test here.
+      '## Decision points touched',
+      '*(none)*',
+      '',
       '## Non-goals',
       'nothing',
     ].join('\n'),

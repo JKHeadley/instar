@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-11T07:51:31.427Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 33,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Same change family as the Increment-1 commit: both self-triggered controllers (owner-dark-notice, duplicate-converge-write) remain registered in SELF_ACTION_CONTROLLERS and pass the sustained-pressure convergence ratchet; this batch adds only annotations, test fixtures, and tracking entries"
+    }
+  },
+  "verdict": "blocked"
+}

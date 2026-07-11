@@ -856,7 +856,7 @@ function _ladderDryRunConsult(
     ownerMachineId: d.ownership?.owner ?? 'unknown',
     mode: 'dry-run',
     custodyLive: false,
-  }).catch(() => { /* the ladder journals its own failures */ });
+  }).catch(() => { /* @silent-fallback-ok: the ladder journals its own failures to logs/owner-dark-ladder.jsonl — a notice/journal miss must never break message dispatch. */ });
 }
 // U4.4 lease hand-back — the F4 reconciler, hoisted so the lease pull tick hook
 // (constructed early) and the /pool surfaces (constructed late) can reach it.
@@ -2632,7 +2632,7 @@ export function wireTelegramRouting(
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
             }, 'spawn-admission-refusal');
             custody = q.result === 'queued' || q.result === 'already-queued';
-          } catch { /* custody is best-effort; the ladder notice below stays honest about it */ }
+          } catch { /* @silent-fallback-ok: custody is best-effort — the ladder notice below states custody honestly either way (queue-live vs resend wording). */ }
         }
         if (d.refusalAction === 'forward' && !custody) {
           // Owner ALIVE but the router fell through AND custody refused —
@@ -2648,7 +2648,7 @@ export function wireTelegramRouting(
             ownerMachineId: d.ownership?.owner ?? 'unknown',
             mode: 'enforce',
             custodyLive: custody,
-          }).catch(() => { /* the ladder journals its own failures */ });
+          }).catch(() => { /* @silent-fallback-ok: the ladder journals its own failures to logs/owner-dark-ladder.jsonl — a notice/journal miss must never break message dispatch. */ });
         }
         return false;
       } catch (err) {
@@ -8312,7 +8312,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                       topicMetadata: undefined,
                     }, 'spawn-admission-refusal');
                     custody = q.result === 'queued' || q.result === 'already-queued';
-                  } catch { /* custody best-effort */ }
+                  } catch { /* @silent-fallback-ok: custody is best-effort — the Slack refusal path stays honest about custody in its journal row. */ }
                 }
                 if (!custody && d.refusalAction === 'forward') {
                   console.warn(`[spawn-admission] slack key ${routingKey} owner-alive refusal without custody — failing OPEN to local spawn (reachability wins)`);
@@ -21615,6 +21615,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   await telegram.sendToTopic(noticeTopicId, noticeText);
                   return true;
                 } catch {
+                  // @silent-fallback-ok: a failed send returns false — the ladder
+                  // records notice-send-failed in its journal (the loud path).
                   return false;
                 }
               },
@@ -21626,6 +21628,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return (telegram?.getTopicHistory(noticeTopicId, 10) ?? [])
                     .some((e) => !e.fromUser && typeof e.text === 'string' && e.text.includes('temporarily unreachable'));
                 } catch {
+                  // @silent-fallback-ok: history unreadable → no suppression signal;
+                  // the ladder's episode-dedupe + cooldown layers still bound the send.
                   return false;
                 }
               },
@@ -21724,7 +21728,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const r = ownReg.read(sk);
                   return r?.status === 'transferring' || r?.status === 'placing';
                 } catch {
-                  return true; // unreadable → treat as in-motion (defer — the safe direction)
+                  // @silent-fallback-ok: unreadable → treat as in-motion, the
+                  // reconciler DEFERS the topic entirely (the safe direction).
+                  return true;
                 }
               },
               // Lease-holder bounded fan-out at tick cadence (§3.2.1 — the
@@ -21762,6 +21768,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   );
                   return { ok: true, live };
                 } catch {
+                  // @silent-fallback-ok: ok:false is the DEFERRAL signal — the
+                  // reconciler journals probe-failed-deferred and burns an
+                  // attempt; a failed probe is never acted on as evidence.
                   return { ok: false, live: false };
                 }
               },
@@ -21771,6 +21780,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // Quarantined pins never surface through the fold reads (U4.1).
                   return tp ? { pinned: !!tp.pinned, preferredMachine: tp.preferredMachine ?? null, quarantined: false } : null;
                 } catch {
+                  // @silent-fallback-ok: no pin evidence → the ladder falls to
+                  // rule 2/3 or ESCALATES — absence of evidence never converges.
                   return null;
                 }
               },
@@ -21784,6 +21795,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // at echo time via /pool/ownership-view.
                   return [{ machineId: _meshSelfId ?? 'self', owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, admissible: true }];
                 } catch {
+                  // @silent-fallback-ok: no admissible view → rule 2 yields no
+                  // winner and the verdict ESCALATES (no-admissible-evidence).
                   return [];
                 }
               },
@@ -21831,6 +21844,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   emitPlacement(sk, r, 'reconcile', prevOwner);
                   return r.ok ? { ok: true } : { ok: false, reason: String((r as { reason?: string }).reason ?? 'cas-refused') };
                 } catch (err) {
+                  // @silent-fallback-ok: ok:false carries the reason UP — the
+                  // reconciler ESCALATES a refused/errored CAS (never retries
+                  // blindly), so this is the loud path, not a swallow.
                   return { ok: false, reason: err instanceof Error ? err.message : String(err) };
                 }
               },
