@@ -6,6 +6,7 @@ author: echo
 status: approved
 review-convergence: internal-self-review-2026-05-31 + independent adversarial security review (verdict SOUND, concurred)
 approved: true
+parent-principle: "Signal vs. Authority"
 approved-by: Echo under the 12h autonomous deploy mandate (self-approved; flagged in PR). Surfaced by the codex mentee (Codey) during the live mentorship loop — exactly the "drive Codey → find real issues → fix as fleet PR" mandate.
 approval-note: >
   computeRiskLevel fell through to 'low' (which maps to the 'proceed' action)

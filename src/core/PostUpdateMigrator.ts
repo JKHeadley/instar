@@ -13021,16 +13021,24 @@ process.stdin.on('end', async () => {
     const service = parts[1];
     const action = parts.slice(2).join('_');
 
-    // Classify mutability from action name
-    let mutability = 'read';
+    // Classify mutability from action name. Keep this vocabulary in lockstep
+    // with ExternalOperationGate.computeRiskLevel's known-input fail-safe:
+    // only explicitly unambiguous reads bypass the API; an unknown verb must
+    // reach the gate for the authoritative decision.
+    const actionTokens = action.split('_').filter(Boolean);
+    const hasMutatingTail = actionTokens.slice(1).some(token =>
+      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(token)
+    );
+    let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
       mutability = 'delete';
     } else if (/^(send|create|post|write|add|insert|new|compose|publish)/.test(action)) {
       mutability = 'write';
     } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
       mutability = 'modify';
+    } else if (!hasMutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) {
+      mutability = 'read';
     }
-    // Everything else defaults to 'read' (get, list, search, fetch, check, etc.)
 
     // Read operations are always safe — fast-path
     if (mutability === 'read') {

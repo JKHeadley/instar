@@ -131,6 +131,32 @@
       "escalatedAt": "seeded-closed",
       "evidenceCountAtLastAck": 20,
       "proposalId": null
+    },
+    {
+      "id": "unknown-classification-fail-open",
+      "description": "An agent-authored classifier treats an unrecognized token, verb, enum, or action shape as the safest class, allowing the input to bypass the authority or proceed with understated risk precisely when classification confidence is absent.",
+      "includes": [
+        "an unknown action verb defaulting to read-only and skipping its operation gate",
+        "an unrecognized enum falling through to a permissive risk or allow result",
+        "an allowlist classifier whose unmatched branch inherits the privileged-safe category"
+      ],
+      "excludes": [
+        "a deliberately fail-open availability policy after the authority itself is unreachable",
+        "a known and explicitly allowlisted read-only operation",
+        "a parser rejecting malformed input before any privileged action is possible"
+      ],
+      "canonicalExamples": [
+        "Issue #628: external-operation-gate classified novel destructive MCP verbs as read and skipped gate evaluation"
+      ],
+      "status": "unconfirmed",
+      "severity": "critical",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "prompt-parser-contract-drift — both concern classifier contracts, but this class is about unmatched runtime input inheriting privileged-safe authority rather than rendered prompt output drifting from its parser schema"
     }
   ]
 }
