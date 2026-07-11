@@ -23,6 +23,7 @@ const execFileAsync = promisify(execFile);
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
+import { heartbeatFreshEnoughToRerecord } from '../core/MachineHeartbeat.js';
 import { slackRespawnBootstrapIds } from '../core/slackRefreshBinding.js';
 import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
@@ -13371,6 +13372,19 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(`[SpeakerElection] topic ${topicId}: speak=${v.speak} (${v.reason})`);
         }
       },
+      // Owner-liveness (speaker-election-owner-liveness Layer 1). ENFORCE only when
+      // EXPLICITLY enabled AND not dryRun — default (no config) is observe-only, so
+      // the verdict is UNCHANGED at ship. The live enforce-flip is deferred (ACT-1196).
+      ownerLivenessEnforce: () => {
+        const c = (config as Record<string, any>).monitoring?.speakerElection?.ownerLiveness;
+        return c?.enabled === true && c?.dryRun === false;
+      },
+      // Bounded observe surface (captured in the size-rotated server log): measures
+      // how often a placement/stamp owner LOOKED dark (and, downstream, how often it
+      // was a FALSE dark) so the enforce-flip decision has real soak data.
+      onOwnerLivenessObservation: (o) => {
+        console.log(`[SpeakerElection.ownerLiveness] would-fall-through topic=${o.topicId} owner=${o.owner} self=${o.self} rule=${o.rule} online=${o.onlinePool.length}`);
+      },
     });
 
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
@@ -18875,8 +18889,18 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
               const hbApi = machineHeartbeat?.api;
               if (hbApi) {
+                // Layer 0 (speaker-election-owner-liveness): a DEAD peer's git-synced
+                // heartbeat file lingers, and re-recording it every ~30s stamps a fresh
+                // LOCAL receipt (routerReceivedAtMs) → the peer stays online:true FOREVER
+                // locally, so any owner/holder-liveness read silently no-ops. Gate the
+                // re-record on the record's SELF-REPORTED freshness: skip when
+                // lastHeartbeatAt is older than >=2x the ~30min write cadence (~60min), or
+                // unparseable (fail toward not-refreshing). A live git-syncing peer
+                // (mid-interval) is always within the window → never flapped dark; only a
+                // peer silent for >2 cadences (genuinely dead) ages out of `online`.
                 for (const r of hbApi.listAll()) {
                   if (r.machineId !== poolSelfId) {
+                    if (!heartbeatFreshEnoughToRerecord(r.lastHeartbeatAt, Date.now())) continue;
                     // COARSE: the file-based MachineHeartbeat is git-synced + written every
                     // ~30min, so its lastHeartbeatAt is NOT a live clock reading. Mark it coarse
                     // so it refreshes liveness but never drives the 5-min clock-skew quarantine

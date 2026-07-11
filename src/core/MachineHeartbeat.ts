@@ -38,6 +38,26 @@ import os from 'node:os';
 import path from 'node:path';
 
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000; // 30 min
+
+/**
+ * Layer-0 staleness predicate (speaker-election-owner-liveness): should the coarse
+ * pool-refresh loop RE-RECORD this git-synced heartbeat (refreshing the peer's
+ * local `online`)? True only when `lastHeartbeatAt` is fresh within `cutoffMs`
+ * (default ≥2× the write cadence, ~60 min). An unparseable/absent timestamp is
+ * treated as stale (fail toward NOT refreshing — a dead/corrupt record must not
+ * keep a peer online forever). A genuinely-live peer (writes every ~30 min) is
+ * always within a ~60-min cutoff → never flapped dark.
+ */
+export function heartbeatFreshEnoughToRerecord(
+  lastHeartbeatAt: string | undefined | null,
+  nowMs: number,
+  cutoffMs: number = 2 * DEFAULT_HEARTBEAT_INTERVAL_MS,
+): boolean {
+  if (!lastHeartbeatAt) return false;
+  const t = Date.parse(lastHeartbeatAt);
+  if (!Number.isFinite(t)) return false;
+  return nowMs - t <= cutoffMs;
+}
 export const DEFAULT_STALE_THRESHOLD_MS = 48 * 60 * 60 * 1000; // 48h
 
 export interface HeartbeatRecord {

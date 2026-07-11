@@ -167,3 +167,69 @@ describe('SpeakerElection — legacy / no-op guards (spec invariant 6)', () => {
     expect(seen).toEqual(['owner-self']);
   });
 });
+
+// ─── Owner-liveness (speaker-election-owner-liveness Layer 1) ────────────────
+function livenessPool(machines: string[], opts: {
+  owner?: string | null;
+  stamp?: string | null;
+  onlinePool?: string[];        // the ONLINE set (default = all machines)
+  leaseHolder?: string | null;
+  enforce?: boolean;            // ownerLivenessEnforce (default false = observe-only)
+}) {
+  const observations: Array<{ topicId: number; owner: string; self: string; rule: 1 | 2 }> = [];
+  const online = opts.onlinePool ?? machines;
+  const elections = machines.map((self) => new SpeakerElection({
+    enabled: () => true,
+    currentMachineId: self,
+    poolMachineIds: () => online,
+    resolveTopicOwner: () => opts.owner ?? null,
+    leaseHolderId: () => opts.leaseHolder ?? null,
+    leaseStable: () => true,
+    dwellMs: 60_000,
+    ownerLivenessEnforce: () => opts.enforce ?? false,
+    onOwnerLivenessObservation: (o) => observations.push({ topicId: o.topicId, owner: o.owner, self: o.self, rule: o.rule }),
+  } satisfies SpeakerElectionDeps));
+  return { elections, observations };
+}
+
+describe('SpeakerElection — owner-liveness (dark owner must not silently hold the voice)', () => {
+  it('OBSERVE-ONLY (default): a DARK placement owner still wins (verdict unchanged) but is RECORDED', () => {
+    // owner m_dark is NOT in the online pool [m_a, m_b]
+    const { elections, observations } = livenessPool(['m_a', 'm_b'], { owner: 'm_dark', onlinePool: ['m_a', 'm_b'], enforce: false });
+    const verdicts = elections.map(e => e.decide(7));
+    // unchanged behavior: both defer to the (dark) owner → owner-other, nobody speaks (today's bug, preserved while dark)
+    expect(verdicts.every(v => !v.speak)).toBe(true);
+    expect(verdicts.every(v => v.reason === 'owner-other')).toBe(true);
+    // but the would-fall-through was measured on BOTH machines
+    expect(observations.length).toBe(2);
+    expect(observations.every(o => o.owner === 'm_dark' && o.rule === 1)).toBe(true);
+  });
+
+  it('ENFORCE: a DARK placement owner falls through → exactly one online machine speaks (both invariant halves)', () => {
+    const { elections } = livenessPool(['m_a', 'm_b'], { owner: 'm_dark', onlinePool: ['m_a', 'm_b'], leaseHolder: null, enforce: true });
+    const verdicts = elections.map(e => e.decide(7));
+    expect(verdicts.filter(v => v.speak).length).toBe(1); // ≥1 and ≤1
+  });
+
+  it('F2: owner === self is NEVER dropped even if self is momentarily absent from its own pool view', () => {
+    // self m_a is the owner but NOT in its own online snapshot [m_b, m_c] (≥2 so the
+    // single-machine early-guard does not fire) — must still speak owner-self.
+    const { elections } = livenessPool(['m_a', 'm_b', 'm_c'], { owner: 'm_a', onlinePool: ['m_b', 'm_c'], enforce: true });
+    const aVerdict = elections[0].decide(7); // m_a
+    expect(aVerdict.speak).toBe(true);
+    expect(aVerdict.reason).toBe('owner-self');
+  });
+
+  it('ENFORCE: a DARK stamp owner (rule 2) falls through → exactly one speaks', () => {
+    const { elections } = livenessPool(['m_a', 'm_b'], { owner: null, stamp: 'm_dark', onlinePool: ['m_a', 'm_b'], leaseHolder: null, enforce: true });
+    const verdicts = elections.map(e => e.decide(7, 'm_dark'));
+    expect(verdicts.filter(v => v.speak).length).toBe(1);
+  });
+
+  it('an ONLINE owner is unaffected (no observation, normal owner-self/owner-other)', () => {
+    const { elections, observations } = livenessPool(['m_a', 'm_b'], { owner: 'm_a', onlinePool: ['m_a', 'm_b'], enforce: true });
+    const verdicts = elections.map(e => e.decide(7));
+    expect(verdicts.filter(v => v.speak).length).toBe(1);
+    expect(observations.length).toBe(0); // online owner → no dark observation
+  });
+});

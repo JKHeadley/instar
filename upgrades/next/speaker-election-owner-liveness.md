@@ -1,0 +1,19 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Two multi-machine liveness improvements from the speaker-election owner-liveness work (CMT-1956). **Layer 0 (lands live):** the pool-refresh loop no longer keeps a dead peer marked `online` forever — it was re-recording every git-synced heartbeat file every ~30s with a fresh local receipt, so a genuinely-dead machine never aged out. It now skips re-recording a heartbeat whose self-reported timestamp is older than ~2× the ~30-min write cadence (~60 min), so a dead peer's `online` correctly expires while a live-but-mesh-unreachable git-syncing peer (mid-interval) is never flapped dark. This is a real standalone bug affecting every liveness read. **Layer 1 (dark/observe-only):** the one-voice election now has an owner-liveness check on rules 1 & 2 (a dark placement/stamp owner should not silently hold a topic's voice), but it ships behind a dev-gated observe-only flag — it changes NO election verdict yet, only records where a dark owner *would* fall through, so the false-dark rate can be measured before the behavior-change flip (deferred, tracked). The guard is self-safe (`owner === self` is never dropped).
+
+## What to Tell Your User
+
+If I run across more than one of your machines, a machine that has actually gone dark will now correctly drop out of the "who's online" picture instead of lingering as online forever — which makes every placement and liveness decision more honest. The related fix (so a dark machine can't silently hold a conversation's voice) is installed but running in measure-only mode for now; the actual behavior change waits on soak data and a stronger "sustained dark" signal, because a naive version could cause a double-reply, which I never want.
+
+## Summary of New Capabilities
+
+- Dead-peer `online` honesty: `heartbeatFreshEnoughToRerecord` gates the coarse pool-refresh re-record on ≥2× the heartbeat cadence.
+- Owner-liveness observe-only guard on `SpeakerElection.decideInner` rules 1 & 2 (dev-gated dryRun; self-safe); enforce-flip deferred (tracked).
+
+## Evidence
+
+- `tests/unit/heartbeat-freshness-gate.test.ts` (Layer 0 predicate, 5), `tests/unit/SpeakerElection.test.ts` (Layer 1 owner-liveness + one-voice invariant, +5). 238-test regression sweep green across ws3/one-voice/machine-pool/heartbeat/seamlessness.
+- Converged spec (`/spec-converge`, 3 rounds; adversarial + integration found + folded 4 material findings, codex externals non-material).
