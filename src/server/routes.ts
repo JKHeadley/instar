@@ -1315,6 +1315,8 @@ export interface RouteContext {
   spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission | null;
   /** ownership-gated-spawn §3.5 — GET /judgment-provenance (redacted rows only). */
   judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog | null;
+  /** ACT-562 §3.3 — binds Real-Check verification outcomes to completion decisions. */
+  realCheckBinder?: import('../core/RealCheckOutcomeBinder.js').RealCheckOutcomeBinder | null;
   /** U4.4 — lease hand-back status + the operator-flip latch levers. */
   leaseHandback?: {
     status(): import('../core/LeaseHandbackReconciler.js').LeaseHandbackStatus;
@@ -5197,6 +5199,12 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       const tail = typeof transcriptTail === 'string' ? transcriptTail : '';
 
+      // ACT-562 §3.3 — drain any Real-Check verification rows written since the
+      // last call and bind them (as INDEPENDENT ground truth) to the completion
+      // decisions they verified. Best-effort, total (never throws), observability
+      // only — it never feeds back into the verdict computed below (§3.5).
+      ctx.realCheckBinder?.bindNewOutcomes();
+
       // ══ Scope-accretion deterministic pre-judge gate (R25/R35/R36) ══════════
       // Whitelist-validated identity fields — everything else on the body is ignored.
       const saBody = (req.body ?? {}) as Record<string, unknown>;
@@ -5357,7 +5365,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   const v = await ctx.completionEvaluator.evaluateStopRationale(tail, {
                     ...(signals ?? {}),
                     stopKind: 'hard-blocker',
-                  });
+                  }, { runId: armedRecord.runId, topicId: armedRecord.topicId });
                   p13Verdict = v.classifiedBlocker ?? (v.stopAllowed ? 'allowed' : 'blocked');
                 } catch { /* @silent-fallback-ok — classification is display-only on the trip; the trip itself is already decided */ }
                 const tripText =
@@ -5435,6 +5443,9 @@ export function createRoutes(ctx: RouteContext): Router {
         effectiveCondition,
         tail,
         signals,
+        // ACT-562 §3.3 — carry the stable run/attempt/topic ids so the Real-Check
+        // annotateOutcome seam can bind ground truth to THIS decision row.
+        { runId: armedRecord?.runId ?? bodyRunId, topicId: resolvedTopic },
       );
       // R43: a met:true final verdict at the chokepoint marks the server-owned
       // run record TERMINAL (subject to the live-test veto below, which can
@@ -5499,9 +5510,19 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const { transcriptTail } = req.body ?? {};
     try {
+      // ACT-562 §3.3 — pass any whitelisted run/topic ids from the body so the
+      // p13-blocker provenance row correlates to the run that produced it.
+      const stopBody = (req.body ?? {}) as Record<string, unknown>;
       const verdict = await ctx.completionEvaluator.evaluateStopRationale(
         typeof transcriptTail === 'string' ? transcriptTail : '',
         parseStopSignals(req.body),
+        {
+          runId: typeof stopBody.runId === 'string' ? stopBody.runId : undefined,
+          topicId:
+            typeof stopBody.topicId === 'string' || typeof stopBody.topicId === 'number'
+              ? String(stopBody.topicId)
+              : undefined,
+        },
       );
       res.json({ ...verdict, p13ProtocolVersion: P13_PROTOCOL_VERSION });
     } catch (err) {
@@ -15007,8 +15028,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // on read). ?limit= (default 100, max 1000), ?sinceHours=. ?scope=pool merges
   // peers' redacted rows as type/length-clamped untrusted data.
   router.get('/judgment-provenance', async (req, res) => {
+    // ACT-562 §3.6 — the log is now constructed UNCONDITIONALLY at boot (the
+    // hoist), so a missing instance is a defensive fallback, NOT the single-
+    // machine/pool-dark case: return 200-empty (an agent with no rows is not an
+    // error), never 503. Redacted rows may carry PII → never cache.
+    res.setHeader('Cache-Control', 'no-store');
     if (!ctx.judgmentProvenance) {
-      res.status(503).json({ error: 'judgment-provenance log not constructed (single-machine / pool dark)' });
+      res.json({ rows: [], status: null });
       return;
     }
     try {

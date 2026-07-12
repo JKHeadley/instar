@@ -1661,6 +1661,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   provenance: {
     retentionDays: 14,
     deterministicSampling: 1.0,
+    // ACT-562 §3.6/§5 — the LLM decision-point WIRING gate. `enabled` is
+    // deliberately OMITTED (NOT hardcoded false — #1001): resolveDevAgentGate
+    // flips it LIVE on a dev agent / DARK on the fleet. Construction of the log
+    // is unconditional; only the in-scope callsites' recordDecision writes ride
+    // this gate. Registered in DEV_GATED_FEATURES (pure observability).
+    llmDecisionWiring: {},
   },
   // Constitutional ceilings carried by ratified standards (three-standards-
   // enforcement spec, converged 2026-07-03: Self-Heal Before Notify's

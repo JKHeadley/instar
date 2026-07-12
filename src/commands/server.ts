@@ -16351,6 +16351,45 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.warn(pc.yellow(`  Threadline: failed to bootstrap — ${err instanceof Error ? err.message : String(err)}`));
     }
 
+    // ── ACT-562 §3.6 HOIST — JudgmentProvenanceLog constructed UNCONDITIONALLY
+    //    at boot (ctor has ZERO pool/mesh deps). Constructed HERE (before the
+    //    tone gate + completion evaluator) so those fleet-wide LLM decision-point
+    //    callsites can write to it; moved OUT of the sessionPool block (which was
+    //    null on single-machine / pool-dark) so GET /judgment-provenance returns
+    //    200-empty (never 503). The sessionPool block below REUSES this instance.
+    try {
+      const jplMod = await import('../core/JudgmentProvenanceLog.js');
+      const provCfg = config.provenance ?? {};
+      _judgmentProvenance = new jplMod.JudgmentProvenanceLog({
+        dir: path.join(config.stateDir, 'state', 'judgment-provenance'),
+        retentionDays: provCfg.retentionDays,
+        sampling: provCfg.deterministicSampling,
+        log: (m) => console.log(pc.dim(`  ${m}`)),
+        // §5 — a lost high-stakes (process-kill / gate) audit crosses the
+        // housekeeping→signal line: ONE deduped operator notice (the only
+        // provenance condition that pages). Best-effort; never on the write path.
+        onHighStakesBufferDrop: (info) => {
+          void telegram
+            ?.createAttentionItem({
+              id: 'agent:provenance-highstakes-drop',
+              title: 'Judgment-provenance: high-stakes audit rows dropped',
+              summary: `${info.dropped} high-stakes provenance row(s) dropped under buffer pressure (${info.decisionPoint ?? 'unknown point'}).`,
+              category: 'system',
+              priority: 'HIGH',
+              sourceContext: 'judgment-provenance',
+            })
+            .catch(() => { /* attention raise is observability — never affects the audited path */ });
+        },
+      });
+      console.log(pc.dim('  JudgmentProvenanceLog: constructed (ACT-562 hoist — always-on observability)'));
+    } catch (err) {
+      console.error(`[judgment-provenance] construction failed (read surface stays 200-empty): ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // §3.6 — WIRING is dark-gated (construction above is not). The in-scope LLM
+    // callsites gate their recordDecision(...) call on this resolution: LIVE on a
+    // dev agent (records), DARK on the fleet (constructed-but-idle).
+    const _provenanceWiringEnabled = resolveDevAgentGate(config.provenance?.llmDecisionWiring?.enabled, config);
+
     // Messaging Tone Gate — always-on tone check on outbound messaging routes.
     // Uses the shared IntelligenceProvider (Claude CLI subscription by default,
     // Anthropic API if key is set). No opt-in. Catches CLI commands, file paths,
@@ -16369,8 +16408,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           failClosedMode: tg?.failClosedMode,
           toneTierDryRun: tg?.toneTierDryRun,
         };
+      }, {
+        // ACT-562 §3.1b/§3.6 — record the outbound-gate verdict (derived context,
+        // never the full body) when the dark gate is live. TOTAL sink: a
+        // provenance write can never hold/drop a message (§3.4).
+        recordProvenance: _provenanceWiringEnabled && _judgmentProvenance
+          ? (row) => { _judgmentProvenance?.recordDecision(row); }
+          : undefined,
       });
-      console.log(pc.green('  Messaging tone gate: active (Haiku via shared IntelligenceProvider)'));
+      console.log(pc.green(`  Messaging tone gate: active (Haiku via shared IntelligenceProvider${_provenanceWiringEnabled ? '; provenance ON' : ''})`));
     } else {
       console.log(pc.yellow('  Messaging tone gate: inactive (no IntelligenceProvider available)'));
     }
@@ -16650,14 +16696,46 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow('  Discovery evaluator: inactive (no IntelligenceProvider)'));
     }
 
+    // ACT-562 §3.3 — the ONE wired annotateOutcome seam: bind the INDEPENDENT
+    // Real-Check verification result (logs/autonomous-realcheck.jsonl) as ground
+    // truth for a continue-stop decision. Constructed unconditionally (cheap; a
+    // no-op read when no realcheck rows exist); the route drives bindNewOutcomes().
+    let _realCheckBinder: import('../core/RealCheckOutcomeBinder.js').RealCheckOutcomeBinder | undefined;
+    if (_judgmentProvenance) {
+      const { RealCheckOutcomeBinder } = await import('../core/RealCheckOutcomeBinder.js');
+      _realCheckBinder = new RealCheckOutcomeBinder({
+        stateDir: config.stateDir,
+        sink: {
+          annotateOutcome: (decisionId, component, outcome) =>
+            _judgmentProvenance?.annotateOutcome(decisionId, component, outcome) ?? false,
+        },
+      });
+    }
+
     // Independent autonomous-completion judge (mirrors /goal). Reuses the
     // framework-aware sharedIntelligence; falls back to the self-declared promise
     // when absent (the stop-hook handles that).
     let completionEvaluator: import('../core/CompletionEvaluator.js').CompletionEvaluator | undefined;
     if (sharedIntelligence) {
       const { CompletionEvaluator } = await import('../core/CompletionEvaluator.js');
-      completionEvaluator = new CompletionEvaluator({ intelligence: sharedIntelligence });
-      console.log(pc.green('  Completion evaluator: active (independent /goal-style judge)'));
+      completionEvaluator = new CompletionEvaluator({
+        intelligence: sharedIntelligence,
+        // ACT-562 §3.1/§3.6 — record continue-stop + p13-blocker provenance when
+        // the dark gate is live. The recorder is TOTAL (its own try/catch) so a
+        // provenance failure can never alter the completion verdict (§3.4). It
+        // also registers the continue-stop decisionId with the Real-Check binder
+        // (§3.3) so an independent verification outcome can be bound to it.
+        recordProvenance: _provenanceWiringEnabled && _judgmentProvenance
+          ? (row) => {
+              const id = _judgmentProvenance?.recordDecision(row) ?? null;
+              if (id && row.decisionPoint === 'CompletionEvaluator:continue-stop:v1') {
+                const topicId = (row.context as { topicId?: unknown })?.topicId;
+                _realCheckBinder?.registerDecision(id, { topicId: topicId != null ? String(topicId) : undefined });
+              }
+            }
+          : undefined,
+      });
+      console.log(pc.green(`  Completion evaluator: active (independent /goal-style judge${_provenanceWiringEnabled ? '; provenance ON' : ''})`));
     }
 
     // ── LiveTestGate (live-user-channel-proof spec §4) ──────────────────────
@@ -17995,9 +18073,49 @@ export async function startServer(options: StartOptions): Promise<void> {
       const ehPrims = createExternalHogServerPrimitives({
         exec: async (cmd, args) => (await execFileAsync(cmd, [...args], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 })).stdout,
         signal: (pid, sig) => { try { process.kill(pid, sig === 0 ? 0 : sig); return true; } catch { return false; } }, // @silent-fallback-ok: `false` IS the signal primitive's contract (pid gone / EPERM → delivery failed); the kill funnel consumes the boolean and surfaces every outcome
-        evaluate: (prompt) => (sharedIntelligence
-          ? sharedIntelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'ExternalHogClassifier' } })
-          : Promise.reject(new Error('no intelligence provider'))),
+        evaluate: async (prompt) => {
+          if (!sharedIntelligence) throw new Error('no intelligence provider');
+          // ACT-562 §3.1 — capture model/tokens from the EXISTING attribution
+          // path so the provenance row agrees with /metrics/features.
+          let usage: { inputTokens: number; outputTokens: number } | undefined;
+          let modelInfo: { model: string; framework?: string } | undefined;
+          const startedAt = Date.now();
+          const raw = await sharedIntelligence.evaluate(prompt, {
+            model: 'fast',
+            attribution: { component: 'ExternalHogClassifier' },
+            onUsage: (u) => { usage = u; },
+            onModel: (m) => { modelInfo = m; },
+          });
+          // ACT-562 §3.6 — record the process-kill classifier verdict when the
+          // dark gate is live. The RECORD-ONLY wiring never affects the kill (the
+          // mechanical veto-only floor + PIN arm still gate the actual kill); a
+          // provenance failure is swallowed by recordDecision (§3.4 total).
+          if (_provenanceWiringEnabled && _judgmentProvenance) {
+            let action = 'unparsed';
+            try {
+              const parsed = JSON.parse((raw || '').trim()) as { action?: unknown };
+              if (typeof parsed.action === 'string') action = parsed.action;
+            } catch { /* @silent-fallback-ok — unparsed verdict is recorded as 'unparsed' (the classifier fails safe: no kill on unparseable) */ }
+            _judgmentProvenance.recordDecision({
+              component: 'ExternalHogClassifier',
+              decisionPoint: 'ExternalHogClassifier:process-kill:v1',
+              // §3.1 — the instruction-inert classifier prompt the model was
+              // handed (buildClassifierPrompt; process facts only, no argv).
+              context: { classifierPrompt: prompt },
+              optionsPresented: ['kill', 'leave', 'alert'],
+              decision: action,
+              reason: `classifier action=${action} (kill executes iff floor_pass && action==='kill'; veto-only floor + PIN arm still gate the real kill)`,
+              floor: 'external-hog mechanical veto-only floor (same-uid, orphaned-owner, launchctl-unmanaged, sustained-CPU, allowlist class, kill-time re-confirm) + PIN arm',
+              fallbackRung: 'llm-judge',
+              model: modelInfo?.model,
+              door: modelInfo?.framework,
+              tokensIn: usage?.inputTokens,
+              tokensOut: usage?.outputTokens,
+              latencyMs: Date.now() - startedAt,
+            });
+          }
+          return raw;
+        },
         raiseAttention: (item) => telegram?.createAttentionItem({
           id: 'agent:external-hog',
           title: item.title,
@@ -21645,16 +21763,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const spawnAdmMod = await import('../core/SpawnAdmission.js');
             const ladderMod = await import('../core/OwnerDarkLadder.js');
-            const jplMod = await import('../core/JudgmentProvenanceLog.js');
             const audMod = await import('../core/BoundedJsonlAudit.js');
             const ogsCfg = config.multiMachine?.sessionPool?.ownershipGatedSpawn ?? {};
-            const provCfg = config.provenance ?? {};
-            _judgmentProvenance = new jplMod.JudgmentProvenanceLog({
-              dir: path.join(config.stateDir, 'state', 'judgment-provenance'),
-              retentionDays: provCfg.retentionDays,
-              sampling: provCfg.deterministicSampling,
-              log: (m) => console.log(pc.dim(`  ${m}`)),
-            });
+            // ACT-562 §3.6 — the JudgmentProvenanceLog is now constructed
+            // UNCONDITIONALLY earlier at boot (the hoist); reuse that instance
+            // here. If the hoist somehow failed, construct a minimal fallback so
+            // the SpawnAdmission provenance seam still has a sink.
+            if (!_judgmentProvenance) {
+              const jplMod = await import('../core/JudgmentProvenanceLog.js');
+              const provCfg = config.provenance ?? {};
+              _judgmentProvenance = new jplMod.JudgmentProvenanceLog({
+                dir: path.join(config.stateDir, 'state', 'judgment-provenance'),
+                retentionDays: provCfg.retentionDays,
+                sampling: provCfg.deterministicSampling,
+                log: (m) => console.log(pc.dim(`  ${m}`)),
+              });
+            }
             const ownerDarkAudit = new audMod.BoundedJsonlAudit({
               file: path.join(config.stateDir, 'logs', 'owner-dark-ladder.jsonl'),
               log: (m) => console.log(pc.dim(`  ${m}`)),
@@ -22912,7 +23036,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, realCheckBinder: _realCheckBinder ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

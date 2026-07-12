@@ -19,3 +19,7 @@ The recording *mechanism* already exists and is well-built (it scrubs credential
 ## Where it sits
 
 This is the keystone of the three-part fix (ACT-562). After it lands, the next pieces are the periodic "grade these decisions with the strongest model" review (ACT-563) and making the benchmark test the real production prompt plus your real-data reevaluation loop (ACT-564). It ships ENABLED on the development machine (so we live with it first) and OFF on the fleet until it's proven. Nothing about how the agent behaves for you changes when this lands — it's a recorder, not a new gate.
+
+---
+
+_Status: approved by Justin (topic 11960, 2026-07-12 — "approved, lets proceed with this"). Shipping dark-gated: ENABLED on the development agent, DARK (constructed-but-idle) on the fleet._

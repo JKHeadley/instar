@@ -1,0 +1,11 @@
+{
+  "_comment": "ACT-562 §3.2 monotonic coverage floor for LLM-decision provenance. count + setHash must never DECREASE silently; lowering requires a PR naming each removed decision point + rationale. Adding coverage is welcome (raise count, add ids, recompute setHash).",
+  "count": 4,
+  "setHash": "85b903e9df38639632bd152fedc50202f9d1c0a99d4b44e2e10b89d8dcf9f2bc",
+  "ids": [
+    "CompletionEvaluator:continue-stop:v1",
+    "CompletionEvaluator:p13-blocker:v1",
+    "ExternalHogClassifier:process-kill:v1",
+    "MessagingToneGate:outbound-gate:v1"
+  ]
+}

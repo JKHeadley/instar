@@ -19,6 +19,7 @@
  */
 
 import type { IntelligenceProvider } from './types.js';
+import type { DecisionRowInput } from './JudgmentProvenanceLog.js';
 
 /**
  * Protocol version stamped on EVERY P13 response (allow / block / error). A
@@ -97,10 +98,32 @@ export interface StopRationaleVerdict {
   classifiedBlocker?: 'external' | 'buildable';
 }
 
+/**
+ * ACT-562 §3.3 — the stable correlation ids for a completion/p13 decision. The
+ * evaluator ALREADY receives runId/attemptId at the route seam; carrying them
+ * into the provenance row's `context` is what lets `annotateOutcome` bind an
+ * INDEPENDENT ground-truth signal (Real-Check) to the SPECIFIC decision that
+ * gated that run+attempt (never a smeared outcome across retries).
+ */
+export interface CompletionCorrelation {
+  runId?: string;
+  attemptId?: string;
+  topicId?: string;
+}
+
 export interface CompletionEvaluatorDeps {
   intelligence: IntelligenceProvider;
   /** Override model tier (default 'fast' — matches /goal's small-fast evaluator). */
   modelTier?: 'fast' | 'balanced' | 'capable';
+  /**
+   * ACT-562 §3.1/§3.6 — provenance sink for the continue-stop + p13-blocker
+   * decision points. Injected (dark-gated at construction in server.ts) so the
+   * evaluator has NO knowledge of the log or the gate. TOTAL by contract: the
+   * sink swallows its own failures, so a provenance write can NEVER alter a
+   * completion/P13 verdict (§3.4 observability-only invariant). Absent ⇒ no
+   * provenance (the fleet-dark path + every test that does not exercise it).
+   */
+  recordProvenance?: (row: DecisionRowInput) => void;
 }
 
 // Bumped from 'completion-eval-v1' for the signal extension (objective-signals
@@ -118,13 +141,39 @@ const STOP_RATIONALE_PROMPT_VERSION = 'stop-rationale-v2';
 const FENCE_OPEN = '<<<AGENT_TRANSCRIPT_DATA>>>';
 const FENCE_CLOSE = '<<<END_AGENT_TRANSCRIPT_DATA>>>';
 
+/**
+ * ACT-562 stable decision-point identities (`<component>:<decisionKind>:v1`).
+ * These are the PROVENANCE_REQUIRED allowlist keys AND the row's decisionPoint;
+ * the `<component>` prefix (CompletionEvaluator) matches the callsite's
+ * attribution.component (§3.2 identity-match, CI-guarded).
+ */
+export const PROVENANCE_POINT_CONTINUE_STOP = 'CompletionEvaluator:continue-stop:v1';
+export const PROVENANCE_POINT_P13_BLOCKER = 'CompletionEvaluator:p13-blocker:v1';
+
 export class CompletionEvaluator {
   private readonly intelligence: IntelligenceProvider;
   private readonly modelTier: 'fast' | 'balanced' | 'capable';
+  private readonly recordProvenance?: (row: DecisionRowInput) => void;
 
   constructor(deps: CompletionEvaluatorDeps) {
     this.intelligence = deps.intelligence;
     this.modelTier = deps.modelTier ?? 'fast';
+    this.recordProvenance = deps.recordProvenance;
+  }
+
+  /**
+   * ACT-562 — emit a provenance row for a completed decision. TOTAL: wrapped so
+   * a sink failure can never propagate into the verdict path (§3.4). The
+   * `context` passed here is the ALREADY-FENCED, instruction-inert form the
+   * judge was handed (never the raw pre-fence tail) — §3.1.
+   */
+  private emitProvenance(row: DecisionRowInput): void {
+    if (!this.recordProvenance) return;
+    try {
+      this.recordProvenance(row);
+    } catch {
+      /* @silent-fallback-ok: provenance is observability — a sink failure must never alter the verdict (§3.4). */
+    }
   }
 
   /**
@@ -137,8 +186,19 @@ export class CompletionEvaluator {
    * completion prompt so the condition path runs a SINGLE critical-path LLM
    * call (spec §2b.2). Absent → identical to the pre-change behavior.
    */
-  async evaluate(condition: string, transcriptTail: string, signals?: StopSignals): Promise<CompletionVerdict> {
+  async evaluate(
+    condition: string,
+    transcriptTail: string,
+    signals?: StopSignals,
+    correlation?: CompletionCorrelation,
+  ): Promise<CompletionVerdict> {
     const prompt = this.buildPrompt(condition, transcriptTail, signals);
+    // ACT-562 §3.1 — source model/tokens from the call's EXISTING attribution
+    // path (onUsage/onModel) so the provenance row and its /metrics/features
+    // cost row agree by construction.
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
+    let modelInfo: { model: string; framework?: string } | undefined;
+    const startedAt = Date.now();
     let raw: string;
     try {
       raw = await this.intelligence.evaluate(prompt, {
@@ -147,11 +207,54 @@ export class CompletionEvaluator {
         maxTokens: 200,
         timeoutMs: 30_000,
         attribution: { component: 'CompletionEvaluator' },
+        onUsage: (u) => { usage = u; },
+        onModel: (m) => { modelInfo = m; },
       });
     } catch (err) {
-      return { met: false, reason: `evaluator error (keep working): ${err instanceof Error ? err.message : String(err)}` };
+      const verdict: CompletionVerdict = { met: false, reason: `evaluator error (keep working): ${err instanceof Error ? err.message : String(err)}` };
+      this.emitProvenance(this.continueStopRow(condition, transcriptTail, signals, verdict, correlation, usage, modelInfo, startedAt));
+      return verdict;
     }
-    return this.parse(raw);
+    const verdict = this.parse(raw);
+    this.emitProvenance(this.continueStopRow(condition, transcriptTail, signals, verdict, correlation, usage, modelInfo, startedAt));
+    return verdict;
+  }
+
+  /** ACT-562 — build the continue-stop provenance row from a formed verdict. */
+  private continueStopRow(
+    condition: string,
+    transcriptTail: string,
+    signals: StopSignals | undefined,
+    verdict: CompletionVerdict,
+    correlation: CompletionCorrelation | undefined,
+    usage: { inputTokens: number; outputTokens: number } | undefined,
+    modelInfo: { model: string; framework?: string } | undefined,
+    startedAt: number,
+  ): DecisionRowInput {
+    return {
+      component: 'CompletionEvaluator',
+      decisionPoint: PROVENANCE_POINT_CONTINUE_STOP,
+      // §3.1 — the ALREADY-FENCED, instruction-inert context the judge was
+      // handed (never the raw pre-fence tail), plus the condition + correlation.
+      context: {
+        condition,
+        fencedTranscript: this.fence(transcriptTail, signals),
+        signals: signals ?? null,
+        runId: correlation?.runId,
+        attemptId: correlation?.attemptId,
+        topicId: correlation?.topicId,
+      },
+      optionsPresented: ['met (may stop)', 'not-met (keep working)'],
+      decision: verdict.met ? 'met' : 'not-met',
+      reason: verdict.reason,
+      floor: 'completion-condition judge (independent; keep-working is the safe direction)',
+      fallbackRung: 'llm-judge',
+      model: modelInfo?.model,
+      door: modelInfo?.framework,
+      tokensIn: usage?.inputTokens,
+      tokensOut: usage?.outputTokens,
+      latencyMs: Date.now() - startedAt,
+    };
   }
 
   private buildPrompt(condition: string, transcriptTail: string, signals?: StopSignals): string {
@@ -223,9 +326,16 @@ export class CompletionEvaluator {
    * on top of the completion check, so an evaluator hiccup must never TRAP a
    * genuine completion — the primary completion authority still governs.
    */
-  async evaluateStopRationale(transcriptTail: string, signals?: StopSignals): Promise<StopRationaleVerdict> {
+  async evaluateStopRationale(
+    transcriptTail: string,
+    signals?: StopSignals,
+    correlation?: CompletionCorrelation,
+  ): Promise<StopRationaleVerdict> {
     const prompt = this.buildStopRationalePrompt(transcriptTail, signals);
     const isHardBlocker = signals?.stopKind === 'hard-blocker';
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
+    let modelInfo: { model: string; framework?: string } | undefined;
+    const startedAt = Date.now();
     let raw: string;
     try {
       raw = await this.intelligence.evaluate(prompt, {
@@ -234,15 +344,60 @@ export class CompletionEvaluator {
         maxTokens: 200,
         timeoutMs: 30_000,
         attribution: { component: 'CompletionEvaluator/P13' },
+        onUsage: (u) => { usage = u; },
+        onModel: (m) => { modelInfo = m; },
       });
     } catch {
       // Fail OPEN — never trap a legitimate completion on an evaluator error.
       // On the hard-blocker path the hook treats the absence of an explicit
       // `external` classification as NOT-a-clean-allow, so a fail-open here does
       // NOT auto-pass an `(a)` exit (the hook's three-case detection owns that).
-      return { stopAllowed: true, guidance: '' };
+      const verdict: StopRationaleVerdict = { stopAllowed: true, guidance: '' };
+      this.emitProvenance(this.p13Row(transcriptTail, signals, verdict, isHardBlocker, correlation, usage, modelInfo, startedAt));
+      return verdict;
     }
-    return this.parseStopRationale(raw, isHardBlocker);
+    const verdict = this.parseStopRationale(raw, isHardBlocker);
+    this.emitProvenance(this.p13Row(transcriptTail, signals, verdict, isHardBlocker, correlation, usage, modelInfo, startedAt));
+    return verdict;
+  }
+
+  /** ACT-562 — build the p13-blocker provenance row from a formed verdict. */
+  private p13Row(
+    transcriptTail: string,
+    signals: StopSignals | undefined,
+    verdict: StopRationaleVerdict,
+    isHardBlocker: boolean,
+    correlation: CompletionCorrelation | undefined,
+    usage: { inputTokens: number; outputTokens: number } | undefined,
+    modelInfo: { model: string; framework?: string } | undefined,
+    startedAt: number,
+  ): DecisionRowInput {
+    return {
+      component: 'CompletionEvaluator',
+      decisionPoint: PROVENANCE_POINT_P13_BLOCKER,
+      context: {
+        fencedTranscript: this.fence(transcriptTail, signals),
+        signals: signals ?? null,
+        isHardBlocker,
+        runId: correlation?.runId,
+        attemptId: correlation?.attemptId,
+        topicId: correlation?.topicId,
+      },
+      optionsPresented: isHardBlocker
+        ? ['stop-ok (external blocker)', 'stop-blocked (buildable)']
+        : ['stop-ok', 'stop-blocked'],
+      decision: verdict.stopAllowed
+        ? `stop-allowed${verdict.classifiedBlocker ? ` (${verdict.classifiedBlocker})` : ''}`
+        : `stop-blocked${verdict.classifiedBlocker ? ` (${verdict.classifiedBlocker})` : ''}`,
+      reason: verdict.guidance || (verdict.stopAllowed ? 'stop earned' : 'stop not earned (P13)'),
+      floor: 'P13 stop-rationale guard (secondary; fails OPEN so it never traps a genuine completion)',
+      fallbackRung: 'llm-judge',
+      model: modelInfo?.model,
+      door: modelInfo?.framework,
+      tokensIn: usage?.inputTokens,
+      tokensOut: usage?.outputTokens,
+      latencyMs: Date.now() - startedAt,
+    };
   }
 
   private buildStopRationalePrompt(transcriptTail: string, signals?: StopSignals): string {

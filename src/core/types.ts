@@ -4169,6 +4169,18 @@ export interface InstarConfig {
     retentionDays?: number;
     /** Deterministic sampling for non-arbiter rows, [0,1]. Default 1.0 (0.1 from Increment 2). */
     deterministicSampling?: number;
+    /**
+     * ACT-562 (llm-decision-provenance-wiring §5) — the LLM decision-point
+     * WIRING gate. Construction of the log is UNCONDITIONAL (§3.6); this gate
+     * governs only whether the in-scope LLM callsites (CompletionEvaluator /
+     * ExternalHogClassifier / MessagingToneGate) actually WRITE provenance rows.
+     * Dev-gated: OMIT `enabled` so resolveDevAgentGate flips it LIVE on a dev
+     * agent, DARK on the fleet (registered in DEV_GATED_FEATURES). Pure
+     * observability — no gate authority, machine-local writes, no spend/egress.
+     */
+    llmDecisionWiring?: {
+      enabled?: boolean;
+    };
   };
   /**
    * Constitutional ceilings carried by ratified standards (three-standards-

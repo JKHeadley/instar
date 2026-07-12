@@ -20,6 +20,7 @@
 
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
+import type { DecisionRowInput } from './JudgmentProvenanceLog.js';
 import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
 import {
   detectGateSignals,
@@ -623,13 +624,62 @@ export interface ToneGateConfig {
   toneTierDryRun?: boolean;
 }
 
+/**
+ * ACT-562 stable decision-point identity for the outbound gate. The `<component>`
+ * prefix (MessagingToneGate) matches the callsite's attribution.component (§3.2).
+ */
+export const PROVENANCE_POINT_OUTBOUND_GATE = 'MessagingToneGate:outbound-gate:v1';
+
 export class MessagingToneGate {
   private provider: IntelligenceProvider;
   private configOrGetter: ToneGateConfig | (() => ToneGateConfig);
+  /**
+   * ACT-562 §3.1/§3.1b/§3.6 — provenance sink for the outbound-gate decision
+   * point. Injected (dark-gated at construction). The logged context is a
+   * DERIVED form (an 80-char textHead + the structured signals/flags the gate
+   * acted on), NEVER the full outbound message body (§3.1b). TOTAL by contract:
+   * the sink swallows its own failures so a provenance write can NEVER hold or
+   * drop a message (§3.4). Absent ⇒ no provenance (the fleet-dark path).
+   */
+  private recordProvenance?: (row: DecisionRowInput) => void;
 
-  constructor(provider: IntelligenceProvider, config: ToneGateConfig | (() => ToneGateConfig) = {}) {
+  constructor(
+    provider: IntelligenceProvider,
+    config: ToneGateConfig | (() => ToneGateConfig) = {},
+    deps?: { recordProvenance?: (row: DecisionRowInput) => void },
+  ) {
     this.provider = provider;
     this.configOrGetter = config;
+    this.recordProvenance = deps?.recordProvenance;
+  }
+
+  /**
+   * ACT-562 — emit a provenance row for a formed outbound-gate verdict. TOTAL:
+   * a sink failure can never propagate into (and thus hold/drop) the message.
+   */
+  private emitProvenance(row: DecisionRowInput): void {
+    if (!this.recordProvenance) return;
+    try {
+      this.recordProvenance(row);
+    } catch {
+      /* @silent-fallback-ok: provenance is observability — a sink failure must never hold/drop the message (§3.4). */
+    }
+  }
+
+  /**
+   * §3.1b — the DERIVED, decision-relevant context the gate logs (NOT the full
+   * message body): an 80-char textHead fingerprint + the structured signals the
+   * gate acted on. It is still attacker-influenceable free text, so it inherits
+   * §3.1a enveloping at the read surface exactly like any other free-text field.
+   */
+  private derivedContext(text: string, context: ToneReviewContext): Record<string, unknown> {
+    return {
+      textHead: (text || '').slice(0, 80),
+      channel: context.channel,
+      messageKind: context.messageKind ?? null,
+      recipientClass: context.recipientClass ?? null,
+      signals: context.signals ?? null,
+    };
   }
 
   /** Resolve config live each review so the kill-switch is honored without a restart. */
@@ -661,6 +711,10 @@ export class MessagingToneGate {
     // downgraded to background. Proactive operator sends (no synchronousReply) and
     // external recipients stay background.
     const interactiveLane = context.recipientClass === 'operator' && context.synchronousReply === true;
+    // ACT-562 §3.1 — capture model/tokens from the call's EXISTING attribution
+    // path so the provenance row and its /metrics/features cost row agree.
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
+    let modelInfo: { model: string; framework?: string } | undefined;
     const opts = {
       model: 'fast' as const,
       maxTokens: 200,
@@ -671,6 +725,8 @@ export class MessagingToneGate {
         gating: true,
         ...(interactiveLane ? { lane: 'interactive' as const } : {}),
       }, // attribution for /metrics/features + F5 lane
+      onUsage: (u: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => { usage = u; },
+      onModel: (m: { model: string; framework?: string }) => { modelInfo = m; },
     };
     const cfg = this.getConfig();
     // Availability-sensitive disposition (spec §Design 6 + tone-gate-graceful-
@@ -708,7 +764,28 @@ export class MessagingToneGate {
       if (interp.kind === 'retry') {
         interp = this.interpret(this.parseResponse(await this.provider.evaluate(prompt, opts)), start);
       }
-      if (interp.kind === 'ok') return interp.result;
+      if (interp.kind === 'ok') {
+        // ACT-562 — record the REAL LLM outbound-gate verdict (the availability
+        // fallback paths below are deterministic degradations, not this LLM
+        // decision point, so they are intentionally not logged here). §3.1b: the
+        // context is the DERIVED form, never the full message body.
+        this.emitProvenance({
+          component: 'MessagingToneGate',
+          decisionPoint: PROVENANCE_POINT_OUTBOUND_GATE,
+          context: this.derivedContext(text, context),
+          optionsPresented: ['pass (send)', 'block (hold)'],
+          decision: interp.result.pass ? 'pass' : `block:${interp.result.rule || 'unspecified'}`,
+          reason: interp.result.pass ? 'no leak / anti-pattern detected' : (interp.result.issue || 'blocked'),
+          floor: 'outbound tone/leak gate (B1-B18; fail-closed on no-verdict for external)',
+          fallbackRung: 'llm-judge',
+          model: modelInfo?.model,
+          door: modelInfo?.framework,
+          tokensIn: usage?.inputTokens,
+          tokensOut: usage?.outputTokens,
+          latencyMs: interp.result.latencyMs,
+        });
+        return interp.result;
+      }
       // Still a discipline failure after one re-prompt → no usable verdict
       // (availability). Tier for the operator channel; else FAIL-CLOSED (hold).
       if (tierDeliver) return this.operatorChannelDeliver(start);

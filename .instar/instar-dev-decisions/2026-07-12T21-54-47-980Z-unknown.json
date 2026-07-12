@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-12T21:54:47.980Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1184,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/commands/server.ts#provenance-highstakes-drop",
+      "howCaught": "The only self-triggered emit added is the high-stakes buffer-drop operator notice, emitted with a FIXED attention id 'agent:provenance-highstakes-drop'. createAttentionItem coalesces by id, so repeated drops under sustained disk-stall pressure converge to exactly ONE operator item (steady-state bound = 1 per condition). The emit is a passive reaction inside recordDecision's bounded flush path (two-ring drop-oldest cap 5000/20000) with no self-scheduled tick/timer loop of its own; provenance recording itself is a per-decision-event append, not a self-triggered controller."
+    }
+  },
+  "verdict": "blocked"
+}

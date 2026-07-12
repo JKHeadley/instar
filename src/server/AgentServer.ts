@@ -27,6 +27,7 @@ import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdl
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { createConversationBindAuth } from '../core/conversationBindToken.js';
+import { JudgmentProvenanceLog } from '../core/JudgmentProvenanceLog.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
 import { UserManager } from '../users/UserManager.js';
@@ -559,6 +560,8 @@ export class AgentServer {
     ownerDarkLadder?: import('../core/OwnerDarkLadder.js').OwnerDarkLadder;
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
+    /** ACT-562 §3.3 — the Real-Check → completion-decision annotateOutcome binder. */
+    realCheckBinder?: import('../core/RealCheckOutcomeBinder.js').RealCheckOutcomeBinder;
     /** U4.4 — the lease hand-back reconciler + the operator-flip latch levers. */
     leaseHandback?: {
       status(): import('../core/LeaseHandbackReconciler.js').LeaseHandbackStatus;
@@ -2927,7 +2930,22 @@ export class AgentServer {
       duplicateReconciler: options.duplicateReconciler ?? null,
       ownerDarkLadder: options.ownerDarkLadder ?? null,
       spawnAdmission: options.spawnAdmission ?? null,
-      judgmentProvenance: options.judgmentProvenance ?? null,
+      // ACT-562 §3.6 HOIST — construction is UNCONDITIONAL (the log's ctor has
+      // ZERO pool/mesh deps: {dir, retentionDays, sampling}). The boot-wired
+      // instance (server.ts) takes precedence; this fallback keeps the log
+      // non-null on EVERY init path (single-machine, pool-dark, and the E2E
+      // production path that constructs AgentServer directly), so
+      // GET /judgment-provenance answers 200-empty (never 503-not-constructed)
+      // and the fleet-wide in-scope callsites can write when the dark gate is on.
+      // Same read-surface-alive precedent as conversationRegistry above.
+      judgmentProvenance:
+        options.judgmentProvenance ??
+        new JudgmentProvenanceLog({
+          dir: path.join(options.config.stateDir, 'state', 'judgment-provenance'),
+          retentionDays: options.config.provenance?.retentionDays,
+          sampling: options.config.provenance?.deterministicSampling,
+        }),
+      realCheckBinder: options.realCheckBinder ?? null,
       leaseHandback: options.leaseHandback ?? null,
       secretSync: options.secretSync ?? null,
       ropeHealthMonitor: options.ropeHealthMonitor ?? null,
