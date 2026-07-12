@@ -268,7 +268,74 @@ minors (callerRef location; granularity; P19 regrade test; anchor cite) → **fo
   the honest mitigant this build).
 3 content-bearing truncation → **folded** (§5.2 feature-extraction preference for high-stakes points).
 
-<!-- Round 3 internal findings + fold appended below -->
+### Round 3 — Standards-Conformance Gate (ZERO flags; 3 → 1 → 0 across rounds)
+
+### Round 3 — external: codex-cli:gpt-5.5 (verdict MINOR ISSUES — "no serious architectural blocker")
+5 refinements, all **folded** into v4: kind-scoped verdict_id queries pinned by lint (CX3-1);
+evidence-strength classes per rule so proof-like vs heuristic grades are never conflated (CX3-2);
+runtime coverage keyed on decision-point id with the component-key bridge stated honestly (CX3-3);
+bounded per-ledgerKey history — latest slot + in-window kill retention (CX3-4); graduation checklist
+with expected counters per phase (CX3-5).
+
+### Round 3 — external: gemini (DEGRADED — timeout; recorded per-round, aggregate stays clean RAN)
+
+### Round 3 — internal: SCALABILITY (PASS, 0 material — all r2 fixes verified landed with accurate anchors)
+
+### Round 3 — internal: SECURITY (3 MATERIAL; all r2 folds verified genuine)
+SEC3-1 hog store dashboard-servable/editable by default → **folded** (NEVER_SERVED + gitignore/backup
+parity + serve-discipline tests). SEC3-2 promptId escapes the §5.2 clamp → **folded** (clamp extended).
+SEC3-3 mint marker lands on the caller's options object — reused-object replay → **folded**
+(router-internal clone + single-use marker consumption + reuse test).
+
+### Round 3 — internal: INTEGRATION (4 MATERIAL; all r2 folds + ~30 anchors verified genuine)
+INT3-F1 pending-ACT liveness cannot run in repo CI → **folded** (honest split: CI = static format/
+pinned checks; liveness = agent-side census-debt on the route, pending-ref-dead flags). INT3-F2 hog
+store root placement would ride a git-synced path → **folded** (moved under .instar/state/, combined
+with SEC3-1). INT3-F3 reconcile/prune wiring point unnamed → **folded** (6h timer + construction-
+condition quality arm). INT3-F4 ruleId→rung registry home unnamed → **folded** (co-located with
+PROVENANCE_COVERAGE in src/data).
+
+### Round 3 — internal: LESSONS-AWARE (2 MATERIAL; all r2 folds + parent-standard obligations verified)
+LES3-M1 enacted enum incomplete vs the sentinel's real disposition space → **folded** (10-value enum;
+only killed/sigterm-exited enter kill-grading; watch-only soak honesty stated). LES3-M2 pending-ACT
+liveness CI-resolvability asserted-not-designed (= INT3-F1, independent convergence) → **folded**.
+Minors (prune-timer condition; cite fixes; at-rest clause; identity+features honesty sentence) →
+**folded**.
+
+### Round 3 — internal: ADVERSARIAL (5 MATERIAL; all 8 r2 folds genuine; stall + revival recorded)
+ADV3-1 ownerTuple unpopulatable in the dominant orphan case / impostor tuple → **folded** (targetTuple
+= the killed process's OWN pid+start-time; spoof-proof kill-time ordering re-test). ADV3-2 latest-slot
+evicts the decision it should grade → **folded** (grade-on-supersede + in-window kill slot retention).
+ADV3-3 pending-ACT liveness (3rd independent convergence) → **folded**. ADV3-4 leave-recurrence
+gradeable on fabricated same-hash evidence → **folded** (recurrence keyed on the SAME process
+signature; different process → unknown). ADV3-5 sustained-right sensor overclaim → **folded**
+(negative-evidence bound stated; candidate-visibility named).
+
+### Round 3 — internal: DECISION-COMPLETENESS (2 MATERIAL + minors; stall + fresh re-run BOTH recorded)
+DC3-M1 grade-on-supersede within-tick ordering (= ADV3-2) → **folded**. DC3-M2 window-close grading vs
+prune race → **folded** (retention = evidenceWindow + gradingSlack ≥ 2× job cadence; hourly cron
+named). Minors (4th grading-cursor table + backoff columns; machineId8 source; 6h reconcile host;
+dryRun suppresses ALL durable writes; registry home; window-change mints -v2; cite fixes) → **folded**.
+
+### Round 4 — confirmation round on v4 (verdict: NOT clean — 2 MATERIAL + 3 codex one-sentence folds)
+Conformance gate: 1 flag = the KNOWN stale-checker traceability artifact (deployed dist predates the
+registry merge; empirically resolved-stale in r1). codex r4: MINOR ISSUES — CX4-1 dedicated-column
+re-argument → rationale sentence folded; CX4-2 strength-first default view → folded; CX4-3 adapter
+seam = the rule registry (note); CX4-4 census-bureaucracy dissent → recorded; CX4-5 dryRun-staging
+honesty clause → folded. gemini r4: DEGRADED (timeout, 2nd consecutive). SCALABILITY: PASS.
+DECISION-COMPLETENESS: PASS — "CONVERGED at round 4", 7/7 r3 folds line-verified, 7 candidates
+contested-then-cleared, 0 cheap tags remaining. ADVERSARIAL: 1 MATERIAL — ADV4-1 ownerTuple schema
+said "recorded as absent" in the parent-absent case while parseParentPid provably succeeds for every
+permitted kill → **folded into v5** (member-wise recording: parentPid ALWAYS on kills,
+parentStartTime where-derivable; both bad implementer exits closed). SECURITY: 1 MATERIAL — SEC4-1
+NEVER_SERVED_PREFIXES is projectDir-rooted so a 'state/...' literal is a production NO-OP, and the
+EXISTING 'state/judgment-provenance/' entry is itself misrooted (a LIVE pre-existing defect: JP
+contextFull day-files reachable by the dashboard file editor TODAY; tracked ACT-1200) → **folded into
+v5** (projectDir-relative literal pinned; JP entry dual-rooted/fixed in the same PR; tests pinned to
+the PRODUCTION layout). INTEGRATION + LESSONS-AWARE: NO VERDICT — both reviewer sessions killed by a
+host session respawn before filing; NOT counted as passes, both re-run fresh in round 5.
+
+<!-- Round 5 confirmation results appended below -->
 
 
 ## Convergence verdict

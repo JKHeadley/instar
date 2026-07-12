@@ -27,22 +27,30 @@ Three connected pieces:
 2. **Outcomes, graded by evidence — with integrity rules.** When reality reveals whether a decision
    was right (the killed process's owner really was dead; the "done" run really passed its
    verification), that evidence is attached to the decision record. Grading in THIS build is strictly
-   rule-based: each grade comes from a precise, named evidence rule (for example, a killed process
-   "coming back" only counts against the kill if it's the same command AND the same owner AND that
-   owner was actually alive at kill time — so you reopening your editor can never make a correct kill
-   look wrong). Every grade records who graded it and by which rule; independent evidence always
-   outranks a component's self-report; re-running the grader updates grades instead of piling up
-   duplicates. Using an AI to interpret ambiguous evidence is designed but deliberately switched OFF
-   until that interpreter has its own benchmark and injection defenses — a quality meter graded by an
-   ungraded AI would be the original problem all over again.
+   rule-based: each grade comes from a precise, named evidence rule. The review made these rules
+   spoof-proof: a killed process "coming back" only counts against the kill if the ordering test that
+   justified the kill re-runs FALSE at evidence time, using recorded process birth-times — which
+   cannot be forged backwards — so neither you reopening your editor nor a malicious lookalike
+   process can frame a correct kill as a mistake. Review also discovered the record-keeper this
+   grading needs didn't exist (the kill ledger lived in memory for one hour; the evidence window is
+   six), so the design now includes a small durable decision store — kept where the dashboard's file
+   editor cannot touch it, because grading ground truth must not be hand-editable. Every grade
+   records who graded it, by which rule, and how STRONG that rule's evidence is (hard proof vs
+   heuristic — the two are never blended in a summary); independent evidence always outranks a
+   component's self-report; re-running the grader updates grades instead of piling up duplicates.
+   Using an AI to interpret ambiguous evidence is designed but deliberately switched OFF until that
+   interpreter has its own benchmark and injection defenses — a quality meter graded by an ungraded
+   AI would be the original problem all over again.
 3. **A read surface for the operator.** One API view answers: for each decision point, over a window —
    how many decisions, how many outcomes known, how many right vs wrong vs honestly unknown, trending
    which way. That's exactly the data needed to decide "this gate needs a bigger model" or "this
-   prompt needs work". The trend is kept as small, content-free daily counts that live ~90 days —
-   long enough to actually answer "over time" — while the detailed records keep their short 14-day
-   life. The view reads from small indexed database tables written at decision time; it never
-   re-parses the raw journal files (an early draft did, and review caught that it would have
-   recreated the exact server freeze we debugged the week before).
+   prompt needs work". The headline numbers are grouped by evidence strength FIRST — a rate backed by
+   hard proof is never blended with one backed by heuristics into a single misleading percentage.
+   The trend is kept as small, content-free daily counts that live ~90 days — long enough to actually
+   answer "over time" — while the detailed records keep their short 14-day life. The view reads from
+   small indexed database tables written at decision time; it never re-parses the raw journal files
+   (an early draft did, and review caught that it would have recreated the exact server freeze we
+   debugged the week before).
 
 Plus a guard rail: a CI check that refuses to let a NEW AI decision point ship without declaring its
 provenance posture — wired (and it's verified, not just claimed), pending with a tracked follow-up,
@@ -59,7 +67,17 @@ machine; only scrubbed summaries are readable remotely, and full content is neve
 all). The review added teeth here: message bodies, transcripts, and process command lines never enter
 the records at all — only fingerprints and bounded code-derived facts — so the served summaries can't
 leak what the judged content contained. Everything ships dark/off by default and turns on gradually,
-starting in dry-run on the development machine.
+starting in dry-run on the development machine. One honesty note about the trial period: the
+process-kill sentinel itself runs in watch-only mode until it's deliberately armed, so during the
+soak its kill decisions record as "would have killed" — real right-vs-wrong kill grades only start
+accumulating after arming. The soak still proves out the recording, the stores, and the
+leave-it-alone grading in the meantime.
+
+One bonus from the review itself: stress-testing this design surfaced a real, live bug in code
+shipped earlier this week — the decision-provenance record that was promised to be unreachable from
+the dashboard's file browser is, due to a path-matching mistake, currently both viewable and
+editable there. It's machine-local and behind your dashboard login, but it's a broken promise and an
+integrity hole for grading ground truth. It's durably tracked and the fix ships with this build.
 
 ## The main tradeoffs
 
