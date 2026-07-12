@@ -1,6 +1,8 @@
 ---
 spec: duplicate-build-guard
-status: draft
+status: approved
+approved: true
+approved-by: justin (topic 11960, 2026-07-12 16:56 PDT — "Approved")
 tracks: ACT-592
 parent-principle: "Structure beats Willpower"
 review-convergence: "2026-07-12T23:32:03.465Z"
