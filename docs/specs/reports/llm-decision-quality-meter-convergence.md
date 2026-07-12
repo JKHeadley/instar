@@ -1,9 +1,11 @@
 # Convergence Report — LLM-Decision Quality Meter — uniform provenance + outcome grading
 
-<!-- DRAFT IN PROGRESS — rounds appended as they complete; banner + verdict written at convergence.
-     Working ledger: REVIEW-STATE.local.md (worktree-local). -->
+## Cross-model review: codex-cli:gpt-5.5
 
-## Cross-model review: (pending — written at convergence from aggregateRoundOutcomes)
+RAN — a real GPT-tier external pass ran through the agent's codex CLI in EVERY round (7/7), and a
+real Gemini-tier pass ran in rounds 1, 2, and 7 (the confirmation round itself had BOTH external
+families). Gemini's r3–r6 timeouts are recorded per-round below — never hidden, never counted as
+passes.
 
 Per-round record so far:
 - Round 1: codex-cli:gpt-5.5 RAN ok (verdict: SERIOUS ISSUES, 6 findings); gemini-cli:gemini-3.1-pro-preview
@@ -24,7 +26,23 @@ Per-round record so far:
 
 ## ELI10 Overview
 
-*(written at convergence — see also the ELI16 companion `docs/specs/llm-decision-quality-meter.eli16.md`)*
+The agent makes hundreds of automated judgment calls a day using AI models — "kill this runaway
+process?", "is this autonomous run really done?", "block this message?". Today there is an excellent
+COST meter for those calls (which model, how many tokens, how fast) but no QUALITY meter: nothing
+records what a judge looked at, and nothing ever finds out whether it was right. This spec builds the
+quality meter: every AI decision gets a correlation id automatically; important decision points
+opt in to recording what they saw and chose; reality-based evidence rules grade decisions
+right/wrong/honestly-unknown after the fact (a killed process's owner really was dead; the "done" run
+really passed its check); and one read surface answers, per decision point, "how often is this judge
+right — does it need a bigger model or a better prompt?". Everything is observe-only, ships dark, and
+keeps full detail on the machine that made the decision.
+
+The main tradeoffs: more recording (bounded, clamped, volume-capped) in exchange for auditability;
+only the two highest-stakes decision points wire up first (the rest become a visible, re-surfaced
+backlog); and grades are honest — "unknown" and "too little evidence" are first-class answers, never
+dressed up as rates.
+
+(See also the ELI16 companion `docs/specs/llm-decision-quality-meter.eli16.md`.)
 
 ## Original vs Converged
 
@@ -70,7 +88,16 @@ as rates, and expired/unknown/not-written are three distinct reported states, ne
 | 3 | Standards-Conformance Gate: ran (0 flags — 3→1→0 across rounds). Externals: codex MINOR ("no serious architectural blocker", 5 refinements), gemini degraded-timeout. Internals: security(3M), integration(4M), lessons-aware(2M), adversarial(5M), decision-completeness(2M), scalability(PASS) | 16 material — ALL narrow pins, zero structural rework; every r2 fold verified genuine by every reviewer | v4 (commit c81ad2d1e): hog store → state/ subdir + NEVER_SERVED + explicit at-rest posture; targetTuple spoof-proof kill-time ordering re-test; leave-recurrence keyed on same-process signature; sustained-right sensor bound; enacted enum → real 10-value disposition space; grade-on-supersede + in-window kill slot retention; retention += gradingSlack; pending-ACT honest CI/runtime split (3 reviewers converged); evidence-strength classes per rule; mint marker on router-internal clone + single-use consumption; 4th table (grading cursor) + backoff; 6h-timer reconcile + construction-condition quality arm; dryRun suppresses all durable writes; graduation counter checklist; kind-scope query lint |
 | 4 (confirmation) | Conformance gate (1 flag — known stale-checker artifact). codex MINOR (3 one-sentence folds + dissents). gemini degraded-timeout. scalability(PASS), decision-completeness(PASS — "CONVERGED at round 4"), adversarial(1M), security(1M). integration + lessons-aware: NO VERDICT (host session respawn killed both mid-review — recorded, NOT counted as passes, re-run r5) | 2 material (ADV4-1 member-wise ownerTuple; SEC4-1 misrooted NEVER_SERVED — also a LIVE pre-existing defect, tracked ACT-1200) | v5 (commit 324ebe802): member-wise ownerTuple recording (both bad implementer exits closed); projectDir-relative NEVER_SERVED literal pinned + existing JP entry dual-rooted/fixed same-PR + tests pinned to PRODUCTION layout; dedicated-column rejection rationale; strength-first default aggregate view; dryRun-staging honesty clause |
 | 5 (confirmation) | Conformance gate (2 flags — both known artifacts). codex MINOR (1 fold: insufficient-evidence marker; 4 dissents recorded). gemini degraded-timeout. scalability(PASS 0/0), decision-completeness(PASS — re-affirmed), lessons-aware(PASS 0/0 CLEAN), security(PASS + 2 minors), integration(PASS + 3 minors; independently REPLICATED the ACT-1200 live defect), adversarial(1M + 4 minors) | 1 material (ADV5-1: census discovery component-keyed vs per-point declarations — same-key reuse silently skips every guard layer) | v6 (commit f2c104096): census component-key uniqueness as census-test ASSERTION + named review-caught residual; rung-registry owning-component + annotate-chokepoint owner rejection; parentPid guarantee scoped to ENACTED kills; exempt baseline pinned shrink-only; grade-pass fairness honesty + per-point sub-budget trigger; insufficient-evidence marker below minSampleForRates=20; onCorrelationId try/catch containment; hog-store ACTIVE backup-exclusion entry; CapabilityIndex same-PR update; anchors re-grounded |
-| 6 (confirmation) | *(in flight — conformance gate: 2 known artifacts, no new; codex MINOR — re-arguments + 2 editorial folds queued; gemini degraded-timeout; scalability PASS 0/0 with independent v5→v6 diff verification)* | *(pending)* | *(pending)* |
+| 6 (confirmation) | Conformance gate (2 known artifacts, no new). codex MINOR (2 editorial folds + re-argument dissents). gemini degraded-timeout. scalability(PASS 0/0, independent v5→v6 diff verification). security(1M + 1 pre-existing disclosure), decision-completeness(1M), lessons-aware(1M + 1 minor), integration(1M), adversarial(1M + 3 minors, filed after nudge — slow not dead) | 1 shared material, independently converged by FIVE reviewers with line-level code grounding: the r5 backup-exclusion fold pinned the flag-gated REMEDIATION_EXCLUDED_PATH_PREFIXES list — a production no-op on default agents (the SEC4-1 no-op-guard class reproduced INSIDE a fold; INT traced the mis-pin to its own r5 finding text). Plus SEC's deeper catch: ALL BackupManager deny checks are entry-level and the dir-copy branch has no per-file re-check (pre-existing sibling exposure → ACT-1201) | v7 (commit 557d25b33): backup fix — BOTH unconditional mechanisms (BLOCKED_PATH_PREFIXES stateDir-relative literal + NEVER_BACKUP_PATH_SEGMENTS filename segment), per-file re-check pinned as INVARIANT vs the non-recursive-copy accident, threat-shaped test (state/ glob + remediation OFF → snapshot omits store); structural >2-enrolled-points sub-budget census assertion; multi-call composition = own unique key per point, linkage only via composition field; a-fortiori parentPid wording; annotation-rejection counters SERVED by class; append-only-alternative decision record; per-rule unknown-rate as graduation product signal |
+| 7 (confirmation — CONVERGED) | Conformance gate: ZERO flags. codex MINOR (glossary + 2 build-shape pins + re-arguments). gemini RAN ok — first since r2 — MINOR (glossary + 2 architecture dissents, decision-recorded). ALL SIX internals PASS at material level: scalability(0/0, 5th consecutive, diff-completeness verified), security(0/0 + 2 pre-existing-adjacent minors), decision-completeness(0/0 + 3 cosmetic minors, "CONVERGED re-affirmed"), integration(0/0 + 3 minors, live threat replication), lessons-aware(0/0 + 2 minors, full P/L/B sweep), adversarial(0/0 + 2 minors, tmp-sibling & traversal & restore attacks non-landed) | ZERO material — the clean confirmation round (criteria: no material new issues + zero open user-decisions, both satisfied) | Editorial-only close-out folds (v8): glossary; canonical winning-grade derivation; verdict_id deprecation trigger; informational callsite inventory; OTel + external-audit-library decision records; per-file re-check enumerates ALL THREE deny layers incl. BLOCKED_FILES (config.json under a './' glob — SEC+ADV independent convergence); uniform census-key uniqueness (supersedes the r6 carve-out); pending-inbound joins the ACT-1201 sibling enumeration + restore-path residual + doubly-inert remediation-list disclosure into ACT-1201 scope; Testing echoes (sub-budget assertion, sibling omission asserts, config.json case); ELI16 backup-arc paragraph |
+
+**Convergence achieved at round 7** under the two additive criteria: the confirmation round produced
+zero material findings across all six internal perspectives + both external model families + the
+zero-flag conformance gate, and zero unresolved user-decisions remain (every open question resolved
+into the 13 Frontloaded Decisions). Rounds 4, 5, and 6 were each ATTEMPTED confirmation rounds that
+found real material (2, 1, and 1 findings respectively) — each was folded and re-confirmed rather
+than argued away, including round 6's five-reviewer catch of an error in the review's OWN round-5
+fold. The convergence is earned, not asserted.
 
 ## Full Findings Catalog
 
@@ -390,9 +417,55 @@ ENACTED kills; exempt baseline pinned shrink-only; grade-pass fairness honesty +
 trigger at third enrollment). Non-landed attacks recorded (commandHash-collision fabrication,
 store-flood, impostor parentStartTime, stale-marker replay, legacy row-id path, run-state tampering).
 
-<!-- Round 6 confirmation results appended below -->
+### Round 6 — confirmation round on v6 (verdict: NOT clean — 1 shared MATERIAL, five-way convergence)
+Conformance gate: the 2 known artifacts, nothing new. codex: MINOR (2 editorial folds + dissents).
+gemini: DEGRADED (timeout, 4th consecutive). SCALABILITY: PASS 0/0 (independent v5→v6 diff
+verification — exactly the ten claimed deltas). The material: FIVE reviewers (SEC, DC, LES, INT, ADV
+— ADV independently, before seeing the others' verdicts) each ground-truthed that the round-5
+backup-exclusion fold pinned the WRONG BackupManager constant — the remediation-flag-gated list
+(inert on default agents) instead of the unconditional NEVER_BACKUP_PATH_SEGMENTS that actually
+excludes the JP dir — i.e. the SEC4-1 "guard that is a production no-op" class reproduced INSIDE a
+fold, caught by the confirmation machinery checking the folds themselves. Integration honestly traced
+the mis-pin's origin to its own round-5 finding text. Security's deeper grounding also exposed the
+pre-existing directory-copy per-file bypass (ACT-1201) affecting existing protected state files.
+Adversarial added the invariant extension (the JP dir's current safety is a non-recursive-copy
+ACCIDENT) + 3 minors (multi-call key contradiction; permitted≠enacted wording; served rejection
+counters) — all folded into v7 alongside the converged backup fix.
+
+### Round 7 — confirmation round on v7 (verdict: CLEAN — CONVERGED)
+Conformance gate: ZERO flags. Externals: BOTH families ran — codex MINOR (glossary, canonical
+winning-grade pin, deprecation trigger, re-arguments), gemini MINOR (glossary, two
+architecture-alternative dissents, decision-recorded) — the confirmation round itself carried full
+dual-family external coverage. Internals, all six PASS at material level with every round-6 fold
+verified genuine against code: SCALABILITY 0/0 (5th consecutive; per-file re-check costed <1% of the
+copy loop it rides); SECURITY 0/0 (full walk-through of the corrected backup fix; per-file re-check
+verified LOAD-BEARING, not decorative; 2 minors on pre-existing adjacent defects — the BLOCKED_FILES
+config.json case + the doubly-inert remediation list); DECISION-COMPLETENESS 0/0 (converged
+re-affirmed; FD=13, open-user-decisions=0); INTEGRATION 0/0 (fold verified genuine AND buildable;
+live threat replication; restore-path + pending-inbound scope adds); LESSONS-AWARE 0/0 (full
+P1-P23/L1-L17/B1-B39 sweep clean; ELI16-currency minor); ADVERSARIAL 0/0 (all prior folds line-
+verified; non-landed attacks recorded: tmp-sibling smuggling, path-traversal spellings, restore-side
+reintroduction, assertion gaming). All round-7 minors were folded editorially into the converged
+text (v8) — none were material, none blocked convergence.
 
 
 ## Convergence verdict
 
-*(pending)*
+**CONVERGED at round 7.** Both additive criteria hold: (1) the round-7 confirmation produced ZERO
+material findings across six internal perspectives, two external model families, and the zero-flag
+constitutional gate — every prior round's fold verified genuine against the worktree code by multiple
+independent reviewers; (2) zero unresolved user-decisions remain (`## Open questions` empty; 13
+Frontloaded Decisions; 1 surviving cheap-to-change-after tag, contested and cleared).
+
+Honest characterization of the path: rounds 1–3 were design rounds (~40, 26, and 16 materials — each
+independently verified folded-genuine in the following round); rounds 4–6 were attempted confirmation
+rounds that each found real material (2 / 1 / 1) and were folded rather than argued away — including
+the round-6 five-reviewer catch of a defect in the review's OWN round-5 fold, and the round-5 catch
+of a LIVE pre-existing production defect (ACT-1200) plus round 6's second one (ACT-1201). Round 7 is
+the clean confirmation. Externals: codex-cli:gpt-5.5 ran all 7 rounds; gemini ran rounds 1, 2, and 7
+(timeouts r3–r6 recorded per-round). Internal reviewers ran on claude-fable-5 (D7 disclosure,
+per-round model recorded in the ledger).
+
+Two live pre-existing production defects were discovered and durably tracked as side effects of this
+review (ACT-1200: JP provenance log servable+editable via the dashboard file editor; ACT-1201:
+BackupManager directory-copy per-file exclusion bypass) — both fixed in this build's PR.

@@ -71,6 +71,31 @@ whether a bigger model or a prompt change is warranted. Today that judgment is i
   runtime), closed exemption taxonomy with liveness-checked pending refs, and census debt re-surfaced on
   the read surface (§5.6).
 
+## Glossary (for readers outside this codebase — codex/gemini r7)
+
+- **The router / the seam**: `IntelligenceRouter.evaluate()` — the single funnel every internal LLM
+  call flows through; "the seam" is the settlement point inside it where metrics (and now provenance)
+  are written.
+- **The breaker / the funnel wrapper**: `CircuitBreakingIntelligenceProvider` — wraps every provider;
+  trips per-framework on repeated failures. "Breaker floor" = the guarantees enforced there even for
+  router-bypassing callers.
+- **Ladder / rung**: an ordered fallback sequence. For grading: which CLASS of evidence produced a
+  grade (deterministic ground truth > recurrence > LLM interpreter (dormant) > self-report).
+- **Floor (hog context)**: the deterministic veto-only safety checks the external-hog sentinel runs
+  before any kill is permitted — the model can only ever SPARE, never widen.
+- **Census / ratchet**: the typed PROVENANCE_COVERAGE registry declaring every LLM decision point
+  (wired / pending:<ACT> / exempt:<reason>) + the CI test that fails when a point is undeclared.
+  "Census debt" = the pending/exempt backlog, re-surfaced on every read.
+- **Substrate**: the small SQLite tables (`decision_quality`, `decision_outcomes`,
+  `decision_quality_rollup`, `decision_grading_cursor`) the read surface serves from.
+- **Settlement**: the moment a router call exits (success OR any error arm) — the write-once point
+  for the decision row.
+- **JP log**: JudgmentProvenanceLog — the machine-local JSONL provenance store (14-day retention).
+- **Hog store**: the durable per-ledgerKey decision file the external-hog sentinel writes so kills
+  and spares can be graded after the fact.
+- **P19**: the codebase's bounded-loop discipline (max attempts + backoff + breaker + terminal
+  give-up) — nothing retries forever.
+
 ## Non-goals
 
 - No automatic model swaps or prompt changes from grades (the meter informs the operator; routing
@@ -133,6 +158,11 @@ Design — two distinct layers (they were conflated in the first draft; they are
    AgentServer construction beside the recorder singleton; when no pool machine id exists
    (single-machine install) the segment is omitted. The FD10 forward path reads the owning machine from
    it.
+   Alternative considered and rejected (gemini r7): OpenTelemetry-style distributed tracing for the
+   correlation ids — rejected because this is a single-process seam with zero OTel substrate in the
+   codebase, the ids exist to JOIN rows in the existing SQLite metrics/provenance stores (not to
+   propagate across services), and adopting a tracing framework would add a dependency without adding
+   a guarantee.
    **One decision row per `router.evaluate()` invocation, by design:** router-INTERNAL retries
    (deferrable backoff, the swap tail) are one decision; caller-level retries or re-invocations above
    the router are DISTINCT decisions, each settling honestly. A component whose one human-visible
@@ -164,7 +194,10 @@ Design — two distinct layers (they were conflated in the first draft; they are
    not hoped). A DEDICATED correlation column was considered and rejected deliberately (codex r4): the
    llm-kind population is write-only with zero readers today, the kind-scope lint enforces exactly the
    discipline a new column would buy, and schema churn on the ledger's largest table is not warranted
-   for a write-only value. A caller-supplied `classifyVerdict.verdictId` NO LONGER lands in the column — if
+   for a write-only value. If a future change legitimately needs to READ llm-kind `verdict_id` values
+   semantically (the lint makes any such reader visible at introduction), that is the named trigger to
+   revisit the dedicated `correlation_id` column — the rejection is load-conditional, not doctrine
+   (codex r7). A caller-supplied `classifyVerdict.verdictId` NO LONGER lands in the column — if
    supplied, the seam records it as `callerRef` INSIDE the provenance row's context (the scrubbed,
    clamped path — deliberately not a new top-level served field), and the types.ts:1112 doc is updated
    in the same PR.
@@ -299,9 +332,10 @@ the concrete predicates below implement this).
   ExternalHogArmStore.ts:89-101), backup-excluded BY ACTIVE UNCONDITIONAL ENTRY — the store joins
   BOTH always-on mechanisms in this same PR: `BLOCKED_PATH_PREFIXES` as the stateDir-relative literal
   `'state/external-hog-decisions.json'` (BackupManager.ts:30-52 — the exact
-  `'state/pr-hand-leases.json'` per-machine-state precedent, whose comment pins "Unconditional (NOT
-  the remediation-gated F-7 list); stateDir-relative prefixes, matching how includeFiles entries
-  resolve") AND `NEVER_BACKUP_PATH_SEGMENTS` as the filename segment `'external-hog-decisions.json'`
+  `'state/pr-hand-leases.json'` per-machine-state precedent at :43; the Set's block comment at :34-36
+  pins "Unconditional (NOT the remediation-gated F-7 list); stateDir-relative prefixes, matching how
+  includeFiles entries resolve" — DC/INT r7 cite precision, re-ground at build)
+  AND `NEVER_BACKUP_PATH_SEGMENTS` as the filename segment `'external-hog-decisions.json'`
   (:88-90 — the mechanism that ACTUALLY excludes the JP dir; four r6 reviewers independently caught
   the r5 fold's mis-pin of the remediation-gated `REMEDIATION_EXCLUDED_PATH_PREFIXES` list here —
   flag-gated inert on default agents, the SEC4-1 no-op-guard class reproduced in the backup layer).
@@ -311,12 +345,27 @@ the concrete predicates below implement this).
   deny list is consulted against the includeFiles ENTRY string only, and createSnapshot's
   directory-copy branch (:311-328) copies a directory entry's direct file children with no per-file
   re-check (SEC r6 — the JP dir survives only incidentally, as a subdirectory under non-recursive
-  copy) — so this PR ALSO re-applies the blocked/never-backup checks to `path.join(entry, file)`
-  inside that loop, closing the glob threat for real and fixing the same latent bypass for the
-  existing per-machine-state siblings (pr-hand-leases, self-action-governor — pre-existing exposure
-  tracked ACT-1201). The per-file re-check is the pinned INVARIANT (ADV r6): the JP dir's current
+  copy) — so this PR ALSO re-applies ALL THREE deny mechanisms to `path.join(entry, file)` inside
+  that loop — `BLOCKED_FILES` (the basename arm; SEC/ADV r7 independently: it is the ONLY per-file
+  protection for `config.json` — which holds the authToken/dashboardPin — under an
+  `includeFiles: ['./']` root glob, whose entry basename '.' passes every entry-level check),
+  `BLOCKED_PATH_PREFIXES`, and `NEVER_BACKUP_PATH_SEGMENTS` — closing the glob threat for real and
+  fixing the same latent bypass for the existing per-machine-state siblings (pr-hand-leases,
+  self-action-governor, and pending-inbound — `state/pending-inbound.<agentId>.sqlite`, in-flight
+  message custody whose cross-machine restore the store's own comment forbids; INT r7 — pre-existing
+  exposure tracked ACT-1201, whose scope also carries: the remediation-gated list being DOUBLY inert
+  — flag-gated AND misrooted, '.instar/'-rooted spelling vs stateDir-relative entry resolution, the
+  SEC4-1 root-divergence trap again (SEC r7; nothing in this build relies on it) — and the UNFILTERED
+  restore path (restoreSnapshot applies path-containment only: a PRE-fix snapshot created on an agent
+  that had an operator-added glob could re-import excluded state on restore; the build applies the
+  same deny checks at restore or names pre-fix snapshots as the residual; INT r7)). The per-file
+  re-check is the pinned INVARIANT (ADV r6): the JP dir's current
   safety under a `state/` glob is an ACCIDENT of the non-recursive copy, and a future recursive-copy
-  enhancement to BackupManager would silently re-expose both stores without it — and the path is
+  enhancement to BackupManager would silently re-expose both stores without it.
+  Alternative considered and rejected (gemini r7): a dedicated external audit/logging service for the
+  store's lifecycle — rejected per the repo's file-based, no-external-service design posture; the
+  custom-mechanism risk gemini names is real and is answered by the threat-shaped tests this review
+  added rather than by outsourcing the surface — and the path is
   added to `NEVER_SERVED_PREFIXES`
   as the PROJECTDIR-RELATIVE literal `'.instar/state/external-hog-decisions.json'` (SEC r4 — the
   prefix list matches projectDir-rooted paths while BackupManager prefixes are stateDir-relative; the
@@ -478,7 +527,11 @@ singleton reaches any instance):
   joinMiss/droppedByBudget counters. **Mutation semantics (grades are MUTABLE facts — unlike the
   spend rollup's immutable increments):** each outcome upsert reads the decision's PRIOR winning grade
   and decrements/increments the decision-day bucket accordingly (recompute-affected-bucket from
-  `decision_quality ⋈ decision_outcomes` is the reference implementation — bounded, self-healing);
+  `decision_quality ⋈ decision_outcomes` is the reference implementation — bounded, self-healing).
+  The winning grade is defined ONCE (codex r7): a single canonical derivation — one SQL view/function
+  computing winning-grade-per-correlation-id under §5.4's precedence + within-rung rules — that BOTH
+  the route's reads AND the rollup recompute consume; parallel reimplementations of precedence are a
+  correctness bug by construction, and the semantic tests pin the two consumers to the one derivation;
   a bounded boot reconcile mirrors the spend prior art (`reconcileSpendRollup`,
   src/monitoring/FeatureMetricsLedger.ts:372-375 — which is BOOT-ONLY; the PERIODIC arm of the quality
   reconcile explicitly rides the existing AgentServer boot+6h unref'd prune timer, window 30d mirroring
@@ -524,7 +577,9 @@ read as an actionable rate — codex r5), per-point
 volume/sampling class (so mixed-class ratios aren't misread), attribution columns (model/framework/
 prompt_id) on each row, census debt counts incl. `pending-ref-dead` flags (§5.6),
 `orphanOutcomes`/`joinMiss`/`droppedByBudget` counters, the ANNOTATION-REJECTION counters by class
-(enum-invalid / rung-mismatch / owner-mismatch / unknown-decisionPoint — ADV r6: rejections that are
+(enum-invalid / rung-mismatch / owner-mismatch / unknown-decisionPoint; DC r7 precision: an
+unregistered ruleId buckets under rung-mismatch, and unknown-decisionPoint is the §5.1.4
+settlement-write census-miss counter served in this same block — ADV r6: rejections that are
 counted-but-unserved would let a renamed grading component's self-report annotations be silently
 rejected wholesale, starving the enacted-disposition preconditions with the only trace in catch-logs;
 a zeroed grading rung must be visible where the operator reads), and the wired-but-silent + exempt-but-active
@@ -603,10 +658,17 @@ runtime and counts unknowns).
   ASSERTION, not prose** (ADV r5): each wired decision point's component key must be UNIQUE across
   census entries — so a second judgment added inside an already-declared component that reuses the
   sibling's key becomes lint-visible the moment the new point is declared or enrolls, instead of hiding
-  under the sibling's coverage. Scope precision (ADV r6): uniqueness binds WIRED keys plus
-  `deterministic-only`-exempt keys (a deterministic-only entry sharing a key with an llm-calling
-  sibling would false-flag exempt-but-active — cheap to include, so it is); multi-call compositions
-  get one unique suffixed key PER point with linkage only via the `composition` field (§5.1.1). Honest bound, stated: an UNENROLLED, UNDECLARED new point that reuses a
+  under the sibling's coverage. Scope: uniqueness binds EVERY census entry's component key regardless
+  of status (ADV r7, superseding the r6 wired+deterministic-only carve-out — uniform is cheaper to
+  state AND closes the two carve-out attacks: a declared PENDING point sharing a wired sibling's key
+  would absorb its census-pending activity under a key that already has quality rows during exactly
+  the window the census exists to make visible, and a `no-decision-content`-exempt point sharing a
+  quiet wired sibling's key would false-flag wired-but-silent); multi-call compositions
+  get one unique suffixed key PER point with linkage only via the `composition` field (§5.1.1).
+  The census test additionally emits an INFORMATIONAL (non-blocking) static count of router-evaluate/
+  funnel-wrapped callsites per component vs that component's declared decision points — a drift hint
+  for review, never a gate (codex r7; the declared-vs-discovered residual stays review-owned, this
+  gives review a number to look at). Honest bound, stated: an UNENROLLED, UNDECLARED new point that reuses a
   declared sibling's component key is caught at code review, not by the ratchet — the discovery chain
   is component-keyed (the bench precedent's granularity), and this is the named residual of that
   inheritance.
@@ -765,8 +827,11 @@ runtime and counts unknowns).
   went green on a layout production never produces — SEC r4) and assert file routes refuse to serve OR
   edit both; backup exclusion proven against the named threat, not by list membership — seed
   `includeFiles: ['state/']` with remediation OFF under the production layout and assert the snapshot
-  OMITS the hog store (r6: a membership-only unit test would have gone green on the mis-pinned
-  flag-gated list — the misrooted-NEVER_SERVED test lesson, applied to the backup arm).
+  OMITS the hog store AND the ACT-1201 siblings (pr-hand-leases, self-action-governor,
+  pending-inbound; ADV r7), and seed `includeFiles: ['./']` and assert the snapshot omits
+  `config.json` (the BLOCKED_FILES per-file basename arm; SEC/ADV r7) (r6: a membership-only unit
+  test would have gone green on the mis-pinned flag-gated list — the misrooted-NEVER_SERVED test
+  lesson, applied to the backup arm).
 - **Integration:** `GET /decision-quality` 200-with-data over a seeded ledger+substrate; 503-when-dark;
   Bearer required; `?scope=pool` dark-peer tolerance (`pool.failed`), peer-URL credential guard, field
   allowlist (a hostile peer row with extra fields — incl. `contextFull` — is stripped); grade-pass
@@ -781,8 +846,9 @@ runtime and counts unknowns).
   includes the quality arm.
 - **Ratchet fixtures:** PROVENANCE_COVERAGE declare/undeclared/exempt-taxonomy cases; pending-ACT
   STATIC checks (format, pinned shrink-only, identity-change review); EXEMPT baseline pinned
-  shrink-only (ADV r5); component-key UNIQUENESS across census entries — a second point declaring a
-  sibling's key fails the census test (ADV r5); typed-import verification
+  shrink-only (ADV r5); component-key UNIQUENESS across ALL census entries — a second point declaring
+  a sibling's key fails the census test (ADV r5; uniform scope ADV r7); the >2-enrolled-points-
+  requires-sub-budget assertion (LES r6; enumerated here per DC/LES r7); typed-import verification
   positive + negative (string-literal-only decision point fails); rung-registry enum pinning (+ the
   owning-component column); census-debt counts + pending-ref-dead + wired-but-silent +
   exempt-but-active flags on route (integration tier for the runtime liveness half).

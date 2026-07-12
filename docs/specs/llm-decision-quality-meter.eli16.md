@@ -75,11 +75,19 @@ soak its kill decisions record as "would have killed" — real right-vs-wrong ki
 accumulating after arming. The soak still proves out the recording, the stores, and the
 leave-it-alone grading in the meantime.
 
-One bonus from the review itself: stress-testing this design surfaced a real, live bug in code
-shipped earlier this week — the decision-provenance record that was promised to be unreachable from
-the dashboard's file browser is, due to a path-matching mistake, currently both viewable and
-editable there. It's machine-local and behind your dashboard login, but it's a broken promise and an
-integrity hole for grading ground truth. It's durably tracked and the fix ships with this build.
+One bonus from the review itself: stress-testing this design surfaced TWO real, live bugs in
+existing code. First, the decision-provenance record that was promised to be unreachable from the
+dashboard's file browser is, due to a path-matching mistake, currently both viewable and editable
+there. It's machine-local and behind your dashboard login, but it's a broken promise and an
+integrity hole for grading ground truth. Second — found while the review was checking its own fix —
+the backup system's exclusion lists are only consulted against the top-level entries an operator
+configures, not against the individual files inside a backed-up folder, so several files that are
+supposed to never leave their machine (including, under one configuration, the file holding the
+dashboard credentials) could ride along into a backup. Both bugs are durably tracked and both fixes
+ship with this build. The review even caught ME once: my first version of the backup fix named a
+protection list that's switched off on default installs — four reviewers independently caught it
+against the real code, which is exactly the kind of error this whole loop exists to catch, applied
+to its own author.
 
 ## The main tradeoffs
 
