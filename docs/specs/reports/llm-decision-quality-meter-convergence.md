@@ -11,6 +11,9 @@ Per-round record so far:
   `no-supported-framework` (config-disabled on this agent) — disclosure only, never a cross-model pass.
 - Round 2: codex-cli:gpt-5.5 RAN ok (verdict: MINOR ISSUES, 5 points + 1 context caveat);
   gemini-cli:gemini-3.1-pro-preview RAN ok (verdict: MINOR ISSUES, 3 points).
+- Round 3: codex-cli:gpt-5.5 RAN ok (verdict: MINOR ISSUES — "no serious architectural blocker", 5
+  refinements); gemini-cli DEGRADED (timeout) — recorded honestly; the spec-level flag stays clean via
+  the r1/r2 successes.
 
 ## ELI10 Overview
 
@@ -38,7 +41,8 @@ week before was caught in review before a line was written).
 |-----------|-----------------------|-------------------|--------------|
 | 1 | security(6M), scalability(4M), adversarial(8M), integration(8M), decision-completeness(6M), lessons-aware(8M), codex(SERIOUS,~5M), gemini(minor), conformance-gate(3 flags) | ~40 material (heavy overlap; ~12 distinct clusters) | Full rewrite (v2, commit fbc3c06ef): correlation spine redesigned (FD1/FD7/FD8), quality substrate (3 SQLite tables + 90d rollup), volume classes (FD4 amended), outcome write-integrity + evidence-rule predicates, content classes, JP construction unconditional (FD9), cross-machine honesty (FD10), grading deterministic-only (FD11), Migration-parity + Testing sections, census hardening, FD count 6→13, 3 tracked deferrals minted (ACT-1197/1198/1199) |
 | 1 | Standards-Conformance Gate: ran (3 flags — parent-standard traceability [resolved: checker staleness, standard verified at registry:522 + parser run extracting 74 articles], maturation-path posture [resolved: FD6 exact DEV_GATED_FEATURES language], testing-integrity [resolved: Testing section added]) | — | — |
-| 2 | Standards-Conformance Gate: ran (1 flag — Operator-Surface Quality, API-only; FD13 tracked deferral, judgment handed to reviewers). Externals: codex MINOR (5), gemini MINOR (3). Internals: *(in flight)* | *(pending)* | *(pending)* |
+| 2 | security(3M), scalability(4M), adversarial(8M), integration(3M), decision-completeness(3M), lessons-aware(5M), codex(MINOR,5), gemini(MINOR,3), conformance-gate(1 flag) — EVERY round-1 resolution independently verified GENUINE by all six internals | 26 material | v3 rewrite (408 ins/244 del): durable hog decision store (false-anchor carrier replaced), settlement = every evaluate() exit, per-attempt capture scoping, ruleId→rung registry + within-rung conservative order, rollup mutation semantics + read-derived expired, b-/d- mint prefixes + joinMiss split, kind:'llm' scoping, funnel-wrapper strip, charset clamps, per-table prune + attribution columns, pending-ACT liveness + pinned ACTs, typed census registration + envelope builders, exempt-but-active flag, recorder-singleton seam |
+| 3 | Standards-Conformance Gate: ran (0 flags — 3→1→0 across rounds). Externals: codex MINOR ("no serious architectural blocker", 5 refinements), gemini degraded-timeout. Internals: *(in flight)* | *(pending)* | *(pending)* |
 
 ## Full Findings Catalog
 
@@ -183,7 +187,89 @@ Feedback-memory disclosure: no feedback_*.md files exist on this agent; session-
    multi-machine fleets.
 3. Content-bearing truncation may drop the salient "why" — prefer code-derived feature extraction.
 
-<!-- Round 2 internal findings + fold, and subsequent rounds, appended below -->
+
+### Round 2 — internal: SECURITY (3 MATERIAL; all 8 r1 resolutions verified genuine)
+M1 breaker floor behavior on inbound id unspecified → **folded**: §5.1.2 unmarked-id discard + b- re-mint.
+M2 provenance strip router-only; breaker spreads options into adapters on bypass path → **folded**: §5.1.6
+  strip at BOTH seams.
+M3 optionsPresented/verdict_class caller-authored, served unscrubbed → **folded**: §5.2 static enum-like
+  labels, charset/length clamp, violation → 'unclassified' + counted.
+
+### Round 2 — internal: SCALABILITY (4 MATERIAL, 4 minor; all r1 resolutions genuine)
+M1 settled-attempt usage/model capture — naive last-write-wins mislabels (onUsage fires on rejects; late
+  callbacks from abandoned attempts) → **folded**: §5.1.5 per-attempt capture scoping.
+M2 rollup aggregates mutable facts with no maintenance/repair semantics → **folded**: §5.5 decision-day
+  bucket recompute + boot/periodic reconcile.
+M3 "async-buffered" false for the SQLite half → **folded**: Testing perf scope split (JSONL async;
+  decision_quality sync WAL ≤1/decision).
+M4 onCorrelationId vs dropped decisions → **folded**: decision_quality row written for EVERY enrolled
+  settlement; volume class valves the JSONL row only.
+minors (keyset cursor; wired-but-silent granularity; prune path; index names) → **folded**.
+
+### Round 2 — internal: ADVERSARIAL (8 MATERIAL, 3 non-material notes; architecture confirmed genuine)
+M1 mintedBy:'breaker' had no storage location → **folded**: b-/d- id prefix split, derivable from the id.
+M2 rung claims self-declared; within-rung conflicts unresolved → **folded**: ruleId→rung registry +
+  conservative within-rung order.
+M3 three evaluate() exits never enter the ladder → **folded**: settlement = every exit + degrade/no-cfg
+  unit cases.
+M4 hog respawn predicates ungradeable (owner identity not recorded; commandHash strips parentPid) →
+  **folded**: owner tuple (parentPid+startTime) recorded in decision context.
+M5 leave-recurrence attributes breaker/governor holds + legitimate spares to the classifier → **folded**:
+  enacted + floorPermitted preconditions; slot semantics stated.
+M6 rollup/read semantics under late/superseding/absent evidence → **folded** (with DC/SCAL — bucket,
+  decrement, expired read-derived, joinMiss split expired vs not-written).
+M7 wired-but-silent underspecified (N, granularity) → **folded**: wiredSilentMinCalls=20 + 1:1 component
+  key convention + honest low-traffic bound.
+M8 exemption claims never cross-checked → **folded**: exempt-but-active flag.
+notes (one-decision-per-invocation stated; pending-ACT honesty; rollup-horizon phrasing) → **folded**.
+
+### Round 2 — internal: INTEGRATION (3 MATERIAL; all 8 r1 resolutions verified genuine; FD13 judged
+adequate — Operator-Surface Quality binds at the tracked dashboard follow-up, one interim-surface
+sentence added)
+M1 hog carrier claimed durable but in-memory/kills-only/1h — → **folded**: §5.3 named new durable store
+  deliverable.
+M2 verdict_id single-writer falsified by event-kind rows → **folded**: FD8 scoped to kind:'llm'.
+M3 cannot-leak overclaim on bypass path → **folded**: funnel-wrapper strip (with SEC M2).
+minors (migration enumeration completeness; exclusions row voluntary-not-swept note; grade-pass shape)
+  → **folded**.
+
+### Round 2 — internal: DECISION-COMPLETENESS (3 MATERIAL, 5 minor; 5.5/6 r1 gaps verified closed)
+M1 hog carrier false code anchor (the decisive version of INT M1, with the 1h-retention and
+  leave-writes-nothing evidence) → **folded**: §5.3 store design incl. retention-derives-from-window.
+M2 rollup bucket attribution + expired lifecycle self-contradiction → **folded**: decision-UTC-day
+  bucket; expired dropped from rollup columns, read-derived; one terminal label.
+M3 onCorrelationId firing point → **folded**: fires at MINT, synchronously, incl. throw paths.
+minors (table ownership/singleton; wiredSilentMinCalls; UTC-day budget; grade-pass contract; immutable
+  ruleIds) → **folded**.
+
+### Round 2 — internal: LESSONS-AWARE (5 MATERIAL, 4 minor; r1 folds verified honest; conformance
+Operator-Surface flag judged NOT material — read surface has no authorize/decide/act flow)
+M1 hog carrier fiction (strongest statement of the shared finding) → **folded**: §5.3.
+M2 no prune path for the 3 new tables on a per-table-prune host → **folded**: named retention keys +
+  prune methods + timer wiring.
+M3 substrate drops the attribution dimensions of the operator question → **folded**: model/framework/
+  prompt_id columns on decision_quality at 90d.
+M4 pending:<ACT> format-only while WIRING_EXCLUSIONS-style rot looms → **folded**: liveness-checked ACT
+  refs + pinned/critical ACTs.
+M5 router→substrate injection seam unstated → **folded**: setDecisionQualityRecorder singleton.
+minors (callerRef location; granularity; P19 regrade test; anchor cite) → **folded**.
+
+### Round 2 — external: codex (disposition)
+1 decision boundary → **folded** (§5.1.1 one-row-per-invocation + census composition field).
+2 rollup late-arrival semantics → **folded** (§5.5 mutation rules).
+3 pipeline-vs-LLM-verdict grading → **folded** (§5.3 grades-attribute-to-verdict + rule preconditions).
+4 grep-wired weak → **folded** (typed census registration; grep demoted to backstop).
+5 envelope subjectivity → **folded** (per-class envelope builders).
+6 context caveat → disclosure only.
+
+### Round 2 — external: gemini (disposition)
+1 glossary → ELI16 companion updated (accessibility surface).
+2 ACT-1199 priority nudge → RECORDED AS ADVISORY DISSENT (operator call; orphanOutcomes visibility is
+  the honest mitigant this build).
+3 content-bearing truncation → **folded** (§5.2 feature-extraction preference for high-stakes points).
+
+<!-- Round 3 internal findings + fold appended below -->
+
 
 ## Convergence verdict
 
