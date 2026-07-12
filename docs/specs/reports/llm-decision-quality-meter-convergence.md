@@ -14,6 +14,13 @@ Per-round record so far:
 - Round 3: codex-cli:gpt-5.5 RAN ok (verdict: MINOR ISSUES — "no serious architectural blocker", 5
   refinements); gemini-cli DEGRADED (timeout) — recorded honestly; the spec-level flag stays clean via
   the r1/r2 successes.
+- Round 4: codex-cli:gpt-5.5 RAN ok (MINOR ISSUES — dispositions folded/recorded); gemini-cli
+  DEGRADED (timeout, 2nd consecutive).
+- Round 5: codex-cli:gpt-5.5 RAN ok (MINOR ISSUES — 1 fold, 4 dissents recorded); gemini-cli
+  DEGRADED (timeout, 3rd).
+- Round 6: codex-cli:gpt-5.5 RAN ok (MINOR ISSUES — 2 editorial folds, re-arguments recorded);
+  gemini-cli DEGRADED (timeout, 4th consecutive on this spec — the known deprioritized gemini service,
+  zombie-alive since June 18; every timeout recorded per-round, never hidden).
 
 ## ELI10 Overview
 
@@ -35,6 +42,24 @@ and the report reads from small indexed database tables written at decision time
 never scanned by the web route (the exact event-loop-freeze shape that wedged this laptop's server the
 week before was caught in review before a line was written).
 
+The later rounds hardened what round 1 designed. Round 2's biggest catch: the record-keeper the
+kill-grading depends on didn't exist — the spec had assumed an in-memory ledger (one-hour retention,
+kills only) could carry evidence for a six-hour window; the durable hog decision store is now a named
+deliverable. Rounds 3–4 made the evidence rules spoof-proof: grading now keys on recorded process
+birth-times (which cannot be forged backwards), a lookalike process cannot frame a correct kill or a
+correct spare, and the parent-process identity is recorded member-wise so the rule stays evaluable in
+the dominant orphan-kill case. Round 4 also surfaced a LIVE pre-existing defect in shipped code — the
+never-serve rule protecting the decision-provenance log is a production no-op due to path-root
+divergence, leaving grading ground truth viewable AND editable in the dashboard file editor today
+(tracked ACT-1200; fixed in this build's PR, with the serve-discipline tests re-pinned to the layout
+production actually produces). Round 5's material catch closed a census blind spot: coverage
+discovery was component-keyed while declarations are per decision point, so a second judgment hiding
+under a declared sibling's identity would have skipped every guard layer — identity reuse is now a
+test failure, and the one genuinely undetectable case is named in the spec as a review-time residual
+rather than implied away. Throughout, the read surface accumulated honesty invariants: aggregates
+group by evidence strength first, tiny samples are marked "insufficient evidence" rather than served
+as rates, and expired/unknown/not-written are three distinct reported states, never conflated.
+
 ## Iteration Summary
 
 | Iteration | Reviewers who flagged | Material findings | Spec changes |
@@ -42,7 +67,10 @@ week before was caught in review before a line was written).
 | 1 | security(6M), scalability(4M), adversarial(8M), integration(8M), decision-completeness(6M), lessons-aware(8M), codex(SERIOUS,~5M), gemini(minor), conformance-gate(3 flags) | ~40 material (heavy overlap; ~12 distinct clusters) | Full rewrite (v2, commit fbc3c06ef): correlation spine redesigned (FD1/FD7/FD8), quality substrate (3 SQLite tables + 90d rollup), volume classes (FD4 amended), outcome write-integrity + evidence-rule predicates, content classes, JP construction unconditional (FD9), cross-machine honesty (FD10), grading deterministic-only (FD11), Migration-parity + Testing sections, census hardening, FD count 6→13, 3 tracked deferrals minted (ACT-1197/1198/1199) |
 | 1 | Standards-Conformance Gate: ran (3 flags — parent-standard traceability [resolved: checker staleness, standard verified at registry:522 + parser run extracting 74 articles], maturation-path posture [resolved: FD6 exact DEV_GATED_FEATURES language], testing-integrity [resolved: Testing section added]) | — | — |
 | 2 | security(3M), scalability(4M), adversarial(8M), integration(3M), decision-completeness(3M), lessons-aware(5M), codex(MINOR,5), gemini(MINOR,3), conformance-gate(1 flag) — EVERY round-1 resolution independently verified GENUINE by all six internals | 26 material | v3 rewrite (408 ins/244 del): durable hog decision store (false-anchor carrier replaced), settlement = every evaluate() exit, per-attempt capture scoping, ruleId→rung registry + within-rung conservative order, rollup mutation semantics + read-derived expired, b-/d- mint prefixes + joinMiss split, kind:'llm' scoping, funnel-wrapper strip, charset clamps, per-table prune + attribution columns, pending-ACT liveness + pinned ACTs, typed census registration + envelope builders, exempt-but-active flag, recorder-singleton seam |
-| 3 | Standards-Conformance Gate: ran (0 flags — 3→1→0 across rounds). Externals: codex MINOR ("no serious architectural blocker", 5 refinements), gemini degraded-timeout. Internals: *(in flight)* | *(pending)* | *(pending)* |
+| 3 | Standards-Conformance Gate: ran (0 flags — 3→1→0 across rounds). Externals: codex MINOR ("no serious architectural blocker", 5 refinements), gemini degraded-timeout. Internals: security(3M), integration(4M), lessons-aware(2M), adversarial(5M), decision-completeness(2M), scalability(PASS) | 16 material — ALL narrow pins, zero structural rework; every r2 fold verified genuine by every reviewer | v4 (commit c81ad2d1e): hog store → state/ subdir + NEVER_SERVED + explicit at-rest posture; targetTuple spoof-proof kill-time ordering re-test; leave-recurrence keyed on same-process signature; sustained-right sensor bound; enacted enum → real 10-value disposition space; grade-on-supersede + in-window kill slot retention; retention += gradingSlack; pending-ACT honest CI/runtime split (3 reviewers converged); evidence-strength classes per rule; mint marker on router-internal clone + single-use consumption; 4th table (grading cursor) + backoff; 6h-timer reconcile + construction-condition quality arm; dryRun suppresses all durable writes; graduation counter checklist; kind-scope query lint |
+| 4 (confirmation) | Conformance gate (1 flag — known stale-checker artifact). codex MINOR (3 one-sentence folds + dissents). gemini degraded-timeout. scalability(PASS), decision-completeness(PASS — "CONVERGED at round 4"), adversarial(1M), security(1M). integration + lessons-aware: NO VERDICT (host session respawn killed both mid-review — recorded, NOT counted as passes, re-run r5) | 2 material (ADV4-1 member-wise ownerTuple; SEC4-1 misrooted NEVER_SERVED — also a LIVE pre-existing defect, tracked ACT-1200) | v5 (commit 324ebe802): member-wise ownerTuple recording (both bad implementer exits closed); projectDir-relative NEVER_SERVED literal pinned + existing JP entry dual-rooted/fixed same-PR + tests pinned to PRODUCTION layout; dedicated-column rejection rationale; strength-first default aggregate view; dryRun-staging honesty clause |
+| 5 (confirmation) | Conformance gate (2 flags — both known artifacts). codex MINOR (1 fold: insufficient-evidence marker; 4 dissents recorded). gemini degraded-timeout. scalability(PASS 0/0), decision-completeness(PASS — re-affirmed), lessons-aware(PASS 0/0 CLEAN), security(PASS + 2 minors), integration(PASS + 3 minors; independently REPLICATED the ACT-1200 live defect), adversarial(1M + 4 minors) | 1 material (ADV5-1: census discovery component-keyed vs per-point declarations — same-key reuse silently skips every guard layer) | v6 (commit f2c104096): census component-key uniqueness as census-test ASSERTION + named review-caught residual; rung-registry owning-component + annotate-chokepoint owner rejection; parentPid guarantee scoped to ENACTED kills; exempt baseline pinned shrink-only; grade-pass fairness honesty + per-point sub-budget trigger; insufficient-evidence marker below minSampleForRates=20; onCorrelationId try/catch containment; hog-store ACTIVE backup-exclusion entry; CapabilityIndex same-PR update; anchors re-grounded |
+| 6 (confirmation) | *(in flight — conformance gate: 2 known artifacts, no new; codex MINOR — re-arguments + 2 editorial folds queued; gemini degraded-timeout; scalability PASS 0/0 with independent v5→v6 diff verification)* | *(pending)* | *(pending)* |
 
 ## Full Findings Catalog
 
@@ -335,7 +363,34 @@ v5** (projectDir-relative literal pinned; JP entry dual-rooted/fixed in the same
 the PRODUCTION layout). INTEGRATION + LESSONS-AWARE: NO VERDICT — both reviewer sessions killed by a
 host session respawn before filing; NOT counted as passes, both re-run fresh in round 5.
 
-<!-- Round 5 confirmation results appended below -->
+### Round 5 — confirmation round on v5 (verdict: NOT clean — 1 MATERIAL + one-clause minors)
+Conformance gate: 2 flags, both known artifacts (stale-checker traceability; Operator-Surface Quality
+disposed r2 via FD13/ACT-1197 — integration confirmed the disposition NOT eroded, do-not-re-flag).
+codex r5: MINOR ISSUES — CX5-2 insufficient-evidence marker below a minimum sample **folded**; CX5-1/
+3/4/5 re-arguments/already-required → dissents recorded. gemini r5: DEGRADED (timeout, 3rd
+consecutive; aggregate stays clean RAN via codex 5/5). SCALABILITY: PASS 0/0 (fresh code-grounded
+sweep clean). DECISION-COMPLETENESS: PASS — convergence re-affirmed on v5 (0 cheap tags, 0 open
+questions, FD1–FD13 complete). SECURITY: PASS 0 material — SEC4-1 fold verified genuine in all three
+parts with empirical grounding; 2 one-clause minors **folded** (onCorrelationId try/catch containment;
+hog-store backup exclusion must be an ACTIVE entry). INTEGRATION: PASS 0 material — independently
+REPLICATED the SEC4-1 live defect against deployed code; Standard A/B, migration parity, rollback all
+clean; 3 minors **folded** (active backup-exclusion entry — converged with security; CapabilityIndex
+/judgment-provenance text goes stale under FD9, same-PR update; cosmetic anchor drift re-grounded).
+LESSONS-AWARE: PASS 0/0 CLEAN — all r3/r4 folds line-verified; both conformance flags disposed
+empirically (registry:522/523 carries the parent standard; FD12 citation exact); foundation audit one
+layer below found every foundation defect surfaced in-spec with same-PR fix or tracked ACT.
+ADVERSARIAL: 1 MATERIAL — ADV5-1: census discovery is COMPONENT-keyed while declarations are per
+DECISION POINT, so a second judgment reusing a declared sibling's attribution key silently skips every
+guard layer (CI clean via the sibling's entry; wired-but-silent quiet via the sibling's rows; the
+settlement census check fires only on enrollment) → **folded into v6**: the 1:1 key convention becomes
+a census-test ASSERTION (unique key per wired point — reuse is lint-visible at declare/enroll) and the
+one undetectable case (an unenrolled, undeclared same-key point) is NAMED as a review-caught residual.
+4 adversarial minors **folded** (rung-registry owning-component binding; parentPid guarantee scoped to
+ENACTED kills; exempt baseline pinned shrink-only; grade-pass fairness honesty + per-point sub-budget
+trigger at third enrollment). Non-landed attacks recorded (commandHash-collision fabrication,
+store-flood, impostor parentStartTime, stale-marker replay, legacy row-id path, run-state tampering).
+
+<!-- Round 6 confirmation results appended below -->
 
 
 ## Convergence verdict
