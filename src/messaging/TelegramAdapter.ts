@@ -315,6 +315,13 @@ export interface AttentionItem {
    * reposted. Falls back to `sourceContext`, then `id`, when unset.
    */
   healthKey?: string;
+  /**
+   * calm-alerting M-P2 (Near-Silent Notifications): true ⇒ the hub post for
+   * this item is sent with `disable_notification` — visible in the topic, the
+   * store, and the dashboard, but it does not buzz. The item's lifecycle is
+   * otherwise identical. Absent ⇒ today's notifying behavior.
+   */
+  silent?: boolean;
   /** WS4.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): the machine this item
    *  belongs to. Stamped at read time in GET /attention (the store stays
    *  machine-agnostic); absent on a single-machine install. */
@@ -4256,7 +4263,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (typeof injected === 'number' && injected > 0) {
       try {
-        await this.sendToTopic(injected, detail, { formatMode: 'html' });
+        await this.sendToTopic(injected, detail, { formatMode: 'html', silent: item.silent === true });
         return injected;
       } catch (err) {
         console.warn(`[telegram] attention hub send to injected topic ${injected} failed (${err}); self-healing a hub topic`);
@@ -4283,7 +4290,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await this.sendToTopic(topicId, detail, { formatMode: 'html' }).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
+    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true }).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
     return topicId;
   }
 
@@ -4314,7 +4321,7 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Update attention item status. Called by /ack, /done, /wontdo, /reopen commands.
    */
-  async updateAttentionStatus(itemId: string, status: AttentionItem['status']): Promise<boolean> {
+  async updateAttentionStatus(itemId: string, status: AttentionItem['status'], opts?: { silent?: boolean }): Promise<boolean> {
     const item = this.attentionItems.get(itemId);
     if (!item) return false;
 
@@ -4331,7 +4338,9 @@ export class TelegramAdapter implements MessagingAdapter {
         'WONT_DO': '\u23ed Won\'t Do',
         'OPEN': '\ud83d\udccb Reopened',
       };
-      await this.sendToTopic(topicId, `Status \u2192 ${labels[status] || status}`).catch(() => {});
+      // calm-alerting M-P2 (legacy per-item routing): a silent status update
+      // posts the line without a buzz \u2014 the one-buzz promise scoped honestly.
+      await this.sendToTopic(topicId, `Status \u2192 ${labels[status] || status}`, opts?.silent === true ? { silent: true } : undefined).catch(() => {});
 
       // Auto-close/reopen topic
       try {

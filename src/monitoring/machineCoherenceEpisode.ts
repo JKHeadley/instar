@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SkewDimension } from './machineCoherenceEvaluate.js';
+import type { AnchorsBlock } from './machineCoherenceAnchors.js';
 
 /** The pendingFix three-state lifecycle (§4.2.1-i, R3-M6 / R4-M2). */
 export type PendingFixState = 'proposed' | 'approved-holding' | 'executing-verifying';
@@ -77,6 +78,10 @@ export interface RecurrenceBlock {
   appendBudget?: { appendTimestamps: number[]; latched: boolean; reservedSuspendResumeAtMs?: number };
   /** When the per-day-cap give-up note last fired (once per rolling 24 h). */
   capGiveupAtMs?: number;
+  /** calm-alerting M-P2 resolve-note bounding: last resolve NOTE per item id
+   *  (at most one per reopenWindowMs; latched-flapping closes are jsonl-only).
+   *  Additive. */
+  resolveNoteAtByItem?: Record<string, number>;
 }
 
 /** A §4.3 close reason — only `restored` may ever claim restoration. */
@@ -114,6 +119,24 @@ export interface EpisodeState {
   escalationAppended?: boolean;
   /** Re-open count carried on the episode (§4.5 damper). */
   reopenCount?: number;
+  /**
+   * Derived escalation item ids raised for this episode (`<itemId>:stalled` /
+   * `<itemId>:recurring`) — the close path resolves EVERY one (calm-alerting
+   * M-P2 derived-item lifecycle); doubles as the restart-proof per-episode
+   * once-per-class raise record. Additive.
+   */
+  derivedItemIds?: string[];
+  /** calm-alerting: episode classified calm at open (all rows patch-only version
+   *  skew under the calm gate) — drives silent narration + close mode. Additive. */
+  calmClass?: boolean;
+  /**
+   * Durable operator-interaction bit (calm-alerting M-P2): set ONLY by
+   * evidence-carrying operator actions (fix approval / explicit ack), NEVER
+   * derived from pendingFix presence (auto-created at raise, cleared on every
+   * fix path). Interacted episodes close with a notifying resolve note; a
+   * reopen does NOT carry it. Additive.
+   */
+  operatorInteracted?: boolean;
   recurrence: RecurrenceBlock;
 }
 
@@ -124,6 +147,13 @@ export interface EpisodeFile {
   episode: EpisodeState | null;
   /** Outlives episode close — the reopen window's memory (R2-N2). */
   recurrence: RecurrenceBlock;
+  /**
+   * The M-P0 identity-independent clock layer (calm-transient-episode-alerting
+   * spec) — STRICTLY ADDITIVE: `version` stays 1, the reader is lenient to it,
+   * and a binary rollback treats it as inert. Absent on files written before
+   * the calm-alerting feature.
+   */
+  anchors?: AnchorsBlock;
 }
 
 /** The result of a durable read — absent / ok / corrupt (§4.6 re-baseline gate). */

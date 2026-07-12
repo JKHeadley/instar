@@ -74,6 +74,30 @@ export interface MachineCoherenceResolvedConfig {
   episodeAppendBudget: number;
   episodeAppendWindowMs: number;
   fixVerifyTicks: number;
+  /**
+   * calm-transient-episode-alerting: the MASTER gate for the calm narration set
+   * (M-P0 anchors, M-P1 progress-aware confirmation, M-P2 calm/silent/derived
+   * narration, wave backstop). Rides resolveDevAgentGate — LIVE on a development
+   * agent, DARK on the fleet; dark ⇒ bit-identical to legacy behavior including
+   * zero durable-file changes. Explicit `monitoring.machineCoherence.calmEnabled`
+   * always wins.
+   */
+  calmEnabled: boolean;
+  /** M-P1 rollback lever: false ⇒ confirm at grace exactly as today. */
+  progressExtensionEnabled: boolean;
+  /** Flap-brake rollback lever. */
+  flapBrakeEnabled: boolean;
+  versionSkewProgressWindowMs: number;
+  versionSkewStallCeilingMs: number;
+  /** Clamped to the priority enum at resolution. */
+  patchSkewPriority: 'NORMAL' | 'HIGH';
+  /** false ⇒ today's notifying resolve note (rollback lever). */
+  silentResolveNote: boolean;
+  /** true ⇒ calm raises buzz (rollback lever; silent is the standard-mandated default). */
+  calmRaiseNotify: boolean;
+  calmWaveBackstopEnabled: boolean;
+  calmWaveThreshold: number;
+  skewFlapThreshold: number;
 }
 
 /**
@@ -109,7 +133,46 @@ export function resolveMachineCoherenceConfig(config: Record<string, unknown>): 
     episodeAppendBudget: num('episodeAppendBudget', 6), // R3-M5
     episodeAppendWindowMs: num('episodeAppendWindowMs', 21_600_000), // 6 h (R3-M5)
     fixVerifyTicks: num('fixVerifyTicks', 10), // R2-M3-v
+    // ── calm-transient-episode-alerting (all engage only under calmEnabled) ──
+    calmEnabled: resolveDevAgentGate(
+      typeof block.calmEnabled === 'boolean' ? block.calmEnabled : undefined,
+      config as { developmentAgent?: boolean },
+    ),
+    progressExtensionEnabled: typeof block.progressExtensionEnabled === 'boolean' ? block.progressExtensionEnabled : true,
+    flapBrakeEnabled: typeof block.flapBrakeEnabled === 'boolean' ? block.flapBrakeEnabled : true,
+    versionSkewProgressWindowMs: numClamped('versionSkewProgressWindowMs', 1_800_000), // 30 min
+    versionSkewStallCeilingMs: numClamped('versionSkewStallCeilingMs', 10_800_000), // 3 h
+    patchSkewPriority: block.patchSkewPriority === 'HIGH' ? 'HIGH' : 'NORMAL', // enum-clamped
+    silentResolveNote: typeof block.silentResolveNote === 'boolean' ? block.silentResolveNote : true,
+    calmRaiseNotify: typeof block.calmRaiseNotify === 'boolean' ? block.calmRaiseNotify : false,
+    calmWaveBackstopEnabled: typeof block.calmWaveBackstopEnabled === 'boolean' ? block.calmWaveBackstopEnabled : true,
+    calmWaveThreshold: numClamped('calmWaveThreshold', 6),
+    skewFlapThreshold: numClamped('skewFlapThreshold', 3),
   };
+
+  /** Calibration keys clamp zero/invalid to defaults — no zero-sentinel magic
+   *  meanings (rollback is the explicit booleans, never a magic 0). */
+  function numClamped(key: string, fallback: number): number {
+    const v = block[key];
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback;
+  }
+}
+
+/**
+ * Boot-time config-sanity warning (calm-alerting M-P1 invariant): the progress
+ * window MUST exceed the restart-cascade dampener window with margin — the
+ * dampener deliberately delays a laggard's restart, and a smaller window would
+ * read deliberate batching as a stall. Warn-only (the multiMachine
+ * config-validation pattern); returns the message for testability.
+ */
+export function checkCalmAlertingConfigSanity(config: Record<string, unknown>, resolved: MachineCoherenceResolvedConfig): string | null {
+  if (!resolved.calmEnabled || !resolved.progressExtensionEnabled) return null;
+  const dampener = getByPath(config, 'updates.restartCascadeDampenerWindowMs');
+  const dampenerMs = typeof dampener === 'number' && Number.isFinite(dampener) ? dampener : 900_000;
+  if (resolved.versionSkewProgressWindowMs <= dampenerMs) {
+    return `machine-coherence calm-alerting: versionSkewProgressWindowMs (${resolved.versionSkewProgressWindowMs}) must exceed updates.restartCascadeDampenerWindowMs (${dampenerMs}) with margin — deliberate restart batching would read as a stall. Raise the progress window or lower the dampener.`;
+  }
+  return null;
 }
 
 /** The guard's own posture, derived from resolved config (feeds candidacy). */
@@ -151,6 +214,14 @@ export interface MachineCoherenceStatus {
   } | null;
   /** Episode lifecycle counters (§4.5) — present only when the machinery is wired. */
   episodeCounters?: import('./machineCoherenceEpisodeManager.js').EpisodeManagerCounters;
+  /** calm-alerting observability (silent ≠ dead): progress extensions, ceiling
+   *  confirms, flap fires, calm/silent raise + resolve counts, wave fires, and
+   *  the fail-loud escalationRaiseFailed. Present when the machinery is wired. */
+  calm?: {
+    progressExtensions: number; ceilingConfirms: number; flapBrakeFires: number;
+    calmRaises: number; calmRaisesSilent: number; silentResolves: number;
+    resolveNotesSuppressed: number; waveBackstopFires: number; escalationRaiseFailed: number;
+  };
   /**
    * `skewsConfirmed` is CUMULATIVE (a counter of confirmation transitions, not a
    * live gauge). `confirmedRows`/`pendingRows` are the live gauges — how many
@@ -167,6 +238,9 @@ export class MachineCoherenceSentinel {
   /** Post-boot warm-up accounting (N8): ticks completed since construction. */
   private ticksSinceBoot = 0;
   private lastClassified: ClassifiedPeer[] = [];
+  /** calm-alerting M-P0 feed: this tick's post-M6 raw rows + raw versions. */
+  private lastRawRows: SkewRow[] = [];
+  private lastVersionsByMachine: Record<string, string> = {};
   private lastRegisteredOnline = 0;
   private lastRaiser: string | null = null;
   private lastCandidates: string[] = [];
@@ -287,6 +361,10 @@ export class MachineCoherenceSentinel {
           leaseHolderMachineId: this.deps.leaseHolderMachineId(),
           nicknameOf: nick,
           now: nowMs,
+          // calm-alerting M-P0 feed (consumed only under cfg.calmEnabled)
+          rawRows: this.lastRawRows,
+          versionsByMachine: this.lastVersionsByMachine,
+          tickMs: 30_000,
         });
         const expiries = this.episode.expireIfStale(nowMs, nick);
         this.pendingEffects.push(...effects, ...expiries);
@@ -331,6 +409,11 @@ export class MachineCoherenceSentinel {
     const hasVersionSkew = new Set(compared.map((c) => c.advert.instarVersion)).size > 1;
     if (hasVersionSkew) rows = rows.filter((r) => r.dimension !== 'flag');
 
+    // calm-alerting M-P0 feed: the POST-suppression raw rows + per-machine raw
+    // versions ride into the episode manager's anchor reconcile this tick.
+    this.lastRawRows = rows;
+    this.lastVersionsByMachine = Object.fromEntries(compared.map((c) => [c.machineId, c.advert.instarVersion]));
+
     const currentIds = new Set(rows.map((r) => r.identity));
 
     // Increment consecutive counters for rows present this tick; a row whose
@@ -353,15 +436,32 @@ export class MachineCoherenceSentinel {
     // Confirmation predicate per dimension.
     for (const st of this.rowState.values()) {
       if (st.confirmed) continue;
-      const doConfirm = st.dimension === 'version' && st.row.versionSeverity === 'patch-only'
-        // Patch-only version skew: confirmed after versionSkewGraceMs of
-        // CONTINUOUS skew (a normal rolling update would else cry wolf).
-        ? nowMs - st.firstSeenAtMs >= this.cfg.versionSkewGraceMs
+      let doConfirm: boolean;
+      if (st.dimension === 'version' && st.row.versionSeverity === 'patch-only') {
+        // Patch-only version skew. Legacy: versionSkewGraceMs of CONTINUOUS row
+        // age. Calm-alerting M-P1: the decision reads the identity-independent
+        // durable anchor (activeSkewMs grace / gap-narrowing progress extension /
+        // unresettable stall ceiling); 'no-anchor' falls back to the legacy path
+        // (fail toward today's behavior).
+        if (this.cfg.calmEnabled && this.episode) {
+          const d = this.episode.decidePatchSkewConfirmation(st.row.key, nowMs, this.lastVersionsByMachine);
+          if (d.reason === 'extend') this.episode.countersCalm.progressExtensions += 1;
+          doConfirm = d.reason === 'no-anchor'
+            ? nowMs - st.firstSeenAtMs >= this.cfg.versionSkewGraceMs
+            : d.confirm;
+        } else {
+          doConfirm = nowMs - st.firstSeenAtMs >= this.cfg.versionSkewGraceMs;
+        }
+      } else {
         // flag / major-minor version / manifest-class / protocol: N consecutive ticks.
-        : st.consecutiveTicks >= this.cfg.flagConfirmTicks;
+        doConfirm = st.consecutiveTicks >= this.cfg.flagConfirmTicks;
+      }
       if (doConfirm) {
         st.confirmed = true;
         this.skewsConfirmed += 1;
+        // calm-alerting flap accounting: a confirm transition arms the key's
+        // pending flap marker; a later GENUINE convergence completes the cycle.
+        if (this.cfg.calmEnabled) this.episode?.noteConfirmTransition(st.dimension, st.row.key);
       }
     }
 
@@ -417,6 +517,7 @@ export class MachineCoherenceSentinel {
       },
       openEpisode: this.episode?.status().openEpisode ?? null,
       episodeCounters: this.episode?.status().counters,
+      calm: this.episode ? { ...this.episode.countersCalm } : undefined,
       counters: {
         ticks: this.ticks,
         skewsConfirmed: this.skewsConfirmed,

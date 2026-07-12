@@ -74,8 +74,13 @@ export interface RopeRecoveryProberDeps {
   /** Send ONE pinned probe (MeshRpcClient envelope → POST <url>/mesh/rpc → typed
    *  classification). Must never throw — a transport error is a failure result. */
   sendProbe: (target: RopeProbeTarget) => Promise<RopeProbeSendResult>;
-  /** Escalate-once sink (deduped per (peer,kind,episode)). Absent = log-only. */
-  raiseAttention?: (item: { id: string; title: string; body: string }) => unknown;
+  /** Escalate-once sink (deduped per (peer,kind,episode)). Absent = log-only.
+   *  calm-alerting M-P3 typed contract: `class` is declared AT THE SOURCE (the
+   *  prober authored the text and knows whether it names an action) — the sink
+   *  routes on the declared field, never on id-string parsing. UNDECLARED
+   *  defaults to 'actionable' (fail-loud). `peer`/`kind` ride the payload so
+   *  the sink's dedupe never parses them out of the id. */
+  raiseAttention?: (item: { id: string; title: string; body: string; class?: 'informational' | 'actionable'; peer?: string; kind?: MeshEndpoint['kind'] }) => unknown;
   /** User-facing machine nickname for a peer id (registry `nickname`). The
    *  escalation BODY must name machines by nickname, never by raw machine id
    *  (rope-health alert contract: rope KIND + machine NICKNAME only). Absent
@@ -293,6 +298,7 @@ export class RopeRecoveryProber {
           `rope-probe-slow-alive:${peer}:${kind}:${ep.openedAt}`,
           `Mesh rope ${kind} answers probes but stays demoted`,
           `The ${kind} rope to ${this.peerName(peer)} has answered ${ep.unreclaimedSuccesses} consecutive recovery probes but has not reclaimed preferred status — latency above the reclaim bar. Probing continues at the floor cadence.`,
+          'informational', peer, kind,
         );
       }
     } else {
@@ -314,6 +320,7 @@ export class RopeRecoveryProber {
             `rope-probe-exhausted:${peer}:${kind}:${ep.openedAt}`,
             `Mesh rope ${kind} not recovering`,
             `The ${kind} rope to ${this.peerName(peer)} has failed ${ep.probeFailures} recovery probes; probing continues at the floor rate (${Math.round(this.cfg.floorMs / 60000)} min).`,
+            'actionable', peer, kind,
           );
         }
       }
@@ -334,9 +341,9 @@ export class RopeRecoveryProber {
     return `peer ${machineId}`;
   }
 
-  private escalate(id: string, title: string, body: string): void {
+  private escalate(id: string, title: string, body: string, cls?: 'informational' | 'actionable', peer?: string, kind?: MeshEndpoint['kind']): void {
     try {
-      const r = this.d.raiseAttention?.({ id, title, body });
+      const r = this.d.raiseAttention?.({ id, title, body, class: cls, peer, kind });
       if (r && typeof (r as Promise<unknown>).catch === 'function') {
         void (r as Promise<unknown>).catch(() => {
           // @silent-fallback-ok: escalation is best-effort observability — the probe

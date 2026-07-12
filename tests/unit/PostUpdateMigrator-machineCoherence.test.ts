@@ -56,3 +56,44 @@ describe('PostUpdateMigrator — Machine-Coherence Guard CLAUDE.md section', () 
     expect(result2.upgraded.some((u) => u.includes('Machine-Coherence Guard'))).toBe(false);
   });
 });
+
+describe('calm-alerting doc parity migrations', () => {
+  let projectDir: string;
+  let claudeMdPath: string;
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-mc-calm-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    claudeMdPath = path.join(projectDir, 'CLAUDE.md');
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-machineCoherence.test.ts:calm-cleanup' });
+  });
+  function newMigrator(): PostUpdateMigrator {
+    return new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: false, projectName: 'test' });
+  }
+
+  it('CONTENT-UPDATES the stale "raises ONE HIGH" narration on deployed agents (idempotent)', () => {
+    const stale = 'exactly ONE elected machine raises ONE HIGH, episode-scoped attention item — impact-first, with a fix I perform on your approval (reply **fix it**) or hold open without nagging (reply **leave it**). Signal-only.';
+    // A deployed agent: the section marker EXISTS (install-if-missing can never fire) with stale text.
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n\n### Machine-Coherence Guard — x\n\n${stale}\n`);
+    const r1 = runClaudeMdMigration(newMigrator());
+    const after1 = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after1).not.toContain('raises ONE HIGH');
+    expect(after1).toContain('calm-first (calm-alerting)');
+    expect(r1.upgraded.some((u) => u.includes('calm-alerting semantics'))).toBe(true);
+    runClaudeMdMigration(newMigrator());
+    const after2 = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after2).toBe(after1);
+  });
+
+  it('appends the rope-notice audit-row guidance ONCE (its own marker)', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\n### Machine-Coherence Guard — x\n\nnarrates ONE episode-scoped attention item — already calm.\n');
+    runClaudeMdMigration(newMigrator());
+    const after1 = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after1).toContain('Rope-notice audit rows');
+    expect(after1).toContain('sentinel-events.jsonl');
+    runClaudeMdMigration(newMigrator());
+    const after2 = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after2.split('Rope-notice audit rows').length).toBe(after1.split('Rope-notice audit rows').length);
+  });
+});

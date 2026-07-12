@@ -5448,6 +5448,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (probeEnabled && meshEnabled()) {
             const { RopeRecoveryProber } = await import('../core/RopeRecoveryProber.js');
             const { buildRopeProbeCommand, parseProbeResponse } = await import('../core/ropeProbeContract.js');
+            const ropeSinkMod = await import('../monitoring/ropeSinkRouter.js');
             const probeClientMod = await import('../core/MeshRpcClient.js');
             const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
             let probeNonce = 0;
@@ -5522,16 +5523,34 @@ export async function startServer(options: StartOptions): Promise<void> {
                     };
                   }
                 },
-                raiseAttention: (item) =>
-                  telegram?.createAttentionItem({
-                    id: item.id,
-                    title: item.title,
-                    summary: item.body.slice(0, 160),
-                    description: item.body,
-                    category: 'rope-recovery-probe',
-                    priority: 'NORMAL',
-                    sourceContext: 'rope-recovery-probe',
-                  }),
+                // calm-alerting M-P3: the typed-class sink router (extracted,
+                // unit-tested module — src/monitoring/ropeSinkRouter.ts). Routes
+                // on the SOURCE-DECLARED class; demotes informational content
+                // only under the LIVE delivery-true conjunction; both-class
+                // (peer,kind) 24 h dedupe with visible count appends.
+                raiseAttention: ropeSinkMod.makeRopeSinkRouter({
+                  telegram: () => telegram ?? null,
+                  digestConfigured: () => {
+                    const rhCfg = config.monitoring?.ropeHealth as { enabled?: boolean; digestTopicId?: number } | undefined;
+                    return rhCfg?.enabled !== false && typeof rhCfg?.digestTopicId === 'number';
+                  },
+                  digestRunnableHere: () => {
+                    // A live JobScheduler handle in THIS process with the digest
+                    // job loaded + enabled — the lease read is NOT the conjunct
+                    // (a promoted standby holds the lease with no scheduler).
+                    try { return !!scheduler && scheduler.getJobs().some((j) => j.slug === 'rope-health-digest' && j.enabled !== false); } catch { return false; }
+                  },
+                  selfNickname: () => {
+                    try { return machinePoolRegistry?.getCapacities().find((c) => c.machineId === selfMachineId)?.nickname ?? 'this machine'; } catch { return 'this machine'; }
+                  },
+                  audit: (row) => {
+                    try {
+                      const p = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
+                      fs.mkdirSync(path.dirname(p), { recursive: true });
+                      fs.appendFileSync(p, JSON.stringify(row) + '\n');
+                    } catch { /* @silent-fallback-ok: audit is observability, never authority */ }
+                  },
+                }),
                 recordMetric: (event) => {
                   try {
                     getFeatureMetricsRecorder()?.record({
@@ -22138,9 +22157,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           // failure is logged non-fatal and the server runs without the evaluator.
           let machineCoherenceSentinel:
             import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null = null;
+          let runMachineCoherenceEffects:
+            typeof import('../monitoring/machineCoherenceEffectsExecutor.js').executeMachineCoherenceEffects | null = null;
           try {
             const mcMod = await import('../monitoring/MachineCoherenceSentinel.js');
+            const effMod = await import('../monitoring/machineCoherenceEffectsExecutor.js');
+            runMachineCoherenceEffects = effMod.executeMachineCoherenceEffects;
             const mcCfg = mcMod.resolveMachineCoherenceConfig(config as unknown as Record<string, unknown>);
+            // calm-alerting M-P1 config invariant (warn-only): the progress window
+            // must exceed the restart-cascade dampener window with margin.
+            const sanityMsg = mcMod.checkCalmAlertingConfigSanity(config as unknown as Record<string, unknown>, mcCfg);
+            if (sanityMsg) console.warn(pc.yellow(`  ⚠ ${sanityMsg}`));
             if (mcCfg.enabled) {
               machineCoherenceSentinel = new mcMod.MachineCoherenceSentinel(
                 {
@@ -22186,31 +22213,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Telegram fault never crashes the shared presence tick (fail toward
           // silence). Defined OUTSIDE the tick body so the tick stays lean; the
           // sentinel already gates effects to raiser && live posture.
+          // calm-alerting M-P2: extracted to the injectable, unit-tested
+          // machineCoherenceEffectsExecutor module (the pass-through fix for the
+          // original hardcoded-HIGH bug lives there); this thin shim only drains.
           const executeMachineCoherenceEffects = (
             sentinel: NonNullable<typeof machineCoherenceSentinel>,
             tg: typeof telegram,
           ): void => {
             let effects: ReturnType<typeof sentinel.drainPendingEffects>;
             try { effects = sentinel.drainPendingEffects(); } catch { return; }
-            for (const eff of effects) {
-              void (async () => {
-                try {
-                  if (eff.kind === 'raise') {
-                    await tg?.createAttentionItem({
-                      id: eff.itemId, title: eff.title, summary: eff.summary, description: eff.description,
-                      category: 'machine-coherence', priority: 'HIGH', sourceContext: 'machine-coherence-guard',
-                    });
-                  } else if (eff.kind === 'append') {
-                    const item = tg?.getAttentionItem(eff.itemId);
-                    if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.text);
-                  } else if (eff.kind === 'resolve') {
-                    const item = tg?.getAttentionItem(eff.itemId);
-                    if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.note);
-                    await tg?.updateAttentionStatus(eff.itemId, 'DONE');
-                  }
-                } catch { /* @silent-fallback-ok: episode effect execution is best-effort; a Telegram send/create fault must never crash the presence tick — the next reconcile re-derives from durable episode state */ }
-              })();
-            }
+            runMachineCoherenceEffects?.(effects, { telegram: () => tg ?? null });
           };
 
           const peerPresenceTick = (): void => {

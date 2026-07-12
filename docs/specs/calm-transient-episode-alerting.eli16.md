@@ -2,6 +2,8 @@
 
 > The one-line version: your machines stop buzzing you about problems they're already fixing themselves — and the alarms that remain become trustworthy, because the clocks behind them can no longer be silently wiped.
 
+> **Status:** operator-approved 2026-07-12 ("Yes, approved. Please proceed with your recommendations."); built the same day behind the dev-agent gate — live on the operator's machines during soak, dark on the fleet until the graduation checkpoint.
+
 ## The problem in one breath
 
 On July 11 your Attention topic filled with high-priority alarms during a routine software update: "my machines have drifted apart!" — followed minutes later by "never mind, restored." Every one of those alerts was about something the system healed on its own. You were being buzzed, at decision priority, about the middle of a self-repair. And when we dug in, it got worse: the "safety net" that was supposed to guarantee you hear about a genuinely stuck machine within a few hours turned out to be broken — its timer silently reset every time the stuck machine inched forward or blinked offline, which is exactly what stuck machines do.

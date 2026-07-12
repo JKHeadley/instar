@@ -683,6 +683,17 @@ export class RopeHealthMonitor {
         const rows = this.safeSnapshot().filter((r) => r.peer === p.machineId && r.dead);
         const kinds = rows.map((r) => r.kind).join(', ') || 'a rope';
         sentences.push(`The ${kinds} rope to ${p.nickname} is down; another rope is carrying traffic.`);
+      } else {
+        // calm-alerting M-P3: the RECOVERING class — a rope answering probes
+        // (recovery streak alive) but not yet reclaimed preferred status. This is
+        // the digest home the demoted slow-alive escalations route to; without it
+        // the demotion would be a black hole (the round-3 verified gap: the digest
+        // previously had NO class for this state). Directionally honest wording.
+        const recovering = this.safeSnapshot().filter((r) => r.peer === p.machineId && !r.dead && !r.lastKnownGood && r.recoveryStreak > 0);
+        if (recovering.length > 0) {
+          const kinds = recovering.map((r) => r.kind).join(', ');
+          sentences.push(`The ${kinds} rope to ${p.nickname} is answering probes but still demoted (recovering; observed from this machine).`);
+        }
       }
     }
     if (this.keyExpiryWarn() && this.keyExpirySoonest) {

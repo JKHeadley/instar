@@ -206,16 +206,30 @@ describe('§4.5 per-day cap (maxEpisodeItemsPerDay)', () => {
 });
 
 describe('§4.5 recurrence reopen (same item, no new item)', () => {
-  it('a skew returning within reopenWindowMs REOPENS the same item — no new item, does not count toward the cap', () => {
+  it('calm gate LIVE: a reopen is a visible APPEND on the SAME item (the swallowed-raise fix) — no new item, no cap count', () => {
     const m = mgr({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, resolveTicks: 1, maxEpisodeItemsPerDay: 1 } } });
     const first = m.reconcile(input()); // open item #1
     const itemId = first.find((e) => e.kind === 'raise')?.kind === 'raise' ? (first.find((e) => e.kind === 'raise') as { itemId: string }).itemId : '';
     m.reconcile(input({ confirmedRows: [] })); // close restored
     const reopen = m.reconcile(input()); // same skew back → reopen
-    const raise = reopen.find((e) => e.kind === 'raise');
-    expect(raise?.kind === 'raise' && raise.itemId).toBe(itemId); // SAME item id
-    expect(raise?.kind === 'raise' && raise.summary).toContain('re-opening');
+    // calm-alerting M-P2: the legacy raise-with-reused-id was silently swallowed
+    // by the createAttentionItem id-dedupe; the reopen is now an append.
+    const append = reopen.find((e) => e.kind === 'append');
+    expect(append?.kind === 'append' && append.itemId).toBe(itemId); // SAME item id
+    expect(append?.kind === 'append' && append.text).toContain('re-opening');
+    expect(reopen.some((e) => e.kind === 'raise')).toBe(false); // no new item
     expect(m.status().openEpisode?.rows).toBe(1);
+  });
+
+  it('calm gate DARK: the legacy reopen raise shape is bit-identical (calmEnabled: false)', () => {
+    const m = mgr({ developmentAgent: true, monitoring: { machineCoherence: { dryRun: false, resolveTicks: 1, maxEpisodeItemsPerDay: 1, calmEnabled: false } } });
+    const first = m.reconcile(input());
+    const itemId = first.find((e) => e.kind === 'raise')?.kind === 'raise' ? (first.find((e) => e.kind === 'raise') as { itemId: string }).itemId : '';
+    m.reconcile(input({ confirmedRows: [] }));
+    const reopen = m.reconcile(input());
+    const raise = reopen.find((e) => e.kind === 'raise');
+    expect(raise?.kind === 'raise' && raise.itemId).toBe(itemId);
+    expect(raise?.kind === 'raise' && raise.summary).toContain('re-opening');
   });
 });
 

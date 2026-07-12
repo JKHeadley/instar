@@ -2,6 +2,7 @@
 title: "Calm Transient-Episode Alerting"
 slug: "calm-transient-episode-alerting"
 author: "echo"
+parent-principle: "Self-Heal Before Notify — The Operator Hears Only When Self-Healing Fails"
 review-convergence: "2026-07-12T04:40:58.382Z"
 review-iterations: 4
 review-completed-at: "2026-07-12T04:40:58.382Z"
@@ -11,6 +12,8 @@ single-run-completable: true
 frontloaded-decisions: 9
 cheap-to-change-tags: 0
 contested-then-cleared: 0
+approved: true
+approved-by: "operator (Justin, telegram uid 7812716706) — topic 29836, 2026-07-12 01:42 PDT: \"Yes, approved. Please proceed with your recommendations.\""
 ---
 
 # Calm Transient-Episode Alerting (machine-coherence + rope probe)
@@ -157,7 +160,7 @@ Default posture is **unified**; no new machine-local file or surface — the one
 
 - Agent-level (cross-machine synced) quiet-settings — CMT-834, operator design decision.
 - Message FORMATTING (shipped: PR #1454).
-- Episode-lifecycle redesign beyond the named touchpoints; duplicate-reconciliation; fix-it/leave-it consent flow. (The handoff-orphan cleanup is IN scope — the self-closeout rule in the Multi-machine posture section — so no orphan sweeper is deferred.)
+- Episode-lifecycle redesign beyond the named touchpoints; duplicate-reconciliation; fix-it/leave-it consent flow. (The handoff-orphan cleanup is IN scope — the self-closeout rule in the Multi-machine posture section — so the orphan cleanup ships complete in this build.)
 
 ## Test obligations (Testing Integrity Standard — all tiers + wiring integrity)
 

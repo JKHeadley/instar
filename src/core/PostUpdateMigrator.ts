@@ -6084,13 +6084,43 @@ When narrating a ship, an update I just applied, or a restart I just completed (
       const mcSection = `
 ### Machine-Coherence Guard — "are my machines running as the same me?" (⚗️ dev-gated dark)
 
-When I run on more than one machine, this guard compares — across my OWN online machines, riding the existing 30s presence-pull — the coherence-critical dimensions (instar version, resolved safety-flags, mesh protocol, manifest generation). When the pool DIVERGES on something that halves a cross-machine guarantee (e.g. the conversation-move pair live on one machine, dark on the other), exactly ONE elected machine raises ONE HIGH, episode-scoped attention item — impact-first, with a fix I perform on your approval (reply **fix it**) or hold open without nagging (reply **leave it**). Signal-only: it never blocks, equalizes, or restarts anything on its own. Dev-gated dark on the fleet (\`monitoring.machineCoherence.enabled\` OMITTED → the dev-agent gate decides), **dry-run FIRST** even on dev (raises no item until a deliberate \`dryRun:false\`), single-machine is a strict no-op.
+When I run on more than one machine, this guard compares — across my OWN online machines, riding the existing 30s presence-pull — the coherence-critical dimensions (instar version, resolved safety-flags, mesh protocol, manifest generation). When the pool DIVERGES on something that halves a cross-machine guarantee (e.g. the conversation-move pair live on one machine, dark on the other), exactly ONE elected machine narrates ONE episode-scoped attention item — priority-mapped, calm-first (calm-alerting): a routine patch-version skew during a rolling update posts CALM and SILENT (visible in the hub/dashboard, no buzz — the self-heal is watched), while a real capability split, a STALLED update (past the stall ceiling), or a KEEPS-RECURRING pattern raises loud HIGH with the fix prompt (reply **fix it**) or hold-open (reply **leave it**). A self-healed episode resolves quietly (one silent note); an escalated episode closes with a notifying stand-down. Signal-only: it never blocks, equalizes, or restarts anything on its own. Dev-gated dark on the fleet (\`monitoring.machineCoherence.enabled\` OMITTED → the dev-agent gate decides), **dry-run FIRST** even on dev (raises no item until a deliberate \`dryRun:false\`), single-machine is a strict no-op.
 - Status (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/machine-coherence\` → \`{ enabled, dryRun, machinesRegisteredOnline, machinesCompared, peerClassifications, raiser, openEpisode, counters }\` (503 when the guard is dark on this agent — say so honestly, don't guess).
 - **When to use** (PROACTIVE — this is the trigger): user asks "are my machines in sync / running the same version+settings?" or "why did I get a machine-coherence alarm?" → read \`/pool/machine-coherence\` and the open episode (its \`pendingFix\` names the proposed fix + target machine); the transition log is \`logs/machine-coherence.jsonl\`. A version-skew row usually just means a rolling update in flight (grace-gated, won't cry wolf).
 `;
       content += '\n' + mcSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Machine-Coherence Guard awareness section');
+    }
+
+    // calm-alerting doc parity (a): a CONTENT-UPDATE migration for the
+    // machine-coherence narration — the install-if-missing sniff above can never
+    // deliver an update to deployed agents (the marker is already present
+    // fleet-wide), so the STALE PHRASE itself is the key. Idempotent: after the
+    // replace the stale phrase is gone. Without this, deployed agents keep
+    // telling the operator "raises ONE HIGH" while raising calm/silent NORMAL.
+    {
+      const staleMcNarration = 'raises ONE HIGH, episode-scoped attention item \u2014 impact-first, with a fix I perform on your approval (reply **fix it**) or hold open without nagging (reply **leave it**).';
+      const calmMcNarration = 'narrates ONE episode-scoped attention item \u2014 priority-mapped, calm-first (calm-alerting): a routine patch-version skew during a rolling update posts CALM and SILENT (visible in the hub/dashboard, no buzz \u2014 the self-heal is watched), while a real capability split, a STALLED update (past the stall ceiling), or a KEEPS-RECURRING pattern raises loud HIGH with the fix prompt (reply **fix it**) or hold-open (reply **leave it**). A self-healed episode resolves quietly (one silent note); an escalated episode closes with a notifying stand-down.';
+      if (content.includes(staleMcNarration)) {
+        content = content.split(staleMcNarration).join(calmMcNarration);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: machine-coherence narration updated to calm-alerting semantics');
+      }
+    }
+
+    // calm-alerting doc parity (b): the sentinel-events ROPE row-kind guidance \u2014
+    // a NEW entry with its OWN marker (the existing sentinel-events sniff cannot
+    // deliver it). Content-sniffed; idempotent.
+    if (!content.includes('Rope-notice audit rows')) {
+      const ropeRowSection = `
+### Rope-notice audit rows (calm-alerting)
+
+Rope-recovery-probe rows \u2014 demoted informational rope notices, hub fallbacks, and per-rope dedupe events \u2014 land in \`logs/sentinel-events.jsonl\` (rope KIND + machine NICKNAME + direction, never raw ids in user-facing text). When a "rope answers probes but stays demoted" notice seems to have gone quiet, read those rows: informational rope content routes to the daily rope-health digest ONLY where the digest provably delivers on the raising machine, and falls back to the \ud83d\udd14 Attention hub everywhere else.
+`;
+      content += '\n' + ropeRowSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added rope-notice audit-row guidance (calm-alerting M-P3)');
     }
 
     // Framework-Onboarding Mentor System — issue-ledger observability (Agent

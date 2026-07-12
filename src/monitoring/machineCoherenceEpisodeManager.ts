@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { COHERENCE_CRITICAL_FLAGS, type CoherenceCriticalFlag } from '../core/machineCoherenceManifest.js';
-import type { SkewRow } from './machineCoherenceEvaluate.js';
+import type { SkewRow, SkewDimension } from './machineCoherenceEvaluate.js';
 
 /** Local manifest lookup (avoids widening the increment-A module + its ratchet). */
 function getFlagByKey(key: string): CoherenceCriticalFlag | undefined {
@@ -46,13 +46,31 @@ import {
   type PendingFix,
   type PendingFixState,
 } from './machineCoherenceEpisode.js';
+import {
+  emptyAnchors,
+  reconcileAnchors,
+  recordConfirmTransition,
+  decidePatchSkew,
+  tryArmDerivedLatch,
+  flapBrakeEligible,
+  recordCalmOnsetAndCheckWave,
+  anchorKey as mkAnchorKey,
+  type AnchorsBlock,
+  type PatchSkewDecision,
+} from './machineCoherenceAnchors.js';
 
 /** One effect the sentinel/server executes (the manager never does I/O beyond
- *  its own durable file + jsonl — telegram effects are the caller's). */
+ *  its own durable file + jsonl — telegram effects are the caller's).
+ *  calm-alerting M-P2: `priority` + `silent` ride the effect (the consumer is a
+ *  pass-through — the decision lives HERE, where dimension/stall/flap/interacted
+ *  context lives); absent fields mean legacy behavior (HIGH, notifying). */
 export type EpisodeEffect =
-  | { kind: 'raise'; itemId: string; title: string; summary: string; description: string }
-  | { kind: 'append'; itemId: string; text: string }
-  | { kind: 'resolve'; itemId: string; note: string }
+  | { kind: 'raise'; itemId: string; title: string; summary: string; description: string; priority?: 'NORMAL' | 'HIGH'; silent?: boolean }
+  | { kind: 'append'; itemId: string; text: string; silent?: boolean }
+  | { kind: 'resolve'; itemId: string; note: string; silent?: boolean }
+  /** Status-only DONE (no message) — the orphan self-closeout arm: every machine
+   *  transitions its OWN items on every close reason, regardless of speaks(). */
+  | { kind: 'resolve-status'; itemId: string }
   // §4.2.1-iv (divergent == raiser, mechanized): the LOCAL config write + self-
   // restart the raiser's own server performs on approval. The caller executes it
   // through the atomic config funnel (write-ahead outcome, then restart).
@@ -91,6 +109,11 @@ export interface EpisodeReconcileInput {
   /** machineId → operator-facing nickname (registry display label; escaped at render). */
   nicknameOf: (machineId: string) => string;
   now: number;
+  /** calm-alerting M-P0 feed (consumed only under cfg.calmEnabled): this tick's
+   *  POST-M6-suppression raw divergent rows + raw advertised versions + cadence. */
+  rawRows?: SkewRow[];
+  versionsByMachine?: Record<string, string>;
+  tickMs?: number;
 }
 
 /** Observability counters (surfaced on the sentinel status snapshot / route). */
@@ -163,6 +186,27 @@ export class MachineCoherenceEpisodeManager {
     const { now } = input;
     this.lastSelfMachineId = input.selfMachineId;
     this.lastNicknameOf = input.nicknameOf;
+
+    // ── calm-alerting M-P0: the anchor layer reconciles FIRST (identity-
+    //    independent clocks over the raw rows), on EVERY machine (speaks() gates
+    //    only narration, never computation). Dark gate ⇒ zero anchor writes —
+    //    bit-identical to legacy including the durable file. ──
+    if (this.cfg.calmEnabled && input.rawRows && input.versionsByMachine && input.tickMs) {
+      const anchors = (this.file.anchors ??= emptyAnchors());
+      const { changed } = reconcileAnchors(anchors, {
+        nowMs: now,
+        tickMs: input.tickMs,
+        kTicks: 4,
+        rows: input.rawRows,
+        comparedMachines: [...input.comparedMachineIds],
+        versionsByMachine: input.versionsByMachine,
+        resolveTicks: this.cfg.resolveTicks,
+        retireAfterMs: 86_400_000,
+      });
+      this.lastVersionsByMachine = input.versionsByMachine;
+      if (changed) this.persist();
+    }
+
     const rowById = new Map(input.confirmedRows.map((r) => [r.identity, r]));
     const confirmedIds = new Set(rowById.keys());
 
@@ -233,8 +277,117 @@ export class MachineCoherenceEpisodeManager {
     // ── §4.4 escalation: open past escalateAfterMs (unsuspended clock), once,
     //    suppressed by the operator "leave it" ack. ──
     this.maybeEscalate(input, ep, effects);
+
+    // ── calm-alerting M-P2: derived escalations (stall ceiling / flap brake) —
+    //    NEW notifying HIGH raises under derived ids, cap-EXEMPT, latched per
+    //    key per 24 h in the durable anchors. ──
+    if (this.cfg.calmEnabled) this.maybeDerivedEscalations(input, ep, effects);
     return effects;
   }
+
+  /** The last raw versions seen (derived-raise laggard naming + calm decisions). */
+  private lastVersionsByMachine: Record<string, string> = {};
+
+  // ── calm-alerting public API (the sentinel's confirmation engine reads these) ──
+
+  /** M-P1 patch-only confirmation decision over the durable anchors. */
+  decidePatchSkewConfirmation(key: string, nowMs: number, versionsByMachine: Record<string, string>): PatchSkewDecision {
+    if (!this.cfg.calmEnabled || !this.file.anchors) return { confirm: false, reason: 'no-anchor' };
+    return decidePatchSkew(this.file.anchors, key, {
+      graceMs: this.cfg.versionSkewGraceMs,
+      progressWindowMs: this.cfg.versionSkewProgressWindowMs,
+      ceilingMs: this.cfg.versionSkewStallCeilingMs,
+      progressExtensionEnabled: this.cfg.progressExtensionEnabled,
+    }, nowMs, versionsByMachine);
+  }
+
+  /** Sentinel → flap accounting: a confirm transition on (dimension, key). */
+  noteConfirmTransition(dimension: SkewDimension, key: string): void {
+    if (!this.cfg.calmEnabled || !this.file.anchors) return;
+    if (recordConfirmTransition(this.file.anchors, dimension, key)) this.persist();
+  }
+
+  /** Read-only anchors view (status route / tests). */
+  anchorsView(): AnchorsBlock | null {
+    return this.file.anchors ?? null;
+  }
+
+  /** An episode is calm-class iff EVERY row is patch-only version skew (set at
+   *  open; a joined non-calm row upgrades the episode to loud via joinRows). */
+  private classifyCalm(rowIds: string[]): boolean {
+    if (!this.cfg.calmEnabled) return false;
+    return rowIds.length > 0 && rowIds.every((id) => dimensionOf(id) === 'version');
+  }
+
+  /**
+   * M-P2 derived escalations on an OPEN episode: the stall ceiling (`:stalled`)
+   * and the flap brake (`:recurring`). Both are notifying HIGH raises under
+   * derived ids — cap-exempt by construction (≤1 per key per 24 h via the
+   * durable anchor latches + ≤1 per class per episode via derivedItemIds).
+   * The fail-loud invariant: an armed latch whose raise cannot be emitted
+   * (no base item id) increments escalationRaiseFailed and logs.
+   */
+  private maybeDerivedEscalations(input: EpisodeReconcileInput, ep: EpisodeState, effects: EpisodeEffect[]): void {
+    const anchors = this.file.anchors;
+    if (!anchors || ep.suspended) return;
+    const derived = (ep.derivedItemIds ??= []);
+
+    // :stalled — a calm episode whose version anchor crossed the stall ceiling.
+    if (ep.calmClass && ep.attentionItemId && !derived.some((d) => d.endsWith(':stalled'))) {
+      const versionKeys = [...new Set(ep.skewRowIdentities.filter((id) => dimensionOf(id) === 'version').map((id) => keyOf(id)))];
+      for (const key of versionKeys) {
+        const e = anchors.entries[mkAnchorKey('version', key)];
+        if (!e || e.skewOnsetAtMs === 0 || e.activeSkewMs < this.cfg.versionSkewStallCeilingMs) continue;
+        if (!tryArmDerivedLatch(anchors, 'version', key, 'stalled', input.now)) continue;
+        const stalledId = `${ep.attentionItemId}:stalled`;
+        derived.push(stalledId);
+        this.countersCalm.ceilingConfirms += 1;
+        this.maybeProposeFix(input, ep);
+        const body = this.renderBody(input, ep);
+        if (this.speaks(input) || ep.attentionItemId) {
+          effects.push({
+            kind: 'raise', itemId: stalledId, priority: 'HIGH', silent: false,
+            title: 'Machine coherence: still drifted — this now needs a look',
+            summary: `This began as a calm self-healing notice at ${new Date(ep.openedAtMs).toISOString()} and has stalled past the ceiling.`,
+            description: `This began as a calm self-healing notice at ${new Date(ep.openedAtMs).toISOString()} and has stalled past the ceiling.\n\n${body.description}`,
+          });
+        } else {
+          this.countersCalm.escalationRaiseFailed += 1;
+        }
+        this.persist();
+        this.log({ t: 'derived-stalled', episodeId: ep.episodeId, key });
+        break;
+      }
+    }
+
+    // :recurring — the flap brake (any dimension's key, durable cycle history).
+    if (this.cfg.flapBrakeEnabled && ep.attentionItemId && !derived.some((d) => d.endsWith(':recurring'))) {
+      const keys = ep.skewRowIdentities.map((id) => ({ d: dimensionOf(id) as SkewDimension, k: keyOf(id) }));
+      for (const { d, k } of keys) {
+        if (!flapBrakeEligible(anchors, d, k, this.cfg.skewFlapThreshold, input.now)) continue;
+        if (!tryArmDerivedLatch(anchors, d, k, 'recurring', input.now)) continue;
+        const recurringId = `${ep.attentionItemId}:recurring`;
+        derived.push(recurringId);
+        this.countersCalm.flapBrakeFires += 1;
+        effects.push({
+          kind: 'raise', itemId: recurringId, priority: 'HIGH', silent: false,
+          title: 'Machine coherence: keeps recurring — a recurring transient is a real defect',
+          summary: `${k} has drifted and self-healed ${this.cfg.skewFlapThreshold}+ times in 24 h. Something keeps re-introducing this divergence.`,
+          description: `${k} has drifted and self-healed ${this.cfg.skewFlapThreshold}+ times in 24 h. Something keeps re-introducing this divergence — worth finding the driver rather than watching the cycle.`,
+        });
+        this.persist();
+        this.log({ t: 'derived-recurring', episodeId: ep.episodeId, key: k });
+        break;
+      }
+    }
+  }
+
+  /** calm-alerting observability counters (surfaced on the status route). */
+  readonly countersCalm = {
+    progressExtensions: 0, ceilingConfirms: 0, flapBrakeFires: 0,
+    calmRaises: 0, calmRaisesSilent: 0, silentResolves: 0,
+    resolveNotesSuppressed: 0, waveBackstopFires: 0, escalationRaiseFailed: 0,
+  };
 
   private episodeParticipants(ep: EpisodeState): Set<string> {
     const s = new Set<string>();
@@ -273,15 +426,48 @@ export class MachineCoherenceEpisodeManager {
     this.pruneRecurrence(input.now);
     const itemsToday = this.file.recurrence.newItemTimestamps.length;
     const overCap = itemsToday >= this.cfg.maxEpisodeItemsPerDay;
+    // calm-alerting M-P2: classify + decide priority/copy/notification mode.
+    ep.calmClass = this.classifyCalm(rowIds) || undefined;
+    // An episode already past the stall ceiling AT OPEN raises loud directly
+    // (the calm phase never existed for it).
+    const stalledAtOpen = ep.calmClass === true && this.anyVersionKeyPastCeiling(rowIds, input.now);
+    if (stalledAtOpen) ep.calmClass = undefined;
     if (this.speaks(input) && !overCap) {
-      // Record the §4.2.1 proposal BEFORE rendering so the body can name it.
-      this.maybeProposeFix(input, ep);
-      const body = this.renderBody(input, ep);
+      const calm = ep.calmClass === true;
+      // Calm copy carries NO fix prompt (self-heal in progress — nothing to decide);
+      // the prompt appears only on loud raises (stall/flap/major-minor/flag).
+      if (!calm) this.maybeProposeFix(input, ep);
+      const body = calm ? this.renderCalmBody(input, ep) : this.renderBody(input, ep);
       ep.itemRaisedAt = input.now;
       ep.attentionItemId = this.itemId(episodeId);
       this.counters.itemsRaised += 1;
       this.file.recurrence.newItemTimestamps.push(input.now);
-      effects.push({ kind: 'raise', itemId: ep.attentionItemId, title: body.title, summary: body.summary, description: body.description });
+      const silent = calm && !this.cfg.calmRaiseNotify;
+      const priority: 'NORMAL' | 'HIGH' = calm ? this.cfg.patchSkewPriority : 'HIGH';
+      if (calm) { this.countersCalm.calmRaises += 1; if (silent) this.countersCalm.calmRaisesSilent += 1; }
+      effects.push({ kind: 'raise', itemId: ep.attentionItemId, title: body.title, summary: body.summary, description: body.description, ...(this.cfg.calmEnabled ? { priority, silent } : {}) });
+      if (stalledAtOpen && this.file.anchors) {
+        // Consume the stalled latch so the derived path can't double inside 24 h.
+        for (const key of new Set(rowIds.filter((id) => dimensionOf(id) === 'version').map((id) => keyOf(id)))) {
+          tryArmDerivedLatch(this.file.anchors, 'version', key, 'stalled', input.now);
+        }
+        this.countersCalm.ceilingConfirms += 1;
+      }
+      // Cross-key wave backstop: NON-reopen calm onsets only (a flapping key
+      // feeds the flap brake, never the wave count).
+      if (calm && this.cfg.calmEnabled && this.file.anchors) {
+        const threshold = this.cfg.calmWaveBackstopEnabled ? this.cfg.calmWaveThreshold : 0;
+        if (recordCalmOnsetAndCheckWave(this.file.anchors, input.now, threshold)) {
+          this.countersCalm.waveBackstopFires += 1;
+          effects.push({
+            kind: 'raise', itemId: `machine-coherence-wave:${input.now}`, priority: 'NORMAL', silent: false,
+            title: 'Machine coherence: an unusual number of self-healing episodes today',
+            summary: `${this.file.anchors.calmOnsetTimestamps.length} self-healing coherence episodes in the last 24 h — routine if updates are rolling; worth a look if not.`,
+            description: `${this.file.anchors.calmOnsetTimestamps.length} self-healing coherence episodes in the last 24 h — routine if updates are rolling; worth a look if not. Details: the machine-coherence status surface and jsonl log.`,
+          });
+          this.log({ t: 'wave-backstop', count: this.file.anchors.calmOnsetTimestamps.length });
+        }
+      }
     } else if (this.speaks(input) && overCap) {
       // Give up LOUDLY, once per window (P19): jsonl-only item, one final note.
       this.maybeCapGiveup(input, effects);
@@ -319,8 +505,18 @@ export class MachineCoherenceEpisodeManager {
       latch.latched = true;
       if (this.speaks(input) && ep.attentionItemId) effects.push({ kind: 'append', itemId: ep.attentionItemId, text: 'this divergence is flapping — recording silently until it stabilizes' });
     } else if (!latch.latched && this.speaks(input) && ep.attentionItemId) {
-      // A reopened item is un-resolved (re-raised OPEN) with one short append.
-      effects.push({ kind: 'raise', itemId: ep.attentionItemId, title: 'Machine coherence: divergence is back', summary: 'this divergence is back — re-opening', description: 'this divergence is back — re-opening' });
+      // calm-alerting M-P2 reopen visibility: the legacy raise with a REUSED id
+      // was silently swallowed by the createAttentionItem id-dedupe (the operator
+      // was never told a divergence returned). A reopen is now a visible APPEND
+      // on the existing item, riding the shared budget; calm-class reopens are
+      // silent (Near-Silent Notifications), loud-class reopens notify.
+      ep.calmClass = this.classifyCalm(rowIds) || undefined;
+      if (this.cfg.calmEnabled) {
+        effects.push({ kind: 'append', itemId: ep.attentionItemId, text: 'this divergence is back — re-opening', silent: ep.calmClass === true });
+      } else {
+        // Legacy shape preserved bit-identically when the calm gate is dark.
+        effects.push({ kind: 'raise', itemId: ep.attentionItemId, title: 'Machine coherence: divergence is back', summary: 'this divergence is back — re-opening', description: 'this divergence is back — re-opening' });
+      }
     }
     // else: latched → jsonl-only (no append).
     this.persist();
@@ -408,6 +604,10 @@ export class MachineCoherenceEpisodeManager {
     if (pf.proposalHash !== args.proposalHash) return { result: { ok: false, reason: 'proposal-lapsed' }, effects };
     if (pf.state !== 'proposed') return { result: { ok: false, reason: 'already-in-flight' }, effects }; // single-flight (R4-N4)
     pf.approvedAtMs = args.now;
+    // calm-alerting M-P2: an approval is an authenticated operator touch — the
+    // durable interacted bit (NEVER derived from pendingFix presence, which is
+    // auto-created at raise and cleared on every fix path).
+    ep.operatorInteracted = true;
     if (pf.targetMachineId === this.lastSelfMachineId) {
       // Divergent == raiser (mechanized): the raiser's own server writes + restarts.
       pf.state = 'executing-verifying';
@@ -535,18 +735,87 @@ export class MachineCoherenceEpisodeManager {
     // Record the close in the recurrence memory (R2-N2 — outlives close; the
     // item id rides along so a §4.5 reopen reuses the SAME item/topic).
     this.file.recurrence.recentlyClosed.push({ rowIdentities: [...ep.skewRowIdentities], closedAtMs: input.now, itemId: ep.attentionItemId });
-    if (this.speaks(input) && ep.attentionItemId && reason === 'restored') {
-      const keys = ep.skewRowIdentities.map((id) => keyOf(id)).join(', ');
-      const nicks = [...this.episodeParticipants(ep)].map((m) => input.nicknameOf(m)).join(', ');
-      effects.push({ kind: 'resolve', itemId: ep.attentionItemId, note: `machine-coherence restored — ${keys} now agree across ${nicks}, held for ${this.cfg.resolveTicks} ticks` });
-    } else if (this.speaks(input) && ep.attentionItemId) {
-      effects.push({ kind: 'resolve', itemId: ep.attentionItemId, note: this.closeNote(reason, ep, input) });
+
+    if (!this.cfg.calmEnabled) {
+      // Legacy narration, bit-identical when the calm gate is dark.
+      if (this.speaks(input) && ep.attentionItemId && reason === 'restored') {
+        const keys = ep.skewRowIdentities.map((id) => keyOf(id)).join(', ');
+        const nicks = [...this.episodeParticipants(ep)].map((m) => input.nicknameOf(m)).join(', ');
+        effects.push({ kind: 'resolve', itemId: ep.attentionItemId, note: `machine-coherence restored — ${keys} now agree across ${nicks}, held for ${this.cfg.resolveTicks} ticks` });
+      } else if (this.speaks(input) && ep.attentionItemId) {
+        effects.push({ kind: 'resolve', itemId: ep.attentionItemId, note: this.closeNote(reason, ep, input) });
+      }
+    } else if (ep.attentionItemId) {
+      // ── calm-alerting M-P2 close-out. Orphan self-closeout: item STATUS
+      //    resolution is decoupled from speaks() — this machine transitions its
+      //    OWN items on EVERY close reason (episode-scoped: the manager's own
+      //    all-rows-cleared/expiry/manifest close fired). Note authorship is
+      //    item-holder voice (the machine closing its own escalated item speaks,
+      //    whether or not it is the current raiser; ≤2×-per-handoff residual
+      //    disclosed in the spec). ──
+      const derived = ep.derivedItemIds ?? [];
+      const escalated = derived.length > 0;
+      const interacted = ep.operatorInteracted === true;
+      const notifying = interacted || escalated;
+      const latched = this.file.recurrence.reopenLatch?.latched === true;
+      // Resolve-note bounding: at most ONE note per item per reopenWindowMs;
+      // latched-flapping closes are jsonl-only (latched wins toward silence,
+      // even over escalated — the derived items still resolve DONE).
+      const noteAt = (this.file.recurrence.resolveNoteAtByItem ??= {});
+      const lastNote = noteAt[ep.attentionItemId];
+      const bounded = lastNote !== undefined && input.now - lastNote < this.cfg.reopenWindowMs;
+      const suppressNote = latched || (bounded && !notifying);
+      if (!suppressNote) {
+        const note = escalated
+          ? (reason === 'restored'
+            ? `healed — the earlier ${derived.some((d) => d.endsWith(':stalled')) ? 'stalled' : 'recurring'} alert is withdrawn (${ep.skewRowIdentities.map((id) => keyOf(id)).join(', ')} agree again)`
+            : `${this.closeNote(reason, ep, input)} — the earlier escalated alert no longer applies`)
+          : (reason === 'restored'
+            ? `machine-coherence restored — ${ep.skewRowIdentities.map((id) => keyOf(id)).join(', ')} now agree across ${[...this.episodeParticipants(ep)].map((m) => input.nicknameOf(m)).join(', ')}, held for ${this.cfg.resolveTicks} ticks`
+            : this.closeNote(reason, ep, input));
+        const silent = !notifying && this.cfg.silentResolveNote;
+        if (silent) this.countersCalm.silentResolves += 1;
+        noteAt[ep.attentionItemId] = input.now;
+        effects.push({ kind: 'resolve', itemId: ep.attentionItemId, note, silent });
+      } else {
+        this.countersCalm.resolveNotesSuppressed += 1;
+        effects.push({ kind: 'resolve-status', itemId: ep.attentionItemId });
+      }
+      // Every derived item resolves DONE (status-only — the close note carries
+      // the withdrawal language; no separate note per derived item).
+      for (const d of derived) effects.push({ kind: 'resolve-status', itemId: d });
     }
+
     this.counters.closes[reason] = (this.counters.closes[reason] ?? 0) + 1;
     this.resolveCleanTicks = 0;
     this.file.episode = null;
     this.persist();
-    this.log({ t: 'close', episodeId: ep.episodeId, reason });
+    this.log({ t: 'close', episodeId: ep.episodeId, reason, escalated: (ep.derivedItemIds?.length ?? 0) > 0, interacted: ep.operatorInteracted === true });
+  }
+
+  /** Any version key on these rows already past the stall ceiling (anchors read). */
+  private anyVersionKeyPastCeiling(rowIds: string[], _now: number): boolean {
+    const anchors = this.file.anchors;
+    if (!anchors) return false;
+    return rowIds.some((id) => {
+      if (dimensionOf(id) !== 'version') return false;
+      const e = anchors.entries[mkAnchorKey('version', keyOf(id))];
+      return !!e && e.skewOnsetAtMs !== 0 && e.activeSkewMs >= this.cfg.versionSkewStallCeilingMs;
+    });
+  }
+
+  /**
+   * Calm-copy body (calm-alerting M-P2): the observed skew + self-heal-in-
+   * progress + will-escalate-if-stalled. Deliberately NO fix-it/leave-it prompt
+   * — a decision prompt on a self-healing notice is the contradictory UX the
+   * round-1 review flagged; the prompt arrives with the stall/flap escalation.
+   */
+  private renderCalmBody(input: EpisodeReconcileInput, ep: EpisodeState): { title: string; summary: string; description: string } {
+    const nicks = [...this.episodeParticipants(ep)].map((m) => input.nicknameOf(m));
+    const keys = [...new Set(ep.skewRowIdentities.map((id) => keyOf(id)))].join(', ');
+    const summary = `My machines are briefly out of step (${keys}) while an update rolls across ${nicks.join(', ')} — self-heal is in progress.`;
+    const description = `${summary}\n\nNo action needed: the auto-updater is closing the gap and I'm watching it. If it stalls past the ceiling I'll escalate loudly with a decision prompt; if it keeps recurring I'll flag the pattern.`;
+    return { title: 'Machine coherence: syncing across machines (self-healing)', summary, description };
   }
 
   private closeNote(reason: EpisodeCloseReason, ep: EpisodeState, input: EpisodeReconcileInput): string {
@@ -567,11 +836,15 @@ export class MachineCoherenceEpisodeManager {
    * the conversational reply path. Suppresses the §4.4 escalation for this
    * episode; cleared on a genuine §4.5 recurrence re-open (b2).
    */
-  setOperatorAck(ack: boolean): void {
+  setOperatorAck(ack: boolean, opts?: { verifiedOperator?: boolean }): void {
     if (!this.file.episode) return;
     this.file.episode.operatorAck = ack;
+    // calm-alerting M-P2: the interacted bit requires the same evidence shape as
+    // approveFix — a caller that cannot assert a verified operator sets the ack
+    // (escalation suppression, today's contract) but NOT the interacted bit.
+    if (ack && opts?.verifiedOperator === true) this.file.episode.operatorInteracted = true;
     this.persist();
-    this.log({ t: ack ? 'operator-ack' : 'operator-ack-clear', episodeId: this.file.episode.episodeId });
+    this.log({ t: ack ? 'operator-ack' : 'operator-ack-clear', episodeId: this.file.episode.episodeId, verified: opts?.verifiedOperator === true });
   }
 
   /** A suspended episode past the expiry closes `expired-peer-gone` (§4.3). Called each tick by the sentinel. */

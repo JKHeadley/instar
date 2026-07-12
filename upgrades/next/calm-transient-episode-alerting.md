@@ -1,0 +1,23 @@
+<!-- bump: minor -->
+
+## What Changed
+
+The machine-coherence guard and the rope probe get the calm-alerting narration from the converged, operator-approved `calm-transient-episode-alerting` spec (4 review rounds, 24 material findings resolved). The whole behavior set ships behind the dev-agent gate (`monitoring.machineCoherence.calmEnabled` — LIVE on a development agent, DARK on the fleet; dark is bit-identical to today including zero durable-file changes). What the gate enables: (1) **M-P0 durable anchors** — identity-independent per-dimension clocks (onset, an active-skew accumulator with computable suspension, per-machine progress, flap history, escalation latches) persisted as additive fields in the existing episode file and computed on every machine, so version advances, restarts, peer dips, and raiser handoffs can no longer reset the loud arms; (2) **M-P1 progress-aware confirmation** — patch-only version skew extends its grace while the laggard makes gap-narrowing progress, with an unresettable 3 h stall ceiling; (3) **M-P2 calm narration** — routine self-healing episodes post silent NORMAL notices without a decision prompt, self-healed episodes resolve quietly (bounded notes), stalls/recurrences escalate via dedicated cap-exempt HIGH items with a complete lifecycle (they resolve on heal with a notifying stand-down), a cross-key wave backstop catches pile-ups, item status resolution is decoupled from the speaker role (no more orphaned items after handoff), and the operator-interacted bit is set only by evidence-carrying actions; (4) **M-P3 rope routing** — the prober declares informational-vs-actionable at the source, informational content demotes to the rope-health digest ONLY where the digest provably runs (live scheduler-handle conjunction — a promoted standby falls back to the hub), the digest gains a recovering-rope class, and both classes dedupe per rope per 24 h with visible "Nth episode" counters.
+
+## What to Tell Your User
+
+Nothing changes for you yet — this ships dark and is being lived with on the development machines first. Once it graduates (after a real update-wave verification and a before/after report), the effect you'll notice: routine software updates stop buzzing you about drift they're already fixing, and the alarms that DO reach you become trustworthy — a machine that's genuinely stuck, a problem that keeps coming back, or a real capability split, each with a clear decision to make and a clear stand-down note when it resolves itself.
+
+## Summary of New Capabilities
+
+- `monitoring.machineCoherence.calmEnabled` (dev-agate) + per-mechanism levers (`progressExtensionEnabled`, `flapBrakeEnabled`, `calmRaiseNotify`, `patchSkewPriority`, `silentResolveNote`, `calmWaveBackstopEnabled`, `versionSkewProgressWindowMs`, `versionSkewStallCeilingMs`, `skewFlapThreshold`, `calmWaveThreshold`).
+- `GET /pool/machine-coherence` gains the `calm` counters block (progressExtensions, ceilingConfirms, flapBrakeFires, calmRaises(Silent), silentResolves, resolveNotesSuppressed, waveBackstopFires, escalationRaiseFailed).
+- Attention items support `silent` (visible, no buzz) end-to-end; `updateAttentionStatus` gains a silent option.
+- `logs/sentinel-events.jsonl` gains the rope-notice row kind (demotions, fallbacks, dedupe events).
+- CLAUDE.md doc parity: fresh agents get the updated narration text; deployed agents get a content-update migration (keyed on the stale phrase) + the rope-row guidance entry.
+
+## Evidence
+
+- 234 tests green across 14 affected suites, including 17 anchor-arithmetic tests (identity-churn survival, participant-aware clear, blinking-laggard, singleton, ceiling-through-advances), 12 narration-semantics tests (calm/silent/interacted/escalated/bounded/wave), 11 rope-router tests (class routing, promoted-standby fallback, both-class dedupe), 3 executor pass-through wiring tests (the hardcoded-HIGH fix site), and 4 doc-parity migration tests (content-update idempotency).
+- Full `tsc --noEmit` clean.
+- Spec chain: converged (4 rounds, cross-model codex-cli/gpt-5.5 every round) + operator-approved 2026-07-12; convergence report at `docs/specs/reports/calm-transient-episode-alerting-convergence.md`.
