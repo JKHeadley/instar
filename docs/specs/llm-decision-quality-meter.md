@@ -2,6 +2,15 @@
 title: "LLM-Decision Quality Meter — uniform provenance + outcome grading"
 slug: "llm-decision-quality-meter"
 author: "echo"
+review-convergence: "2026-07-12T03:44:19.544Z"
+review-iterations: 7
+review-completed-at: "2026-07-12T03:44:19.544Z"
+review-report: "docs/specs/reports/llm-decision-quality-meter-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 13
+cheap-to-change-tags: 1
+contested-then-cleared: 2
 ---
 
 # LLM-Decision Quality Meter — uniform provenance + outcome grading
@@ -975,4 +984,7 @@ runtime and counts unknowns).
 
 ## Open questions
 
-*(none — all resolved into Frontloaded Decisions above)*
+*(none)*
+
+> All five original open questions were resolved into the Frontloaded Decisions above during
+> convergence (FD1–FD13).
