@@ -3,6 +3,15 @@ title: "Benchmark-Divergence Detector — real grades vs benchmark predictions (
 slug: "benchmark-divergence-detector"
 author: "echo"
 parent-principle: "Decision Provenance & Outcome Review"
+review-convergence: "2026-07-12T21:03:37.326Z"
+review-iterations: 4
+review-completed-at: "2026-07-12T21:03:37.326Z"
+review-report: "docs/specs/reports/benchmark-divergence-detector-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 13
+cheap-to-change-tags: 3
+contested-then-cleared: 6
 ---
 
 # Benchmark-Divergence Detector — real grades vs benchmark predictions
@@ -13,7 +22,7 @@ parent-principle: "Decision Provenance & Outcome Review"
 
 **Parent standard:** *Decision Provenance & Outcome Review* — whose rule text explicitly includes "graded real cases feeding its bench battery"; this detector is the review-the-outcomes-against-the-promise layer. Dual lineage acknowledged: the compounding-improvement signal it produces is squarely *Never-Waste Feedback — corrections compound*.
 
-**Dependency status (honest):** the LLM-Decision Quality Meter (`docs/specs/llm-decision-quality-meter.md`) is **operator-approved with PR #1458 OPEN, auto-merge armed on green CI — NOT yet merged**. HARD ORDERING CONSTRAINT: this build extends the meter's annotate-chokepoint and reads its tables, which have no target until #1458 merges; the detector cannot build/merge before the meter lands. Live *function* is additionally gated on the meter's `provenance.uniformSeam` being live and grades accumulating.
+**Dependency status (honest):** the LLM-Decision Quality Meter (`docs/specs/llm-decision-quality-meter.md`) — operator-approved, **PR #1458 MERGED 2026-07-12T20:46Z** — the build-ordering constraint (this spec extends the meter's annotate-chokepoint and reads its tables) is now SATISFIED. Live *function* remains gated on the meter's `provenance.uniformSeam` being live and grades accumulating.
 
 ## Problem statement
 
@@ -69,7 +78,7 @@ The improvement fork: a divergence routes to **fix-the-SYSTEM** (context/prompt)
 | Q0 template-hash precondition (FD6) | **invariant** | Hash equality under one pinned canonicalization + recorded-prompt uniformity; uncomputable ⇒ `hash-unverifiable`, never assumed faithful. |
 | Model-id normalization (FD5) + enrolled-pair join (FD2) | **invariant** | Fixed exact-match lookups; miss ⇒ fail-closed inert defaults; fuzzy forbidden. |
 | Peer-aggregate admission (FD9) | **invariant** | Deterministic type/range/volume clamps; implausible/excess ⇒ excluded + surfaced. |
-| Analyzer election (FD8) | **pass-through** | Reuses the existing serving-lease machinery; no new election logic. |
+| Analyzer election (FD8) | **invariant** | A deterministic pass-through of the existing serving-lease machinery (holder ⇒ run, non-holder ⇒ no-op/409); this spec adds NO new election logic, and the lease layer's own judgment/floors are governed by its own spec. |
 
 ## Multi-machine posture
 
@@ -116,7 +125,7 @@ CLAUDE.md template capability + proactive trigger; `migrateClaudeMd` twin (conte
 
 ## Open questions
 
-*(none — all resolved into Frontloaded Decisions; the operator's pending A-vs-A+B scope steer sequences Increment B and does not affect this build.)*
+*(none)*
 
 ## Parent audit
 
