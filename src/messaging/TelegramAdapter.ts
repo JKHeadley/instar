@@ -1308,6 +1308,13 @@ export class TelegramAdapter implements MessagingAdapter {
        *  hop (spec outbound-jargon-filepath-gap §2.5). Direct sends ignore it
        *  — the local route already consumed it. */
       kindMetadata?: Record<string, unknown>;
+      /** 'html' = the caller already produced ESCAPED Telegram HTML (e.g. the
+       *  attention-hub post) — the send carries `parse_mode: 'HTML'` +
+       *  `_formatMode: 'html'` so applyTelegramFormatter's markdown converter
+       *  does not re-escape the tags into literal `<b>`/`<i>` text (the
+       *  2026-07-11 attention-hub rendering bug). Direct sends only; a relayed
+       *  (tokenless-standby) send keeps today's default formatting. */
+      formatMode?: 'html';
     },
   ): Promise<SendResult> {
     const params: Record<string, unknown> = {
@@ -1341,6 +1348,15 @@ export class TelegramAdapter implements MessagingAdapter {
         throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
       }
       result = { message_id: relayed.messageId };
+    } else if (options?.formatMode === 'html') {
+      // Caller-authored, already-escaped Telegram HTML: one deterministic send.
+      // On a rare 400 (malformed entity), fall back to the plain-param send so
+      // the message still delivers (tags visible — never worse than the bug).
+      try {
+        result = await this.apiCall('sendMessage', { ...params, parse_mode: 'HTML', _formatMode: 'html' }) as { message_id: number };
+      } catch {
+        result = await this.apiCall('sendMessage', params) as { message_id: number };
+      }
     } else {
       try {
         result = await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' }) as { message_id: number };
@@ -3941,8 +3957,7 @@ export class TelegramAdapter implements MessagingAdapter {
       const detail = [
         `<b>${this.escapeHtml(item.category)}</b> | Priority: ${item.priority}`,
         ``,
-        this.escapeHtml(item.summary),
-        item.description ? `\n${this.escapeHtml(item.description.slice(0, 1000))}` : '',
+        ...attentionBodyBlocks(item.summary, item.description, 1000).map((b) => this.escapeHtml(b)),
         item.sourceContext ? `\n<i>Source: ${this.escapeHtml(item.sourceContext)}</i>` : '',
         ``,
         `Commands: /ack, /done, /wontdo, /reopen`,
@@ -4227,8 +4242,7 @@ export class TelegramAdapter implements MessagingAdapter {
       `${emoji} <b>${this.escapeHtml(item.title)}</b>`,
       `${this.escapeHtml(item.category)} | Priority: ${item.priority}`,
       ``,
-      this.escapeHtml(item.summary),
-      item.description ? `\n${this.escapeHtml(item.description.slice(0, 500))}` : '',
+      ...attentionBodyBlocks(item.summary, item.description, 500).map((b) => this.escapeHtml(b)),
       item.sourceContext ? `\n<i>Source: ${this.escapeHtml(item.sourceContext)}</i>` : '',
     ].filter(Boolean).join('\n');
 
@@ -4242,7 +4256,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (typeof injected === 'number' && injected > 0) {
       try {
-        await this.sendToTopic(injected, detail);
+        await this.sendToTopic(injected, detail, { formatMode: 'html' });
         return injected;
       } catch (err) {
         console.warn(`[telegram] attention hub send to injected topic ${injected} failed (${err}); self-healing a hub topic`);
@@ -4269,7 +4283,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await this.sendToTopic(topicId, detail).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
+    await this.sendToTopic(topicId, detail, { formatMode: 'html' }).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
     return topicId;
   }
 
@@ -5592,6 +5606,29 @@ export class TelegramAdapter implements MessagingAdapter {
 
     return data.result;
   }
+}
+
+/**
+ * The summary/description blocks of an attention-item post, WITHOUT the
+ * duplicated paragraph. Episode renderers (machine-coherence, rope probe)
+ * conventionally build `description` as `${summary}\n\n${...}` — rendering
+ * both repeated the same paragraph twice in every hub post (the 2026-07-11
+ * attention-hub duplication bug). When description starts with summary (or
+ * there is no description), exactly one copy renders. Pure for testability;
+ * blocks are UNESCAPED — the caller escapes each before splicing into HTML.
+ */
+export function attentionBodyBlocks(
+  summary: string | null | undefined,
+  description: string | null | undefined,
+  descriptionSlice: number,
+): string[] {
+  const s = (summary ?? '').trim();
+  const d = (description ?? '').trim();
+  if (!d) return s ? [s] : [];
+  const dSliced = d.slice(0, descriptionSlice);
+  if (s && d.startsWith(s)) return [dSliced];
+  // Leading \n preserves the original blank-line separation when joined by '\n'.
+  return s ? [s, `\n${dSliced}`] : [dSliced];
 }
 
 /**

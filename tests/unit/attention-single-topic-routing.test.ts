@@ -15,13 +15,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { TelegramAdapter, type TelegramConfig } from '../../src/messaging/TelegramAdapter.js';
+import { TelegramAdapter, type TelegramConfig, attentionBodyBlocks } from '../../src/messaging/TelegramAdapter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 interface Recorder {
   forumTopicsCreated: number;
   topicTitles: string[];
   messagesByThread: Map<number, string[]>;
+  /** Full sendMessage params per thread — lets tests assert parse_mode/_formatMode. */
+  sendParamsByThread: Map<number, Array<Record<string, unknown>>>;
   closedTopics: number[];
   failSendToThread: number | null;
 }
@@ -31,6 +33,7 @@ function installApiStub(adapter: TelegramAdapter): Recorder {
     forumTopicsCreated: 0,
     topicTitles: [],
     messagesByThread: new Map(),
+    sendParamsByThread: new Map(),
     closedTopics: [],
     failSendToThread: null,
   };
@@ -50,6 +53,9 @@ function installApiStub(adapter: TelegramAdapter): Recorder {
         const texts = rec.messagesByThread.get(tid) ?? [];
         texts.push(String(params.text ?? ''));
         rec.messagesByThread.set(tid, texts);
+        const allParams = rec.sendParamsByThread.get(tid) ?? [];
+        allParams.push({ ...params });
+        rec.sendParamsByThread.set(tid, allParams);
         return { message_id: threadSeq * 10 + texts.length };
       }
       if (method === 'closeForumTopic') {
@@ -127,6 +133,69 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(msg).toContain('x'.repeat(500));
     expect(msg).not.toContain('x'.repeat(501));
     expect(msg).toContain('<i>Source: rope-recovery-probe</i>');
+  });
+
+  it('the hub post rides parse_mode HTML + _formatMode html (the 2026-07-11 literal-tag fix)', async () => {
+    const HUB = 781;
+    makeAdapter({ getAttentionHubTopicId: () => HUB });
+    const rec = installApiStub(adapter);
+
+    await adapter.createAttentionItem({
+      id: 'hub-html-mode',
+      title: 'Machine coherence: my machines have drifted apart',
+      summary: 'drift summary',
+      category: 'machine-coherence',
+      priority: 'HIGH',
+      sourceContext: 'machine-coherence-guard',
+    });
+
+    const [params] = rec.sendParamsByThread.get(HUB)!;
+    // Without these two the default markdown formatter escapes the authored
+    // <b>/<i> tags and the user sees them as literal text in Telegram.
+    expect(params.parse_mode).toBe('HTML');
+    expect(params._formatMode).toBe('html');
+  });
+
+  it('a description that begins with the summary renders the paragraph ONCE (the 2026-07-11 duplication fix)', async () => {
+    const HUB = 782;
+    makeAdapter({ getAttentionHubTopicId: () => HUB });
+    const rec = installApiStub(adapter);
+
+    const summary = 'My machines have drifted apart — Mac Mini and Laptop aren\'t running as the same me.';
+    await adapter.createAttentionItem({
+      id: 'hub-dedupe',
+      title: 'Machine coherence',
+      summary,
+      // Episode renderers build description as `${summary}\n\n${fix}\n\n${tech}`.
+      description: `${summary}\n\nReply fix it and I will align them.\n\nTechnical detail:\nversion · instarVersion`,
+      category: 'machine-coherence',
+      priority: 'HIGH',
+    });
+
+    const [msg] = rec.messagesByThread.get(HUB)!;
+    const occurrences = msg.split('drifted apart').length - 1;
+    expect(occurrences).toBe(1); // summary paragraph exactly once
+    expect(msg).toContain('Reply fix it'); // the description tail still renders
+    expect(msg).toContain('Technical detail:');
+  });
+
+  it('a description that does NOT begin with the summary still renders both blocks', async () => {
+    const HUB = 783;
+    makeAdapter({ getAttentionHubTopicId: () => HUB });
+    const rec = installApiStub(adapter);
+
+    await adapter.createAttentionItem({
+      id: 'hub-both-blocks',
+      title: 'T',
+      summary: 'short impact line',
+      description: 'a longer independent explanation',
+      category: 'general',
+      priority: 'NORMAL',
+    });
+
+    const [msg] = rec.messagesByThread.get(HUB)!;
+    expect(msg).toContain('short impact line');
+    expect(msg).toContain('a longer independent explanation');
   });
 
   it('resolving a hub-routed item NEVER closes the shared hub topic', async () => {
@@ -230,5 +299,26 @@ describe('Single-alerts-topic routing (default mode)', () => {
     );
     const wirings = serverSrc.match(/getAttentionHubTopicId: \(\) => state\.get<number>\('agent-attention-topic'\) \?\? null/g) ?? [];
     expect(wirings.length).toBe(2);
+  });
+});
+
+describe('attentionBodyBlocks (pure) — summary/description dedupe', () => {
+  it('description starting with summary → one block (description only)', () => {
+    expect(attentionBodyBlocks('sum', 'sum\n\nmore detail', 500)).toEqual(['sum\n\nmore detail']);
+  });
+  it('identical summary and description → one block', () => {
+    expect(attentionBodyBlocks('same text', 'same text', 500)).toEqual(['same text']);
+  });
+  it('independent description → both blocks, blank-line separated', () => {
+    expect(attentionBodyBlocks('impact', 'independent detail', 500)).toEqual(['impact', '\nindependent detail']);
+  });
+  it('no description → summary only; nothing → empty', () => {
+    expect(attentionBodyBlocks('impact', null, 500)).toEqual(['impact']);
+    expect(attentionBodyBlocks('impact', undefined, 500)).toEqual(['impact']);
+    expect(attentionBodyBlocks('', '', 500)).toEqual([]);
+  });
+  it('description is clipped to the slice bound', () => {
+    const [only] = attentionBodyBlocks('s', 's' + 'x'.repeat(900), 500);
+    expect(only.length).toBe(500);
   });
 });

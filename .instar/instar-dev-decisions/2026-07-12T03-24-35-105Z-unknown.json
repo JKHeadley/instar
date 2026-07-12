@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-12T03:24:35.105Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 83,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot formatting/naming change: the escalation loop (episode-scoped escalate-once + P19 floor cadence) is unchanged — only the emitted string (nickname vs raw id) and the send formatting (parse_mode HTML, deduped body) changed. No new self-triggered action, retry, or cadence is introduced."
+  },
+  "verdict": "pass"
+}

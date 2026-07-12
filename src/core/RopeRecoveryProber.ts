@@ -76,6 +76,11 @@ export interface RopeRecoveryProberDeps {
   sendProbe: (target: RopeProbeTarget) => Promise<RopeProbeSendResult>;
   /** Escalate-once sink (deduped per (peer,kind,episode)). Absent = log-only. */
   raiseAttention?: (item: { id: string; title: string; body: string }) => unknown;
+  /** User-facing machine nickname for a peer id (registry `nickname`). The
+   *  escalation BODY must name machines by nickname, never by raw machine id
+   *  (rope-health alert contract: rope KIND + machine NICKNAME only). Absent
+   *  or null → fall back to the raw id (honest, but the 2026-07-11 noise). */
+  nicknameOf?: (machineId: string) => string | null;
   /** Feature-metrics sink (key `rope-recovery-probe`). Absent = no metrics. */
   recordMetric?: (event:
     | 'probe-sent' | 'probe-success' | 'probe-failure' | 'rope-recovered'
@@ -287,7 +292,7 @@ export class RopeRecoveryProber {
         this.escalate(
           `rope-probe-slow-alive:${peer}:${kind}:${ep.openedAt}`,
           `Mesh rope ${kind} answers probes but stays demoted`,
-          `The ${kind} rope to peer ${peer} has answered ${ep.unreclaimedSuccesses} consecutive recovery probes but has not reclaimed preferred status — latency above the reclaim bar. Probing continues at the floor cadence.`,
+          `The ${kind} rope to ${this.peerName(peer)} has answered ${ep.unreclaimedSuccesses} consecutive recovery probes but has not reclaimed preferred status — latency above the reclaim bar. Probing continues at the floor cadence.`,
         );
       }
     } else {
@@ -308,11 +313,25 @@ export class RopeRecoveryProber {
           this.escalate(
             `rope-probe-exhausted:${peer}:${kind}:${ep.openedAt}`,
             `Mesh rope ${kind} not recovering`,
-            `The ${kind} rope to peer ${peer} has failed ${ep.probeFailures} recovery probes; probing continues at the floor rate (${Math.round(this.cfg.floorMs / 60000)} min).`,
+            `The ${kind} rope to ${this.peerName(peer)} has failed ${ep.probeFailures} recovery probes; probing continues at the floor rate (${Math.round(this.cfg.floorMs / 60000)} min).`,
           );
         }
       }
     }
+  }
+
+  /** Nickname-first peer naming for escalation bodies (contract: rope KIND +
+   *  machine NICKNAME, never a raw machine id). Falls back to the raw id when
+   *  no resolver is wired or it has no nickname — a throwing resolver must
+   *  never break the probe loop. */
+  private peerName(machineId: string): string {
+    try {
+      const nick = this.d.nicknameOf?.(machineId);
+      if (typeof nick === 'string' && nick.trim().length > 0) return nick.trim();
+    } catch {
+      // @silent-fallback-ok — naming is cosmetic; the probe loop must not break.
+    }
+    return `peer ${machineId}`;
   }
 
   private escalate(id: string, title: string, body: string): void {

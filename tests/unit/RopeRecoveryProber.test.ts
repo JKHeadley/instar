@@ -25,7 +25,7 @@ interface Harness {
   clock: { t: number };
   probes: Array<{ at: number }>;
   logs: string[];
-  attention: Array<{ id: string; title: string }>;
+  attention: Array<{ id: string; title: string; body: string }>;
   metrics: string[];
   setProbeResult: (r: Partial<RopeProbeSendResult>) => void;
   tick: () => Promise<void>;
@@ -33,7 +33,7 @@ interface Harness {
   run: (durationMs: number, stepMs?: number) => Promise<void>;
 }
 
-function boot(opts: { dryRun?: boolean; floorMs?: number; exhaustAttempts?: number; midIntervalMs?: number; maxUnreclaimedSuccesses?: number; reopenEpisodeWindowMs?: number } = {}): Harness {
+function boot(opts: { dryRun?: boolean; floorMs?: number; exhaustAttempts?: number; midIntervalMs?: number; maxUnreclaimedSuccesses?: number; reopenEpisodeWindowMs?: number; nicknameOf?: (m: string) => string | null } = {}): Harness {
   const clock = { t: 1_000_000 };
   const resolver = new PeerEndpointResolver({
     config: {
@@ -53,7 +53,7 @@ function boot(opts: { dryRun?: boolean; floorMs?: number; exhaustAttempts?: numb
   });
   const probes: Array<{ at: number }> = [];
   const logs: string[] = [];
-  const attention: Array<{ id: string; title: string }> = [];
+  const attention: Array<{ id: string; title: string; body: string }> = [];
   const metrics: string[] = [];
   let result: RopeProbeSendResult = { typedSuccess: false, detail: 'refused', latencyMs: 20 };
   const prober = new RopeRecoveryProber(
@@ -65,11 +65,12 @@ function boot(opts: { dryRun?: boolean; floorMs?: number; exhaustAttempts?: numb
         return { ...result };
       },
       raiseAttention: (item) => {
-        attention.push({ id: item.id, title: item.title });
+        attention.push({ id: item.id, title: item.title, body: item.body });
       },
       recordMetric: (e) => {
         metrics.push(e);
       },
+      nicknameOf: opts.nicknameOf,
       now: () => clock.t,
       logger: (m) => logs.push(m),
     },
@@ -360,5 +361,46 @@ describe('RopeRecoveryProber — /health view rows', () => {
     expect(row.lastProbeAt).not.toBeNull();
     expect(row.nextProbeDueAt).toBeGreaterThan(row.lastProbeAt!);
     expect(JSON.stringify(row)).not.toContain('http');
+  });
+});
+
+describe('RopeRecoveryProber — escalation bodies name machines by NICKNAME (2026-07-11 raw-id fix)', () => {
+  it('slow-alive escalation body carries the nickname, never the raw machine id', async () => {
+    const h = boot({
+      midIntervalMs: 10_000, maxUnreclaimedSuccesses: 3, floorMs: 900_000,
+      nicknameOf: (m) => (m === PEER ? 'Laptop' : null),
+    });
+    killRope(h);
+    h.setProbeResult({ typedSuccess: true, latencyMs: 9_000 });
+    await h.tick();
+    await h.run(30_000, 10_000);
+    const [esc] = h.attention.filter((a) => a.id.startsWith('rope-probe-slow-alive'));
+    expect(esc).toBeDefined();
+    expect(esc.body).toContain('The tailscale rope to Laptop has answered');
+    expect(esc.body).not.toContain(PEER); // raw id never surfaces to the user
+  });
+
+  it('exhaustion escalation body carries the nickname too', async () => {
+    const h = boot({ exhaustAttempts: 3, midIntervalMs: 10_000, nicknameOf: () => 'Laptop' });
+    killRope(h);
+    h.setProbeResult({ typedSuccess: false });
+    await h.run(60_000, 10_000);
+    const [esc] = h.attention.filter((a) => a.id.startsWith('rope-probe-exhausted'));
+    expect(esc).toBeDefined();
+    expect(esc.body).toContain('The tailscale rope to Laptop has failed');
+    expect(esc.body).not.toContain(PEER);
+  });
+
+  it('no resolver (or no nickname) falls back to the raw id — and a THROWING resolver never breaks the probe loop', async () => {
+    const h = boot({
+      exhaustAttempts: 3, midIntervalMs: 10_000,
+      nicknameOf: () => { throw new Error('registry unreadable'); },
+    });
+    killRope(h);
+    h.setProbeResult({ typedSuccess: false });
+    await h.run(60_000, 10_000);
+    const [esc] = h.attention.filter((a) => a.id.startsWith('rope-probe-exhausted'));
+    expect(esc).toBeDefined();
+    expect(esc.body).toContain(`peer ${PEER}`); // honest fallback
   });
 });

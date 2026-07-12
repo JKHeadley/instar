@@ -5460,6 +5460,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             const ropeProber = new RopeRecoveryProber(
               {
                 resolver: meshResolver,
+                // Escalation bodies name machines by NICKNAME (rope-health alert
+                // contract), never by raw machine id — resolved from the same
+                // registry the targets come from.
+                nicknameOf: (machineId: string) => {
+                  try {
+                    return idMgr.loadRegistry().machines?.[machineId]?.nickname ?? null;
+                  } catch {
+                    // @silent-fallback-ok — naming is cosmetic; prober falls back to the id.
+                    return null;
+                  }
+                },
                 // The same validated registry view the transport dials: resolve()
                 // validates URL shape per kind + the LAN-subnet gate, so the probe
                 // can never dial a forbidden host.
