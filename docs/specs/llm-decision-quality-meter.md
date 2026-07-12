@@ -178,7 +178,10 @@ Design — two distinct layers (they were conflated in the first draft; they are
    - `promptId` (prompt identity — a hash/version tag; charset/length-clamped per §5.2),
    - optionally `onCorrelationId?: (id: string) => void` — fired by the ROUTER synchronously at MINT
      (entry, before the first attempt), exactly once per logical decision, INCLUDING decisions that
-     subsequently throw — never after the returned promise settles. The callsite persists the id in its
+     subsequently throw — never after the returned promise settles. The router invokes the callback
+     inside try/catch (a throwing callback is caught, counted, and never propagates — the decision
+     call is never failed by its audit trail, matching the documented `classifyVerdict` containment
+     contract, types.ts:1104-1110; SEC r5). The callsite persists the id in its
      OWN durable state for later outcome annotation (§5.3/§5.4). There is deliberately NO shared
      in-memory pending-outcome registry — an id nobody persists simply ages out as `unknown` (the
      unbounded-map leak class is precluded by design). (A router-bypassed call never fires the callback —
@@ -290,7 +293,12 @@ the concrete predicates below implement this).
   a root-of-`.instar` placement would churn an unignored file in a git-synced agent home and leak
   machine-specific pids across machines; INT r3). At-rest posture, explicit: 0600 via atomic
   tmp+fsync+rename writes with fail-closed reads (the ExternalHogArmStore posture,
-  ExternalHogArmStore.ts:89-101), backup-excluded, and the path is added to `NEVER_SERVED_PREFIXES`
+  ExternalHogArmStore.ts:89-101), backup-excluded BY ACTIVE ENTRY — the store's filename joins
+  `REMEDIATION_EXCLUDED_PATH_PREFIXES` (BackupManager.ts:89, the same mechanism that excludes the JP
+  dir) in this same PR, NOT by allowlist-absence alone, which an operator-added `includeFiles`
+  `state/` glob would defeat (SEC/INT r5 — a restored backup on another machine would reintroduce
+  stale machine-specific pid tuples the respawn predicate keys on) — and the path is added to
+  `NEVER_SERVED_PREFIXES`
   as the PROJECTDIR-RELATIVE literal `'.instar/state/external-hog-decisions.json'` (SEC r4 — the
   prefix list matches projectDir-rooted paths while BackupManager prefixes are stateDir-relative; the
   root divergence is the trap: a `'state/...'` literal is a production no-op, which is exactly what
@@ -302,12 +310,15 @@ the concrete predicates below implement this).
   Contents are content-free (hashes, pids, timestamps, enums).
   Per-ledgerKey the store holds `{ verdict (classifier), enacted, correlationId, atMs, targetTuple
   (the candidate's OWN pid + start-time — the spoof-proof identity §5.4's predicates key on),
-  ownerTuple — recorded MEMBER-WISE (ADV r4): `parentPid` is ALWAYS recorded on kill decisions, since
-  `parseParentPid` succeeded for every permitted kill by construction (FactBuilder:74 vetoes a null
-  parse), while `parentStartTime` is recorded where derivable and absent in the dominant orphan-kill
-  case (no live parent to stamp; §5.4's ordering test keys on the recorded parent PID plus the killed
-  child's own start-time, so the rule stays evaluable either way), floorPermitted, commandHash }` for
-  BOTH kill and leave
+  ownerTuple — recorded MEMBER-WISE (ADV r4): `parentPid` is ALWAYS recorded on ENACTED kills
+  (`killed`/`sigterm-exited` — equivalently every floorPermitted kill; ADV r5 precision: a
+  floor-VETOED kill verdict whose veto came from a null parse legitimately has no parentPid, so the
+  store write must not hard-assert `verdict==='kill' ⇒ parentPid` — the always-in-hand guarantee is
+  that `parseParentPid` succeeded for every PERMITTED kill by construction, FactBuilder:74 vetoes a
+  null parse), while `parentStartTime` is recorded where derivable and absent in the dominant
+  orphan-kill case (no live parent to stamp; §5.4's ordering test keys on the recorded parent PID plus
+  the killed child's own start-time, so the rule stays evaluable either way), floorPermitted,
+  commandHash }` for BOTH kill and leave
   verdicts. **`enacted` covers the sentinel's REAL disposition space** (LES r3 — verified against
   ExternalHogScanTick.ts:160-227): `killed | sigterm-exited | would-kill | deferred | aborted |
   alert-only-model-spared | alert-only-floor-veto | alert-only-breaker-held | alert-only-governor-hold |
@@ -359,8 +370,11 @@ write-integrity rules, or the meter is gameable by construction:
    grades so aggregates cannot imply stronger correctness than the evidence supports). An annotation's
    `gradedBy` carries component + ruleId; the rung comes from the registry — an annotation claiming a
    ruleId whose registered rung disagrees, or an unregistered ruleId, is REJECTED and counted (the same
-   closure move as the grade-enum validation). §5.3's enacted-disposition annotations use registered
-   `self-report`-rung rules by construction.
+   closure move as the grade-enum validation). **Registry rows additionally carry the rule's OWNING
+   component** (ADV r5 — the last trusted label in this section): the annotate chokepoint rejects an
+   annotation whose `gradedBy.component` is not the ruleId's registered owner, so a confused in-process
+   annotator cannot inherit another rule's rung/precedence by claiming its id. §5.3's
+   enacted-disposition annotations use registered `self-report`-rung rules by construction.
 3. **Precedence (conflict resolution):** `deterministic-ground-truth` > `recurrence` > `llm-interpreter`
    > `self-report`. A self-reported outcome NEVER overrides an independent grader. **Within-rung
    conflicts** (two different components at the same rung) resolve conservatively: `wrong` > `unknown` >
@@ -459,7 +473,8 @@ singleton reaches any instance):
 `decision_outcomes`; `provenance.quality.rollupRetentionDays` (default 90) governs the rollup. Each
 table gets its own batched prune method (the host's per-table pattern: `pruneOlderThan` :786 /
 `pruneSpendRollup` :815, PRUNE_BATCH-bounded), driven by the existing AgentServer boot + 6h unref'd
-prune timer (AgentServer.ts:1458-1466) — **whose construction condition gains a quality arm** (today it
+prune timer (AgentServer.ts:1457-1464; anchors re-grounded at build time — INT r5 noted ±2-line
+drift on three cites, mechanisms verified real) — **whose construction condition gains a quality arm** (today it
 is created only under `retentionDays > 0 || routingSpendOn`; without the arm, an agent with
 featureMetrics retention 0 would never prune the quality tables — INT/LES r3).
 
@@ -475,7 +490,10 @@ orphan outcome is never counted as a graded decision.
 (right/wrong/unknown/expired), grade-by-rule breakdown, grade-by-rung AND grade-by-evidence-strength
 breakdowns (proof-like vs heuristic grades are never conflated in aggregates — codex r3; the DEFAULT
 aggregate view groups by evidence strength FIRST, so the headline number a reader sees is
-strength-segmented, never a blended rate — codex r4), per-point
+strength-segmented, never a blended rate — codex r4; and any aggregate whose graded-decision count is
+below a minimum sample threshold — `provenance.quality.minSampleForRates`, default 20 — is served with
+an explicit `insufficient-evidence: true` marker beside the raw counts, so three data points can never
+read as an actionable rate — codex r5), per-point
 volume/sampling class (so mixed-class ratios aren't misread), attribution columns (model/framework/
 prompt_id) on each row, census debt counts incl. `pending-ref-dead` flags (§5.6),
 `orphanOutcomes`/`joinMiss`/`droppedByBudget` counters, and the wired-but-silent + exempt-but-active
@@ -516,7 +534,11 @@ advanced boundary) — it never messages, never interprets. The endpoint:
   pagination `ORDER BY (ts, correlation_id)` with the compound cursor as the page boundary (same-ms
   bursts cannot skip rows at a page boundary),
 - bounded per run (`maxDecisionsPerPass`, default 200; any JSONL access is streamed line-by-line under
-  a row budget, never whole-file sync parses),
+  a row budget, never whole-file sync parses). Fairness honesty (ADV r5): the bound is GLOBAL, not
+  per-point — with this build's two low-frequency full-class customers starvation is unreachable, but
+  a future high-volume enrolled point could consume whole passes while sibling points' evidence
+  windows expire; when a third point enrolls, the pass gains a per-point sub-budget (round-robin over
+  cursors) — stated now so the limitation is a named residual, not a surprise,
 - upserts grades per §5.4 (idempotent by key — re-runs converge, never multiply; concurrent job-tick +
   operator curl converge by the same idempotency),
 - spends zero LLM tokens in this build (deterministic rules only); when ACT-1198 activates the LLM rung
@@ -544,11 +566,21 @@ runtime and counts unknowns).
 
 - **Enrollment key convention:** each enrolled decision point uses a 1:1 `attribution.component` key
   (the existing `CompletionEvaluator` vs `CompletionEvaluator/P13` suffix pattern) so per-point metric
-  counts exist and the runtime flags below compare like with like.
+  counts exist and the runtime flags below compare like with like. **The 1:1 convention is a census-test
+  ASSERTION, not prose** (ADV r5): each wired decision point's component key must be UNIQUE across
+  census entries — so a second judgment added inside an already-declared component that reuses the
+  sibling's key becomes lint-visible the moment the new point is declared or enrolls, instead of hiding
+  under the sibling's coverage. Honest bound, stated: an UNENROLLED, UNDECLARED new point that reuses a
+  declared sibling's component key is caught at code review, not by the ratchet — the discovery chain
+  is component-keyed (the bench precedent's granularity), and this is the named residual of that
+  inheritance.
 - **Closed exemption taxonomy** (an exemption is a classification, not an essay):
   `deterministic-only` (no LLM verdict at this point) | `no-decision-content` (nothing reconstructable
   beyond what feature_metrics already records) | `operator-ratified:<resolvable-ref>`. Free-text
-  exemptions are refused by the ratchet.
+  exemptions are refused by the ratchet. **The exempt baseline is pinned shrink-only, like pending**
+  (ADV r5 — the bench precedent pins BOTH baselines; `no-decision-content` is the soft spot since it
+  is deliberately excluded from exempt-but-active, so review is its only runtime guard): adding or
+  re-classifying an exempt entry is a reviewed baseline change.
 - **`pending:<ACT>` — the honest two-layer check** (the evolution queue is AGENT-RUNTIME state,
   unreachable from repo CI; three reviewers independently established the r3 draft's "fails CI" was
   unimplementable as written): **CI (static, hermetic):** format-validated ACT refs, the pinned
@@ -612,7 +644,10 @@ runtime and counts unknowns).
   becomes UNCONDITIONAL (a dir + a buffered appender — pure machine-local observability; construction
   uses only stateDir/config/logger, zero mesh inputs, and the hoisted variable at server.ts:837 is
   already passed unconditionally at :22892 — only the assignment moves). The `/judgment-provenance`
-  503 text ("not constructed (single-machine / pool dark)", routes.ts:15011) is updated to match. The
+  503 text ("not constructed (single-machine / pool dark)", routes.ts:15011) is updated to match —
+  and so is the `/judgment-provenance` CapabilityIndex entry (CapabilityIndex.ts:125 hardcodes the
+  same now-obsolete 503 cause; INT r5, Agent Awareness Standard — deployed agents' self-awareness
+  text must not describe semantics FD9 removes). The
   two existing mesh-block callsites keep their optional-chaining writes unchanged.
 - **Machine-coherence posture:** the flag does NOT automatically "participate like sibling flags" — the
   manifest is a closed enumerated list. Deliverable: a `COHERENCE_MANIFEST_EXCLUSIONS` row for
@@ -629,7 +664,7 @@ runtime and counts unknowns).
 - Grading job manifest ships `enabled:false` (cost-bearing job class). Config keys nested under the
   existing `provenance` block (types.ts:4167): `provenance.quality.{decisionRetentionDays,
   rollupRetentionDays, maxDecisionsPerPass, evidenceWindowHours, gradingSlackHours,
-  wiredSilentMinCalls}` — tuning knobs, cheap-to-change-after (dark feature, no external effect; the
+  wiredSilentMinCalls, minSampleForRates}` — tuning knobs, cheap-to-change-after (dark feature, no external effect; the
   hog store's retention DERIVES from evidenceWindowHours + gradingSlackHours per §5.3, and a window
   change mints new rule versions per §5.4.5, so the knobs cannot be tuned into silent un-grading or
   silent semantic drift).
@@ -644,7 +679,7 @@ runtime and counts unknowns).
 - **Config:** `migrateConfig` is a deliberate NO-OP for `provenance.uniformSeam.enabled` (omit-required,
   §5.7). The `provenance.quality.*` tuning keys are also unseeded (inline defaults).
 - **Job:** the `llm-decision-grading.md` template is picked up on fresh install (init.ts:448) AND on
-  every update (`PostUpdateMigrator.migrateBuiltinJobs` :3713, honoring operator-disabled state) — no
+  every update (`PostUpdateMigrator.migrateBuiltinJobs` :3707, honoring operator-disabled state) — no
   dedicated migration needed; stated so the parity requirement is visibly satisfied, not assumed.
 - **Hooks / hook scripts / built-in skills: none touched** (stated so the six-point enumeration is
   visibly complete). All migrations named here are idempotent (content-sniff / existence-check /
@@ -676,7 +711,10 @@ runtime and counts unknowns).
   boot + 6h-timer periodic reconcile self-repair, expired derived at read); P19 sustained-failure test
   for unknown-regrade backoff + terminal `expired` give-up; clamps (decision-field bounding,
   optionsPresented/verdict_class/promptId charset clamps, evidence ≤500, context head 300);
-  kind-scoped verdict_id query lint.
+  kind-scoped verdict_id query lint; `onCorrelationId`-throw containment (a throwing callback is
+  caught + counted, the decision call succeeds — SEC r5); annotate-chokepoint owner rejection
+  (`gradedBy.component` ≠ the ruleId's registered owning component → rejected + counted — ADV r5);
+  insufficient-evidence marker on both sides of the `minSampleForRates` boundary (codex r5).
 - **Redaction/scrub semantic suite (the security posture IS test-shaped):** a seam-written row never
   serves raw model output or argv fragments (hog context excludes argv — asserted on realistic
   ExternalHogFacts incl. positional-password shapes); `contextFull` never crosses `readRedacted` or the
@@ -699,10 +737,12 @@ runtime and counts unknowns).
   injection present; COHERENCE_MANIFEST_EXCLUSIONS row present; prune-timer construction condition
   includes the quality arm.
 - **Ratchet fixtures:** PROVENANCE_COVERAGE declare/undeclared/exempt-taxonomy cases; pending-ACT
-  STATIC checks (format, pinned shrink-only, identity-change review); typed-import verification
-  positive + negative (string-literal-only decision point fails); rung-registry enum pinning;
-  census-debt counts + pending-ref-dead + wired-but-silent + exempt-but-active flags on route
-  (integration tier for the runtime liveness half).
+  STATIC checks (format, pinned shrink-only, identity-change review); EXEMPT baseline pinned
+  shrink-only (ADV r5); component-key UNIQUENESS across census entries — a second point declaring a
+  sibling's key fails the census test (ADV r5); typed-import verification
+  positive + negative (string-literal-only decision point fails); rung-registry enum pinning (+ the
+  owning-component column); census-debt counts + pending-ref-dead + wired-but-silent +
+  exempt-but-active flags on route (integration tier for the runtime liveness half).
 - **Existing-test sweep (behavior-changes-break-old-tests):** stamping verdict_id on every llm row
   changes the pinned NULL-world — `tests/unit/CircuitBreaking-feature-metrics-tap.test.ts` + ledger
   tests are updated in the same PR; full tests/ sweep before push.

@@ -45,7 +45,9 @@ Three connected pieces:
    how many decisions, how many outcomes known, how many right vs wrong vs honestly unknown, trending
    which way. That's exactly the data needed to decide "this gate needs a bigger model" or "this
    prompt needs work". The headline numbers are grouped by evidence strength FIRST — a rate backed by
-   hard proof is never blended with one backed by heuristics into a single misleading percentage.
+   hard proof is never blended with one backed by heuristics into a single misleading percentage —
+   and any figure built on too few graded decisions says "insufficient evidence" outright instead of
+   letting three data points masquerade as a trend.
    The trend is kept as small, content-free daily counts that live ~90 days — long enough to actually
    answer "over time" — while the detailed records keep their short 14-day life. The view reads from
    small indexed database tables written at decision time; it never re-parses the raw journal files
