@@ -89,10 +89,13 @@ whether a bigger model or a prompt change is warranted. Today that judgment is i
 - No full-content transcript retention beyond the provenance log's existing machine-local,
   retention-bounded, never-HTTP-served-raw posture — hardened here with content classes (§5.2/§5.6):
   message-carrying decision points store identity (hash/pointer + bounded head), never full bodies.
+  (Deliberate reading of the parent rule, stated for the record: "logs the full context it was handed"
+  is satisfied by identity + bounded code-derived features under the rule's own containment contract —
+  a full-body archive would violate the containment the same standard ratified; converged round 2.)
 - Not retrofitting all ~60+ decision points in one PR: the uniform seam + the named high-stakes sites +
   a census that makes the remaining retrofit backlog visible, ratcheted, AND re-surfaced (census debt
-  counts on the read surface; pending refs liveness-checked — no silent skips, no permanent pinned
-  backlog).
+  counts on the read surface; pending refs liveness-checked agent-side — no silent skips, no permanent
+  pinned backlog).
 
 ## Proposed design
 
@@ -118,13 +121,18 @@ Recon-established facts (all verified on upstream/main @ 61d24370a):
 Design — two distinct layers (they were conflated in the first draft; they are not the same thing):
 
 **Layer A — automatic correlation (zero callsite edits, always-on).**
-1. `IntelligenceRouter.evaluate` mints a per-DECISION correlation id UNCONDITIONALLY at entry —
-   overwriting any inbound value on the options object (a caller can never inject a chosen id; FD8) —
-   and threads it down through an internal `IntelligenceOptions` field. Every swap-attempt metric row of
-   the same decision stamps the SAME id into `verdict_id`. Id format: collision-resistant
+1. `IntelligenceRouter.evaluate` mints a per-DECISION correlation id UNCONDITIONALLY at entry. The mint
+   and its per-call mint marker are attached to a router-INTERNAL clone of the options object — the
+   caller-visible object is NEVER mutated, so a reused shared options object can never carry a stale
+   marked id into a later call (SEC r3); any inbound correlation-id value on the caller's object is
+   ignored. The id threads down through the internal clone; every swap-attempt metric row of the same
+   decision stamps the SAME id into `verdict_id`. Id format: collision-resistant
    (`crypto.randomUUID()`-based), NEVER time+seq. Router-minted ids use the `d-` prefix; on
-   multi-machine installs a machineId segment is included (`d-<machineId8>-<uuid>`; single-machine
-   installs omit the segment) — the FD10 forward path reads the owning machine from it.
+   multi-machine installs a machineId segment is included (`d-<machineId8>-<uuid>`) — machineId8 = the
+   first 8 chars of the pool/mesh self machine id (the id `pool.machines[]` resolves), injected at
+   AgentServer construction beside the recorder singleton; when no pool machine id exists
+   (single-machine install) the segment is omitted. The FD10 forward path reads the owning machine from
+   it.
    **One decision row per `router.evaluate()` invocation, by design:** router-INTERNAL retries
    (deferrable backoff, the swap tail) are one decision; caller-level retries or re-invocations above
    the router are DISTINCT decisions, each settling honestly. A component whose one human-visible
@@ -132,22 +140,25 @@ Design — two distinct layers (they were conflated in the first draft; they are
    composition in its census entry (§5.6) — one decision point per call, linked by the component key.
 2. Floor: a funnel-wrapped provider used DIRECTLY (router bypassed) reaches the breaker without a
    router mint marker; the breaker treats ANY inbound correlation id as absent unless that per-call mint
-   marker is present (an unmarked id is discarded — the documented/accidental injection path is closed;
-   hostile same-process code is out of threat-model scope) and mints locally with the distinct `b-`
-   prefix (`b-<machineId8>-<uuid>`). Provenance-of-mint is thus derivable from the id itself on every
-   metric row — no new metrics column. Honesty note (amending the first draft's overclaim): N retries by
-   a router-bypassing caller get N breaker-minted ids and read as N decisions — the floor guarantees
-   *no row is uncorrelated*, not that correlation is always decision-accurate. Decision-accurate
-   correlation requires the router path; the census (§5.6) declares router-bypassing points as `pending`
-   until they route. `b-`-prefixed ids never enter the joinMiss→expired mapping (§5.5) — they are
-   known-unenrolled by construction.
+   marker is present, and CONSUMES the marker single-use on acceptance (an unmarked or marker-less id is
+   discarded — the documented/accidental injection path is closed on every route; hostile same-process
+   code is out of threat-model scope), minting locally with the distinct `b-` prefix
+   (`b-<machineId8>-<uuid>`; same machineId8 source, injected into the funnel wrapper). Provenance-of-
+   mint is thus derivable from the id itself on every metric row — no new metrics column. Honesty note
+   (amending the first draft's overclaim): N retries by a router-bypassing caller get N breaker-minted
+   ids and read as N decisions — the floor guarantees *no row is uncorrelated*, not that correlation is
+   always decision-accurate. Decision-accurate correlation requires the router path; the census (§5.6)
+   declares router-bypassing points as `pending` until they route. `b-`-prefixed ids never enter the
+   joinMiss→expired mapping (§5.5) — they are known-unenrolled by construction.
 3. Minting and `verdict_id` stamping are ALWAYS-ON (not gated by `provenance.uniformSeam`): the id is an
    opaque mint with no decision content — stamping it is a NULL→value change on an existing column whose
    llm-kind population has zero readers. Rationale: correlation data accumulates during the dark soak,
    and rollback semantics stay trivial (§5.7). Single-writer rule for the column, SCOPED TO llm-kind
    rows (FD8): the minted correlation id ALWAYS occupies `verdict_id` on `kind:'llm'` rows; event-kind
    rows keep their existing semantic verdictId use untouched, and every decision-quality join filters
-   `kind='llm'`. A caller-supplied `classifyVerdict.verdictId` NO LONGER lands in the column — if
+   `kind='llm'` — pinned by a repo lint/test asserting every query touching `verdict_id` is kind-scoped
+   (codex r3; the polymorphic column is the accepted tradeoff, the kind-scope discipline is enforced,
+   not hoped). A caller-supplied `classifyVerdict.verdictId` NO LONGER lands in the column — if
    supplied, the seam records it as `callerRef` INSIDE the provenance row's context (the scrubbed,
    clamped path — deliberately not a new top-level served field), and the types.ts:1112 doc is updated
    in the same PR.
@@ -155,23 +166,26 @@ Design — two distinct layers (they were conflated in the first draft; they are
 **Layer B — provenance enrollment (per-callsite contract, opt-in, gated).**
 4. An enrolling callsite adds an additive `options.provenance` block. The MINIMUM integration contract a
    callsite owes (this is real per-callsite work — enrollment is NOT zero-edit):
-   - `decisionPoint` (stable id, matches its census entry, §5.6),
+   - `decisionPoint` (stable id, IMPORTED from the census module — §5.6's typed registration; the
+     settlement write additionally validates decisionPoint ∈ census and counts unknowns),
    - `context` (built via its content class's envelope BUILDER, §5.2 — callsites do not hand-roll
      envelopes),
    - `optionsPresented` (the bounded action space shown to the model — static, code-authored,
      enum-like labels; charset/length-clamped per §5.2),
-   - `promptId` (prompt identity — a hash/version tag, additive schema field per §5.2),
+   - `promptId` (prompt identity — a hash/version tag; charset/length-clamped per §5.2),
    - optionally `onCorrelationId?: (id: string) => void` — fired by the ROUTER synchronously at MINT
      (entry, before the first attempt), exactly once per logical decision, INCLUDING decisions that
      subsequently throw — never after the returned promise settles. The callsite persists the id in its
      OWN durable state for later outcome annotation (§5.3/§5.4). There is deliberately NO shared
      in-memory pending-outcome registry — an id nobody persists simply ages out as `unknown` (the
-     unbounded-map leak class is precluded by design).
+     unbounded-map leak class is precluded by design). (A router-bypassed call never fires the callback —
+     the breaker strips the provenance block; such points are census-`pending` by rule.)
 5. **Write-once rule (FD7):** the provenance decision row is written by the ROUTER at decision
    SETTLEMENT. Settlement is EVERY `evaluate()` exit — ladder success, ladder-final failure, the
-   `!cfg` early return, the provider-unavailable degrade arm, and the `enforcedNoRoute` throw — so an
-   enrolled decision always yields exactly ONE row no matter which exit fires (the degrade arm fires on
-   every binary-missing agent; it is not an edge case). The row combines the caller's provenance block,
+   `!cfg` early return, the provider-unavailable degrade arm, the `enforcedNoRoute` throw, the
+   `RouterFailClosedError` rethrow, and the fallback-`'none'` unavailable throw — so an enrolled
+   decision always yields exactly ONE row no matter which exit fires (the degrade arm fires on every
+   binary-missing agent; it is not an edge case). The row combines the caller's provenance block,
    the settled attempt's classified verdict (from `classifyVerdict` where implemented; else
    `decision:'unclassified'` — the raw-response head goes into `context`, scrubbed and clamped to 300
    chars, NEVER into the served `decision` field), the settled attempt's usage/model/door, the
@@ -210,11 +224,13 @@ New serve-discipline invariants (these are code invariants with semantic tests, 
   callsite's declared `optionsPresented` space, an error class, or the fixed marker `'unclassified'`.
   Raw model output NEVER lands in `decision`, `optionsPresented`, or `floor` (the unscrubbed served
   fields) — raw heads live in `context` (scrubbed, 300-char clamp).
-- **`optionsPresented` entries and every written `verdict_class` value are static, code-authored,
-  enum-like labels** — charset/length-clamped at the settlement write (`^[a-zA-Z0-9_-]{1,64}$`);
-  a violating value is replaced with `'unclassified'` and counted. Runtime data interpolated into an
-  option label cannot reopen the raw-content channel through the served fields or the "content-free"
-  quality table (SEC r2).
+- **`optionsPresented` entries, every written `verdict_class` value, AND `promptId` are static,
+  code-authored, enum-like labels** — charset/length-clamped at the settlement write
+  (`^[a-zA-Z0-9_-]{1,64}$`); a violating value is replaced with `'unclassified'` (or, for promptId, a
+  fixed `'unlabeled-prompt'` marker) and counted. Runtime data interpolated into a caller-authored
+  label cannot reopen the raw-content channel through the served fields or the "content-free" quality
+  table — promptId is the one attribution column a CALLSITE authors, so it pays the same clamp as the
+  other caller-authored served values (SEC r3; model/framework are code-derived and exempt).
 - **Content classes** (declared per decision point in the census, §5.6), each with a code-provided
   **envelope builder** so callsites cannot hand-roll their context shape:
   - `metadata` — context is code-authored facts (ids, hashes, booleans, numbers, enums). The default.
@@ -227,11 +243,11 @@ New serve-discipline invariants (these are code invariants with semantic tests, 
     store's containment posture was ratified for admission metadata, and this rule is what keeps the
     retrofit from silently changing what `contextRedacted` exposes over HTTP.
   - Concretely for the first customers: external-hog context carries commandHash/ledgerKey/classId,
-    process name, floor booleans, CPU numbers, AND the code-derived owner tuple (parent pid + parent
-    start-time — numbers, not attacker text; §5.4's respawn predicate requires it) — raw argv is
-    EXCLUDED (hashed; the floor needs argv, the provenance row does not). Completion-judge context
-    carries the transcript-slice IDENTITY (hash + bounds) + the StopSignals corroboration block, never
-    transcript text.
+    process name, floor booleans, CPU numbers, AND the code-derived process identity tuples §5.3/§5.4
+    require (the candidate's own pid + start-time; the named parent's pid + start-time where derivable
+    — numbers, not attacker text) — raw argv is EXCLUDED (hashed; the floor needs argv, the provenance
+    row does not). Completion-judge context carries the transcript-slice IDENTITY (hash + bounds) + the
+    StopSignals corroboration block, never transcript text.
 - **Outcome evidence notes are clamped at annotate time** (≤500 chars) with pointer discipline (ids,
   hashes, enum reasons — never message bodies); FD3's "nuance lives in the outcome payload" means
   structured fields + pointers, not prose dumps. `evidence_note` is NOT part of any `/decision-quality`
@@ -239,7 +255,9 @@ New serve-discipline invariants (these are code invariants with semantic tests, 
   crosses is the existing redacted `/judgment-provenance` read (scrubbed at write).
 - **Dry-run logging is metadata-only**: the dryRun stage (§5.7) logs component, decisionPoint, byte
   sizes, volume-class disposition — NEVER context content into server.log (that would violate the very
-  posture the 0700/0600 store exists to contain).
+  posture the 0700/0600 store exists to contain). While `dryRun` holds, the seam suppresses BOTH the
+  provenance JSONL row AND the SQLite quality/outcome writes — would-write logs are the only output
+  (the safe reading; DC r3).
 
 ### 5.3 High-stakes first customers — operational wiring (anchors verified)
 
@@ -259,19 +277,43 @@ the concrete predicates below implement this).
   needs does not exist: the P19 kill-ledger state is in-memory-only and re-initialized empty at
   construction (ExternalHogSentinel.ts:117), holds kill records only (leave-alives write nothing,
   ExternalHogScanTick.ts:217), and its retention is a hardcoded 1h (commands/server.ts:18000) — shorter
-  than the 6h evidence window): `<stateDir>/external-hog-decisions.json`, atomic tmp+rename writes with
-  fail-closed reads (the ExternalHogArmStore posture, ExternalHogArmStore.ts:89-91), holding
-  per-ledgerKey `{ verdict (classifier), enacted (killed|alert-only-model-spared|alert-only-floor-veto|
-  alert-only-breaker-held|alert-only-governor-hold), correlationId, atMs, ownerTuple (parentPid +
-  parentStartTime), floorPermitted (was a kill floor-available at decision time), commandHash }` for
-  BOTH kill and leave verdicts; pruned on write at `max(evidenceWindowMs, killLedgerBreakerWindowMs)`
-  (the evidence window is the config knob — the store's retention DERIVES from it, so tuning
-  `evidenceWindowHours` can never silently outrun the carrier); hydrated at sentinel construction. The
-  in-memory P19 kill-breaker ledger is left untouched (the brake is not coupled to the new file).
-  **Slot semantics:** the store holds the LATEST decision per ledgerKey; a superseded earlier decision's
-  id ages out as `unknown` (stated, not silent). Positive-evidence grading (respawn / re-flag) runs in
-  the NEXT scan ticks; window-close grading (`*-right-v1` rules) runs in the grading job reading THIS
-  store.
+  than the 6h evidence window): **`<stateDir>/state/external-hog-decisions.json`** — under the
+  `.instar/state/` runtime-state subdir (rides the existing gitignore; the same subdir the JP log uses —
+  a root-of-`.instar` placement would churn an unignored file in a git-synced agent home and leak
+  machine-specific pids across machines; INT r3). At-rest posture, explicit: 0600 via atomic
+  tmp+fsync+rename writes with fail-closed reads (the ExternalHogArmStore posture,
+  ExternalHogArmStore.ts:89-101), backup-excluded, and the path is added to `NEVER_SERVED_PREFIXES` —
+  the store is grading GROUND TRUTH, and the dashboard file editor must not be able to rewrite it
+  (serve-deny implies edit-deny; SEC r3). Contents are content-free (hashes, pids, timestamps, enums).
+  Per-ledgerKey the store holds `{ verdict (classifier), enacted, correlationId, atMs, targetTuple
+  (the candidate's OWN pid + start-time — the spoof-proof identity §5.4's predicates key on),
+  ownerTuple (named parent pid + parent start-time, where derivable — the dominant orphan-kill case has
+  no live parent to stamp, recorded as absent), floorPermitted, commandHash }` for BOTH kill and leave
+  verdicts. **`enacted` covers the sentinel's REAL disposition space** (LES r3 — verified against
+  ExternalHogScanTick.ts:160-227): `killed | sigterm-exited | would-kill | deferred | aborted |
+  alert-only-model-spared | alert-only-floor-veto | alert-only-breaker-held | alert-only-governor-hold |
+  decider-unavailable`. Only `killed`/`sigterm-exited` enter the kill-grading rules;
+  `would-kill`/`deferred`/`aborted`/`decider-unavailable` decisions age out `unknown` — and stated
+  plainly: during the watch-only dev soak EVERY kill verdict enacts as `would-kill`, so kill-grade
+  volume arrives only after a PIN-arm (the soak still exercises the store, the leave rules, and the
+  enacted self-reports).
+  **Retention:** pruned on write at `max(evidenceWindowMs + gradingSlackMs, killLedgerBreakerWindowMs)`
+  — the grading slack (default 2h, ≥ 2× the grading job's default hourly cadence) closes the race where
+  an entry becomes gradeable at exactly the age it becomes prunable (DC r3); the evidence window is the
+  config knob and the store's retention DERIVES from it, so tuning `evidenceWindowHours` can never
+  silently outrun the carrier. Hydrated at sentinel construction. The in-memory P19 kill-breaker ledger
+  is left untouched (the brake is not coupled to the new file).
+  **Slot semantics:** per ledgerKey the store holds the LATEST decision PLUS any in-window kill decision
+  (a kill's evidence slot is never evicted by later same-key decisions before its window closes — a
+  same-commandHash flood cannot force a premature `unknown` on a kill; ADV r3). **Grade-on-supersede:**
+  writing a new decision for ledgerKey K first applies the evidence rules against the OUTGOING record
+  (the supersede event IS the positive-evidence event for recurrence rules — within-tick ordering is
+  pinned, not assumed; ADV/DC r3), then replaces the slot; a superseded record whose rules yield nothing
+  ages out as `unknown` (stated, not silent). Oscillation honesty: every enrolled decision still has its
+  own `decision_quality` row regardless of slot eviction (§5.5), so repeated flip-flopping on one
+  ledgerKey remains visible in the meter even where the store retains only the carrier slots.
+  Positive-evidence grading (respawn / re-flag) runs in the NEXT scan ticks + at grade-on-supersede;
+  window-close grading (`*-right-v1` rules) runs in the grading job reading THIS store.
 - **Completion + P13 judges** — src/core/CompletionEvaluator.ts: `evaluate()` :140 (component
   `CompletionEvaluator`) and `evaluateStopRationale()` :226 (component `CompletionEvaluator/P13`); both
   volumeClass `full`, contentClass `content-bearing` (transcript-slice identity only). The correlation
@@ -289,12 +331,17 @@ write-integrity rules, or the meter is gameable by construction:
 
 1. **Keying:** `annotateOutcome` accepts the CORRELATION id (additive; the legacy row-id path remains
    for the two existing deterministic callsites). Outcome rows join decisions on `correlationId`.
-2. **Rung is DERIVED, never caller-supplied:** a code-defined **ruleId→rung registry** maps every
-   registered evidence rule to its rung (`deterministic-ground-truth` | `recurrence` | `llm-interpreter`
-   (dormant) | `self-report`). An annotation's `gradedBy` carries component + ruleId; the rung comes
-   from the registry — an annotation claiming a ruleId whose registered rung disagrees, or an
-   unregistered ruleId, is REJECTED and counted (the same closure move as the grade-enum validation).
-   §5.3's enacted-disposition annotations use registered `self-report`-rung rules by construction.
+2. **Rung is DERIVED, never caller-supplied:** a code-defined **ruleId→rung registry** — co-located
+   with PROVENANCE_COVERAGE in src/data (typed, single source; imported by the annotate chokepoint and
+   the grading endpoint; the ratchet fixtures pin its enum — INT r3) — maps every registered evidence
+   rule to its rung (`deterministic-ground-truth` | `recurrence` | `llm-interpreter` (dormant) |
+   `self-report`) AND its **evidence-strength class** (`deterministic-proof` | `negative-evidence` |
+   `recurrence-proxy` | `self-report` — codex r3: the read surface splits proof-like from heuristic
+   grades so aggregates cannot imply stronger correctness than the evidence supports). An annotation's
+   `gradedBy` carries component + ruleId; the rung comes from the registry — an annotation claiming a
+   ruleId whose registered rung disagrees, or an unregistered ruleId, is REJECTED and counted (the same
+   closure move as the grade-enum validation). §5.3's enacted-disposition annotations use registered
+   `self-report`-rung rules by construction.
 3. **Precedence (conflict resolution):** `deterministic-ground-truth` > `recurrence` > `llm-interpreter`
    > `self-report`. A self-reported outcome NEVER overrides an independent grader. **Within-rung
    conflicts** (two different components at the same rung) resolve conservatively: `wrong` > `unknown` >
@@ -302,26 +349,38 @@ write-integrity rules, or the meter is gameable by construction:
 4. **Idempotency:** the write key is `correlationId × gradedBy` — a re-run UPSERTS (supersedes its own
    prior grade), never multiplies. Grade enum (`right|wrong|unknown` per FD3) is validated at write;
    invalid → rejected, counted, catch-logged.
-5. **Evidence rules are precise predicates with immutable, versioned ids** (a predicate change mints a
-   new ruleId — `-v2` — never mutates `-v1` in place; the grade-by-rule breakdown depends on id
-   stability):
-   - `hog-respawn-wrong-v1`: a kill is graded `wrong` ONLY IF a process respawns within the bounded
-     window (default 6h) with the same commandHash AND its `--parentPid` names the SAME owner (pid +
-     start-time tuple) the killed process named AND that owner is still alive — proving the orphan
-     determination was false. The owner tuple is code-derived numbers recorded in the decision context
-     at kill time (§5.2). A respawn under a NEW owner (operator reopened the editor — a fresh exthost
-     gets a new `--parentPid`, per ExternalHogFactBuilder's own commandHash normalization) is
-     `unknown` — not evidence the kill was wrong.
-   - `hog-sustained-right-v1`: a kill whose target does NOT respawn within the window, where the floor
-     facts recorded the owner dead at kill time, grades `right` (window-close, from the durable store).
-   - `hog-leave-recurrence-v1`: applies ONLY to decisions where `verdict === 'leave'` AND
-     `enacted === 'alert-only-model-spared'` (a kill-verdict held by the breaker/governor/floor is NEVER
-     graded against the classifier — breaker-held re-flags are the brake's normal operation) AND
-     `floorPermitted` was true at decision time (a spare of an owner-alive hog — the user's live editor
-     compiling — is correct behavior with no gradeable counterfactual). Within those preconditions: the
-     SAME ledgerKey re-flagging as a sustained hog within the window grades the leave `wrong`; no
-     recurrence grades `right` at window close.
-   - `completion-realcheck-v1`: as §5.3. No realcheck → `unknown`, never guessed.
+5. **Evidence rules are precise predicates with immutable, versioned ids** (a predicate change — or a
+   change to a rule PARAMETER like the evidence window — mints a new ruleId (`-v2`), never mutates `-v1`
+   in place; each outcome row additionally records the effective `windowMs` in its structured evidence,
+   so grade-by-rule aggregates can never silently mix semantics; DC r3):
+   - `hog-respawn-wrong-v1` (evidence-strength `deterministic-proof`): a kill is graded `wrong` ONLY IF,
+     within the bounded window (default 6h), a same-commandHash CANDIDATE respawns AND the kill-time
+     ordering test re-runs TRUE at evidence time — a currently-alive process sits at the killed
+     process's recorded parent pid with a start-time ≤ the killed child's recorded start-time
+     (`targetTuple`), proving the orphan determination was false. Un-orderable start times → `unknown`.
+     This predicate is evaluable in BOTH kill-permit cases (parent-absent — where no ownerTuple could be
+     recorded — and pid-reused), and start-times cannot be forged old, so it is spoof-proof in both
+     directions (ADV r3; a respawn under a genuinely new owner — the operator reopened the editor —
+     fails the ordering test and grades `unknown`, never `wrong`).
+   - `hog-sustained-right-v1` (evidence-strength `negative-evidence`): a kill whose commandHash does NOT
+     re-flag as a CANDIDATE within the window, where the floor facts recorded the owner dead at kill
+     time, grades `right` at window close (from the durable store). **Sensor bound, stated:** candidate
+     visibility is sustained-CPU processes only — a quiet respawn is invisible to this rule, so
+     `right`-grades from it carry negative-evidence strength, never proof (ADV r3; the strength class
+     on the read surface is what keeps this honest).
+   - `hog-leave-recurrence-v1` (evidence-strength `recurrence-proxy`): applies ONLY to decisions where
+     `verdict === 'leave'` AND `enacted === 'alert-only-model-spared'` (a kill-verdict held by the
+     breaker/governor/floor is NEVER graded against the classifier — breaker-held re-flags are the
+     brake's normal operation) AND `floorPermitted` was true at decision time (a spare of an owner-alive
+     hog — the user's live editor compiling — is correct behavior with no gradeable counterfactual).
+     Within those preconditions: the SAME PROCESS (matching `targetTuple` pid + start-time — the
+     candidate signature already computed at ExternalHogScanTick.ts:122/150) re-flagging as a sustained
+     hog within the window grades the leave `wrong`; a DIFFERENT process with the same commandHash
+     grades `unknown` (a lookalike spawned by any same-uid process is not a counterfactual for the
+     specific process the classifier spared — and cannot fabricate a `wrong`; ADV r3). No recurrence
+     grades `right` at window close (negative-evidence strength applies to that half).
+   - `completion-realcheck-v1` (evidence-strength `deterministic-proof`): as §5.3. No realcheck →
+     `unknown`, never guessed.
    - Every grade row carries its `ruleId`; `GET /decision-quality` exposes a grade-by-rule breakdown so
      a coincidence-prone rule is auditable BEFORE anyone acts on the aggregate number.
 6. **Unknown is re-checkable, bounded:** the grading job may re-evaluate `unknown` decisions when new
@@ -337,10 +396,10 @@ write-integrity rules, or the meter is gameable by construction:
 ### 5.5 The quality substrate + read surface + grading job
 
 **The substrate:** the route NEVER scans provenance JSONL (the EvolutionManager-doom-loop lesson is a
-hard constraint on EVERY reader this spec adds). Three additive SQLite tables live beside
+hard constraint on EVERY reader this spec adds). Four additive SQLite tables live beside
 `feature_metrics` — **owned by FeatureMetricsLedger** (its SCHEMA array + idempotent
-CREATE-TABLE-IF-NOT-EXISTS + ADDED_COLUMNS conventions, FeatureMetricsLedger.ts:255-296); the router
-seam and JudgmentProvenanceLog reach them through a **recorder-style module singleton**
+CREATE-TABLE-IF-NOT-EXISTS + ADDED_COLUMNS conventions, src/monitoring/FeatureMetricsLedger.ts:255-296);
+the router seam and JudgmentProvenanceLog reach them through a **recorder-style module singleton**
 (`setDecisionQualityRecorder`, the setFeatureMetricsRecorder pattern injected at AgentServer
 construction, AgentServer.ts:1173 — a constructor-option would reach only the one shared router; the
 singleton reaches any instance):
@@ -348,14 +407,17 @@ singleton reaches any instance):
 - `decision_quality` — one row per settled ENROLLED decision, written by the router-settlement path:
   `correlation_id` (PK), `feature`, `decision_point`, `ts`, `verdict_class` (the bounded §5.2 value),
   `minted_by`, `volume_class`, `content_class`, `machine_id`, and the attribution columns the operator
-  question needs at the long horizon: `model`, `framework`, `prompt_id` (all content-free labels).
-  ~250 bytes. **Written for EVERY enrolled settled decision REGARDLESS of volume class** — the volume
-  valve (§5.6) governs the expensive provenance JSONL row ONLY, so outcome rows always have parents,
-  counts are complete, and `onCorrelationId`'s contract has no dropped-parent corner (r2 reconciliation;
-  worst case ~4k rows/day ≈ ~1MB/day — trivial). Index: `(decision_point, ts)`.
+  question needs at the long horizon: `model`, `framework`, `prompt_id` (all clamped content-free
+  labels). ~250 bytes. **Written for EVERY enrolled settled decision REGARDLESS of volume class** — the
+  volume valve (§5.6) governs the expensive provenance JSONL row ONLY, so outcome rows always have
+  parents, counts are complete, and `onCorrelationId`'s contract has no dropped-parent corner (r2
+  reconciliation; worst case ~4k rows/day ≈ ~1MB/day — trivial). Index: `(decision_point, ts)` (a
+  covering `(decision_point, ts, correlation_id)` is the build-time refinement). Re-check backoff state
+  (`recheck_count`, `next_recheck_ts`) rides this table via ADDED_COLUMNS (DC r3).
 - `decision_outcomes` — upserted by `annotateOutcome`: `correlation_id`, `grade`, `graded_by`,
   `rule_id`, `evidence_note` (≤500 scrubbed chars; never served by /decision-quality), `ts`;
-  UNIQUE(`correlation_id`,`graded_by`); ts-indexed.
+  UNIQUE(`correlation_id`,`graded_by`); ts-indexed. Structured evidence records effective rule
+  parameters (`windowMs`) per §5.4.5.
 - `decision_quality_rollup` — content-free daily aggregate: `decision_point` × `day` (the DECISION's
   UTC day — the spend_token_rollup 'YYYY-MM-DD'-UTC convention — looked up from `decision_quality`,
   whose 90d retention exceeds any legal late evidence) × right/wrong/unknown counts + the orphan/
@@ -363,30 +425,41 @@ singleton reaches any instance):
   spend rollup's immutable increments):** each outcome upsert reads the decision's PRIOR winning grade
   and decrements/increments the decision-day bucket accordingly (recompute-affected-bucket from
   `decision_quality ⋈ decision_outcomes` is the reference implementation — bounded, self-healing);
-  a bounded boot + periodic reconcile mirrors the spend prior art (`reconcileSpendRollup`,
-  FeatureMetricsLedger.ts:372-375) so a crash between the outcome upsert and the rollup update
-  self-repairs. **`expired` is NOT a rollup column and NOT a writable grade** — it is derived at READ:
-  decisions minus Σgrades for buckets older than the raw retentions, plus the expired share of joinMiss.
+  a bounded boot reconcile mirrors the spend prior art (`reconcileSpendRollup`,
+  src/monitoring/FeatureMetricsLedger.ts:372-375 — which is BOOT-ONLY; the PERIODIC arm of the quality
+  reconcile explicitly rides the existing AgentServer boot+6h unref'd prune timer, window 30d mirroring
+  spend; INT/DC r3) so a crash between the outcome upsert and the rollup update self-repairs.
+  **`expired` is NOT a rollup column and NOT a writable grade** — it is derived at READ: decisions
+  minus Σgrades for buckets older than the raw retentions, plus the expired share of joinMiss.
+- `decision_grading_cursor` — the grading job's durable per-decision-point cursor
+  (`decision_point` PK → last `ts` + `correlation_id` compound boundary; DC r3 — the cursor is a table,
+  not an implicit "fourth thing").
 
 **Retention and prune (named deliverables — an unnamed prune on this host is an unbounded store):**
 `provenance.quality.decisionRetentionDays` (default 90) governs `decision_quality` +
 `decision_outcomes`; `provenance.quality.rollupRetentionDays` (default 90) governs the rollup. Each
 table gets its own batched prune method (the host's per-table pattern: `pruneOlderThan` :786 /
 `pruneSpendRollup` :815, PRUNE_BATCH-bounded), driven by the existing AgentServer boot + 6h unref'd
-prune timer (AgentServer.ts:1458-1466).
+prune timer (AgentServer.ts:1458-1466) — **whose construction condition gains a quality arm** (today it
+is created only under `retentionDays > 0 || routingSpendOn`; without the arm, an agent with
+featureMetrics retention 0 would never prune the quality tables — INT/LES r3).
 
 **Read honesty:** provenance rows die at 14d, `feature_metrics` at ~30d, quality rows at 90d. The read
 surface distinguishes `unknown` (ungraded, parent row present) from `expired` (aged out) from
-`not-written` (a verdict_id with no decision_quality parent that is NOT expiry: `b-`-prefixed
-unenrolled mints — §5.1.2 — reported as census-pending activity, never as `expired`). Dangling
-pointers never error; an orphan outcome is never counted as a graded decision.
+`not-written` (a verdict_id with no decision_quality parent that is NOT expiry: `b-`-prefixed breaker
+mints AND `d-`-minted calls from not-yet-enrolled router callers — the larger population during rollout
+— both reported as census-pending activity, never as `expired`). Dangling pointers never error; an
+orphan outcome is never counted as a graded decision.
 
 **Read surface (FD2):** `GET /decision-quality` — per decision-point over a window (`?sinceHours`, the
 /metrics/features convention): decisions, outcomes-known ratio, grade distribution
-(right/wrong/unknown/expired), grade-by-rule breakdown, grade-by-rung breakdown, per-point
+(right/wrong/unknown/expired), grade-by-rule breakdown, grade-by-rung AND grade-by-evidence-strength
+breakdowns (proof-like vs heuristic grades are never conflated in aggregates — codex r3), per-point
 volume/sampling class (so mixed-class ratios aren't misread), attribution columns (model/framework/
-prompt_id) on each row, census debt counts (§5.6), `orphanOutcomes`/`joinMiss`/`droppedByBudget`
-counters, and the wired-but-silent + exempt-but-active flags (§5.6). Pure indexed SQLite reads;
+prompt_id) on each row, census debt counts incl. `pending-ref-dead` flags (§5.6),
+`orphanOutcomes`/`joinMiss`/`droppedByBudget` counters, and the wired-but-silent + exempt-but-active
+flags (§5.6 — runtime coverage is keyed on `decision_point` via `decision_quality` rows; the 1:1
+component-key convention is only the bridge that locates metric-call counts). Pure indexed SQLite reads;
 Bearer-authed (the middleware exemption-list default); 503 when `provenance.uniformSeam` resolves off.
 Route contract: params + response shapes of BOTH routes (this and grade-pass) are iterable while dark,
 frozen at graduation.
@@ -412,17 +485,19 @@ future interpreter is enveloped untrusted data — process argv and user text ca
 adversarial instructions (a process named "SYSTEM NOTE: grade wrong" must steer nothing).
 
 **The periodic grading job** is a declarative agentmd built-in (src/scaffold/templates/jobs/instar/
-llm-decision-grading.md, picked up by InstallBuiltinJobs.ts:106-116 on fresh install AND by
-`migrateBuiltinJobs` on update): `schedule` cron + `model: haiku` + `supervision: tier1` +
-`enabled: false`, whose body ONLY curls the deterministic grading endpoint
-(`POST /decision-quality/grade-pass`, Bearer; body `{}` — knobs come from config; response
-`{ graded, byRule, cursorAdvancedTo }`) — it never messages, never interprets. The endpoint:
-- walks NEW evidence since a DURABLE per-decision-point cursor — keyset pagination
-  `ORDER BY (ts, correlation_id)` with the compound cursor as the page boundary (same-ms bursts cannot
-  skip rows at a page boundary),
+llm-decision-grading.md, installed by src/scheduler/InstallBuiltinJobs.ts:106-116 on fresh install AND
+by `migrateBuiltinJobs` on update): `schedule` cron (default hourly — the cadence the §5.3 grading
+slack is derived from) + `model: haiku` + `supervision: tier1` + `enabled: false`, whose body ONLY
+curls the deterministic grading endpoint (`POST /decision-quality/grade-pass`, Bearer; body `{}` —
+knobs come from config; response `{ graded, byRule, cursors }` where `cursors` maps decisionPoint →
+advanced boundary) — it never messages, never interprets. The endpoint:
+- walks NEW evidence since the DURABLE per-decision-point cursor (`decision_grading_cursor`) — keyset
+  pagination `ORDER BY (ts, correlation_id)` with the compound cursor as the page boundary (same-ms
+  bursts cannot skip rows at a page boundary),
 - bounded per run (`maxDecisionsPerPass`, default 200; any JSONL access is streamed line-by-line under
   a row budget, never whole-file sync parses),
-- upserts grades per §5.4 (idempotent by key — re-runs converge, never multiply),
+- upserts grades per §5.4 (idempotent by key — re-runs converge, never multiply; concurrent job-tick +
+  operator curl converge by the same idempotency),
 - spends zero LLM tokens in this build (deterministic rules only); when ACT-1198 activates the LLM rung
   it rides `llmQueue.enqueue('background', fn, costCents)` (LlmQueue.ts:96-122; daily cap default 100¢)
   with `attribution.component: 'DecisionGrading'` (Token-Audit Completeness).
@@ -443,7 +518,8 @@ distinct decision points with different prompts/outcomes), each entry:
 
 Decision-point ids are exported from this census module and IMPORTED by enrolling callsites (typed
 registration — the census is the single source of truth; a decision point that exists only as a string
-literal at a callsite fails the ratchet; codex-r2).
+literal at a callsite fails the ratchet; the settlement write also validates decisionPoint ∈ census at
+runtime and counts unknowns).
 
 - **Enrollment key convention:** each enrolled decision point uses a 1:1 `attribution.component` key
   (the existing `CompletionEvaluator` vs `CompletionEvaluator/P13` suffix pattern) so per-point metric
@@ -452,11 +528,17 @@ literal at a callsite fails the ratchet; codex-r2).
   `deterministic-only` (no LLM verdict at this point) | `no-decision-content` (nothing reconstructable
   beyond what feature_metrics already records) | `operator-ratified:<resolvable-ref>`. Free-text
   exemptions are refused by the ratchet.
-- **`pending:<ACT>` is LIVENESS-checked, not format-checked:** the ratchet resolves the ACT ref against
-  the evolution queue (a dead/expired/never-registered ACT fails CI — a pending entry cannot rot into a
-  permanently-"tracked" skip; the WIRING_EXCLUSIONS lesson one layer up), and the referenced ACTs are
-  pinned/critical-class so `evolutionActions.autoExpiry` can never sweep them. The pending list rides
-  the pinned-baseline discipline: shrink-only, ≥40-char argued reasons.
+- **`pending:<ACT>` — the honest two-layer check** (the evolution queue is AGENT-RUNTIME state,
+  unreachable from repo CI; three reviewers independently established the r3 draft's "fails CI" was
+  unimplementable as written): **CI (static, hermetic):** format-validated ACT refs, the pinned
+  shrink-only baseline, ≥40-char argued reasons — and re-pointing a pending entry to a different ACT is
+  a reviewed baseline change (shrink-only covers count, not identity). **Runtime (agent-side, where the
+  queue exists):** the census-debt block on `GET /decision-quality` resolves each `pending:<ACT>`
+  against the live evolution queue and flags `pending-ref-dead` rows — alive = registered AND
+  non-terminal (`pending`/`in_progress`); a completed/cancelled/never-registered ref is flagged,
+  observe-only (FD5). The referenced ACTs are pinned/critical-class so `evolutionActions.autoExpiry`
+  can never sweep them. This runtime check — not the pull route alone — is the Close-the-Loop cadence
+  carrier: the ACT machinery's own lifecycle re-surfaces the backlog.
 - **`wired` is verified, not trusted:** (a) statically — the census test requires the enrolling
   component's source to import the census-exported decision-point id and reference `provenance:`
   enrollment (grep-level backstop; the typed import is the primary check); (b) at runtime — the read
@@ -479,8 +561,7 @@ literal at a callsite fails the ratchet; codex-r2).
   for every enrolled settlement (§5.5). The arbiter-bypass invariant is RESERVED for `full`-class
   points (FD4 as amended).
 - **Census debt is re-surfaced, not just pinned:** `GET /decision-quality` reports wired/pending/exempt
-  counts per window, and the pending-ACT liveness check makes the evolution queue's own cadence the
-  Close-the-Loop carrier (a pull route alone is not a cadence; the liveness-checked ACT machinery is).
+  counts per window plus the `pending-ref-dead` flags above.
 
 ### 5.7 Config, rollout, substrate construction, rollback
 
@@ -490,10 +571,17 @@ literal at a callsite fails the ratchet; codex-r2).
   `DEV_GATED_FEATURES` entry (`configPath: 'provenance.uniformSeam.enabled'`) with justification:
   "observe-only side write at the router-settlement seam; never gates/blocks/delays the decision call;
   no egress, no spend, no destructive action; failure is catch-logged." `dryRun` defaults TRUE even on
-  dev — metadata-only would-write logs (§5.2) — until a deliberate `dryRun:false` flip after the
-  would-write soak validates volume-class dispositions. Migration note: `migrateConfig` must NOT seed
-  the key (a seeded `enabled:false` would permanently pin the dev gate off — the documented
-  PostUpdateMigrator.ts:330 omit-requirement pattern).
+  dev — metadata-only would-write logs, ALL durable writes suppressed (§5.2) — until a deliberate
+  `dryRun:false` flip after the would-write soak validates volume-class dispositions. Migration note:
+  `migrateConfig` must NOT seed the key (a seeded `enabled:false` would permanently pin the dev gate
+  off — the documented PostUpdateMigrator.ts:330 omit-requirement pattern).
+- **Graduation checklist (codex r3 — each phase has expected counters, so the substrate cannot sit
+  impressively dark):** (1) always-on minting live → llm-kind `verdict_id` non-NULL rate ≈ 100%;
+  (2) dev dryRun → would-write log lines for both first customers, volume-class dispositions sane;
+  (3) `dryRun:false` on dev → `decision_quality` rows accruing for both customers, provenance JSONL
+  rows for `full`-class, enacted self-report outcomes present; (4) grading job enabled on dev → grade
+  distribution populating, cursor advancing, `pending-ref-dead` empty; (5) fleet stays dark pending
+  operator (each step's counters read from `GET /decision-quality`).
 - **JudgmentProvenanceLog construction moves OUT of the mesh block** (today it is constructed only
   inside `if (meshIdMgr && meshSelfId)` at server.ts:19005/21622, so the seam would have nothing to
   write to on a single-machine agent and `/decision-quality` would 503 through the whole dev soak). It
@@ -510,15 +598,17 @@ literal at a callsite fails the ratchet; codex-r2).
   `multiMachine.*` paths only, so this row is a voluntary documentation row, not ratchet-swept).
 - **Rollback semantics:** (1) correlation-id minting + verdict_id stamping are always-on (§5.1.3) —
   opaque, contentless, llm-kind-scoped, and the join-miss path is honest; (2) the `/decision-quality`
-  join treats a missing provenance row as `expired` and an unenrolled `b-` mint as `not-written`, never
+  join treats a missing provenance row as `expired` and an unenrolled mint as `not-written`, never
   an error; (3) flipping the seam off stops NEW decision/quality rows only — already-written rows age
   out on their own retentions (14d/90d), no purge, no migration. Grading job off = cursors freeze in
   place, resumable.
 - Grading job manifest ships `enabled:false` (cost-bearing job class). Config keys nested under the
   existing `provenance` block (types.ts:4167): `provenance.quality.{decisionRetentionDays,
-  rollupRetentionDays, maxDecisionsPerPass, evidenceWindowHours, wiredSilentMinCalls}` — tuning knobs,
-  cheap-to-change-after (dark feature, no external effect; the hog store's retention DERIVES from
-  evidenceWindowHours per §5.3, so the knobs cannot be tuned into silent un-grading).
+  rollupRetentionDays, maxDecisionsPerPass, evidenceWindowHours, gradingSlackHours,
+  wiredSilentMinCalls}` — tuning knobs, cheap-to-change-after (dark feature, no external effect; the
+  hog store's retention DERIVES from evidenceWindowHours + gradingSlackHours per §5.3, and a window
+  change mints new rule versions per §5.4.5, so the knobs cannot be tuned into silent un-grading or
+  silent semantic drift).
 - No other feature's rollout flags are touched.
 
 ## Migration parity & agent awareness
@@ -541,41 +631,51 @@ literal at a callsite fails the ratchet; codex-r2).
 
 - **Unit:** correlation-id threading through failure-swap (N attempt metric rows, ONE id, ONE decision
   row at settlement); settlement coverage for EVERY evaluate() exit (ladder success/failure, `!cfg`
-  early return, provider-unavailable degrade arm, enforcedNoRoute throw); per-attempt capture scoping
-  (a rejected primary's onUsage never attributes to the settled swap row; a post-settlement late
-  callback is discarded); breaker floor (inbound unmarked id discarded + re-minted `b-` prefix;
-  `mintedBy` honesty); router overwrite-inbound-id; onCorrelationId fires at mint, once, including
-  throw paths; seam strips `options.provenance` on BOTH router and breaker paths; write-once semantics
-  incl. errored settlement; volume classes (full/sampled/budget + UTC-day COUNT enforcement +
+  early return, provider-unavailable degrade arm, enforcedNoRoute throw, RouterFailClosedError rethrow,
+  fallback-'none' throw); per-attempt capture scoping (a rejected primary's onUsage never attributes to
+  the settled swap row; a post-settlement late callback is discarded); breaker floor (inbound unmarked
+  id discarded + re-minted `b-` prefix; marker consumed single-use; a REUSED caller options object never
+  replays a stale marked id; `mintedBy` honesty); router mints on an internal clone (caller object never
+  mutated); onCorrelationId fires at mint, once, including throw paths, never on breaker-stripped
+  bypassed calls; seam strips `options.provenance` on BOTH router and breaker paths; write-once
+  semantics incl. errored settlement; volume classes (full/sampled/budget + UTC-day COUNT enforcement +
   droppedByBudget; decision_quality row written regardless of class); evidence-rule predicates BOTH
-  SIDES (hog-respawn same-owner-tuple-alive → wrong vs new-owner → unknown; leave-recurrence enacted/
-  floorPermitted preconditions — breaker-held kill re-flag grades NOTHING; realcheck pass/fail/absent);
-  the durable hog store (atomic write, fail-closed read, hydration, retention-derives-from-window,
-  latest-decision slot semantics); annotateOutcome integrity (enum validation, ruleId→rung registry
-  rejection, upsert idempotency on correlationId×gradedBy, precedence incl. within-rung conservative
-  resolution, self-report never overrides); rollup mutation (decision-day bucket, decrement-on-
-  supersede, boot/periodic reconcile self-repair, expired derived at read); P19 sustained-failure test
+  SIDES (respawn ordering-test true → wrong vs new-owner/un-orderable → unknown; leave-recurrence
+  same-process-signature → wrong vs same-commandHash-different-process → unknown; enacted/floorPermitted
+  preconditions — breaker-held kill re-flag grades NOTHING; would-kill/deferred/aborted/
+  decider-unavailable age out unknown; realcheck pass/fail/absent); the durable hog store (atomic write,
+  fail-closed read, hydration, retention = evidenceWindow + gradingSlack derivation, latest-plus-
+  in-window-kill slot retention, grade-on-supersede ordering — the outgoing record is graded BEFORE
+  replacement); annotateOutcome integrity (enum validation, ruleId→rung registry rejection, upsert
+  idempotency on correlationId×gradedBy, precedence incl. within-rung conservative resolution,
+  self-report never overrides); rollup mutation (decision-day bucket, decrement-on-supersede,
+  boot + 6h-timer periodic reconcile self-repair, expired derived at read); P19 sustained-failure test
   for unknown-regrade backoff + terminal `expired` give-up; clamps (decision-field bounding,
-  optionsPresented/verdict_class charset clamp, evidence ≤500, context head 300).
+  optionsPresented/verdict_class/promptId charset clamps, evidence ≤500, context head 300);
+  kind-scoped verdict_id query lint.
 - **Redaction/scrub semantic suite (the security posture IS test-shaped):** a seam-written row never
   serves raw model output or argv fragments (hog context excludes argv — asserted on realistic
   ExternalHogFacts incl. positional-password shapes); `contextFull` never crosses `readRedacted` or the
-  pool merge; content-bearing rows carry identity/bounded-features only; dry-run logs are metadata-only;
-  evidence_note absent from every /decision-quality payload.
+  pool merge; content-bearing rows carry identity/bounded-features only; dry-run logs are metadata-only
+  AND dry-run suppresses all durable writes; evidence_note absent from every /decision-quality payload;
+  the hog decision store is NEVER_SERVED (file routes refuse to serve or edit it).
 - **Integration:** `GET /decision-quality` 200-with-data over a seeded ledger+substrate; 503-when-dark;
   Bearer required; `?scope=pool` dark-peer tolerance (`pool.failed`), peer-URL credential guard, field
   allowlist (a hostile peer row with extra fields — incl. `contextFull` — is stripped); grade-pass
-  endpoint cursor keyset (same-ms burst at the page boundary), batch ceiling, idempotent re-run.
+  endpoint cursor keyset (same-ms burst at the page boundary), batch ceiling, idempotent re-run,
+  concurrent job+manual convergence.
 - **E2E lifecycle (feature-alive):** production init path, SINGLE-MACHINE boot → JP log constructed →
   seam on (dev-gate) → route answers 200 not 503 (this tier is exactly where the mesh-block construction
   bug would have been caught).
 - **Wiring integrity:** DEV_GATED_FEATURES both-sides test for `provenance.uniformSeam.enabled`;
-  `setDecisionQualityRecorder` singleton injected not-null at AgentServer construction;
-  COHERENCE_MANIFEST_EXCLUSIONS row present.
+  `setDecisionQualityRecorder` singleton injected not-null at AgentServer construction; machineId8
+  injection present; COHERENCE_MANIFEST_EXCLUSIONS row present; prune-timer construction condition
+  includes the quality arm.
 - **Ratchet fixtures:** PROVENANCE_COVERAGE declare/undeclared/exempt-taxonomy cases; pending-ACT
-  LIVENESS (a dead/unregistered ACT fails); typed-import verification positive + negative
-  (string-literal-only decision point fails); census-debt counts + wired-but-silent + exempt-but-active
-  flags on route.
+  STATIC checks (format, pinned shrink-only, identity-change review); typed-import verification
+  positive + negative (string-literal-only decision point fails); rung-registry enum pinning;
+  census-debt counts + pending-ref-dead + wired-but-silent + exempt-but-active flags on route
+  (integration tier for the runtime liveness half).
 - **Existing-test sweep (behavior-changes-break-old-tests):** stamping verdict_id on every llm row
   changes the pinned NULL-world — `tests/unit/CircuitBreaking-feature-metrics-tap.test.ts` + ledger
   tests are updated in the same PR; full tests/ sweep before push.
@@ -594,24 +694,27 @@ literal at a callsite fails the ratchet; codex-r2).
 | Decision point | Classification | Justification / floor |
 |---|---|---|
 | Provenance write at the router-settlement seam | `invariant` | Observe-only side write; gates nothing, chooses nothing. Deterministic: writes iff enrolled (+ volume-class rule per §5.6). Failure never touches the decision path. |
-| PROVENANCE_COVERAGE ratchet (CI) | `invariant` | Deterministic declare-or-fail over a static census with closed taxonomies + liveness-checked refs — a completeness property with no competing signals. |
-| Outcome grade assignment (grading endpoint) | `judgment-candidate` | Floor: bounded action space = `{right, wrong, unknown}` (FD3); conservative default = `unknown` (no evidence → unknown, never guessed); ladder = deterministic evidence rules (registered ruleId predicates, §5.4) → recurrence/persistence → [DORMANT: LLM evidence-interpreter — NO code this build; activates only behind ACT-1198's benched evaluator + FENCE + injection-exposed registration] → deterministic `unknown` rung. Grades never gate behavior. |
+| PROVENANCE_COVERAGE ratchet (CI) | `invariant` | Deterministic declare-or-fail over a static census with closed taxonomies + static ref checks (runtime liveness is a separate observe-only flag) — a completeness property with no competing signals. |
+| Outcome grade assignment (grading endpoint) | `judgment-candidate` | Floor: bounded action space = `{right, wrong, unknown}` (FD3); conservative default = `unknown` (no evidence → unknown, never guessed); ladder = deterministic evidence rules (registered ruleId predicates with evidence-strength classes, §5.4) → recurrence/persistence → [DORMANT: LLM evidence-interpreter — NO code this build; activates only behind ACT-1198's benched evaluator + FENCE + injection-exposed registration] → deterministic `unknown` rung. Grades never gate behavior. |
 | Grade precedence on conflict | `invariant` | Fixed rung order (deterministic > recurrence > llm > self-report) + fixed within-rung conservative order (wrong > unknown > right); rungs derived from the registered rule, never claimed — a lookup, not a call. |
-| Correlation-id minting | `invariant` | Mechanical mint; router-vs-breaker fallback is a fixed structural rule (FD1/FD8). Router overwrites inbound ids unconditionally; breaker discards unmarked inbound ids. |
-| Wired-but-silent / exempt-but-active flags | `invariant` | Deterministic comparisons of existing counters; flag, never block. |
+| Correlation-id minting | `invariant` | Mechanical mint; router-vs-breaker fallback is a fixed structural rule (FD1/FD8). Router mints on an internal clone; breaker discards unmarked inbound ids and consumes markers single-use. |
+| Wired-but-silent / exempt-but-active / pending-ref-dead flags | `invariant` | Deterministic comparisons of existing counters/state; flag, never block. |
 
 ## Multi-machine posture
 
-- **Provenance rows (`state/judgment-provenance/`) + the hog decision store** — `machine-local` BY
-  DESIGN. machine-local-justification: operator-ratified-exception — the JudgmentProvenanceLog
+- **Provenance rows (`state/judgment-provenance/`) + the hog decision store
+  (`state/external-hog-decisions.json`)** — `machine-local` BY DESIGN.
+  machine-local-justification: operator-ratified-exception — the JudgmentProvenanceLog
   machine-local containment posture ("machine-local-full/HTTP-redacted") is pinned in the ratified
   standard text itself (docs/STANDARDS-REGISTRY.md:522 "### Decision Provenance & Outcome Review";
   ratified in PR #1436, merge commit 965a3602c). This spec adds writers to that store; it does not
   change its posture (and the §5.2 content classes exist precisely so the retrofit cannot change it de
-  facto). Pool-scope visibility is proxied-on-read: the existing `GET /judgment-provenance?scope=pool`
+  facto). The hog store additionally holds machine-specific process identity (pids/start-times) that is
+  MEANINGLESS off-machine — its `.instar/state/` placement keeps it out of git-synced agent-home paths
+  (INT r3). Pool-scope visibility is proxied-on-read: the existing `GET /judgment-provenance?scope=pool`
   merges peers' REDACTED rows (routes.ts:15023-15050), hardened in this build with the peer-URL
   credential guard + field allowlist (§5.5).
-- **`decision_quality`/`decision_outcomes`/rollup + `feature_metrics.verdict_id`** — inherit the
+- **`decision_quality`/`decision_outcomes`/rollup/cursor + `feature_metrics.verdict_id`** — inherit the
   existing feature_metrics posture (machine-local SQLite observability; per-machine spend/activity is
   the semantic unit). Unified operator view via proxied-on-read below.
 - **`GET /decision-quality`** — unified via proxied-on-read (`?scope=pool`): MACHINE-TAGGED rows per
@@ -627,13 +730,15 @@ literal at a callsite fails the ratchet; codex-r2).
 
 ## Frontloaded Decisions
 
-- **FD1 — Correlation-id minting: router-minted at entry, breaker-local floor, ALWAYS-ON.** The router
-  is the only layer that sees one logical decision as one call; minting there makes swap-attempt rows
-  correlate. One decision row per `router.evaluate()` invocation; caller-level retries are distinct
-  decisions by design. The floor guarantees no row is UNCORRELATED (breaker mints carry the `b-` id
-  prefix and are honestly decision-approximate, §5.1.2). Minting/stamping is ungated: opaque id, no
-  content, trivial rollback. Ids are collision-resistant (uuid-based, machineId-segmented on
-  multi-machine installs), never time+seq.
+- **FD1 — Correlation-id minting: router-minted at entry on an INTERNAL clone, breaker-local floor,
+  ALWAYS-ON.** The router is the only layer that sees one logical decision as one call; minting there
+  makes swap-attempt rows correlate. The caller's options object is never mutated; the mint marker is
+  single-use at the breaker. One decision row per `router.evaluate()` invocation; caller-level retries
+  are distinct decisions by design. The floor guarantees no row is UNCORRELATED (breaker mints carry
+  the `b-` id prefix and are honestly decision-approximate, §5.1.2). Minting/stamping is ungated:
+  opaque id, no content, trivial rollback. Ids are collision-resistant (uuid-based, machineId-segmented
+  on multi-machine installs — pool/mesh self id, first 8 chars, injected at AgentServer construction),
+  never time+seq.
 - **FD2 — Read surface: a new `GET /decision-quality` route** over the dedicated quality substrate
   (§5.5) — not a block bolted onto /metrics/features, and never a JSONL scan. Cross-linked by feature
   key so the operator can pivot to the cost view.
@@ -641,7 +746,9 @@ literal at a callsite fails the ratchet; codex-r2).
   — never a rollup column, never a writable grade; the aged-out terminal event has exactly one name) +
   a clamped (≤500 chars), pointer-disciplined `evidence` note (never served by /decision-quality).
   Per-point custom scales DENIED — uniformity is what makes the meter comparable; nuance lives in
-  structured outcome fields.
+  structured outcome fields (which record effective rule parameters like `windowMs`). Grades carry
+  their rule's evidence-strength class on the read surface — proof-like and heuristic grades are never
+  conflated.
 - **FD4 (amended) — Volume classes replace blanket arbiter-bypass**, and they valve the PROVENANCE row
   only. The always-write invariant is RESERVED for `full`-class decision points (rare, high-stakes —
   the two first customers). High-frequency points declare `sampled:<rate>` or `budget:<rows/day>`
@@ -653,19 +760,23 @@ literal at a callsite fails the ratchet; codex-r2).
 - **FD6 — Ships via the dev gate, dryRun-first, exact posture:** `provenance.uniformSeam.enabled`
   OMITTED from ConfigDefaults → `resolveDevAgentGate` → LIVE on a development agent / DARK on the fleet;
   `DEV_GATED_FEATURES` entry with the §5.7 justification; `dryRun` defaults TRUE even on dev
-  (metadata-only would-write logs) until a deliberate `dryRun:false` flip; `migrateConfig` never seeds
-  the key. Grading job `enabled:false`. Tuning knobs cheap-to-change-after (dark, no external effect;
-  the evidenceWindow↔hog-store-retention derivation closes the one unsafe-tuning corner).
+  (metadata-only would-write logs; ALL durable writes suppressed) until a deliberate `dryRun:false`
+  flip; `migrateConfig` never seeds the key. Grading job `enabled:false`. Graduation follows the §5.7
+  counter checklist. Tuning knobs cheap-to-change-after (dark, no external effect; the
+  evidenceWindow↔hog-store-retention derivation and the window-change-mints-new-ruleId rule close the
+  two unsafe-tuning corners).
 - **FD7 — Write-once at settlement, settlement = every exit.** Exactly ONE provenance decision row per
   correlation id, written by the router at whichever `evaluate()` exit fires (ladder, early-return,
-  degrade, throw); per-attempt capture scoping keeps rejected/late attempts out of the row; an errored
-  settlement writes one `'<errored>'` row so ladder quality is itself gradeable.
+  degrade, enforced/fail-closed/fallback-none throws); per-attempt capture scoping keeps rejected/late
+  attempts out of the row; an errored settlement writes one `'<errored>'` row so ladder quality is
+  itself gradeable.
 - **FD8 — `verdict_id` single-writer, scoped to llm-kind rows.** The minted correlation id ALWAYS
   occupies `feature_metrics.verdict_id` on `kind:'llm'` rows (event-kind rows keep their existing
-  semantic labels; joins filter kind='llm'); the documented caller-supplied `classifyVerdict.verdictId`
-  is relocated INTO the provenance row's context as `callerRef` (types.ts:1112 doc updated same PR).
-  The router overwrites any inbound correlation id; the breaker discards unmarked inbound ids — callers
-  cannot inject a chosen id into another decision's chain on any path.
+  semantic labels; joins filter kind='llm', enforced by a query-scope lint/test); the documented
+  caller-supplied `classifyVerdict.verdictId` is relocated INTO the provenance row's context as
+  `callerRef` (types.ts:1112 doc updated same PR). The router ignores inbound ids (internal clone); the
+  breaker discards unmarked inbound ids and consumes markers single-use — callers cannot inject a
+  chosen id into another decision's chain on any path.
 - **FD9 — JudgmentProvenanceLog construction becomes unconditional** (out of the mesh block; §5.7) —
   the seam must have a substrate on every agent, single-machine included; `/judgment-provenance` 503
   semantics updated; existing callsites unchanged.
