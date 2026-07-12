@@ -1,12 +1,17 @@
+---
+title: "LLM-Decision Quality Meter — uniform provenance + outcome grading"
+slug: "llm-decision-quality-meter"
+author: "echo"
+---
+
 # LLM-Decision Quality Meter — uniform provenance + outcome grading
 
-**Status:** DRAFT (pre-convergence)
 **Tracks:** ACT-1193 (uniform full-context provenance), ACT-1194 (outcome grading over time)
 **Source audit:** `docs/audits/llm-decision-accountability.md` (CMT-1962, Rounds 1–2)
 **Parent standard:** Decision Provenance & Outcome Review (docs/STANDARDS-REGISTRY.md)
 **Explicit non-scope:** ACT-1195 (bench prompt-parity) — separate follow-up. ACT-1196 (speaker-election enforce flip) — separate gate.
 
-## 1. Problem
+## Problem statement
 
 Instar has a cost meter for its LLM decisions, not a quality meter. The operator's stated goal
 (2026-07-10 topic 11960): judge an LLM feature's performance in a scenario over time, to decide
@@ -21,19 +26,20 @@ whether a bigger model or a prompt change is warranted. Today that judgment is i
    JSONL logs (response-review-decisions.jsonl, sentinel-events.jsonl, principal-coherence.jsonl)
    capture inputs inconsistently. A past decision cannot be reliably reconstructed for review.
 2. **The highest-consequence decisions are the least logged.** The external-hog KILL decision
-   (ExternalHogScanTick.ts:165) records no durable facts/verdict/prompt in default wiring. The
-   autonomous continue/stop + P13 hard-blocker judges (CompletionEvaluator.ts:144/231) — which gate
+   (ExternalHogScanTick.ts:163-223) records no durable facts/verdict/prompt in default wiring. The
+   autonomous continue/stop + P13 hard-blocker judges (CompletionEvaluator.ts:140/226) — which gate
    whether a run keeps burning budget — durably log no judged transcript slice, prompt, or verdict.
 3. **Outcome grading is absent.** `verdictId` is a live schema column designed for verdict↔outcome
-   correlation; no LLM row ever sets it (both `classifyVerdict` callers return `{acted}` only).
-   `annotateOutcome` (JudgmentProvenanceLog.ts:203) has zero production callers. There is no periodic
-   grading of any LLM decision against ground truth; the only real graders are two bespoke loops
-   (CartographerSweep deterministic validation; correction-learning recurrence verify).
+   correlation; no LLM row ever sets it (both `classifyVerdict` callers — MessageSentinel.ts:711,
+   CommitmentSentinel.ts:339 — return `{acted}` only). `annotateOutcome` (JudgmentProvenanceLog.ts:203)
+   has zero production callers. There is no periodic grading of any LLM decision against ground truth;
+   the only real graders are two bespoke non-LLM loops (CartographerSweep deterministic validation;
+   correction-learning recurrence verify).
 4. **Nothing ratchets.** A new LLM decision point that skips provenance passes CI clean. The standard
    is honored by prose for LLM decisions — exactly the "documented-only" enforcement class the
    audit-convergence work just eliminated for audits.
 
-## 2. Goals
+## Goals
 
 - G1 (ACT-1193): ONE uniform, opt-in-per-decision-point provenance path such that a gate/sentinel/judge
   decision can later be reconstructed (input context, prompt identity, verdict, model/door) — riding the
@@ -48,39 +54,24 @@ whether a bigger model or a prompt change is warranted. Today that judgment is i
   decisions made, outcomes known, grade distribution (right/wrong/unknown), trend — sufficient to answer
   "does this gate need a bigger model or a prompt change?".
 - G5: a structural guard (census/ratchet) so a NEW LLM decision point must declare its provenance
-  posture (wired / argued-exempt) — the same declare-or-fail pattern as the bench-coverage ratchet.
+  posture (wired / pending / argued-exempt) — the same declare-or-fail pattern as the bench-coverage
+  ratchet.
 
-## 3. Non-goals
+## Non-goals
 
 - No automatic model swaps or prompt changes from grades (the meter informs the operator; routing
   changes stay operator-gated — INSTAR-Bench remains the routing authority).
 - No grading-LLM authority over live behavior: grading is observe-only, never gates.
+- No operator alerting in this build: the grading surface is a pull read (route), not a watcher — no
+  attention items, no notices (so no Self-Heal-Before-Notify escalation surface is introduced).
+  A "this gate is performing badly" alert is a possible follow-up that would then carry Standard B
+  obligations; it is deliberately out of scope here.
 - No full-content transcript retention beyond the provenance log's existing machine-local,
   retention-bounded, never-HTTP-served-raw posture.
 - Not retrofitting all ~60+ decision points in one PR: the uniform seam + the named high-stakes sites +
   a census that makes the remaining retrofit backlog visible and ratcheted (no silent skips).
 
-## 4. Design principles (constraints to converge against)
-
-- **One seam, not 107 edits.** Provenance capture must attach at (or immediately adjacent to) the single
-  LLM-funnel chokepoint that already writes feature_metrics rows, so callsites inherit the correlation id
-  by construction; the per-point opt-in adds the decision CONTEXT, not the plumbing. (Exact seam:
-  §recon — pending.)
-- **Provenance content stays machine-local** (JudgmentProvenanceLog posture: local disk, bounded
-  retention, redacted-only HTTP read). feature_metrics carries only the POINTER (verdictId), never
-  context payloads.
-- **Fail-open, signal-only.** A provenance write failure must never fail or delay the decision call
-  itself — but it must be loud in the ledger (error-row / degradation), never silently dropped
-  (Silent-Loss Refusal Conservation).
-- **Grading is evidence-first.** Outcome annotation prefers ground-truth events (process came back /
-  run actually completed / operator reversed the action) over LLM re-judgment; an LLM grader is the
-  fallback interpreter of evidence, and its own calls are attributed + benched (Token-Audit
-  Completeness).
-- **Cost-bounded.** The grading job rides LlmQueue (spend caps, priority lanes) and ships
-  `enabled:false` like every cost-bearing background job; the provenance path adds no LLM calls at all.
-- **Ships dark/dryRun** per the graduated rollout ladder; no other feature's rollout flags are touched.
-
-## 5. Mechanism (grounded — recon complete for 5.1/5.2; 5.3/5.5 anchors pending third recon pass)
+## Proposed design
 
 ### 5.1 The correlation spine — one seam, minted per decision
 
@@ -94,16 +85,17 @@ Recon-established facts (all verified on upstream/main @ 61d24370a):
   AgentServer.ts:1173.
 - `evaluate` returns `Promise<string>` only (types.ts:970); the additive extension pattern is the
   `onUsage`/`onModel`/`classifyVerdict` callbacks (types.ts:1086-1112). `classifyVerdict` has exactly 2
-  callers (MessageSentinel.ts:711, CommitmentSentinel.ts:339); neither sets `verdictId` → every
-  `kind:'llm'` row writes `verdict_id = NULL` today.
+  callers; neither sets `verdictId` → every `kind:'llm'` row writes `verdict_id = NULL` today.
 - Failure-swap means ONE logical decision can emit N metric rows (one per attempted framework); only
   `IntelligenceRouter.evaluate()` (src/core/IntelligenceRouter.ts:943+) still sees the decision as one
   call. `feature_metrics.verdict_id` (FeatureMetricsLedger.ts:269) is write-only — no SELECT references it.
 
-Design (the convergence review arbitrates the A/B choice, §6-Q1):
-1. A per-DECISION correlation id is minted at the router level (one logical decision = one id) and
-   threaded down through `IntelligenceOptions` (additive field), so every swap-attempt metric row of the
-   same decision stamps the SAME `verdictId`. Callsites inherit it with zero edits.
+Design (per Frontloaded Decision FD1):
+1. A per-DECISION correlation id is minted at the router level (`IntelligenceRouter.evaluate`) and
+   threaded down through `IntelligenceOptions` (additive internal field), so every swap-attempt metric
+   row of the same decision stamps the SAME `verdictId`. Callsites inherit it with zero edits. Floor:
+   if a call reaches the breaker without a router-minted id (a funnel-wrapped provider used directly),
+   the breaker mints one locally — rows are never uncorrelated.
 2. An opting-in callsite adds an additive `options.provenance` block: `{ decisionPoint, context,
    optionsPresented, promptId? }` — the DecisionRowInput fields the caller uniquely knows
    (JudgmentProvenanceLog.ts:51-70 already defines the envelope; the log already carries model/door/
@@ -111,8 +103,9 @@ Design (the convergence review arbitrates the A/B choice, §6-Q1):
 3. When `options.provenance` is present, the funnel seam writes the `JudgmentProvenanceLog.recordDecision`
    row at call completion — combining the caller's context block, the classified verdict (from the
    existing `classifyVerdict` callback where implemented, else the raw-response head), and the
-   usage/model/door the seam already observes — and stamps the correlation id on both stores. LLM-arbiter
-   rows set `arbiter:true` (bypasses sampling — JudgmentProvenanceLog invariant).
+   usage/model/door the seam already observes — carrying the correlation id so the provenance row and
+   the metric row(s) join on it. LLM-verdict rows set `arbiter:true` (bypasses sampling — existing
+   JudgmentProvenanceLog invariant; per FD4).
 4. Provenance write failures are catch-logged (the log's own observability-only failure semantics);
    the decision call is NEVER failed or delayed by its audit trail.
 
@@ -144,12 +137,6 @@ contract stays a code invariant, never config (types.ts:4167-4172 doc pin).
   provenance context must not become a second transcript store), the StopSignals corroboration block,
   verdict + reason.
 
-### 5.4a Q2 resolved — LlmQueue is not a second seam
-
-LlmQueue consumers enqueue closures that call `router.evaluate(...)` (e.g. CartographerSweepEngine.ts:688)
-— the queue is a scheduling/spend wrapper ABOVE the funnel, not a bypass. The funnel chokepoint remains
-the single metrics/provenance seam.
-
 ### 5.4 Outcome annotation — making `annotateOutcome` real
 
 `annotateOutcome(decisionId, component, outcome)` (JudgmentProvenanceLog.ts:203) has zero production
@@ -160,7 +147,10 @@ callers. This build adds ground-truth-first callers keyed on the §5.1 correlati
   operator "keep going" correction, grades the judgment.
 - The generic path: any subsystem holding the correlation id may annotate when its ground truth lands.
 
-### 5.5 The grading read surface + periodic job (anchors verified)
+LlmQueue is NOT a second seam: its consumers call `router.evaluate(...)` inside their enqueued closures
+(e.g. CartographerSweepEngine.ts:688) — the queue is a scheduling/spend wrapper ABOVE the funnel.
+
+### 5.5 The grading read surface + periodic job
 
 - FeatureMetricsLedger gains a verdict-aware read (decisions ↔ outcomes joined per feature/window) —
   closing the "verdict_id is write-only" gap (no SELECT references the column today).
@@ -177,9 +167,9 @@ callers. This build adds ground-truth-first callers keyed on the §5.1 correlati
   Any LLM interpretation inside the endpoint rides `llmQueue.enqueue('background', fn, costCents)`
   (LlmQueue.ts:96-122; daily cap default 100¢, interactive reserve honored, abort signal honored) —
   exactly how CartographerSweep rides it (CartographerSweepEngine.ts:688).
-- Read surface: `GET /decision-quality` (or a `quality` block on `/metrics/features` — §6-Q3): per
-  decision-point over a window → decisions, outcomes-known ratio, grade distribution
-  (right/wrong/unknown), trend. Serves REDACTED provenance pointers only.
+- Read surface (per FD2): `GET /decision-quality` — per decision-point over a window → decisions,
+  outcomes-known ratio, grade distribution (right/wrong/unknown per FD3), trend. Serves REDACTED
+  provenance pointers only. API-only this build; a dashboard rendering is a follow-up.
 
 ### 5.6 The census/ratchet — no silent skips (G5)
 
@@ -196,14 +186,63 @@ silent.
 - No other feature's rollout flags are touched. Config keys nested under the existing `provenance` block
   (types.ts:4167).
 
-## 6. Open questions for convergence
+## Decision points touched
 
-- Q1 verdictId minting: (A) breaker-local — JP row id stamped on the deciding row only, failed swap
-  attempts uncorrelated; vs (B) router-minted decision id threaded via IntelligenceOptions — all N
-  attempt rows share it, JP row carries it. Recon says only the router sees one-decision-as-one-call;
-  B is the working draft, A is simpler.
-- Q2 RESOLVED (recon pass 3): LlmQueue consumers call router.evaluate inside their enqueued closures —
-  the queue is above the funnel, not a bypass. One seam confirmed.
-- Q3 Read surface placement: new /decision-quality route vs a quality block on /metrics/features.
-- Q4 Grade taxonomy: right/wrong/unknown global vs per-point custom scales — what the operator reads.
-- Q5 Sampling interaction: opted-in NON-arbiter deterministic-adjacent decisions vs the sampling knob.
+| Decision point | Classification | Justification / floor |
+|---|---|---|
+| Provenance write at the funnel seam | `invariant` | Observe-only side write; gates nothing, chooses nothing. Deterministic: writes iff `options.provenance` present (+ sampling rule per FD4). Failure never touches the decision path. |
+| PROVENANCE_COVERAGE ratchet (CI) | `invariant` | Deterministic declare-or-fail test over a static census — a completeness property with no competing signals. Same class as the existing bench-coverage ratchet. |
+| Outcome grade assignment (the grading endpoint) | `judgment-candidate` | Floor: bounded action space = `{right, wrong, unknown}` (FD3); conservative default = `unknown` (no evidence → unknown, never guessed); fallback ladder = deterministic ground-truth check first (prior-art shapes §5.5) → recurrence/persistence check → LLM evidence-interpreter LAST (attributed + benched, rides LlmQueue) → deterministic `unknown` rung when all interpreters unavailable. Grades never gate behavior (observe-only). |
+| Correlation-id minting | `invariant` | Id generation is mechanical (no choice among competing signals); the router-vs-breaker fallback is a fixed structural rule (FD1). |
+
+## Multi-machine posture
+
+- **Provenance rows (`state/judgment-provenance/`)** — `machine-local` BY DESIGN.
+  machine-local-justification: operator-ratified-exception — the JudgmentProvenanceLog machine-local
+  containment posture (full-fidelity context never leaves the machine; redacted-only reads) was ratified
+  with the Decision Provenance & Outcome Review standard in PR #1436, merge commit 965a3602c
+  (JKHeadley/instar). This spec adds writers to that store; it does not change its posture. Pool-scope
+  visibility is proxied-on-read: the existing `GET /judgment-provenance?scope=pool` merges peers'
+  REDACTED rows (routes.ts:15023-15050).
+- **`feature_metrics.verdict_id` column** — inherits the existing feature_metrics posture (machine-local
+  SQLite observability store, same as tokens/latency columns today; per-machine spend/activity is the
+  semantic unit). The new verdict-aware read is served per-machine; `GET /decision-quality` gains
+  `?scope=pool` proxied-on-read merging peers' per-machine summaries (same pattern as /guards,
+  /subscription-pool).
+- **`GET /decision-quality`** — unified via proxied-on-read (`?scope=pool`), serving redacted
+  summaries + pointers only; never raw context.
+- **Grading job** — runs per machine over that machine's local decision rows (the data is
+  machine-local by the ratified posture above; grading follows the data). Its summaries are visible
+  pool-wide via the route's pool scope.
+- **Config flags** — `provenance.uniformSeam` participates in the machine-coherence guard's
+  safety-flags comparison like sibling flags (no special handling).
+
+## Frontloaded Decisions
+
+- **FD1 — Correlation-id minting point: router-minted (Option B), breaker-local floor.** The router is
+  the only layer that sees one logical decision as one call (failure-swap = N breaker rows per
+  decision); minting there makes swap-attempt rows correlate. The floor (breaker mints locally when no
+  id arrived) guarantees no row is ever uncorrelated. Rationale: recon pass 2; Option A (breaker-only)
+  loses failed-attempt correlation, which is exactly the data needed to grade the failure-swap ladder
+  itself.
+- **FD2 — Read surface: a new `GET /decision-quality` route** (not a block bolted onto
+  /metrics/features). The data source differs (provenance join, not just the metrics ledger), the
+  audience action differs (quality review vs cost review), and /metrics/features stays cost-focused.
+  Cross-linked: each /decision-quality row carries the feature key so the operator can pivot.
+- **FD3 — Grade taxonomy: global `right | wrong | unknown`** + a free-form `evidence` note on the
+  outcome payload. Per-point custom scales are DENIED — uniformity is what makes the meter comparable
+  across decision points; nuance lives in the outcome payload, not the enum.
+- **FD4 — Sampling interaction: LLM-verdict provenance rows set `arbiter:true`** (always written —
+  the existing JP invariant that arbiter rows bypass sampling); deterministic-floor rows opted in
+  through the same seam respect the sampling knob. Matches existing semantics; the expensive, rare,
+  high-value rows are never sampled away.
+- **FD5 — No alerting in this build** (see Non-goals): the meter is a pull surface. A push alert on
+  degrading gate quality is a follow-up feature that would then owe Standard B (self-heal-before-notify)
+  design; deliberately not smuggled in here.
+- **FD6 — Ships dark:** `provenance.uniformSeam` dev-gated dark, dryRun-first on dev (logs what it
+  WOULD write before real writes); grading job `enabled:false`. Cheap-to-change-after posture for
+  tuning knobs (sampling default, retention) is inherited from the existing `provenance` config block.
+
+## Open questions
+
+*(none — all resolved into Frontloaded Decisions above)*
