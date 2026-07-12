@@ -78,6 +78,12 @@ export type SubscriptionAccountStatus =
 export interface AccountQuotaSnapshot {
   fiveHour?: { utilizationPct: number; resetsAt: string };
   sevenDay?: { utilizationPct: number; resetsAt: string };
+  /**
+   * Fable-5 weekly usage window (scope.model.display_name === 'Fable' in the
+   * usage API `limits[]`). Same shape as fiveHour/sevenDay so the dashboard
+   * renders it with the identical quota bar.
+   */
+  fable?: { utilizationPct: number; resetsAt: string };
   perModel?: Record<string, number | null>;
   extraUsage?: {
     isEnabled: boolean;

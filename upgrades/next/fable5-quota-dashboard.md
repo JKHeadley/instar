@@ -1,0 +1,23 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The Subscriptions dashboard now shows a **Fable 5** usage bar per account, alongside the existing 5-hour and Weekly bars. Fable 5 has its own weekly usage allowance that is separate from an account's overall limits, and until now it was invisible on the dashboard. It turns out the Anthropic usage API already exposes this number — not as a top-level field, but as a scoped weekly limit entry inside the response's `limits[]` array (the entry whose `scope.model.display_name === "Fable"`, carrying a `percent` and a `resets_at`). `QuotaPoller.mapUsageResponse()` now parses that entry into a new `fable` window on `AccountQuotaSnapshot` (same `{utilizationPct, resetsAt}` shape as `fiveHour`/`sevenDay`), which flows through the existing `/subscription-pool` passthrough to `dashboard/subscriptions.js`, where `renderAccounts()` draws it as a third quota bar. The multi-machine replicated-store validator (`SubscriptionAccountMetaReplicatedStore`) was also updated to allow + validate the new `fable` window, so a peer machine's Fable usage survives cross-machine replication instead of being rejected wholesale.
+
+## What to Tell Your User
+
+Your Subscriptions dashboard now shows how much of each account's **Fable 5** allowance you've used this week, right under the 5-hour and weekly bars — with its own reset countdown. Fable 5 has a separate weekly pool from your normal limits, so this fills a real blind spot: you can now see at a glance which accounts still have Fable 5 headroom and which are maxed out, without testing a call and hitting the wall.
+
+## Summary of New Capabilities
+
+- `AccountQuotaSnapshot.fable?: { utilizationPct; resetsAt }` — the Fable-5 weekly window, parsed from the usage API `limits[]` `Fable`-scoped entry.
+- Per-account **Fable 5** quota bar in the Subscriptions dashboard tab (rendered only when a Fable reading is present).
+- `fable` added to the cross-machine replicated-store allowlist + validation, so Fable usage survives multi-machine replication.
+
+## Evidence
+
+- `tests/unit/quota-poller.test.ts` (+4: Fable extraction from `limits[]`, maxed-100% read, non-Fable scoped-limit not mistaken for Fable, absent-limits → undefined).
+- `tests/unit/subscriptions-render.test.ts` (+3: Fable bar renders as a third bar, renders as the only window, no-quota message when all windows absent).
+- `tests/unit/subscription-account-meta-store.test.ts` (+2: well-formed `fable` window round-trips through replication; malformed `fable` rejected).
+- Full `tsc --noEmit` clean; 86 tests green across the three touched suites.
+- Live-verified against the real Anthropic usage API across all 4 pool accounts (2026-07-11): adriana 100% (critical), dawn 36%, sagemind 0%, headley 16%.

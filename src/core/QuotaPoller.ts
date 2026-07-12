@@ -214,6 +214,32 @@ export function mapUsageResponse(
   }
   if (Object.keys(perModel).length > 0) snap.perModel = perModel;
 
+  // Fable 5 usage is NOT a top-level `seven_day_fable` field — it surfaces as a
+  // scoped weekly limit entry inside `limits[]`, identified by
+  // `scope.model.display_name === 'Fable'` (group 'weekly'). The entry carries a
+  // `percent` (0–100) and a `resets_at`, so we map it into a window with the same
+  // shape as fiveHour/sevenDay. Verified live 2026-07-11 across all pool accounts.
+  const limits = body['limits'];
+  if (Array.isArray(limits)) {
+    for (const entry of limits) {
+      if (!entry || typeof entry !== 'object') continue;
+      const l = entry as Record<string, unknown>;
+      const scope = l.scope as Record<string, unknown> | null | undefined;
+      const model =
+        scope && typeof scope === 'object'
+          ? (scope.model as Record<string, unknown> | null | undefined)
+          : undefined;
+      const displayName = model && typeof model === 'object' ? model.display_name : undefined;
+      if (l.group === 'weekly' && displayName === 'Fable' && l.percent !== undefined) {
+        snap.fable = {
+          utilizationPct: Number(l.percent ?? 0),
+          resetsAt: String(l.resets_at ?? ''),
+        };
+        break;
+      }
+    }
+  }
+
   const extra = body['extra_usage'];
   if (extra && typeof extra === 'object') {
     const e = extra as Record<string, unknown>;

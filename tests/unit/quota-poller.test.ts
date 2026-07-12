@@ -79,6 +79,76 @@ describe('QuotaPoller', () => {
     expect(snap.extraUsage).toBeUndefined();
   });
 
+  // ── Fable 5: the scoped weekly limit (verified live 2026-07-11) ────
+  it('extracts Fable 5 weekly usage from the limits[] scoped entry', () => {
+    const snap = mapUsageResponse(
+      {
+        seven_day: { utilization: 21, resets_at: '2026-07-18T15:59:59Z' },
+        limits: [
+          { kind: 'weekly_all', group: 'weekly', percent: 21, scope: null, is_active: false },
+          {
+            kind: 'weekly_scoped',
+            group: 'weekly',
+            percent: 36,
+            resets_at: '2026-07-18T15:59:59Z',
+            scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+            is_active: true,
+          },
+        ],
+      },
+      'oauth-usage-endpoint-fallback',
+      't',
+    );
+    expect(snap.fable).toEqual({ utilizationPct: 36, resetsAt: '2026-07-18T15:59:59Z' });
+  });
+
+  it('reads a maxed-out Fable 5 window at 100%', () => {
+    const snap = mapUsageResponse(
+      {
+        limits: [
+          {
+            kind: 'weekly_scoped',
+            group: 'weekly',
+            percent: 100,
+            resets_at: '2026-07-15T01:59:59Z',
+            scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+            is_active: true,
+          },
+        ],
+      },
+      'oauth-usage-endpoint-fallback',
+      't',
+    );
+    expect(snap.fable?.utilizationPct).toBe(100);
+  });
+
+  it('leaves fable undefined when no Fable-scoped limit is present', () => {
+    // A non-Fable scoped weekly limit must NOT be mistaken for Fable.
+    const snap = mapUsageResponse(
+      {
+        seven_day: { utilization: 8, resets_at: 'x' },
+        limits: [
+          { kind: 'weekly_all', group: 'weekly', percent: 8, scope: null, is_active: true },
+          {
+            kind: 'weekly_scoped',
+            group: 'weekly',
+            percent: 50,
+            scope: { model: { id: null, display_name: 'Opus' }, surface: null },
+            is_active: false,
+          },
+        ],
+      },
+      'oauth-usage-endpoint-fallback',
+      't',
+    );
+    expect(snap.fable).toBeUndefined();
+  });
+
+  it('leaves fable undefined when limits is absent entirely', () => {
+    const snap = mapUsageResponse(LIVE_USAGE_BODY, 'oauth-usage-endpoint-fallback', 't');
+    expect(snap.fable).toBeUndefined();
+  });
+
   // ── pollAccount lifecycle ─────────────────────────────────────────
   it('pollAccount returns a snapshot on a clean read', async () => {
     const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });

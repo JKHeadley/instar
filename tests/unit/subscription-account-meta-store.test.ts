@@ -79,6 +79,25 @@ describe('subscription-account-meta schema (WS5.2 §6.1a)', () => {
     expect(validate(wellFormed({ quota: { source: 'made-up-source' } }))).toBeNull();
   });
 
+  it('accepts a fable window and round-trips it (so peers keep Fable-5 usage)', () => {
+    const projection = wellFormed({
+      quota: {
+        fiveHour: { utilizationPct: 42.5, resetsAt: '2026-06-17T00:00:00Z' },
+        fable: { utilizationPct: 100, resetsAt: '2026-07-15T00:00:00Z' },
+        source: 'oauth-usage-endpoint-fallback',
+      },
+    });
+    const out = validate(projection);
+    expect(out).not.toBeNull();
+    expect((out as Record<string, any>).quota.fable).toEqual({ utilizationPct: 100, resetsAt: '2026-07-15T00:00:00Z' });
+  });
+
+  it('REJECTS a malformed fable window (non-numeric pct / bad date / extra key)', () => {
+    expect(validate(wellFormed({ quota: { fable: { utilizationPct: 'lots', resetsAt: '2026-07-15T00:00:00Z' } } }))).toBeNull();
+    expect(validate(wellFormed({ quota: { fable: { utilizationPct: 1, resetsAt: 'not-a-date' } } }))).toBeNull();
+    expect(validate(wellFormed({ quota: { fable: { utilizationPct: 1, resetsAt: '2026-07-15T00:00:00Z', extra: true } } }))).toBeNull();
+  });
+
   it('clamps an over-long nickname to 256 chars rather than rejecting', () => {
     const out = validate(wellFormed({ nickname: 'y'.repeat(300) }));
     expect((out as { nickname: string }).nickname.length).toBe(256);

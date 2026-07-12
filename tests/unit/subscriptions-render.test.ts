@@ -112,6 +112,39 @@ describe('renderAccounts', () => {
     expect(t.querySelector('.sub-account-status')!.textContent).toBe('Active');
     expect(t.querySelectorAll('.sub-quota').length).toBe(2);
   });
+  it('renders a Fable 5 bar when the fable window is present', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active',
+      lastQuota: {
+        fiveHour: { utilizationPct: 10, resetsAt: '2026-06-07T01:00:00Z' },
+        sevenDay: { utilizationPct: 71, resetsAt: '2026-06-12T00:00:00Z' },
+        fable: { utilizationPct: 100, resetsAt: '2026-07-15T00:00:00Z' },
+      },
+    }], NOW);
+    const bars = t.querySelectorAll('.sub-quota');
+    expect(bars.length).toBe(3);
+    const labels = Array.from(t.querySelectorAll('.sub-quota-label')).map(n => n.textContent);
+    expect(labels).toContain('Fable 5');
+  });
+  it('renders a Fable 5 bar even when it is the only quota window', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active',
+      lastQuota: { fable: { utilizationPct: 36, resetsAt: '2026-07-18T00:00:00Z' } },
+    }], NOW);
+    expect(t.querySelectorAll('.sub-quota').length).toBe(1);
+    expect(t.querySelector('.sub-quota-label')!.textContent).toBe('Fable 5');
+    expect(t.querySelector('.sub-account-noquota')).toBeNull();
+  });
+  it('shows the no-quota message when no windows at all (fable included) are present', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active',
+      lastQuota: {},
+    }], NOW);
+    expect(t.querySelector('.sub-account-noquota')).not.toBeNull();
+  });
   it('a malicious nickname survives only as inert text (no element injected)', () => {
     const t = el();
     renderAccounts(doc, t, [{ id: 'x', nickname: '<img src=x onerror=alert(1)>', provider: 'anthropic', framework: 'claude-code', status: 'active' }], NOW);

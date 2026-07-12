@@ -212,9 +212,10 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
       card.appendChild(el(doc, 'div', 'sub-account-email', sanitizeForDisplay(a.email, 'label')));
     }
     const q = (a && a.lastQuota) || null;
-    if (q && (q.fiveHour || q.sevenDay)) {
+    if (q && (q.fiveHour || q.sevenDay || q.fable)) {
       if (q.fiveHour) card.appendChild(quotaBar(doc, '5-hour', q.fiveHour.utilizationPct, q.fiveHour.resetsAt, now));
       if (q.sevenDay) card.appendChild(quotaBar(doc, 'Weekly', q.sevenDay.utilizationPct, q.sevenDay.resetsAt, now));
+      if (q.fable) card.appendChild(quotaBar(doc, 'Fable 5', q.fable.utilizationPct, q.fable.resetsAt, now));
     } else {
       card.appendChild(el(doc, 'div', 'sub-account-noquota', 'No quota reading yet.'));
     }
