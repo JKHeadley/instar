@@ -158,7 +158,10 @@ Design — two distinct layers (they were conflated in the first draft; they are
    rows keep their existing semantic verdictId use untouched, and every decision-quality join filters
    `kind='llm'` — pinned by a repo lint/test asserting every query touching `verdict_id` is kind-scoped
    (codex r3; the polymorphic column is the accepted tradeoff, the kind-scope discipline is enforced,
-   not hoped). A caller-supplied `classifyVerdict.verdictId` NO LONGER lands in the column — if
+   not hoped). A DEDICATED correlation column was considered and rejected deliberately (codex r4): the
+   llm-kind population is write-only with zero readers today, the kind-scope lint enforces exactly the
+   discipline a new column would buy, and schema churn on the ledger's largest table is not warranted
+   for a write-only value. A caller-supplied `classifyVerdict.verdictId` NO LONGER lands in the column — if
    supplied, the seam records it as `callerRef` INSIDE the provenance row's context (the scrubbed,
    clamped path — deliberately not a new top-level served field), and the types.ts:1112 doc is updated
    in the same PR.
@@ -214,8 +217,13 @@ requires them): `correlationId` (the §5.1 mint; also becomes `annotateOutcome`'
 at write), `gradedBy`, `ruleId` (§5.4). (`callerRef` lives inside `context`, §5.1.3 — not a top-level
 field.) All existing invariants ride along unchanged: write-time credential scrub to `contextRedacted`
 (2000-char clamp), `contextFull` machine-local only (0700/0600, gitignored, backup-excluded,
-never-HTTP-served via NEVER_SERVED_PREFIXES), 64KB row clamp truncate+flag, 14-day retention, async
-buffered appends, deterministic FNV-1a sampling, redaction-by-field-omission at `readRedacted` (:314).
+never-HTTP-served via NEVER_SERVED_PREFIXES — with one honest correction, SEC r4: the EXISTING
+`'state/judgment-provenance/'` entry is empirically a production NO-OP today, because the prefix list
+matches projectDir-rooted paths while the log lives under `<projectDir>/.instar/state/` — so
+`contextFull` day-files are currently reachable by the dashboard file editor. That is a live
+pre-existing defect this build fixes in the same PR, §5.3), 64KB row clamp truncate+flag, 14-day
+retention, async buffered appends, deterministic FNV-1a sampling, redaction-by-field-omission at
+`readRedacted` (:314).
 The redaction contract stays a code invariant, never config (types.ts:4167-4172 doc pin — that doc
 comment is updated in the same PR when `uniformSeam`/`quality` nest under the `provenance` block).
 
@@ -282,13 +290,24 @@ the concrete predicates below implement this).
   a root-of-`.instar` placement would churn an unignored file in a git-synced agent home and leak
   machine-specific pids across machines; INT r3). At-rest posture, explicit: 0600 via atomic
   tmp+fsync+rename writes with fail-closed reads (the ExternalHogArmStore posture,
-  ExternalHogArmStore.ts:89-101), backup-excluded, and the path is added to `NEVER_SERVED_PREFIXES` —
-  the store is grading GROUND TRUTH, and the dashboard file editor must not be able to rewrite it
-  (serve-deny implies edit-deny; SEC r3). Contents are content-free (hashes, pids, timestamps, enums).
+  ExternalHogArmStore.ts:89-101), backup-excluded, and the path is added to `NEVER_SERVED_PREFIXES`
+  as the PROJECTDIR-RELATIVE literal `'.instar/state/external-hog-decisions.json'` (SEC r4 — the
+  prefix list matches projectDir-rooted paths while BackupManager prefixes are stateDir-relative; the
+  root divergence is the trap: a `'state/...'` literal is a production no-op, which is exactly what
+  the existing `'state/judgment-provenance/'` entry is today — empirically verified,
+  `isNeverServed('.instar/state/judgment-provenance/x')` → false, its unit test having gone green on a
+  layout production never produces. That existing JP entry is dual-rooted/fixed in this same PR, and
+  the serve-discipline tests pin the PRODUCTION layout, §Testing) — the store is grading GROUND TRUTH,
+  and the dashboard file editor must not be able to rewrite it (serve-deny implies edit-deny; SEC r3).
+  Contents are content-free (hashes, pids, timestamps, enums).
   Per-ledgerKey the store holds `{ verdict (classifier), enacted, correlationId, atMs, targetTuple
   (the candidate's OWN pid + start-time — the spoof-proof identity §5.4's predicates key on),
-  ownerTuple (named parent pid + parent start-time, where derivable — the dominant orphan-kill case has
-  no live parent to stamp, recorded as absent), floorPermitted, commandHash }` for BOTH kill and leave
+  ownerTuple — recorded MEMBER-WISE (ADV r4): `parentPid` is ALWAYS recorded on kill decisions, since
+  `parseParentPid` succeeded for every permitted kill by construction (FactBuilder:74 vetoes a null
+  parse), while `parentStartTime` is recorded where derivable and absent in the dominant orphan-kill
+  case (no live parent to stamp; §5.4's ordering test keys on the recorded parent PID plus the killed
+  child's own start-time, so the rule stays evaluable either way), floorPermitted, commandHash }` for
+  BOTH kill and leave
   verdicts. **`enacted` covers the sentinel's REAL disposition space** (LES r3 — verified against
   ExternalHogScanTick.ts:160-227): `killed | sigterm-exited | would-kill | deferred | aborted |
   alert-only-model-spared | alert-only-floor-veto | alert-only-breaker-held | alert-only-governor-hold |
@@ -358,8 +377,8 @@ write-integrity rules, or the meter is gameable by construction:
      ordering test re-runs TRUE at evidence time — a currently-alive process sits at the killed
      process's recorded parent pid with a start-time ≤ the killed child's recorded start-time
      (`targetTuple`), proving the orphan determination was false. Un-orderable start times → `unknown`.
-     This predicate is evaluable in BOTH kill-permit cases (parent-absent — where no ownerTuple could be
-     recorded — and pid-reused), and start-times cannot be forged old, so it is spoof-proof in both
+     This predicate is evaluable in BOTH kill-permit cases (parent-absent — where `ownerTuple.parentPid`
+     IS recorded but no `parentStartTime` could be — and pid-reused), and start-times cannot be forged old, so it is spoof-proof in both
      directions (ADV r3; a respawn under a genuinely new owner — the operator reopened the editor —
      fails the ordering test and grades `unknown`, never `wrong`).
    - `hog-sustained-right-v1` (evidence-strength `negative-evidence`): a kill whose commandHash does NOT
@@ -454,7 +473,9 @@ orphan outcome is never counted as a graded decision.
 **Read surface (FD2):** `GET /decision-quality` — per decision-point over a window (`?sinceHours`, the
 /metrics/features convention): decisions, outcomes-known ratio, grade distribution
 (right/wrong/unknown/expired), grade-by-rule breakdown, grade-by-rung AND grade-by-evidence-strength
-breakdowns (proof-like vs heuristic grades are never conflated in aggregates — codex r3), per-point
+breakdowns (proof-like vs heuristic grades are never conflated in aggregates — codex r3; the DEFAULT
+aggregate view groups by evidence strength FIRST, so the headline number a reader sees is
+strength-segmented, never a blended rate — codex r4), per-point
 volume/sampling class (so mixed-class ratios aren't misread), attribution columns (model/framework/
 prompt_id) on each row, census debt counts incl. `pending-ref-dead` flags (§5.6),
 `orphanOutcomes`/`joinMiss`/`droppedByBudget` counters, and the wired-but-silent + exempt-but-active
@@ -581,7 +602,10 @@ runtime and counts unknowns).
   (3) `dryRun:false` on dev → `decision_quality` rows accruing for both customers, provenance JSONL
   rows for `full`-class, enacted self-report outcomes present; (4) grading job enabled on dev → grade
   distribution populating, cursor advancing, `pending-ref-dead` empty; (5) fleet stays dark pending
-  operator (each step's counters read from `GET /decision-quality`).
+  operator (each step's counters read from `GET /decision-quality`). Stated honestly (codex r4): while
+  `dryRun` holds, ALL durable writes are suppressed, so the substrate's real write path is validated
+  only at phase (3) — deliberate staging (metadata-only soak first, then write-path validation on dev),
+  not an oversight.
 - **JudgmentProvenanceLog construction moves OUT of the mesh block** (today it is constructed only
   inside `if (meshIdMgr && meshSelfId)` at server.ts:19005/21622, so the seam would have nothing to
   write to on a single-machine agent and `/decision-quality` would 503 through the whole dev soak). It
@@ -658,7 +682,10 @@ runtime and counts unknowns).
   ExternalHogFacts incl. positional-password shapes); `contextFull` never crosses `readRedacted` or the
   pool merge; content-bearing rows carry identity/bounded-features only; dry-run logs are metadata-only
   AND dry-run suppresses all durable writes; evidence_note absent from every /decision-quality payload;
-  the hog decision store is NEVER_SERVED (file routes refuse to serve or edit it).
+  the hog decision store AND the JP log are NEVER_SERVED under the PRODUCTION layout — the tests seed
+  `<projectDir>/.instar/state/...` paths exactly as production produces them (the prior JP unit test
+  went green on a layout production never produces — SEC r4) and assert file routes refuse to serve OR
+  edit both.
 - **Integration:** `GET /decision-quality` 200-with-data over a seeded ledger+substrate; 503-when-dark;
   Bearer required; `?scope=pool` dark-peer tolerance (`pool.failed`), peer-URL credential guard, field
   allowlist (a hostile peer row with extra fields — incl. `contextFull` — is stripped); grade-pass
