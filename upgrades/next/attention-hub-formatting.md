@@ -6,7 +6,7 @@ Three rendering bugs in attention-alert messages, all visible in the operator's 
 
 ## What to Tell Your User
 
-The alert messages in your 🔔 Attention topic are readable now: no more visible `<b>` code tags, no more saying everything twice, and connection alerts name your machines the way you do ("Laptop", "Mac Mini") instead of long internal ids. Same alerts, same information — just formatted like a human wrote them.
+The alert messages in your 🔔 Attention topic are readable now: no more visible code tags where bold text should be, no more saying everything twice, and connection alerts name your machines the way you do ("Laptop", "Mac Mini") instead of long internal ids. Same alerts, same information — just formatted like a human wrote them.
 
 ## Summary of New Capabilities
 
