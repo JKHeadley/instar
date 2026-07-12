@@ -137,7 +137,10 @@ Design — two distinct layers (they were conflated in the first draft; they are
    (deferrable backoff, the swap tail) are one decision; caller-level retries or re-invocations above
    the router are DISTINCT decisions, each settling honestly. A component whose one human-visible
    judgment spans multiple `evaluate()` calls (cascaded classifiers, decomposed prompts) declares that
-   composition in its census entry (§5.6) — one decision point per call, linked by the component key.
+   composition in its census entry (§5.6) — one decision point per call, EACH with its OWN suffixed
+   unique component key; the linkage lives ONLY in the census `composition` field's linked
+   decision-point ids, never in key sharing (ADV r6 — key sharing would contradict §5.6's uniqueness
+   assertion and re-open the very same-key blind spot it closes).
 2. Floor: a funnel-wrapped provider used DIRECTLY (router bypassed) reaches the breaker without a
    router mint marker; the breaker treats ANY inbound correlation id as absent unless that per-call mint
    marker is present, and CONSUMES the marker single-use on acceptance (an unmarked or marker-less id is
@@ -293,12 +296,28 @@ the concrete predicates below implement this).
   a root-of-`.instar` placement would churn an unignored file in a git-synced agent home and leak
   machine-specific pids across machines; INT r3). At-rest posture, explicit: 0600 via atomic
   tmp+fsync+rename writes with fail-closed reads (the ExternalHogArmStore posture,
-  ExternalHogArmStore.ts:89-101), backup-excluded BY ACTIVE ENTRY — the store's filename joins
-  `REMEDIATION_EXCLUDED_PATH_PREFIXES` (BackupManager.ts:89, the same mechanism that excludes the JP
-  dir) in this same PR, NOT by allowlist-absence alone, which an operator-added `includeFiles`
-  `state/` glob would defeat (SEC/INT r5 — a restored backup on another machine would reintroduce
-  stale machine-specific pid tuples the respawn predicate keys on) — and the path is added to
-  `NEVER_SERVED_PREFIXES`
+  ExternalHogArmStore.ts:89-101), backup-excluded BY ACTIVE UNCONDITIONAL ENTRY — the store joins
+  BOTH always-on mechanisms in this same PR: `BLOCKED_PATH_PREFIXES` as the stateDir-relative literal
+  `'state/external-hog-decisions.json'` (BackupManager.ts:30-52 — the exact
+  `'state/pr-hand-leases.json'` per-machine-state precedent, whose comment pins "Unconditional (NOT
+  the remediation-gated F-7 list); stateDir-relative prefixes, matching how includeFiles entries
+  resolve") AND `NEVER_BACKUP_PATH_SEGMENTS` as the filename segment `'external-hog-decisions.json'`
+  (:88-90 — the mechanism that ACTUALLY excludes the JP dir; four r6 reviewers independently caught
+  the r5 fold's mis-pin of the remediation-gated `REMEDIATION_EXCLUDED_PATH_PREFIXES` list here —
+  flag-gated inert on default agents, the SEC4-1 no-op-guard class reproduced in the backup layer).
+  NOT by allowlist-absence alone, which an operator-added `includeFiles` `state/` glob would defeat
+  (SEC/INT r5 — a restored backup on another machine would reintroduce stale machine-specific pid
+  tuples the respawn predicate keys on). Entry-level checks alone do NOT close that glob threat: every
+  deny list is consulted against the includeFiles ENTRY string only, and createSnapshot's
+  directory-copy branch (:311-328) copies a directory entry's direct file children with no per-file
+  re-check (SEC r6 — the JP dir survives only incidentally, as a subdirectory under non-recursive
+  copy) — so this PR ALSO re-applies the blocked/never-backup checks to `path.join(entry, file)`
+  inside that loop, closing the glob threat for real and fixing the same latent bypass for the
+  existing per-machine-state siblings (pr-hand-leases, self-action-governor — pre-existing exposure
+  tracked ACT-1201). The per-file re-check is the pinned INVARIANT (ADV r6): the JP dir's current
+  safety under a `state/` glob is an ACCIDENT of the non-recursive copy, and a future recursive-copy
+  enhancement to BackupManager would silently re-expose both stores without it — and the path is
+  added to `NEVER_SERVED_PREFIXES`
   as the PROJECTDIR-RELATIVE literal `'.instar/state/external-hog-decisions.json'` (SEC r4 — the
   prefix list matches projectDir-rooted paths while BackupManager prefixes are stateDir-relative; the
   root divergence is the trap: a `'state/...'` literal is a production no-op, which is exactly what
@@ -311,7 +330,9 @@ the concrete predicates below implement this).
   Per-ledgerKey the store holds `{ verdict (classifier), enacted, correlationId, atMs, targetTuple
   (the candidate's OWN pid + start-time — the spoof-proof identity §5.4's predicates key on),
   ownerTuple — recorded MEMBER-WISE (ADV r4): `parentPid` is ALWAYS recorded on ENACTED kills
-  (`killed`/`sigterm-exited` — equivalently every floorPermitted kill; ADV r5 precision: a
+  (`killed`/`sigterm-exited` — and a fortiori in-hand for every floorPermitted kill, including
+  watch-only `would-kill` enactments (ADV r6 wording precision: permitted ≠ enacted during the soak);
+  ADV r5 precision: a
   floor-VETOED kill verdict whose veto came from a null parse legitimately has no parentPid, so the
   store write must not hard-assert `verdict==='kill' ⇒ parentPid` — the always-in-hand guarantee is
   that `parseParentPid` succeeded for every PERMITTED kill by construction, FactBuilder:74 vetoes a
@@ -462,6 +483,12 @@ singleton reaches any instance):
   src/monitoring/FeatureMetricsLedger.ts:372-375 — which is BOOT-ONLY; the PERIODIC arm of the quality
   reconcile explicitly rides the existing AgentServer boot+6h unref'd prune timer, window 30d mirroring
   spend; INT/DC r3) so a crash between the outcome upsert and the rollup update self-repairs.
+  Alternative considered and rejected (codex r6): an append-only outcome-event log with a
+  materialized/recompute-on-read rollup — rejected because grades are LOW-volume mutable facts over
+  already-indexed keys (the outcomes table IS the append-ish record; upsert-by-idempotency-key is
+  what bounds it), the recompute-affected-bucket + bounded-reconcile pair already delivers the
+  self-healing an event log would buy, and a second bespoke event store would add machinery without
+  adding a guarantee.
   **`expired` is NOT a rollup column and NOT a writable grade** — it is derived at READ: decisions
   minus Σgrades for buckets older than the raw retentions, plus the expired share of joinMiss.
 - `decision_grading_cursor` — the grading job's durable per-decision-point cursor
@@ -496,7 +523,11 @@ an explicit `insufficient-evidence: true` marker beside the raw counts, so three
 read as an actionable rate — codex r5), per-point
 volume/sampling class (so mixed-class ratios aren't misread), attribution columns (model/framework/
 prompt_id) on each row, census debt counts incl. `pending-ref-dead` flags (§5.6),
-`orphanOutcomes`/`joinMiss`/`droppedByBudget` counters, and the wired-but-silent + exempt-but-active
+`orphanOutcomes`/`joinMiss`/`droppedByBudget` counters, the ANNOTATION-REJECTION counters by class
+(enum-invalid / rung-mismatch / owner-mismatch / unknown-decisionPoint — ADV r6: rejections that are
+counted-but-unserved would let a renamed grading component's self-report annotations be silently
+rejected wholesale, starving the enacted-disposition preconditions with the only trace in catch-logs;
+a zeroed grading rung must be visible where the operator reads), and the wired-but-silent + exempt-but-active
 flags (§5.6 — runtime coverage is keyed on `decision_point` via `decision_quality` rows; the 1:1
 component-key convention is only the bridge that locates metric-call counts). Pure indexed SQLite reads;
 Bearer-authed (the middleware exemption-list default); 503 when `provenance.uniformSeam` resolves off.
@@ -538,7 +569,9 @@ advanced boundary) — it never messages, never interprets. The endpoint:
   per-point — with this build's two low-frequency full-class customers starvation is unreachable, but
   a future high-volume enrolled point could consume whole passes while sibling points' evidence
   windows expire; when a third point enrolls, the pass gains a per-point sub-budget (round-robin over
-  cursors) — stated now so the limitation is a named residual, not a surprise,
+  cursors) — and that trigger is STRUCTURAL, not prose (LES r6): the census test asserts that more
+  than two ENROLLED decision points requires the sub-budget implementation, so the third enroller's
+  build fails until it exists rather than relying on a reviewer remembering this clause,
 - upserts grades per §5.4 (idempotent by key — re-runs converge, never multiply; concurrent job-tick +
   operator curl converge by the same idempotency),
 - spends zero LLM tokens in this build (deterministic rules only); when ACT-1198 activates the LLM rung
@@ -570,7 +603,10 @@ runtime and counts unknowns).
   ASSERTION, not prose** (ADV r5): each wired decision point's component key must be UNIQUE across
   census entries — so a second judgment added inside an already-declared component that reuses the
   sibling's key becomes lint-visible the moment the new point is declared or enrolls, instead of hiding
-  under the sibling's coverage. Honest bound, stated: an UNENROLLED, UNDECLARED new point that reuses a
+  under the sibling's coverage. Scope precision (ADV r6): uniqueness binds WIRED keys plus
+  `deterministic-only`-exempt keys (a deterministic-only entry sharing a key with an llm-calling
+  sibling would false-flag exempt-but-active — cheap to include, so it is); multi-call compositions
+  get one unique suffixed key PER point with linkage only via the `composition` field (§5.1.1). Honest bound, stated: an UNENROLLED, UNDECLARED new point that reuses a
   declared sibling's component key is caught at code review, not by the ratchet — the discovery chain
   is component-keyed (the bench precedent's granularity), and this is the named residual of that
   inheritance.
@@ -637,7 +673,11 @@ runtime and counts unknowns).
   operator (each step's counters read from `GET /decision-quality`). Stated honestly (codex r4): while
   `dryRun` holds, ALL durable writes are suppressed, so the substrate's real write path is validated
   only at phase (3) — deliberate staging (metadata-only soak first, then write-path validation on dev),
-  not an oversight.
+  not an oversight. Phase (4) additionally reads the per-rule unknown/coverage rates as a PRODUCT
+  signal, not just a metric state (codex r6): a rule whose grades are dominated by `unknown` — quiet
+  respawns invisible to the sensor, un-orderable start-times, platform differences — is evidence the
+  rule needs work before its numbers steer any model/prompt decision, and the graduation review says
+  so out loud.
 - **JudgmentProvenanceLog construction moves OUT of the mesh block** (today it is constructed only
   inside `if (meshIdMgr && meshSelfId)` at server.ts:19005/21622, so the seam would have nothing to
   write to on a single-machine agent and `/decision-quality` would 503 through the whole dev soak). It
@@ -723,7 +763,10 @@ runtime and counts unknowns).
   the hog decision store AND the JP log are NEVER_SERVED under the PRODUCTION layout — the tests seed
   `<projectDir>/.instar/state/...` paths exactly as production produces them (the prior JP unit test
   went green on a layout production never produces — SEC r4) and assert file routes refuse to serve OR
-  edit both.
+  edit both; backup exclusion proven against the named threat, not by list membership — seed
+  `includeFiles: ['state/']` with remediation OFF under the production layout and assert the snapshot
+  OMITS the hog store (r6: a membership-only unit test would have gone green on the mis-pinned
+  flag-gated list — the misrooted-NEVER_SERVED test lesson, applied to the backup arm).
 - **Integration:** `GET /decision-quality` 200-with-data over a seeded ledger+substrate; 503-when-dark;
   Bearer required; `?scope=pool` dark-peer tolerance (`pool.failed`), peer-URL credential guard, field
   allowlist (a hostile peer row with extra fields — incl. `contextFull` — is stripped); grade-pass
