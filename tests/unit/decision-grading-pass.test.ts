@@ -18,7 +18,12 @@ import {
   _resetDecisionAnnotationRejectionCountersForTest,
 } from '../../src/core/DecisionQualityRecorderImpl.js';
 import { _resetDecisionQualityForTest } from '../../src/core/decisionQualityTypes.js';
-import { runDecisionGradingPass, DECISION_GRADING_COMPONENT } from '../../src/core/decisionGradingPass.js';
+import {
+  runDecisionGradingPass,
+  DECISION_GRADING_COMPONENT,
+  perPointSubBudget,
+  GRADE_PASS_POINTS,
+} from '../../src/core/decisionGradingPass.js';
 import { CompletionEvaluator, type CompletionCorrelationSink } from '../../src/core/CompletionEvaluator.js';
 
 /**
@@ -234,5 +239,26 @@ describe('wiring integrity (P8/P9)', () => {
     });
     await evaluator.evaluate('the goal is met', 'transcript tail', undefined, { topicId: '11960', runId: 'run-7' });
     expect(calls).toEqual([['11960', 'run-7', 'completion', 'd-corr-abc']]);
+  });
+});
+
+describe('perPointSubBudget — §5.5 fairness sub-budget (the SUBBUDGET_IMPLEMENTED primitive)', () => {
+  it('returns the FULL budget for a single point (byte-identical to the pre-sub-budget behavior)', () => {
+    expect(perPointSubBudget(200, 1)).toBe(200);
+    // Today the pass drives exactly one point → the slice IS the whole budget.
+    expect(GRADE_PASS_POINTS.length).toBe(1);
+    expect(perPointSubBudget(200, GRADE_PASS_POINTS.length)).toBe(200);
+  });
+
+  it('divides the global budget evenly so no point can consume a whole pass (a second point → half each)', () => {
+    expect(perPointSubBudget(200, 2)).toBe(100);
+    expect(perPointSubBudget(201, 2)).toBe(100); // floored
+    expect(perPointSubBudget(10, 3)).toBe(3); // ⌊10/3⌋
+  });
+
+  it('floors at 1 so every point always makes some progress (never a zero slice that starves a point)', () => {
+    expect(perPointSubBudget(1, 5)).toBe(1);
+    expect(perPointSubBudget(0, 1)).toBe(1);
+    expect(perPointSubBudget(200, 0)).toBe(200); // degenerate count clamps to 1
   });
 });

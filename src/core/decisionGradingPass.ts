@@ -74,19 +74,71 @@ export interface DecisionGradingPassResult {
 }
 
 /**
+ * The DecisionGrading-owned window-close points this pass drives (§5.5). ONE
+ * today (`hog-sustained-right-v1` over `external-hog-kill-leave`); adding another
+ * appends its point id here. The per-point sub-budget (`perPointSubBudget`)
+ * divides the GLOBAL row budget across THIS set round-robin so no single point
+ * can consume a whole pass and starve a sibling's maturing evidence window
+ * (LES r6 / §5.5 — the fairness bound the census `SUBBUDGET_IMPLEMENTED` flag
+ * asserts is in place before a third ENROLLED customer). MessagingToneGate (the
+ * third enrolled customer) is graded by its own evidence source, not this pass —
+ * so it is not listed here, but its enrollment is what tripped the structural
+ * requirement that this sub-budget exist.
+ */
+export const GRADE_PASS_POINTS: ReadonlyArray<string> = [DP_EXTERNAL_HOG_KILL_LEAVE];
+
+/**
+ * The per-point row slice of the GLOBAL grading budget (§5.5 fairness). Divides
+ * `globalBudget` evenly across `pointCount` grade-pass-driven points, floored at
+ * 1 so every point always makes some progress. With a single point (today) this
+ * returns the full budget — byte-identical to the pre-sub-budget behavior — and
+ * a second high-volume point can no longer starve the first: each gets ⌊N/2⌋.
+ */
+export function perPointSubBudget(globalBudget: number, pointCount: number): number {
+  const n = Math.max(1, Math.floor(pointCount) || 1);
+  return Math.max(1, Math.floor(globalBudget / n));
+}
+
+/**
  * Run one deterministic grading pass. See the module doc for cursor semantics.
- * The only DecisionGrading-owned window-close rule in this build is
- * `hog-sustained-right-v1`; adding another enrolls a new point here AND flips
- * `SUBBUDGET_IMPLEMENTED` (the census ratchet enforces the fairness sub-budget
- * before a third enrolled point).
+ * The GLOBAL row budget is split per-point (`perPointSubBudget`) across
+ * `GRADE_PASS_POINTS` so a high-volume point cannot consume a whole pass and
+ * starve a sibling — the §5.5 fairness sub-budget (`SUBBUDGET_IMPLEMENTED`).
  */
 export function runDecisionGradingPass(deps: DecisionGradingPassDeps): DecisionGradingPassResult {
   const { ledger, hogStore, annotate, now } = deps;
-  const budget = Math.max(1, Math.min(10_000, Math.floor(deps.maxDecisionsPerPass) || 200));
+  const globalBudget = Math.max(1, Math.min(10_000, Math.floor(deps.maxDecisionsPerPass) || 200));
   const evidenceWindowMs = deps.evidenceWindowMs > 0 ? deps.evidenceWindowMs : 6 * HOUR_MS;
   const result: DecisionGradingPassResult = { graded: 0, byRule: {}, cursors: {} };
-  const point = DP_EXTERNAL_HOG_KILL_LEAVE;
   const nowMs = now();
+
+  // §5.5 fairness: each grade-pass-driven point gets an even slice of the global
+  // budget (round-robin over cursors), so no point can consume a whole pass.
+  const subBudget = perPointSubBudget(globalBudget, GRADE_PASS_POINTS.length);
+
+  for (const point of GRADE_PASS_POINTS) {
+    gradeOnePoint({ ledger, hogStore, annotate, point, subBudget, evidenceWindowMs, nowMs, result });
+  }
+  return result;
+}
+
+/**
+ * Grade one point's matured evidence within its own sub-budget slice, writing
+ * its advanced cursor + P19 backoff bookkeeping. Extracted from the single-point
+ * body so the sub-budget can drive N points fairly (§5.5). Behavior for the hog
+ * point is unchanged from the pre-sub-budget single-point walk.
+ */
+function gradeOnePoint(args: {
+  ledger: FeatureMetricsLedger;
+  hogStore: ExternalHogDecisionStore | null;
+  annotate: (a: DecisionOutcomeAnnotationInput) => DecisionOutcomeAnnotationResult;
+  point: string;
+  subBudget: number;
+  evidenceWindowMs: number;
+  nowMs: number;
+  result: DecisionGradingPassResult;
+}): void {
+  const { ledger, hogStore, annotate, point, subBudget, evidenceWindowMs, nowMs, result } = args;
 
   const cursor = ledger.getGradingCursor(point) ?? {
     decisionPoint: point,
@@ -101,14 +153,14 @@ export function runDecisionGradingPass(deps: DecisionGradingPassDeps): DecisionG
   // matured — skip it entirely this pass (report the frozen boundary honestly).
   if (cursor.nextRecheckTs !== null && nowMs < cursor.nextRecheckTs) {
     result.cursors[point] = { ts: cursor.cursorTs, correlationId: cursor.cursorCorrelationId };
-    return result;
+    return;
   }
 
   // No durable evidence source wired (the sentinel store is not constructed) →
   // nothing to grade; leave the cursor untouched.
   if (!hogStore) {
     result.cursors[point] = { ts: cursor.cursorTs, correlationId: cursor.cursorCorrelationId };
-    return result;
+    return;
   }
 
   // correlationId → hog record (bounded: the store retains a handful of slots).
@@ -117,7 +169,7 @@ export function runDecisionGradingPass(deps: DecisionGradingPassDeps): DecisionG
     if (record.correlationId) byCorr.set(record.correlationId, record);
   }
 
-  const rows = ledger.walkDecisionsForGrading(point, cursor.cursorTs, cursor.cursorCorrelationId, budget);
+  const rows = ledger.walkDecisionsForGrading(point, cursor.cursorTs, cursor.cursorCorrelationId, subBudget);
 
   let cursorTs = cursor.cursorTs;
   let cursorCorr = cursor.cursorCorrelationId;
@@ -195,5 +247,4 @@ export function runDecisionGradingPass(deps: DecisionGradingPassDeps): DecisionG
   //  continues immediately from the advanced boundary.)
   ledger.setGradingCursor(point, { cursorTs, cursorCorrelationId: cursorCorr, nextRecheckTs, attempts });
   result.cursors[point] = { ts: cursorTs, correlationId: cursorCorr };
-  return result;
 }

@@ -136,6 +136,13 @@ export const DP_COMPLETION_EVALUATE = 'completion-evaluate';
  * (component 'CompletionEvaluator/P13'; spec §5.3). */
 export const DP_COMPLETION_STOP_RATIONALE = 'completion-stop-rationale';
 
+/** Outbound tone/leak verdict — MessagingToneGate.review() (component
+ * 'MessagingToneGate'; spec §5.6). An ALWAYS-ON HIGH-VOLUME gate: it declares a
+ * `budget:<rows/day>` volume valve (NEVER `full`) and stores content as IDENTITY
+ * only (candidate hash + bounds + code-derived features), never the outbound
+ * body or any plaintext slice of it. */
+export const DP_MESSAGING_TONE_GATE = 'messaging-tone-gate';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -174,6 +181,31 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'First customer (spec §5.3): the P13 stop-rationale judge decides whether a stop-attempt is EARNED; same transcript-slice-identity envelope as evaluate().',
+  },
+
+  // ── Wired high-volume gate (§5.6 — NOT full-class; the third enrolled
+  //    customer, which required the grading-pass per-point sub-budget FIRST —
+  //    SUBBUDGET_IMPLEMENTED is now true) ─────────────────────────────────────
+  {
+    decisionPoint: DP_MESSAGING_TONE_GATE,
+    component: 'MessagingToneGate',
+    status: 'wired',
+    // §5.6 volume valve: an ALWAYS-ON high-volume gate MUST NOT be `full`. A
+    // per-UTC-day COUNT budget gives a hard, count-enforced ceiling on the
+    // provenance JSONL archive (loud droppedByBudget counter when hit) — a
+    // deterministic bound preferable to probabilistic sampling for a gate that
+    // fires on every drafted outbound message. 500/day = a representative daily
+    // sample without unbounded growth; the ~250-byte decision_quality row is
+    // ALWAYS written regardless (counts stay complete).
+    volumeClass: 'budget:500',
+    // Content-bearing: the gate judges an agent-authored outbound message. It
+    // enters the row as IDENTITY ONLY — a sha256 of the candidate + byte/char
+    // bounds + code-derived features — never the full body or any plaintext
+    // slice (the provenance store must not become an outbound-message archive;
+    // mirrors the CompletionEvaluator content-bearing sibling, §5.3).
+    contentClass: 'content-bearing',
+    reason:
+      'The outbound tone/leak authority (spec §5.6 named high-volume point). Enrolled at budget:500/day, identity-only content — never the message body.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not
@@ -315,14 +347,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Stop-justified verdict over session state; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
-  },
-  {
-    decisionPoint: 'messaging-tone-gate',
-    component: 'MessagingToneGate',
-    status: 'pending:ACT-1193',
-    contentClass: 'content-bearing',
-    reason:
-      'Outbound tone/leak verdict over every drafted user-facing message — an always-on high-volume gate; MUST declare sampled:<rate> or budget:<rows/day> at enrollment (§5.6 volume valve), never full.',
   },
   {
     decisionPoint: 'coherence-review',
@@ -649,16 +673,19 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 // ───────────────────────────────────────────────────────────────────────────
 // Grading-pass fairness marker (§5.5 / LES r6).
 //
-// The grading endpoint's per-pass bound is GLOBAL, not per-point — safe for the
+// The grading endpoint's per-pass bound was GLOBAL, not per-point — safe for the
 // two seeded low-frequency full-class customers, but a third ENROLLED customer
 // could starve sibling points' evidence windows. The census ratchet asserts
 // structurally that enrolling beyond the seeded first-customer set requires the
-// per-point round-robin sub-budget FIRST: flip this to true ONLY in the PR that
-// implements the sub-budget in the grade-pass loop (the third enroller's build
-// fails until then — the trigger is structural, not prose).
+// per-point round-robin sub-budget FIRST: this is now true because
+// `runDecisionGradingPass` divides its global budget round-robin across the
+// grade-pass-driven points (src/core/decisionGradingPass.ts — the sub-budget
+// helper `perPointSubBudget`), so no single point can consume a whole pass and
+// starve a sibling's maturing evidence window. Flipped in the PR that
+// implements that sub-budget (MessagingToneGate enrollment, the third customer).
 // ───────────────────────────────────────────────────────────────────────────
 
-export const SUBBUDGET_IMPLEMENTED = false;
+export const SUBBUDGET_IMPLEMENTED = true;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Evidence-rule registry (§5.4.2) — ruleId → rung + evidence-strength + OWNING

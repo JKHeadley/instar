@@ -28,6 +28,23 @@ import {
 } from './GateSignalDetectors.js';
 import { detectInternalIdLeak } from './internal-id-leak.js';
 import { detectSelfStopShape } from './self-stop-floor.js';
+import { DP_MESSAGING_TONE_GATE } from '../data/provenanceCoverage.js';
+
+/**
+ * The prompt-version tag for the tone-gate judge, declared as the provenance
+ * `promptId` (llm-decision-quality-meter §5.2 — a stable, clamp-safe
+ * ^[a-zA-Z0-9_-]{1,64}$ version tag). BUMP ON ANY PROMPT CHANGE so grade-by-
+ * promptId aggregates never silently mix prompt semantics. `-sigv1` marks the
+ * signal-driven B1–B7 prompt shape (CMT-1793).
+ */
+export const TONE_GATE_PROMPT_ID = 'tone-gate-sigv1';
+
+/**
+ * The bounded action space the tone judge emits, declared as `optionsPresented`
+ * on the provenance enrollment (§5.2 static, code-authored, enum-like labels):
+ * the gate makes ONE deliver-or-block decision per call.
+ */
+export const TONE_OPTIONS_PRESENTED = ['PASS', 'BLOCK'] as const;
 
 /**
  * Why the LLM tone authority could not produce a verdict — an INFRA reason
@@ -94,6 +111,44 @@ export function detectDeterministicLeak(
     return { rule: 'B20_INTERNAL_ID_LEAK', kind: 'internal-id-leak' };
   }
   return null;
+}
+
+/**
+ * The §5.2 content-bearing decision-context envelope for the tone gate's
+ * provenance row (llm-decision-quality-meter). The gate judges an agent-authored
+ * OUTBOUND message; the row stores it as IDENTITY ONLY — a sha256 of the exact
+ * candidate + byte/char bounds — plus CODE-DERIVED features (channel, messageKind,
+ * recent-message COUNT, the deterministic gate-signal KINDS). It NEVER stores the
+ * message body or any plaintext slice of it.
+ *
+ * WHY NO plaintext head (mirrors the CompletionEvaluator content-bearing sibling,
+ * §5.3): the candidate IS the very outbound text this gate exists to inspect for
+ * leaks — a bounded head, even credential-scrubbed, would still archive
+ * non-credential PII / user-facing prose the store must not become a copy of. The
+ * hash gives full identity (correlate/dedupe/replay-verify) with zero body
+ * exposure.
+ */
+export function buildToneDecisionContext(
+  text: string,
+  context: ToneReviewContext,
+): Record<string, unknown> {
+  const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+  const ctx: Record<string, unknown> = {
+    candidate: {
+      sha256: sha256(text),
+      bytes: Buffer.byteLength(text, 'utf8'),
+      chars: text.length,
+    },
+    channel: String(context.channel ?? '').slice(0, 32),
+    messageKind: context.messageKind ?? 'reply',
+    recentMessageCount: Array.isArray(context.recentMessages) ? context.recentMessages.length : 0,
+    // The deterministic gate-signal KINDS the prompt was handed (identity +
+    // features discipline — the kinds, not the offending substrings).
+    gateSignalKinds: detectGateSignals(text)
+      .filter((s) => s.detected)
+      .map((s) => s.kind),
+  };
+  return ctx;
 }
 
 /**
@@ -671,6 +726,20 @@ export class MessagingToneGate {
         gating: true,
         ...(interactiveLane ? { lane: 'interactive' as const } : {}),
       }, // attribution for /metrics/features + F5 lane
+      // LLM-Decision Quality Meter §5.1.4/§5.6 Layer-B enrollment (decision
+      // point `messaging-tone-gate`, volumeClass budget:500, content-bearing —
+      // candidate IDENTITY only: sha256 + bounds + code-derived features, never
+      // the outbound body). Observability-only: the router-settlement seam CONSUMES
+      // this block (strips it before any inner adapter) and records the row on
+      // its own path — it NEVER reaches the model and NEVER alters the gate's
+      // block/allow verdict (a provenance write failure is contained by the
+      // recorder's own total/fail-open contract).
+      provenance: {
+        decisionPoint: DP_MESSAGING_TONE_GATE,
+        context: buildToneDecisionContext(text, context),
+        optionsPresented: [...TONE_OPTIONS_PRESENTED],
+        promptId: TONE_GATE_PROMPT_ID,
+      },
     };
     const cfg = this.getConfig();
     // Availability-sensitive disposition (spec §Design 6 + tone-gate-graceful-

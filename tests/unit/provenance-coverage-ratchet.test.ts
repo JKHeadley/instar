@@ -39,6 +39,7 @@ import {
   DP_EXTERNAL_HOG_KILL_LEAVE,
   DP_COMPLETION_EVALUATE,
   DP_COMPLETION_STOP_RATIONALE,
+  DP_MESSAGING_TONE_GATE,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -91,7 +92,6 @@ const PENDING_BASELINE = [
   'llm-sanitize::LLMSanitizer::ACT-1193',
   'mentor-stage-b-classify::mentor-stage-b::ACT-1193',
   'message-sentinel-classify::MessageSentinel::ACT-1193',
-  'messaging-tone-gate::MessagingToneGate::ACT-1193',
   'move-intent-classify::MoveIntentClassifier::ACT-1193',
   'open-conversation-brief::openConversationBrief::ACT-1193',
   'override-detect::OverrideDetector::ACT-1193',
@@ -328,6 +328,34 @@ describe('enrollment growth — the sub-budget trigger is structural (LES r6, §
       expect(e?.volumeClass, `${dp} is a low-frequency high-stakes first customer — full-class by spec §5.3`).toBe('full');
       expect(e?.contentClass, `${dp} judges process/transcript content — content-bearing by spec §5.3`).toBe('content-bearing');
     }
+  });
+});
+
+describe('messaging-tone-gate — the third enrolled customer (§5.6 high-volume valve)', () => {
+  it('is WIRED (a regression to pending fails here — the ratchet now REQUIRES it enrolled)', () => {
+    const e = getCensusEntry(DP_MESSAGING_TONE_GATE);
+    expect(e, 'messaging-tone-gate must be a census entry').toBeDefined();
+    expect(e?.status, 'messaging-tone-gate must be WIRED (not pending) — the pending→wired flip must not regress').toBe('wired');
+    expect(isEnrolled(DP_MESSAGING_TONE_GATE)).toBe(true);
+    // A regression to pending would ALSO reintroduce the PENDING_BASELINE line —
+    // the shrink-only pending pin (above) would then fail on the new/changed line.
+  });
+
+  it('declares a HIGH-VOLUME valve — a per-day budget, NEVER full (§5.6 always-on gate)', () => {
+    const vc = getVolumeClass(DP_MESSAGING_TONE_GATE);
+    expect(vc, 'messaging-tone-gate MUST declare its volumeClass').toBeDefined();
+    expect(vc, 'an always-on high-volume gate MUST NOT be full — sampled:<rate> or budget:<rows/day> only (§5.6)').not.toBe('full');
+    expect(vc, 'the chosen valve is a per-UTC-day COUNT budget').toMatch(/^budget:[1-9]\d*$/);
+  });
+
+  it('is content-bearing (it judges an agent-authored outbound message → identity-only content)', () => {
+    expect(getCensusEntry(DP_MESSAGING_TONE_GATE)?.contentClass).toBe('content-bearing');
+  });
+
+  it('enrolling it REQUIRED the sub-budget (SUBBUDGET_IMPLEMENTED true — the structural trigger it tripped)', () => {
+    // The two enrollment-growth guards above only pass because the sub-budget
+    // now exists; pin the flag so a revert of the sub-budget re-fails here too.
+    expect(SUBBUDGET_IMPLEMENTED, 'the tone-gate enrollment requires the §5.5 per-point sub-budget in place').toBe(true);
   });
 });
 
