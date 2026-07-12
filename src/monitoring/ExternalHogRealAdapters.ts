@@ -23,6 +23,7 @@ import { classContentHash, isMarkerValid, type ArmMarker } from './ExternalHogAr
 import { buildClassifierPrompt } from './ExternalHogClassifierPrompt.js';
 import type { KillFunnelDeps } from './ExternalHogKillFunnel.js';
 import type { CoalesceResult } from './ExternalHogNoticeCoalescer.js';
+import type { DecisionProvenanceBlock } from '../core/decisionQualityTypes.js';
 
 /** The raw side-effect primitives — the ONLY things that touch the real OS / network. */
 export interface ExternalHogPrimitives {
@@ -36,8 +37,11 @@ export interface ExternalHogPrimitives {
    *  is unreadable. This is the fresh "is it STILL pinning cores, or did it go idle?" probe that
    *  gates every signal — a null or below-threshold reading must abort the kill (fail-safe). */
   cpuCoresOver(pid: number, windowMs: number): Promise<number | null>;
-  /** Call the classifier model with a prompt (wrapped by the caller in the LlmQueue background lane). */
-  callModel(prompt: string): Promise<string>;
+  /** Call the classifier model with a prompt (wrapped by the caller in the LlmQueue background lane).
+   *  `provenance` is the llm-decision-quality-meter §5.3 enrollment block — the server-side
+   *  primitive threads it as `options.provenance` on intelligence.evaluate so the router mints +
+   *  settles a decision row for the kill/leave verdict. */
+  callModel(prompt: string, provenance?: DecisionProvenanceBlock): Promise<string>;
   /** Raise ONE attention item for the coalesced notices. */
   raiseAttention(item: { title: string; body: string; priority?: 'low' | 'medium' | 'high'; source?: string }): Promise<unknown> | unknown;
   /** A monotonic clock reading (ms). */
@@ -206,10 +210,10 @@ export function createExternalHogAdapters(prims: ExternalHogPrimitives, opts: Ex
     return buildIdentity(facts);
   }
 
-  async function classify(facts: ExternalHogFacts): Promise<unknown> {
+  async function classify(facts: ExternalHogFacts, provenance?: DecisionProvenanceBlock): Promise<unknown> {
     const classId = matchAllowlistClass(facts.name, facts.argv);
     if (!classId) return null; // not an allowlist class → decider-unavailable → alert (never happens: only classified after identity)
-    return prims.callModel(buildClassifierPrompt(facts, classId));
+    return prims.callModel(buildClassifierPrompt(facts, classId), provenance);
   }
 
   function currentClassContentHash(classId: string): string {

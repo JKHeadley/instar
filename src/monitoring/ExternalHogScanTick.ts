@@ -18,7 +18,8 @@ import type { ProcTableRow } from './ExternalHogProcTable.js';
 import { advanceSampler, type SamplerState, type SamplerOpts, type Candidate } from './ExternalHogSampler.js';
 import type { ProcTree, OwnedRefs } from './ExternalHogOwnership.js';
 import { selectForClassification, parseClassifierVerdict, type ClassifierVerdict } from './ExternalHogClassifier.js';
-import { evaluateKillFloor, matchAllowlistClass, type ExternalHogFacts } from './ExternalHogFloor.js';
+import { evaluateKillFloor, matchAllowlistClass, type ExternalHogFacts, type FloorVerdict } from './ExternalHogFloor.js';
+import { parseParentPid, lstartToEpochMs } from './ExternalHogFactBuilder.js';
 import { runKillFunnel, type KillOutcome, type KillTarget, type KillFunnelDeps, type KillFunnelOpts } from './ExternalHogKillFunnel.js';
 import {
   isBreakerTripped, recordKill, type KillLedgerState, type BreakerOpts,
@@ -27,6 +28,8 @@ import { coalesceNotices, type Notice, type CoalesceResult } from './ExternalHog
 import { advanceSustained, isSustained, candidateSignature, type SustainedState } from './ExternalHogSustained.js';
 import { governor, consumeAdmissionToken } from './selfaction/governor.js';
 import type { DerivedTarget } from './selfaction/types.js';
+import { DP_EXTERNAL_HOG_KILL_LEAVE } from '../data/provenanceCoverage.js';
+import type { DecisionProvenanceBlock } from '../core/decisionQualityTypes.js';
 
 /* @self-action-controller: external-hog-kill-breaker */
 // Unified self-action backpressure (Increment B, OBSERVE-ONLY): the live kill
@@ -52,6 +55,131 @@ export interface ScanState {
   readonly sustained: SustainedState;
 }
 
+// ── LLM-Decision Quality Meter — the §5.3 first-customer wiring ─────────────
+// (docs/specs/llm-decision-quality-meter.md §5.3: enrollment via
+// options.provenance on the classifier call + the enacted-disposition space
+// the durable ExternalHogDecisionStore records.)
+
+/**
+ * The sentinel's REAL enacted-disposition space (spec §5.3, verified against
+ * this orchestrator's branches): the five kill-funnel outcomes plus the four
+ * alert-only branches plus decider-unavailable. Only `killed`/`sigterm-exited`
+ * ever enter the kill-grading evidence rules; `would-kill`/`deferred`/
+ * `aborted`/`decider-unavailable` age out `unknown` — during the watch-only
+ * dev soak EVERY kill verdict enacts as `would-kill`.
+ */
+export type HogEnactedDisposition =
+  | 'killed'
+  | 'sigterm-exited'
+  | 'would-kill'
+  | 'deferred'
+  | 'aborted'
+  | 'alert-only-model-spared'
+  | 'alert-only-floor-veto'
+  | 'alert-only-breaker-held'
+  | 'alert-only-governor-hold'
+  | 'decider-unavailable';
+
+/**
+ * Stable prompt identity for the classifier decision point. The prompt module
+ * (ExternalHogClassifierPrompt) carries no version tag of its own, so this is
+ * the §5.2 promptId literal — bump it when buildClassifierPrompt changes
+ * materially (a prompt change is exactly what the meter's per-prompt
+ * attribution exists to distinguish).
+ */
+export const HOG_CLASSIFIER_PROMPT_ID = 'external-hog-classifier-v1';
+
+/**
+ * The candidate's OWN spoof-proof identity (§5.3 targetTuple): pid + lstart
+ * parsed to epoch ms FOR ORDERING (start-times cannot be forged old). A null
+ * `startTimeMs` (un-parseable lstart) degrades every ordering-dependent
+ * evidence predicate to `unknown`, never `wrong`.
+ */
+export interface HogTargetTuple {
+  readonly pid: number;
+  readonly startTimeMs: number | null;
+}
+
+/**
+ * MEMBER-WISE owner identity (§5.3, ADV r4/r5/r6): `parentPid` is ALWAYS
+ * derivable for a floor-PERMITTED kill by construction (parseParentPid
+ * succeeded, else the floor's ownerAppRunning veto fired), so it is always
+ * present on ENACTED kills — but a floor-VETOED kill verdict whose veto came
+ * from a null parse legitimately has NO parentPid, so nothing here is
+ * hard-asserted. `parentStartTimeMs` is recorded where derivable and absent
+ * in the dominant orphan-kill case (no live parent to stamp).
+ */
+export interface HogOwnerTuple {
+  readonly parentPid?: number;
+  readonly parentStartTimeMs?: number;
+}
+
+/**
+ * The durable decision-store seed for ONE per-candidate decision — everything
+ * the ExternalHogDecisionStore's per-ledgerKey record needs except the wall
+ * timestamp + effective window (the store stamps those; the scan tick's clock
+ * is monotonic and must never be persisted).
+ */
+export interface HogDecisionSeed {
+  readonly ledgerKey: string;
+  readonly classId: string;
+  readonly commandHash: string;
+  readonly verdict: ClassifierVerdict | 'decider-unavailable';
+  readonly enacted: HogEnactedDisposition;
+  /** Router-minted correlation id (via provenance.onCorrelationId); null when
+   *  no mint reached us (no classify call, router-bypassed, provider down). */
+  readonly correlationId: string | null;
+  readonly targetTuple: HogTargetTuple;
+  readonly ownerTuple: HogOwnerTuple;
+  /** The floor verdict AT DECISION TIME. False for over-cap degraded rows
+   *  (the floor was never evaluated — conservative, excludes every
+   *  floorPermitted-gated evidence rule). */
+  readonly floorPermitted: boolean;
+}
+
+/** Derive the member-wise owner tuple from argv + the live proc tree (§5.3). */
+export function deriveHogOwnerTuple(argv: string, tree: ProcTree): HogOwnerTuple {
+  const parentPid = parseParentPid(argv);
+  if (parentPid === null) return {};
+  const parent = tree.get(parentPid);
+  const parentStartTimeMs = parent ? lstartToEpochMs(parent.startTime) : null;
+  return { parentPid, ...(parentStartTimeMs !== null ? { parentStartTimeMs } : {}) };
+}
+
+/**
+ * The bounded §5.2 content-bearing hog envelope: identity + verdict-relevant
+ * fields ONLY — commandHash/ledgerKey/classId, the (length-clamped) process
+ * name, floor booleans, CPU numbers, and the code-derived identity tuples.
+ * NEVER raw argv (attacker-controllable, can carry positional passwords).
+ */
+export function buildHogDecisionContext(input: {
+  readonly id: { commandHash: string; ledgerKey: string; classId: string };
+  readonly facts: ExternalHogFacts;
+  readonly floor: FloorVerdict;
+  readonly coreEquivalents: number;
+  readonly targetTuple: HogTargetTuple;
+  readonly ownerTuple: HogOwnerTuple;
+}): Record<string, unknown> {
+  const { id, facts, floor, coreEquivalents, targetTuple, ownerTuple } = input;
+  return {
+    commandHash: id.commandHash,
+    ledgerKey: id.ledgerKey,
+    classId: id.classId,
+    name: typeof facts.name === 'string' ? facts.name.slice(0, 200) : '',
+    floorPermitted: floor.permitted,
+    ...(floor.permitted ? {} : { floorVetoReason: floor.vetoReason }),
+    ownerAppRunning: facts.ownerAppRunning === true,
+    sustainedHighCpu: facts.sustainedHighCpu === true,
+    isInstarProcess: facts.isInstarProcess === true,
+    ownerRootDaemon: facts.ownerRootDaemon === true,
+    hasLaunchctlLabel: facts.hasLaunchctlLabel === true,
+    coreEquivalents,
+    pid: targetTuple.pid,
+    startTimeMs: targetTuple.startTimeMs,
+    ...(ownerTuple.parentPid !== undefined ? { parentPid: ownerTuple.parentPid } : {}),
+  };
+}
+
 export interface ScanDeps {
   /** The current parsed ps table (the sampler's input). */
   readProcTable(): readonly ProcTableRow[];
@@ -62,8 +190,10 @@ export interface ScanDeps {
   factsFor(candidate: Candidate): ExternalHogFacts | null | Promise<ExternalHogFacts | null>;
   /** The command-hash + ledger key + class for a candidate (identity for the ledger/funnel). */
   identityFor(candidate: Candidate, facts: ExternalHogFacts): { commandHash: string; ledgerKey: string; classId: string } | null;
-  /** Call the classifier (LlmQueue). Returns raw model output, or null if the decider is unavailable. */
-  classify(facts: ExternalHogFacts): Promise<unknown>;
+  /** Call the classifier (LlmQueue). Returns raw model output, or null if the decider is unavailable.
+   *  `provenance` is the §5.3 enrollment block (llm-decision-quality-meter) — the adapter threads it
+   *  as `options.provenance` on the underlying intelligence.evaluate call. */
+  classify(facts: ExternalHogFacts, provenance?: DecisionProvenanceBlock): Promise<unknown>;
   /** The kill-funnel I/O (re-read facts/arm, fd-probe, signal, aliveness, wait). */
   killFunnelDeps: KillFunnelDeps;
   /** A monotonic clock reading (ms). */
@@ -92,6 +222,13 @@ export interface ScanOutcome {
   readonly classId: string;
   readonly verdict: ClassifierVerdict | 'decider-unavailable';
   readonly outcome: KillOutcome | 'alert-only';
+  /** The ENACTED disposition (spec §5.3 10-value space) — what actually
+   *  happened after floors/breakers/governors, never the raw verdict. */
+  readonly enacted: HogEnactedDisposition;
+  /** The durable decision-store seed (the ExternalHogDecisionStore record
+   *  minus the store-stamped wall time + effective window). Present on every
+   *  outcome — each row comes from a fully-identified (enriched) candidate. */
+  readonly decision: HogDecisionSeed;
 }
 
 export interface ScanResult {
@@ -133,7 +270,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
   // allowlist class, or an identity race on the command-hash) is NEVER a killable target, yet
   // it IS a sustained external hog: it MUST be SURFACED, never silently dropped (round-13 —
   // second-pass reviewer: the §4 broad-observability guarantee — no present hog is invisible).
-  const enriched: Array<{ c: Candidate; facts: ExternalHogFacts; id: { commandHash: string; ledgerKey: string; classId: string }; tuple: { pid: number; startTime: string; commandHash: string }; coreEquivalents: number }> = [];
+  const enriched: Array<{ c: Candidate; facts: ExternalHogFacts; id: { commandHash: string; ledgerKey: string; classId: string }; tuple: { pid: number; startTime: string; commandHash: string }; coreEquivalents: number; targetTuple: HogTargetTuple; ownerTuple: HogOwnerTuple }> = [];
   for (const c of tick.candidates) {
     const rawFacts = await deps.factsFor(c);
     if (!rawFacts) continue; // vanished → nothing to surface (safe)
@@ -155,15 +292,48 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
       notices.push({ cls: 'hog-left-alive', signature: `${c.pid} ${c.startTime}`, text: `sustained external hog (not kill-eligible): pid ${c.pid}` });
       continue;
     }
-    enriched.push({ c, facts, id, tuple: { pid: c.pid, startTime: c.startTime, commandHash: id.commandHash }, coreEquivalents: c.coreEquivalents });
+    enriched.push({
+      c, facts, id,
+      tuple: { pid: c.pid, startTime: c.startTime, commandHash: id.commandHash },
+      coreEquivalents: c.coreEquivalents,
+      // §5.3 durable-store identity tuples, derived ONCE per candidate from the
+      // code-read table/argv (never from model output).
+      targetTuple: { pid: c.pid, startTimeMs: lstartToEpochMs(c.startTime) },
+      ownerTuple: deriveHogOwnerTuple(facts.argv, tree),
+    });
   }
 
   const { toClassify, degradedToAlert } = selectForClassification(enriched, opts.maxClassificationsPerScan);
 
   for (const cand of toClassify) {
     const floor = evaluateKillFloor(cand.facts);
-    const raw = await deps.classify(cand.facts);
+
+    // §5.3 enrollment (llm-decision-quality-meter): the classifier call carries
+    // options.provenance so the router mints + settles a decision row for it.
+    // onCorrelationId fires SYNCHRONOUSLY at mint (before the first attempt),
+    // so `correlationId` is set by the time the classify promise resolves.
+    let correlationId: string | null = null;
+    const provenance: DecisionProvenanceBlock = {
+      decisionPoint: DP_EXTERNAL_HOG_KILL_LEAVE,
+      context: buildHogDecisionContext({
+        id: cand.id, facts: cand.facts, floor,
+        coreEquivalents: cand.coreEquivalents,
+        targetTuple: cand.targetTuple, ownerTuple: cand.ownerTuple,
+      }),
+      optionsPresented: ['kill', 'leave'],
+      promptId: HOG_CLASSIFIER_PROMPT_ID,
+      onCorrelationId: (id) => { correlationId = id; },
+    };
+    const raw = await deps.classify(cand.facts, provenance);
     const verdict = parseClassifierVerdict(raw); // null → decider-unavailable → alert
+
+    /** The durable-store seed for this candidate's decision (persisted by the sentinel shell). */
+    const decisionSeed = (v: ClassifierVerdict | 'decider-unavailable', enacted: HogEnactedDisposition): HogDecisionSeed => ({
+      ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, commandHash: cand.id.commandHash,
+      verdict: v, enacted, correlationId,
+      targetTuple: cand.targetTuple, ownerTuple: cand.ownerTuple,
+      floorPermitted: floor.permitted,
+    });
 
     // The §4 observability floor: a deterministic sustained hog that is NOT killed is ALWAYS
     // surfaced (the model can never silence it).
@@ -171,14 +341,19 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
 
     if (verdict === null) {
       // Decider unavailable → no kill → alert.
-      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict: 'decider-unavailable', outcome: 'alert-only' });
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict: 'decider-unavailable', outcome: 'alert-only', enacted: 'decider-unavailable', decision: decisionSeed('decider-unavailable', 'decider-unavailable') });
       notices.push({ cls: 'decider-unavailable', signature: cand.id.ledgerKey, text: `decider unavailable: pid ${cand.c.pid}` });
       continue;
     }
 
     if (verdict !== 'kill' || !floor.permitted) {
       // Model spared it, or the floor vetoes → alert-only (observability floor still surfaces).
-      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only' });
+      // Disposition honesty (§5.3): a spared verdict is 'alert-only-model-spared' (the
+      // leave-recurrence rule's precondition ALSO requires floorPermitted, recorded on the
+      // seed); a kill verdict the floor vetoed is 'alert-only-floor-veto' — never graded
+      // as if the classifier's recommendation had been executed.
+      const enacted: HogEnactedDisposition = verdict !== 'kill' ? 'alert-only-model-spared' : 'alert-only-floor-veto';
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only', enacted, decision: decisionSeed(verdict, enacted) });
       surfaceLeftAlive();
       if (!floor.permitted) notices.push({ cls: 'floor-veto-downgrade', signature: cand.id.ledgerKey, text: `floor vetoed a kill: pid ${cand.c.pid}` });
       continue;
@@ -187,7 +362,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
     // verdict === 'kill' && floor permits. Check the P19 breaker before acting.
     const tripped = isBreakerTripped(ledger, cand.id.ledgerKey, cand.id.classId, { ...opts.breaker, nowMs: now });
     if (tripped) {
-      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only' });
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only', enacted: 'alert-only-breaker-held', decision: decisionSeed(verdict, 'alert-only-breaker-held') });
       surfaceLeftAlive(); // shielded from KILL only, never from surfacing
       continue;
     }
@@ -202,7 +377,7 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
         ? consumeAdmissionToken(hogAdmission.token, 'external-hog-kill-breaker', { targetKey: hogTarget.key })
         : null;
     if (hogAdmission.outcome !== 'allow' || !hogSink?.proceed) {
-      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only' });
+      outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome: 'alert-only', enacted: 'alert-only-governor-hold', decision: decisionSeed(verdict, 'alert-only-governor-hold') });
       surfaceLeftAlive();
       continue;
     }
@@ -211,7 +386,9 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
     const target: KillTarget = { pid: cand.c.pid, startTime: cand.c.startTime, commandHash: cand.id.commandHash, classId: cand.id.classId };
     const funnelOpts: KillFunnelOpts = { ...opts.killFunnel, currentDeferrals: deps.deferralsFor(cand.id.ledgerKey) };
     const outcome = await runKillFunnel(target, funnelOpts, deps.killFunnelDeps);
-    outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome });
+    // The funnel's action IS the enacted disposition (killed | sigterm-exited |
+    // would-kill | deferred | aborted) — the §5.3 enum reuses the same names.
+    outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict, outcome, enacted: outcome.action, decision: decisionSeed(verdict, outcome.action) });
 
     if (outcome.action === 'killed') {
       ledger = recordKill(ledger, { key: cand.id.ledgerKey, classId: cand.id.classId, atMs: now }, opts.killLedgerRetentionMs, now);
@@ -222,9 +399,19 @@ export async function runScanTick(state: ScanState, deps: ScanDeps, opts: ScanOp
     }
   }
 
-  // The over-cap remainder degrades to alert-only (observability floor).
+  // The over-cap remainder degrades to alert-only (observability floor). No classifier ran,
+  // so verdict + enacted are 'decider-unavailable', there is no correlation id, and
+  // floorPermitted is false (the floor was never evaluated — conservative).
   for (const cand of degradedToAlert) {
-    outcomes.push({ pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, verdict: 'decider-unavailable', outcome: 'alert-only' });
+    outcomes.push({
+      pid: cand.c.pid, ledgerKey: cand.id.ledgerKey, classId: cand.id.classId,
+      verdict: 'decider-unavailable', outcome: 'alert-only', enacted: 'decider-unavailable',
+      decision: {
+        ledgerKey: cand.id.ledgerKey, classId: cand.id.classId, commandHash: cand.id.commandHash,
+        verdict: 'decider-unavailable', enacted: 'decider-unavailable', correlationId: null,
+        targetTuple: cand.targetTuple, ownerTuple: cand.ownerTuple, floorPermitted: false,
+      },
+    });
     notices.push({ cls: 'hog-left-alive', signature: cand.id.ledgerKey, text: `sustained hog left alive (over cap): pid ${cand.c.pid}` });
   }
 

@@ -1,5 +1,9 @@
 # The LLM-Decision Quality Meter, in plain English
 
+> **Status (2026-07-12):** operator-approved (topic 11960) and shipping — but shipping **dark / dry-run**:
+> the machinery records and (would-)grades nothing durably until the `provenance.uniformSeam` flag is
+> deliberately turned on after a soak. Two small live bug-fixes ride along and DO take effect immediately.
+
 ## What problem this solves
 
 The agent makes hundreds of automated judgment calls a day using AI models: "is this process a

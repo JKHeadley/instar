@@ -2,10 +2,13 @@
 title: "LLM-Decision Quality Meter — uniform provenance + outcome grading"
 slug: "llm-decision-quality-meter"
 author: "echo"
+parent-principle: "Decision Provenance & Outcome Review"
 review-convergence: "2026-07-12T03:44:19.544Z"
 review-iterations: 7
 review-completed-at: "2026-07-12T03:44:19.544Z"
 review-report: "docs/specs/reports/llm-decision-quality-meter-convergence.md"
+approved: true
+approved-by: "Justin (Telegram topic 11960, 2026-07-12 — conversational approval: \"yes, approved, lets proceed with this\")"
 cross-model-review: "codex-cli:gpt-5.5"
 single-run-completable: true
 frontloaded-decisions: 13
@@ -19,14 +22,14 @@ contested-then-cleared: 2
 **Source audit:** `docs/audits/llm-decision-accountability.md` (CMT-1962, Rounds 1–2)
 **Parent standard:** Decision Provenance & Outcome Review (docs/STANDARDS-REGISTRY.md:522 — "### Decision
 Provenance & Outcome Review", ratified in PR #1436, merge commit 965a3602c)
-**Explicit non-scope:** ACT-1195 (bench prompt-parity) — separate follow-up. ACT-1196 (speaker-election
+**Explicit non-scope:** ACT-1195 (bench prompt-parity) — separate follow-up. <!-- tracked: ACT-1195 --> ACT-1196 (speaker-election
 enforce flip) — separate gate. Graded-case→bench-battery feed + LLM evidence-interpreter activation —
-deferred with the standard clause named, tracked ACT-1198 (see FD12). Cross-machine outcome ROUTING —
+deferred with the standard clause named, tracked ACT-1198 (see FD12). <!-- tracked: ACT-1198 --> Cross-machine outcome ROUTING —
 tracked ACT-1199 (honest-degradation ships in this build; see FD10). Dashboard rendering — tracked
 ACT-1197 (API-only this build; see FD13). Operator-reversal detection (an operator manually undoing a
 graded action as evidence) — OUT of this build, named residual inside ACT-1198's evidence-source family.
 (Build note: the three referenced ACTs are pinned/critical-class in the evolution queue at build time so
-`evolutionActions.autoExpiry` can never sweep a deferred constitutional obligation — see §5.6.)
+`evolutionActions.autoExpiry` can never sweep a deferred constitutional obligation — see §5.6.) <!-- tracked: ACT-1198 -->
 
 ## Problem statement
 
@@ -63,7 +66,7 @@ whether a bigger model or a prompt change is warranted. Today that judgment is i
   existing JudgmentProvenanceLog storage/redaction/retention posture (with named additive schema fields,
   §5.2), not a second mechanism.
 - G2 (ACT-1193): the two named high-stakes callsites (external-hog kill, completion/P13 judges) actually
-  wired as the first customers, in this build — not deferred — including the NEW durable hog
+  wired as the first customers, in this build — not postponed — including the NEW durable hog
   decision-record store their grading requires (§5.3; the review established the previously-assumed
   carrier does not exist).
 - G3 (ACT-1194): verdict↔outcome correlation made real: every llm-kind funnel metric row carries the
@@ -116,7 +119,7 @@ whether a bigger model or a prompt change is warranted. Today that judgment is i
   strictly deterministic/rule-based.
 - No operator alerting in this build: the grading surface is a pull read (route), not a watcher — no
   attention items, no notices (so no Self-Heal-Before-Notify escalation surface is introduced).
-  A "this gate is performing badly" alert is a possible follow-up that would then carry Standard B
+  A "this gate is performing badly" alert is a possible future extension that would then carry Standard B
   obligations; it is deliberately out of scope here. The grading JOB likewise never messages: its body
   only curls the deterministic grading endpoint (pinned in the job template so FD5 cannot erode at
   template-authoring time).
@@ -401,8 +404,8 @@ the concrete predicates below implement this).
   verdicts. **`enacted` covers the sentinel's REAL disposition space** (LES r3 — verified against
   ExternalHogScanTick.ts:160-227): `killed | sigterm-exited | would-kill | deferred | aborted |
   alert-only-model-spared | alert-only-floor-veto | alert-only-breaker-held | alert-only-governor-hold |
-  decider-unavailable`. Only `killed`/`sigterm-exited` enter the kill-grading rules;
-  `would-kill`/`deferred`/`aborted`/`decider-unavailable` decisions age out `unknown` — and stated
+  decider-unavailable`. <!-- tracked: ACT-1194 --> Only `killed`/`sigterm-exited` enter the kill-grading rules;
+  `would-kill`/`deferred`/`aborted`/`decider-unavailable` decisions age out `unknown` <!-- tracked: ACT-1194 --> — and stated
   plainly: during the watch-only dev soak EVERY kill verdict enacts as `would-kill`, so kill-grade
   volume arrives only after a PIN-arm (the soak still exercises the store, the leave rules, and the
   enacted self-reports).
@@ -503,7 +506,7 @@ write-integrity rules, or the meter is gameable by construction:
    lands on a different machine than the decision row (autonomous run moved mid-run) produces an orphan
    outcome row; the substrate counts these (`orphanOutcomes`) and the route reports the counter — the
    loss is visible, never silent. The id's machineId segment (§5.1) is the structure the ACT-1199
-   routing follow-up needs; routing itself is NOT in this build.
+   routing follow-up needs; routing itself is NOT in this build. <!-- tracked: ACT-1199 -->
 
 ### 5.5 The quality substrate + read surface + grading job
 
@@ -813,7 +816,7 @@ runtime and counts unknowns).
   SIDES (respawn ordering-test true → wrong vs new-owner/un-orderable → unknown; leave-recurrence
   same-process-signature → wrong vs same-commandHash-different-process → unknown; enacted/floorPermitted
   preconditions — breaker-held kill re-flag grades NOTHING; would-kill/deferred/aborted/
-  decider-unavailable age out unknown; realcheck pass/fail/absent); the durable hog store (atomic write,
+  decider-unavailable age out unknown; <!-- tracked: ACT-1194 --> realcheck pass/fail/absent); the durable hog store (atomic write,
   fail-closed read, hydration, retention = evidenceWindow + gradingSlack derivation, latest-plus-
   in-window-kill slot retention, grade-on-supersede ordering — the outgoing record is graded BEFORE
   replacement); annotateOutcome integrity (enum validation, ruleId→rung registry rejection, upsert
@@ -907,7 +910,7 @@ runtime and counts unknowns).
   fragments), summed nowhere silently; serves redacted summaries + pointers only; never raw context.
 - **Cross-machine outcomes** — honest-degradation this build (FD10): orphan outcome rows are counted
   and reported (`orphanOutcomes`), never silently lost; correlation ids carry a machineId segment so
-  the ACT-1199 routing follow-up has the structure it needs.
+  the ACT-1199 routing follow-up has the structure it needs. <!-- tracked: ACT-1199 -->
 - **Grading job** — runs per machine over that machine's local rows (grading follows the ratified
   machine-local data posture). Its summaries are pool-visible via the route's pool scope.
 - **Config flag** — `provenance.uniformSeam.enabled` gets a `COHERENCE_MANIFEST_EXCLUSIONS` row with a
@@ -941,7 +944,7 @@ runtime and counts unknowns).
   content-free `decision_quality` row is written for every enrolled settlement regardless of class, so
   quality counts stay complete.
 - **FD5 — No alerting in this build**: the meter is a pull surface; the grading job never messages
-  (pinned in its template). A quality alert is a follow-up that would owe Standard B design.
+  (pinned in its template). A quality alert is a possible future extension that would owe Standard B design.
 - **FD6 — Ships via the dev gate, dryRun-first, exact posture:** `provenance.uniformSeam.enabled`
   OMITTED from ConfigDefaults → `resolveDevAgentGate` → LIVE on a development agent / DARK on the fleet;
   `DEV_GATED_FEATURES` entry with the §5.7 justification; `dryRun` defaults TRUE even on dev
@@ -972,11 +975,11 @@ runtime and counts unknowns).
   code (dormancy is structural-by-absence) and activation is gated on ACT-1198 (benched evaluator +
   FENCE + injection-exposed registration). A meter graded by an ungraded LLM would be the problem
   statement recursed.
-- **FD12 — Parent-standard bench-feed clause: explicit tracked deferral.** "Graded real cases feeding
+- **FD12 — Parent-standard bench-feed clause: explicit tracked deferral.** <!-- tracked: ACT-1198 --> "Graded real cases feeding
   the bench battery" (registry:523) depends on the ACT-1195 prompt-parity infrastructure for the battery
   format; it is deferred to ACT-1198 with the clause named — not silently dropped. ACT-1198 is
-  pinned/critical so the deferred constitutional obligation cannot be auto-expired.
-- **FD13 — Dashboard rendering deferred, tracked ACT-1197.** API-only this build; operator consumption
+  pinned/critical so the deferred constitutional obligation cannot be auto-expired. <!-- tracked: ACT-1198 -->
+- **FD13 — Dashboard rendering deferred, tracked ACT-1197.** <!-- tracked: ACT-1197 --> API-only this build; operator consumption
   this build is conversational via the agent (the CLAUDE.md proactive trigger ships same-PR) with
   private-view rendering on demand — the /metrics/features → LLM-Activity-tab precedent. The
   Operator-Surface Quality obligations bind at ACT-1197 (no authorize/decide/act flow exists on this

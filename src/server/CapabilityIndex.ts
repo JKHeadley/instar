@@ -122,10 +122,24 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'judgmentProvenance',
     prefixes: ['/judgment-provenance'],
-    description: 'Judgment-call decision provenance (ownership-gated-spawn-and-judgment-within-floors §3.5 — the Decision Provenance & Outcome Review standard). Every judgment call the ownership layer makes (SpawnAdmission verdicts, duplicate-reconciler intended-owner determinations; J1/J2 arbiter calls from Increment 3) is durably logged with the FULL context it was handed — machine-local under state/judgment-provenance/ (0700/0600, gitignored, backup-excluded, 14-day retention, NEVER HTTP-served raw: a hardcoded NEVER_SERVED_PREFIXES deny in the file routes covers read/download/edit/link incl. symlink evasion). GET /judgment-provenance serves REDACTED rows only (write-time credential-shape scrub + omission of the machine-local full context); ?limit / ?sinceHours filter; ?scope=pool merges peers\' redacted rows as clamped untrusted data. 503 when the layer is not constructed (single-machine / pool dark) — say so honestly. When asked "why did the system decide machine X owns this conversation?" / "what did the duplicate healer see?" → read this, never guess.',
+    description: 'Judgment-call decision provenance (ownership-gated-spawn-and-judgment-within-floors §3.5 + llm-decision-quality-meter §5.2 — the Decision Provenance & Outcome Review standard). Every judgment call the ownership layer makes (SpawnAdmission verdicts, duplicate-reconciler intended-owner determinations) AND every ENROLLED LLM decision the router-settlement seam records (correlation-id-keyed, content-class-enveloped, volume-class-valved) is durably logged — machine-local under .instar/state/judgment-provenance/ (0700/0600, gitignored, backup-excluded, 14-day retention, NEVER HTTP-served raw: a hardcoded NEVER_SERVED_PREFIXES deny in the file routes covers read/download/edit/link incl. symlink evasion). GET /judgment-provenance serves REDACTED rows only (write-time credential-shape scrub + omission of the machine-local full context); ?limit / ?sinceHours filter; ?scope=pool merges peers\' redacted rows as clamped untrusted data. The log is constructed UNCONDITIONALLY at boot on every agent, single-machine included (FD9) — a 503 here means construction FAILED (see server log), never "single-machine so not built". When asked "why did the system decide machine X owns this conversation?" / "what did the duplicate healer see?" / "what context did that gate judge?" → read this, never guess.',
     build: ({ ctx }) => ({
       configured: !!ctx.judgmentProvenance,
       endpoints: ['GET /judgment-provenance', 'GET /pool/duplicate-reconciler', 'GET /pool/ownership-view'],
+    }),
+  },
+  {
+    key: 'decisionQuality',
+    // P10: the /decision-quality routes are now registered in routes.ts
+    // (GET /decision-quality + POST /decision-quality/grade-pass), so the
+    // discoverability lint's "every declared prefix exists as a route" invariant
+    // holds with this prefix present (structure, not memory, closed the gap).
+    prefixes: ['/decision-quality'],
+    description: 'LLM-Decision Quality Meter (llm-decision-quality-meter §5.5 — ACT-1193/ACT-1194): the QUALITY meter beside the cost meter — per LLM decision-point over a window: decisions made, outcomes known, grade distribution (right/wrong/unknown/expired), grade-by-rule/rung/evidence-strength breakdowns (proof-like vs heuristic never conflated; insufficient-evidence marker below the minimum sample), attribution columns (model/framework/prompt_id), census debt (wired/pending/exempt + pending-ref-dead + wired-but-silent + exempt-but-active flags), and the honest counters (orphanOutcomes/joinMiss/droppedByBudget + the four annotation-rejection classes). GET /decision-quality is the read surface (Bearer; pure indexed SQLite; ?sinceHours; ?scope=pool merges MACHINE-TAGGED rows — per-machine framework routing makes per-machine quality genuinely distinct data); POST /decision-quality/grade-pass runs ONE bounded deterministic grading pass (cursor keyset, idempotent, zero LLM spend — the hourly llm-decision-grading job template drives it, ships enabled:false). Both routes 503 when the seam is DARK on this agent (provenance.uniformSeam resolves off — dev-gated: LIVE on a development agent, DARK on the fleet; dryRun defaults TRUE even on dev) — say so honestly rather than guessing. When the operator asks "is this gate performing / does it need a bigger model or a prompt change?" → read the meter, never guess.',
+    build: ({ ctx }) => ({
+      configured: resolveDevAgentGate(ctx.config.provenance?.uniformSeam?.enabled, ctx.config),
+      dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false,
+      endpoints: ['GET /decision-quality', 'POST /decision-quality/grade-pass'],
     }),
   },
   {

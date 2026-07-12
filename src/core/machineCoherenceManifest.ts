@@ -270,6 +270,10 @@ export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
   { configPath: 'multiMachine.stateSync.threadlinePairing.enabled', reason: 'verified-pairing store; a non-participant fails-closed on credential share (its own gate), not a silent memory-reach loss like the 7 WS2 stores' },
   { configPath: 'multiMachine.sessionPool.moveIntent.enabled', reason: 'per-machine inbound move-intent recognizer; fail-open + dry-run-first, a non-participant just passes the message through (never hijacks), no cross-machine data-loss guarantee it owns' },
   { configPath: 'multiMachine.sessionPool.judgmentArbiters.enabled', reason: 'per-machine LLM arbiter layer (shadow-first) INSIDE deterministic floors; a non-participant runs the same floors\' static defaults — no cross-machine guarantee of its own (the three pool-behavior flags that DO halve a guarantee are in the manifest)' },
+  // llm-decision-quality-meter §5.7: NOT a multiMachine.* path, so the N5 drift-guard
+  // sweep does not require this row — it is a VOLUNTARY documentation row recording
+  // the deliberate manifest decision (the spec states this honestly).
+  { configPath: 'provenance.uniformSeam.enabled', reason: 'per-machine observability side write; skew degrades to missing provenance rows on one machine, visible in /decision-quality coverage — no cross-machine data guarantee' },
 ];
 
 // ─── Clamp + byte bounds (spec §3.1) ─────────────────────────────────────

@@ -104,6 +104,10 @@ import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+// LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
+import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
+import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
+import { PROVENANCE_COVERAGE } from '../data/provenanceCoverage.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -1675,6 +1679,68 @@ function resolveAgentFingerprint(ctx: RouteContext): string {
     }
   } catch { /* fall through to project name */ }
   return ctx.config.projectName ?? 'self';
+}
+
+/**
+ * Explicit FIELD ALLOWLIST for a REDACTED judgment-provenance row merged from a
+ * peer (llm-decision-quality-meter §5.5): the served RedactedProvenanceRow keys
+ * ONLY — never `contextFull`, never an arbitrary extra field a hostile peer
+ * might inject. Applied instead of a `{...row}` spread on every peer row.
+ */
+const REDACTED_PROVENANCE_FIELDS: readonly string[] = [
+  'id', 'ts', 'kind', 'component', 'decisionPoint', 'contextRedacted', 'truncated',
+  'optionsPresented', 'decision', 'reason', 'floor', 'fallbackRung', 'arbiter',
+  'model', 'door', 'tokensIn', 'tokensOut', 'latencyMs', 'decisionId', 'outcome',
+  'correlationId', 'promptId', 'contentClass', 'mintedBy', 'grade', 'gradedBy', 'ruleId',
+];
+function pickRedactedProvenanceFields(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of REDACTED_PROVENANCE_FIELDS) {
+    if (k in row) out[k] = row[k];
+  }
+  return out;
+}
+
+/**
+ * Explicit FIELD ALLOWLIST for a per-decision-point row merged from a peer's
+ * GET /decision-quality?scope=pool (llm-decision-quality-meter §5.5): the local
+ * view's row shape ONLY — never a `{...row}` spread (a hostile peer cannot
+ * smuggle `contextFull` or any extra field back through the pool merge).
+ */
+const DECISION_QUALITY_POINT_FIELDS: readonly string[] = [
+  'decisionPoint', 'component', 'status', 'volumeClass', 'contentClass',
+  'decisions', 'outcomesKnown', 'outcomesKnownRatio', 'insufficientEvidence',
+  'gradeDistribution', 'byStrength', 'byRule', 'byRung', 'attribution', 'counters', 'flags',
+];
+function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of DECISION_QUALITY_POINT_FIELDS) {
+    if (k in row) out[k] = row[k];
+  }
+  return out;
+}
+
+/**
+ * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue
+ * — the agent-side half of the §5.6 pending-ref-dead check. null when the queue
+ * file is absent/unreadable (⇒ the check is skipped honestly rather than
+ * false-flagging every pending ref on an agent that has no queue yet).
+ */
+function readLiveEvolutionActs(stateDir: string): Set<string> | null {
+  try {
+    const p = path.join(stateDir, 'state', 'evolution', 'action-queue.json');
+    if (!fs.existsSync(p)) return null;
+    const aq = JSON.parse(fs.readFileSync(p, 'utf-8')) as { actions?: Array<{ id?: string; status?: string }> };
+    const alive = new Set<string>();
+    for (const a of aq.actions ?? []) {
+      if (a.id && (a.status === 'pending' || a.status === 'in_progress')) alive.add(a.id);
+    }
+    return alive;
+  } catch {
+    // @silent-fallback-ok: an unreadable queue ⇒ skip pending-ref-dead (never a
+    // false "dead" flag); observe-only surface, never a throw.
+    return null;
+  }
 }
 
 export function createRoutes(ctx: RouteContext): Router {
@@ -5357,7 +5423,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   const v = await ctx.completionEvaluator.evaluateStopRationale(tail, {
                     ...(signals ?? {}),
                     stopKind: 'hard-blocker',
-                  });
+                  }, { topicId: armedRecord.topicId, runId: armedRecord.runId }); // §5.3 P8: persist the P13 correlation id
                   p13Verdict = v.classifiedBlocker ?? (v.stopAllowed ? 'allowed' : 'blocked');
                 } catch { /* @silent-fallback-ok — classification is display-only on the trip; the trip itself is already decided */ }
                 const tripText =
@@ -5435,6 +5501,10 @@ export function createRoutes(ctx: RouteContext): Router {
         effectiveCondition,
         tail,
         signals,
+        // §5.3 P8: persist the completion-judge correlation id into the durable
+        // run record so the realcheck path can annotate it later. Undefined for
+        // a legacy caller with no resolvable registered run (nothing to persist).
+        armedRecord ? { topicId: armedRecord.topicId, runId: armedRecord.runId } : undefined,
       );
       // R43: a met:true final verdict at the chokepoint marks the server-owned
       // run record TERMINAL (subject to the live-test veto below, which can
@@ -5499,9 +5569,24 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const { transcriptTail } = req.body ?? {};
     try {
+      // §5.3 P8: resolve the registered autonomous run (if any) so the P13
+      // stop-rationale correlation id is persisted into the durable run record.
+      // Server-resolved from the whitelisted identity fields, never trusted from
+      // the client; only an ACTIVE record yields a runRef (else undefined).
+      const sr = (req.body ?? {}) as Record<string, unknown>;
+      const srTopicId =
+        typeof sr.topicId === 'string' || typeof sr.topicId === 'number' ? String(sr.topicId) : undefined;
+      const srSessionId = typeof sr.sessionId === 'string' ? sr.sessionId : undefined;
+      const resolvedStopTopic = srTopicId ?? (srSessionId ? autonomousRunStore.resolveSession(srSessionId)?.topicId : undefined);
+      let stopRunRef: { topicId: string; runId: string } | undefined;
+      if (resolvedStopTopic) {
+        const rec = autonomousRunStore.getRecord(resolvedStopTopic);
+        if (rec && autonomousRunStore.isActive(rec)) stopRunRef = { topicId: rec.topicId, runId: rec.runId };
+      }
       const verdict = await ctx.completionEvaluator.evaluateStopRationale(
         typeof transcriptTail === 'string' ? transcriptTail : '',
         parseStopSignals(req.body),
+        stopRunRef,
       );
       res.json({ ...verdict, p13ProtocolVersion: P13_PROTOCOL_VERSION });
     } catch (err) {
@@ -15008,7 +15093,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // peers' redacted rows as type/length-clamped untrusted data.
   router.get('/judgment-provenance', async (req, res) => {
     if (!ctx.judgmentProvenance) {
-      res.status(503).json({ error: 'judgment-provenance log not constructed (single-machine / pool dark)' });
+      res.status(503).json({ error: 'judgment-provenance log unavailable (constructed unconditionally at boot — FD9; a 503 means its construction failed, see server log)' });
       return;
     }
     try {
@@ -15022,11 +15107,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       // Pool scope: merge peers' REDACTED rows (each peer redacts on its own
       // serving machine) as clamped untrusted data — bounded per row + total.
+      // Hardened (llm-decision-quality-meter §5.5): the pool Bearer NEVER travels
+      // to a non-allowlisted peer URL (isPeerUrlAllowedForCredentials), and each
+      // merged peer row passes an explicit FIELD ALLOWLIST — never a {...row}
+      // spread — so a hostile peer cannot smuggle contextFull (or any extra
+      // field) back through this surface.
       const peers = ctx.resolvePeerUrls?.() ?? [];
+      const jpExtraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
       const failed: Array<{ machineId: string; error: string }> = [];
       const remote: Array<Record<string, unknown>> = [];
       await Promise.all(
         peers.map(async (p) => {
+          if (!isPeerUrlAllowedForCredentials(p.url, jpExtraAllowlist).ok) {
+            failed.push({ machineId: p.machineId, error: 'url-rejected' });
+            return;
+          }
           try {
             const r = await fetch(`${p.url}/judgment-provenance?limit=${limit}${sinceHours ? `&sinceHours=${sinceHours}` : ''}`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
@@ -15040,7 +15135,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             for (const row of (j.rows ?? []).slice(0, limit)) {
               const serialized = JSON.stringify(row);
               if (serialized.length > 8_192) continue; // clamp: oversized peer rows dropped
-              remote.push({ ...row, machineId: p.machineId, remote: true });
+              remote.push({ ...pickRedactedProvenanceFields(row), machineId: p.machineId, remote: true });
             }
           } catch (err) {
             failed.push({ machineId: p.machineId, error: err instanceof Error ? err.name : 'unreachable' });
@@ -15050,6 +15145,240 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ rows: [...rows, ...remote].slice(0, limit * (peers.length + 1)), pool: { peersQueried: peers.length, failed }, status: ctx.judgmentProvenance.status() });
     } catch (err) {
       res.status(500).json({ error: `provenance read failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // ── LLM-Decision Quality Meter routes (llm-decision-quality-meter §5.5) ──────
+  // Both routes 503 when the seam resolves DARK (resolveDevAgentGate on
+  // provenance.uniformSeam.enabled — LIVE on a dev agent, dark on the fleet), so
+  // a plain install never surfaces a half-built meter.
+  const decisionQualitySeamOn = (): boolean =>
+    resolveDevAgentGate(ctx.config.provenance?.uniformSeam?.enabled, ctx.config);
+
+  /** Assemble the local (this-machine) GET /decision-quality view over a window
+   *  (readLiveEvolutionActs + the pure pickers live at module scope). */
+  const buildDecisionQualityView = (sinceHours: number): Record<string, unknown> => {
+    const ledger = ctx.featureMetricsLedger!;
+    const q = ctx.config.provenance?.quality ?? {};
+    const posNum = (v: unknown, d: number): number => (typeof v === 'number' && v > 0 ? v : d);
+    const minSample = posNum(q.minSampleForRates, 20);
+    const wiredSilentMin = posNum(q.wiredSilentMinCalls, 20);
+    const evidenceWindowHours = posNum(q.evidenceWindowHours, 6);
+    const gradingSlackHours = posNum(q.gradingSlackHours, 2);
+    const expiryCutoffMs = Date.now() - (evidenceWindowHours + gradingSlackHours) * 3_600_000;
+
+    const stats = ledger.decisionPointStats(sinceHours > 0 ? { sinceHours } : {});
+    const breakdown = ledger.decisionGradeBreakdown(sinceHours > 0 ? { sinceHours } : {});
+    const expired = ledger.countExpiredByPoint({ ...(sinceHours > 0 ? { sinceHours } : {}), expiryCutoffMs });
+    const rollupDays = sinceHours > 0 ? Math.max(1, Math.ceil(sinceHours / 24)) : 0;
+    const rollup = ledger.decisionQualityRollupDaily(rollupDays > 0 ? { sinceDays: rollupDays } : {});
+    const featureRollup = ledger.byFeature(sinceHours > 0 ? { sinceHours } : {});
+
+    const statByPoint = new Map(stats.map((s) => [s.decisionPoint, s]));
+    const expiredByPoint = new Map(expired.map((e) => [e.decisionPoint, e.expired]));
+    const llmCallsByComponent = new Map(featureRollup.map((f) => [f.feature, f.llmCalls]));
+    const brByPoint = new Map<string, typeof breakdown>();
+    for (const r of breakdown) {
+      const a = brByPoint.get(r.decisionPoint) ?? [];
+      a.push(r);
+      brByPoint.set(r.decisionPoint, a);
+    }
+    const countersByPoint = new Map<string, { orphanOutcomes: number; joinMiss: number; droppedByBudget: number }>();
+    for (const r of rollup) {
+      const c = countersByPoint.get(r.decisionPoint) ?? { orphanOutcomes: 0, joinMiss: 0, droppedByBudget: 0 };
+      c.orphanOutcomes += r.orphanOutcomes;
+      c.joinMiss += r.joinMiss;
+      c.droppedByBudget += r.droppedByBudget;
+      countersByPoint.set(r.decisionPoint, c);
+    }
+
+    type GradeCounts = { right: number; wrong: number; unknown: number };
+    const bump = (m: Record<string, GradeCounts>, k: string, grade: string, n: number): void => {
+      const b = m[k] ?? { right: 0, wrong: 0, unknown: 0 };
+      if (grade === 'right') b.right += n;
+      else if (grade === 'wrong') b.wrong += n;
+      else if (grade === 'unknown') b.unknown += n;
+      m[k] = b;
+    };
+
+    const points: Array<Record<string, unknown>> = [];
+    for (const entry of PROVENANCE_COVERAGE) {
+      const st = statByPoint.get(entry.decisionPoint);
+      const isWired = entry.status === 'wired';
+      const decisions = st?.decisions ?? 0;
+      const llmCalls = llmCallsByComponent.get(entry.component) ?? 0;
+      const wiredButSilent = isWired && llmCalls >= wiredSilentMin && decisions === 0;
+      const exemptButActive = entry.status === 'exempt:deterministic-only' && llmCalls > 0;
+      // Keep the surface bounded: wired points, points with actual decisions, or
+      // a live contradiction flag — never a wall of empty pending rows.
+      if (!isWired && decisions === 0 && !exemptButActive) continue;
+
+      const rows = brByPoint.get(entry.decisionPoint) ?? [];
+      let right = 0;
+      let wrong = 0;
+      let unknown = 0;
+      const byRule: Record<string, GradeCounts> = {};
+      const byRung: Record<string, GradeCounts> = {};
+      const byStrength: Record<string, GradeCounts> = {};
+      for (const r of rows) {
+        if (r.grade === 'right') right += r.n;
+        else if (r.grade === 'wrong') wrong += r.n;
+        else if (r.grade === 'unknown') unknown += r.n;
+        bump(byRule, r.ruleId, r.grade, r.n);
+        bump(byRung, r.rung, r.grade, r.n);
+        bump(byStrength, r.evidenceStrength, r.grade, r.n);
+      }
+      const outcomesKnown = right + wrong + unknown;
+      points.push({
+        decisionPoint: entry.decisionPoint,
+        component: entry.component,
+        status: entry.status,
+        volumeClass: entry.volumeClass ?? null,
+        contentClass: entry.contentClass,
+        decisions,
+        outcomesKnown,
+        outcomesKnownRatio: decisions > 0 ? outcomesKnown / decisions : 0,
+        // Below the minimum sample an aggregate rate is not actionable (§5.5 codex r5).
+        insufficientEvidence: outcomesKnown < minSample,
+        gradeDistribution: { right, wrong, unknown, expired: expiredByPoint.get(entry.decisionPoint) ?? 0 },
+        // Strength FIRST (default aggregate) — proof-like and heuristic grades are never conflated.
+        byStrength,
+        byRule,
+        byRung,
+        attribution: { models: st?.models ?? [], frameworks: st?.frameworks ?? [], promptIds: st?.promptIds ?? [] },
+        counters: countersByPoint.get(entry.decisionPoint) ?? { orphanOutcomes: 0, joinMiss: 0, droppedByBudget: 0 },
+        flags: { wiredButSilent, exemptButActive },
+      });
+    }
+
+    // Census debt + the runtime pending-ref-dead half (§5.6).
+    let wired = 0;
+    let pending = 0;
+    let exempt = 0;
+    const pendingRefDead: string[] = [];
+    const liveActs = readLiveEvolutionActs(ctx.config.stateDir);
+    for (const entry of PROVENANCE_COVERAGE) {
+      if (entry.status === 'wired') wired++;
+      else if (entry.status.startsWith('pending:')) {
+        pending++;
+        if (liveActs !== null) {
+          const act = entry.status.slice('pending:'.length);
+          if (!liveActs.has(act)) pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+        }
+      } else if (entry.status.startsWith('exempt:')) exempt++;
+    }
+
+    const totalCounters = { orphanOutcomes: 0, joinMiss: 0, droppedByBudget: 0 };
+    for (const c of countersByPoint.values()) {
+      totalCounters.orphanOutcomes += c.orphanOutcomes;
+      totalCounters.joinMiss += c.joinMiss;
+      totalCounters.droppedByBudget += c.droppedByBudget;
+    }
+
+    return {
+      sinceHours,
+      gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
+      points,
+      censusDebt: { wired, pending, exempt, pendingRefDead },
+      counters: totalCounters,
+      // The four §5.5 annotation-rejection counters, by class.
+      rejections: getDecisionAnnotationRejectionCounters(),
+    };
+  };
+
+  // GET /decision-quality — the operator read surface (§5.5/FD2). Per
+  // decision-point over ?sinceHours: grade distribution (right/wrong/unknown/
+  // expired) grouped by evidence STRENGTH first, grade-by-rule/rung/strength,
+  // attribution columns, census debt (+ pending-ref-dead / wired-but-silent /
+  // exempt-but-active), orphan/joinMiss/droppedByBudget + the annotation-
+  // rejection counters. Pure indexed SQLite reads — NEVER a JSONL scan. Bearer-
+  // authed; 503 when the seam is dark. ?scope=pool merges MACHINE-TAGGED peer
+  // rows (per-machine framework routing = genuinely distinct data) with the
+  // sibling-route hygiene: peer-URL credential guard, per-row 8KB clamp,
+  // pool.failed classified rows, explicit FIELD ALLOWLIST (never {...row}).
+  router.get('/decision-quality', async (req, res) => {
+    if (!decisionQualitySeamOn()) {
+      res.status(503).json({ error: 'decision-quality seam is off (provenance.uniformSeam resolves dark on this agent)' });
+      return;
+    }
+    if (!ctx.featureMetricsLedger) {
+      res.status(503).json({ error: 'decision-quality substrate unavailable (feature-metrics ledger not constructed)' });
+      return;
+    }
+    try {
+      const sinceHours = parseFloat(String(req.query.sinceHours ?? '')) || 0;
+      const local = buildDecisionQualityView(sinceHours);
+      if (req.query.scope !== 'pool') {
+        res.json(local);
+        return;
+      }
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const dqExtraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remotePoints: Array<Record<string, unknown>> = [];
+      await Promise.all(
+        peers.map(async (p) => {
+          if (!isPeerUrlAllowedForCredentials(p.url, dqExtraAllowlist).ok) {
+            failed.push({ machineId: p.machineId, error: 'url-rejected' });
+            return;
+          }
+          try {
+            const r = await fetch(`${p.url}/decision-quality${sinceHours ? `?sinceHours=${sinceHours}` : ''}`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!r.ok) {
+              failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` });
+              return;
+            }
+            const j = (await r.json()) as { points?: Array<Record<string, unknown>> };
+            for (const row of j.points ?? []) {
+              if (JSON.stringify(row).length > 8_192) continue; // clamp oversized peer rows
+              remotePoints.push({ ...pickDecisionQualityPointFields(row), machineId: p.machineId, remote: true });
+            }
+          } catch (err) {
+            failed.push({ machineId: p.machineId, error: err instanceof Error ? err.name : 'unreachable' });
+          }
+        }),
+      );
+      res.json({ ...local, scope: 'pool', pool: { peersQueried: peers.length, failed }, remotePoints });
+    } catch (err) {
+      res.status(500).json({ error: `decision-quality read failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // POST /decision-quality/grade-pass — the deterministic grading pass the
+  // hourly llm-decision-grading job triggers (§5.5). Body `{}` (all knobs come
+  // from config). Walks NEW decision rows since the durable per-decision-point
+  // cursor (keyset (ts, correlation_id)), applies the registered DETERMINISTIC
+  // window-close rule (hog-sustained-right-v1 — ZERO LLM spend, FD11), upserts
+  // grades idempotently through the annotate chokepoint (re-runs converge),
+  // with P19 backoff. Returns { graded, byRule, cursors }. Bearer-authed; 503
+  // when the seam is dark. The injected clock lives in runDecisionGradingPass.
+  router.post('/decision-quality/grade-pass', (_req, res) => {
+    if (!decisionQualitySeamOn()) {
+      res.status(503).json({ error: 'decision-quality seam is off (provenance.uniformSeam resolves dark on this agent)' });
+      return;
+    }
+    if (!ctx.featureMetricsLedger) {
+      res.status(503).json({ error: 'decision-quality substrate unavailable (feature-metrics ledger not constructed)' });
+      return;
+    }
+    try {
+      const q = ctx.config.provenance?.quality ?? {};
+      const maxDecisionsPerPass = typeof q.maxDecisionsPerPass === 'number' && q.maxDecisionsPerPass > 0 ? q.maxDecisionsPerPass : 200;
+      const evidenceWindowHours = typeof q.evidenceWindowHours === 'number' && q.evidenceWindowHours > 0 ? q.evidenceWindowHours : 6;
+      const result = runDecisionGradingPass({
+        ledger: ctx.featureMetricsLedger,
+        hogStore: ctx.externalHogSentinel?.decisionStoreRef?.() ?? null,
+        annotate: annotateDecisionOutcome,
+        maxDecisionsPerPass,
+        evidenceWindowMs: evidenceWindowHours * 3_600_000,
+        now: Date.now,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: `grade-pass failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
 

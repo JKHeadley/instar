@@ -13,6 +13,7 @@ import { parseProcTable } from './ExternalHogProcTable.js';
 import { loadArmState } from './ExternalHogArmStore.js';
 import type { ExternalHogPrimitives } from './ExternalHogRealAdapters.js';
 import type { ArmMarker } from './ExternalHogArmMarker.js';
+import type { DecisionProvenanceBlock } from '../core/decisionQualityTypes.js';
 
 /** The low-level deps the server wires in. */
 export interface ServerPrimitiveDeps {
@@ -20,8 +21,15 @@ export interface ServerPrimitiveDeps {
   exec(cmd: string, args: readonly string[]): Promise<string>;
   /** Send a signal (0 = aliveness probe). */
   signal(pid: number, sig: 'SIGTERM' | 'SIGKILL' | 0): boolean;
-  /** The classifier model call (intelligence.evaluate, routed off-Claude by default). */
-  evaluate(prompt: string): Promise<string>;
+  /** The classifier model call (intelligence.evaluate, routed off-Claude by default).
+   *  `provenance` (llm-decision-quality-meter §5.3): the server's lambda MUST forward it —
+   *  `sharedIntelligence.evaluate(prompt, { model: 'fast',
+   *    attribution: { component: 'ExternalHogClassifier' },
+   *    ...(provenance ? { provenance } : {}) })`
+   *  — so the kill/leave verdict is enrolled with the router's correlation spine. A lambda
+   *  that ignores the second parameter still compiles but silently un-enrolls the sentinel's
+   *  highest-consequence decision (the wiring-integrity test guards the shipped callsite). */
+  evaluate(prompt: string, provenance?: DecisionProvenanceBlock): Promise<string>;
   /** Raise ONE attention item (already mapped to the platform's createAttentionItem in the server). */
   raiseAttention(item: { title: string; body: string; priority?: 'low' | 'medium' | 'high'; source?: string }): Promise<unknown> | unknown;
   /** The LIVE, dev-gate-RESOLVED kill-capability config (enabled resolved, dryRun from config). */
@@ -91,7 +99,7 @@ export function createExternalHogServerPrimitives(deps: ServerPrimitiveDeps): Ex
     exec: deps.exec,
     signal: deps.signal,
     cpuCoresOver: makeCpuCoresOver(deps.exec, now, deps.sleep),
-    callModel: deps.evaluate,
+    callModel: (prompt, provenance) => deps.evaluate(prompt, provenance),
     raiseAttention: deps.raiseAttention,
     now,
     ownEuid: () => deps.ownEuid,

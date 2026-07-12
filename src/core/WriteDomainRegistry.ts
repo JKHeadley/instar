@@ -385,5 +385,30 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/arm', domain: 'machine-local', story: externalHogArmStory });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/disarm', domain: 'machine-local', story: externalHogArmStory });
 
+  // ── Decision-Quality deterministic grading pass (llm-decision-quality-meter §5.5, §Multi-machine) ──
+  // Machine-local by construction: POST /decision-quality/grade-pass upserts grade
+  // rows for THIS machine's decision points into the per-machine feature-metrics
+  // SQLite (state/server-data/feature-metrics.db — decision_quality/decision_outcomes/
+  // rollup/cursor tables). It inherits the RATIFIED machine-local feature_metrics
+  // posture (spec §Multi-machine: "machine-local SQLite observability; per-machine
+  // spend/activity is the semantic unit"); the grading job runs per machine over its
+  // OWN local rows. Logical convergence is proxied-on-read — GET /decision-quality?scope=pool
+  // merges MACHINE-TAGGED rows across peers, summed nowhere silently. The backing store
+  // is a binary SQLite .db under the generated .instar/ server-data dir — git-sync-excluded
+  // on both counts (FileClassifier BINARY_EXTENSIONS + the .instar/server-data generated
+  // pattern), mirroring the topic-memory.db precedent above.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/decision-quality/grade-pass',
+    domain: 'machine-local',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'grades upsert into the per-machine feature-metrics SQLite (decision_quality/decision_outcomes tables); GET /decision-quality?scope=pool merges machine-tagged rows across peers (summed nowhere silently); the .db is git-sync-excluded via FileClassifier BINARY_EXTENSIONS + the .instar/server-data generated pattern',
+    },
+  });
+
   return reg;
 }

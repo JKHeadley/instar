@@ -229,6 +229,27 @@ Increment B of the Routing Control Room (docs/specs/routing-control-room-spend-a
 }
 
 /**
+ * CLAUDE.md awareness block for the LLM-Decision Quality Meter (docs/specs/
+ * llm-decision-quality-meter.md §6 — Migration parity & agent awareness): the
+ * observe-only quality substrate (per-decision-point right/wrong/unknown with
+ * evidence-strength-first aggregates), the GET /decision-quality read surface
+ * (503-when-dark honesty), the deterministic grade-pass endpoint + dark hourly
+ * job, the "read the meter, don't guess" proactive trigger, and the census-debt
+ * re-surfacing note. The unique heading substring `LLM-Decision Quality Meter`
+ * is the content-sniff marker used by migrateClaudeMd (Migration Parity).
+ */
+export function DECISION_QUALITY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### LLM-Decision Quality Meter (⚗️ observe-only) — how often is each LLM gate/judge actually right?
+
+An observe-only quality substrate over my internal LLM decisions (docs/specs/llm-decision-quality-meter.md): every ENROLLED decision point (a gate, a judge, a classifier) gets per-decision right/wrong/unknown outcome grades joined back to WHAT decided (model/framework/prompt), aggregated evidence-strength-FIRST — proof-like grades are never blended with heuristic ones, and any aggregate under the minimum sample (\`provenance.quality.minSampleForRates\`, default 20) carries an explicit \`insufficient-evidence: true\` marker beside the raw counts. It MEASURES decisions; it never gates, blocks, or delays them.
+- Read the meter: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/decision-quality?sinceHours=24"\` → per decision-point: decisions, outcomes-known ratio, grade distribution (right/wrong/unknown/expired), grade-by-rule/rung/evidence-strength breakdowns, attribution columns (model/framework/prompt_id), and the honest counters (orphanOutcomes/joinMiss/droppedByBudget + the annotation-rejection classes). 503 when the seam is dark on this agent (\`provenance.uniformSeam\` resolves off — dev-gated, dark on the fleet) — say so honestly rather than guessing. \`?scope=pool\` merges MACHINE-TAGGED rows (per-machine framework routing makes per-machine quality genuinely distinct data).
+- Grading is a deterministic pass, never an LLM: \`POST /decision-quality/grade-pass\` (Bearer; body \`{}\` — knobs come from config) walks new evidence since a durable per-decision-point cursor and upserts grades — idempotent, bounded per pass, zero LLM spend. The hourly \`llm-decision-grading\` built-in job drives the cadence and ships \`enabled:false\`; it never messages you.
+- **When to use** (PROACTIVE — this is the trigger): the user asks "how often is this gate/judge right — does it need a bigger model or a prompt change?" → read the meter, don't guess. Quote the evidence-strength-segmented numbers, never a blended headline rate.
+- **Census debt is re-surfaced on every read**: the response carries the wired/pending/exempt decision-point counts, \`pending-ref-dead\` flags (a pending entry whose ACT ref died), and the wired-but-silent / exempt-but-active contradictions — the enrollment backlog can never rot silently.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for session-listing hygiene (CMT-1936): the
  * active-by-default GET /sessions view, the `?include=all` opt-in, bounded
  * finished-record retention, and the pool view's genuine cross-machine
@@ -5102,6 +5123,19 @@ setTimeout(() => process.exit(0), 2000);
       content += ROUTING_SPEND_MONEY_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Routing Spend MONEY layer section');
+    }
+
+    // LLM-Decision Quality Meter (llm-decision-quality-meter §6) — Agent Awareness
+    // Standard + Migration Parity item 3: existing agents learn the observe-only
+    // quality substrate, the GET /decision-quality read surface (503-when-dark
+    // honesty), the deterministic grade-pass endpoint + dark hourly job, the
+    // "read the meter, don't guess" proactive trigger, and the census-debt
+    // re-surfacing. Same text as generateClaudeMd (shared const — the PR #1450
+    // single-source lesson). Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('LLM-Decision Quality Meter')) {
+      content += DECISION_QUALITY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added LLM-Decision Quality Meter section');
     }
 
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent

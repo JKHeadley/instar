@@ -49,6 +49,12 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // pollutes the FD12 soak counters. The `state/self-action-governor` prefix
   // covers the snapshot, the aggregates file, and their tmp siblings.
   'state/self-action-governor',
+  // External-hog decision store (llm-decision-quality-meter spec §5.3): grading
+  // ground truth keyed on machine-specific pid + start-time tuples — a restored
+  // foreign copy would feed stale identities into the respawn predicate. Same
+  // per-machine-state posture as 'state/pr-hand-leases.json'. stateDir-relative
+  // literal.
+  'state/external-hog-decisions.json',
 ]);
 
 /**
@@ -87,7 +93,31 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
  */
 export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   'judgment-provenance',
+  // External-hog decision store (llm-decision-quality-meter spec §5.3): same
+  // machine-local posture as the provenance rows; the filename segment closes
+  // alternate relative spellings the stateDir-relative prefix cannot.
+  'external-hog-decisions.json',
 ]);
+
+/**
+ * Re-apply ALL THREE unconditional deny layers to a stateDir-relative path:
+ * BLOCKED_FILES (basename equality), BLOCKED_PATH_PREFIXES (prefix), and
+ * NEVER_BACKUP_PATH_SEGMENTS (segment). Every deny list is otherwise consulted
+ * against the includeFiles ENTRY string only — so a directory entry like
+ * 'state/' (or the './' root glob, whose entry basename '.' passes every
+ * entry-level check) would ship excluded per-machine state via its direct file
+ * children. Called per copied file in createSnapshot's directory-copy branch
+ * and per restored file in restoreSnapshot (a pre-fix snapshot must not
+ * re-import excluded state). llm-decision-quality-meter spec §5.3 / ACT-1201.
+ */
+function isDeniedForBackup(relPath: string): boolean {
+  const normalized = path.normalize(relPath);
+  if (BLOCKED_FILES.has(path.basename(normalized)) || BLOCKED_FILES.has(relPath)) return true;
+  for (const prefix of BLOCKED_PATH_PREFIXES) {
+    if (normalized.startsWith(prefix)) return true;
+  }
+  return normalized.split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg));
+}
 
 const DEFAULT_CONFIG: BackupConfig = {
   enabled: true,
@@ -316,13 +346,21 @@ export class BackupManager {
           fs.mkdirSync(targetDir, { recursive: true });
 
           for (const file of dirEntries) {
+            // Re-apply all three deny layers per copied file — the entry-level
+            // checks above see only the ENTRY string, so a 'state/' (or './')
+            // glob would otherwise ship excluded state via its direct children.
+            const relPath = path.join(entry, file);
+            if (isDeniedForBackup(relPath)) {
+              console.warn(`[BackupManager] Skipping blocked file in directory copy: ${relPath}`);
+              continue;
+            }
             const src = path.join(sourcePath, file);
             if (fs.statSync(src).isFile()) {
               const dest = path.join(targetDir, file);
               fs.copyFileSync(src, dest);
               const stat = fs.statSync(src);
               totalBytes += stat.size;
-              files.push(path.join(entry, file));
+              files.push(relPath);
             }
           }
         }
@@ -450,6 +488,13 @@ export class BackupManager {
 
     // Restore files
     for (const file of manifest.files) {
+      // A PRE-fix snapshot (or one crafted on another machine) may carry
+      // excluded per-machine state — apply the same three deny layers on the
+      // way back in, not just at snapshot time (ACT-1201).
+      if (isDeniedForBackup(file)) {
+        console.warn(`[BackupManager] Skipping excluded file during restore: ${file}`);
+        continue;
+      }
       const src = path.join(snapshotDir, file);
       const dest = path.join(this.stateDir, file);
 

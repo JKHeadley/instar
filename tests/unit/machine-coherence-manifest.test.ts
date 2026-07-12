@@ -137,6 +137,17 @@ describe('machineCoherenceManifest — N5 membership drift guard (§3.1)', () =>
       expect(manifestPaths.has(e.configPath)).toBe(false);
     }
   });
+
+  it('provenance.uniformSeam.enabled carries its voluntary exclusion row with the spec §5.7 reason (llm-decision-quality-meter)', () => {
+    // NOT multiMachine.* so the N5 sweep does not require it — the row is the
+    // deliberate documentation of the manifest decision, pinned here so a
+    // future delete is a reviewed choice, not silent drift.
+    const row = COHERENCE_MANIFEST_EXCLUSIONS.find((e) => e.configPath === 'provenance.uniformSeam.enabled');
+    expect(row).toBeDefined();
+    expect(row!.reason).toBe(
+      'per-machine observability side write; skew degrades to missing provenance rows on one machine, visible in /decision-quality coverage — no cross-machine data guarantee',
+    );
+  });
 });
 
 describe('machineCoherenceManifest — resolution semantics (§3.3, both sides)', () => {

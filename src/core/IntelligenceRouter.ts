@@ -46,6 +46,15 @@ import {
   NATURE_ROUTING_CRITICAL_GATES,
   resolveInjectionExposure,
 } from '../data/llmBenchCoverage.js';
+import {
+  DECISION_CORRELATION_ID,
+  DECISION_MINT_MARKER,
+  mintRouterCorrelationId,
+  getDecisionQualityRecorder,
+  bumpOnCorrelationIdThrow,
+  type DecisionAttemptCapture,
+  type DecisionProvenanceBlock,
+} from './decisionQualityTypes.js';
 
 export interface ComponentFrameworksConfig {
   /** Framework for anything not otherwise specified. Defaults to the router's defaultFramework. */
@@ -228,6 +237,31 @@ export interface IntelligenceRouterOptions {
 
 interface CachedFramework {
   provider: IntelligenceProvider | null; // null = built but unavailable (binary missing)
+}
+
+/**
+ * Router-internal per-invocation decision context — the correlation spine
+ * (llm-decision-quality-meter §5.1, FD1/FD7). Minted at `evaluate()` entry,
+ * settled write-once at EVERY exit. Never escapes the router.
+ */
+interface DecisionCallContext {
+  /** The router-minted correlation id (`d-<machineId8>-<uuid>` / `d-<uuid>`). */
+  correlationId: string;
+  /** The caller's Layer-B enrollment block, CONSUMED at mint (undefined = not enrolled). */
+  provenance?: DecisionProvenanceBlock;
+  /**
+   * The router-INTERNAL shallow clone of the caller's options: `provenance`
+   * stripped, correlation id + single-use mint marker attached (symbol-keyed,
+   * enumerable — so every per-attempt spread of this clone carries its OWN
+   * marker copy for the breaker to consume). The caller-visible object is
+   * NEVER mutated (SEC r3), and any inbound correlation id on it is ignored.
+   */
+  internal: IntelligenceOptions;
+  mintedAtMs: number;
+  /** Write-once settlement latch; also discards late attempt callbacks (§5.1.5). */
+  settled: boolean;
+  /** Capture of the attempt whose promise the router actually returned. */
+  settledCapture?: DecisionAttemptCapture;
 }
 
 /**
@@ -1064,6 +1098,203 @@ export class IntelligenceRouter implements IntelligenceProvider {
   }
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
+    // ── Decision-quality correlation spine (llm-decision-quality-meter §5.1,
+    // FD1/FD7). The router is the ONLY layer that sees one logical decision as
+    // one call, so the mint lives here — unconditionally, always-on. Settlement
+    // is write-once at EVERY exit: ladder success, ladder-final failure, the
+    // !cfg early return, the provider-unavailable degrade arm, the
+    // enforcedNoRoute throw, the RouterFailClosedError rethrow, and the
+    // fallback-'none' throw ALL flow through this one try/catch.
+    const decision = this.mintDecision(options);
+    try {
+      const result = await this.evaluateRouted(prompt, options, decision);
+      this.settleDecision(decision, result);
+      return result;
+    } catch (err) {
+      this.settleDecisionErrored(decision, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Mint the per-decision correlation id on a router-INTERNAL clone (§5.1.1).
+   * The caller's options object is NEVER mutated; `options.provenance` is
+   * consumed here (stripped before any per-attempt spread can carry it down —
+   * §5.1.6); `onCorrelationId` fires synchronously at mint, exactly once per
+   * `evaluate()` invocation INCLUDING calls that later throw, never after
+   * settlement — and a throwing callback is caught + counted, never propagated
+   * (the decision call is never failed by its audit trail, §5.1.4).
+   */
+  private mintDecision(options: IntelligenceOptions | undefined): DecisionCallContext {
+    const correlationId = mintRouterCorrelationId();
+    const provenance = options?.provenance;
+    if (provenance?.onCorrelationId) {
+      try {
+        provenance.onCorrelationId(correlationId);
+      } catch {
+        bumpOnCorrelationIdThrow();
+      }
+    }
+    const internal: IntelligenceOptions = { ...(options ?? {}) };
+    delete internal.provenance;
+    // Assign (never spread-inherit) both slots: an inbound correlation id or
+    // marker on the caller's object is ignored by construction (FD8).
+    (internal as Record<PropertyKey, unknown>)[DECISION_CORRELATION_ID] = correlationId;
+    (internal as Record<PropertyKey, unknown>)[DECISION_MINT_MARKER] = true;
+    return { correlationId, provenance, internal, mintedAtMs: Date.now(), settled: false };
+  }
+
+  /**
+   * Run ONE attempt of the current decision (§5.1.5 — per-attempt capture
+   * scoping). Every attempt gets a FRESH options object: a spread of the
+   * internal clone (the symbol-keyed correlation id + mint marker ride the
+   * spread; the breaker consumes each copy's marker single-use) with fresh
+   * capture wrappers composed over the caller's callbacks and any attempt
+   * extras. Only the attempt whose promise the router actually returns
+   * contributes its capture to the settlement: a rejected attempt's callbacks
+   * land in its own unread capture, and any callback firing AFTER settlement
+   * (a withSwapTimeout-abandoned attempt) is discarded by the settled latch.
+   */
+  private async runAttempt(
+    provider: IntelligenceProvider,
+    prompt: string,
+    decision: DecisionCallContext,
+    opts?: {
+      /** Attempt-specific option overrides (timeoutMs / model / rateLimitWaitMs). */
+      extra?: Partial<IntelligenceOptions>;
+      /** withSwapTimeout race cap for this attempt (the same bound flows as `extra.timeoutMs`). */
+      capMs?: number;
+      capTarget?: string;
+      /** Extra usage observer for this attempt (the non-gating produced-tokens probe). */
+      usageProbe?: (u: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void;
+    },
+  ): Promise<string> {
+    const base = decision.internal;
+    const callerOnUsage = base.onUsage;
+    const callerOnModel = base.onModel;
+    const capture: DecisionAttemptCapture = {};
+    const attemptOptions: IntelligenceOptions = {
+      ...base,
+      ...(opts?.extra ?? {}),
+      onUsage: (u) => {
+        opts?.usageProbe?.(u);
+        if (!decision.settled) capture.usage = u;
+        callerOnUsage?.(u);
+      },
+      onModel: (info) => {
+        if (!decision.settled) capture.resolved = info;
+        callerOnModel?.(info);
+      },
+    };
+    const inFlight = provider.evaluate(prompt, attemptOptions);
+    const result =
+      opts?.capMs !== undefined
+        ? await withSwapTimeout(inFlight, opts.capMs, opts.capTarget ?? 'unknown')
+        : await inFlight;
+    // This resolution is the one being returned up the ladder — its capture is
+    // the settlement capture. A withSwapTimeout-abandoned attempt never reaches
+    // this line (its race already rejected), and a queue-abandoned late
+    // resolution is discarded by the latch.
+    if (!decision.settled) decision.settledCapture = capture;
+    return result;
+  }
+
+  /** Write-once settlement on a SUCCESSFUL exit (FD7). */
+  private settleDecision(decision: DecisionCallContext, result: string): void {
+    if (decision.settled) return; // write-once
+    decision.settled = true;
+    if (!getDecisionQualityRecorder()) return; // no substrate injected — clean no-op
+    // classifyVerdict is documented pure/cheap and try/catch-contained
+    // (types.ts): the settlement re-runs it for the decision row's verdict
+    // class + the FD8 callerRef relocation (the funnel's metric-row
+    // classification is a separate concern).
+    let verdictClass = 'unclassified';
+    let callerRef: string | undefined;
+    const classify = decision.internal.classifyVerdict;
+    if (classify) {
+      try {
+        const v = classify(result);
+        verdictClass = v?.acted ? 'fired' : 'noop';
+        callerRef = v?.verdictId;
+      } catch {
+        /* contained: a throwing classifier leaves 'unclassified' */
+      }
+    }
+    // §5.1.5: an ENROLLED unclassified settlement carries a bounded raw-response
+    // head for the provenance row's context (the seam scrubs + clamps to 300);
+    // it never enters the served `decision` field, and unenrolled settlements
+    // never carry raw content at all.
+    const rawResponseHead =
+      decision.provenance !== undefined && verdictClass === 'unclassified'
+        ? result.slice(0, 600)
+        : undefined;
+    this.recordSettlement(decision, verdictClass, undefined, callerRef, rawResponseHead);
+  }
+
+  /**
+   * Write-once settlement on ANY throwing exit (FD7): the decision still yields
+   * exactly one row — `'<errored>'` + the error class — so failure-swap-ladder
+   * quality is itself gradeable, without N phantom decisions.
+   */
+  private settleDecisionErrored(decision: DecisionCallContext, err: unknown): void {
+    if (decision.settled) return; // write-once
+    decision.settled = true;
+    if (!getDecisionQualityRecorder()) return;
+    const errorClass =
+      err instanceof Error ? err.constructor?.name || err.name || 'Error' : typeof err;
+    this.recordSettlement(decision, '<errored>', errorClass, undefined);
+  }
+
+  /** The single settlement write — isolated so a recorder throw can never reach the decision path (§5.1.7). */
+  private recordSettlement(
+    decision: DecisionCallContext,
+    verdictClass: string,
+    errorClass: string | undefined,
+    callerRef: string | undefined,
+    rawResponseHead?: string,
+  ): void {
+    const recorder = getDecisionQualityRecorder();
+    if (!recorder) return;
+    const p = decision.provenance;
+    const capture = decision.settledCapture;
+    try {
+      recorder.recordSettlement({
+        correlationId: decision.correlationId,
+        mintedBy: 'router',
+        enrolled: p !== undefined,
+        provenance: p
+          ? {
+              decisionPoint: p.decisionPoint,
+              context: p.context,
+              optionsPresented: p.optionsPresented,
+              promptId: p.promptId,
+            }
+          : undefined,
+        settledAttempt: {
+          model: capture?.resolved?.model,
+          framework: capture?.resolved?.framework,
+          usage: capture?.usage,
+        },
+        verdictClass,
+        errorClass,
+        // FD8: a caller-supplied classifyVerdict.verdictId is recorded as
+        // callerRef ONLY when a provenance row is being written (enrolled);
+        // it is dropped for llm rows otherwise.
+        callerRef: p !== undefined ? callerRef : undefined,
+        rawResponseHead,
+        mintedAtMs: decision.mintedAtMs,
+        settledAtMs: Date.now(),
+      });
+    } catch {
+      /* the decision call is never failed or delayed by its audit trail */
+    }
+  }
+
+  private async evaluateRouted(
+    prompt: string,
+    options: IntelligenceOptions | undefined,
+    decision: DecisionCallContext,
+  ): Promise<string> {
     const component = options?.attribution?.component;
     const explicitCategory = (options?.attribution as { category?: unknown } | undefined)?.category;
     const category: ComponentCategory = isComponentCategory(explicitCategory)
@@ -1151,15 +1382,18 @@ export class IntelligenceRouter implements IntelligenceProvider {
     // guaranteed reachable — the resolver only emits reachable CLI doors). Otherwise today's
     // behavior: unconfigured componentFrameworks ⇒ the default provider verbatim.
     let framework: IntelligenceFramework;
-    let evalOptions = options;
     if (enforced) {
       framework = enforced.primary.door as IntelligenceFramework; // resolver emits CLI doors only
       // The resolved primary's CONCRETE model id REPLACES the caller's tier hint (spec step 8).
       // It is already reserve-clamped by the resolver (clampToReserveOnCleanDoor); a concrete id
       // rides `options.model` verbatim to the provider (the adapters resolve tier-or-id).
-      evalOptions = { ...(options ?? {}), model: enforced.primary.modelId as IntelligenceOptions['model'] };
+      // Folded into the decision's internal clone so every subsequent attempt inherits it.
+      decision.internal = {
+        ...decision.internal,
+        model: enforced.primary.modelId as IntelligenceOptions['model'],
+      };
     } else {
-      if (!cfg) return this.opts.defaultProvider.evaluate(prompt, options);
+      if (!cfg) return this.runAttempt(this.opts.defaultProvider, prompt, decision);
       framework = this.resolveFramework(component, category, cfg);
     }
     const primary = this.resolveProvider(framework);
@@ -1194,14 +1428,14 @@ export class IntelligenceRouter implements IntelligenceProvider {
       // `sessions.natureRouting`: it is a standalone safety narrowing, NOT gated on the S4
       // feature flag (FD4 LA4-r2). Strictly the safe direction (a measured-worse route → the
       // sanctioned reserve) — never an upgrade, never a block.
-      let degradeOptions = options;
+      let degradeExtra: Partial<IntelligenceOptions> | undefined;
       if (isBoundedGatingDegrade(component, options)) {
         const { model: clampedModel, clamped } = clampClaudeCliSwapModel(
           this.opts.defaultFramework,
           options?.model,
         );
         if (clamped) {
-          degradeOptions = { ...(options ?? {}), model: clampedModel };
+          degradeExtra = { model: clampedModel };
           this.opts.onDegrade?.({
             component: component ?? '(none)',
             category,
@@ -1213,7 +1447,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
           });
         }
       }
-      return this.opts.defaultProvider.evaluate(prompt, degradeOptions);
+      return this.runAttempt(this.opts.defaultProvider, prompt, decision, { extra: degradeExtra });
     }
 
     // Failure-swap: ONLY a safety-gating call with configured failureSwap targets
@@ -1247,9 +1481,9 @@ export class IntelligenceRouter implements IntelligenceProvider {
     // swap when the feature is on and a config `failureSwap` tail exists. To honor the §6.4
     // caller-handled-malformed-output contract, the swap must fire ONLY on an INVOCATION-level
     // failure (zero tokens produced), never on a content/parse error that carried tokens — so
-    // we compose an onUsage capture onto the PRIMARY attempt to observe whether it produced any
-    // tokens. This capture is installed ONLY on the eligible path; gating/deferrable/enforced
-    // calls use `evalOptions` verbatim (byte-identical). A provider that never surfaces usage
+    // we compose an onUsage probe onto the PRIMARY attempt to observe whether it produced any
+    // tokens. The probe is installed ONLY on the eligible path; gating/deferrable/enforced
+    // calls carry no probe (byte-identical). A provider that never surfaces usage
     // (gemini-cli) leaves `primaryProducedTokens` false, so its errors are treated as
     // invocation-level (swap) — the conservative, error-reducing direction when unobservable.
     const nonGatingSwapEligible =
@@ -1259,21 +1493,19 @@ export class IntelligenceRouter implements IntelligenceProvider {
       this.opts.nonGatingFailureSwap?.enabled === true &&
       (cfg?.failureSwap?.length ?? 0) > 0;
     let primaryProducedTokens = false;
-    let primaryEvalOptions = evalOptions;
-    if (nonGatingSwapEligible) {
-      const callerOnUsage = evalOptions?.onUsage;
-      primaryEvalOptions = {
-        ...(evalOptions ?? {}),
-        onUsage: (u) => {
+    // The produced-tokens probe is composed INTO the primary attempt's fresh
+    // per-attempt wrapper (runAttempt) — installed only on the eligible path.
+    const primaryUsageProbe = nonGatingSwapEligible
+      ? (u: { inputTokens: number; outputTokens: number }) => {
           if (u.inputTokens > 0 || u.outputTokens > 0) primaryProducedTokens = true;
-          callerOnUsage?.(u);
-        },
-      };
-    }
+        }
+      : undefined;
 
     let err: unknown;
     try {
-      const mainResult = await primary.evaluate(prompt, primaryEvalOptions);
+      const mainResult = await this.runAttempt(primary, prompt, decision, {
+        usageProbe: primaryUsageProbe,
+      });
       this.opts.onResolved?.(component ?? '(none)', framework); // a real answer → auto-resolve any open degradation
       return mainResult;
     } catch (firstErr) {
@@ -1288,7 +1520,9 @@ export class IntelligenceRouter implements IntelligenceProvider {
           const delay = Math.min(b.baseMs * Math.pow(b.factor, attempt), b.ceilingMs);
           const jittered = Math.min(Math.floor(delay * (0.5 + Math.random() * 0.5)), b.maxWaitMs);
           try {
-            const boResult = await primary.evaluate(prompt, { ...(evalOptions ?? {}), rateLimitWaitMs: jittered });
+            const boResult = await this.runAttempt(primary, prompt, decision, {
+              extra: { rateLimitWaitMs: jittered },
+            });
             this.opts.onResolved?.(component ?? '(none)', framework); // recovered on backoff → auto-resolve
             return boResult;
           } catch (retryErr) {
@@ -1305,7 +1539,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
         // success we return before the heuristic-fallthrough tracking below (no false degradation).
         if (nonGatingSwapEligible && !primaryProducedTokens) {
           const ng = await this.tryNonGatingSwap(
-            cfg, prompt, evalOptions, component ?? '(none)', framework, category, err,
+            cfg, prompt, decision, component ?? '(none)', framework, category, err,
           );
           if (ng.ok) return ng.result;
         }
@@ -1313,7 +1547,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
         // in the LlmQueue before dropping to its heuristic. gating can never reach here (deferrable =
         // !gating && …) — the D5 queue-skip invariant is structural.
         if (deferrable) {
-          const q = await this.tryDeferrableQueue(primary, prompt, evalOptions, component ?? '(none)', framework, category);
+          const q = await this.tryDeferrableQueue(primary, prompt, decision, component ?? '(none)', framework, category);
           if (q.ok) return q.result;
         }
         // Non-gating ⇒ the caller will swallow this into its heuristic — track it (never-silent).
@@ -1389,27 +1623,28 @@ export class IntelligenceRouter implements IntelligenceProvider {
         }
         // Pass the cap through as the provider's per-call timeout so the subprocess
         // self-terminates at the bound (no AbortSignal exists on IntelligenceOptions).
-        // Base is `evalOptions` (byte-identical to `options` on the legacy path); an enforced
-        // position's model always overrides it below.
-        const attemptOptions: IntelligenceOptions | undefined =
+        // Base is the decision's internal clone (byte-identical to `options` on the
+        // legacy path, plus the correlation plumbing); an enforced position's model
+        // always overrides it below.
+        const attemptExtra: Partial<IntelligenceOptions> | undefined =
           cap !== undefined || overrideModel
             ? {
-                ...(evalOptions ?? {}),
                 ...(cap !== undefined ? { timeoutMs: cap } : {}),
                 ...(overrideModel ? { model: attemptModel } : {}),
               }
-            : evalOptions;
+            : undefined;
         try {
-          // withSwapTimeout keeps the shipped, crash-safe Promise.race pattern
-          // (InputGuard precedent): it attaches a settlement handler to EACH input,
-          // so a late rejection from an abandoned attempt is already handled (no
-          // unhandledRejection) and a late resolve is ignored. NEVER a detached/
-          // awaited handle. It additionally CLEARS the timer on settle (FD7) so a
-          // fast success does not leak a pending timer.
-          const result =
-            cap !== undefined
-              ? await withSwapTimeout(tp.evaluate(prompt, attemptOptions), cap, target)
-              : await tp.evaluate(prompt, attemptOptions);
+          // withSwapTimeout (inside runAttempt) keeps the shipped, crash-safe
+          // Promise.race pattern (InputGuard precedent): it attaches a settlement
+          // handler to EACH input, so a late rejection from an abandoned attempt is
+          // already handled (no unhandledRejection) and a late resolve is ignored.
+          // NEVER a detached/awaited handle. It additionally CLEARS the timer on
+          // settle (FD7) so a fast success does not leak a pending timer.
+          const result = await this.runAttempt(tp, prompt, decision, {
+            extra: attemptExtra,
+            capMs: cap,
+            capTarget: target,
+          });
           this.opts.onDegrade?.({
             component: component ?? '(none)',
             category,
@@ -1442,7 +1677,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
       // for capacity in the LlmQueue before dropping to its heuristic (the gentle order, §3b.3). A
       // gating call NEVER reaches here (deferrable = !gating && …) — D5 queue-skip is structural.
       if (deferrable) {
-        const q = await this.tryDeferrableQueue(primary, prompt, evalOptions, component ?? '(none)', framework, category);
+        const q = await this.tryDeferrableQueue(primary, prompt, decision, component ?? '(none)', framework, category);
         if (q.ok) return q.result;
       }
       // Every swap target is also down → re-throw so the (gating) caller fails CLOSED,
@@ -1470,7 +1705,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
   private async tryNonGatingSwap(
     cfg: ComponentFrameworksConfig | undefined,
     prompt: string,
-    evalOptions: IntelligenceOptions | undefined,
+    decision: DecisionCallContext,
     component: string,
     primaryFramework: IntelligenceFramework,
     category: ComponentCategory,
@@ -1501,19 +1736,19 @@ export class IntelligenceRouter implements IntelligenceProvider {
       const tp = this.resolveProvider(target);
       if (!tp) continue; // target binary missing → skip
       const cap = resolveSwapCap(target, globalCapMs, byFramework, maxCapMs);
-      // Model-size preservation (Q5): the caller's tier travels verbatim. No claude-code
-      // tier-clamp is needed here — claude-code is excluded from non-gating targets above.
-      const attemptOptions: IntelligenceOptions | undefined =
-        cap !== undefined ? { ...(evalOptions ?? {}), timeoutMs: cap } : evalOptions;
       try {
-        // withSwapTimeout keeps the shipped crash-safe Promise.race pattern (per-input
-        // settlement handlers → a late reject/resolve from an abandoned attempt is handled/
-        // ignored) and clears the timer on settle. The cap also flows through as the provider's
-        // per-call `timeoutMs` so the CLI subprocess SIGTERMs itself at the same bound.
-        const result =
-          cap !== undefined
-            ? await withSwapTimeout(tp.evaluate(prompt, attemptOptions), cap, target)
-            : await tp.evaluate(prompt, attemptOptions);
+        // Model-size preservation (Q5): the caller's tier travels verbatim. No claude-code
+        // tier-clamp is needed here — claude-code is excluded from non-gating targets above.
+        // withSwapTimeout (inside runAttempt) keeps the shipped crash-safe Promise.race
+        // pattern (per-input settlement handlers → a late reject/resolve from an abandoned
+        // attempt is handled/ignored) and clears the timer on settle. The cap also flows
+        // through as the provider's per-call `timeoutMs` so the CLI subprocess SIGTERMs
+        // itself at the same bound.
+        const result = await this.runAttempt(tp, prompt, decision, {
+          extra: cap !== undefined ? { timeoutMs: cap } : undefined,
+          capMs: cap,
+          capTarget: target,
+        });
         this.opts.onDegrade?.({
           component,
           category,
@@ -1555,7 +1790,7 @@ export class IntelligenceRouter implements IntelligenceProvider {
   private async tryDeferrableQueue(
     primary: IntelligenceProvider,
     prompt: string,
-    options: IntelligenceOptions | undefined,
+    decision: DecisionCallContext,
     component: string,
     framework: IntelligenceFramework,
     category: ComponentCategory,
@@ -1564,10 +1799,12 @@ export class IntelligenceRouter implements IntelligenceProvider {
     const ladder = this.opts.ladder;
     if (!q || !ladder?.queueEnabled) return { ok: false };
     const bound = ladder.queueAttemptTimeoutMs ?? 0;
-    const enqueueOptions: IntelligenceOptions | undefined =
-      bound > 0 ? { ...(options ?? {}), timeoutMs: bound } : options;
     try {
-      const result = await q.enqueue('background', () => primary.evaluate(prompt, enqueueOptions));
+      const result = await q.enqueue('background', () =>
+        this.runAttempt(primary, prompt, decision, {
+          extra: bound > 0 ? { timeoutMs: bound } : undefined,
+        }),
+      );
       this.opts.onDegrade?.({
         component,
         category,

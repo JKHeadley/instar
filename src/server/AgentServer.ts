@@ -133,6 +133,8 @@ import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
 import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
 import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
+import { DecisionQualityRecorderImpl, installDecisionQualityRecorder } from '../core/DecisionQualityRecorderImpl.js';
+import { setDecisionQualityMachineId } from '../core/decisionQualityTypes.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { ResourceLedger } from '../monitoring/ResourceLedger.js';
 import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
@@ -1172,6 +1174,32 @@ export class AgentServer {
         // wrapped provider (current and future). Null-safe; no-op if it failed above.
         setFeatureMetricsRecorder(this.featureMetricsLedger);
 
+        // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5/§5.7):
+        // the settlement recorder + annotate chokepoint, injected beside the
+        // metrics recorder (the same module-singleton pattern — a constructor
+        // option would reach only the one shared router; the singleton reaches
+        // any instance). Gate resolution lives inside the recorder
+        // (resolveDevAgentGate on provenance.uniformSeam.enabled; dryRun
+        // default TRUE). machineId8 = the pool/mesh self id's first 8 chars
+        // (§5.1.1 — the FD10 id segment); absent on single-machine installs.
+        // Own try/catch: a recorder failure must never break the ledger block.
+        try {
+          installDecisionQualityRecorder(
+            new DecisionQualityRecorderImpl({
+              ledger: this.featureMetricsLedger,
+              judgmentProvenance: options.judgmentProvenance ?? null,
+              config: options.config,
+              log: (m) => console.log(m),
+            }),
+          );
+          setDecisionQualityMachineId(options.meshSelfId ?? null);
+        } catch (err) {
+          // @silent-fallback-ok: loud warn + the seam degrades to the null-recorder
+          // no-op (the router's settlement write is a clean no-op without it) —
+          // observability init must never break the ledger block or the server.
+          console.warn('[instar] decision-quality recorder init failed (non-fatal — settlement seam stays no-op):', err);
+        }
+
         // The reporting price authority (Layer 1) — reviewed manifest + machine-local
         // observed/overlay/credits. Read-only; constructed only when the view is live.
         if (routingSpendOn) {
@@ -1454,11 +1482,39 @@ export class AgentServer {
         // The daily spend rollup has its OWN (longer) horizon, decoupled from the 30d raw
         // rows (routing-control-room-spend scal-F3) — default 400 days.
         const rollupRetentionDays = routingSpendCfg?.tokenRollupRetentionDays ?? 400;
-        if (retentionDays > 0 || routingSpendOn) {
+        // Decision-quality substrate retention (llm-decision-quality-meter §5.5):
+        // the four quality tables carry their OWN 90d horizon, decoupled from both
+        // the 30d raw rows and the spend rollup. The quality arm on the condition
+        // below keeps this timer constructed even when featureMetrics retention is
+        // 0 and routing-spend is dark — without it the quality tables would never
+        // prune and the periodic reconcile would never run (INT/LES r3).
+        const qualityCfg = (options.config as {
+          provenance?: { quality?: { decisionRetentionDays?: number; rollupRetentionDays?: number } };
+        }).provenance?.quality;
+        const qualityDecisionRetentionDays = qualityCfg?.decisionRetentionDays ?? 90;
+        const qualityRollupRetentionDays = qualityCfg?.rollupRetentionDays ?? 90;
+        const qualityPruneOn = qualityDecisionRetentionDays > 0 || qualityRollupRetentionDays > 0;
+        if (retentionDays > 0 || routingSpendOn || qualityPruneOn) {
           const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
           const prune = () => {
             try { if (retentionDays > 0) this.featureMetricsLedger?.pruneOlderThan(Date.now() - retentionMs); } catch { /* @silent-fallback-ok: retention prune is best-effort housekeeping — a failed prune just leaves old rows for the next tick */ }
             try { if (routingSpendOn && rollupRetentionDays > 0) this.featureMetricsLedger?.pruneSpendRollup(rollupRetentionDays); } catch { /* @silent-fallback-ok: rollup prune is best-effort housekeeping */ }
+            // Quality-substrate housekeeping (§5.5): per-table prunes + the PERIODIC
+            // arm of the bounded rollup reconcile (window 30d, mirroring spend; the
+            // boot arm runs in the ledger constructor — the fold is idempotent).
+            // Grading cursors: never pruned while their decision point is registered
+            // — the census wiring (§5.6) threads the registered ids here when it
+            // lands; until then only ≥horizon-stale cursors (abandoned points whose
+            // grading job hasn't re-stamped them in 90d) are eligible.
+            try {
+              if (qualityDecisionRetentionDays > 0) {
+                this.featureMetricsLedger?.pruneDecisionQuality(qualityDecisionRetentionDays);
+                this.featureMetricsLedger?.pruneDecisionOutcomes(qualityDecisionRetentionDays);
+                this.featureMetricsLedger?.pruneGradingCursors(qualityDecisionRetentionDays);
+              }
+              if (qualityRollupRetentionDays > 0) this.featureMetricsLedger?.pruneQualityRollup(qualityRollupRetentionDays);
+              this.featureMetricsLedger?.reconcileQualityRollup(30);
+            } catch { /* @silent-fallback-ok: quality housekeeping is best-effort — a failed pass leaves rows for the next tick */ }
           };
           prune();
           this.featureMetricsPruneTimer = setInterval(prune, 6 * 60 * 60 * 1000);

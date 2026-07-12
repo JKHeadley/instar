@@ -5,6 +5,9 @@
  * Everything flows from these — sessions, jobs, users, messaging.
  */
 
+// Type-only import (erased at compile time — types.ts stays runtime-import-free).
+import type { DecisionProvenanceBlock } from './decisionQualityTypes.js';
+
 // ── Provider Credentials ────────────────────────────────────────────
 
 /**
@@ -1106,10 +1109,34 @@ export interface IntelligenceOptions {
    * instead of every completed call reading as noop. OPTIONAL: when omitted the
    * outcome defaults to 'noop' (today's behavior). The callback must be pure and
    * cheap — it runs inside the funnel and is wrapped in try/catch so a throw can
-   * never break the observed path. `verdictId` optionally correlates the call to
-   * a downstream record (e.g. a commitment id).
+   * never break the observed path (it may be invoked more than once per call —
+   * the funnel classifies the metric outcome and the router's settlement seam
+   * classifies the decision row).
+   *
+   * `verdictId` (llm-decision-quality-meter FD8): a caller-supplied verdictId NO
+   * LONGER lands in `feature_metrics.verdict_id` on `kind:'llm'` rows — that
+   * column is single-writer for the seam-minted correlation id (`d-`/`b-`
+   * prefixed) on llm rows, always-on. If supplied, the router's settlement seam
+   * records it as `callerRef` inside the provenance row's context when a
+   * provenance row is being written (an enrolled call), and DROPS it for llm
+   * rows otherwise. Event-kind rows (`recordEvent`) keep their existing
+   * semantic verdictId use untouched.
    */
   classifyVerdict?: (result: string) => { acted: boolean; verdictId?: string };
+  /**
+   * LLM-Decision Quality Meter — Layer B provenance enrollment
+   * (docs/specs/llm-decision-quality-meter.md §5.1.4). An enrolling callsite
+   * supplies this block so its decision can later be reconstructed and graded.
+   * CONSUMED by the seam: the IntelligenceRouter strips it before every
+   * per-attempt option spread, and the CircuitBreaking funnel wrapper ALSO
+   * strips it before `inner.evaluate` — it never reaches an inner adapter on
+   * any path. `onCorrelationId` fires synchronously at mint, exactly once per
+   * `evaluate()` invocation (including calls that later throw), never after
+   * settlement; a throw in it is contained + counted. A router-BYPASSED call
+   * has the block stripped-and-counted at the breaker and fires no callback
+   * (such decision points are census-`pending` by rule, §5.6).
+   */
+  provenance?: DecisionProvenanceBlock;
 }
 
 // ── Drift Checker ───────────────────────────────────────────────────
@@ -4161,14 +4188,54 @@ export interface InstarConfig {
     noticeCooldownMs?: number;
   };
   /**
-   * Judgment-call decision provenance (same spec §3.5). Retention + sampling
-   * ONLY — the redaction contract is an invariant in code, never config.
+   * Judgment-call decision provenance (ownership-gated-spawn §3.5) + the
+   * LLM-Decision Quality Meter's `uniformSeam`/`quality` blocks nested here
+   * (llm-decision-quality-meter §5.7). Retention/sampling/tuning knobs ONLY —
+   * the redaction contract (write-time credential scrub, contextFull
+   * machine-local, redaction-by-field-omission at readRedacted, the §5.2
+   * serve-discipline clamps) is an invariant in code, never config.
    */
   provenance?: {
     /** Day-file retention. Default 14. */
     retentionDays?: number;
     /** Deterministic sampling for non-arbiter rows, [0,1]. Default 1.0 (0.1 from Increment 2). */
     deterministicSampling?: number;
+    /**
+     * The uniform provenance seam at the router settlement point
+     * (llm-decision-quality-meter §5.1/§5.7). Observe-only side write — never
+     * gates/blocks/delays the decision call.
+     */
+    uniformSeam?: {
+      /**
+       * OMIT-REQUIRED (never seeded by ConfigDefaults/migrateConfig): resolves
+       * via `resolveDevAgentGate` — LIVE on a development agent, DARK on the
+       * fleet. An explicit value always wins.
+       */
+      enabled?: boolean;
+      /**
+       * Default TRUE even on a dev agent: metadata-only would-write logs; ALL
+       * durable writes (provenance JSONL + SQLite quality/outcome rows) are
+       * suppressed until a deliberate `dryRun: false` flip (§5.2/§5.7).
+       */
+      dryRun?: boolean;
+    };
+    /** Decision-quality substrate tuning knobs (llm-decision-quality-meter §5.5/§5.7). All unseeded — inline defaults. */
+    quality?: {
+      /** `decision_quality` + `decision_outcomes` retention. Default 90 (outcomes floored at 30d in code). */
+      decisionRetentionDays?: number;
+      /** `decision_quality_rollup` retention. Default 90. */
+      rollupRetentionDays?: number;
+      /** Grading-pass global row ceiling per run. Default 200. */
+      maxDecisionsPerPass?: number;
+      /** Evidence-rule window (hog rules). Default 6. A change mints new ruleId versions (§5.4.5). */
+      evidenceWindowHours?: number;
+      /** Grading slack added to carrier retention (≥ 2× the job cadence). Default 2. */
+      gradingSlackHours?: number;
+      /** wired-but-silent runtime-flag threshold (llm-kind calls in-window). Default 20. */
+      wiredSilentMinCalls?: number;
+      /** Below this graded-decision count an aggregate is served with `insufficient-evidence: true`. Default 20. */
+      minSampleForRates?: number;
+    };
   };
   /**
    * Constitutional ceilings carried by ratified standards (three-standards-
