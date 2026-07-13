@@ -1,0 +1,14 @@
+export type ProvenanceStatus = 'wired' | 'pending' | 'exempt';
+export interface ProvenanceCoverageEntry {
+  decisionPoint: string;
+  component: string;
+  status: ProvenanceStatus;
+}
+export const DP_MESSAGING_TONE_GATE = 'messaging-tone-gate';
+export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
+  {
+    decisionPoint: DP_MESSAGING_TONE_GATE,
+    component: 'MessagingToneGate',
+    status: 'wired',
+  },
+];

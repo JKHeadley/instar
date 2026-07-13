@@ -467,6 +467,46 @@ try {
   // grep not available — skip gracefully
 }
 
+// ── 7. Duplicate-build advisory (docs/specs/duplicate-build-guard.md FD1) ──
+//
+// warnings[] ONLY — NEVER errors[]: a duplicate build is recoverable (close
+// the PR), so the irreversible-action carve-out does not apply and a
+// deterministic push-block would be brittle authority over a judgment call
+// (docs/signal-vs-authority.md). The teeth live at build-start (the PreToolUse
+// gate) + the precommit presence backstop; this is the last-look signal.
+//
+// Honors INSTAR_PRE_PUSH_SKIP (mirrors the husky skip) and the
+// INSTAR_DUP_BUILD_CHECK=off master switch; the open-PR scan is skipped under
+// CI inside the library (§3.3/§5). The library re-fetches origin/main and
+// re-keys its cache at phase 'pre-push' so a merge that landed mid-build is
+// actually seen at push time (§3.2). ANY failure degrades to silence — the
+// guard's own breakage must never block or delay a push (FD5).
+
+if (process.env.INSTAR_PRE_PUSH_SKIP !== '1') {
+  try {
+    const dup = await import('./lib/duplicate-build-check.mjs');
+    if (!dup.isGuardOff(process.env, ROOT)) {
+      const specPath = dup.resolveSpecForAdvisory(ROOT);
+      if (specPath) {
+        const result = dup.runDuplicateBuildCheck({ specPath, root: ROOT, phase: 'pre-push', env: process.env });
+        if (result && (result.verdict === 'likely-duplicate' || result.verdict === 'verify')) {
+          const top = (result.evidence || []).slice(0, 3).map((e) => `      • ${e.id} [${e.source}] ${e.detail}`);
+          warnings.push(
+            `Duplicate-build check: ${result.verdict}` +
+            (result.cause ? ` (cause: ${result.cause})` : '') +
+            ` for spec ${path.relative(ROOT, specPath)}.` +
+            (top.length ? `\n${top.join('\n')}` : '') +
+            `\n      Advisory only (never blocks a push) — review the overlap before merging.` +
+            `\n      docs/specs/duplicate-build-guard.md | off-switch: INSTAR_DUP_BUILD_CHECK=off`
+          );
+        }
+      }
+    }
+  } catch {
+    // Advisory only — the guard's own failure never blocks a push (FD5).
+  }
+}
+
 // ── Report ────────────────────────────────────────────────────────────
 
 if (errors.length > 0 || warnings.length > 0) {
