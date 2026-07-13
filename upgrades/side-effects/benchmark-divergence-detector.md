@@ -77,3 +77,10 @@ Per the spec's converged §Multi-machine posture: aggregates are **collected-on-
 4. The migration strips any `benchmarkDivergence.enabled === false` on EVERY run, so an operator's later deliberate `enabled:false` opt-out on a dev agent would be silently removed at the next update. This follows established precedent (dashboard.liveInsights, cartographer, conformanceAudit strips) and `dryRun` is preserved, but the pattern-wide tension with "an explicit value always wins" (types.ts) is worth a registry-level look someday — it is not this PR's invention.
 
 Verification performed: programmatic old-vs-new template byte-comparison; full-diff hunk audit of all 11 modified files; consumer grep for every detector surface; 170 tests across the 9 feature test files + 13 tone-gate suites re-run green; `tsc --noEmit` clean.
+
+## CI conformance-ratchet fixes (post-push)
+
+Three instar completeness ratchets tripped on the first push (my local targeted runs did not cover the full sharded suite) — all fixed, none a behavior change:
+1. `feature-delivery-completeness` — registered the new `Benchmark-Divergence Detector` CLAUDE.md section in the template↔migrator parity tracker (it is emitted by both generateClaudeMd and migrateClaudeMd; dark observe-only, migrator-only awareness class).
+2. `write-domain-conformance-ratchet` — classified the new mutating route `POST /benchmark-divergence/analyze` in `WriteDomainRegistry` as `machine-local` with the pool-scope-read-merge convergence story, mirroring the `POST /decision-quality/grade-pass` precedent (same feature-metrics.db, holder-local findings, proxied-on-read).
+3. `no-silent-fallbacks` — added `@silent-fallback-ok` to the PRE-EXISTING grade-pass catch (it surfaces the error as HTTP 500 — not silent; flagged only by the 20-line-window bleeding into the adjacent benchmark helper's `return false`).

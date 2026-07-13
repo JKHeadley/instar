@@ -15390,6 +15390,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json(result);
     } catch (err) {
+      // @silent-fallback-ok: NOT silent — the failure is surfaced to the caller as
+      // an HTTP 500 with the error message; nothing is swallowed. (Newly flagged
+      // only by the no-silent-fallbacks 20-line-window bleeding into the adjacent
+      // benchmark-divergence helper's `return false` inserted just below.)
       res.status(500).json({ error: `grade-pass failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
