@@ -348,6 +348,10 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /context/dispatch`
 - `GET /context/working-memory`
 
+## /decision-quality
+- `GET /decision-quality`
+- `POST /decision-quality/grade-pass`
+
 ## /delivery-queue
 - `GET /delivery-queue`
 

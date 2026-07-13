@@ -263,14 +263,24 @@ function makeRouterWithNature(nature: NatureRoutingRuntime | undefined, onPlan?:
 describe('evaluate() — nature routing is BYTE-IDENTICAL when unset/off', () => {
   const opts: IntelligenceOptions = { model: 'capable', attribution: { component: 'MessagingToneGate' } };
 
+  // NOTE (llm-decision-quality-meter §5.1): the router now ALWAYS runs attempts on a
+  // fresh internal clone carrying the always-on correlation mint (FD1) — object
+  // IDENTITY pass-through is gone by design. "Byte-identical when off" means the
+  // SELECTION is unchanged: same provider, same un-rewritten model/attribution
+  // (attribution stays the same reference — nothing merged, validated, or rewritten).
+  const expectSelectionUntouched = (received: IntelligenceOptions | undefined) => {
+    expect(received?.model).toBe('capable'); // never rewritten by an off/observing resolver
+    expect(received?.attribution).toBe(opts.attribution); // same reference — nothing rebuilt
+  };
+
   it('natureRouting UNSET ⇒ selection unchanged, onNatureRoutePlan NEVER called', async () => {
-    // THE safety case (named test): the resolve path is bit-for-bit today's behavior when off.
+    // THE safety case (named test): the resolve path selects bit-for-bit today's door/model when off.
     const onPlan = vi.fn();
     const { router, defaultProvider } = makeRouterWithNature(undefined, onPlan);
     const out = await router.evaluate('p', opts);
     expect(out).toBe('claude');
     expect(defaultProvider.calls).toHaveLength(1);
-    expect(defaultProvider.calls[0]).toBe(opts); // SAME options object — nothing rewritten
+    expectSelectionUntouched(defaultProvider.calls[0]);
     expect(onPlan).not.toHaveBeenCalled();
   });
 
@@ -279,7 +289,7 @@ describe('evaluate() — nature routing is BYTE-IDENTICAL when unset/off', () =>
     const { router, defaultProvider } = makeRouterWithNature({ enabled: false, dryRun: true }, onPlan);
     const out = await router.evaluate('p', opts);
     expect(out).toBe('claude');
-    expect(defaultProvider.calls[0]).toBe(opts);
+    expectSelectionUntouched(defaultProvider.calls[0]);
     expect(onPlan).not.toHaveBeenCalled();
   });
 
@@ -287,9 +297,9 @@ describe('evaluate() — nature routing is BYTE-IDENTICAL when unset/off', () =>
     const onPlan = vi.fn();
     const { router, defaultProvider } = makeRouterWithNature({ enabled: true, dryRun: true }, onPlan);
     const out = await router.evaluate('p', opts);
-    // Selection is UNCHANGED — the same default provider is called with the SAME options.
+    // Selection is UNCHANGED — the same default provider is called with an un-rewritten selection.
     expect(out).toBe('claude');
-    expect(defaultProvider.calls[0]).toBe(opts);
+    expectSelectionUntouched(defaultProvider.calls[0]);
     // …but the plan WAS observed.
     expect(onPlan).toHaveBeenCalledTimes(1);
     const plan = onPlan.mock.calls[0][0] as NatureRoutePlan;
@@ -438,7 +448,10 @@ describe('evaluate() — A2.2 ENFORCING selection changes (door, model) when dry
     const opts: IntelligenceOptions = { model: 'capable', attribution: { component: 'TotallyUnknownThing' } };
     const out = await router.evaluate('p', opts);
     expect(out).toBe('claude-default');
-    expect(defaultProvider.calls[0]).toBe(opts); // SAME options object — nothing rewritten for an unmapped call
+    // Selection un-rewritten for an unmapped call (identity replaced by the always-on
+    // correlation-spine clone — llm-decision-quality-meter §5.1; content is what's pinned).
+    expect(defaultProvider.calls[0]?.model).toBe('capable');
+    expect(defaultProvider.calls[0]?.attribution).toBe(opts.attribution);
   });
 
   it('dryRun:true still OBSERVES only — enforcing changes NOTHING (byte-identical selection)', async () => {
@@ -458,7 +471,9 @@ describe('evaluate() — A2.2 ENFORCING selection changes (door, model) when dry
     const out = await router.evaluate('p', opts);
     expect(out).toBe('claude-default'); // UNCHANGED — codex NOT used in dryRun
     expect(codex.calls).toHaveLength(0);
-    expect(defaultProvider.calls[0]).toBe(opts); // SAME options object
+    // Selection un-rewritten (identity replaced by the always-on correlation-spine clone).
+    expect(defaultProvider.calls[0]?.model).toBe('capable');
+    expect(defaultProvider.calls[0]?.attribution).toBe(opts.attribution);
     expect((onPlan.mock.calls[0][0] as NatureRoutePlan).resolution?.outcome).toBe('route'); // …but observed
   });
 });
@@ -582,7 +597,10 @@ describe('FD4.3 is BYTE-IDENTICAL when nature-routing is OFF (the validator neve
     const opts: IntelligenceOptions = { model: 'capable', attribution: { component: 'MessagingToneGate' } };
     const out = await router.evaluate('p', opts);
     expect(out).toBe('claude');
-    expect(defaultProvider.calls[0]).toBe(opts); // SAME object — nothing merged, validated, or rewritten
+    // Selection un-rewritten — nothing merged, validated, or rewritten (identity
+    // replaced by the always-on correlation-spine clone, llm-decision-quality-meter §5.1).
+    expect(defaultProvider.calls[0]?.model).toBe('capable');
+    expect(defaultProvider.calls[0]?.attribution).toBe(opts.attribution);
     expect(onPlan).not.toHaveBeenCalled();
   });
 });

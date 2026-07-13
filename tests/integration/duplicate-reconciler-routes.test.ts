@@ -153,7 +153,11 @@ describe('ownership-gated-spawn routes (integration)', () => {
     it('GET /judgment-provenance → 503 when the log is absent', async () => {
       const res = await request(app).get('/judgment-provenance').set(auth());
       expect(res.status).toBe(503);
-      expect(res.body.error).toContain('not constructed');
+      // FD9 (llm-decision-quality-meter §5.7): construction is unconditional at
+      // boot, so the 503 text names the only remaining cause — a failed boot
+      // construction — never "single-machine / pool dark".
+      expect(res.body.error).toContain('judgment-provenance log unavailable');
+      expect(res.body.error).not.toContain('single-machine / pool dark');
     });
   });
 

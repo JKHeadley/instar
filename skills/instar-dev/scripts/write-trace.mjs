@@ -177,6 +177,39 @@ fs.mkdirSync(traceDir, { recursive: true });
 const traceFile = path.join(traceDir, `${timestamp.replace(/[:.]/g, '-')}-${slug}-${traceId}.json`);
 const toolchain = buildToolchain();
 const isTier1 = tier === 1;
+
+/**
+ * Duplicate-build guard (docs/specs/duplicate-build-guard.md §3.4): fold the
+ * build-start check's recorded verdict + disposition (the worktree stub at
+ * .instar/dup-build-check.json, written by scripts/lib/duplicate-build-check.mjs
+ * and/or the build-start PreToolUse gate) into the trace as the
+ * `duplicateBuildCheck` field the precommit PRESENCE backstop looks for.
+ * Fail-open: a missing/unreadable stub simply omits the field — the backstop
+ * (not this writer) decides what that means for the commit.
+ */
+function readDuplicateBuildCheck() {
+  try {
+    const stubPath = path.join(ROOT, '.instar', 'dup-build-check.json');
+    if (!fs.existsSync(stubPath)) return undefined;
+    const stub = JSON.parse(fs.readFileSync(stubPath, 'utf8'));
+    if (!stub || typeof stub.verdict !== 'string') return undefined;
+    const d = stub.disposition && typeof stub.disposition === 'object' ? stub.disposition : {};
+    return {
+      verdict: stub.verdict,
+      cause: stub.cause ?? null,
+      ...(Array.isArray(stub.causes) ? { causes: stub.causes } : {}),
+      decision: d.decision ?? null,
+      reason: d.reason ?? null,
+      acknowledgedEvidenceIds: Array.isArray(d.acknowledgedEvidenceIds) ? d.acknowledgedEvidenceIds : [],
+      ...(stub.checkedAt ? { checkedAt: stub.checkedAt } : {}),
+      ...(stub.specSlug ? { specSlug: stub.specSlug } : {}),
+    };
+  } catch {
+    return undefined; // fail-open: never block trace-writing on the guard
+  }
+}
+const duplicateBuildCheck = readDuplicateBuildCheck();
+
 const trace = {
   version: toolchain ? 3 : 2, // v3 only when enriched; readers ignore unknown fields either way
   sessionId: process.env.INSTAR_SESSION_ID || process.env.CLAUDE_CODE_SESSION_ID || 'unknown',
@@ -196,6 +229,9 @@ const trace = {
   secondPass,
   reviewerConcurred,
   ...(toolchain ? { toolchain } : {}),
+  // Duplicate-build guard §3.4 — omitted when no stub exists so pre-guard
+  // traces round-trip byte-identically.
+  ...(duplicateBuildCheck ? { duplicateBuildCheck } : {}),
 };
 
 fs.writeFileSync(traceFile, JSON.stringify(trace, null, 2) + '\n');

@@ -39,6 +39,14 @@ import type { KillFunnelDeps } from './ExternalHogKillFunnel.js';
 import type { CoalesceResult } from './ExternalHogNoticeCoalescer.js';
 import { externalHogEffectiveState } from './ExternalHogGuardStatus.js';
 import type { GuardEffectiveState } from './guardPostureView.js';
+import {
+  buildScanEvidenceView,
+  EXTERNAL_HOG_SENTINEL_COMPONENT,
+  HOG_ENACTED_DISPOSITION_RULE_ID,
+  type ExternalHogDecisionStore,
+  type HogGradeEvent,
+} from './ExternalHogDecisionStore.js';
+import type { DecisionProvenanceBlock } from '../core/decisionQualityTypes.js';
 
 /** The real-I/O seam. Every method is injected so the shell is fully testable with fakes. */
 export interface ExternalHogAdapters {
@@ -51,8 +59,10 @@ export interface ExternalHogAdapters {
   factsFor(candidate: Candidate, table: readonly ProcTableRow[]): ExternalHogFacts | null | Promise<ExternalHogFacts | null>;
   /** command-hash + ledger key + class for a candidate; null if not a killable allowlist class. */
   identityFor(candidate: Candidate, facts: ExternalHogFacts): { commandHash: string; ledgerKey: string; classId: string } | null;
-  /** The classifier (LlmQueue). Raw model output, or null when the decider is unavailable. */
-  classify(facts: ExternalHogFacts): Promise<unknown>;
+  /** The classifier (LlmQueue). Raw model output, or null when the decider is unavailable.
+   *  `provenance` is the §5.3 enrollment block (llm-decision-quality-meter) — the real adapter
+   *  threads it as `options.provenance` on the underlying intelligence.evaluate call. */
+  classify(facts: ExternalHogFacts, provenance?: DecisionProvenanceBlock): Promise<unknown>;
   /** The hardened kill-funnel I/O (re-read facts/arm, fd-probe, signal, aliveness, wait). */
   killFunnelDeps: KillFunnelDeps;
   /** Deliver the coalesced notices (attention queue / telegram). */
@@ -90,6 +100,46 @@ export interface ExternalHogStatus {
   readonly lastTickAt: number | null;
   readonly recentOutcomes: readonly ScanOutcome[];
   readonly trackedDeferrals: number;
+  /** LLM-Decision Quality Meter wiring posture (§5.3) — Observable Intelligence:
+   *  the durable-store/annotate arms are visible, never a silent skip. */
+  readonly decisionQuality: {
+    readonly storeWired: boolean;
+    readonly annotateBound: boolean;
+    readonly recordsWritten: number;
+    readonly gradeEvents: number;
+    readonly storeErrors: number;
+  };
+}
+
+// ── LLM-Decision Quality Meter — annotation seam (§5.3/§5.4) ────────────────
+
+/**
+ * One outcome annotation handed to the §5.4 chokepoint. Content-free by
+ * construction (ids, enums, numbers — pointer discipline). Rung/strength are
+ * DERIVED registry-side from `gradedBy.ruleId`, never carried here.
+ */
+export interface HogOutcomeAnnotation {
+  /** The decision join key (§5.4.1). */
+  readonly correlationId: string;
+  /** Component + ruleId — the chokepoint rejects a component that is not the
+   *  ruleId's registered owner (§5.4.2). */
+  readonly gradedBy: { readonly component: string; readonly ruleId: string };
+  readonly grade: 'right' | 'wrong' | 'unknown';
+  /** Structured, clamp-safe evidence (§5.2 ≤500-char pointer discipline);
+   *  records the effective `windowMs` for window-bounded rules (§5.4.5). */
+  readonly evidence: Record<string, unknown>;
+}
+
+/** The §5.4 chokepoint binding, or null while unbound (P6 handoff). */
+export type HogAnnotateOutcomeFn = (annotation: HogOutcomeAnnotation) => void;
+
+/** The decision-quality wiring handed to the sentinel at construction (all
+ *  optional — absent pieces degrade to honest no-ops, counted in status()). */
+export interface ExternalHogDecisionQualityDeps {
+  /** The durable §5.3 decision store (hydrated at ITS construction). */
+  readonly decisionStore?: ExternalHogDecisionStore;
+  /** The §5.4 annotate chokepoint, or null/absent while unbound (P6 handoff). */
+  readonly annotate?: HogAnnotateOutcomeFn | null;
 }
 
 const DEFAULT_DEFERRAL_MAP_MAX = 128;
@@ -119,11 +169,26 @@ export class ExternalHogSentinel {
   private readonly deferrals = new Map<string, number>();
   private lastTickAt: number | null = null;
   private lastOutcomes: readonly ScanOutcome[] = [];
+  /** Decision-quality counters (Observable Intelligence — visible in status()). */
+  private dqRecordsWritten = 0;
+  private dqGradeEvents = 0;
+  private dqStoreErrors = 0;
 
   constructor(
     private readonly adapters: ExternalHogAdapters,
     private readonly opts: ExternalHogRuntimeOpts,
+    /** §5.3 decision-quality wiring (optional — absent = no store writes, counted honestly). */
+    private readonly decisionQuality: ExternalHogDecisionQualityDeps = {},
   ) {}
+
+  /**
+   * The durable §5.3 decision store the P9 grading endpoint reads (window-close
+   * `hog-sustained-right-v1` over `list()`); null when the store is unwired
+   * (the grade-pass then grades nothing for the hog point — honest). Read-only.
+   */
+  decisionStoreRef(): ExternalHogDecisionStore | null {
+    return this.decisionQuality.decisionStore ?? null;
+  }
 
   /**
    * Run one scan tick. Reads the real table + owned pids (async, off-loop), then delegates the
@@ -141,7 +206,7 @@ export class ExternalHogSentinel {
       buildOwnership: () => ({ tree, owned }),
       factsFor: (c) => this.adapters.factsFor(c, table),
       identityFor: (c, f) => this.adapters.identityFor(c, f),
-      classify: (f) => this.adapters.classify(f),
+      classify: (f, p) => this.adapters.classify(f, p),
       killFunnelDeps: this.adapters.killFunnelDeps,
       nowMs: () => this.adapters.nowMs(),
       deferralsFor: (key) => this.deferrals.get(key) ?? 0,
@@ -153,9 +218,74 @@ export class ExternalHogSentinel {
     this.lastOutcomes = result.outcomes.slice(-16);
     this.lastTickAt = this.adapters.nowMs();
 
+    this.recordDecisions(result.outcomes, table);
     this.adapters.deliverNotices(result.notices);
     this.emitAudit(result.outcomes);
     return result;
+  }
+
+  /**
+   * Persist this tick's decisions into the durable §5.3 store and route the resulting
+   * annotations. The store's `record()` runs grade-on-supersede — the positive-evidence
+   * rules (respawn-wrong / leave-recurrence) fire HERE, because every fully-identified
+   * candidate produces exactly one decision write per tick, so a same-commandHash
+   * re-flag ALWAYS arrives as a same-ledgerKey supersede (the "scan ticks +
+   * grade-on-supersede" §5.3 paths are one funnel by construction). Window-close
+   * grading (hog-sustained-right-v1) belongs to the P9 grading job reading the store.
+   * Never throws into the tick; failures are counted, never silent (status()).
+   */
+  private recordDecisions(outcomes: readonly ScanOutcome[], table: readonly ProcTableRow[]): void {
+    const store = this.decisionQuality.decisionStore;
+    if (!store || outcomes.length === 0) return;
+    const scan = buildScanEvidenceView(outcomes, table);
+    const events: HogGradeEvent[] = [];
+    for (const o of outcomes) {
+      try {
+        events.push(...store.record(o.decision, scan));
+        this.dqRecordsWritten++;
+      } catch {
+        // @silent-fallback-ok: NOT silent — counted in dqStoreErrors and surfaced on
+        // status().decisionQuality; a persist failure (disk full/perms) must never
+        // break the scan tick it observes. The decision then ages out `unknown`.
+        this.dqStoreErrors++;
+      }
+    }
+    this.dqGradeEvents += events.length;
+
+    // §5.3 immediate enacted-disposition self-report (rung self-report, rule
+    // hog-enacted-disposition-v1) + the positive-evidence grade annotations.
+    // The annotate seam is the §5.4 chokepoint binding; while unbound (P6
+    // handoff) the store still carries everything a later grading pass needs.
+    const annotate = this.decisionQuality.annotate;
+    if (!annotate) return;
+    for (const o of outcomes) {
+      if (!o.decision.correlationId) continue; // never fabricate a join key
+      this.safeAnnotate(annotate, {
+        correlationId: o.decision.correlationId,
+        gradedBy: { component: EXTERNAL_HOG_SENTINEL_COMPONENT, ruleId: HOG_ENACTED_DISPOSITION_RULE_ID },
+        grade: 'unknown', // a self-report records WHAT WAS ENACTED, never correctness
+        evidence: { kind: 'hog-enacted-disposition', enacted: o.enacted, classId: o.classId },
+      });
+    }
+    for (const ev of events) {
+      if (!ev.correlationId) continue;
+      this.safeAnnotate(annotate, {
+        correlationId: ev.correlationId,
+        gradedBy: { component: EXTERNAL_HOG_SENTINEL_COMPONENT, ruleId: ev.ruleId },
+        grade: ev.grade,
+        evidence: { kind: 'hog-evidence', windowMs: ev.windowMs, note: ev.evidenceNote },
+      });
+    }
+  }
+
+  private safeAnnotate(annotate: HogAnnotateOutcomeFn, annotation: HogOutcomeAnnotation): void {
+    try {
+      annotate(annotation);
+    } catch {
+      // @silent-fallback-ok: an annotation write failure must never propagate into the
+      // scan tick it observes; the decision then honestly ages out `unknown` (§5.4.6),
+      // and the chokepoint counts its own rejections.
+    }
   }
 
   /**
@@ -191,6 +321,13 @@ export class ExternalHogSentinel {
       lastTickAt: this.lastTickAt,
       recentOutcomes: this.lastOutcomes,
       trackedDeferrals: this.deferrals.size,
+      decisionQuality: {
+        storeWired: !!this.decisionQuality.decisionStore,
+        annotateBound: !!this.decisionQuality.annotate,
+        recordsWritten: this.dqRecordsWritten,
+        gradeEvents: this.dqGradeEvents,
+        storeErrors: this.dqStoreErrors,
+      },
     };
   }
 
@@ -227,3 +364,36 @@ export class ExternalHogSentinel {
     }
   }
 }
+
+// ── TODO(P6-handoff): production chokepoint binding — SINGLE handoff point ──
+// The hardened §5.4 annotate chokepoint (correlationId keying + registry-
+// derived rung + owner rejection; DecisionQualityRecorderImpl / the upgraded
+// JudgmentProvenanceLog.annotateOutcome) was built CONCURRENTLY with this
+// wiring and was not importable at P7 build time. When it lands, bind BOTH
+// decision-quality arms at the sentinel construction site
+// (commands/server.ts, the `new ExternalHogSentinel(...)` call) — passing
+// EXACTLY:
+//
+//   new ExternalHogSentinel(ehAdapters, { ...opts }, {
+//     decisionStore: new ExternalHogDecisionStore({
+//       stateDir: config.stateDir,
+//       config,                                  // reads provenance.quality.{evidenceWindowHours,gradingSlackHours}
+//       killLedgerBreakerWindowMs: 3_600_000,    // MUST equal opts.breaker.windowMs (§5.3 retention derivation)
+//     }),
+//     annotate: (a) => decisionQualityRecorder.annotateOutcome({
+//       correlationId: a.correlationId,          // §5.4.1 keying
+//       gradedBy: a.gradedBy,                    // { component: 'ExternalHogSentinel', ruleId: 'hog-…-v1' }
+//       grade: a.grade,                          // enacted self-reports are 'unknown' + evidence.enacted
+//       evidence: a.evidence,                    // structured, content-free (§5.2 clamp discipline)
+//     }),
+//   });
+//
+// ALSO required at the same site: the ServerPrimitiveDeps.evaluate lambda must
+// forward the provenance block into the intelligence options —
+//   evaluate: (prompt, provenance) => sharedIntelligence.evaluate(prompt, {
+//     model: 'fast',
+//     attribution: { component: 'ExternalHogClassifier' },   // must stay 1:1 with the census key
+//     ...(provenance ? { provenance } : {}),
+//   }),
+// Until both land, `decisionQuality` stays {} → the sentinel counts the
+// unwired arms honestly in status() and never fabricates a grade.

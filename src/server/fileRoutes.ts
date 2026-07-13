@@ -98,7 +98,16 @@ export const NEVER_SERVED_PREFIXES = [
   // Judgment-call provenance rows: full decision context, machine-local only
   // (0700/0600, gitignored, backup-excluded). The HTTP read surface for this
   // data is GET /judgment-provenance (redacted rows only) — never the files.
+  // DUAL-ROOT (llm-decision-quality-meter spec §5.3, SEC r4): this list matches
+  // PROJECTDIR-relative paths while the log lives under <projectDir>/.instar/
+  // state/ (stateDir), so the bare 'state/' literal never matches a production
+  // path — it stays only as a legacy-layout regression pin.
   'state/judgment-provenance/',
+  '.instar/state/judgment-provenance/',
+  // External-hog decision store: grading GROUND TRUTH (llm-decision-quality-
+  // meter spec §5.3) — the dashboard file editor must not read or rewrite it
+  // (serve-deny implies edit-deny via isNeverEditable).
+  '.instar/state/external-hog-decisions.json',
 ];
 
 export function isNeverServed(relativePath: string): boolean {

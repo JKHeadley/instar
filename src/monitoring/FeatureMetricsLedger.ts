@@ -16,6 +16,14 @@
  *
  * The per-feature key is the existing IntelligenceOptions.attribution.component
  * tag (e.g. "MessagingToneGate"); calls without one bucket under "unlabeled".
+ *
+ * Also owns the decision-quality substrate (llm-decision-quality-meter §5.5):
+ * the `decision_quality` / `decision_outcomes` / `decision_quality_rollup` /
+ * `decision_grading_cursor` tables plus the CANONICAL winning-grade derivation
+ * (the `decision_winning_grade` SQL view — the ONE place §5.4's precedence +
+ * within-rung rules live; both the read route and the rollup recompute consume
+ * it). Same posture as the metrics rows: synchronous WAL writes in isolated
+ * try/catch that NEVER throw into a caller, injected now() everywhere.
  */
 
 import * as fs from 'node:fs';
@@ -178,6 +186,135 @@ export interface SpendTokenBucket {
   tokensCached: number;
 }
 
+/* ------------------------------------------------------------------------ *
+ * Decision-quality substrate types (llm-decision-quality-meter §5.5)
+ * ------------------------------------------------------------------------ */
+
+/** FD3: the bounded grade action space. `expired` is derived at READ, never written. */
+export type DecisionGrade = 'right' | 'wrong' | 'unknown';
+
+/** §5.4.2 — the grading ladder rung a registered evidence rule belongs to. */
+export type GradingRung =
+  | 'deterministic-ground-truth'
+  | 'recurrence'
+  | 'llm-interpreter'
+  | 'self-report';
+
+/** §5.4.2 — evidence-strength class (proof-like vs heuristic are never conflated). */
+export type EvidenceStrength =
+  | 'deterministic-proof'
+  | 'negative-evidence'
+  | 'recurrence-proxy'
+  | 'self-report';
+
+/**
+ * One settled ENROLLED decision (§5.5 `decision_quality` — ~250B content-free
+ * row, written by the router-settlement path for EVERY enrolled settlement
+ * REGARDLESS of volume class; the volume valve governs the provenance JSONL
+ * row only). All label fields are clamped content-free labels.
+ */
+export interface DecisionQualityRecord {
+  /** The §5.1 correlation id (`d-<machineId8>-<uuid>`); the write-once key. */
+  correlationId: string;
+  /** Census decision-point id (§5.6). */
+  decisionPoint: string;
+  /** attribution.component label (the census 1:1 enrollment-key convention). */
+  feature?: string;
+  /** Bounded §5.2 verdict class label. */
+  verdictClass?: string;
+  /** Who minted the id ('router' | 'breaker-floor' …) — mintedBy honesty. */
+  mintedBy?: string;
+  /** Census volume class ('full' | 'sampled:<rate>' | 'budget:<rows/day>'). */
+  volumeClass?: string;
+  /** 'metadata' | 'content-bearing'. */
+  contentClass?: string;
+  /** 8-char machine-id segment of the correlation id; nullable. */
+  machineId?: string;
+  model?: string;
+  framework?: string;
+  promptId?: string;
+  /** Defaults to now(). The rollup bucket is THIS ts's UTC day. */
+  ts?: number;
+}
+
+/**
+ * One outcome annotation upsert (§5.5 `decision_outcomes`). The write key is
+ * correlationId × gradedBy (§5.4.4 — a re-run supersedes its own prior grade,
+ * never multiplies). Rung/strength arrive DERIVED from the ruleId registry at
+ * the annotate chokepoint — this substrate stores them and enum-guards the
+ * closed sets; registry/owner rejection-counting is the chokepoint's job.
+ */
+export interface DecisionOutcomeUpsert {
+  correlationId: string;
+  /** The grading COMPONENT (the ruleId's registered owner). */
+  gradedBy: string;
+  /** Immutable, versioned evidence-rule id (e.g. 'hog-respawn-wrong-v1'). */
+  ruleId: string;
+  rung: GradingRung;
+  evidenceStrength: EvidenceStrength;
+  grade: DecisionGrade;
+  /** Effective rule window recorded per outcome (§5.4.5 — semantics never mix silently). */
+  effectiveWindowMs?: number;
+  /** ≤500 scrubbed chars; NEVER served by /decision-quality. */
+  evidenceNote?: string;
+  /**
+   * Orphan attribution hint (FD10): when no decision_quality parent exists on
+   * THIS machine, the orphan counter is bucketed under this decision point.
+   */
+  decisionPoint?: string;
+  /** Defaults to now(). */
+  ts?: number;
+}
+
+export interface OutcomeUpsertResult {
+  /** True = the outcome row landed (orphan or not). */
+  applied: boolean;
+  /** True = no decision_quality parent on this machine (counted, never an error). */
+  orphan: boolean;
+  reason?: 'closed' | 'missing-key' | 'invalid-grade' | 'invalid-rung' | 'write-failed';
+}
+
+/** One row of the canonical winning-grade derivation (the `decision_winning_grade` view). */
+export interface WinningGrade {
+  correlationId: string;
+  grade: DecisionGrade;
+  rung: GradingRung;
+  evidenceStrength: string;
+  ruleId: string;
+  gradedBy: string;
+}
+
+/**
+ * One `decision_quality_rollup` bucket: decision_point × UTC day (the
+ * DECISION's day) × winning-grade counts + the event counters. `expired` is
+ * NOT a column — it is derived at read.
+ */
+export interface DecisionQualityRollupRow {
+  decisionPoint: string;
+  /** 'YYYY-MM-DD' UTC (the spend_token_rollup convention). */
+  day: string;
+  dayStartMs: number;
+  right: number;
+  wrong: number;
+  unknown: number;
+  orphanOutcomes: number;
+  joinMiss: number;
+  droppedByBudget: number;
+}
+
+/** The grading job's durable per-decision-point cursor (§5.5). */
+export interface GradingCursor {
+  decisionPoint: string;
+  /** Keyset boundary: last graded (ts, correlation_id) compound position. */
+  cursorTs: number;
+  cursorCorrelationId: string;
+  /** P19 recheck backoff: earliest next re-evaluation; null = no backoff armed. */
+  nextRecheckTs: number | null;
+  attempts: number;
+  /** Last cursor write (injected clock) — the staleness key for cursor pruning. */
+  updatedAt: number;
+}
+
 /**
  * Per-framework usage-reporting coverage (the drift tripwire's durable
  * surface). Denominator = SUCCESSFUL llm rows only (fired + noop) — error
@@ -285,6 +422,102 @@ const SCHEMA = [
      PRIMARY KEY (day, door, model_id)
    )`,
   `CREATE INDEX IF NOT EXISTS idx_spend_token_rollup_day ON spend_token_rollup (day)`,
+  // ---- Decision-quality substrate (llm-decision-quality-meter §5.5) ----
+  // One ~250B content-free row per settled ENROLLED decision, written for EVERY
+  // enrolled settlement regardless of volume class (the volume valve governs the
+  // provenance JSONL row only) — so outcome rows always have parents and counts
+  // are complete. recheck_count/next_recheck_ts carry the per-decision
+  // unknown-regrade backoff state (§5.4.6, DC r3).
+  `CREATE TABLE IF NOT EXISTS decision_quality (
+     correlation_id  TEXT PRIMARY KEY,
+     decision_point  TEXT NOT NULL,
+     feature         TEXT,
+     ts              INTEGER NOT NULL,
+     verdict_class   TEXT,
+     minted_by       TEXT,
+     volume_class    TEXT,
+     content_class   TEXT,
+     machine_id      TEXT,
+     model           TEXT,
+     framework       TEXT,
+     prompt_id       TEXT,
+     recheck_count   INTEGER NOT NULL DEFAULT 0,
+     next_recheck_ts INTEGER
+   )`,
+  // Covering index for the read surface + grading keyset walk (point, ts,
+  // correlation_id); a plain ts index carries the retention prune.
+  `CREATE INDEX IF NOT EXISTS idx_decision_quality_point_ts ON decision_quality (decision_point, ts, correlation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_decision_quality_ts ON decision_quality (ts)`,
+  // Outcome annotations (§5.4): upsert key = (correlation_id, graded_by) — a
+  // grader supersedes its own prior grade, never multiplies. evidence_note is
+  // ≤500 scrubbed chars and NEVER served by /decision-quality.
+  `CREATE TABLE IF NOT EXISTS decision_outcomes (
+     correlation_id      TEXT NOT NULL,
+     graded_by           TEXT NOT NULL,
+     rule_id             TEXT NOT NULL,
+     rung                TEXT NOT NULL,
+     evidence_strength   TEXT NOT NULL,
+     grade               TEXT NOT NULL,
+     effective_window_ms INTEGER,
+     evidence_note       TEXT,
+     ts                  INTEGER NOT NULL,
+     UNIQUE (correlation_id, graded_by)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_decision_outcomes_ts ON decision_outcomes (ts)`,
+  // Content-free daily aggregate: decision_point × the DECISION's UTC day ×
+  // winning-grade counts + event counters. Grades are MUTABLE facts (unlike the
+  // spend rollup's immutable increments): each outcome upsert RECOMPUTES its
+  // affected bucket from decision_quality ⋈ decision_winning_grade. 'expired'
+  // is NOT a column — derived at read.
+  `CREATE TABLE IF NOT EXISTS decision_quality_rollup (
+     decision_point    TEXT NOT NULL,
+     day               TEXT NOT NULL,
+     right_count       INTEGER NOT NULL DEFAULT 0,
+     wrong_count       INTEGER NOT NULL DEFAULT 0,
+     unknown_count     INTEGER NOT NULL DEFAULT 0,
+     orphan_outcomes   INTEGER NOT NULL DEFAULT 0,
+     join_miss         INTEGER NOT NULL DEFAULT 0,
+     dropped_by_budget INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (decision_point, day)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_decision_quality_rollup_day ON decision_quality_rollup (day)`,
+  // The grading job's durable per-decision-point keyset cursor (§5.5 — a table,
+  // not an implicit "fourth thing"), + the per-point P19 recheck backoff.
+  `CREATE TABLE IF NOT EXISTS decision_grading_cursor (
+     decision_point        TEXT PRIMARY KEY,
+     cursor_ts             INTEGER NOT NULL DEFAULT 0,
+     cursor_correlation_id TEXT NOT NULL DEFAULT '',
+     next_recheck_ts       INTEGER,
+     attempts              INTEGER NOT NULL DEFAULT 0,
+     updated_at            INTEGER NOT NULL DEFAULT 0
+   )`,
+  // THE CANONICAL WINNING-GRADE DERIVATION (§5.5, codex r7 — defined ONCE).
+  // Precedence: deterministic-ground-truth > recurrence > llm-interpreter >
+  // self-report (a self-report NEVER overrides an independent grader); within
+  // a rung, conservative: wrong > unknown > right. Deterministic tie-break
+  // (ts DESC, graded_by ASC) affects only WHICH row reports the grade, never
+  // the grade itself. Both the /decision-quality reads AND the rollup
+  // recompute consume THIS view — a parallel reimplementation of precedence
+  // is a correctness bug by construction.
+  `CREATE VIEW IF NOT EXISTS decision_winning_grade AS
+     SELECT correlation_id, grade, rung, evidence_strength, rule_id, graded_by
+       FROM (
+         SELECT o.*, ROW_NUMBER() OVER (
+           PARTITION BY o.correlation_id
+           ORDER BY
+             CASE o.rung
+               WHEN 'deterministic-ground-truth' THEN 0
+               WHEN 'recurrence'                 THEN 1
+               WHEN 'llm-interpreter'            THEN 2
+               WHEN 'self-report'                THEN 3
+               ELSE 4 END ASC,
+             CASE o.grade WHEN 'wrong' THEN 0 WHEN 'unknown' THEN 1 WHEN 'right' THEN 2 ELSE 3 END ASC,
+             o.ts DESC,
+             o.graded_by ASC
+         ) AS rn
+         FROM decision_outcomes o
+       )
+      WHERE rn = 1`,
 ];
 
 /**
@@ -307,6 +540,39 @@ const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
 
 /** Batch ceiling for the retention prune (scal-F4): SQLite-portable bounded DELETE. */
 const PRUNE_BATCH = 5000;
+
+/** FD3 grade enum — validated at the substrate write (invalid → refused, never stored). */
+const QUALITY_GRADES: ReadonlySet<string> = new Set(['right', 'wrong', 'unknown']);
+
+/** §5.4.2 rung enum — the closed set the canonical view's precedence CASE knows. */
+const GRADING_RUNGS: ReadonlySet<string> = new Set([
+  'deterministic-ground-truth',
+  'recurrence',
+  'llm-interpreter',
+  'self-report',
+]);
+
+/**
+ * Rollup event-counter columns (closed map — counter names never interpolate
+ * user input into SQL). These are EVENT counters, not derivable from the
+ * decisions⋈outcomes join, so the bucket recompute/reconcile preserves them.
+ */
+const QUALITY_COUNTER_COLUMNS: Record<'orphanOutcomes' | 'joinMiss' | 'droppedByBudget', string> = {
+  orphanOutcomes: 'orphan_outcomes',
+  joinMiss: 'join_miss',
+  droppedByBudget: 'dropped_by_budget',
+};
+
+/** Outcome evidence-note hard bound (§5.5 — ≤500 scrubbed chars, never served). */
+const EVIDENCE_NOTE_MAX = 500;
+
+/** Content-free label clamp: trimmed + bounded; null when absent/empty. */
+function clampLabel(v: string | undefined | null, max = 128): string | null {
+  if (v === undefined || v === null) return null;
+  const t = String(v).trim();
+  if (!t) return null;
+  return t.length > max ? t.slice(0, max) : t;
+}
 
 /** UTC day key 'YYYY-MM-DD' for a timestamp (the daily-rollup bucket key). */
 function dayKey(ms: number): string {
@@ -332,8 +598,12 @@ export class FeatureMetricsLedger {
   private now: () => number;
   private insertStmt!: ReturnType<BetterSqliteDatabase['prepare']>;
   private rollupUpsertStmt: ReturnType<BetterSqliteDatabase['prepare']> | null = null;
+  /** Quality substrate (§5.5): null = the substrate failed to prepare; writes no-op. */
+  private decisionInsertStmt: ReturnType<BetterSqliteDatabase['prepare']> | null = null;
+  private outcomeUpsertStmt: ReturnType<BetterSqliteDatabase['prepare']> | null = null;
   private readonly maintainSpendRollup: boolean;
   private lastRollupReconcileMs: number | null = null;
+  private lastQualityReconcileMsValue: number | null = null;
   private closed = false;
 
   constructor(opts: FeatureMetricsLedgerOptions) {
@@ -352,6 +622,18 @@ export class FeatureMetricsLedger {
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) this.db.exec(ddl);
     this.ensureAddedColumns();
+    // Partial index for the quality join (feature_metrics.verdict_id → correlation
+    // id, §5.5). Guarded separately from the SCHEMA loop: verdict_id shipped in the
+    // original CREATE (it is NOT in ADDED_COLUMNS), but an index-create failure on
+    // an exotic old DB must degrade (slower join) rather than brick the open path.
+    try {
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_feature_metrics_verdict_id
+           ON feature_metrics (verdict_id) WHERE verdict_id IS NOT NULL`,
+      );
+    } catch {
+      // @silent-fallback-ok: the partial index is a read-path optimization only.
+    }
     // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
     registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
@@ -379,6 +661,40 @@ export class FeatureMetricsLedger {
         // — it must never break the primary metrics insert path this store exists for.
         this.rollupUpsertStmt = null;
       }
+    }
+    // Quality substrate (llm-decision-quality-meter §5.5): prepared writes + the
+    // bounded BOOT reconcile (mirrors reconcileSpendRollup's boot arm; the PERIODIC
+    // arm rides AgentServer's boot+6h prune timer — both are the same idempotent
+    // fold). Not option-gated: the tables always exist here and the fold is a cheap
+    // indexed no-op on an agent with no enrolled decisions. Isolated try/catch — a
+    // quality-substrate failure degrades quality writes to no-ops and must never
+    // break the primary metrics insert path.
+    try {
+      this.decisionInsertStmt = this.db.prepare(
+        `INSERT OR IGNORE INTO decision_quality
+           (correlation_id, decision_point, feature, ts, verdict_class, minted_by, volume_class, content_class, machine_id, model, framework, prompt_id)
+         VALUES (@correlationId, @decisionPoint, @feature, @ts, @verdictClass, @mintedBy, @volumeClass, @contentClass, @machineId, @model, @framework, @promptId)`,
+      );
+      this.outcomeUpsertStmt = this.db.prepare(
+        `INSERT INTO decision_outcomes
+           (correlation_id, graded_by, rule_id, rung, evidence_strength, grade, effective_window_ms, evidence_note, ts)
+         VALUES (@correlationId, @gradedBy, @ruleId, @rung, @evidenceStrength, @grade, @effectiveWindowMs, @evidenceNote, @ts)
+         ON CONFLICT(correlation_id, graded_by) DO UPDATE SET
+           rule_id             = excluded.rule_id,
+           rung                = excluded.rung,
+           evidence_strength   = excluded.evidence_strength,
+           grade               = excluded.grade,
+           effective_window_ms = excluded.effective_window_ms,
+           evidence_note       = excluded.evidence_note,
+           ts                  = excluded.ts`,
+      );
+      this.reconcileQualityRollup(30);
+    } catch {
+      // @silent-fallback-ok: the quality substrate is observability. A prepare
+      // failure leaves recordDecision/upsertOutcome as no-ops (the quality view
+      // degrades to what it can read) — never the primary insert path's problem.
+      this.decisionInsertStmt = null;
+      this.outcomeUpsertStmt = null;
     }
   }
 
@@ -947,6 +1263,616 @@ export class FeatureMetricsLedger {
       // @silent-fallback-ok: a read-only reporting query — degrade to an empty result
       // (the spend view shows no hourly rows) rather than throw into the read path.
       return [];
+    }
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * Decision-quality substrate (llm-decision-quality-meter §5.5)
+   * ---------------------------------------------------------------------- */
+
+  /**
+   * Record one settled ENROLLED decision (the router-settlement write). Write-
+   * once per correlation id (INSERT OR IGNORE — the first settlement wins; a
+   * duplicate settle is a no-op, never a rewrite). Synchronous WAL insert in an
+   * isolated try/catch — NEVER throws into the decision path (the record()
+   * posture), strictly ≤1 per settled decision.
+   */
+  recordDecision(rec: DecisionQualityRecord): void {
+    if (this.closed || !this.decisionInsertStmt) return;
+    const correlationId = clampLabel(rec.correlationId, 128);
+    const decisionPoint = clampLabel(rec.decisionPoint, 128);
+    if (!correlationId || !decisionPoint) return; // keyless row = unjoinable noise
+    try {
+      this.decisionInsertStmt.run({
+        correlationId,
+        decisionPoint,
+        feature: clampLabel(rec.feature),
+        ts: rec.ts ?? this.now(),
+        verdictClass: clampLabel(rec.verdictClass),
+        mintedBy: clampLabel(rec.mintedBy),
+        volumeClass: clampLabel(rec.volumeClass),
+        contentClass: clampLabel(rec.contentClass),
+        machineId: clampLabel(rec.machineId, 32),
+        model: clampLabel(rec.model),
+        framework: clampLabel(rec.framework),
+        promptId: clampLabel(rec.promptId),
+      });
+    } catch {
+      // @silent-fallback-ok: observability must never break the path it observes;
+      // a dropped decision row surfaces as joinMiss on the read surface, not a throw.
+    }
+  }
+
+  /**
+   * Indexed COUNT of decision_quality rows for a point since `sinceMs` — the
+   * `budget:<rows/day>` volume-class enforcement read (§5.6: UTC-day window,
+   * restart-safe, no new state; rides idx_decision_quality_point_ts). Returns
+   * null when the count cannot be produced (closed / substrate degraded) —
+   * the caller decides the fail direction, honestly, rather than trusting a
+   * fabricated 0.
+   */
+  countDecisionsSince(decisionPoint: string, sinceMs: number): number | null {
+    if (this.closed || !this.decisionInsertStmt) return null;
+    try {
+      const row = this.db
+        .prepare(`SELECT COUNT(*) AS n FROM decision_quality WHERE decision_point = ? AND ts >= ?`)
+        .get(decisionPoint, sinceMs) as { n: number } | undefined;
+      return Number(row?.n) || 0;
+    } catch {
+      // @silent-fallback-ok: a failed budget count degrades to null — the seam
+      // treats it as "budget unverifiable" and writes (observability must not
+      // starve a decision class on a transient read failure).
+      return null;
+    }
+  }
+
+  /**
+   * Upsert one outcome annotation (§5.4.4: key = correlationId × gradedBy — a
+   * re-run supersedes its own prior grade, never multiplies), then RECOMPUTE
+   * the affected (decision_point, decision-UTC-day) rollup bucket from
+   * decision_quality ⋈ decision_winning_grade (§5.5 reference implementation —
+   * bounded, self-healing; a grade flip decrements the old bucket column and
+   * increments the new one by construction). An outcome with no local parent
+   * row is an ORPHAN (FD10 cross-machine honesty): stored + counted under the
+   * caller's decisionPoint hint, never an error and never a graded decision.
+   * Never throws into the caller.
+   */
+  upsertOutcome(o: DecisionOutcomeUpsert): OutcomeUpsertResult {
+    if (this.closed || !this.outcomeUpsertStmt) return { applied: false, orphan: false, reason: 'closed' };
+    const correlationId = clampLabel(o.correlationId, 128);
+    const gradedBy = clampLabel(o.gradedBy, 128);
+    const ruleId = clampLabel(o.ruleId, 128);
+    if (!correlationId || !gradedBy || !ruleId) return { applied: false, orphan: false, reason: 'missing-key' };
+    if (!QUALITY_GRADES.has(o.grade)) return { applied: false, orphan: false, reason: 'invalid-grade' };
+    if (!GRADING_RUNGS.has(o.rung)) return { applied: false, orphan: false, reason: 'invalid-rung' };
+    const ts = o.ts ?? this.now();
+    try {
+      const tx = this.db.transaction((): OutcomeUpsertResult => {
+        this.outcomeUpsertStmt!.run({
+          correlationId,
+          gradedBy,
+          ruleId,
+          rung: o.rung,
+          evidenceStrength: clampLabel(o.evidenceStrength) ?? 'self-report',
+          grade: o.grade,
+          effectiveWindowMs: o.effectiveWindowMs ?? null,
+          evidenceNote: clampLabel(o.evidenceNote, EVIDENCE_NOTE_MAX),
+          ts,
+        });
+        const parent = this.db
+          .prepare(`SELECT decision_point AS decisionPoint, ts FROM decision_quality WHERE correlation_id = ?`)
+          .get(correlationId) as { decisionPoint: string; ts: number } | undefined;
+        if (!parent) {
+          this.bumpQualityCounterInTx(clampLabel(o.decisionPoint) ?? 'unknown', dayKey(ts), 'orphanOutcomes', 1);
+          return { applied: true, orphan: true };
+        }
+        // The bucket is the DECISION's UTC day (looked up from decision_quality),
+        // never the outcome's — late evidence lands in the day it grades.
+        this.recomputeQualityBucketInTx(parent.decisionPoint, dayKey(parent.ts));
+        return { applied: true, orphan: false };
+      });
+      return tx();
+    } catch {
+      // @silent-fallback-ok: a dropped upsert is repaired by the bounded reconcile
+      // from raw truth — never lost data, never a throw into the grading caller.
+      return { applied: false, orphan: false, reason: 'write-failed' };
+    }
+  }
+
+  /**
+   * Recompute ONE (decision_point, day) bucket's winning-grade counts from
+   * truth via the canonical view. Event counters (orphan/joinMiss/dropped) are
+   * preserved — they are not derivable from the join. Caller holds the tx.
+   */
+  private recomputeQualityBucketInTx(decisionPoint: string, day: string): void {
+    const start = dayStartMs(day);
+    const agg = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN w.grade='right'   THEN 1 ELSE 0 END) AS rightCount,
+           SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END) AS wrongCount,
+           SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END) AS unknownCount
+         FROM decision_quality q
+         JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
+         WHERE q.decision_point = ? AND q.ts >= ? AND q.ts < ?`,
+      )
+      .get(decisionPoint, start, start + 86_400_000) as
+      { rightCount: number | null; wrongCount: number | null; unknownCount: number | null } | undefined;
+    this.db
+      .prepare(
+        `INSERT INTO decision_quality_rollup (decision_point, day, right_count, wrong_count, unknown_count)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(decision_point, day) DO UPDATE SET
+           right_count   = excluded.right_count,
+           wrong_count   = excluded.wrong_count,
+           unknown_count = excluded.unknown_count`,
+      )
+      .run(decisionPoint, day, Number(agg?.rightCount) || 0, Number(agg?.wrongCount) || 0, Number(agg?.unknownCount) || 0);
+  }
+
+  /** In-tx counter bump (column name from the closed map — never interpolated input). */
+  private bumpQualityCounterInTx(
+    decisionPoint: string,
+    day: string,
+    counter: keyof typeof QUALITY_COUNTER_COLUMNS,
+    n: number,
+  ): void {
+    const col = QUALITY_COUNTER_COLUMNS[counter];
+    this.db
+      .prepare(
+        `INSERT INTO decision_quality_rollup (decision_point, day, ${col})
+         VALUES (?, ?, ?)
+         ON CONFLICT(decision_point, day) DO UPDATE SET ${col} = ${col} + excluded.${col}`,
+      )
+      .run(decisionPoint, day, n);
+  }
+
+  /**
+   * Increment a rollup EVENT counter (orphanOutcomes / joinMiss /
+   * droppedByBudget) for a decision point's UTC-day bucket. These counters are
+   * additive events (not recomputable from the join) and survive bucket
+   * recompute + reconcile. Never throws.
+   */
+  bumpQualityCounter(
+    decisionPoint: string,
+    counter: keyof typeof QUALITY_COUNTER_COLUMNS,
+    opts: { ts?: number; n?: number } = {},
+  ): void {
+    if (this.closed) return;
+    const point = clampLabel(decisionPoint) ?? 'unknown';
+    const n = Math.max(1, Math.floor(opts.n ?? 1));
+    try {
+      this.bumpQualityCounterInTx(point, dayKey(opts.ts ?? this.now()), counter, n);
+    } catch {
+      // @silent-fallback-ok: a dropped counter bump under-counts an event class;
+      // it must never throw into the settlement/annotation path.
+    }
+  }
+
+  /**
+   * THE canonical winning-grade read (§5.5 — the single derivation API). Reads
+   * the `decision_winning_grade` view; chunked IN-lists keep parameter counts
+   * bounded. Fail-open to [].
+   */
+  getWinningGrades(correlationIds: readonly string[]): WinningGrade[] {
+    if (this.closed || correlationIds.length === 0) return [];
+    try {
+      const out: WinningGrade[] = [];
+      for (let i = 0; i < correlationIds.length; i += 500) {
+        const chunk = correlationIds.slice(i, i + 500);
+        const rows = this.db
+          .prepare(
+            `SELECT correlation_id AS correlationId, grade, rung,
+                    evidence_strength AS evidenceStrength, rule_id AS ruleId, graded_by AS gradedBy
+               FROM decision_winning_grade
+              WHERE correlation_id IN (${chunk.map(() => '?').join(',')})`,
+          )
+          .all(...chunk) as WinningGrade[];
+        out.push(...rows);
+      }
+      return out;
+    } catch {
+      // @silent-fallback-ok: a read-only reporting query — degrade to [].
+      return [];
+    }
+  }
+
+  /**
+   * Bounded reconcile of the quality rollup's GRADE counts from raw truth
+   * (decision_quality ⋈ decision_winning_grade) over the last `days` of
+   * DECISION days — the §5.5 self-heal for a crash between the outcome upsert
+   * and its bucket recompute (and for a hand-corrupted bucket). Event counters
+   * are preserved. Idempotent fold; runs at boot (constructor) AND from the
+   * AgentServer 6h prune timer. Returns buckets written.
+   */
+  reconcileQualityRollup(days: number): number {
+    if (this.closed) return 0;
+    try {
+      const cutoffDay = dayKey(this.now() - days * 86_400_000);
+      const cutoffMs = dayStartMs(cutoffDay);
+      const tx = this.db.transaction(() => {
+        // Zero (not DELETE) the window's grade counts so event counters survive
+        // and a bucket whose underlying rows vanished is honestly zeroed.
+        this.db
+          .prepare(`UPDATE decision_quality_rollup SET right_count = 0, wrong_count = 0, unknown_count = 0 WHERE day >= ?`)
+          .run(cutoffDay);
+        const res = this.db
+          .prepare(
+            `INSERT INTO decision_quality_rollup (decision_point, day, right_count, wrong_count, unknown_count)
+             SELECT
+               q.decision_point,
+               strftime('%Y-%m-%d', q.ts/1000, 'unixepoch') AS day,
+               SUM(CASE WHEN w.grade='right'   THEN 1 ELSE 0 END),
+               SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END),
+               SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END)
+             FROM decision_quality q
+             JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
+             WHERE q.ts >= ?
+             GROUP BY q.decision_point, day
+             ON CONFLICT(decision_point, day) DO UPDATE SET
+               right_count   = excluded.right_count,
+               wrong_count   = excluded.wrong_count,
+               unknown_count = excluded.unknown_count`,
+          )
+          .run(cutoffMs);
+        return Number(res.changes ?? 0);
+      });
+      const written = tx();
+      this.lastQualityReconcileMsValue = this.now();
+      return written;
+    } catch {
+      // @silent-fallback-ok: a reconcile failure leaves the last-good rollup in
+      // place; the next boot/timer tick retries. Raw truth is never touched.
+      return 0;
+    }
+  }
+
+  /** When the quality rollup was last reconciled from raw truth (read-honesty surface). */
+  lastQualityReconcileMs(): number | null {
+    return this.lastQualityReconcileMsValue;
+  }
+
+  /** Quality rollup buckets (per decision_point × UTC day), oldest first. Fail-open to []. */
+  decisionQualityRollupDaily(opts: { sinceDays?: number; decisionPoint?: string } = {}): DecisionQualityRollupRow[] {
+    try {
+      const where: string[] = [];
+      const params: unknown[] = [];
+      if (opts.sinceDays && opts.sinceDays > 0) {
+        where.push('day >= ?');
+        params.push(dayKey(this.now() - opts.sinceDays * 86_400_000));
+      }
+      if (opts.decisionPoint) {
+        where.push('decision_point = ?');
+        params.push(opts.decisionPoint);
+      }
+      const rows = this.db
+        .prepare(
+          `SELECT decision_point AS decisionPoint, day,
+                  right_count AS rightCount, wrong_count AS wrongCount, unknown_count AS unknownCount,
+                  orphan_outcomes AS orphanOutcomes, join_miss AS joinMiss, dropped_by_budget AS droppedByBudget
+             FROM decision_quality_rollup
+             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+            ORDER BY day ASC, decision_point ASC`,
+        )
+        .all(...params) as Array<Record<string, string | number>>;
+      return rows.map((r) => ({
+        decisionPoint: String(r.decisionPoint),
+        day: String(r.day),
+        dayStartMs: dayStartMs(String(r.day)),
+        right: Number(r.rightCount) || 0,
+        wrong: Number(r.wrongCount) || 0,
+        unknown: Number(r.unknownCount) || 0,
+        orphanOutcomes: Number(r.orphanOutcomes) || 0,
+        joinMiss: Number(r.joinMiss) || 0,
+        droppedByBudget: Number(r.droppedByBudget) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: a read-only reporting query — degrade to [].
+      return [];
+    }
+  }
+
+  /**
+   * Keyset walk of `decision_quality` rows for ONE point AFTER the compound
+   * cursor `(ts, correlation_id)` — the P9 grade-pass's bounded, same-ms-safe
+   * page (§5.5: "keyset pagination ORDER BY (ts, correlation_id) with the
+   * compound cursor as the page boundary — same-ms bursts cannot skip rows").
+   * Rides idx_decision_quality_point_ts (decision_point, ts, correlation_id).
+   * Content-free: only the join key + decision ts. Fail-open to [].
+   */
+  walkDecisionsForGrading(
+    decisionPoint: string,
+    cursorTs: number,
+    cursorCorrelationId: string,
+    limit: number,
+  ): Array<{ correlationId: string; ts: number }> {
+    if (this.closed) return [];
+    const cap = Math.max(1, Math.min(10_000, Math.floor(limit) || 1));
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT correlation_id AS correlationId, ts
+             FROM decision_quality
+            WHERE decision_point = ?
+              AND (ts > ? OR (ts = ? AND correlation_id > ?))
+            ORDER BY ts ASC, correlation_id ASC
+            LIMIT ?`,
+        )
+        .all(decisionPoint, cursorTs, cursorTs, cursorCorrelationId, cap) as Array<{ correlationId: string; ts: number }>;
+      return rows.map((r) => ({ correlationId: String(r.correlationId), ts: Number(r.ts) || 0 }));
+    } catch {
+      // @silent-fallback-ok: a failed keyset read yields an empty page — the
+      // grade-pass makes no progress this run and retries next tick (never a throw).
+      return [];
+    }
+  }
+
+  /**
+   * Per-decision-point read model for GET /decision-quality (§5.5): decision
+   * COUNT + distinct attribution labels (model/framework/prompt_id) over the
+   * window. Pure indexed reads. Fail-open to [].
+   */
+  decisionPointStats(opts: { sinceHours?: number } = {}): Array<{
+    decisionPoint: string;
+    decisions: number;
+    models: string[];
+    frameworks: string[];
+    promptIds: string[];
+  }> {
+    if (this.closed) return [];
+    const sinceMs = this.sinceMsFrom(opts);
+    try {
+      const counts = this.db
+        .prepare(`SELECT decision_point AS dp, COUNT(*) AS n FROM decision_quality WHERE ts >= ? GROUP BY decision_point`)
+        .all(sinceMs) as Array<{ dp: string; n: number }>;
+      const attr = this.db
+        .prepare(
+          `SELECT DISTINCT decision_point AS dp, model, framework, prompt_id AS promptId
+             FROM decision_quality WHERE ts >= ?`,
+        )
+        .all(sinceMs) as Array<{ dp: string; model: string | null; framework: string | null; promptId: string | null }>;
+      const models = new Map<string, Set<string>>();
+      const frameworks = new Map<string, Set<string>>();
+      const prompts = new Map<string, Set<string>>();
+      const add = (m: Map<string, Set<string>>, k: string, v: string | null): void => {
+        if (!v) return;
+        const s = m.get(k) ?? new Set<string>();
+        s.add(v);
+        m.set(k, s);
+      };
+      for (const r of attr) {
+        add(models, r.dp, r.model);
+        add(frameworks, r.dp, r.framework);
+        add(prompts, r.dp, r.promptId);
+      }
+      return counts.map((c) => ({
+        decisionPoint: String(c.dp),
+        decisions: Number(c.n) || 0,
+        models: Array.from(models.get(c.dp) ?? []).sort(),
+        frameworks: Array.from(frameworks.get(c.dp) ?? []).sort(),
+        promptIds: Array.from(prompts.get(c.dp) ?? []).sort(),
+      }));
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /**
+   * Grade breakdown for GET /decision-quality (§5.5): winning grades joined to
+   * their decision point over the window, grouped by (decisionPoint, ruleId,
+   * rung, evidenceStrength, grade). The route pivots these into
+   * by-strength/by-rule/by-rung views (strength FIRST — proof-like and
+   * heuristic grades are never conflated). Consumes the CANONICAL
+   * `decision_winning_grade` view (one derivation, both consumers). Window is on
+   * the DECISION ts. Fail-open to [].
+   */
+  decisionGradeBreakdown(opts: { sinceHours?: number } = {}): Array<{
+    decisionPoint: string;
+    ruleId: string;
+    rung: string;
+    evidenceStrength: string;
+    grade: string;
+    n: number;
+  }> {
+    if (this.closed) return [];
+    const sinceMs = this.sinceMsFrom(opts);
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT q.decision_point AS decisionPoint, w.rule_id AS ruleId, w.rung,
+                  w.evidence_strength AS evidenceStrength, w.grade, COUNT(*) AS n
+             FROM decision_quality q
+             JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
+            WHERE q.ts >= ?
+            GROUP BY q.decision_point, w.rule_id, w.rung, w.evidence_strength, w.grade`,
+        )
+        .all(sinceMs) as Array<Record<string, string | number>>;
+      return rows.map((r) => ({
+        decisionPoint: String(r.decisionPoint),
+        ruleId: String(r.ruleId),
+        rung: String(r.rung),
+        evidenceStrength: String(r.evidenceStrength),
+        grade: String(r.grade),
+        n: Number(r.n) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /**
+   * Per-point count of EXPIRED decisions for GET /decision-quality (§5.5 read
+   * honesty): in-window decisions whose age exceeds `expiryCutoffMs` (the
+   * evidence-carrier horizon — beyond which no window-close grade can arrive)
+   * AND which carry NO winning grade. `expired` is derived at READ, never a
+   * stored grade. Fail-open to [].
+   */
+  countExpiredByPoint(opts: { sinceHours?: number; expiryCutoffMs: number }): Array<{ decisionPoint: string; expired: number }> {
+    if (this.closed) return [];
+    const sinceMs = this.sinceMsFrom(opts);
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT q.decision_point AS decisionPoint, COUNT(*) AS n
+             FROM decision_quality q
+             LEFT JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
+            WHERE q.ts >= ? AND q.ts < ? AND w.correlation_id IS NULL
+            GROUP BY q.decision_point`,
+        )
+        .all(sinceMs, opts.expiryCutoffMs) as Array<{ decisionPoint: string; n: number }>;
+      return rows.map((r) => ({ decisionPoint: String(r.decisionPoint), expired: Number(r.n) || 0 }));
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /** The grading job's durable per-decision-point cursor. null = no cursor yet (or read failed). */
+  getGradingCursor(decisionPoint: string): GradingCursor | null {
+    if (this.closed) return null;
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT decision_point AS decisionPoint, cursor_ts AS cursorTs,
+                  cursor_correlation_id AS cursorCorrelationId,
+                  next_recheck_ts AS nextRecheckTs, attempts, updated_at AS updatedAt
+             FROM decision_grading_cursor WHERE decision_point = ?`,
+        )
+        .get(decisionPoint) as GradingCursor | undefined;
+      return row ?? null;
+    } catch {
+      // @silent-fallback-ok: a failed cursor read makes the grading pass start
+      // from its last durable boundary next run — never a throw.
+      return null;
+    }
+  }
+
+  /**
+   * Upsert the grading cursor (keyset boundary + P19 recheck backoff).
+   * `updated_at` is stamped from the injected clock — it is the staleness key
+   * cursor pruning keys on. Never throws.
+   */
+  setGradingCursor(
+    decisionPoint: string,
+    c: { cursorTs: number; cursorCorrelationId: string; nextRecheckTs?: number | null; attempts?: number },
+  ): void {
+    if (this.closed) return;
+    const point = clampLabel(decisionPoint);
+    if (!point) return;
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO decision_grading_cursor
+             (decision_point, cursor_ts, cursor_correlation_id, next_recheck_ts, attempts, updated_at)
+           VALUES (@decisionPoint, @cursorTs, @cursorCorrelationId, @nextRecheckTs, @attempts, @updatedAt)
+           ON CONFLICT(decision_point) DO UPDATE SET
+             cursor_ts             = excluded.cursor_ts,
+             cursor_correlation_id = excluded.cursor_correlation_id,
+             next_recheck_ts       = excluded.next_recheck_ts,
+             attempts              = excluded.attempts,
+             updated_at            = excluded.updated_at`,
+        )
+        .run({
+          decisionPoint: point,
+          cursorTs: c.cursorTs,
+          cursorCorrelationId: clampLabel(c.cursorCorrelationId, 128) ?? '',
+          nextRecheckTs: c.nextRecheckTs ?? null,
+          attempts: Math.max(0, Math.floor(c.attempts ?? 0)),
+          updatedAt: this.now(),
+        });
+    } catch {
+      // @silent-fallback-ok: a dropped cursor write re-grades a page idempotently
+      // next pass (upserts converge) — never a throw into the grading job.
+    }
+  }
+
+  /**
+   * Retention prune for `decision_quality` (default horizon 90d via
+   * provenance.quality.decisionRetentionDays). PRUNE_BATCH-bounded. Fail-open.
+   */
+  pruneDecisionQuality(retentionDays: number, opts: { maxBatches?: number } = {}): number {
+    if (this.closed || retentionDays <= 0) return 0;
+    const cutoff = this.now() - retentionDays * 86_400_000;
+    return this.batchedPrune(
+      `DELETE FROM decision_quality WHERE rowid IN
+         (SELECT rowid FROM decision_quality WHERE ts < ? LIMIT ${PRUNE_BATCH})`,
+      [cutoff],
+      opts.maxBatches ?? 20,
+    );
+  }
+
+  /**
+   * Retention prune for `decision_outcomes`. Governed by the same
+   * decisionRetentionDays knob but FLOORED at 30d — grading evidence windows +
+   * slack need the outcomes to outlive the raw metrics horizon, so a
+   * mis-tuned low knob can never starve the grade join. Fail-open.
+   */
+  pruneDecisionOutcomes(retentionDays: number, opts: { maxBatches?: number } = {}): number {
+    if (this.closed || retentionDays <= 0) return 0;
+    const cutoff = this.now() - Math.max(30, retentionDays) * 86_400_000;
+    return this.batchedPrune(
+      `DELETE FROM decision_outcomes WHERE rowid IN
+         (SELECT rowid FROM decision_outcomes WHERE ts < ? LIMIT ${PRUNE_BATCH})`,
+      [cutoff],
+      opts.maxBatches ?? 20,
+    );
+  }
+
+  /**
+   * Retention prune for the quality rollup (provenance.quality.rollupRetentionDays,
+   * default 90) — day-keyed like pruneSpendRollup, batch-bounded like the rest. Fail-open.
+   */
+  pruneQualityRollup(retentionDays: number, opts: { maxBatches?: number } = {}): number {
+    if (this.closed || retentionDays <= 0) return 0;
+    const cutoffDay = dayKey(this.now() - retentionDays * 86_400_000);
+    return this.batchedPrune(
+      `DELETE FROM decision_quality_rollup WHERE rowid IN
+         (SELECT rowid FROM decision_quality_rollup WHERE day < ? LIMIT ${PRUNE_BATCH})`,
+      [cutoffDay],
+      opts.maxBatches ?? 20,
+    );
+  }
+
+  /**
+   * Cursor hygiene: a cursor row whose decision_point is REGISTERED is never
+   * pruned (pass the census's decision-point ids); an UNKNOWN point's cursor is
+   * pruned only once stale past `retentionDays` (updated_at — a live grading
+   * job re-stamps it every pass, so only a de-registered/abandoned point ages
+   * out; re-grading after a cursor loss converges idempotently). Fail-open.
+   */
+  pruneGradingCursors(
+    retentionDays: number,
+    opts: { registeredDecisionPoints?: readonly string[]; maxBatches?: number } = {},
+  ): number {
+    if (this.closed || retentionDays <= 0) return 0;
+    const cutoff = this.now() - retentionDays * 86_400_000;
+    const registered = opts.registeredDecisionPoints ?? [];
+    const notIn = registered.length ? ` AND decision_point NOT IN (${registered.map(() => '?').join(',')})` : '';
+    return this.batchedPrune(
+      `DELETE FROM decision_grading_cursor WHERE rowid IN
+         (SELECT rowid FROM decision_grading_cursor WHERE updated_at < ?${notIn} LIMIT ${PRUNE_BATCH})`,
+      [cutoff, ...registered],
+      opts.maxBatches ?? 20,
+    );
+  }
+
+  /** Shared bounded-DELETE loop (the pruneOlderThan idiom). Fail-open to count-so-far. */
+  private batchedPrune(deleteSql: string, params: unknown[], maxBatches: number): number {
+    let deleted = 0;
+    try {
+      const stmt = this.db.prepare(deleteSql);
+      for (let i = 0; i < maxBatches; i++) {
+        const n = Number(stmt.run(...params).changes ?? 0);
+        deleted += n;
+        if (n < PRUNE_BATCH) break; // drained
+      }
+      return deleted;
+    } catch {
+      // @silent-fallback-ok: retention prune is best-effort housekeeping — a failed
+      // batch leaves older rows for the next tick; never a throw.
+      return deleted;
     }
   }
 

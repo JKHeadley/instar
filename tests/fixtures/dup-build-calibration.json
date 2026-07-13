@@ -1,0 +1,161 @@
+{
+  "description": "FD6 calibration corpus for the duplicate-build guard's token-set-Jaccard fuzzy floor (docs/specs/duplicate-build-guard.md §3.1/FD6). Each pair is a title+body PAIR in instar's real vocabulary: `duplicates` are known same-feature pairs (including the 2026-07-12 PR #1458 vs #1460 incident pair, reworded/renamed variants); `nonDuplicates` are known DIFFERENT features that deliberately share heavy platform vocabulary (telegram/session/secret/queue/gate) — the adversarial precision cases. The unit test asserts full recall on `duplicates` and a precision floor on `nonDuplicates` at exactly the shipped JACCARD_THRESHOLD. Changing the threshold constant requires re-passing this corpus — an evidence-set constant, not a guess.",
+  "duplicates": [
+    {
+      "name": "the 2026-07-12 incident pair (PR #1458 vs PR #1460)",
+      "a": {
+        "title": "LLM-Decision Quality Meter (ACT-1193/1194)",
+        "body": "Record provenance for every LLM decision point: a census ratchet over decision points so a new LLM decision that skips provenance fails CI. Each enrolled callsite writes a decision_quality row with verdict, model, and outcome so gates can be graded. Adds the provenance coverage census file and wires the first decision points."
+      },
+      "b": {
+        "title": "LLM-decision provenance wiring (ACT-562)",
+        "body": "Wire LLM decision points into provenance recording so every decision an LLM gate makes is captured and gradable. Introduces a coverage census over decision points, enrolls callsites with provenance options, and records decision quality outcomes per verdict and model for later grading."
+      }
+    },
+    {
+      "name": "renamed feature: detector vs guard",
+      "a": {
+        "title": "Duplicate build detector for instar-dev",
+        "body": "Catch a build that is already in flight under a different tracking id BEFORE the build cost is spent. Check open pull requests and recently merged commits for the same substrate files and decision points, plus a sibling session ledger on the same machine."
+      },
+      "b": {
+        "title": "Duplicate-Build Guard — overlap check at build start",
+        "body": "Detect that another session or pull request is already building the same feature before a whole session is wasted. Scans open PRs, recent merges to main, and a local in-flight ledger for overlapping substrate files and decision-point targets."
+      }
+    },
+    {
+      "name": "telegram delivery retry reworded",
+      "a": {
+        "title": "Telegram delivery retry queue",
+        "body": "A durable retry queue for failed Telegram sends: failed deliveries are persisted, retried with exponential backoff, and survive server restarts so no user message is silently lost."
+      },
+      "b": {
+        "title": "Durable retry for failed Telegram message delivery",
+        "body": "Failed Telegram sends go into a durable persisted queue with backoff and are retried after a restart, so a delivery failure never silently drops the user's message."
+      }
+    },
+    {
+      "name": "session reaper pressure reworded",
+      "a": {
+        "title": "Session reaper pressure-aware idle kill",
+        "body": "The idle-session reaper considers CPU load per core and memory pressure when deciding whether to kill idle sessions, raising pressure tiers on a CPU-bound machine even when free memory is fine."
+      },
+      "b": {
+        "title": "CPU-aware session reaping under load",
+        "body": "Make the idle session reaper consider per-core CPU load and memory pressure in its kill decisions so a CPU-bound box raises the pressure tier and reaps idle sessions earlier."
+      }
+    },
+    {
+      "name": "cross-machine secret sync reworded",
+      "a": {
+        "title": "Cross-machine secret sync",
+        "body": "A secret entered on one machine is encrypted to each peer machine's key and pushed to registered paired machines automatically, so a credential dropped once is usable everywhere without re-entering it per machine."
+      },
+      "b": {
+        "title": "Sync secrets across the machine pool",
+        "body": "Push encrypted secrets to every registered peer machine so a credential the user drops on one machine works on all of them — encrypted per recipient machine key, never plaintext on disk."
+      }
+    },
+    {
+      "name": "fully rewritten problem statement, same feature (rename + rewrite)",
+      "a": {
+        "title": "Stuck-session watchdog with escalating kill sequence",
+        "body": "Detect sessions whose process is wedged and recover them: watch for stalled output, nudge first, then escalate through progressively stronger kill signals until the session is freed, notifying the user when recovery fails."
+      },
+      "b": {
+        "title": "SessionWatchdog escalation ladder",
+        "body": "A watchdog that notices a wedged session process, tries a gentle nudge, and walks an escalating kill sequence when the session stays stuck, with user-facing watchdog notifications on failure."
+      }
+    }
+  ],
+  "nonDuplicates": [
+    {
+      "name": "telegram retry vs telegram topic flood guard (shared: telegram, queue, budget)",
+      "a": {
+        "title": "Telegram delivery retry queue",
+        "body": "A durable retry queue for failed Telegram sends: failed deliveries are persisted, retried with exponential backoff, and survive server restarts so no user message is silently lost."
+      },
+      "b": {
+        "title": "Telegram topic flood guard",
+        "body": "A per-source circuit breaker at the topic-creation chokepoint: when one attention source exceeds its topic budget within a rolling window, further non-critical items are coalesced into one running notices topic instead of a wall of new topics."
+      }
+    },
+    {
+      "name": "session reaper vs session clock (shared: session, time)",
+      "a": {
+        "title": "Session reaper pressure-aware idle kill",
+        "body": "The idle-session reaper considers CPU load per core and memory pressure when deciding whether to kill idle sessions, raising pressure tiers on a CPU-bound machine even when free memory is fine."
+      },
+      "b": {
+        "title": "Session clock elapsed and remaining API",
+        "body": "A read-only endpoint reporting computed elapsed and remaining time for any active time-boxed session so the agent never estimates elapsed or remaining time by hand."
+      }
+    },
+    {
+      "name": "secret sync vs secret drop (shared: secret, credential, machine)",
+      "a": {
+        "title": "Cross-machine secret sync",
+        "body": "A secret entered on one machine is encrypted to each peer machine's key and pushed to registered paired machines automatically, so a credential dropped once is usable everywhere without re-entering it per machine."
+      },
+      "b": {
+        "title": "Secret Drop one-time collection links",
+        "body": "Securely collect credentials from users without exposing them in chat history: a one-time expiring form link with CSRF protection; the submitted value is persisted encrypted and consumed once."
+      }
+    },
+    {
+      "name": "decision quality meter vs token ledger (shared: LLM, record, observability)",
+      "a": {
+        "title": "LLM-Decision Quality Meter",
+        "body": "Record provenance for every LLM decision point: a census ratchet over decision points so a new LLM decision that skips provenance fails CI. Each enrolled callsite writes a decision quality row so gates can be graded."
+      },
+      "b": {
+        "title": "Token ledger read-only usage observability",
+        "body": "Scan Claude Code JSONL transcripts for token usage into a SQLite-backed ledger, exposing summary and per-session endpoints. Never gates or mutates source files — observability only."
+      }
+    },
+    {
+      "name": "duplicate detector vs green-PR auto-merge (shared: PR, merge, CI, build)",
+      "a": {
+        "title": "Duplicate build detector for instar-dev",
+        "body": "Catch a build that is already in flight under a different tracking id BEFORE the build cost is spent. Check open pull requests and recently merged commits for the same substrate files and decision points."
+      },
+      "b": {
+        "title": "Green PR auto-merge watcher",
+        "body": "When one of the agent's own pull requests goes green, a background watcher arms GitHub native auto-merge so the merge happens the instant every required check passes; holds and labels always win."
+      }
+    },
+    {
+      "name": "cartographer vs playbook (shared: context, summaries, freshness)",
+      "a": {
+        "title": "Cartographer doc-tree freshness sweep",
+        "body": "A background sweep that re-authors stale node summaries in the hierarchical semantic code map on a light model, with a CI ratchet keeping aggregate freshness from backsliding."
+      },
+      "b": {
+        "title": "Playbook adaptive context manifest",
+        "body": "A living knowledge base of curated context items — facts, lessons, patterns, safety rules — selected per session by triggers, token budgets, and usefulness scores instead of loading static context every time."
+      }
+    },
+    {
+      "name": "rope health vs load assessment (shared: machine, health, verdict)",
+      "a": {
+        "title": "Mesh rope health alerts",
+        "body": "Classify each peer machine's connectivity per rope kind every 30 seconds — ok, degraded, peer-offline, or urgent partition — raising one deduped attention item per episode with honest latency bounds."
+      },
+      "b": {
+        "title": "Machine load assessment script",
+        "body": "Report the machine's real CPU idle percentage, agent-attributed CPU over the last hour, and per-core load, then a verdict of OK, ELEVATED, or SATURATED — because the 1-minute load average is the wrong signal."
+      }
+    },
+    {
+      "name": "attention breaker vs commitment beacon (shared: queue, cadence, item)",
+      "a": {
+        "title": "Attention queue circuit breaker",
+        "body": "Budget topic creation per attention source within a rolling window and coalesce overflow items into one running topic, recording suppressed items durably so nothing is dropped."
+      },
+      "b": {
+        "title": "Commitment tracker beacon cadence",
+        "body": "Cadenced heartbeats on open beacon-enabled commitments with an atRisk non-terminal state and boot-cap enforcement, so a promise to the user survives session turnover and actually gets delivered."
+      }
+    }
+  ]
+}

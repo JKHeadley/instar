@@ -118,7 +118,32 @@ export interface AutonomousRunRecord {
   lastSweepAt?: string;
   /** Mid-run condition divergence between body and registered text — flagged once (R36). */
   conditionDivergenceFlagged?: boolean;
+  /**
+   * LLM-Decision Quality Meter §5.3: the router-minted correlation id of the
+   * run's LAST completion-judge decision (`completion-evaluate`), persisted at
+   * mint time so the realcheck path can annotate deterministic ground truth
+   * against the decision row later (rule `completion-realcheck-v1`). Rides
+   * this durable record, so it survives restarts. ADDITIVE — absent on
+   * pre-meter records; never read by the accretion gate.
+   */
+  lastCompletionCorrelationId?: string;
+  /** ISO timestamp of the `lastCompletionCorrelationId` write. */
+  lastCompletionCorrelationAt?: string;
+  /** Same as `lastCompletionCorrelationId`, for the P13 `completion-stop-rationale` point. */
+  lastStopRationaleCorrelationId?: string;
+  /** ISO timestamp of the `lastStopRationaleCorrelationId` write. */
+  lastStopRationaleCorrelationAt?: string;
 }
+
+/** Which enrolled completion decision point a correlation id belongs to (§5.3).
+ * Structurally identical to CompletionEvaluator's CompletionDecisionKind —
+ * kept local so the store stays import-free of the evaluator module. */
+export type DecisionCorrelationKind = 'completion' | 'stop-rationale';
+
+/** Correlation ids are seam-minted (`d-`/`b-` prefix + uuid, optionally a
+ * machineId8 segment) — anything outside this shape is refused at the write
+ * (ids arrive via callback plumbing, so jail them like the filename ids). */
+const CORRELATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface RegisterRunInput {
   topicId: string;
@@ -383,6 +408,45 @@ export class AutonomousRunStore {
       this.archive(rec);
     }
     return reaped;
+  }
+
+  // ── Decision correlation ids (llm-decision-quality-meter §5.3) ────────
+
+  /**
+   * Persist the router-minted correlation id of a completion/stop-rationale
+   * judgment onto the run record — the durable join key the realcheck path
+   * annotates through (`completion-realcheck-v1`). Satisfies the evaluator's
+   * `CompletionCorrelationSink` structurally. Best-effort by contract: a
+   * refused id or a missing record returns false and mutates nothing (later
+   * annotation then honestly ages out `unknown`); it never throws into the
+   * judgment path.
+   */
+  recordDecisionCorrelation(
+    topicId: string,
+    runId: string,
+    kind: DecisionCorrelationKind,
+    correlationId: string,
+    now: number = Date.now(),
+  ): boolean {
+    if (typeof correlationId !== 'string' || !CORRELATION_ID_RE.test(correlationId)) return false;
+    try {
+      const updated = this.update(topicId, runId, (rec) => {
+        const at = new Date(now).toISOString();
+        if (kind === 'completion') {
+          rec.lastCompletionCorrelationId = correlationId;
+          rec.lastCompletionCorrelationAt = at;
+        } else {
+          rec.lastStopRationaleCorrelationId = correlationId;
+          rec.lastStopRationaleCorrelationAt = at;
+        }
+      });
+      return updated !== null;
+    } catch {
+      /* @silent-fallback-ok — a failed correlation write only degrades later
+         outcome annotation to age-out-unknown (honest, §5.4.6); the judgment
+         path and the accretion gate are untouched. */
+      return false;
+    }
   }
 
   // ── Corroboration persistence (R21/R22) ───────────────────────────────

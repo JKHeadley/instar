@@ -60,7 +60,11 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'core/JobReflector.ts': 'returns null/defaults — advisory post-job reflection',
   'core/TopicIntentCapture.ts': 'returns {status:"degraded"} — explicitly marks degraded; advisory intent capture',
   'core/ProjectDriftChecker.ts': 'returns empty drift — advisory project-drift signal, no gated action',
-  'core/CompletionEvaluator.ts': 'fail-open returns met:false ("keep working") / stopAllowed:true — conservative; gates autonomous completion in the benign direction',
+  // core/CompletionEvaluator.ts REMOVED from REVIEWED_ADVISORY (llm-decision-quality-meter
+  // P7 correlation-persistence wiring): it now carries a @silent-fallback-ok marker
+  // (the persistCorrelation sink-write catch — a sink failure degrades later outcome
+  // annotation to age-out-unknown, honest; the verdict path is untouched). The
+  // "no stale entries" check below enforces this removal (it now hasMarker).
   'core/ContextualEvaluator.ts': 'routes failure through handleEvaluationError — advisory contextual evaluation',
   // core/CoherenceReviewer.ts REMOVED from REVIEWED_ADVISORY (reviewer-fail-closed-on-abstain,
   // CMT-1794): it no longer silently degrades — it now carries gating:true (the router

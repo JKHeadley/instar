@@ -16656,8 +16656,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     let completionEvaluator: import('../core/CompletionEvaluator.js').CompletionEvaluator | undefined;
     if (sharedIntelligence) {
       const { CompletionEvaluator } = await import('../core/CompletionEvaluator.js');
-      completionEvaluator = new CompletionEvaluator({ intelligence: sharedIntelligence });
-      console.log(pc.green('  Completion evaluator: active (independent /goal-style judge)'));
+      // LLM-Decision Quality Meter §5.3 (P8 integration): the router-minted
+      // completion/P13 correlation ids are persisted into the durable autonomous
+      // run-state record so the realcheck path can annotate the decision later.
+      // The sink is a file-backed AutonomousRunStore keyed on the same stateDir
+      // the routes' instance uses (the store is stateless file IO — the
+      // throwaway-instance pattern at AutonomousRunStore.ts, so both instances
+      // read/write the same state/autonomous-server/*.json records coherently).
+      const { AutonomousRunStore } = await import('../core/AutonomousRunStore.js');
+      completionEvaluator = new CompletionEvaluator({
+        intelligence: sharedIntelligence,
+        runCorrelationSink: new AutonomousRunStore(config.stateDir),
+      });
+      console.log(pc.green('  Completion evaluator: active (independent /goal-style judge; §5.3 correlation sink wired)'));
     }
 
     // ── LiveTestGate (live-user-channel-proof spec §4) ──────────────────────
@@ -17984,6 +17995,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { createExternalHogServerPrimitives } = await import('../monitoring/ExternalHogServerPrimitives.js');
       const { createExternalHogAdapters } = await import('../monitoring/ExternalHogRealAdapters.js');
       const { ExternalHogSentinel } = await import('../monitoring/ExternalHogSentinel.js');
+      const { ExternalHogDecisionStore } = await import('../monitoring/ExternalHogDecisionStore.js');
+      const { annotateDecisionOutcome } = await import('../core/DecisionQualityRecorderImpl.js');
       // Positive-clamp the interval-critical knobs so a garbage config (0/negative/huge-but-finite,
       // which ehNum passes through) can never hot-loop the tick or widen candidacy to everything
       // (Phase-5 reviewer nit D — dev-only robustness; the kill gate is unaffected either way).
@@ -17995,8 +18008,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       const ehPrims = createExternalHogServerPrimitives({
         exec: async (cmd, args) => (await execFileAsync(cmd, [...args], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 })).stdout,
         signal: (pid, sig) => { try { process.kill(pid, sig === 0 ? 0 : sig); return true; } catch { return false; } }, // @silent-fallback-ok: `false` IS the signal primitive's contract (pid gone / EPERM → delivery failed); the kill funnel consumes the boolean and surfaces every outcome
-        evaluate: (prompt) => (sharedIntelligence
-          ? sharedIntelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'ExternalHogClassifier' } })
+        // llm-decision-quality-meter §5.3: forward the router-enrollment provenance
+        // block (from ExternalHogScanTick) into the intelligence options so the
+        // router mints + settles a decision_quality row for the classifier call.
+        // Minting is always-on; the decision_quality WRITE is gated inside the
+        // recorder (dev-gate + dryRun), so this forward is unconditional.
+        evaluate: (prompt, provenance) => (sharedIntelligence
+          ? sharedIntelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'ExternalHogClassifier' }, ...(provenance ? { provenance } : {}) })
           : Promise.reject(new Error('no intelligence provider'))),
         raiseAttention: (item) => telegram?.createAttentionItem({
           id: 'agent:external-hog',
@@ -18020,6 +18038,27 @@ export async function startServer(options: StartOptions): Promise<void> {
         killTimeCpuCoreThreshold: 0.5,
         homeDir: os.homedir(),
       });
+      // ── llm-decision-quality-meter §5.3 wiring: the durable decision store +
+      //    the §5.4 annotate chokepoint. The SEAM gate is independent of the hog
+      //    gate — resolve it the SAME way the recorder does (resolveDevAgentGate
+      //    on provenance.uniformSeam.enabled + dryRun defaults TRUE). The store is
+      //    constructed ONLY when the seam resolves live; dryRun is threaded in so
+      //    the store suppresses its durable persist while still running
+      //    grade-on-supersede in-memory (§5.2: "dry-run suppresses all durable
+      //    writes"). `annotate` is always passed — the recorder gates it
+      //    internally, and a disabled seam leaves `decisionStore` undefined so
+      //    recordDecisions() no-ops before reaching it.
+      const _dqSeamEnabled = resolveDevAgentGate(config.provenance?.uniformSeam?.enabled, config);
+      const _dqSeamDryRun = config.provenance?.uniformSeam?.dryRun !== false;
+      const ehDecisionStore = _dqSeamEnabled
+        ? new ExternalHogDecisionStore({
+            stateDir: config.stateDir,
+            config, // reads provenance.quality.{evidenceWindowHours,gradingSlackHours}
+            killLedgerBreakerWindowMs: 3_600_000, // MUST equal breaker.windowMs below (§5.3 retention derivation)
+            dryRun: _dqSeamDryRun,
+            log: (m) => console.log(m),
+          })
+        : undefined;
       externalHogSentinel = new ExternalHogSentinel(ehAdapters, {
         sampler: { ownEuid: ehEuid, cpuCoreThreshold: ehCpuCoreThreshold, sampleWindowMs: ehSampleWindowMs, maxAncestorHops: 30 },
         sustainedSampleCount: ehSustainedSampleCount,
@@ -18029,6 +18068,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         noticeBudgetPerWindow: ehNum(ehCfg.noticeBudgetPerWindow, 4),
         killLedgerRetentionMs: 3_600_000,
         samplerDeadThresholdMs: Math.max(2 * ehScanIntervalMs, ehSustainedSampleCount * ehSampleWindowMs),
+      }, {
+        decisionStore: ehDecisionStore,
+        annotate: (a) => {
+          // Map the sentinel's HogOutcomeAnnotation → the recorder's
+          // DecisionOutcomeAnnotationInput (ruleId is top-level on the input but
+          // nested in gradedBy on the hog annotation). The result is discarded —
+          // `annotate` is void; the recorder gates enabled+dryRun internally.
+          annotateDecisionOutcome({
+            correlationId: a.correlationId,
+            ruleId: a.gradedBy.ruleId,
+            gradedBy: { component: a.gradedBy.component },
+            grade: a.grade,
+            evidence: a.evidence,
+          });
+        },
       });
       // Register the /guards runtime getter regardless of enabled (so posture reports honestly).
       guardRegistry.register('monitoring.externalHogSentinel.enabled', () => externalHogSentinel!.guardRuntimeStatus());
@@ -19026,6 +19080,31 @@ export async function startServer(options: StartOptions): Promise<void> {
     // onCommit hook. Stays null on pool-dark installs (the index warms empty;
     // scoped domains collapse to the legacy lease boolean anyway).
     let _writeAdmissionOwnershipStore: import('../core/SessionOwnershipRegistry.js').SessionOwnershipStore | null = null;
+
+    // ── Judgment-provenance log (llm-decision-quality-meter §5.7/FD9) ──
+    // Constructed UNCONDITIONALLY — the decision-quality settlement seam needs
+    // a substrate on every agent, single-machine included (construction uses
+    // only stateDir/config/logger, zero mesh inputs). Previously this lived
+    // inside the mesh block below, so a single-machine agent had nothing to
+    // write to and /judgment-provenance 503'd through the whole dev soak.
+    // Only the assignment moved; the hoisted `_judgmentProvenance` is passed
+    // to AgentServer unchanged, and the two mesh-block callsites keep their
+    // optional-chaining writes.
+    try {
+      const jplMod = await import('../core/JudgmentProvenanceLog.js');
+      const provCfg = config.provenance ?? {};
+      _judgmentProvenance = new jplMod.JudgmentProvenanceLog({
+        dir: path.join(config.stateDir, 'state', 'judgment-provenance'),
+        retentionDays: provCfg.retentionDays,
+        sampling: provCfg.deterministicSampling,
+        log: (m) => console.log(pc.dim(`  ${m}`)),
+      });
+    } catch (err) {
+      console.error(
+        `[judgment-provenance] construction failed (provenance rows will not be recorded; /judgment-provenance will 503): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     try {
       const meshMod = await import('../core/MeshRpc.js');
       const idMod = await import('../core/MachineIdentity.js');
@@ -21645,16 +21724,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const spawnAdmMod = await import('../core/SpawnAdmission.js');
             const ladderMod = await import('../core/OwnerDarkLadder.js');
-            const jplMod = await import('../core/JudgmentProvenanceLog.js');
             const audMod = await import('../core/BoundedJsonlAudit.js');
             const ogsCfg = config.multiMachine?.sessionPool?.ownershipGatedSpawn ?? {};
-            const provCfg = config.provenance ?? {};
-            _judgmentProvenance = new jplMod.JudgmentProvenanceLog({
-              dir: path.join(config.stateDir, 'state', 'judgment-provenance'),
-              retentionDays: provCfg.retentionDays,
-              sampling: provCfg.deterministicSampling,
-              log: (m) => console.log(pc.dim(`  ${m}`)),
-            });
+            // (The JudgmentProvenanceLog is constructed UNCONDITIONALLY before
+            // this mesh block — llm-decision-quality-meter FD9; the seam callsites
+            // here keep their optional-chaining writes.)
             const ownerDarkAudit = new audMod.BoundedJsonlAudit({
               file: path.join(config.stateDir, 'logs', 'owner-dark-ladder.jsonl'),
               log: (m) => console.log(pc.dim(`  ${m}`)),

@@ -592,6 +592,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Swap-continuity in-flight work gate (swap-continuity-antithrash §4) — every session-killing mutation (proactive/reactive account swap, agent/API refresh) consults the SwapWorkGate at the SessionRefresh funnel: a proactive swap DEFERS over in-flight work (ceiling-dropped, never forced), a reactive swap gets a bounded ≤120s grace then proceeds WITH the F3 mitigations (enumerated killed subagents + re-injected unanswered inbound), an interactive refresh gets a structured session-busy refusal + force.',
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the gate probes and LOGS every would-defer/would-refuse/would-mitigate verdict but changes NOTHING — every refresh kills exactly as today until a deliberate dryRun:false. The gate itself is deterministic structural-state math (pane footer / child process / subagent registry — Tier 0, no LLM), bounded on every edge (30-min deferral ceiling, 120-s reactive grace, force override, recovery-class exemption), and its uncertainty direction only ever DELAYS an optimization — it can never kill work, spend, or egress. Same dogfooding posture as topicProfiles / agentOwnedFollowthrough.',
   },
+  {
+    name: 'provenanceUniformSeam',
+    configPath: 'provenance.uniformSeam.enabled',
+    description: 'LLM-Decision Quality Meter uniform provenance seam (docs/specs/llm-decision-quality-meter.md §5.7) — the router-settlement side write that records each ENROLLED LLM decision (a ~250-byte decision_quality row always; a provenance JSONL row per the census volume valve) so per-decision-point right/wrong/unknown grading has parents. Read surface: GET /decision-quality (503 when the seam resolves off). dryRun defaults TRUE even on dev — metadata-only would-write logs, ALL durable writes suppressed — until a deliberate dryRun:false flip after the would-write soak.',
+    justification: 'observe-only side write at the router-settlement seam; never gates/blocks/delays the decision call; no egress, no spend, no destructive action; failure is catch-logged.',
+  },
 ];
 
 /**

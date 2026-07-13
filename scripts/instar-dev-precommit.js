@@ -26,7 +26,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs';
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
@@ -963,12 +963,14 @@ if (!promotionGateResult.ok) {
 assertFrameworkGenerality(inScopeFiles, validTrace.trace);
 assertOperatorSurfaceQuality(staged, validTrace.trace);
 assertSelfActionDeclared(addedDiffText, inScopeFiles, validTrace.trace);
+enforceDuplicateBuildBackstop(validTrace.trace);
 
 console.error(
   `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved` +
     `${REQUIRE_CONVERGENCE_REPORT ? ` + report-backed (${convergenceReportRel})` : ''}` +
     ` [cross-model: ${crossModelReview}], ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
 );
+removeDupBuildMarkerOnCommitSuccess();
 process.exit(0);
 
 // Framework-generality review gate. Changes to the session launch/inject
@@ -1196,6 +1198,99 @@ function assertSelfActionDeclared(addedDiffText, inScopeFilesArg, trace) {
   }
 }
 
+// Duplicate-build guard — precommit PRESENCE backstop
+// (docs/specs/duplicate-build-guard.md §3.4, second enforced moment).
+// PRESENCE-ONLY: it gates on the trace FIELD existing, never on the verdict's
+// VALUE — it MUST accept decision:"proceed" on a likely-duplicate (the human
+// is the authority; a value-gate would make this validator a meaning-authority,
+// forbidden by docs/signal-vs-authority.md; the "hard-invariant validation"
+// carve-out is exactly what a structural field-validator is). It DOES
+// distinguish the §3.4 `check-errored` auto-stub from an author disposition:
+// the stub satisfies presence (never wedges the commit) but WARNS loudly.
+//
+// Rollout scoping (spec §5 + first-ship compatibility): the backstop only
+// REFUSES a missing field when the guard is provably live for THIS build —
+// either INSTAR_DUP_BUILD_CHECK is explicitly on, or the build-start check
+// actually ran here (its stub exists in this worktree, so the trace SHOULD
+// carry the field — re-running write-trace.mjs folds it in). Traces written
+// before the guard existed (env unset, no stub) get a loud WARN, never a
+// refusal. INSTAR_DUP_BUILD_CHECK=off no-ops the whole backstop.
+// §3.2 terminal lifecycle: at commit success the build's in-flight ledger
+// marker is REMOVED (mirrors PendingInjectStore "recorded at spawn, cleared
+// after"). Fail-open: any error is swallowed — marker cleanup must never
+// block a commit; a leaked marker self-heals via liveness + compaction.
+function removeDupBuildMarkerOnCommitSuccess() {
+  try {
+    const mode = String(process.env.INSTAR_DUP_BUILD_CHECK ?? '').toLowerCase();
+    if (mode === 'off' || mode === '0' || mode === 'false') return;
+    if (!fs.existsSync(path.join(ROOT, '.instar', 'dup-build-check.json'))) return;
+    execFileSync('node', [path.join(ROOT, 'scripts', 'lib', 'duplicate-build-check.mjs'), '--remove-marker'], {
+      cwd: ROOT,
+      timeout: 3000,
+      stdio: 'ignore',
+    });
+  } catch { /* fail-open — never block the commit on cleanup */ }
+}
+
+function enforceDuplicateBuildBackstop(trace) {
+  try {
+    const mode = String(process.env.INSTAR_DUP_BUILD_CHECK ?? '').toLowerCase();
+    if (mode === 'off' || mode === '0' || mode === 'false') return;
+    const explicitlyOn = mode === 'on' || mode === '1' || mode === 'true';
+
+    const field = trace && trace.duplicateBuildCheck;
+    if (field && typeof field === 'object' && !Array.isArray(field)) {
+      if (field.verdict === 'check-errored') {
+        // Presence satisfied — but a build that ran on a FAILED check is a
+        // visible second-look signal, not silently indistinguishable from an
+        // author-reviewed proceed (§3.4). WARN, never block.
+        console.error('');
+        console.error('┌──────────────────────────────────────────────────────────────────┐');
+        console.error('│  ⚠ DUPLICATE-BUILD CHECK ERRORED (fail-open auto-stub).           │');
+        console.error('│    This build proceeded WITHOUT a working duplicate-build check.  │');
+        console.error('│    NOT blocked — but give the overlap question a second look:     │');
+        console.error('│    node scripts/lib/duplicate-build-check.mjs <specPath>          │');
+        console.error('└──────────────────────────────────────────────────────────────────┘');
+        console.error('');
+      }
+      return; // presence-only — the verdict's VALUE is never gated on.
+    }
+
+    const stubExists = fs.existsSync(path.join(ROOT, '.instar', 'dup-build-check.json'));
+    if (explicitlyOn || stubExists) {
+      blockCommit(
+        inScopeFiles,
+        [
+          'Duplicate-build backstop: the trace carries no duplicateBuildCheck field.',
+          '',
+          'The duplicate-build guard is live for this build' +
+            (stubExists ? ' (its check stub exists at .instar/dup-build-check.json)' : ' (INSTAR_DUP_BUILD_CHECK is on)') + ',',
+          'so the trace must record the check verdict + your proceed/abandon disposition.',
+          '',
+          'Fix:',
+          '  1. Run the check (if you have not): node scripts/lib/duplicate-build-check.mjs <specPath>',
+          '  2. On a verify/likely-duplicate verdict, record your disposition:',
+          '     node scripts/lib/duplicate-build-check.mjs --record-disposition --decision proceed --reason "…" [--ack EV-1]',
+          '  3. Re-run write-trace.mjs (it folds the stub into the trace) and commit fresh.',
+          '',
+          'This backstop is PRESENCE-ONLY: it never gates on the verdict value —',
+          'a recorded proceed-on-likely-duplicate passes (you are the authority).',
+          '(docs/specs/duplicate-build-guard.md §3.4; off-switch: INSTAR_DUP_BUILD_CHECK=off)',
+        ].join('\n'),
+      );
+    } else {
+      // Guard not yet live for this build — advisory only (a trace written
+      // before the guard existed must not be refused retroactively).
+      console.error(
+        '[instar-dev-precommit] note: trace has no duplicateBuildCheck field (duplicate-build guard not live for this build — advisory only).',
+      );
+    }
+  } catch {
+    // Fail-open (FD5): the backstop must never crash the gate on its own bug.
+    // (blockCommit exits the process directly, so a real refusal never lands here.)
+  }
+}
+
 function blockCommit(files, reason) {
   console.error('');
   console.error('╔════════════════════════════════════════════════════════════════════╗');
@@ -1399,11 +1494,13 @@ function enforceTier1(trace, traceFile) {
   assertFrameworkGenerality(inScopeFiles, trace);
   assertOperatorSurfaceQuality(staged, trace);
   assertSelfActionDeclared(addedDiffText, inScopeFiles, trace);
+  enforceDuplicateBuildBackstop(trace);
 
   console.error(
     `[instar-dev-precommit] OK (Tier 1) — trace ${traceName} covers ${inScopeFiles.length} in-scope file(s), ` +
       `ELI16 ${eli16Rel} (${eli16Content.trim().length} chars) + side-effects ${sideEffectsRel} staged & verified. ` +
       `No converged spec required for Tier 1.`,
   );
+  removeDupBuildMarkerOnCommitSuccess();
   process.exit(0);
 }
