@@ -410,5 +410,29 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // ── Benchmark-Divergence analyze pass (benchmark-divergence-detector §FD8, §Multi-machine) ──
+  // Machine-local by construction, inheriting the SAME ratified feature_metrics posture as
+  // the decision-quality grade-pass above: POST /benchmark-divergence/analyze runs on the
+  // SERVING-LEASE HOLDER only and upserts finding + watermark rows into the per-machine
+  // feature-metrics SQLite (state/server-data/feature-metrics.db — benchmark_analysis_finding
+  // /_watermark/_history + decision_quality_rollup_by_model). Findings are holder-local durable
+  // state (never replicated) that idempotently rebuild from raw on the next pass; logical
+  // convergence is proxied-on-read — GET /benchmark-divergence?scope=pool merges machine-tagged
+  // findings across peers through the FD9 clamps (free-text never crosses), summed nowhere
+  // silently. The .db is git-sync-excluded on both counts (FileClassifier BINARY_EXTENSIONS +
+  // the .instar/server-data generated pattern), exactly like the grade-pass precedent.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/benchmark-divergence/analyze',
+    domain: 'machine-local',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'lease-holder-only analyze pass upserts holder-local findings/watermark/by_model-rollup rows into the per-machine feature-metrics SQLite; GET /benchmark-divergence?scope=pool merges machine-tagged findings across peers through the FD9 clamps (free-text never crosses); the .db is git-sync-excluded via FileClassifier BINARY_EXTENSIONS + the .instar/server-data generated pattern',
+    },
+  });
+
   return reg;
 }

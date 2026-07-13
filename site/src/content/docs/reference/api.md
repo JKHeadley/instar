@@ -352,6 +352,11 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /decision-quality`
 - `POST /decision-quality/grade-pass`
 
+## /benchmark-divergence
+- `GET /benchmark-divergence`
+- `POST /benchmark-divergence/analyze`
+- `GET /benchmark-divergence/rollup-aggregates`
+
 ## /delivery-queue
 - `GET /delivery-queue`
 

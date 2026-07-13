@@ -113,6 +113,8 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
+import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
 import { MeteredSpendLedger } from '../core/MeteredSpendLedger.js';
 import { RoutingSpendCapsStore } from '../core/RoutingSpendCapsStore.js';
@@ -268,6 +270,8 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8) — null when the ledger failed. */
+  private benchmarkDivergenceAnalyzer: BenchmarkDivergenceAnalyzer | null = null;
   private routingPriceAuthority: RoutingPriceAuthority | null = null;
   /** Increment B money layer — all null unless routingSpend.money.enabled === true (FD-16). */
   private meteredSpendLedger: MeteredSpendLedger | null = null;
@@ -1166,9 +1170,17 @@ export class AgentServer {
           routingSpend?: { enabled?: boolean; tokenRollupRetentionDays?: number };
         }).routingSpend;
         const routingSpendOn = resolveDevAgentGate(routingSpendCfg?.enabled, options.config);
+        // The operator's RAW decision-row retention — threaded into the ledger
+        // as the by_model reconcile's freeze-don't-zero floor
+        // (benchmark-divergence-detector §Durable schema): the reconcile must
+        // never zero a by_model day whose raw truth the prune already removed.
+        const rawQualityRetentionDays =
+          (options.config as { provenance?: { quality?: { decisionRetentionDays?: number } } }).provenance?.quality
+            ?.decisionRetentionDays ?? 90;
         this.featureMetricsLedger = new FeatureMetricsLedger({
           dbPath: path.join(serverDataDir, 'feature-metrics.db'),
           maintainSpendRollup: routingSpendOn,
+          rawRetentionDays: rawQualityRetentionDays,
         });
         // Phase 1b: wire the funnel → ledger. One injection point covers every
         // wrapped provider (current and future). Null-safe; no-op if it failed above.
@@ -1198,6 +1210,32 @@ export class AgentServer {
           // no-op (the router's settlement write is a clean no-op without it) —
           // observability init must never break the ledger block or the server.
           console.warn('[instar] decision-quality recorder init failed (non-fatal — settlement seam stays no-op):', err);
+        }
+
+        // Benchmark-Divergence Detector (docs/specs/benchmark-divergence-detector.md
+        // FD8/FD13): the stage-3 ANALYZE engine. Constructed whenever the ledger
+        // exists — the dev-agent gate + dryRun are resolved INSIDE the analyzer at
+        // call time, so a dark agent carries an inert instance and the routes 503.
+        try {
+          const peerExtraAllowlist = (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
+            ?.peerUrlAllowlist;
+          this.benchmarkDivergenceAnalyzer = new BenchmarkDivergenceAnalyzer({
+            ledger: this.featureMetricsLedger,
+            config: options.config,
+            machineId: options.meshSelfId ?? 'local',
+            // Single-machine (no coordinator) counts as holder (FD8).
+            isHolder: () => (options.coordinator?.enabled ? options.coordinator.getSyncStatus().holdsLease : true),
+            holderMachineId: () =>
+              options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : options.meshSelfId ?? 'local',
+            resolvePeerUrls: options.resolvePeerUrls ?? null,
+            isPeerUrlAllowed: (url) => isPeerUrlAllowedForCredentials(url, peerExtraAllowlist).ok,
+            authToken: options.config.authToken,
+          });
+        } catch (err) {
+          // @silent-fallback-ok: the detector is observe-only — a failed init
+          // leaves the routes answering 503, never breaks the ledger block.
+          console.warn('[instar] benchmark-divergence analyzer init failed (non-fatal):', err);
+          this.benchmarkDivergenceAnalyzer = null;
         }
 
         // The reporting price authority (Layer 1) — reviewed manifest + machine-local
@@ -1513,7 +1551,19 @@ export class AgentServer {
                 this.featureMetricsLedger?.pruneGradingCursors(qualityDecisionRetentionDays);
               }
               if (qualityRollupRetentionDays > 0) this.featureMetricsLedger?.pruneQualityRollup(qualityRollupRetentionDays);
-              this.featureMetricsLedger?.reconcileQualityRollup(30);
+              // benchmark-divergence-detector §Durable schema: the by_model
+              // rollup + analysis watermark carry their OWN retention knob
+              // (byModelRetentionDays, default 180 — P19 bounded), decoupled
+              // from the meter's clocks; the reconcile carries the operator's
+              // raw retention as its freeze-don't-zero floor.
+              const bdRetentionDays = (options.config as {
+                benchmarkDivergence?: { byModelRetentionDays?: number };
+              }).benchmarkDivergence?.byModelRetentionDays ?? 180;
+              if (bdRetentionDays > 0) {
+                this.featureMetricsLedger?.pruneQualityRollupByModel(bdRetentionDays);
+                this.featureMetricsLedger?.pruneBenchmarkWatermarks(bdRetentionDays);
+              }
+              this.featureMetricsLedger?.reconcileQualityRollup(30, { rawRetentionDays: qualityDecisionRetentionDays });
             } catch { /* @silent-fallback-ok: quality housekeeping is best-effort — a failed pass leaves rows for the next tick */ }
           };
           prune();
@@ -2855,6 +2905,7 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
+      benchmarkDivergenceAnalyzer: this.benchmarkDivergenceAnalyzer,
       routingPriceAuthority: this.routingPriceAuthority,
       meteredSpendLedger: this.meteredSpendLedger,
       routingSpendCapsStore: this.routingSpendCapsStore,
@@ -4673,6 +4724,7 @@ export class AgentServer {
       try { this.resourceLedger.close(); } catch { /* best-effort */ }
       this.resourceLedger = null;
     }
+    try { this.benchmarkDivergenceAnalyzer?.stop(); } catch { /* @silent-fallback-ok: pending-jitter teardown is best-effort cleanup at shutdown */ }
     if (this.featureMetricsPruneTimer) {
       try { clearInterval(this.featureMetricsPruneTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.meteredSweepTimer) clearInterval(this.meteredSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
