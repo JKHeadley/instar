@@ -387,6 +387,13 @@ export interface FeatureMetricsLedgerOptions {
    * are always active (additive/safe). Absent ⇒ false (no rollup maintenance).
    */
   maintainSpendRollup?: boolean;
+  /**
+   * The operator's raw decision-row retention (provenance.quality.decisionRetentionDays,
+   * default 90) — the freeze-don't-zero floor for the by_model reconcile arm
+   * (benchmark-divergence-detector §Durable schema). Threaded from AgentServer so the
+   * boot reconcile and every timer reconcile agree with the actual prune horizon.
+   */
+  rawRetentionDays?: number;
 }
 
 const SCHEMA = [
@@ -481,6 +488,96 @@ const SCHEMA = [
      PRIMARY KEY (decision_point, day)
    )`,
   `CREATE INDEX IF NOT EXISTS idx_decision_quality_rollup_day ON decision_quality_rollup (day)`,
+  // ---- Benchmark-Divergence Detector substrate (benchmark-divergence-detector) ----
+  // NEW PARALLEL per-model rollup (deliberately NOT an extension of
+  // decision_quality_rollup, whose inline PK (decision_point, day) cannot be
+  // altered in SQLite): PK (decision_point, model, day). Maintained at the SAME
+  // annotate chokepoint (recomputeQualityBucketInTx recomputes BOTH tables in
+  // one transaction) and by the reconcile's GROUP BY model arm — recompute-
+  // from-raw is naturally supersede-correct and replay-idempotent.
+  // `decided_total` counts ALL recorded decisions (the correlation spine —
+  // NEVER outcome rows); a bucket is materialized for every (point, model,
+  // day) with ≥1 raw decision even at zero outcomes. `prompt_id` is the
+  // recorded prompt identity when uniform within the bucket, else '__mixed__';
+  // an empty/unparseable model id is REFUSED into '' and written under the
+  // reserved '__missing__' (excluded from comparisons, surfaced as
+  // missingModelShare). Retention: its own byModelRetentionDays knob (180).
+  `CREATE TABLE IF NOT EXISTS decision_quality_rollup_by_model (
+     decision_point TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     day            TEXT NOT NULL,
+     right_n        INTEGER NOT NULL DEFAULT 0,
+     wrong_n        INTEGER NOT NULL DEFAULT 0,
+     unknown_n      INTEGER NOT NULL DEFAULT 0,
+     decided_total  INTEGER NOT NULL DEFAULT 0,
+     prompt_id      TEXT,
+     last_write_at  INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (decision_point, model, day)
+   )`,
+  // Backs the analyzer's window read, the retention prune, and the reconcile's
+  // day-range scans (the meter's own rollup ships the same index shape).
+  `CREATE INDEX IF NOT EXISTS idx_decision_quality_rollup_by_model_day ON decision_quality_rollup_by_model (day)`,
+  // Findings latest view (FD10/FD11): one row per (task, decision point,
+  // model); all fields content-free; advisory is an envelope invariant.
+  `CREATE TABLE IF NOT EXISTS benchmark_divergence_findings (
+     task_id                TEXT NOT NULL,
+     decision_point         TEXT NOT NULL,
+     model                  TEXT NOT NULL,
+     verdict                TEXT NOT NULL,
+     precondition_reason    TEXT,
+     real_grade_rate        REAL,
+     predicted_rate         REAL,
+     delta                  REAL,
+     graded_n               INTEGER NOT NULL DEFAULT 0,
+     unknown_share          REAL,
+     ci_half_width          REAL,
+     bench_n                INTEGER,
+     bench_ci_half_width    REAL,
+     orphan_tainted         INTEGER NOT NULL DEFAULT 0,
+     chronic                INTEGER NOT NULL DEFAULT 0,
+     chronic_streak         INTEGER NOT NULL DEFAULT 0,
+     chronic_reason         TEXT,
+     coverage_json          TEXT,
+     dominant_machine_share REAL,
+     unmapped               INTEGER,
+     benched_prompt_hash    TEXT,
+     mirror_captured_at     TEXT,
+     window_from_day        TEXT,
+     window_to_day          TEXT,
+     first_seen_at          INTEGER NOT NULL,
+     last_seen_at           INTEGER NOT NULL,
+     PRIMARY KEY (task_id, decision_point, model)
+   )`,
+  // Content-free history rows keyed + (analysisWindow.toDay, mirrorCapturedAt)
+  // (FD11): a same-day re-analysis UPSERTS, never appends. Capped per key
+  // (maxHistoryPerKey) with the FIRST row per key retained permanently.
+  `CREATE TABLE IF NOT EXISTS benchmark_divergence_findings_history (
+     task_id            TEXT NOT NULL,
+     decision_point     TEXT NOT NULL,
+     model              TEXT NOT NULL,
+     window_to_day      TEXT NOT NULL,
+     mirror_captured_at TEXT NOT NULL DEFAULT '',
+     verdict            TEXT NOT NULL,
+     delta              REAL,
+     graded_n           INTEGER NOT NULL DEFAULT 0,
+     chronic_streak     INTEGER NOT NULL DEFAULT 0,
+     recorded_at        INTEGER NOT NULL,
+     PRIMARY KEY (task_id, decision_point, model, window_to_day, mirror_captured_at)
+   )`,
+  // Per-machine watermark — PURE R1 loss-accounting (FD7): PK (machineId,
+  // decisionPointId, model) with analyzedThroughDay as a VALUE column. NOT a
+  // processing checkpoint; guarantees NO coverage and NO exactly-once — it
+  // exists solely to COUNT unanalyzed loss (unanalyzed_loss accrues when a day
+  // ages past retention having never been covered by any pass).
+  `CREATE TABLE IF NOT EXISTS benchmark_analysis_watermark (
+     machine_id           TEXT NOT NULL,
+     decision_point       TEXT NOT NULL,
+     model                TEXT NOT NULL,
+     analyzed_through_day TEXT NOT NULL,
+     unanalyzed_loss      INTEGER NOT NULL DEFAULT 0,
+     updated_at           INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (machine_id, decision_point, model)
+   )`,
   // The grading job's durable per-decision-point keyset cursor (§5.5 — a table,
   // not an implicit "fourth thing"), + the per-point P19 recheck backoff.
   `CREATE TABLE IF NOT EXISTS decision_grading_cursor (
@@ -602,6 +699,8 @@ export class FeatureMetricsLedger {
   private decisionInsertStmt: ReturnType<BetterSqliteDatabase['prepare']> | null = null;
   private outcomeUpsertStmt: ReturnType<BetterSqliteDatabase['prepare']> | null = null;
   private readonly maintainSpendRollup: boolean;
+  /** Freeze-don't-zero floor input for the by_model reconcile arm (benchmark-divergence). */
+  private readonly rawRetentionDays: number = 90;
   private lastRollupReconcileMs: number | null = null;
   private lastQualityReconcileMsValue: number | null = null;
   private closed = false;
@@ -609,6 +708,7 @@ export class FeatureMetricsLedger {
   constructor(opts: FeatureMetricsLedgerOptions) {
     this.now = opts.now ?? (() => Date.now());
     this.maintainSpendRollup = opts.maintainSpendRollup === true;
+    this.rawRetentionDays = typeof opts.rawRetentionDays === 'number' && opts.rawRetentionDays > 0 ? opts.rawRetentionDays : 90;
     if (opts.dbPath !== ':memory:') {
       fs.mkdirSync(path.dirname(opts.dbPath), { recursive: true });
     }
@@ -688,6 +788,12 @@ export class FeatureMetricsLedger {
            evidence_note       = excluded.evidence_note,
            ts                  = excluded.ts`,
       );
+      // benchmark-divergence stage 2: the one-time by_model backfill runs FIRST
+      // (empty-table seed from ALL raw rows still on disk — the post-migration
+      // reconcile backfill pass), then the bounded boot reconcile keeps both
+      // rollups current. Order matters: the backfill's empty-table check must
+      // run before the reconcile writes the window's by_model rows.
+      this.backfillByModelRollupIfEmpty();
       this.reconcileQualityRollup(30);
     } catch {
       // @silent-fallback-ok: the quality substrate is observability. A prepare
@@ -1383,6 +1489,11 @@ export class FeatureMetricsLedger {
    * Recompute ONE (decision_point, day) bucket's winning-grade counts from
    * truth via the canonical view. Event counters (orphan/joinMiss/dropped) are
    * preserved — they are not derivable from the join. Caller holds the tx.
+   *
+   * benchmark-divergence-detector stage 2: the SAME transaction ALSO recomputes
+   * the parallel `decision_quality_rollup_by_model` bucket — recompute-from-raw
+   * is naturally supersede-correct and replay-idempotent, so a sentinel-landed
+   * wrong grade or an unknown→right regrade nets counts in BOTH tables at once.
    */
   private recomputeQualityBucketInTx(decisionPoint: string, day: string): void {
     const start = dayStartMs(day);
@@ -1408,6 +1519,46 @@ export class FeatureMetricsLedger {
            unknown_count = excluded.unknown_count`,
       )
       .run(decisionPoint, day, Number(agg?.rightCount) || 0, Number(agg?.wrongCount) || 0, Number(agg?.unknownCount) || 0);
+    this.recomputeByModelBucketInTx(decisionPoint, day);
+  }
+
+  /**
+   * Recompute the (decision_point, *, day) rows of the PARALLEL by_model
+   * rollup from raw truth (benchmark-divergence-detector §Durable schema).
+   * DELETE-then-INSERT within the caller's tx — every column is derivable, so
+   * the rebuild is exact, supersede-correct, and replay-idempotent.
+   * `decided_total` comes from DECISION rows via LEFT JOIN (a decisions-only
+   * day materializes 0/0/0 buckets with decided_total > 0); the model id is
+   * refused-into-'__missing__' when empty; prompt_id records the bucket's
+   * uniform recorded prompt identity, else '__mixed__'.
+   */
+  private recomputeByModelBucketInTx(decisionPoint: string, day: string): void {
+    const start = dayStartMs(day);
+    this.db
+      .prepare(`DELETE FROM decision_quality_rollup_by_model WHERE decision_point = ? AND day = ?`)
+      .run(decisionPoint, day);
+    this.db
+      .prepare(
+        `INSERT INTO decision_quality_rollup_by_model
+           (decision_point, model, day, right_n, wrong_n, unknown_n, decided_total, prompt_id, last_write_at)
+         SELECT
+           q.decision_point,
+           COALESCE(NULLIF(TRIM(COALESCE(q.model, '')), ''), '__missing__') AS m,
+           ?,
+           SUM(CASE WHEN w.grade='right'   THEN 1 ELSE 0 END),
+           SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END),
+           SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END),
+           COUNT(*),
+           CASE WHEN COUNT(DISTINCT COALESCE(q.prompt_id, '')) = 1
+                THEN MIN(COALESCE(q.prompt_id, ''))
+                ELSE '__mixed__' END,
+           ?
+         FROM decision_quality q
+         LEFT JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
+         WHERE q.decision_point = ? AND q.ts >= ? AND q.ts < ?
+         GROUP BY m`,
+      )
+      .run(day, this.now(), decisionPoint, start, start + 86_400_000);
   }
 
   /** In-tx counter bump (column name from the closed map — never interpolated input). */
@@ -1485,11 +1636,21 @@ export class FeatureMetricsLedger {
    * are preserved. Idempotent fold; runs at boot (constructor) AND from the
    * AgentServer 6h prune timer. Returns buckets written.
    */
-  reconcileQualityRollup(days: number): number {
+  reconcileQualityRollup(days: number, opts: { rawRetentionDays?: number } = {}): number {
     if (this.closed) return 0;
     try {
       const cutoffDay = dayKey(this.now() - days * 86_400_000);
       const cutoffMs = dayStartMs(cutoffDay);
+      // benchmark-divergence stage 2 (freeze-don't-zero): the by_model arm
+      // rebuilds ONLY days whose raw truth still exists. The raw floor is the
+      // first FULLY-intact day under the raw retention horizon; days below it
+      // are FROZEN (left at their last-good values), never blindly zeroed —
+      // the meter's rollup is a derived cache of raw, and zeroing beyond the
+      // floor would silently destroy not-yet-analyzed per-model essence.
+      const rawRetentionDays = opts.rawRetentionDays && opts.rawRetentionDays > 0 ? opts.rawRetentionDays : this.rawRetentionDays;
+      const rawFloorDay = dayKey(this.now() - rawRetentionDays * 86_400_000 + 86_400_000);
+      const byModelFromDay = cutoffDay >= rawFloorDay ? cutoffDay : rawFloorDay;
+      const byModelFromMs = dayStartMs(byModelFromDay);
       const tx = this.db.transaction(() => {
         // Zero (not DELETE) the window's grade counts so event counters survive
         // and a bucket whose underlying rows vanished is honestly zeroed.
@@ -1515,6 +1676,7 @@ export class FeatureMetricsLedger {
                unknown_count = excluded.unknown_count`,
           )
           .run(cutoffMs);
+        this.rebuildByModelRangeInTx(byModelFromDay, byModelFromMs);
         return Number(res.changes ?? 0);
       });
       const written = tx();
@@ -1523,6 +1685,63 @@ export class FeatureMetricsLedger {
     } catch {
       // @silent-fallback-ok: a reconcile failure leaves the last-good rollup in
       // place; the next boot/timer tick retries. Raw truth is never touched.
+      return 0;
+    }
+  }
+
+  /** Rebuild the by_model rollup for every day >= fromDay from raw truth
+   *  (DELETE-then-INSERT — exact + replay-idempotent). Caller holds the tx. */
+  private rebuildByModelRangeInTx(fromDay: string, fromMs: number): void {
+    this.db.prepare(`DELETE FROM decision_quality_rollup_by_model WHERE day >= ?`).run(fromDay);
+    this.db
+      .prepare(
+        `INSERT INTO decision_quality_rollup_by_model
+           (decision_point, model, day, right_n, wrong_n, unknown_n, decided_total, prompt_id, last_write_at)
+         SELECT
+           q.decision_point,
+           COALESCE(NULLIF(TRIM(COALESCE(q.model, '')), ''), '__missing__') AS m,
+           strftime('%Y-%m-%d', q.ts/1000, 'unixepoch') AS day,
+           SUM(CASE WHEN w.grade='right'   THEN 1 ELSE 0 END),
+           SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END),
+           SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END),
+           COUNT(*),
+           CASE WHEN COUNT(DISTINCT COALESCE(q.prompt_id, '')) = 1
+                THEN MIN(COALESCE(q.prompt_id, ''))
+                ELSE '__mixed__' END,
+           ?
+         FROM decision_quality q
+         LEFT JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
+         WHERE q.ts >= ?
+         GROUP BY q.decision_point, m, day`,
+      )
+      .run(this.now(), fromMs);
+  }
+
+  /**
+   * ONE-TIME by_model backfill (benchmark-divergence §Durable schema): when
+   * the parallel table is EMPTY and raw decisions exist (a DB migrated from a
+   * pre-detector meter), seed per-model history from ALL raw rows still on
+   * disk — days already pruned from raw are lost, and that is accepted,
+   * stated. Idempotent (a non-empty table is a no-op). Runs at open.
+   */
+  backfillByModelRollupIfEmpty(): number {
+    if (this.closed || !this.decisionInsertStmt) return 0;
+    try {
+      const existing = this.db
+        .prepare(`SELECT COUNT(*) AS n FROM decision_quality_rollup_by_model`)
+        .get() as { n: number } | undefined;
+      if (Number(existing?.n) > 0) return 0;
+      const raw = this.db.prepare(`SELECT COUNT(*) AS n FROM decision_quality`).get() as { n: number } | undefined;
+      if (!Number(raw?.n)) return 0;
+      const tx = this.db.transaction(() => this.rebuildByModelRangeInTx('0000-01-01', 0));
+      tx();
+      const after = this.db
+        .prepare(`SELECT COUNT(*) AS n FROM decision_quality_rollup_by_model`)
+        .get() as { n: number } | undefined;
+      return Number(after?.n) || 0;
+    } catch {
+      // @silent-fallback-ok: the backfill is a seeding convenience — a failure
+      // leaves the reconcile to fill the window incrementally.
       return 0;
     }
   }
@@ -1874,6 +2093,387 @@ export class FeatureMetricsLedger {
       // batch leaves older rows for the next tick; never a throw.
       return deleted;
     }
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
+   * Benchmark-Divergence Detector substrate (benchmark-divergence-detector)
+   * ──────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * The analyzer's window read (FD12): by_model buckets for day ∈
+   * [fromDay, toDay], one grouped indexed query — O(points × models ×
+   * window-days), never O(raw). Also serves GET
+   * /benchmark-divergence/rollup-aggregates. Fail-open to [].
+   */
+  byModelAggregates(fromDay: string, toDay: string): Array<{
+    decisionPointId: string;
+    model: string;
+    day: string;
+    rightN: number;
+    wrongN: number;
+    unknownN: number;
+    decidedTotal: number;
+    promptId: string;
+  }> {
+    if (this.closed) return [];
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT decision_point AS decisionPointId, model, day,
+                  right_n AS rightN, wrong_n AS wrongN, unknown_n AS unknownN,
+                  decided_total AS decidedTotal, prompt_id AS promptId
+             FROM decision_quality_rollup_by_model
+            WHERE day >= ? AND day <= ?
+            ORDER BY day ASC, decision_point ASC, model ASC`,
+        )
+        .all(fromDay, toDay) as Array<Record<string, string | number>>;
+      return rows.map((r) => ({
+        decisionPointId: String(r.decisionPointId),
+        model: String(r.model),
+        day: String(r.day),
+        rightN: Number(r.rightN) || 0,
+        wrongN: Number(r.wrongN) || 0,
+        unknownN: Number(r.unknownN) || 0,
+        decidedTotal: Number(r.decidedTotal) || 0,
+        promptId: r.promptId == null ? '' : String(r.promptId),
+      }));
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /** Per-(point, day) orphan counts from the meter's rollup for the window
+   *  (FD9: the peer envelope carries these through the same clamps). Fail-open. */
+  orphanAggregates(fromDay: string, toDay: string): Array<{ decisionPointId: string; day: string; orphanOutcomes: number }> {
+    if (this.closed) return [];
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT decision_point AS decisionPointId, day, orphan_outcomes AS orphanOutcomes
+             FROM decision_quality_rollup
+            WHERE day >= ? AND day <= ? AND orphan_outcomes > 0
+            ORDER BY day ASC, decision_point ASC`,
+        )
+        .all(fromDay, toDay) as Array<Record<string, string | number>>;
+      return rows.map((r) => ({
+        decisionPointId: String(r.decisionPointId),
+        day: String(r.day),
+        orphanOutcomes: Number(r.orphanOutcomes) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /** Retention prune for the by_model rollup — its OWN knob
+   *  (benchmarkDivergence.byModelRetentionDays, default 180 — P19 bounded). */
+  pruneQualityRollupByModel(retentionDays: number, opts: { maxBatches?: number } = {}): number {
+    if (this.closed || retentionDays <= 0) return 0;
+    const cutoffDay = dayKey(this.now() - retentionDays * 86_400_000);
+    return this.batchedPrune(
+      `DELETE FROM decision_quality_rollup_by_model WHERE rowid IN
+         (SELECT rowid FROM decision_quality_rollup_by_model WHERE day < ? LIMIT ${PRUNE_BATCH})`,
+      [cutoffDay],
+      opts.maxBatches ?? 20,
+    );
+  }
+
+  /**
+   * Upsert one finding into the latest view AND its content-free history row
+   * (FD11): history keys + (windowToDay, mirrorCapturedAt) so a same-day
+   * re-analysis UPSERTS, never appends; the cap prunes oldest EXCEPT the FIRST
+   * history row per key (the first detection is never evicted). Never throws.
+   */
+  upsertBenchmarkFinding(f: {
+    taskId: string;
+    decisionPointId: string;
+    model: string;
+    verdict: string;
+    preconditionReason?: string | null;
+    realGradeRate: number | null;
+    predictedRate: number | null;
+    delta: number | null;
+    gradedN: number;
+    unknownShare: number | null;
+    ciHalfWidth: number | null;
+    benchN: number | null;
+    benchCiHalfWidth: number | null;
+    orphanTainted: boolean;
+    chronic: boolean;
+    chronicStreak: number;
+    chronicReason?: string | null;
+    coverageJson: string;
+    dominantMachineShare: number | null;
+    unmapped?: boolean | null;
+    benchedPromptHash: string | null;
+    mirrorCapturedAt: string | null;
+    windowFromDay: string;
+    windowToDay: string;
+    maxHistoryPerKey: number;
+  }): void {
+    if (this.closed) return;
+    const ts = this.now();
+    try {
+      const tx = this.db.transaction(() => {
+        this.db
+          .prepare(
+            `INSERT INTO benchmark_divergence_findings
+               (task_id, decision_point, model, verdict, precondition_reason, real_grade_rate, predicted_rate, delta,
+                graded_n, unknown_share, ci_half_width, bench_n, bench_ci_half_width, orphan_tainted, chronic,
+                chronic_streak, chronic_reason, coverage_json, dominant_machine_share, unmapped, benched_prompt_hash,
+                mirror_captured_at, window_from_day, window_to_day, first_seen_at, last_seen_at)
+             VALUES (@taskId, @decisionPointId, @model, @verdict, @preconditionReason, @realGradeRate, @predictedRate,
+                @delta, @gradedN, @unknownShare, @ciHalfWidth, @benchN, @benchCiHalfWidth, @orphanTainted, @chronic,
+                @chronicStreak, @chronicReason, @coverageJson, @dominantMachineShare, @unmapped, @benchedPromptHash,
+                @mirrorCapturedAt, @windowFromDay, @windowToDay, @ts, @ts)
+             ON CONFLICT(task_id, decision_point, model) DO UPDATE SET
+               verdict = excluded.verdict,
+               precondition_reason = excluded.precondition_reason,
+               real_grade_rate = excluded.real_grade_rate,
+               predicted_rate = excluded.predicted_rate,
+               delta = excluded.delta,
+               graded_n = excluded.graded_n,
+               unknown_share = excluded.unknown_share,
+               ci_half_width = excluded.ci_half_width,
+               bench_n = excluded.bench_n,
+               bench_ci_half_width = excluded.bench_ci_half_width,
+               orphan_tainted = excluded.orphan_tainted,
+               chronic = excluded.chronic,
+               chronic_streak = excluded.chronic_streak,
+               chronic_reason = excluded.chronic_reason,
+               coverage_json = excluded.coverage_json,
+               dominant_machine_share = excluded.dominant_machine_share,
+               unmapped = excluded.unmapped,
+               benched_prompt_hash = excluded.benched_prompt_hash,
+               mirror_captured_at = excluded.mirror_captured_at,
+               window_from_day = excluded.window_from_day,
+               window_to_day = excluded.window_to_day,
+               last_seen_at = excluded.last_seen_at`,
+          )
+          .run({
+            taskId: f.taskId,
+            decisionPointId: f.decisionPointId,
+            model: f.model,
+            verdict: f.verdict,
+            preconditionReason: f.preconditionReason ?? null,
+            realGradeRate: f.realGradeRate,
+            predictedRate: f.predictedRate,
+            delta: f.delta,
+            gradedN: f.gradedN,
+            unknownShare: f.unknownShare,
+            ciHalfWidth: f.ciHalfWidth,
+            benchN: f.benchN,
+            benchCiHalfWidth: f.benchCiHalfWidth,
+            orphanTainted: f.orphanTainted ? 1 : 0,
+            chronic: f.chronic ? 1 : 0,
+            chronicStreak: f.chronicStreak,
+            chronicReason: f.chronicReason ?? null,
+            coverageJson: f.coverageJson,
+            dominantMachineShare: f.dominantMachineShare,
+            unmapped: f.unmapped == null ? null : f.unmapped ? 1 : 0,
+            benchedPromptHash: f.benchedPromptHash,
+            mirrorCapturedAt: f.mirrorCapturedAt,
+            windowFromDay: f.windowFromDay,
+            windowToDay: f.windowToDay,
+            ts,
+          });
+        // FD11 history row (same-day upsert, never append).
+        this.db
+          .prepare(
+            `INSERT INTO benchmark_divergence_findings_history
+               (task_id, decision_point, model, window_to_day, mirror_captured_at, verdict, delta, graded_n, chronic_streak, recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(task_id, decision_point, model, window_to_day, mirror_captured_at) DO UPDATE SET
+               verdict = excluded.verdict,
+               delta = excluded.delta,
+               graded_n = excluded.graded_n,
+               chronic_streak = excluded.chronic_streak,
+               recorded_at = excluded.recorded_at`,
+          )
+          .run(
+            f.taskId, f.decisionPointId, f.model, f.windowToDay, f.mirrorCapturedAt ?? '', f.verdict,
+            f.delta, f.gradedN, f.chronicStreak, ts,
+          );
+        // Cap per key, retaining the FIRST row permanently (FD11): prune the
+        // oldest rows above the cap, always excluding the key's earliest row.
+        const cap = Math.max(2, Math.floor(f.maxHistoryPerKey) || 50);
+        this.db
+          .prepare(
+            `DELETE FROM benchmark_divergence_findings_history
+              WHERE task_id = ? AND decision_point = ? AND model = ?
+                AND rowid NOT IN (
+                  SELECT rowid FROM benchmark_divergence_findings_history
+                   WHERE task_id = ? AND decision_point = ? AND model = ?
+                   ORDER BY recorded_at ASC, rowid ASC LIMIT 1)
+                AND rowid NOT IN (
+                  SELECT rowid FROM benchmark_divergence_findings_history
+                   WHERE task_id = ? AND decision_point = ? AND model = ?
+                   ORDER BY recorded_at DESC, rowid DESC LIMIT ?)`,
+          )
+          .run(
+            f.taskId, f.decisionPointId, f.model,
+            f.taskId, f.decisionPointId, f.model,
+            f.taskId, f.decisionPointId, f.model, cap - 1,
+          );
+      });
+      tx();
+    } catch {
+      // @silent-fallback-ok: a dropped finding upsert is repaired by the next
+      // idempotent analysis pass — never a throw into the analyzer.
+    }
+  }
+
+  /** The findings latest view, ordered (window_to_day DESC, last_seen_at DESC). Fail-open. */
+  listBenchmarkFindings(): Array<Record<string, unknown>> {
+    if (this.closed) return [];
+    try {
+      return this.db
+        .prepare(
+          `SELECT task_id AS taskId, decision_point AS decisionPointId, model, verdict,
+                  precondition_reason AS preconditionReason, real_grade_rate AS realGradeRate,
+                  predicted_rate AS predictedRate, delta, graded_n AS gradedN, unknown_share AS unknownShare,
+                  ci_half_width AS ciHalfWidth, bench_n AS benchN, bench_ci_half_width AS benchCiHalfWidth,
+                  orphan_tainted AS orphanTainted, chronic, chronic_streak AS chronicStreak,
+                  chronic_reason AS chronicReason, coverage_json AS coverageJson,
+                  dominant_machine_share AS dominantMachineShare, unmapped,
+                  benched_prompt_hash AS benchedPromptHash, mirror_captured_at AS mirrorCapturedAt,
+                  window_from_day AS windowFromDay, window_to_day AS windowToDay,
+                  first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt
+             FROM benchmark_divergence_findings
+            ORDER BY window_to_day DESC, last_seen_at DESC, task_id ASC, decision_point ASC, model ASC`,
+        )
+        .all() as Array<Record<string, unknown>>;
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /** Per-key history rows (oldest first) — the FD11 bounded trajectory. Fail-open. */
+  listBenchmarkFindingHistory(taskId: string, decisionPointId: string, model: string): Array<Record<string, unknown>> {
+    if (this.closed) return [];
+    try {
+      return this.db
+        .prepare(
+          `SELECT window_to_day AS windowToDay, mirror_captured_at AS mirrorCapturedAt, verdict, delta,
+                  graded_n AS gradedN, chronic_streak AS chronicStreak, recorded_at AS recordedAt
+             FROM benchmark_divergence_findings_history
+            WHERE task_id = ? AND decision_point = ? AND model = ?
+            ORDER BY recorded_at ASC, rowid ASC`,
+        )
+        .all(taskId, decisionPointId, model) as Array<Record<string, unknown>>;
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /** All watermark rows (FD7 loss accounting). Fail-open to []. */
+  listBenchmarkWatermarks(): Array<{
+    machineId: string;
+    decisionPointId: string;
+    model: string;
+    analyzedThroughDay: string;
+    unanalyzedLoss: number;
+  }> {
+    if (this.closed) return [];
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT machine_id AS machineId, decision_point AS decisionPointId, model,
+                  analyzed_through_day AS analyzedThroughDay, unanalyzed_loss AS unanalyzedLoss
+             FROM benchmark_analysis_watermark`,
+        )
+        .all() as Array<Record<string, string | number>>;
+      return rows.map((r) => ({
+        machineId: String(r.machineId),
+        decisionPointId: String(r.decisionPointId),
+        model: String(r.model),
+        analyzedThroughDay: String(r.analyzedThroughDay),
+        unanalyzedLoss: Number(r.unanalyzedLoss) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: read-only reporting — degrade to [].
+      return [];
+    }
+  }
+
+  /**
+   * Advance one watermark (FD7): first-seen keys SEED at the supplied
+   * `seedDay` (today − maxDaysPerAnalysis — prevents a months-long false-loss
+   * drip after holder churn); an existing key only ever moves FORWARD.
+   */
+  advanceBenchmarkWatermark(machineId: string, decisionPointId: string, model: string, throughDay: string, seedDay: string): void {
+    if (this.closed) return;
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO benchmark_analysis_watermark
+             (machine_id, decision_point, model, analyzed_through_day, unanalyzed_loss, updated_at)
+           VALUES (?, ?, ?, ?, 0, ?)
+           ON CONFLICT(machine_id, decision_point, model) DO UPDATE SET
+             analyzed_through_day = MAX(analyzed_through_day, excluded.analyzed_through_day),
+             updated_at = excluded.updated_at`,
+        )
+        .run(machineId, decisionPointId, model, throughDay >= seedDay ? throughDay : seedDay, this.now());
+    } catch {
+      // @silent-fallback-ok: a dropped watermark write re-seeds next pass —
+      // the watermark is pure loss-accounting, never a processing checkpoint.
+    }
+  }
+
+  /**
+   * FD7 loss accounting: for every watermark row of `machineId`, days in
+   * (analyzedThroughDay, retentionEdgeDay] have aged past retention having
+   * never been covered by any pass — accrue them into `unanalyzed_loss` and
+   * advance the watermark to the edge (never double-counted). Returns total
+   * days accrued this call.
+   */
+  accrueBenchmarkWatermarkLoss(machineId: string, retentionEdgeDay: string): number {
+    if (this.closed) return 0;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT decision_point AS dp, model, analyzed_through_day AS through
+             FROM benchmark_analysis_watermark
+            WHERE machine_id = ? AND analyzed_through_day < ?`,
+        )
+        .all(machineId, retentionEdgeDay) as Array<{ dp: string; model: string; through: string }>;
+      let accrued = 0;
+      const stmt = this.db.prepare(
+        `UPDATE benchmark_analysis_watermark
+            SET unanalyzed_loss = unanalyzed_loss + ?, analyzed_through_day = ?, updated_at = ?
+          WHERE machine_id = ? AND decision_point = ? AND model = ?`,
+      );
+      for (const r of rows) {
+        const throughMs = dayStartMs(r.through);
+        const edgeMs = dayStartMs(retentionEdgeDay);
+        if (!Number.isFinite(throughMs) || !Number.isFinite(edgeMs) || edgeMs <= throughMs) continue;
+        const lostDays = Math.round((edgeMs - throughMs) / 86_400_000);
+        stmt.run(lostDays, retentionEdgeDay, this.now(), machineId, r.dp, r.model);
+        accrued += lostDays;
+      }
+      return accrued;
+    } catch {
+      // @silent-fallback-ok: loss accounting is observability — a failed pass
+      // retries next tick; it never gates retention or analysis.
+      return 0;
+    }
+  }
+
+  /** Watermark hygiene (FD7): prune rows stale past `retentionDays` (mirrors
+   *  the meter's cursor pruning — stale machines / retired points age out). */
+  pruneBenchmarkWatermarks(retentionDays: number, opts: { maxBatches?: number } = {}): number {
+    if (this.closed || retentionDays <= 0) return 0;
+    const cutoff = this.now() - retentionDays * 86_400_000;
+    return this.batchedPrune(
+      `DELETE FROM benchmark_analysis_watermark WHERE rowid IN
+         (SELECT rowid FROM benchmark_analysis_watermark WHERE updated_at < ? LIMIT ${PRUNE_BATCH})`,
+      [cutoff],
+      opts.maxBatches ?? 20,
+    );
   }
 
   close(): void {

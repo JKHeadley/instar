@@ -26,6 +26,13 @@ import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
 import { writeServeProgress } from '../core/serveProgress.js';
 import { readDoorwayRegistry } from '../core/DoorwayRegistryReader.js';
+import {
+  clampPeerFinding as clampBenchmarkPeerFinding,
+  mergeFindingsByKey as mergeBenchmarkFindingsByKey,
+  FD9_DAY_RE as BENCHMARK_DAY_RE,
+  type FindingView as BenchmarkFindingView,
+} from '../core/benchmarkDivergenceCore.js';
+import { ANALYZE_MIN_INTERVAL_MS as BENCHMARK_ANALYZE_MIN_INTERVAL_MS } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
 import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
@@ -1011,6 +1018,11 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8/FD10)
+   *  — backs GET /benchmark-divergence (+pool), POST /benchmark-divergence/analyze,
+   *  GET /benchmark-divergence/rollup-aggregates. Null when the ledger failed;
+   *  the routes 503 when the dev-agent gate resolves the detector dark. */
+  benchmarkDivergenceAnalyzer?: import('../monitoring/BenchmarkDivergenceAnalyzer.js').BenchmarkDivergenceAnalyzer | null;
   /** Routing Control Room price authority (read-only reporting; routing-control-room-spend
    *  Increment A). Null when the spend view is dark (dev-gated). */
   routingPriceAuthority: import('../core/routingPriceAuthority.js').RoutingPriceAuthority | null;
@@ -15379,6 +15391,158 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: `grade-pass failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // ── Benchmark-Divergence Detector routes (benchmark-divergence-detector FD10) ──
+  // All three routes 503 when the detector resolves DARK (resolveDevAgentGate on
+  // benchmarkDivergence.enabled — live-in-dryRun on a dev agent, dark fleet).
+  const benchmarkDivergenceOn = (): boolean =>
+    resolveDevAgentGate(ctx.config.benchmarkDivergence?.enabled, ctx.config);
+  const benchmarkDivergenceUnavailable = (res: import('express').Response): boolean => {
+    if (!benchmarkDivergenceOn()) {
+      res.status(503).json({ error: 'benchmark-divergence detector is off (benchmarkDivergence resolves dark on this agent)' });
+      return true;
+    }
+    if (!ctx.benchmarkDivergenceAnalyzer) {
+      res.status(503).json({ error: 'benchmark-divergence substrate unavailable (feature-metrics ledger not constructed)' });
+      return true;
+    }
+    return false;
+  };
+
+  // GET /benchmark-divergence — the FD10 read surface. Frozen envelope:
+  // { enabled, dryRun, analyzer, mirror, summary, findings[], scope }; every
+  // finding row carries advisory:true + locally-regenerated question text.
+  // CONTENT-FREE: never joins/inlines raw decision context (question 1 answers
+  // by correlation-id POINTERS into the meter's own surfaces). A plain-scope
+  // read on a non-holder is tagged analyzer.stale:true. ?scope=pool merges
+  // peers' findings through the FD9 allowlist (peer questions DROPPED and
+  // regenerated locally; failed/suspect carry normalized enums + clamped ids
+  // only), fronted by the shared PoolPollCache when wired, ordered per key
+  // (analysisWindow.toDay DESC, lastSeenAt DESC).
+  router.get('/benchmark-divergence', async (req, res) => {
+    if (benchmarkDivergenceUnavailable(res)) return;
+    try {
+      const analyzer = ctx.benchmarkDivergenceAnalyzer!;
+      const s = analyzer.settings();
+      const localFindings = analyzer.readLocalFindingViews();
+      const base = {
+        enabled: true,
+        dryRun: s.dryRun,
+        analyzer: analyzer.status(),
+        mirror: analyzer.mirrorStatus(),
+        summary: analyzer.summary(),
+      };
+      if (req.query.scope !== 'pool') {
+        res.json({ ...base, findings: localFindings, scope: 'local' });
+        return;
+      }
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const bdExtraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+      const failed: Array<{ machineId: string; reason: string }> = [];
+      const suspect: Array<{ machineId: string; reasons: string[] }> = [];
+      const remote: BenchmarkFindingView[] = [];
+      const todayDay = new Date().toISOString().slice(0, 10);
+      let peersOk = 0;
+      await Promise.all(
+        peers.map(async (p) => {
+          if (!isPeerUrlAllowedForCredentials(p.url, bdExtraAllowlist).ok) {
+            failed.push({ machineId: p.machineId, reason: 'url-rejected' });
+            return;
+          }
+          const fetchPeerFindings = async (): Promise<{ findings?: unknown[] }> => {
+            const r = await fetch(`${p.url}/benchmark-divergence`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!r.ok) throw new Error(`http-${r.status}`);
+            return (await r.json()) as { findings?: unknown[] };
+          };
+          try {
+            let body: { findings?: unknown[] };
+            if (ctx.poolPollCache) {
+              const cached = await ctx.poolPollCache.fetchPeer(p.machineId, '/benchmark-divergence', fetchPeerFindings);
+              body = cached.body as { findings?: unknown[] };
+            } else {
+              body = await fetchPeerFindings();
+            }
+            const rows = Array.isArray(body.findings) ? body.findings : [];
+            const reasons = new Set<string>();
+            if (rows.length > 500) reasons.add('row-volume-exceeded');
+            for (const raw of rows.slice(0, 500)) {
+              // FD9 allowlist admission: hostile fields stripped, peer question
+              // text DROPPED (regenerated locally), enum/charset clamps.
+              const view = clampBenchmarkPeerFinding(raw, { todayDay, maxAgeDays: s.byModelRetentionDays });
+              if (view) remote.push({ ...view, machineId: p.machineId } as BenchmarkFindingView);
+              else reasons.add('implausible-row');
+            }
+            if (reasons.size > 0) suspect.push({ machineId: p.machineId, reasons: Array.from(reasons).sort() });
+            peersOk++;
+          } catch (err) {
+            failed.push({
+              machineId: p.machineId,
+              reason: err instanceof Error && err.name === 'TimeoutError' ? 'timeout' : 'unreachable',
+            });
+          }
+        }),
+      );
+      const mergedFindings = mergeBenchmarkFindingsByKey([...localFindings, ...remote]);
+      res.json({
+        ...base,
+        findings: mergedFindings,
+        scope: 'pool',
+        pool: { peersQueried: peers.length, peersOk, failed, suspect },
+      });
+    } catch (err) {
+      res.status(500).json({ error: `benchmark-divergence read failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // POST /benchmark-divergence/analyze — trigger one analysis pass (FD8).
+  // Lease-gated (non-holder ⇒ 409 naming the holder), rate-limited (429),
+  // single-flight + idempotent (an in-flight pass answers calmly, never
+  // duplicates). Body {"trigger":"cadence"} (the built-in job) rides the
+  // bounded jitter; default manual runs immediately.
+  router.post('/benchmark-divergence/analyze', async (req, res) => {
+    if (benchmarkDivergenceUnavailable(res)) return;
+    try {
+      const trigger = (req.body as { trigger?: string } | undefined)?.trigger === 'cadence' ? 'cadence' : 'manual';
+      const result = await ctx.benchmarkDivergenceAnalyzer!.analyze(trigger);
+      if (result.reason === 'not-holder' || result.reason === 'lease-lost') {
+        res.status(409).json({ error: 'not-lease-holder', holderMachineId: result.holderMachineId ?? null, reason: result.reason });
+        return;
+      }
+      if (result.reason === 'rate-limited') {
+        res.status(429).json({ error: 'rate-limited', minIntervalMs: BENCHMARK_ANALYZE_MIN_INTERVAL_MS });
+        return;
+      }
+      if (result.reason === 'disabled') {
+        res.status(503).json({ error: 'benchmark-divergence detector is off (benchmarkDivergence resolves dark on this agent)' });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: `benchmark-divergence analyze failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // GET /benchmark-divergence/rollup-aggregates?fromDay=&toDay= — the FD10 peer
+  // collection route: this machine's matured-window per-model aggregates. The
+  // SERVING peer clamps the range (min of requested, its own maxDaysPerAnalysis,
+  // its retention) and bounds the response (maxAggregateRowsPerPeer).
+  router.get('/benchmark-divergence/rollup-aggregates', (req, res) => {
+    if (benchmarkDivergenceUnavailable(res)) return;
+    try {
+      const fromDay = String(req.query.fromDay ?? '');
+      const toDay = String(req.query.toDay ?? '');
+      if (!BENCHMARK_DAY_RE.test(fromDay) || !BENCHMARK_DAY_RE.test(toDay) || fromDay > toDay) {
+        res.status(400).json({ error: 'fromDay/toDay must be strict YYYY-MM-DD with fromDay <= toDay' });
+        return;
+      }
+      res.json(ctx.benchmarkDivergenceAnalyzer!.rollupAggregates(fromDay, toDay));
+    } catch (err) {
+      res.status(500).json({ error: `benchmark-divergence aggregates read failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
 

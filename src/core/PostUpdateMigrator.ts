@@ -250,6 +250,27 @@ An observe-only quality substrate over my internal LLM decisions (docs/specs/llm
 }
 
 /**
+ * CLAUDE.md awareness block for the Benchmark-Divergence Detector (docs/specs/
+ * benchmark-divergence-detector.md §Migration parity + agent awareness): the
+ * observe-only detector comparing real per-(decision-point × model) grade-rates
+ * against the mirrored INSTAR-Bench predictions, the three read/trigger routes
+ * (503-when-dark honesty), the precondition-first verdict enum, and the
+ * "read the findings, don't guess" proactive trigger. The unique heading
+ * substring `Benchmark-Divergence Detector` is the content-sniff marker used
+ * by migrateClaudeMd (Migration Parity).
+ */
+export function BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Benchmark-Divergence Detector (⚗️ observe-only) — does real life agree with the benchmark?
+
+An observe-only detector (docs/specs/benchmark-divergence-detector.md) that compares each enrolled decision point's REAL grade-rate (from the quality meter, per model, settled grades only) against the benchmark's PREDICTED pass-rate from the git-tracked mirror — noise-aware on BOTH sides (a tiny battery can never manufacture divergence), across every machine (the analysis pass runs on the serving-lease holder only and pool-collects each machine's aggregates). Every finding is \`advisory: true\` — a SIGNAL into a human or a proper authority, never a gate.
+- Read the findings: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/benchmark-divergence\` → \`{ enabled, dryRun, analyzer, mirror, summary, findings }\`. Verdicts are precondition-FIRST: \`precondition-failed\` (stale/missing mirror, prompt drift, unverifiable hash) suppresses divergent AND aligned — a stale benchmark never blames or credits a model. \`divergent-better\` leads with "is the grade-rate inflated?", never "promote this model". 503 when the detector is dark on this agent (\`benchmarkDivergence\` resolves off — dev-gated, dark on the fleet) — say so honestly rather than guessing. \`?scope=pool\` merges peers' findings (clamped, questions regenerated locally).
+- Trigger a pass: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{}' http://localhost:${port}/benchmark-divergence/analyze\` — lease-gated (a non-holder answers 409 naming the holder), rate-limited, idempotent. The daily \`benchmark-divergence-analysis\` built-in job drives the cadence and ships \`enabled:false\`; it never messages you.
+- **When to use** (PROACTIVE — this is the trigger): the user asks "is the benchmark still right about model X?" / "why does this gate underperform its bench score?" → read the findings, don't guess. Quote the verdict + its evidence fields (gradedN, unknownShare, CI half-widths); a \`chronic: true\` finding means the comparison has been stuck non-actionable for cycles (offline machine, starved grades, or a stale mirror) and names why.
+- The per-model essence accumulates METER-side (inside the annotate chokepoint) regardless of detector state — flipping \`benchmarkDivergence.enabled\` off stops the DETECTOR only; the by_model rollup keeps riding the meter's grading so a later enable has history.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for session-listing hygiene (CMT-1936): the
  * active-by-default GET /sessions view, the `?include=all` opt-in, bounded
  * finished-record retention, and the pool view's genuine cross-machine
@@ -585,6 +606,34 @@ export function migrateConfigRoutingSpendDark(config: Record<string, unknown>): 
     tokenRollupRetentionDays: 400,
   };
   return true;
+}
+
+/**
+ * Benchmark-Divergence Detector (docs/specs/benchmark-divergence-detector.md
+ * §Config surface + FD13): SEED the top-level `benchmarkDivergence` block DARK on
+ * existing agents — `enabled` DELIBERATELY OMITTED (the #1001 pattern: the routes +
+ * analyzer resolve it via resolveDevAgentGate, so a seeded `enabled:false` would
+ * force-dark even a development agent), `dryRun:true` (FD13 — zero detector-owned
+ * durable writes until a deliberate flip) and the P19-bounded retention knob. When
+ * the block is already present, only a default-shaped literal `enabled:false` is
+ * stripped (an explicit `true` — an operator fleet-flip — is preserved).
+ * Idempotent + existence-checked.
+ */
+export function migrateConfigBenchmarkDivergenceDark(config: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(config, 'benchmarkDivergence')) {
+    config.benchmarkDivergence = {
+      // `enabled` OMITTED so resolveDevAgentGate decides (live on a dev agent, dark fleet).
+      dryRun: true,
+      byModelRetentionDays: 180,
+    };
+    return true;
+  }
+  const bd = config.benchmarkDivergence as Record<string, unknown> | undefined;
+  if (bd && typeof bd === 'object' && !Array.isArray(bd) && bd.enabled === false) {
+    delete bd.enabled;
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -5138,6 +5187,19 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added LLM-Decision Quality Meter section');
     }
 
+    // Benchmark-Divergence Detector (benchmark-divergence-detector §Migration
+    // parity) — Agent Awareness Standard + Migration Parity item 3: existing
+    // agents learn the observe-only detector, its three routes (503-when-dark
+    // honesty), the precondition-first verdict semantics, and the "read the
+    // findings, don't guess" proactive trigger. Same text as generateClaudeMd
+    // (shared const — the PR #1450 single-source lesson). Content-sniff on the
+    // heading keeps it idempotent.
+    if (!content.includes('Benchmark-Divergence Detector')) {
+      content += BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Benchmark-Divergence Detector section');
+    }
+
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent
     // awareness for the owner⟂blockedOn commitment model + the probe + that the
     // user is never status-pinged for an agent-owned commitment. Content-sniffed.
@@ -9577,6 +9639,18 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: seeded dark routingSpend (tokenRollupRetentionDays:400; enabled omitted for the developmentAgent gate)');
     } else {
       result.skipped.push('config.json: routingSpend already present (no seed)');
+    }
+
+    // Benchmark-Divergence Detector (benchmark-divergence-detector §Migration
+    // parity): SEED the benchmarkDivergence block DARK (dryRun:true +
+    // byModelRetentionDays:180; `enabled` OMITTED so the developmentAgent gate
+    // resolves it live-on-dev / dark-fleet) AND strip a default-shaped
+    // `enabled:false`. Existence-checked, idempotent.
+    if (migrateConfigBenchmarkDivergenceDark(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded/normalized dark benchmarkDivergence (dryRun:true, byModelRetentionDays:180; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: benchmarkDivergence already present + correct (no seed/strip)');
     }
 
     // Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md): SEED

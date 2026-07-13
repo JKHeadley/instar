@@ -143,6 +143,20 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'benchmarkDivergence',
+    prefixes: ['/benchmark-divergence'],
+    description: 'Benchmark-Divergence Detector (benchmark-divergence-detector — Increment A of the benchmark-feedback loop; parent standard Decision Provenance & Outcome Review): the observe-only detector comparing each enrolled decision point\'s REAL per-model grade-rate (quality-meter settled grades over a rolling matured-day window, pool-collected across every machine on the serving-lease holder) against the benchmark\'s PREDICTED pass-rate from the git-tracked mirror — CI-aware on BOTH sides (Wilson half-widths, so a 10-case battery cannot manufacture divergence), precondition-FIRST (a stale/missing mirror or a drifted/unverifiable prompt template suppresses divergent AND aligned — a stale benchmark never blames or credits a model), direction-split (divergent-better leads with "is the grade-rate inflated?", never "promote this model"). Every finding is advisory:true (Signal vs. Authority) and content-free (correlation-id POINTERS into the meter, never raw decision context). GET /benchmark-divergence is the read surface (Bearer; ?scope=pool merges peers\' clamped findings, questions regenerated locally); POST /benchmark-divergence/analyze triggers one lease-gated, rate-limited, idempotent pass (the daily benchmark-divergence-analysis job template drives it, ships enabled:false); GET /benchmark-divergence/rollup-aggregates is the peer collection route (serving peer clamps the range). All three 503 when the detector is DARK on this agent (benchmarkDivergence resolves off — dev-gated: LIVE-in-dryRun on a development agent, DARK on the fleet) — say so honestly rather than guessing. When the operator asks "is the benchmark still right about model X?" / "why does this gate underperform its bench score?" → read the findings, never guess.',
+    build: ({ ctx }) => ({
+      configured: resolveDevAgentGate(ctx.config.benchmarkDivergence?.enabled, ctx.config),
+      dryRun: ctx.config.benchmarkDivergence?.dryRun !== false,
+      endpoints: [
+        'GET /benchmark-divergence',
+        'POST /benchmark-divergence/analyze',
+        'GET /benchmark-divergence/rollup-aggregates',
+      ],
+    }),
+  },
+  {
     key: 'conversationIdentity',
     prefixes: ['/conversations'],
     description: 'Durable Conversation Identity (durable-conversation-identity §8) — the read-only registry surface behind channel-agnostic conversation ids. Every conversation has ONE durable numeric identity: a Telegram topic IS its positive id (pass-through, never registered); a non-Telegram conversation (Slack channel/thread) is minted a stable NEGATIVE id at first inbound, so durable state (commitments, memory, notices) can attach to it and survive restarts. A negative topicId anywhere in state is a minted conversation id, not an error. GET /conversations lists entries + the alias table; GET /conversations/:id resolves one id (unknown negative → honest 404 "never minted on this machine"); GET /conversations/resolve?key=…|?sessionKey=… is the forward lookup that mints NOTHING; GET /conversations/health carries entry counts, origins, quarantine + snapshot-suspension state, and the growth tripwire. Recording is always-on foundation (kill-switch: conversationIdentity.recording.enabled=false degrades to legacy in-memory hashing); DELIVERY to minted ids is dev-gated (conversationIdentity.followThrough, dryRun-first). When asked "what is this negative topic id?" / "which Slack conversation is -N?" → read /conversations/:id, never guess.',

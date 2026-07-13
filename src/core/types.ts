@@ -4238,6 +4238,51 @@ export interface InstarConfig {
     };
   };
   /**
+   * Benchmark-Divergence Detector (docs/specs/benchmark-divergence-detector.md
+   * §Config surface). Observe-only detector comparing real grade-rates to the
+   * mirrored INSTAR-Bench predictions. Ships DARK on the fleet, live-in-dryRun
+   * on a development agent.
+   */
+  benchmarkDivergence?: {
+    /**
+     * OMIT-REQUIRED (never seeded by migrateConfig): resolves via
+     * `resolveDevAgentGate` — LIVE on a development agent, DARK on the fleet.
+     * An explicit value always wins.
+     */
+    enabled?: boolean;
+    /** Default TRUE (FD13): dryRun = ZERO detector-owned durable writes (no
+     *  findings, no watermark, no history; would-analyze summaries logged). */
+    dryRun?: boolean;
+    /** FD3 base divergence threshold. Default 0.15. */
+    divergenceThreshold?: number;
+    /** Graded-sample floor; falls through to provenance.quality.minSampleForRates (20). */
+    minSampleForRates?: number;
+    /** FD2 unsettled-stream bound over decided_total. Default 0.5. */
+    maxUnknownShare?: number;
+    /** FD2 pool-merged orphan-share bound. Default 0.10. */
+    maxOrphanShare?: number;
+    /** A day is matured when day ≤ today − this (FD7). Default 2. */
+    analysisMaturityLagDays?: number;
+    /** Analysis cadence (±10% jitter, FD8). Default 24. */
+    analysisCadenceHours?: number;
+    /** Rolling-window length in matured days (FD7). Default 35. */
+    maxDaysPerAnalysis?: number;
+    /** FD1 mirror location relative to the project root. Default src/data/benchmarkPredictions.json. */
+    mirrorPath?: string;
+    /** Mirror age beyond this ⇒ stale-mirror suppression (FD4). Default 30. */
+    mirrorStalenessMaxDays?: number;
+    /** decision_quality_rollup_by_model retention (its OWN knob — P19). Default 180. */
+    byModelRetentionDays?: number;
+    /** Consecutive non-actionable verdicts before chronic:true (FD8). Default 3. */
+    chronicCycles?: number;
+    /** FD11 per-key history cap (first row retained permanently). Default 50. */
+    maxHistoryPerKey?: number;
+    /** FD9 per-peer aggregate-row ceiling (hard absolute cap 10000). Default 10000. */
+    maxAggregateRowsPerPeer?: number;
+    /** FD9 new-finding-key ceiling per pass (excess → one unmapped-flood finding). Default 200. */
+    maxNewFindingKeysPerPass?: number;
+  };
+  /**
    * Constitutional ceilings carried by ratified standards (three-standards-
    * enforcement spec). Read by watchers/lints; a missing/non-numeric value
    * fails CLOSED (escalate-sooner).
