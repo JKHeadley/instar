@@ -10,7 +10,9 @@ Give the agent one small, shared "operator decisions" notebook that every machin
 
 ## What's allowed in the notebook (the important safety line)
 
-Only "noise knobs" — settings that change **what you hear** (which alerts buzz, thresholds, digest routing). The allowed list is written in the code itself, so it can only grow through a reviewed code change, never by anyone (including me) editing a config at runtime. Deliberately banned: anything structural or safety-bearing — the development-agent flag, mesh/topology settings, money settings, secrets, and the safety floors. Worst case if something goes wrong here: an alert is louder or quieter than intended. Never: the agent gains an ability it shouldn't have.
+Only "noise knobs" — settings that change **what you hear** (which alerts buzz, thresholds). The allowed list is written in the code itself, so it can only grow through a reviewed code change, never by anyone (including me) editing a config at runtime. Deliberately banned: anything structural or safety-bearing — the development-agent flag, mesh/topology settings, money settings, secrets, the safety floors, and even "where alerts get sent" (redirecting alerts is a real security lever, so it's excluded until it can be properly validated). Worst case if something goes wrong here: an alert is louder or quieter than intended. Never: the agent gains an ability it shouldn't have.
+
+**Extra lock on the three riskiest switches.** Three of the allowed settings can turn OFF a detector that watches the system itself (like the token-burn alarm). Those get a stronger rule: I can't flip them off on my own at all — the server itself messages you for a yes/no, and only YOUR reply commits the change. Turning a detector back ON needs no such friction. And every "detector off" decision posts one calm, un-deletable notice to your alerts topic — so nothing can ever be quieted invisibly, not even by me.
 
 ## How it behaves day to day
 
