@@ -3,6 +3,15 @@ title: "Quiet-Settings Follow the Agent — Replicated Operator-Settings Overlay
 slug: "quiet-settings-overlay"
 author: "echo"
 principal-deferral-approval: "v1 conversational-only confirmation for NON-suppression noise keys — argued exemption per Threat model (suppression-class keys carry the structural server-confirm gate); direction + auto-apply approved by operator 2026-07-12 (design-brief decision, topic 29836)"
+review-convergence: "2026-07-13T08:08:10.931Z"
+review-iterations: 6
+review-completed-at: "2026-07-13T08:08:10.931Z"
+review-report: "docs/specs/reports/quiet-settings-overlay-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 18
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 # Quiet-Settings Follow the Agent — Replicated Operator-Settings Overlay
@@ -202,7 +211,7 @@ Because a running machine persists received records immediately (D4), "behind an
 
 ## Open questions
 
-*(none — all decisions frontloaded above)*
+*(none)*
 
 ## Failure honesty
 
