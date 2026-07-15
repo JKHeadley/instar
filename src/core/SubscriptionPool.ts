@@ -130,6 +130,23 @@ export interface SubscriptionAccount {
    * rather than a re-auth event.
    */
   lastRefreshAt?: string;
+  /**
+   * The credential currently found in this account's labelled slot proved to
+   * belong to another pool account. This is first-class operational state:
+   * drifted accounts are never capacity-counted or selected as swap targets.
+   * It self-closes on the first identity-confirmed poll of the labelled slot.
+   */
+  identityDrifted?: boolean;
+  /** Public, credential-free identity evidence for the active drift episode. */
+  identityDrift?: {
+    expectedAccountId: string;
+    actualAccountId: string;
+    actualEmail?: string;
+    slot: string;
+    detectedAt: string;
+    lastConfirmedAt: string;
+    repairState: 'planned' | 'dry-run' | 'repairing' | 'owner-relogin-required';
+  };
   /** Monotonic version for optimistic CAS in update(). */
   version: number;
 }
@@ -151,7 +168,8 @@ export function isLocallyExecutable(a: SubscriptionAccount): boolean {
   return (
     typeof a.configHome === 'string' &&
     a.configHome.trim().length > 0 &&
-    (a.status === 'active' || a.status === 'warming')
+    (a.status === 'active' || a.status === 'warming') &&
+    a.identityDrifted !== true
   );
 }
 
@@ -187,6 +205,8 @@ export interface UpdateAccountInput {
   lastUsedAt?: string;
   lastRefreshAt?: string;
   email?: string;
+  identityDrifted?: boolean;
+  identityDrift?: SubscriptionAccount['identityDrift'] | null;
 }
 
 const ID_RE = /^[a-z0-9-]+$/;
@@ -383,6 +403,13 @@ export class SubscriptionPool {
       const em = patch.email.trim();
       acct.email = em || undefined;
     }
+    if (patch.identityDrifted !== undefined) {
+      acct.identityDrifted = patch.identityDrifted;
+    }
+    if (patch.identityDrift !== undefined) {
+      if (patch.identityDrift === null) delete acct.identityDrift;
+      else acct.identityDrift = { ...patch.identityDrift };
+    }
 
     acct.version += 1;
     this.save();
@@ -408,7 +435,7 @@ export class SubscriptionPool {
   getHealth(): ComponentHealth {
     const total = this.store.accounts.length;
     const usable = this.store.accounts.filter(
-      (a) => a.status === 'active' || a.status === 'warming',
+      (a) => (a.status === 'active' || a.status === 'warming') && !a.identityDrifted,
     ).length;
     return {
       status: 'healthy',

@@ -46,6 +46,7 @@ import {
   type RefreshResult,
 } from './OAuthRefresher.js';
 import type { CredentialLocationGate } from './CredentialLocationGate.js';
+import type { CredentialLocationLedger } from './CredentialLocationLedger.js';
 import {
   readLatestCodexUsage,
   type CodexUsageSnapshot,
@@ -105,6 +106,17 @@ export interface QuotaPollerConfig {
    * (or flag-off / ledger-unknown) → byte-for-byte today's enrollment-home behavior.
    */
   locationGate?: CredentialLocationGate;
+  /** Cached identity truth for Claude credential slots (default host TTL: ~6h). */
+  resolveSlotIdentity?: (slot: string) => Promise<
+    | { accountId: string; email?: string }
+    | { unavailable: true; reason: string }
+  >;
+  identityCacheTtlMs?: number;
+  /** Reconcile confirmed live attribution into the durable location ledger. */
+  locationLedger?: CredentialLocationLedger;
+  /** One deduped attention item per drift episode (id is stable until self-close). */
+  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
+  onIdentityRestored?: (accountId: string) => void | Promise<void>;
 }
 
 /** Outcome of a single usage read (internal). */
@@ -263,6 +275,13 @@ export class QuotaPoller {
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
+  private readonly resolveSlotIdentity?: QuotaPollerConfig['resolveSlotIdentity'];
+  private readonly identityCacheTtlMs: number;
+  private readonly locationLedger?: CredentialLocationLedger;
+  private readonly emitIdentityDriftAttention?: QuotaPollerConfig['emitIdentityDriftAttention'];
+  private readonly onIdentityRestored?: QuotaPollerConfig['onIdentityRestored'];
+  private readonly identityCache = new Map<string, { at: number; value: Awaited<ReturnType<NonNullable<QuotaPollerConfig['resolveSlotIdentity']>>> }>();
+  private readonly attributionByExpected = new Map<string, string>();
   private interval: ReturnType<typeof setInterval> | null = null;
   /** Most-recent snapshot per account id. */
   private readonly lastByAccount = new Map<string, AccountQuotaSnapshot>();
@@ -282,6 +301,76 @@ export class QuotaPoller {
     this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
+    this.resolveSlotIdentity = config.resolveSlotIdentity;
+    this.identityCacheTtlMs = config.identityCacheTtlMs ?? 6 * 60 * 60_000;
+    this.locationLedger = config.locationLedger;
+    this.emitIdentityDriftAttention = config.emitIdentityDriftAttention;
+    this.onIdentityRestored = config.onIdentityRestored;
+  }
+
+  private async identityForSlot(slot: string) {
+    if (!this.resolveSlotIdentity) return null;
+    const cached = this.identityCache.get(slot);
+    const now = this.now();
+    if (cached && now - cached.at < this.identityCacheTtlMs) return cached.value;
+    const value = await this.resolveSlotIdentity(slot);
+    this.identityCache.set(slot, { at: now, value });
+    return value;
+  }
+
+  /** Identity truth wins over a stale registry/ledger label. */
+  private async reconcileIdentity(expected: SubscriptionAccount, slot: string): Promise<SubscriptionAccount | null> {
+    this.attributionByExpected.set(expected.id, expected.id);
+    if (expected.framework !== 'claude-code') return expected;
+    const identity = await this.identityForSlot(slot);
+    if (!identity || 'unavailable' in identity) return expected; // uncertainty never mutates truth
+    const actual = this.pool.get(identity.accountId);
+    if (!actual) return null; // confirmed but unknown to the registry: quarantine/repair path owns it
+    const nowIso = new Date(this.now()).toISOString();
+    if (identity.accountId === expected.id) {
+      if (expected.identityDrifted) {
+        this.pool.update(expected.id, { identityDrifted: false, identityDrift: null });
+        try { void this.onIdentityRestored?.(expected.id); }
+        catch { /* @silent-fallback-ok: drift state is already self-closed; commitment cleanup retries on a later confirmed poll */ }
+      }
+      this.locationLedger?.recordAssignment(slot, expected.id, {
+        verifiedAt: nowIso,
+        op: 'reconcile',
+        source: 'quota-poll-identity-oracle',
+      });
+      this.attributionByExpected.set(expected.id, expected.id);
+      return expected;
+    }
+
+    const detectedAt = expected.identityDrift?.detectedAt ?? nowIso;
+    this.pool.update(expected.id, {
+      identityDrifted: true,
+      identityDrift: {
+        expectedAccountId: expected.id,
+        actualAccountId: actual.id,
+        ...(identity.email ? { actualEmail: identity.email } : {}),
+        slot,
+        detectedAt,
+        lastConfirmedAt: nowIso,
+        repairState: 'planned',
+      },
+    });
+    // Registry truth is explicit + journalled. This changes attribution only;
+    // the separately planned executor move restores the labelled physical home.
+    this.locationLedger?.recordAssignment(slot, actual.id, {
+      verifiedAt: nowIso,
+      op: 'reconcile',
+      source: 'quota-poll-identity-oracle',
+    });
+    this.attributionByExpected.set(expected.id, actual.id);
+    try {
+      void this.emitIdentityDriftAttention?.({
+        id: `credential-identity-drift-${expected.id}-${detectedAt}`,
+        title: `Credential identity drift: ${expected.id}`,
+        summary: `Slot ${slot} is labelled ${expected.id} but live identity is ${actual.id}. Quota was attributed to ${actual.id}; the slot is excluded from swaps pending audited repair.`,
+      });
+    } catch { /* @silent-fallback-ok: attribution + exclusion are already enforced; attention is best-effort */ }
+    return { ...actual, configHome: slot };
   }
 
   /**
@@ -365,7 +454,9 @@ export class QuotaPoller {
     // attribution) targets the account's LIVE slot per the ledger gate — NOT its enrollment home —
     // so a swap mid-poll can't read/refresh/flag the wrong tenant. account.id is preserved (only
     // the slot home moves), so pool.update + logging still name the right account.
-    const slotAccount = this.accountForReads(account);
+    const routedAccount = this.accountForReads(account);
+    const slotAccount = await this.reconcileIdentity(account, routedAccount.configHome);
+    if (!slotAccount) return null;
 
     if (account.provider === 'openai' && account.framework === 'codex-cli') {
       const nowMs = this.now();
@@ -388,9 +479,10 @@ export class QuotaPoller {
       };
       if (fiveHour) snap.fiveHour = fiveHour;
       if (sevenDay) snap.sevenDay = sevenDay;
-      const priorLast = this.lastByAccount.get(account.id);
-      if (priorLast) this.prevByAccount.set(account.id, priorLast);
-      this.lastByAccount.set(account.id, snap);
+      const attributedId = slotAccount.id;
+      const priorLast = this.lastByAccount.get(attributedId);
+      if (priorLast) this.prevByAccount.set(attributedId, priorLast);
+      this.lastByAccount.set(attributedId, snap);
       return snap;
     }
 
@@ -417,14 +509,14 @@ export class QuotaPoller {
           return null;
         }
         // No refresh token, or the exchange was rejected — genuine re-auth.
-        this.markNeedsReauth(account, refreshed.reason);
+        this.markNeedsReauth(slotAccount, refreshed.reason);
         return null;
       }
       const retry = await this.readUsage(refreshed.accessToken);
       if (retry === null) return null; // network blip on the retry → next cycle
       if (retry.authFailed) {
         // Fresh token still rejected — treat as genuinely failed.
-        this.markNeedsReauth(account, 'usage still auth-failed after refresh');
+        this.markNeedsReauth(slotAccount, 'usage still auth-failed after refresh');
         return null;
       }
       // Recovered silently — no operator action needed. Record for visibility.
@@ -445,9 +537,10 @@ export class QuotaPoller {
 
     const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date(this.now()).toISOString());
     // Shift the prior "last" down to "prev" so burnRate has a distinct baseline.
-    const priorLast = this.lastByAccount.get(account.id);
-    if (priorLast) this.prevByAccount.set(account.id, priorLast);
-    this.lastByAccount.set(account.id, snap);
+    const attributedId = slotAccount.id;
+    const priorLast = this.lastByAccount.get(attributedId);
+    if (priorLast) this.prevByAccount.set(attributedId, priorLast);
+    this.lastByAccount.set(attributedId, snap);
     return snap;
   }
 
@@ -471,6 +564,7 @@ export class QuotaPoller {
         continue;
       }
       polled++;
+      const attributedId = this.attributionByExpected.get(account.id) ?? account.id;
       const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
       // A clean read on an account previously flagged needs-reauth restores it.
       if (account.status === 'needs-reauth') patch.status = 'active';
@@ -488,7 +582,7 @@ export class QuotaPoller {
         if (email && email !== account.email) patch.email = email;
       }
       try {
-        this.pool.update(account.id, patch);
+        this.pool.update(attributedId, patch);
       } catch {
         // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
       }

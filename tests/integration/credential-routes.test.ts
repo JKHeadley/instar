@@ -70,13 +70,15 @@ function buildLedger(stateDir: string): CredentialLocationLedger {
 }
 
 /** Identity resolver mapping the in-memory blob's token → its account (commit-side ALLOW). */
-const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
+const resolveCurrent: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_A : ACC_B });
+const resolveDrifted: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
 
 function makeApp(opts: {
   enabled: boolean;
   manualLeversEnabled?: boolean;
   anthropicApiKey?: string;
   fleet?: EnvTokenFleetSession[];
+  identityDrifted?: boolean;
 }): { app: express.Express; stateDir: string; auditLines: string[]; ledger: CredentialLocationLedger } {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-routes-'));
   fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
@@ -88,14 +90,14 @@ function makeApp(opts: {
     funnel: new CredentialWriteFunnel(),
     ledger,
     keychain: km,
-    resolveIdentity: resolveAllow,
+    resolveIdentity: opts.identityDrifted ? resolveDrifted : resolveCurrent,
     config: { enabled: opts.enabled, dryRun: true }, // dry-run so the route exercises the live path without real writes
     reverifyDelayMs: 5,
   });
   const credentialRepointing = {
     ledger,
     swapExecutor,
-    resolveIdentity: resolveAllow,
+    resolveIdentity: opts.identityDrifted ? resolveDrifted : resolveCurrent,
     audit,
     levers: new CredentialManualLevers(),
     envTokenGate: new CredentialEnvTokenGate({
@@ -108,6 +110,21 @@ function makeApp(opts: {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       return { raw, oauth: (parsed.claudeAiOauth ?? null) as never };
     },
+    repairPlan: async () => ({
+      moves: [{ slotA: SLOT_A, slotB: SLOT_B, accountA: ACC_A, accountB: ACC_B, reason: 'restore-labelled-home' as const }],
+      vacates: [], quarantineSlots: [], ownerReloginAccountIds: [], duplicateAccountIds: [], complete: true,
+    }),
+    executeRepairPlan: async () => ({
+      plan: {
+        moves: [{ slotA: SLOT_A, slotB: SLOT_B, accountA: ACC_A, accountB: ACC_B, reason: 'restore-labelled-home' as const }],
+        vacates: [], quarantineSlots: [], ownerReloginAccountIds: [], duplicateAccountIds: [], complete: true,
+      },
+      results: [{
+        move: { slotA: SLOT_A, slotB: SLOT_B, accountA: ACC_A, accountB: ACC_B, reason: 'restore-labelled-home' as const },
+        outcome: 'dry-run', reason: 'dry-run',
+      }],
+      vacateResults: [],
+    }),
   };
   const app = express();
   app.use(express.json());
@@ -227,6 +244,17 @@ describe('/credentials/* routes (integration)', () => {
     expect(built.auditLines.join('')).not.toContain('LeAkMe1234567890');
   });
 
+  it('Tier-2: repair plan is readable first and execution reuses the dry-run staged executor', async () => {
+    const built = makeApp({ enabled: true, identityDrifted: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const dry = await api('/credentials/repair-plan');
+    expect(dry).toMatchObject({ status: 200, body: { enabled: true, dryRun: true } });
+    expect(dry.body.plan.moves).toHaveLength(1);
+    const executed = await api('/credentials/repair-plan/execute', { method: 'POST', body: '{}' });
+    expect(executed.status).toBe(200);
+    expect(executed.body.results[0].outcome).toBe('dry-run');
+  });
+
   it('param-validate: unknown slot → 400 (never reaches a keychain write)', async () => {
     const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
     server = await listen(built.app);
@@ -241,9 +269,9 @@ describe('/credentials/* routes (integration)', () => {
   });
 
   it('restore-enrollment parks an incoherent slot one-directionally (never exchanged)', async () => {
-    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    const built = makeApp({ enabled: true, identityDrifted: true }); stateDir = built.stateDir; cleanup.push(stateDir);
     server = await listen(built.app);
-    // The oracle resolver (resolveAllow) returns ACC_B for SLOT_A but the ledger lineage is ACC_A
+    // The drifted resolver returns ACC_B for SLOT_A but the ledger lineage is ACC_A
     // → identity-incoherent → parked. (SLOT_B: ACC_A vs lineage ACC_B → also parked.)
     const r = await api('/credentials/restore-enrollment', { method: 'POST', body: '{}' });
     expect(r.status).toBe(200);

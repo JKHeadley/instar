@@ -125,6 +125,21 @@ describe('SubscriptionPool', () => {
     expect(u?.version).toBe(2);   // bumped from 1
   });
 
+  it('excludes identity-drifted accounts from local execution until self-closed', () => {
+    pool.add({ ...VALID });
+    pool.update(VALID.id, {
+      identityDrifted: true,
+      identityDrift: {
+        expectedAccountId: VALID.id, actualAccountId: 'other', slot: VALID.configHome,
+        detectedAt: '2026-01-01T00:00:00.000Z', lastConfirmedAt: '2026-01-01T00:00:00.000Z',
+        repairState: 'planned',
+      },
+    });
+    expect(pool.locallyExecutable()).toEqual([]);
+    pool.update(VALID.id, { identityDrifted: false, identityDrift: null });
+    expect(pool.locallyExecutable().map((a) => a.id)).toEqual([VALID.id]);
+  });
+
   it('update returns null for an unknown id', () => {
     expect(pool.update('nope', { nickname: 'x' })).toBeNull();
   });

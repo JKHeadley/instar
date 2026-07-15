@@ -27,6 +27,7 @@ import { heartbeatFreshEnoughToRerecord } from '../core/MachineHeartbeat.js';
 import { slackRespawnBootstrapIds } from '../core/slackRefreshBinding.js';
 import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
+import { planCredentialIdentityRepair } from '../core/CredentialIdentityRepairPlan.js';
 import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifier.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
@@ -12919,6 +12920,55 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
       },
     });
+    const buildCredentialRepairPlan = async () => {
+      const accounts = subscriptionPool.list().filter((a) => a.framework === 'claude-code');
+      const slots = [...new Set(accounts.map((a) => a.configHome))];
+      const observations = await Promise.all(slots.map(async (slot) => {
+        const identity = await credResolveIdentity(slot);
+        return { slot, accountId: 'unavailable' in identity ? null : identity.accountId };
+      }));
+      return planCredentialIdentityRepair(accounts, observations);
+    };
+    const executeCredentialRepairPlan = async () => {
+      const plan = await buildCredentialRepairPlan();
+      const results: Array<{ move: (typeof plan.moves)[number]; outcome: string; reason: string }> = [];
+      const vacateResults: Array<{ impostorSlot: string; retainedSlot: string; accountId: string; outcome: string; reason: string }> = [];
+      for (const vacate of plan.vacates) {
+        const result = await credentialSwapExecutor.vacateDuplicate(vacate.impostorSlot, vacate.retainedSlot, vacate.accountId);
+        vacateResults.push({ ...vacate, outcome: result.outcome, reason: result.reason });
+        if (result.outcome !== 'swapped' && result.outcome !== 'dry-run') break;
+      }
+      for (const move of plan.moves) {
+        const [liveA, liveB] = await Promise.all([credResolveIdentity(move.slotA), credResolveIdentity(move.slotB)]);
+        if ('unavailable' in liveA || 'unavailable' in liveB) {
+          results.push({ move, outcome: 'precondition-failed', reason: 'repair census became unavailable — move refused' });
+          break;
+        }
+        credentialLocationLedger.recordAssignment(move.slotA, liveA.accountId, { verifiedAt: new Date().toISOString(), op: 'reconcile', source: 'identity-repair-preflight' });
+        credentialLocationLedger.recordAssignment(move.slotB, liveB.accountId, { verifiedAt: new Date().toISOString(), op: 'reconcile', source: 'identity-repair-preflight' });
+        const result = await credentialSwapExecutor.swap(move.slotA, move.slotB);
+        results.push({ move, outcome: result.outcome, reason: result.reason });
+        if (result.outcome !== 'swapped' && result.outcome !== 'dry-run') break;
+      }
+      for (const accountId of plan.ownerReloginAccountIds) {
+        const externalKey = `credential-identity-relogin:${accountId}`;
+        try {
+          if (!commitmentTracker.getActive().some((c) => c.externalKey === externalKey)) {
+            commitmentTracker.record({
+              type: 'one-time-action', source: 'agent', beaconEnabled: true, externalKey,
+              userRequest: `Restore the missing local login for subscription account ${accountId}.`,
+              agentResponse: `Owner re-login is required on this machine. Use the dashboard Subscriptions grid or POST /subscription-pool/follow-me/enroll/start for account ${accountId}; the login is minted locally and never copied across machines.`,
+            });
+          }
+          subscriptionPool.update(accountId, { identityDrifted: true, identityDrift: {
+            expectedAccountId: accountId, actualAccountId: 'missing-local-login',
+            slot: subscriptionPool.get(accountId)?.configHome ?? 'unknown', detectedAt: new Date().toISOString(),
+            lastConfirmedAt: new Date().toISOString(), repairState: 'owner-relogin-required',
+          } });
+        } catch { /* @silent-fallback-ok: next audit retries the durable residual; no credential mutation depends on it */ }
+      }
+      return { plan, results, vacateResults };
+    };
     const credentialRepointing = {
       ledger: credentialLocationLedger,
       swapExecutor: credentialSwapExecutor,
@@ -12927,6 +12977,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       levers: credentialManualLevers,
       envTokenGate: credentialEnvTokenGate,
       rebalancer: credentialRebalancer,
+      repairPlan: buildCredentialRepairPlan,
+      executeRepairPlan: executeCredentialRepairPlan,
       readBlob: async (slot: string) => {
         const raw = await defaultKeychainExec.readService(credSwapService(slot));
         if (!raw) return null;
@@ -13033,6 +13085,20 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (r.refreshed || r.recovered || r.quarantined) {
           console.log(pc.dim(`  Credential identity audit (${trigger}): ${r.refreshed} refreshed, ${r.recovered} recovered, ${r.quarantined} quarantined, ${r.unresolved} unresolved`));
         }
+        // A confirmed divergence is not flag-and-forget. Immediately run the
+        // audited repair arm: dry-run while the feature is in dry-run, real
+        // staged moves only when the existing destructive gate is live.
+        if (r.quarantined > 0) {
+          const repair = await executeCredentialRepairPlan();
+          credentialAuditEmit.audit({
+            event: 'identity-repair-auto-pass', trigger,
+            moves: repair.results.length,
+            outcomes: repair.results.map((x) => x.outcome),
+            duplicateVacates: repair.vacateResults.length,
+            vacateOutcomes: repair.vacateResults.map((x) => x.outcome),
+            ownerReloginResiduals: repair.plan.ownerReloginAccountIds.length,
+          });
+        }
       } catch (e) {
         console.warn(`[CredentialIdentityAudit] ${trigger} error: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
@@ -13060,6 +13126,33 @@ export async function startServer(options: StartOptions): Promise<void> {
       logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       // Census #1–#4: resolve each account's LIVE slot through the ledger (no-op while dark).
       locationGate: credentialLocationGate,
+      // Tier-0 attribution hardening: reuse the SAME profile-backed identity oracle as
+      // credential swaps. QuotaPoller caches this read for ~6h; the swap executor's
+      // mandatory pre-flight remains live/uncached.
+      resolveSlotIdentity: async (slot) => {
+        const r = await credResolveIdentity(slot);
+        if ('unavailable' in r) return r;
+        const account = subscriptionPool.get(r.accountId);
+        return { accountId: r.accountId, ...(account?.email ? { email: account.email } : {}) };
+      },
+      identityCacheTtlMs: 6 * 60 * 60_000,
+      locationLedger: credentialLocationLedger,
+      emitIdentityDriftAttention: telegram
+        ? (item) => void telegram!.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.summary,
+            description: item.summary,
+            category: 'credential-identity-drift',
+            priority: 'HIGH',
+            sourceContext: 'quota-poll-identity-oracle',
+          })
+        : undefined,
+      onIdentityRestored: (accountId) => {
+        const externalKey = `credential-identity-relogin:${accountId}`;
+        const active = commitmentTracker.getActive().find((c) => c.externalKey === externalKey);
+        if (active) commitmentTracker.deliver(active.id);
+      },
     });
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();

@@ -74,6 +74,27 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
     expect(onDisk.accounts[0].lastQuota.sevenDay.utilizationPct).toBe(42);
   });
 
+  it('LIVE: /subscription-pool exposes drift while quota follows live identity', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-drift-e2e-'));
+    const pool = new SubscriptionPool({ stateDir: dir });
+    pool.add({ id: 'label-a', nickname: 'A', email: 'a@test', provider: 'anthropic', framework: 'claude-code', configHome: '/slot/a' });
+    pool.add({ id: 'real-b', nickname: 'B', email: 'b@test', provider: 'anthropic', framework: 'claude-code', configHome: '/slot/b' });
+    const quotaPoller = new QuotaPoller({
+      pool, fetchImpl: okFetch, tokenResolver: () => 'sk-ant-oat01-x',
+      resolveSlotIdentity: async (slot) => slot === '/slot/a'
+        ? { accountId: 'real-b', email: 'b@test' }
+        : { accountId: 'real-b', email: 'b@test' },
+    });
+    server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, quotaPoller });
+    await fetch(server.url + '/subscription-pool/poll', { method: 'POST' });
+    const body = await (await fetch(server.url + '/subscription-pool')).json();
+    const accounts = body.accounts;
+    const drifted = accounts.find((a: { id: string }) => a.id === 'label-a');
+    const actual = accounts.find((a: { id: string }) => a.id === 'real-b');
+    expect(drifted).toMatchObject({ identityDrifted: true, identityDrift: { actualAccountId: 'real-b', slot: '/slot/a' } });
+    expect(actual.lastQuota.sevenDay.utilizationPct).toBe(42);
+  });
+
   it('LIVE: a real Codex rollout becomes a non-zero pool quota snapshot over HTTP', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-codex-e2e-'));
     const codexHome = path.join(dir, 'codex-home');

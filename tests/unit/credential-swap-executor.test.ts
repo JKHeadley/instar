@@ -175,6 +175,35 @@ describe('CredentialSwapExecutor — dark-ship inertness', () => {
   });
 });
 
+describe('CredentialSwapExecutor — duplicate-copy consolidation', () => {
+  it('stages and vacates only the impostor copy after both homes live-identify as the same account', async () => {
+    const km = memKeychain({
+      [claudeCredentialService(SLOT_A)]: blob(ACC_A, 'HOME'),
+      [claudeCredentialService(SLOT_B)]: blob(ACC_A, 'DUPLICATE'),
+    });
+    const led = makeLedger(stateDir);
+    const ex = makeExecutor({ km, ledger: led, resolveIdentity: identityFromMap(km), dryRun: false });
+    const result = await ex.vacateDuplicate(SLOT_B, SLOT_A, ACC_A);
+    expect(result.outcome).toBe('swapped');
+    expect(km.map[claudeCredentialService(SLOT_A)]).toContain('HOME');
+    expect(km.map[claudeCredentialService(SLOT_B)]).toBeUndefined();
+    expect(led.getAssignment(SLOT_B)?.quarantined).toBe(true);
+    expect(km.services().some((s) => s.startsWith('instar-credential-swap-staging-'))).toBe(false);
+  });
+
+  it('refuses and writes nothing when either live identity is uncertain', async () => {
+    const km = memKeychain({
+      [claudeCredentialService(SLOT_A)]: blob(ACC_A),
+      [claudeCredentialService(SLOT_B)]: blob(ACC_A),
+    });
+    const led = makeLedger(stateDir);
+    const ex = makeExecutor({ km, ledger: led, resolveIdentity: async () => ({ unavailable: true, reason: 'down' }), dryRun: false });
+    const result = await ex.vacateDuplicate(SLOT_B, SLOT_A, ACC_A);
+    expect(result.outcome).toBe('precondition-failed');
+    expect(km.map[claudeCredentialService(SLOT_B)]).toBeTruthy();
+  });
+});
+
 describe('CredentialSwapExecutor — preconditions (exact ledger membership BEFORE path expansion)', () => {
   it('rejects a non-member slot (traversal can never reach a keychain service)', async () => {
     const km = memKeychain({ [claudeCredentialService(SLOT_A)]: blob(ACC_A), [claudeCredentialService(SLOT_B)]: blob(ACC_B) });
@@ -293,11 +322,14 @@ describe('CredentialSwapExecutor — clobber-race / source-slot CAS (§2.3.1a)',
       funnel: new CredentialWriteFunnel(),
       ledger: led,
       keychain: exec,
-      resolveIdentity: async (slot) => {
-        // The CAS re-read blob on slot A now identity-resolves to ACC_B (different tenant).
-        if (slot === SLOT_A) return { accountId: ACC_B };
+      resolveIdentity: (() => {
+        let slotAProbes = 0;
+        return async (slot) => {
+        // Live pre-flight first confirms A; the later CAS probe sees the clobber to B.
+        if (slot === SLOT_A) return { accountId: slotAProbes++ === 0 ? ACC_A : ACC_B };
         return { accountId: ACC_B };
-      },
+        };
+      })(),
       config: { enabled: true, dryRun: false },
     });
     const res = await ex.swap(SLOT_A, SLOT_B);
