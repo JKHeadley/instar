@@ -23,3 +23,5 @@ enrollment flow—Claude login tokens are never copied between machines.
 
 The episode closes automatically when a later poll proves that the slot label
 and live identity agree again.
+
+The repair remains behind the existing credential re-pointing dark and dry-run gates.

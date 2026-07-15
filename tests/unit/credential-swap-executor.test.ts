@@ -202,6 +202,34 @@ describe('CredentialSwapExecutor — duplicate-copy consolidation', () => {
     expect(result.outcome).toBe('precondition-failed');
     expect(km.map[claudeCredentialService(SLOT_B)]).toBeTruthy();
   });
+
+  it('boot recovery restores a deleted duplicate from escrow and closes the operation aborted', async () => {
+    const swapId = 'duplicate-crash';
+    const staging = `instar-credential-swap-staging-${swapId}`;
+    const duplicate = blob(ACC_A, 'ESCROW');
+    const km = memKeychain({
+      [claudeCredentialService(SLOT_A)]: blob(ACC_A, 'HOME'),
+      [staging]: duplicate,
+    });
+    const led = makeLedger(stateDir);
+    led.appendJournal({ op: 'swap', phase: 'begin', slots: [SLOT_B, SLOT_A], detail: `swapId=${swapId} duplicate-vacate staged` });
+    const ex = makeExecutor({ km, ledger: led, resolveIdentity: identityFromMap(km), dryRun: false });
+    await ex.recover();
+    expect(km.map[claudeCredentialService(SLOT_B)]).toBe(duplicate);
+    expect(km.map[staging]).toBeUndefined();
+    expect(led.getJournal().some((e) => e.phase === 'aborted' && e.detail.includes(`${swapId} duplicate-vacate recovered-restored`))).toBe(true);
+  });
+
+  it('boot recovery quarantines and keeps an unresolved duplicate-vacate journal nonterminal when escrow is missing', async () => {
+    const swapId = 'duplicate-missing-escrow';
+    const km = memKeychain({ [claudeCredentialService(SLOT_A)]: blob(ACC_A, 'HOME') });
+    const led = makeLedger(stateDir);
+    led.appendJournal({ op: 'swap', phase: 'begin', slots: [SLOT_B, SLOT_A], detail: `swapId=${swapId} duplicate-vacate staged` });
+    const ex = makeExecutor({ km, ledger: led, resolveIdentity: identityFromMap(km), dryRun: false });
+    await ex.recover();
+    expect(led.getAssignment(SLOT_B)?.quarantined).toBe(true);
+    expect(led.getJournal().filter((e) => e.detail.includes(`swapId=${swapId}`)).some((e) => e.phase === 'done' || e.phase === 'aborted')).toBe(false);
+  });
 });
 
 describe('CredentialSwapExecutor — preconditions (exact ledger membership BEFORE path expansion)', () => {

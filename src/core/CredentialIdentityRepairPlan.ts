@@ -3,6 +3,7 @@
  *
  * It contains no credential IO. Execution is delegated to CredentialSwapExecutor,
  * preserving its staging, identity verification, quarantine, and audit contracts.
+ * A plan is advisory until that executor repeats live identity pre-flight under locks.
  */
 
 export interface RepairAccount {

@@ -411,17 +411,21 @@ export class CredentialSwapExecutor {
         }
         const staging = this.stagingService(swapId);
         await this.keychain.writeService(staging, blob.raw);
-        this.ledger.appendJournal({ op: 'reconcile', phase: 'begin', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacate staged` });
+        this.ledger.appendJournal({ op: 'swap', phase: 'begin', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacate staged` });
         await this.keychain.deleteService(claudeCredentialService(impostorSlot));
         const retainedAfter = await this.resolveIdentity(retainedSlot);
         const impostorAfter = await this.keychain.readService(claudeCredentialService(impostorSlot));
         if ('unavailable' in retainedAfter || retainedAfter.accountId !== accountId || impostorAfter !== null) {
+          await this.keychain.writeService(claudeCredentialService(impostorSlot), blob.raw);
+          this.ledger.appendJournal({ op: 'swap', phase: 'aborted', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacate restored-after-failed-verify` });
+          await this.keychain.deleteService(staging);
           this.ledger.quarantineSlot(impostorSlot, 'duplicate vacate post-write verification failed');
-          return { outcome: 'quarantined', reason: 'duplicate vacate post-write verification failed; staging retained', swapId, quarantinedSlots: [impostorSlot] } as SwapResult;
+          return { outcome: 'quarantined', reason: 'duplicate vacate post-write verification failed; impostor restored and quarantined', swapId, quarantinedSlots: [impostorSlot] } as SwapResult;
         }
         this.ledger.quarantineSlot(impostorSlot, `duplicate of ${accountId} vacated; owner re-login slot`);
-        this.ledger.appendJournal({ op: 'reconcile', phase: 'done', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacated account=${accountId}` });
+        this.ledger.appendJournal({ op: 'swap', phase: 'done', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacated account=${accountId}` });
         await this.keychain.deleteService(staging);
+        this.notifySlotsChanged([impostorSlot, retainedSlot]);
         this.audit(swapId, 'duplicate-vacated', impostorSlot, retainedSlot, `account=${accountId}`);
         return { outcome: 'swapped', reason: 'duplicate impostor credential vacated; retained home identity-confirmed', swapId } as SwapResult;
       }),
@@ -767,6 +771,25 @@ export class CredentialSwapExecutor {
     // ran iff the swap committed); for an in-flight entry we resolve by reading the live identity
     // of each slot and quarantining anything we cannot confirm. We never guess a tenant.
     const staging = this.stagingService(entry.swapId);
+    const journalDetail = this.ledger.getJournal().filter((e) => parseSwapId(e.detail) === entry.swapId).at(-1)?.detail ?? '';
+    if (journalDetail.includes('duplicate-vacate')) {
+      const staged = await this.keychain.readService(staging);
+      if (!staged) {
+        this.ledger.quarantineSlot(slotA, 'boot-recovery: duplicate-vacate escrow missing');
+        return;
+      }
+      const liveRaw = await this.keychain.readService(claudeCredentialService(slotA));
+      if (liveRaw === null) await this.keychain.writeService(claudeCredentialService(slotA), staged);
+      const restored = await this.resolveIdentity(slotA);
+      if ('unavailable' in restored) {
+        this.ledger.quarantineSlot(slotA, 'boot-recovery: duplicate-vacate restore unverified');
+        return;
+      }
+      await this.keychain.deleteService(staging);
+      this.ledger.appendJournal({ op: 'swap', phase: 'aborted', slots: entry.slots, detail: `swapId=${entry.swapId} duplicate-vacate recovered-restored` });
+      this.audit(entry.swapId, 'duplicate-vacate-recovered', slotA, slotB, `account=${restored.accountId}`);
+      return;
+    }
     let allConfirmed = true;
     for (const slot of [slotA, slotB]) {
       const id = await this.resolveIdentity(slot);

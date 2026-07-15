@@ -189,16 +189,34 @@ describe('QuotaPoller', () => {
         repairState: 'owner-relogin-required',
       },
     });
-    const restored: string[] = [];
+    const restored: Array<[string, string]> = [];
     const p = new QuotaPoller({
       pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x',
       resolveSlotIdentity: async () => ({ accountId: ACCT.id, email: 'expected@example.test' }),
-      onIdentityRestored: (id) => { restored.push(id); },
+      onIdentityRestored: (id, attentionId) => { restored.push([id, attentionId]); },
     });
     await p.pollAccount(pool.get(ACCT.id)!);
     expect(pool.get(ACCT.id)?.identityDrifted).toBe(false);
     expect(pool.get(ACCT.id)?.identityDrift).toBeUndefined();
-    expect(restored).toEqual([ACCT.id]);
+    expect(restored).toEqual([[ACCT.id, `credential-identity-drift-${ACCT.id}-2026-01-01T00:00:00.000Z`]]);
+  });
+
+  it('invalidates cached pre-repair identity so the immediate poll observes the repaired tenant', async () => {
+    pool.add({ ...ACCT });
+    pool.add({ ...ACCT, id: 'claude-2', configHome: '/home/x/.claude-2' });
+    let live = 'claude-2';
+    let probes = 0;
+    const p = new QuotaPoller({
+      pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x',
+      resolveSlotIdentity: async () => { probes++; return { accountId: live }; },
+    });
+    await p.pollAccount(pool.get(ACCT.id)!);
+    expect(pool.get(ACCT.id)?.identityDrifted).toBe(true);
+    live = ACCT.id;
+    p.invalidateIdentityCache([ACCT.configHome]);
+    await p.pollAccount(pool.get(ACCT.id)!);
+    expect(probes).toBe(2);
+    expect(pool.get(ACCT.id)?.identityDrifted).toBe(false);
   });
 
   it('pollAccount returns null when the token is unresolvable', async () => {

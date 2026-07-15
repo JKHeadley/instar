@@ -67,7 +67,9 @@ function memKeychain(): KeychainCredentialExec {
   map.set(claudeCredentialService(SLOT_B), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-dddd4444eeee5555ffff6666', refreshToken: 'sk-ant-ort01-rrrr2222' } }));
   return { async readService(s) { return map.get(s) ?? null; }, async writeService(s, v) { map.set(s, v); }, async deleteService(s) { map.delete(s); } };
 }
-const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
+// Dry-run still proves the exact live preflight a real write would require, so
+// the fixture must describe the seeded pre-swap tenants (not the post-swap state).
+const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_A : ACC_B });
 
 function buildRepointing(
   stateDir: string,

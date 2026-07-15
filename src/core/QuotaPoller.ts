@@ -116,7 +116,7 @@ export interface QuotaPollerConfig {
   locationLedger?: CredentialLocationLedger;
   /** One deduped attention item per drift episode (id is stable until self-close). */
   emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
-  onIdentityRestored?: (accountId: string) => void | Promise<void>;
+  onIdentityRestored?: (accountId: string, attentionId: string) => void | Promise<void>;
 }
 
 /** Outcome of a single usage read (internal). */
@@ -318,6 +318,11 @@ export class QuotaPoller {
     return value;
   }
 
+  /** Credential mutations must invalidate observations made before the write. */
+  invalidateIdentityCache(slots: string[]): void {
+    for (const slot of slots) this.identityCache.delete(slot);
+  }
+
   /** Identity truth wins over a stale registry/ledger label. */
   private async reconcileIdentity(expected: SubscriptionAccount, slot: string): Promise<SubscriptionAccount | null> {
     this.attributionByExpected.set(expected.id, expected.id);
@@ -325,12 +330,12 @@ export class QuotaPoller {
     const identity = await this.identityForSlot(slot);
     if (!identity || 'unavailable' in identity) return expected; // uncertainty never mutates truth
     const actual = this.pool.get(identity.accountId);
-    if (!actual) return null; // confirmed but unknown to the registry: quarantine/repair path owns it
     const nowIso = new Date(this.now()).toISOString();
     if (identity.accountId === expected.id) {
       if (expected.identityDrifted) {
+        const attentionId = `credential-identity-drift-${expected.id}-${expected.identityDrift?.detectedAt ?? nowIso}`;
         this.pool.update(expected.id, { identityDrifted: false, identityDrift: null });
-        try { void this.onIdentityRestored?.(expected.id); }
+        try { void this.onIdentityRestored?.(expected.id, attentionId); }
         catch { /* @silent-fallback-ok: drift state is already self-closed; commitment cleanup retries on a later confirmed poll */ }
       }
       this.locationLedger?.recordAssignment(slot, expected.id, {
@@ -343,11 +348,12 @@ export class QuotaPoller {
     }
 
     const detectedAt = expected.identityDrift?.detectedAt ?? nowIso;
+    const actualId = actual?.id ?? identity.accountId;
     this.pool.update(expected.id, {
       identityDrifted: true,
       identityDrift: {
         expectedAccountId: expected.id,
-        actualAccountId: actual.id,
+        actualAccountId: actualId,
         ...(identity.email ? { actualEmail: identity.email } : {}),
         slot,
         detectedAt,
@@ -357,20 +363,20 @@ export class QuotaPoller {
     });
     // Registry truth is explicit + journalled. This changes attribution only;
     // the separately planned executor move restores the labelled physical home.
-    this.locationLedger?.recordAssignment(slot, actual.id, {
+    this.locationLedger?.recordAssignment(slot, actualId, {
       verifiedAt: nowIso,
       op: 'reconcile',
       source: 'quota-poll-identity-oracle',
     });
-    this.attributionByExpected.set(expected.id, actual.id);
+    this.attributionByExpected.set(expected.id, actualId);
     try {
       void this.emitIdentityDriftAttention?.({
         id: `credential-identity-drift-${expected.id}-${detectedAt}`,
         title: `Credential identity drift: ${expected.id}`,
-        summary: `Slot ${slot} is labelled ${expected.id} but live identity is ${actual.id}. Quota was attributed to ${actual.id}; the slot is excluded from swaps pending audited repair.`,
+        summary: `Slot ${slot} is labelled ${expected.id} but live identity is ${actualId}. ${actual ? `Quota was attributed to ${actualId}` : 'The confirmed identity is not enrolled in the registry'}; the slot is excluded from swaps pending audited repair.`,
       });
     } catch { /* @silent-fallback-ok: attribution + exclusion are already enforced; attention is best-effort */ }
-    return { ...actual, configHome: slot };
+    return actual ? { ...actual, configHome: slot } : null;
   }
 
   /**

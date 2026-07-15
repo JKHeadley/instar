@@ -12849,6 +12849,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (matches.length !== 1) return { unavailable: true, reason: `ambiguous/unknown email (${matches.length} pool matches)` };
       return { accountId: matches[0].id };
     };
+    let quotaPollerRef: import('../core/QuotaPoller.js').QuotaPoller | null = null;
     const credentialSwapExecutor = new CredentialSwapExecutor({
       funnel: credentialWriteFunnel,
       ledger: credentialLocationLedger,
@@ -12860,7 +12861,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
       emitAudit: (rec) => credentialAuditEmit.audit({ event: 'swap-step', ...rec }),
       emitAttention: (item) => void credentialAuditEmit.attention(item),
-      onSlotsChanged: (slots) => { try { inUseAccountResolver.bustCache?.(); } catch { /* @silent-fallback-ok: cache-bust is an observability nicety (a stale badge self-corrects at TTL); a throwing consumer must never break the committed swap */ } void slots; },
+      onSlotsChanged: (slots) => { try { inUseAccountResolver.bustCache?.(); } catch { /* @silent-fallback-ok: cache-bust is an observability nicety (a stale badge self-corrects at TTL); a throwing consumer must never break the committed swap */ } quotaPollerRef?.invalidateIdentityCache(slots); },
     });
     const credentialManualLevers = new CredentialManualLevers({
       maxForcedPerWindow: config.subscriptionPool?.credentialRepointing?.maxForcedManualSwapsPerWindow,
@@ -13148,12 +13149,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             sourceContext: 'quota-poll-identity-oracle',
           })
         : undefined,
-      onIdentityRestored: (accountId) => {
+      onIdentityRestored: (accountId, attentionId) => {
         const externalKey = `credential-identity-relogin:${accountId}`;
         const active = commitmentTracker.getActive().find((c) => c.externalKey === externalKey);
         if (active) commitmentTracker.deliver(active.id);
+        void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true }).catch(() => { /* @silent-fallback-ok: durable drift state is already closed; attention cleanup is best-effort */ });
       },
     });
+    quotaPollerRef = quotaPoller;
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
       console.log(pc.green('  Subscription quota poller started'));
