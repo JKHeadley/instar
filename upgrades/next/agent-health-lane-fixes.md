@@ -1,0 +1,17 @@
+## What Changed
+
+Fixed a formatting bug in the calm "🩺 Agent Health" notification lane: its notices were sent without HTML rendering enabled, so Telegram showed the literal `<b>...</b>` tags instead of a bold title. The lane send now passes `formatMode: 'html'`, matching the lane's own intro post and the attention hub, so titles render as bold.
+
+## What to Tell Your User
+
+If you saw ugly raw formatting tags in the "🩺 Agent Health" topic's notices, that's fixed — those notices now render cleanly with bold titles. (The separate "same message repeating over and over" flood in that lane is a different issue that's being fixed properly on its own; it's currently kept quiet by an existing stopgap.)
+
+## Summary of New Capabilities
+
+None — this is a display bug fix to existing behavior (the agent-health notification lane), not a new capability.
+
+## Evidence
+
+- `TelegramAdapter.routeToAgentHealthLane`: lane send changed from `sendToTopic(topicId, line)` to `sendToTopic(topicId, line, { formatMode: 'html' })`, routing through the existing `parse_mode:'HTML'` + `_formatMode:'html'` send branch (`TelegramAdapter.ts:1358-1366`).
+- Regression test: `tests/unit/attention-single-topic-routing.test.ts` raises an agent-health lane item and asserts the item post carries `parse_mode: HTML` + `_formatMode: html`. Suite green (17 tests). `tsc --noEmit` clean.
+- Side-effects review: `upgrades/side-effects/agent-health-lane-fixes.md` (includes the Phase-5 second-pass review that redirected the sibling flood fix to a spec).
