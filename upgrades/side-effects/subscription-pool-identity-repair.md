@@ -119,6 +119,7 @@ The change is clear to ship behind the existing `credentialRepointing.enabled` a
 - `tests/integration/credential-routes.test.ts`
 - `tests/e2e/subscription-quota-lifecycle.test.ts`
 - Four local `test:push` shards, lint, build, and focused 106-test run completed green.
+- Follow-up shared-substrate regression: quota polling now carries the ledger-routed account object into identity reconciliation, so an absent or matching oracle cannot silently restore the enrollment home. All 14 direct `CredentialLocationLedger` consumer suites pass (156 tests), including the pre-existing gate contract.
 
 ---
 

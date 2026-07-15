@@ -461,7 +461,10 @@ export class QuotaPoller {
     // so a swap mid-poll can't read/refresh/flag the wrong tenant. account.id is preserved (only
     // the slot home moves), so pool.update + logging still name the right account.
     const routedAccount = this.accountForReads(account);
-    const slotAccount = await this.reconcileIdentity(account, routedAccount.configHome);
+    // Preserve the ledger-routed home through identity reconciliation. Passing
+    // the enrollment object here silently discarded census routing whenever
+    // the optional identity oracle was absent or confirmed the expected id.
+    const slotAccount = await this.reconcileIdentity(routedAccount, routedAccount.configHome);
     if (!slotAccount) return null;
 
     if (account.provider === 'openai' && account.framework === 'codex-cli') {
