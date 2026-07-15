@@ -1,0 +1,24 @@
+{
+  "ts": "2026-07-15T22:53:20.901Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/pending-relay-store.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 218,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/sentinel-recovery.test.ts",
+      "howCaught": "The existing watchdog remains bounded by maxConcurrent and per-topic pacing; renewable claims settle to one owner, and exact-token finalization or retry prevents overlapping drains from multiplying sends."
+    }
+  },
+  "verdict": "pass"
+}

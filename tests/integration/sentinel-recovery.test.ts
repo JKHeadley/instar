@@ -44,6 +44,78 @@ afterEach(() => {
 });
 
 describe('DeliveryFailureSentinel — recovery happy path', () => {
+  it('two stale drain reads of one delivery_id produce exactly one recovery POST', async () => {
+    const store = PendingRelayStore.open('echo', stateDir);
+    const id = '01010101-0101-4101-8101-010101010101';
+    store.enqueue({ delivery_id: id, topic_id: 6, text_hash: 'f'.repeat(64), text: Buffer.from('once'), http_code: 503, attempted_port: 4042 });
+    const stale = store.findByDeliveryId(id)!;
+    const postReply = vi.fn(async () => ({ status: 200, body: '{"ok":true}' }));
+    const sentinel = new DeliveryFailureSentinel({
+      store, configPath, readConfig: () => ({ port: 4042, authToken: 'tok', agentId: 'echo' }),
+      bootId: getOrCreateBootId(stateDir, '0.28.0'), toneGate: null, postReply,
+      whoamiCache: new WhoamiCache({ fetchFn: async () => ({ agentId: 'echo', port: 4042 }) }),
+    });
+    const process = (sentinel as unknown as { processRow: (row: typeof stale) => Promise<string> }).processRow.bind(sentinel);
+    const outcomes = await Promise.all([process(stale), process(stale)]);
+    expect(outcomes.sort()).toEqual(['recovered', 'retry']);
+    expect(postReply).toHaveBeenCalledTimes(1);
+    store.close();
+  });
+
+  it('renews the lease during a blocked send so a second boot cannot double-POST', async () => {
+    const store = PendingRelayStore.open('echo', stateDir);
+    const id = '02020202-0202-4202-8202-020202020202';
+    store.enqueue({ delivery_id: id, topic_id: 16, text_hash: '1'.repeat(64), text: 'blocked', http_code: 503, attempted_port: 4042 });
+    let now = 1_000;
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const postReply = vi.fn(async () => { await blocked; return { status: 200, body: '{}' }; });
+    const deps = {
+      store, configPath, readConfig: () => ({ port: 4042, authToken: 'tok', agentId: 'echo' }),
+      toneGate: null, postReply, now: () => now,
+      whoamiCache: new WhoamiCache({ fetchFn: async () => ({ agentId: 'echo', port: 4042 }) }),
+    };
+    const first = new DeliveryFailureSentinel({ ...deps, bootId: 'boot-one' }, { leaseDurationMs: 60 });
+    const second = new DeliveryFailureSentinel({ ...deps, bootId: 'boot-two' }, { leaseDurationMs: 60 });
+    const original = store.findByDeliveryId(id)!;
+    const firstRun = (first as any).processRow(original) as Promise<string>;
+    await vi.waitFor(() => expect(postReply).toHaveBeenCalledTimes(1));
+    now = 10_000;
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    const claimable = (second as any).selectClaimable() as unknown[];
+    expect(claimable).toHaveLength(0);
+    expect(postReply).toHaveBeenCalledTimes(1);
+    release();
+    expect(await firstRun).toBe('recovered');
+    store.close();
+  });
+
+  it('a stale owner cannot finalize after its exact claim token is replaced', async () => {
+    const store = PendingRelayStore.open('echo', stateDir);
+    const id = '03030303-0303-4303-8303-030303030303';
+    store.enqueue({ delivery_id: id, topic_id: 17, text_hash: '2'.repeat(64), text: 'fenced', http_code: 503, attempted_port: 4042 });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const postReply = vi.fn(async () => { await blocked; return { status: 200, body: '{}' }; });
+    const sentinel = new DeliveryFailureSentinel({
+      store, configPath, readConfig: () => ({ port: 4042, authToken: 'tok', agentId: 'echo' }),
+      bootId: 'old-owner', toneGate: null, postReply,
+      whoamiCache: new WhoamiCache({ fetchFn: async () => ({ agentId: 'echo', port: 4042 }) }),
+    }, { leaseDurationMs: 10_000 });
+    const run = (sentinel as any).processRow(store.findByDeliveryId(id)!) as Promise<string>;
+    await vi.waitFor(() => expect(postReply).toHaveBeenCalledTimes(1));
+    const owned = store.findByDeliveryId(id)!;
+    expect(store.claimCas(id, 'new-owner:999:2099-01-01T00:00:00.000Z', {
+      state: 'claimed', claimed_by: owned.claimed_by,
+    })).toBe(true);
+    release();
+    expect(await run).toBe('retry');
+    const final = store.findByDeliveryId(id)!;
+    expect(final.state).toBe('claimed');
+    expect(final.claimed_by).toContain('new-owner');
+    store.close();
+  });
+
   it('queued 503 → recovery → delivered-recovered + recovered marker follow-up', async () => {
     const store = PendingRelayStore.open('echo', stateDir);
     const id = '11111111-1111-4111-8111-111111111111';

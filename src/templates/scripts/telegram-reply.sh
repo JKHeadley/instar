@@ -700,6 +700,31 @@ SQL
       chmod 600 "$QUEUE_DB" 2>/dev/null
     fi
 
+    # A zero exit from a writer is not durable evidence. Re-open the canonical
+    # DB and prove this exact pre-minted delivery_id exists before claiming the
+    # message is queued. This closes the historical false-success path where a
+    # failed/partial writer left a zero-byte file and the script still printed
+    # "Queued for recovery".
+    QUEUE_PERSISTED=$(Q_DB_PATH="$QUEUE_DB" Q_DELIVERY_ID="$DELIVERY_ID" \
+      Q_TOPIC_ID="$TOPIC_ID" Q_TEXT_HASH="$TEXT_HASH" python3 -c '
+import os, sqlite3
+try:
+    conn = sqlite3.connect("file:" + os.environ["Q_DB_PATH"] + "?mode=ro", uri=True, timeout=2.0)
+    row = conn.execute(
+        "SELECT 1 FROM entries WHERE delivery_id=? AND topic_id=? AND text_hash=? AND state=? LIMIT 1",
+        (os.environ["Q_DELIVERY_ID"], int(os.environ["Q_TOPIC_ID"]), os.environ["Q_TEXT_HASH"], "queued"),
+    ).fetchone()
+    conn.close()
+    print("1" if row else "0")
+except Exception:
+    print("0")
+' 2>/dev/null)
+    if [ "$QUEUE_PERSISTED" != "1" ]; then
+      echo "Failed (HTTP $HTTP_CODE): $BODY" >&2
+      echo "  (also: recovery queue persistence could not be verified; message was NOT reported as queued)" >&2
+      exit 1
+    fi
+
     # Best-effort POST /events/delivery-failed to the SAME port the
     # original send used (NOT the live config port — see spec § Layer 2c
     # cross-tenant safety).
