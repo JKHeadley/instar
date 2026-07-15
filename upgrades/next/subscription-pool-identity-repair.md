@@ -1,0 +1,22 @@
+# Subscription-pool identity repair
+
+## What Changed
+
+Fixed subscription credential identity drift so quota follows the live authenticated account, drifted slots leave available capacity, and confirmed mismatches enter the existing audited credential-repair machinery. Duplicate credentials are consolidated with staged crash recovery, and missing local logins create one owner follow-up instead of copying credentials between machines.
+
+## What to Tell Your User
+
+If a subscription login is found in the wrong account slot, Instar now reports the live account honestly and repairs the local placement through its guarded credential workflow. If the needed login is missing, you receive one follow-up with the enrollment link. The alert closes automatically once the correct identity is confirmed.
+
+## Summary of New Capabilities
+
+- Inspect a credential-free identity repair plan before execution.
+- Exclude identity-drifted accounts from quota capacity and swap targeting.
+- Restore or quarantine interrupted duplicate cleanup safely after restart.
+- Close drift alerts and owner follow-ups when a matching live identity returns.
+
+## Evidence
+
+- Focused unit, integration, and end-to-end identity-repair tests pass.
+- All four local push-test shards passed before review hardening.
+- The exact credential routes lifecycle regression now passes with live preflight truth.
