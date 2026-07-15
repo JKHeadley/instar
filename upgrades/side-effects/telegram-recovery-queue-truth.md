@@ -1,8 +1,8 @@
 # Side-Effects Review — Telegram recovery queue truth
 
-**Version / slug:** `telegram-recovery-queue-truth`  
-**Date:** 2026-07-15  
-**Author:** Instar-codey  
+**Version / slug:** `telegram-recovery-queue-truth`
+**Date:** 2026-07-15
+**Author:** Instar-codey
 **Second-pass reviewer:** pending
 
 ## Summary of the change
@@ -64,7 +64,7 @@ Current openers were already canonical from the July 10 fix, so this patch targe
 
 ## Second-pass review
 
-**Reviewer:** Codex independent reviewer `/root/identity_repair_side_effects_review`  
+**Reviewer:** Codex independent reviewer `/root/identity_repair_side_effects_review`
 **Independent read of the artifact:** concur after atomic-quarantine, exact-message verification, active-send lease renewal, and stale-finalizer fencing were independently verified; 45/45 focused tests passed.
 
 ## Evidence pointers
