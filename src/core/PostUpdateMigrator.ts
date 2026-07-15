@@ -13627,6 +13627,10 @@ process.stdin.on('end', async () => {
     // Existing agents must receive the constrained agent-home resolver and
     // loud unknown-id queue refusal rather than an inert `.new` candidate.
     '89849c10aa30cc83a07d6e7721aa3ebbfd07ab897250c0d0f3e234f079dba153',
+    // Agent-home-anchored resolver version from #1437 (pre recovery-queue
+    // reopen-and-prove). Shipped through v1.3.834; recognize it so stock
+    // deployed relays upgrade in place rather than being treated as drift.
+    '24a638766fc8a2473e23e032dde39ff7ef046c37e893ff878323d18d9dad2d52',
   ]);
 
   /**

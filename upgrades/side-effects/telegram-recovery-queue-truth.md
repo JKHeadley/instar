@@ -74,6 +74,7 @@ Current openers were already canonical from the July 10 fix, so this patch targe
 - `tests/integration/sentinel-recovery.test.ts`
 - `tests/e2e/telegram-recovery-queue-truth-lifecycle.test.ts`
 - Focused result: 45/45 green; build and lint green.
+- Post-rebase shared-consumer result: 22 files / 164 tests green. The template-lineage ratchet identified the #1437 relay SHA as a legitimate prior shipped version; it is now registered so stock deployed scripts migrate in place rather than false-reporting drift.
 
 ## Class-Closure Declaration (display-only mirror)
 
