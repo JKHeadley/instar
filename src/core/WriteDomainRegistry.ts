@@ -271,6 +271,21 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     domain: 'machine-local', story: enrollmentStory,
   });
 
+  // Credential identity repair executes staged swaps only among login homes on
+  // this machine. Claude credentials cannot be relocated across machines; the
+  // ledger/audit state is likewise agent-home-local and outside git sync.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/credentials/repair-plan/execute',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: false,
+      note: 'executes identity-verified staged swaps between this machine’s credential homes; credential files and the location ledger/audit live under agent-home-local state and never converge across machines',
+    },
+  });
+
   // ── Routing Control Room MONEY surfaces (Increment B, §Surface 2) ────────
   // Single-writer BY DESIGN (FD-20): the whole cap lives on ONE PIN-designated
   // metered-lease machine until Increment D — the caps store + booking ledger are

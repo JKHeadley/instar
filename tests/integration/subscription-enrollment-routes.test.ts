@@ -43,8 +43,10 @@ describe('/subscription-pool enrollment routes (integration)', () => {
   let store: PendingLoginStore;
   let clock: number;
   let tmuxLog: string;
+  let enrollmentCompleteInFlightHook: ((id: string) => void | Promise<void>) | undefined;
 
   beforeEach(async () => {
+    enrollmentCompleteInFlightHook = undefined;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-int-'));
     clock = Date.parse('2026-06-07T00:00:00Z');
     store = new PendingLoginStore({ stateDir: dir, now: () => clock });
@@ -58,6 +60,7 @@ describe('/subscription-pool enrollment routes (integration)', () => {
       config: { authToken: 't', stateDir: dir, port: 0, sessions: { tmuxPath } },
       startTime: new Date(),
       enrollmentWizard: wizard,
+      enrollmentCompleteInFlightHook: (id: string) => enrollmentCompleteInFlightHook?.(id),
     };
     app.use(createRoutes(ctx));
     server = await listen(app);
@@ -184,10 +187,16 @@ describe('/subscription-pool enrollment routes (integration)', () => {
       method: 'POST',
       body: JSON.stringify({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' }),
     });
+    let releaseCompletion!: () => void;
+    const holdCompletion = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    let entered!: () => void;
+    const completionEntered = new Promise<void>((resolve) => { entered = resolve; });
+    enrollmentCompleteInFlightHook = () => { entered(); return holdCompletion; };
     const completing = api('/subscription-pool/enroll/codex-1/complete', { method: 'POST' });
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    await completionEntered;
     const cancelled = await api('/subscription-pool/enroll/codex-1/cancel', { method: 'POST' });
     expect(cancelled.status).toBe(409);
+    releaseCompletion();
     expect((await completing).status).toBe(200);
     expect(store.get('codex-1')?.status).toBe('completed');
   });

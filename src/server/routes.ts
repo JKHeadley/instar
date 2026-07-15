@@ -788,6 +788,8 @@ export interface RouteContext {
   inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
+  /** Deterministic test seam after plain enrollment completion owns its id. */
+  enrollmentCompleteInFlightHook?: (id: string) => void | Promise<void>;
   /** WS5.2 R12 — Account Follow-Me revocation data-plane executor. Constructed in the server with
    *  REAL deps (cooperative local wipe + durable pending store + attention emit). Null when the
    *  server wiring did not construct it (e.g. lightweight test harnesses). The `/mandate/:id/revoke`
@@ -25697,6 +25699,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     plainCompleteInFlight.add(id);
     try {
+      await ctx.enrollmentCompleteInFlightHook?.(id);
       // Keep a short observable critical section so a concurrent cancel stands aside.
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       const login = ctx.enrollmentWizard.complete(id);
