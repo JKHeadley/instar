@@ -25,6 +25,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import DatabaseCtor from 'better-sqlite3';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -307,6 +308,39 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     const retained = await request(app).get('/apprenticeship/instances/miscreated-pending').set(auth());
     expect(retained.status).toBe(200);
     expect(retained.body.status).toBe('abandoned');
+  });
+
+  it('keeps the production integrity route alive with a legacy bad-kind row', async () => {
+    await request(app)
+      .post('/apprenticeship/instances')
+      .set(auth())
+      .send({ id: 'legacy-kind-instance', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null })
+      .expect(201);
+    await request(app)
+      .post('/apprenticeship/instances/legacy-kind-instance/transition')
+      .set(auth())
+      .send({ to: 'active' })
+      .expect(200);
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'legacy-bad-kind-e2e',
+        instanceId: 'legacy-kind-instance',
+        cycleNumber: 1,
+        task: 'legacy',
+        menteeOutput: 'kept',
+        operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
+      })
+      .expect(201);
+
+    const db = new DatabaseCtor(path.join(stateDir, 'server-data', 'apprenticeship-cycles.db'));
+    db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind-e2e');
+    db.close();
+
+    const report = await request(app).get('/apprenticeship/cycles/integrity').set(auth());
+    expect(report.status).toBe(200);
+    expect(report.body.scanned).toBeGreaterThanOrEqual(1);
   });
 
   it('full lifecycle: create → transition pending→active gated on the real on-disk harvest', async () => {

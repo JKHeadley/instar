@@ -109,6 +109,26 @@ describe('ApprenticeshipCycleStore', () => {
     store.close();
   });
 
+  it('keeps a legacy bad-kind row readable while retaining strict write validation', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apprenticeship-cycles-legacy-kind-'));
+    tmpDirs.push(tmp);
+    const dbPath = path.join(tmp, 'cycles.db');
+    let store = new ApprenticeshipCycleStore({ dbPath });
+    store.record({ id: 'legacy-bad-kind', instanceId: 'phantom', cycleNumber: 1, task: 'legacy', menteeOutput: 'kept', operatorSeatUx: ux() });
+    store.close();
+
+    const db = new DatabaseCtor(dbPath);
+    db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind');
+    db.close();
+
+    store = new ApprenticeshipCycleStore({ dbPath });
+    expect(store.list()).toMatchObject([{ id: 'legacy-bad-kind', kind: 'unknown' }]);
+    expect(store.get('legacy-bad-kind')).toMatchObject({ kind: 'unknown' });
+    expect(store.roleCoverage('phantom').unknown).toMatchObject({ fired: true, cycleCount: 1 });
+    expect(() => store.record({ id: 'new-bad-kind', instanceId: 'i', cycleNumber: 2, task: 't', menteeOutput: 'm', kind: 'mentorship', operatorSeatUx: ux() })).toThrow(/kind must be one of/);
+    store.close();
+  });
+
   it('roleCoverage warns when mentor-mentee is dormant while overseer-apprentice has multiple cycles', () => {
     const store = makeStore();
     store.record({ id: 'review-1', instanceId: 'i', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview', operatorSeatUx: ux() });
