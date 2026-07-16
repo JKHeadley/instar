@@ -8,15 +8,14 @@ per-turn `ultracode` prompt trigger, covering both the normal headless path and
 the subscription-rerouted interactive path. The option is rejected when the
 explicit or configured default framework is not Claude Code.
 
+Claude's `workflowKeywordTriggerEnabled` setting defaults on. If explicitly
+disabled, Instar respects the choice and the workflow mode does not activate.
+
 ## What to Tell Your User
 
 “I can now opt a single Claude task into ultracode — Claude's deepest effort
 plus dynamic workflow orchestration — without changing your defaults or later
 sessions.”
-
-Claude's `workflowKeywordTriggerEnabled` setting defaults on. If you explicitly
-disabled that setting, Instar respects the choice and the workflow mode will not
-activate.
 
 ## Summary of New Capabilities
 
