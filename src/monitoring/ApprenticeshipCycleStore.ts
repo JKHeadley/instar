@@ -328,6 +328,15 @@ function normalizeKind(raw: unknown): ApprenticeshipCycleKind {
   throw new Error(`kind must be one of ${[...APPRENTICESHIP_CYCLE_AXES, 'unknown'].join(', ')}`);
 }
 
+/** Legacy rows must remain readable even when their historical kind predates the enum. */
+function normalizeStoredKind(raw: unknown): ApprenticeshipCycleKind {
+  try {
+    return normalizeKind(raw);
+  } catch {
+    return 'unknown';
+  }
+}
+
 function normalizeChannel(raw: unknown): ApprenticeshipCycleChannel {
   if (
     typeof raw === 'string' &&
@@ -679,7 +688,7 @@ export class ApprenticeshipCycleStore {
     const oversightTimestamps: string[] = [];
 
     for (const row of rows) {
-      const kind = normalizeKind(row.kind);
+      const kind = normalizeStoredKind(row.kind);
       const channel = normalizeChannel(row.channel);
       // §4a ENFORCEMENT: a mentor-mentee-differential cycle that ran through a
       // `direct-shortcut` (bypassing the dogfooded Telegram-Playwright UX-under-test)
@@ -824,7 +833,7 @@ export class ApprenticeshipCycleStore {
       overseerDifferential: parseJsonArray(row.overseer_diff_json),
       coaching: row.coaching,
       infraItems: parseJsonArray(row.infra_items_json),
-      kind: normalizeKind(row.kind),
+      kind: normalizeStoredKind(row.kind),
       status: row.status,
       channel: normalizeChannel(row.channel),
       operatorSeatUx: parseOperatorSeatUx(row.operator_seat_ux_json),

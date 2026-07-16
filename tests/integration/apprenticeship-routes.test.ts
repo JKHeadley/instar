@@ -18,6 +18,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import DatabaseCtor from 'better-sqlite3';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
@@ -296,6 +297,25 @@ describe('/apprenticeship routes (integration)', () => {
     expect(report.body).toMatchObject({ scanned: 1, danglingCount: 1, truncated: false });
     expect(report.body.dangling[0]).toMatchObject({ instanceId: 'phantom' });
     expect(store.list()).toHaveLength(1);
+    store.close();
+  });
+
+  it('reports a dangling legacy bad-kind cycle instead of failing the integrity read', async () => {
+    const dbPath = path.join(stateDir, 'legacy-bad-kind.db');
+    let store = new ApprenticeshipCycleStore({ dbPath });
+    store.record({ id: 'legacy-bad-kind', instanceId: 'phantom', cycleNumber: 1, task: 'legacy', menteeOutput: 'kept', operatorSeatUx: UXOK });
+    store.close();
+    const db = new DatabaseCtor(dbPath);
+    db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind');
+    db.close();
+    store = new ApprenticeshipCycleStore({ dbPath });
+    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+
+    const report = await request(app).get('/apprenticeship/cycles/integrity').set(auth());
+    expect(report.status).toBe(200);
+    expect(report.body).toMatchObject({ scanned: 1, danglingCount: 1 });
+    expect(report.body.dangling[0]).toMatchObject({ cycleId: 'legacy-bad-kind', instanceId: 'phantom' });
+    expect(store.list()).toMatchObject([{ id: 'legacy-bad-kind', kind: 'unknown' }]);
     store.close();
   });
 
