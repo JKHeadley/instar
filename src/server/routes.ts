@@ -8008,7 +8008,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode } = req.body;
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
@@ -8066,9 +8066,17 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"jobSlug" must contain only letters, numbers, hyphens, underscores' });
       return;
     }
+    if (ultracode !== undefined && typeof ultracode !== 'boolean') {
+      res.status(400).json({ error: '"ultracode" must be a boolean' });
+      return;
+    }
+    if (ultracode === true && (framework ?? 'claude-code') !== 'claude-code') {
+      res.status(400).json({ error: '"ultracode" is supported only for framework "claude-code"' });
+      return;
+    }
 
     try {
-      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework });
+      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework, ultracode });
       res.status(201).json(session);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

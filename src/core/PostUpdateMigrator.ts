@@ -110,6 +110,12 @@ Heavy MCP servers (Playwright's Chromium; Electron bridges) are mostly idle and 
 - **When to use** (PROACTIVE): in an autonomous run, when I need a heavy tool I don't have, I request the load (I'm preapproved → it loads + restarts + continues). When the user asks "free up resources from idle MCP servers" / "why did my session restart to add a tool?" → this feature. Single-server / no-\`.mcp.json\` agents are a no-op.\n`;
 }
 
+export function ULTRACODE_SPAWN_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Ultracode one-shot spawn (Claude Code, opt-in)
+
+Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration. It is deliberately NOT a \`--effort\` CLI value. Instar uses Claude's supported prompt-keyword trigger instead: \`POST /sessions/spawn\` accepts \`{"name":"deep-task","prompt":"...","framework":"claude-code","ultracode":true}\` and prefixes \`ultracode\` to that spawned turn. The option ships dark (false/absent changes nothing), is rejected for non-Claude frameworks, and applies only to that one-shot spawn — it does not pin a topic or mutate Claude settings. Status/result uses the normal \`GET /sessions\` surface at \`http://localhost:${port}\`.\n`;
+}
+
 export function EXTERNAL_HOG_CLAUDEMD_SECTION(port: number): string {
   return `\n### External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer
 
@@ -5133,6 +5139,15 @@ setTimeout(() => process.exit(0), 2000);
       content += DYNAMIC_MCP_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Dynamic MCP Lifecycle section');
+    }
+
+    // State-free capability migration: existing agents need awareness only.
+    // No config/default migration exists because the spawn option is explicitly
+    // per-call and dark when absent.
+    if (!content.includes('Ultracode one-shot spawn')) {
+      content += ULTRACODE_SPAWN_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Ultracode one-shot spawn section');
     }
 
     // Machine Load Assessment (CMT-1703, spec robust-load-assessment-fleet) — Agent

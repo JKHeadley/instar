@@ -145,6 +145,29 @@ describe('claude-code headless builder — direct --effort pin', () => {
   });
 });
 
+describe('claude-code headless builder — ultracode workflow opt-in', () => {
+  it('prefixes the supported prompt keyword without inventing a CLI flag', () => {
+    const spec = buildHeadlessLaunch('claude-code', {
+      binaryPath: '/usr/local/bin/claude',
+      prompt: 'trace the race',
+      ultracode: true,
+    });
+    expect(spec.argv).not.toContain('--ultracode');
+    expect(spec.argv.at(-1)).toBe('ultracode\n\ntrace the race');
+  });
+
+  it('preserves the prompt byte-for-byte when dark and is a non-Claude no-op', () => {
+    const plain = buildHeadlessLaunch('claude-code', {
+      binaryPath: '/usr/local/bin/claude', prompt: 'trace the race',
+    });
+    const codex = buildHeadlessLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex', prompt: 'trace the race', ultracode: true,
+    });
+    expect(plain.argv.at(-1)).toBe('trace the race');
+    expect(codex.argv.at(-1)).toBe('trace the race');
+  });
+});
+
 describe('non-claude frameworks ignore effort', () => {
   it('codex interactive does not emit --effort for a direct effort pin', () => {
     const spec = buildInteractiveLaunch('codex-cli', {

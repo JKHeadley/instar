@@ -555,6 +555,10 @@ export interface HeadlessLaunchOptions {
    * frameworks.
    */
   effort?: EffortLevel;
+  /** Claude Code dynamic-workflow opt-in. Claude deliberately does not expose
+   * ultracode as a `--effort` value; the supported programmatic surface is the
+   * `ultracode` prompt keyword. Strict no-op on non-Claude frameworks. */
+  ultracode?: boolean;
 }
 
 export interface HeadlessLaunchSpec {
@@ -570,6 +574,10 @@ export interface HeadlessLaunchSpec {
 
 type HeadlessBuilder = (options: HeadlessLaunchOptions) => HeadlessLaunchSpec;
 
+export function withClaudeUltracodePrompt(prompt: string, enabled?: boolean): string {
+  return enabled ? `ultracode\n\n${prompt}` : prompt;
+}
+
 const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
   const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
   const resolved = resolveModelForFramework('claude-code', options.model);
@@ -583,7 +591,7 @@ const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
   if (headlessEffort) {
     argv.push('--effort', headlessEffort);
   }
-  argv.push('-p', options.prompt);
+  argv.push('-p', withClaudeUltracodePrompt(options.prompt, options.ultracode));
   return {
     argv,
     envOverrides: {

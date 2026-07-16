@@ -324,4 +324,25 @@ describe('POST /sessions/spawn — fable allowlist (integration)', () => {
     expect(res.body.error).toContain('"model" must be one of');
     expect(mockSM._spawnCount).toBe(0);
   });
+
+  it('threads an explicit ultracode opt-in only to Claude spawns', async () => {
+    const accepted = await request(app)
+      .post('/sessions/spawn')
+      .send({ name: 'ultracode-spawn', prompt: 'hello', ultracode: true });
+    expect(accepted.status).toBe(201);
+    expect(mockSM._lastSpawnArgs?.ultracode).toBe(true);
+
+    const refused = await request(app)
+      .post('/sessions/spawn')
+      .send({ name: 'codex-ultracode', prompt: 'hello', framework: 'codex-cli', ultracode: true });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toContain('supported only for framework');
+  });
+
+  it('rejects non-boolean ultracode values', async () => {
+    const res = await request(app)
+      .post('/sessions/spawn')
+      .send({ name: 'bad-ultracode', prompt: 'hello', ultracode: 'yes' });
+    expect(res.status).toBe(400);
+  });
 });

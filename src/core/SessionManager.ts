@@ -71,6 +71,7 @@ import {
 import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
+  withClaudeUltracodePrompt,
   claudeHeadlessExtraFlags,
   resolveInteractiveFramework,
   resolveModelForFramework,
@@ -2293,6 +2294,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  covered by the existing resume-crash fallback. No effect on non-claude
      *  frameworks or interactive spawns. */
     resumeSessionId?: string;
+    /** Claude Code only: opt this spawned turn into xhigh effort + dynamic
+     * workflow orchestration via Claude's supported prompt keyword. */
+    ultracode?: boolean;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -2419,6 +2423,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Reply spawns set this so the codex worker can call threadline_send;
       // jobs leave it unset and keep the workspace-write sandbox.
       ...(options.codexAllowMcpTools ? { codexAllowMcpTools: true } : {}),
+      ...(options.ultracode ? { ultracode: true } : {}),
     });
 
     // Extra claude-code headless flags, spliced before the `-p` prompt positional
@@ -2744,7 +2749,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // is keyed on the session id suffix so two concurrent rerouted sessions
     // can't false-trigger each other.
     const sentinel = `INSTAR_JOB_COMPLETE_${sessionId.slice(-8)}`;
-    const promptWithSentinel = `${options.prompt}\n\nWhen you have fully completed this task, print exactly this marker as your final line: ${sentinel}`;
+    const promptWithSentinel = `${withClaudeUltracodePrompt(options.prompt, options.ultracode)}\n\nWhen you have fully completed this task, print exactly this marker as your final line: ${sentinel}`;
 
     // ── Build the INTERACTIVE launch (no `-p`) ──
     // Carry the resolved model + the A2A continuity flag through. sessionId
