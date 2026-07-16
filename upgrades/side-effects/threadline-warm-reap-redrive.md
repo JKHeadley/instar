@@ -45,6 +45,7 @@ No new static heuristic resolves competing semantic signals. Exact identity pair
 - **Shadowing:** Threadline revalidation runs alongside the existing topic/job branches and cannot alter them.
 - **Double-fire:** enqueue checks for an exact correlated outbound; drain checks again. A successful correlated send racing the reap therefore invalidates the queued replay before spawn.
 - **Races:** a send after the second check but before cold spawn remains a narrow at-least-once boundary shared by distributed delivery systems. Stable per-thread queue keys, cold-spawn selection, and the router's normal conversation ownership reduce concurrent duplication.
+- **Restart boundary:** ordinary reply claims are process-local, so a server restart after claim acquisition but before reply settlement reopens that same at-least-once window. Only the delivery-succeeded/outbox-append-failed edge is persisted as a durable failure claim, because it has positive evidence that replay risks a duplicate.
 - **Feedback loops:** a failed spawn uses the existing bounded exponential backoff and resurrection cap; it does not recursively enqueue.
 
 ## 6. External surfaces
