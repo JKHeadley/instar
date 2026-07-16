@@ -5797,6 +5797,22 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
       }
     }
 
+    // Registry integrity + retained pending disposal. Existing agents must learn
+    // both the stricter write precondition and the non-mutating legacy audit.
+    if (
+      content.includes('**Apprenticeship Program**') &&
+      !content.includes('GET /apprenticeship/cycles/integrity')
+    ) {
+      const anchor = '- **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance';
+      const index = content.indexOf(anchor);
+      if (index !== -1) {
+        const integrityLine = '- Registry integrity: cycles are recordable only against an existing `active` instance; unknown, pending, blocked, complete, and abandoned references are refused. Dispose of a mis-created `pending` instance by transitioning it to retained terminal `abandoned` (never delete it). Existing legacy dangling cycle rows are never rewritten: enumerate them with `GET /apprenticeship/cycles/integrity`.\n';
+        content = content.slice(0, index) + integrityLine + content.slice(index);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added apprenticeship registry-integrity awareness');
+      }
+    }
+
     // Maturity honesty (mature-update-announcements spec). Existing agents need
     // to know user-facing update announcements are now opt-in + maturity-tagged
     // so they mirror that honesty when self-narrating a ship (and don't dress up
