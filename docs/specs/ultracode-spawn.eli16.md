@@ -6,6 +6,11 @@ Claude dynamically organize workflow agents. Claude's command line does not
 accept `--effort ultracode`; instead, Claude Code 2.1.177 officially recognizes
 the word `ultracode` in a prompt as a per-turn opt-in.
 
+That prompt trigger depends on Claude's `workflowKeywordTriggerEnabled` setting.
+Claude defaults it to true. If an operator explicitly disables it, the keyword
+is ordinary prompt text and the workflow mode will not activate; Instar does not
+silently override that operator choice.
+
 Instar now exposes exactly that supported mechanism on its existing one-shot
 spawn API. A caller adds `ultracode: true` to a Claude Code spawn. Instar prefixes
 the keyword to the prompt and otherwise uses the normal launch path. There is no

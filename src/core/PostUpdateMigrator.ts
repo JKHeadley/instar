@@ -113,7 +113,7 @@ Heavy MCP servers (Playwright's Chromium; Electron bridges) are mostly idle and 
 export function ULTRACODE_SPAWN_CLAUDEMD_SECTION(port: number): string {
   return `\n### Ultracode one-shot spawn (Claude Code, opt-in)
 
-Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration. It is deliberately NOT a \`--effort\` CLI value. Instar uses Claude's supported prompt-keyword trigger instead: \`POST /sessions/spawn\` accepts \`{"name":"deep-task","prompt":"...","framework":"claude-code","ultracode":true}\` and prefixes \`ultracode\` to that spawned turn. The option ships dark (false/absent changes nothing), is rejected for non-Claude frameworks, and applies only to that one-shot spawn — it does not pin a topic or mutate Claude settings. Status/result uses the normal \`GET /sessions\` surface at \`http://localhost:${port}\`.\n`;
+Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration. It is deliberately NOT a \`--effort\` CLI value. Instar uses Claude's supported prompt-keyword trigger instead: \`POST /sessions/spawn\` accepts \`{"name":"deep-task","prompt":"...","framework":"claude-code","ultracode":true}\` and prefixes \`ultracode\` to that spawned turn. Claude's \`workflowKeywordTriggerEnabled\` setting defaults to true; an operator who disabled it has deliberately disabled this trigger, so the prefixed keyword becomes ordinary prompt text. The option ships dark (false/absent changes nothing), is rejected for non-Claude frameworks, and applies only to that one-shot spawn — it does not pin a topic or mutate Claude settings. Status/result uses the normal \`GET /sessions\` surface at \`http://localhost:${port}\`.\n`;
 }
 
 export function EXTERNAL_HOG_CLAUDEMD_SECTION(port: number): string {

@@ -8070,7 +8070,14 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"ultracode" must be a boolean' });
       return;
     }
-    if (ultracode === true && (framework ?? 'claude-code') !== 'claude-code') {
+    // Match SessionManager's omitted-framework resolution. A Codex-default
+    // agent must not pass this guard merely because the request omitted the
+    // explicit framework and then receive a cosmetic keyword on a Codex turn.
+    const effectiveSpawnFramework = framework
+      ?? ctx.config.sessions?.framework
+      ?? ctx.config.enabledFrameworks?.[0]
+      ?? 'claude-code';
+    if (ultracode === true && effectiveSpawnFramework !== 'claude-code') {
       res.status(400).json({ error: '"ultracode" is supported only for framework "claude-code"' });
       return;
     }

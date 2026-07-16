@@ -345,4 +345,19 @@ describe('POST /sessions/spawn — fable allowlist (integration)', () => {
       .send({ name: 'bad-ultracode', prompt: 'hello', ultracode: 'yes' });
     expect(res.status).toBe(400);
   });
+
+  it('refuses omitted-framework ultracode on a Codex-default agent', async () => {
+    const codexDefaultApp = express();
+    codexDefaultApp.use(express.json());
+    codexDefaultApp.use(createRoutes({
+      config: { authToken: 'test', stateDir: tmpDir, port: 0, sessions: { framework: 'codex-cli' } },
+      sessionManager: mockSM,
+      startTime: new Date(),
+    } as any));
+    const res = await request(codexDefaultApp)
+      .post('/sessions/spawn')
+      .send({ name: 'implicit-codex-ultracode', prompt: 'hello', ultracode: true });
+    expect(res.status).toBe(400);
+    expect(mockSM._spawnCount).toBe(0);
+  });
 });
