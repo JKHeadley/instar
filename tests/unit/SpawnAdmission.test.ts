@@ -50,6 +50,7 @@ function admitInput(over: Partial<AdmitInput> = {}): AdmitInput {
 
 const ENFORCE: SpawnAdmissionFlag = { enabled: true, dryRun: false };
 const DRY: SpawnAdmissionFlag = { enabled: true, dryRun: true };
+const LIVE_OWNER_BINDING: SpawnAdmissionFlag = { enabled: true, dryRun: true, enforceLiveOwner: true };
 const OFF: SpawnAdmissionFlag = { enabled: false, dryRun: true };
 
 beforeEach(() => {
@@ -239,6 +240,66 @@ describe('admit — ownership rows', () => {
     const sa = new SpawnAdmission(ENFORCE, deps);
     const d = sa.admit(admitInput());
     expect(d).toMatchObject({ allow: false, row: 'other-dark', refusalAction: 'owner-dark-ladder' });
+  });
+});
+
+describe('Tier 1.4 — narrow live-owner graduation', () => {
+  it('refuses a cold spawn on the non-owner when the recorded owner is alive and custody is live', () => {
+    const deps = makeDeps({
+      readOwnership: vi.fn(() => ({ owner: 'machine-b', epoch: 7, status: 'active' })),
+      isMachineAlive: vi.fn(() => true),
+      durableCustodyLive: vi.fn(() => true),
+    });
+    const admission = new SpawnAdmission(LIVE_OWNER_BINDING, deps);
+    expect(admission.status().liveOwnerEnforcement).toEqual({ configured: true, armed: true, blockedBy: null });
+    const d = admission.admit(admitInput());
+    expect(d).toMatchObject({
+      allow: false,
+      mode: 'enforce',
+      row: 'other-alive',
+      refusalAction: 'forward',
+    });
+  });
+
+  it('allows the recorded owner to cold-spawn', () => {
+    const d = new SpawnAdmission(LIVE_OWNER_BINDING, makeDeps()).admit(admitInput());
+    expect(d).toMatchObject({ allow: true, row: 'self', mode: 'dry-run' });
+  });
+
+  it('single-machine/pool-dark remains a strict no-op', () => {
+    const deps = makeDeps({
+      selfMachineId: vi.fn(() => null),
+      readOwnership: vi.fn(() => ({ owner: 'machine-b', epoch: 7, status: 'active' })),
+    });
+    const d = new SpawnAdmission(LIVE_OWNER_BINDING, deps).admit(admitInput());
+    expect(d).toMatchObject({ allow: true, row: 'short-circuit', reason: 'single-machine-or-pool-dark' });
+    expect(deps.readOwnership).not.toHaveBeenCalled();
+  });
+
+  it('does not bind without durable custody', () => {
+    const deps = makeDeps({
+      readOwnership: vi.fn(() => ({ owner: 'machine-b', epoch: 7, status: 'active' })),
+      isMachineAlive: vi.fn(() => true),
+      durableCustodyLive: vi.fn(() => false),
+    });
+    const admission = new SpawnAdmission(LIVE_OWNER_BINDING, deps);
+    expect(admission.status().liveOwnerEnforcement).toEqual({
+      configured: true,
+      armed: false,
+      blockedBy: 'durable-custody-dark',
+    });
+    const d = admission.admit(admitInput());
+    expect(d).toMatchObject({ allow: true, mode: 'dry-run', row: 'other-alive', wouldBlock: true });
+  });
+
+  it('keeps a dark-owner row observe-only until the stale-owner ladder graduates', () => {
+    const deps = makeDeps({
+      readOwnership: vi.fn(() => ({ owner: 'machine-b', epoch: 7, status: 'active' })),
+      isMachineAlive: vi.fn(() => false),
+      durableCustodyLive: vi.fn(() => true),
+    });
+    const d = new SpawnAdmission(LIVE_OWNER_BINDING, deps).admit(admitInput());
+    expect(d).toMatchObject({ allow: true, mode: 'dry-run', row: 'other-dark', wouldBlock: true });
   });
 });
 

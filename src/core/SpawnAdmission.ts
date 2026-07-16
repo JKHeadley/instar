@@ -120,6 +120,12 @@ export interface AdmitInput {
 export interface SpawnAdmissionFlag {
   enabled: boolean;
   dryRun: boolean;
+  /**
+   * Narrow graduation arm: a provably-live OTHER owner may bind even while
+   * the broader owner-dark ladder remains in dry-run. Still requires durable
+   * custody, so a refusal can never turn into silent loss.
+   */
+  enforceLiveOwner?: boolean;
 }
 
 export interface SpawnAdmissionDeps {
@@ -212,6 +218,11 @@ interface ErrorEpisodeState {
 export interface SpawnAdmissionStatus {
   mode: AdmissionMode;
   enforceBlockedBy: 'flag-disabled' | 'dry-run' | 'durable-custody-dark' | null;
+  liveOwnerEnforcement: {
+    configured: boolean;
+    armed: boolean;
+    blockedBy: 'flag-disabled' | 'pool-dark-or-single-machine' | 'durable-custody-dark' | null;
+  };
   errorEpisode: {
     open: boolean;
     openedAt: string | null;
@@ -345,7 +356,7 @@ export class SpawnAdmission {
         return { allow: true, mode, row: 'unowned', wouldBlock: false, reason: 'no ownership record — claim rides the router placeAndClaim path', ownership };
       case 'other-alive':
         this.recordCleanResolution();
-        return this.decide(input, mode, {
+        return this.decide(input, this.liveOwnerMode(mode), {
           row: 'other-alive',
           refusalAction: 'forward',
           reason: `owner ${ownership.owner} is alive — forward, never a local spawn`,
@@ -362,6 +373,25 @@ export class SpawnAdmission {
       case 'error':
         return this.admitErrorArm(input, mode, ownership);
     }
+  }
+
+  /**
+   * Increment 1.4 graduation: the live-owner row has stronger evidence and
+   * fewer dependencies than owner-dark. Bind it once custody is live without
+   * prematurely graduating the stale-owner ladder.
+   */
+  private liveOwnerMode(mode: AdmissionMode): AdmissionMode {
+    if (
+      mode === 'dry-run' &&
+      this.flag.enabled &&
+      this.flag.enforceLiveOwner === true &&
+      this.deps.poolStage() !== 'dark' &&
+      !!this.deps.selfMachineId() &&
+      this.deps.durableCustodyLive()
+    ) {
+      return 'enforce';
+    }
+    return mode;
   }
 
   /** Shared dry-run/enforce decision shaping for the blocking rows. */
@@ -575,6 +605,13 @@ export class SpawnAdmission {
     const now = this.nowFn();
     const winFloor = now - ERROR_ARM_CONSTANTS.EPISODES_WINDOW_MS;
     const mode = this.effectiveMode();
+    // Keep the narrow arm's prerequisites independently visible even while the
+    // broader status.mode honestly remains `dry-run` for owner-dark/error rows.
+    const liveOwnerConfigured = this.flag.enforceLiveOwner === true;
+    let liveOwnerBlockedBy: SpawnAdmissionStatus['liveOwnerEnforcement']['blockedBy'] = null;
+    if (!this.flag.enabled || !liveOwnerConfigured) liveOwnerBlockedBy = 'flag-disabled';
+    else if (this.deps.poolStage() === 'dark' || !this.deps.selfMachineId()) liveOwnerBlockedBy = 'pool-dark-or-single-machine';
+    else if (!this.deps.durableCustodyLive()) liveOwnerBlockedBy = 'durable-custody-dark';
     return {
       mode,
       enforceBlockedBy: !this.flag.enabled
@@ -584,6 +621,11 @@ export class SpawnAdmission {
           : this.deps.durableCustodyLive()
             ? null
             : 'durable-custody-dark',
+      liveOwnerEnforcement: {
+        configured: liveOwnerConfigured,
+        armed: liveOwnerBlockedBy === null,
+        blockedBy: liveOwnerBlockedBy,
+      },
       errorEpisode: {
         open: this.episode.open,
         openedAt: this.episode.openedAt ? new Date(this.episode.openedAt).toISOString() : null,
