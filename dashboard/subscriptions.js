@@ -71,6 +71,14 @@ export function friendlyStatus(status) {
   return STATUS_WORDS[typeof status === 'string' ? status : ''] || 'Unknown';
 }
 
+/** Credential identity is authoritative over enrollment bookkeeping. */
+export function effectiveAccountStatus(account) {
+  if (account && (account.identityDrifted === true || account.identityDrift?.repairState === 'owner-relogin-required')) {
+    return 'needs-reauth';
+  }
+  return account && account.status;
+}
+
 const PROVIDER_WORDS = { anthropic: 'Claude', openai: 'Codex', 'github-copilot': 'Copilot', google: 'Gemini' };
 export function friendlyProvider(provider) {
   return PROVIDER_WORDS[typeof provider === 'string' ? provider : ''] || sanitizeForDisplay(provider, 'label');
@@ -204,7 +212,7 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const head = el(doc, 'div', 'sub-account-head');
     head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(a && a.nickname, 'label')));
     if (inUse) head.appendChild(el(doc, 'span', 'sub-account-inuse-badge', '● In use now'));
-    head.appendChild(el(doc, 'span', 'sub-account-status', friendlyStatus(a && a.status)));
+    head.appendChild(el(doc, 'span', 'sub-account-status', friendlyStatus(effectiveAccountStatus(a))));
     card.appendChild(head);
     card.appendChild(el(doc, 'div', 'sub-account-meta',
       `${friendlyProvider(a && a.provider)} · ${sanitizeForDisplay(a && a.framework, 'label')}`));
@@ -503,7 +511,8 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   for (const a of accountRows) {
     const mid = a && a.machineId;
     if (!a || !a.id || !mid || offlineMachineIds.has(mid)) continue;
-    cellStatus.set(`${a.id}::${mid}`, a.status === 'needs-reauth' ? 'needs-reauth' : (a.status === 'active' ? 'active' : 'other'));
+    const status = effectiveAccountStatus(a);
+    cellStatus.set(`${a.id}::${mid}`, status === 'needs-reauth' ? 'needs-reauth' : (status === 'active' ? 'active' : 'other'));
   }
   // (accountId, machineId) in-progress, correlated on (login.id === accountId, machineId) (FD6 r3 #2).
   // The MAP carries the pending-login RECORD so the in-progress cell can render the COMPLETE

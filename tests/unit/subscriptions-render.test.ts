@@ -112,6 +112,14 @@ describe('renderAccounts', () => {
     expect(t.querySelector('.sub-account-status')!.textContent).toBe('Active');
     expect(t.querySelectorAll('.sub-quota').length).toBe(2);
   });
+  it('shows needs sign-in when credential identity drift overrides active enrollment bookkeeping', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active',
+      identityDrifted: true, identityDrift: { repairState: 'owner-relogin-required' },
+    }], NOW);
+    expect(t.querySelector('.sub-account-status')!.textContent).toBe('Needs sign-in');
+  });
   it('renders a Fable 5 bar when the fable window is present', () => {
     const t = el();
     renderAccounts(doc, t, [{
@@ -311,6 +319,20 @@ describe('renderAccountMatrix', () => {
     expect(cell).toBeTruthy();
     expect(cell!.textContent).toContain('✓');
     expect(cell!.querySelector('.sub-matrix-setup')).toBeNull();
+  });
+
+  it('renders an actionable needs-sign-in cell when an active row is identity-drifted', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, { enabled: true, logins: [] }, {});
+    const cell = t.querySelector('.sub-matrix-needs-reauth');
+    expect(cell).toBeTruthy();
+    expect(cell!.textContent).toContain('Needs sign-in');
+    expect(cell!.querySelector('.sub-matrix-setup')!.textContent).toBe('Sign in');
+    expect(t.querySelector('.sub-matrix-active')).toBeNull();
   });
 
   it('renders a "Set up" button for a genuinely-empty (reachable) cell', () => {

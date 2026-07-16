@@ -35,12 +35,15 @@ export interface BurnThrottleConfig {
   autoThrottleOnUnknown: boolean;
   /** Throttle duration (default 60min). */
   throttleDurationMs: number;
+  /** Quiet period after an episode closes before the same key may open another. */
+  notificationCooldownMs: number;
 }
 
 export const DEFAULT_BURN_THROTTLE_CONFIG: BurnThrottleConfig = {
   autoThrottle: true,
   autoThrottleOnUnknown: false,
   throttleDurationMs: 60 * 60 * 1000,
+  notificationCooldownMs: 15 * 60 * 1000,
 };
 
 export type RunbookOutcomeKind =
@@ -49,6 +52,7 @@ export type RunbookOutcomeKind =
   | 'alert-only-self-attribution'
   | 'alert-only-snoozed'
   | 'throttle-installed'
+  | 'throttle-suppressed-episode'
   | 'throttle-failed';
 
 export interface RunbookOutcome {
@@ -93,6 +97,7 @@ export class BurnThrottleRunbook {
   private readonly alertTopicId: number;
   private readonly now: () => number;
   private readonly isSnoozed: (key: string) => boolean;
+  private readonly episodes = new Map<string, { closesAt: number; cooldownUntil: number; timer: ReturnType<typeof setTimeout> }>();
 
   constructor(deps: BurnThrottleRunbookDeps) {
     this.gate = deps.gate;
@@ -115,6 +120,27 @@ export class BurnThrottleRunbook {
     const trigger = extractTrigger(event);
     const decidedAt = new Date(this.now()).toISOString();
     const signalId = `${event.timestamp}:${attributionKey}`;
+
+    // Narrate state transitions, never detector ticks. Once a throttle episode
+    // is open, repeated signals for the same component neither reinstall the
+    // throttle nor emit another user-facing notice. The post-close cooldown
+    // also absorbs detector lag around the expiry boundary.
+    const episode = this.episodes.get(attributionKey);
+    if (episode && this.now() < episode.cooldownUntil) {
+      return {
+        kind: 'throttle-suppressed-episode',
+        attributionKey,
+        decidedAt,
+        trigger,
+        reason: this.now() < episode.closesAt
+          ? 'Throttle episode is already open; duplicate signal suppressed.'
+          : 'Throttle episode recently closed; cooldown signal suppressed.',
+      };
+    }
+    if (episode) {
+      clearTimeout(episode.timer);
+      this.episodes.delete(attributionKey);
+    }
 
     // 1. Self-attribution: refuse to throttle the runbook itself, AND emit
     //    a high-severity escalation alert. Per Phase 4 second-pass review §3:
@@ -198,6 +224,7 @@ export class BurnThrottleRunbook {
         capabilityToken: token,
       });
       this.fireTelegram(`${alertText}\n\nI have slowed this component down. It will resume automatically in ${Math.round(this.config.throttleDurationMs / 60000)} minutes, or you can reply STOP to release it sooner.`);
+      this.openEpisode(attributionKey, throttle);
       return {
         kind: 'throttle-installed',
         attributionKey,
@@ -216,6 +243,25 @@ export class BurnThrottleRunbook {
         reason: `Throttle install failed: ${(err as Error).message}`,
       };
     }
+  }
+
+  private openEpisode(attributionKey: string, throttle: InstalledThrottle): void {
+    const closesAt = Date.parse(throttle.expiresAt);
+    const delay = Math.max(0, closesAt - this.now());
+    const timer = setTimeout(() => {
+      const current = this.episodes.get(attributionKey);
+      if (!current || current.timer !== timer) return;
+      this.fireTelegram(
+        `The token-burn slowdown for ${humanize(attributionKey)} has ended automatically. ` +
+        'Normal activity is available again.',
+      );
+    }, delay);
+    timer.unref?.();
+    this.episodes.set(attributionKey, {
+      closesAt,
+      cooldownUntil: closesAt + this.config.notificationCooldownMs,
+      timer,
+    });
   }
 
   private fireTelegram(text: string): void {
