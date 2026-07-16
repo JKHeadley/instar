@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-16T00:48:01.513Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1436
+    ],
+    "notes": "Increment 1 intentionally shipped the admission seam observe-only; live operator evidence on topic 29723 demonstrated that the verified other-alive row now needs a narrower graduation than the still-blocked owner-dark ladder."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -21,3 +21,5 @@ The change does not graduate the owner-dark ladder: other-dark, registry-error, 
 Regression coverage pins non-owner refusal, owner allowance, single-machine no-op, custody-dark fallback, and owner-dark non-graduation. Existing admission-table, callsite-wiring, and burst E2E consumers remain required before push.
 
 `GET /pool/duplicate-reconciler` exposes `spawnAdmission.liveOwnerEnforcement` with `configured`, `armed`, and the precise blocked prerequisite, so rollout state is observable rather than inferred from config.
+
+The decision-audit record is generated from this follow-up's staged behavioral file and the same reviewed artifact after the initial worktree lacked an active Husky shim; it is committed rather than bypassed.

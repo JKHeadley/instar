@@ -605,6 +605,8 @@ export class SpawnAdmission {
     const now = this.nowFn();
     const winFloor = now - ERROR_ARM_CONSTANTS.EPISODES_WINDOW_MS;
     const mode = this.effectiveMode();
+    // Keep the narrow arm's prerequisites independently visible even while the
+    // broader status.mode honestly remains `dry-run` for owner-dark/error rows.
     const liveOwnerConfigured = this.flag.enforceLiveOwner === true;
     let liveOwnerBlockedBy: SpawnAdmissionStatus['liveOwnerEnforcement']['blockedBy'] = null;
     if (!this.flag.enabled || !liveOwnerConfigured) liveOwnerBlockedBy = 'flag-disabled';
