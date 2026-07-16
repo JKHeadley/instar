@@ -24722,6 +24722,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   };
 
+  // A completed sign-in has replaced the credential at this slot. Discard the
+  // pre-login identity observation and immediately re-probe only this account;
+  // otherwise identityDrifted remains latched until the next scheduled sweep.
+  // Completion remains successful if the fresh quota read is temporarily
+  // unavailable: the normal poll loop will retry, while the cache is already
+  // invalidated so it cannot reuse pre-login identity evidence.
+  const reverifyCompletedEnrollment = async (
+    login: { id: string; configHome?: string },
+  ): Promise<void> => {
+    const poller = ctx.quotaPoller;
+    const account = ctx.subscriptionPool?.get(login.id);
+    if (!poller || !account) return;
+    poller.invalidateIdentityCache([login.configHome || account.configHome]);
+    try { await poller.pollAccount(account); }
+    catch (err) {
+      console.warn(`[subscription-pool] immediate post-enrollment verification deferred for ${login.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   // P2.1 — the "Pending Logins" surface (the phone/dashboard panel). MUST be
   // registered before GET /subscription-pool/:id, or the param route shadows the
   // literal "pending-logins" segment. 200 { enabled:false } when unwired.
@@ -25395,6 +25414,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active;
             // only a genuinely-new account is added.
             const acct = upsertValidatedAccount(result.login, result.email);
+            await reverifyCompletedEnrollment(result.login);
             logOutcome('validated');
             // `email` rides along so the dashboard's terminal success state can NAME the
             // verified account ("headley.justin@gmail.com is set up on this machine") —
@@ -25749,6 +25769,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(404).json({ error: `pending login ${id} not found` });
         return;
       }
+      await reverifyCompletedEnrollment(login);
       res.json({ enabled: true, login });
     } finally {
       plainCompleteInFlight.delete(id);
@@ -25790,6 +25811,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active.
       const { login, email } = result;
       const account = upsertValidatedAccount(login, email);
+      await reverifyCompletedEnrollment(login);
       res.status(201).json({ enabled: true, outcome: 'validated', account });
     } catch (err) {
       const isValidation = err instanceof Error && err.name === 'ValidationError';

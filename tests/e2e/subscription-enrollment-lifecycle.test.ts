@@ -119,4 +119,37 @@ describe('/subscription-pool enrollment — E2E feature-alive', () => {
     expect(cfg.hasTrustDialogAccepted).toBe(true);
     expect(cfg.oauthAccount).toEqual(oauthAccount); // credentials byte-identical
   });
+
+  it('FEATURE ALIVE: completion invalidates and immediately reverifies the repaired slot without a scheduled sweep', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-e2e-reverify-'));
+    const configHome = path.join(dir, 'codex-1');
+    const account = { id: 'codex-1', configHome, identityDrifted: true };
+    const events: string[] = [];
+    const store = new PendingLoginStore({ stateDir: dir });
+    const wizard = new EnrollmentWizard({ store, driveLogin: async () => ART });
+    server = await bootApp({
+      config: { authToken: 't', stateDir: dir, port: 0 },
+      startTime: new Date(),
+      enrollmentWizard: wizard,
+      subscriptionPool: { get: (id: string) => id === account.id ? account : null },
+      quotaPoller: {
+        invalidateIdentityCache: (slots: string[]) => events.push(`invalidate:${slots.join(',')}`),
+        pollAccount: async (polled: typeof account) => {
+          events.push(`poll:${polled.id}`);
+          polled.identityDrifted = false;
+          return null;
+        },
+      },
+    });
+    const started = await fetch(server.url + '/subscription-pool/enroll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: account.id, label: 'codex', provider: 'openai', framework: 'codex-cli', configHome }),
+    });
+    expect(started.status).toBe(201);
+
+    const completed = await fetch(server.url + `/subscription-pool/enroll/${account.id}/complete`, { method: 'POST' });
+    expect(completed.status).toBe(200);
+    expect(events).toEqual([`invalidate:${configHome}`, `poll:${account.id}`]);
+    expect(account.identityDrifted).toBe(false);
+  });
 });

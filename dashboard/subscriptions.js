@@ -561,6 +561,10 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
       else if (cellStatus.get(key) === 'needs-reauth' && pendingLogin && pendingLogin.paneAlive === false) state = 'broken';
       else if (cellStatus.get(key) === 'needs-reauth' && pendingLogin) state = 'in-progress';
       else if (t && t.state === 'expired') state = 'expired';
+      // A validated completion is newer evidence than the pool snapshot that
+      // still says needs-reauth/identity-drifted. Keep the success ceremony
+      // visible while the targeted post-login verification catches the row up.
+      else if (t && t.state === 'just-verified' && cellStatus.get(key) === 'needs-reauth') state = 'just-verified';
       else if (cellStatus.get(key) === 'needs-reauth') state = 'needs-reauth';
       else if (cellStatus.get(key) === 'active') state = 'active';
       else if ((pendingLogin && pendingLogin.paneAlive === false) || (t && t.state === 'broken')) state = 'broken';

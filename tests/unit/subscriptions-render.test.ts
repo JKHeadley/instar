@@ -561,6 +561,22 @@ describe('renderAccountMatrix', () => {
     expect(cell.querySelector('.sub-matrix-setup')).toBeNull(); // never blinks back to "Set up"
   });
 
+  it('D4: fresh completion wins over a stale needs-reauth pool row', () => {
+    const t = el();
+    const pool = {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', status: 'needs-reauth', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] },
+    };
+    const transient = { 'a1::m1': { state: 'just-verified', at: Date.now() } };
+    renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, transient);
+    const cell = t.querySelector('.sub-matrix-just-verified')!;
+    expect(cell.textContent).toContain('Set up complete');
+    expect(t.querySelector('.sub-matrix-needs-reauth')).toBeNull();
+  });
+
   it('D4: an ACTIVE cell with a fresh just-verified transient carries the highlight class + "just set up" wording', () => {
     const t = el();
     const transient = { 'a1::m1': { state: 'just-verified', at: Date.now() } };
