@@ -13415,6 +13415,47 @@ process.stdin.on('end', async () => {
     const service = parts[1];
     const action = parts.slice(2).join('_');
 
+    // Playwright's logged-in operator profile is one physical, host-wide seat.
+    // Acquire/renew its lease before EVERY browser tool, including snapshots and
+    // reads: a "read" can observe a page another drive is actively mutating, and
+    // allowing it through would re-open the same interleaving race.
+    if (service === 'playwright') {
+      const holderId = process.env.INSTAR_SESSION_ID || '';
+      const holderLabel = process.env.INSTAR_SESSION_NAME || process.env.INSTAR_CONVERSATION_ID || holderId;
+      if (holderId) {
+        let leasePort = 4321;
+        let leaseAuth = process.env.INSTAR_AUTH_TOKEN || '';
+        try {
+          const nodeFs = await import('node:fs');
+          const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+          const cfg = JSON.parse(nodeFs.readFileSync(projectDir + '/.instar/config.json', 'utf-8'));
+          leasePort = cfg.port || 4321;
+          if (!leaseAuth && typeof cfg.authToken === 'string') leaseAuth = cfg.authToken;
+          const scopedHolderId = projectDir + ':' + holderId;
+          const leaseController = new AbortController();
+          const leaseTimeout = setTimeout(() => leaseController.abort(), 3000);
+          try {
+            const leaseRes = await fetch('http://127.0.0.1:' + leasePort + '/playwright-profiles/seat/acquire', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + leaseAuth },
+              body: JSON.stringify({ holderId: scopedHolderId, holderLabel }),
+              signal: leaseController.signal,
+            });
+            clearTimeout(leaseTimeout);
+            if (leaseRes.status === 409) {
+              const conflict = await leaseRes.json().catch(() => ({}));
+              process.stderr.write('BLOCKED: The logged-in Playwright operator seat is already in use.\\n');
+              process.stderr.write('Holder: ' + String(conflict.holderLabel || 'another active browser drive') + '\\n');
+              process.stderr.write('Retry after: ' + String(conflict.retryAfterMs || 'a short wait') + 'ms\\n');
+              process.exit(2);
+            }
+            // Only an authoritative live conflict blocks. Disabled/unavailable
+            // lease infrastructure degrades fail-open so browser access remains.
+          } catch { clearTimeout(leaseTimeout); }
+        } catch { /* no stable holder/config -> preserve existing fail-open posture */ }
+      }
+    }
+
     // Classify mutability from action name. Keep this vocabulary in lockstep
     // with ExternalOperationGate.computeRiskLevel's known-input fail-safe:
     // only explicitly unambiguous reads bypass the API; an unknown verb must

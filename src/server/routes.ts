@@ -82,6 +82,7 @@ import {
   PlaywrightRegistryCorruptError,
   DEFAULT_BLOCK_MAX_BYTES as PLAYWRIGHT_BLOCK_MAX_BYTES,
 } from '../core/PlaywrightProfileRegistry.js';
+import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
@@ -871,6 +872,8 @@ export interface RouteContext {
    *  read FRESH from disk). Tests inject this to control listVaultNames /
    *  hostname hermetically. When absent the route builds the default. */
   playwrightRegistry?: () => PlaywrightProfileRegistry;
+  /** Test/embedding override for the host-wide physical Playwright seat lease. */
+  playwrightSeatLease?: () => PlaywrightSeatLease;
   /** Agent-initiated session respawn. Null when no Telegram adapter is
    *  wired (v1 requires a Telegram-bound session). */
   sessionRefresh: SessionRefresh | null;
@@ -21088,6 +21091,40 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list playwright profiles' });
+    }
+  });
+
+  // POST /playwright-profiles/seat/acquire — host-wide physical browser-seat lease.
+  // The PreToolUse MCP hook calls this before EVERY Playwright tool (including reads),
+  // so two drives cannot interleave clicks against one logged-in browser profile.
+  // Same-holder calls renew idempotently; a crashed/quiet drive releases by TTL.
+  router.post('/playwright-profiles/seat/acquire', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    // Deliberately NOT coupled to the profile-registry rollout gate: the MCP
+    // hook is fleet-wide, and host-seat safety must remain available when the
+    // optional registry/activation UI is dark.
+    const holderId = typeof req.body?.holderId === 'string' ? req.body.holderId : '';
+    const holderLabel = typeof req.body?.holderLabel === 'string' ? req.body.holderLabel : '';
+    if (!holderId) {
+      res.status(400).json({ error: 'holderId is required' });
+      return;
+    }
+    try {
+      const result = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).acquire(holderId, holderLabel);
+      if (!result.acquired) {
+        res.status(409).json({
+          error: 'playwright operator seat is in use',
+          holderLabel: result.holderLabel,
+          retryAfterMs: result.retryAfterMs,
+          expiresAt: result.expiresAt,
+        });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      // An unavailable lease store must not make browser access disappear. The
+      // hook treats this as degraded/fail-open; only a positive conflict blocks.
+      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
     }
   });
 

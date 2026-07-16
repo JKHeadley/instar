@@ -31,6 +31,7 @@ import type { RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { SecretStore } from '../../src/core/SecretStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { PlaywrightSeatLease } from '../../src/core/PlaywrightSeatLease.js';
 
 const AUTH_TOKEN = 'test-pw-registry-bearer';
 
@@ -59,11 +60,13 @@ function ctxFor(projectDir: string, opts: { developmentAgent?: boolean } = {}): 
   } as unknown as RouteContext;
 }
 
-function appWith(projectDir: string, opts: { developmentAgent?: boolean } = {}): express.Express {
+function appWith(projectDir: string, opts: { developmentAgent?: boolean; seatFile?: string } = {}): express.Express {
   const app = express();
   app.use(express.json());
   app.use(authMiddleware(AUTH_TOKEN));
-  app.use('/', createRoutes(ctxFor(projectDir, opts)));
+  const ctx = ctxFor(projectDir, opts);
+  if (opts.seatFile) ctx.playwrightSeatLease = () => new PlaywrightSeatLease({ filePath: opts.seatFile, ttlMs: 10_000 });
+  app.use('/', createRoutes(ctx));
   return app;
 }
 
@@ -146,6 +149,39 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     expect(res.body.block).toContain('<playwright-profiles');
     const full = await request(app).get('/playwright-profiles/session-context?full=1').set(auth());
     expect(full.body.full).toBe(true);
+  });
+
+  it('seat acquire renews one drive and blocks a competing drive', async () => {
+    const app = appWith(projectDir, {
+      developmentAgent: true,
+      seatFile: path.join(stateDir, 'shared-host-seat.json'),
+    });
+    const first = await request(app).post('/playwright-profiles/seat/acquire').set(auth())
+      .send({ holderId: 'agent-a:topic-1', holderLabel: 'topic-1' });
+    expect(first.status).toBe(200);
+    expect(first.body.acquired).toBe(true);
+
+    const renewed = await request(app).post('/playwright-profiles/seat/acquire').set(auth())
+      .send({ holderId: 'agent-a:topic-1', holderLabel: 'topic-1' });
+    expect(renewed.status).toBe(200);
+    expect(renewed.body.lease.acquiredAt).toBe(first.body.lease.acquiredAt);
+
+    const conflict = await request(app).post('/playwright-profiles/seat/acquire').set(auth())
+      .send({ holderId: 'agent-b:topic-2', holderLabel: 'topic-2' });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.holderLabel).toBe('topic-1');
+    expect(conflict.body.retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it('seat safety remains available when the optional profile registry is dark', async () => {
+    const app = appWith(projectDir, {
+      developmentAgent: false,
+      seatFile: path.join(stateDir, 'dark-registry-shared-host-seat.json'),
+    });
+    const acquired = await request(app).post('/playwright-profiles/seat/acquire').set(auth())
+      .send({ holderId: 'spawn-unique-id', holderLabel: 'drive' });
+    expect(acquired.status).toBe(200);
+    expect(acquired.body.acquired).toBe(true);
   });
 
   it('create → 409 on a duplicate id', async () => {

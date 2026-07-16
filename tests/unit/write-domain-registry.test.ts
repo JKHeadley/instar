@@ -146,6 +146,13 @@ describe('wave-1 route entries (§3.5)', () => {
     const entry = reg.entryForRoute('POST', '/apprenticeship/instances/example/rung-transition');
     expect(entry?.domain).toBe('cluster-shared');
   });
+
+  it('the physical Playwright seat lease is machine-local outside git sync', () => {
+    const entry = reg.entryForRoute('POST', '/playwright-profiles/seat/acquire');
+    expect(entry?.domain).toBe('machine-local');
+    expect(entry?.story?.logical).toBe('per-machine-path');
+    expect(entry?.story?.onSharedGitSyncedPath).toBe(false);
+  });
 });
 
 describe('registry↔wiring identity (the PR-#334 dead-code lesson)', () => {

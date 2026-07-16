@@ -256,6 +256,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/playwright-profiles/seat/acquire',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the lease protects browser cookies/user-data physically resident on this host; ~/.instar/state is outside every agent project and git sync',
+    },
+  });
 
   // Apprenticeship instance transitions mutate durable program state. Keep
   // those writes on the cluster-shared/single-writer side so two machines can
