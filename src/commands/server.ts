@@ -13179,7 +13179,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // a 2nd account never clobbers the 1st.
     const { PendingLoginStore } = await import('../core/PendingLoginStore.js');
     const { EnrollmentWizard } = await import('../core/EnrollmentWizard.js');
-    const { FrameworkLoginDriver, enrollPaneSessionName } = await import('../core/FrameworkLoginDriver.js');
+    const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv } = await import('../core/FrameworkLoginDriver.js');
     const DEFAULT_ENROLL_LOGIN_COMMANDS: Record<string, string> = {
       'claude-code': 'claude auth login',
       'codex-cli': 'codex login',
@@ -13228,15 +13228,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           return sessionManager.captureOutput(session, 120) || '';
         },
-        spawn: async ({ framework, configHome }) => {
+        spawn: async ({ framework, configHome, openBrowser }) => {
           const tmuxPath = detectTmuxPath();
           if (!tmuxPath) throw new Error('tmux not available for enrollment login');
           const baseCmd = enrollLoginCommands[framework] ?? `${framework} login`;
           // env-prefix sets the per-account config home for the login process so
           // the credential lands in its own slot (CLAUDE_CONFIG_DIR isolation).
-          const cmd = configHome
-            ? `env CLAUDE_CONFIG_DIR=${JSON.stringify(configHome)} ${baseCmd}`
-            : baseCmd;
+          const env = { ...(configHome ? { CLAUDE_CONFIG_DIR: configHome } : {}), ...enrollmentBrowserEnv(openBrowser) };
+          const prefix = Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
+          const cmd = prefix ? `env ${prefix} ${baseCmd}` : baseCmd;
           const session = enrollPaneSessionName(framework, configHome);
           try {
             execFileSync(tmuxPath, ['kill-session', '-t', `=${session}`], { stdio: 'ignore' });

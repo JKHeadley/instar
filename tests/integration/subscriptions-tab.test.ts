@@ -136,6 +136,51 @@ describe('Subscriptions tab controller (integration)', () => {
 
   // ── topic 29836 D1–D5: the matrix "Set up" flow through the SHIPPED controller ──
 
+  it('restart rehydrates a drifted cell and its durable pending flow; stale Active cannot overwrite drift', async () => {
+    const pool = {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' },
+        // A duplicate stale observation reproduces the live overwrite regression.
+        { id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: false, machineId: 'm1', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    const pending = { enabled: true, logins: [{
+      id: 'a1', machineId: 'm1', paneAlive: true, kind: 'url-code-paste',
+      verificationUrl: 'https://claude.com/oauth/renewed', expectedEmail: 'a1@x.com',
+      ttlExpiresAt: '2999-01-01T00:00:00Z',
+    }] };
+    fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: pending };
+    fx.script['/subscription-pool?scope=pool'] = { body: pool };
+
+    const first = ctl(); first._state.active = true; await first.tick();
+    expect(els.matrix.querySelector('[data-cell-key="a1::m1"] .sub-matrix-signin')).toBeTruthy();
+
+    // A brand-new controller models a server/browser restart: no client transient
+    // or repairState survives. Durable pool drift + pending login reconstruct the cell.
+    const restarted = ctl(); restarted._state.active = true; await restarted.tick();
+    const cell = els.matrix.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell.className).toContain('sub-matrix-in-progress');
+    expect(cell.textContent).toContain('Signing in');
+    expect(cell.querySelector('.sub-matrix-signin')).toBeTruthy();
+  });
+
+  it('a drifted cell without a pending flow is honest and PIN-actionable', async () => {
+    fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: NO_PENDING };
+    fx.script['/subscription-pool?scope=pool'] = { body: {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    } };
+    const c = ctl(); c._state.active = true; await c.tick();
+    const cell = els.matrix.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell.textContent).toContain('Needs sign-in');
+    expect(cell.querySelector('[data-matrix-setup]').textContent).toBe('Sign in');
+  });
+
   const POOL_SCOPE = {
     enabled: true,
     accounts: [

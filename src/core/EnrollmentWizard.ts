@@ -52,6 +52,9 @@ export type LoginDriver = (req: {
    *  passes a larger value (cloud→provider latency + the two-code Claude window);
    *  omitted ⇒ the driver's own default (the local-LAN budget). */
   scrapeTimeoutMs?: number;
+  /** Consent boundary: only an explicit operator initiation may open a browser.
+   *  Background renewal still mints a fresh URL/code, but suppresses browser launch. */
+  openBrowser?: boolean;
 }) => Promise<LoginArtifact>;
 
 /**
@@ -214,6 +217,7 @@ export class EnrollmentWizard {
         framework: input.framework,
         kind,
         configHome: input.configHome,
+        openBrowser: true,
         // Threaded only for remote drives; omitted ⇒ the driver's local-LAN default.
         ...(input.remote && typeof input.remoteScrapeTimeoutMs === 'number'
           ? { scrapeTimeoutMs: input.remoteScrapeTimeoutMs }
@@ -260,6 +264,9 @@ export class EnrollmentWizard {
           framework: login.framework,
           kind: login.kind,
           configHome: login.configHome,
+          // Renewal is maintenance, not fresh operator consent. The new URL/code
+          // is stored and rendered; never pop a browser on a timer tick.
+          openBrowser: false,
         });
         const updated = this.store.reissue(login.id, {
           verificationUrl: fresh.verificationUrl,

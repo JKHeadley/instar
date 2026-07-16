@@ -147,6 +147,27 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
     expect(code.value).toBe('HALF-TYPED');
   });
 
+  it('restart-safe truth: live identity drift renders in-cell sign-in, then durable pending state rehydrates the full flow', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-tab-e2e-'));
+    const pool = new SubscriptionPool({ stateDir: dir });
+    pool.add({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
+    pool.update('a1', { status: 'active', identityDrifted: true, identityDrift: { expectedAccountId: 'a1', actualAccountId: 'other', detectedAt: '2026-06-07T00:00:00Z', slot: '/h/.c1', repairState: 'planned' } });
+    const store = new PendingLoginStore({ stateDir: dir, now: () => Date.parse('2026-06-07T00:00:00Z') });
+    const wizard = new EnrollmentWizard({ store, now: () => Date.parse('2026-06-07T00:00:00Z'), driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth/renewed', ttlMs: 15 * 60_000 }) });
+    server = await bootApp({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), meshSelfId: 'm-self', subscriptionPool: pool, enrollmentWizard: wizard });
+
+    let mounted = mountTab(server.url);
+    await mounted.c.tick();
+    expect(mounted.els.matrix.textContent).toContain('Needs sign-in');
+    expect(mounted.els.matrix.querySelector('[data-matrix-setup]').textContent).toBe('Sign in');
+
+    await wizard.start({ id: 'a1', label: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', expectedEmail: 'a1@x.com' });
+    mounted = mountTab(server.url); // fresh controller/DOM: restart, zero client-only state
+    await mounted.c.tick();
+    expect(mounted.els.matrix.querySelector('.sub-matrix-in-progress')).toBeTruthy();
+    expect(mounted.els.matrix.querySelector('.sub-matrix-signin').getAttribute('href')).toContain('/renewed');
+  });
+
   it('feature OFF: both routes 200 { enabled:false } → friendly not-set-up copy', async () => {
     server = await bootApp({ config: { authToken: 't', stateDir: '/tmp/.instar', port: 0 }, startTime: new Date() });
     // Routes are alive (not 503).

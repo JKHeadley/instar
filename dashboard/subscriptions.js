@@ -512,7 +512,13 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const mid = a && a.machineId;
     if (!a || !a.id || !mid || offlineMachineIds.has(mid)) continue;
     const status = effectiveAccountStatus(a);
-    cellStatus.set(`${a.id}::${mid}`, status === 'needs-reauth' ? 'needs-reauth' : (status === 'active' ? 'active' : 'other'));
+    const key = `${a.id}::${mid}`;
+    const next = status === 'needs-reauth' ? 'needs-reauth' : (status === 'active' ? 'active' : 'other');
+    // Pool reads may contain more than one observation for the same account/machine.
+    // Safety state is monotonic within a render: a later stale Active row must never
+    // overwrite a live identity-drift verdict.
+    const prior = cellStatus.get(key);
+    cellStatus.set(key, prior === 'needs-reauth' || next === 'needs-reauth' ? 'needs-reauth' : next);
   }
   // (accountId, machineId) in-progress, correlated on (login.id === accountId, machineId) (FD6 r3 #2).
   // The MAP carries the pending-login RECORD so the in-progress cell can render the COMPLETE
@@ -546,20 +552,22 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
       if (m.offline) state = 'offline';                              // whole column offline (FD6)
       else if (t && t.state === 'held') state = 'held';
       else if (t && t.state === 'cant-resolve') state = 'cant-resolve';
-      else if (cellStatus.get(key) === 'active') state = 'active';
-      // just-verified BRIDGES the gap between a client-observed successful enrollment and the
-      // next pool read that shows the account active — the cell must flip to an unmistakable
-      // verified presentation the moment the enrollment verifies (topic 29836 D4), never blink
-      // back to a "Set up" button while the server catches up.
-      else if (t && t.state === 'just-verified') state = 'just-verified';
+      // Durable pending state wins over enrollment bookkeeping after restart: the
+      // full flow rehydrates into its cell even if the pool row still says Active.
       // broken (D5): the server says this attempt's sign-in pane is DEAD (record ⟂ pane
       // reconciliation) — or the client just watched a code-submit refuse with pane-dead.
       // Presenting it as submittable would be a lie; it gets an explicit needs-restart
       // presentation with a working Retry (start-cell supersedes the zombie atomically).
-      else if ((pendingLogin && pendingLogin.paneAlive === false) || (t && t.state === 'broken')) state = 'broken';
-      else if (pendingLogin) state = 'in-progress';
+      else if (cellStatus.get(key) === 'needs-reauth' && pendingLogin && pendingLogin.paneAlive === false) state = 'broken';
+      else if (cellStatus.get(key) === 'needs-reauth' && pendingLogin) state = 'in-progress';
       else if (t && t.state === 'expired') state = 'expired';
       else if (cellStatus.get(key) === 'needs-reauth') state = 'needs-reauth';
+      else if (cellStatus.get(key) === 'active') state = 'active';
+      else if ((pendingLogin && pendingLogin.paneAlive === false) || (t && t.state === 'broken')) state = 'broken';
+      else if (pendingLogin) state = 'in-progress';
+      // just-verified bridges the short interval before the pool row becomes active.
+      // Once active, keep state=active and carry this transient as the highlight detail.
+      else if (t && t.state === 'just-verified') state = 'just-verified';
       else state = 'empty';                                          // → "Set up" button
       rowCells.push({
         accountId: acct.accountId, machineId: m.machineId, state,
