@@ -257,6 +257,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
 
+  // Apprenticeship instance transitions mutate durable program state. Keep
+  // those writes on the cluster-shared/single-writer side so two machines can
+  // never fork rung or lifecycle history. Read-only POST previews currently
+  // share this path family; admission remains dry-run until the wave-2 latch.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/apprenticeship/instances/',
+    domain: 'cluster-shared',
+  });
+
   // Pending enrollment records + raw login panes belong to the machine driving
   // the login. Pool-scope pending-logins merges the logical view across peers;
   // the backing stateDir file remains inside the git-sync-excluded .instar jail.

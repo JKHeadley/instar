@@ -44,6 +44,7 @@ No static heuristic is added at a competing-signals decision point. Whether evid
 - **Shadowing:** rung transitions are independent of status lifecycle gates; neither runs before or suppresses the other.
 - **Double-fire:** one request produces one CAS-backed instance update and one decision-log entry. Retry without recalculating the next adjacent rung becomes a same-rung refusal rather than a duplicate history append.
 - **Races:** updates reuse the registry's optimistic-version persistence path, so concurrent writers cannot silently overwrite each other.
+- **Cross-machine writes:** apprenticeship instance subroutes are classified `cluster-shared`, preserving a single-writer authority for rung and lifecycle history; the write-admission feature is still dry-run, so this classification changes no fleet behavior today.
 - **Feedback loops:** no monitor, timer, or self-triggered controller consumes rung state in this arm.
 
 ## 6. External surfaces

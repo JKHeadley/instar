@@ -141,6 +141,11 @@ describe('wave-1 route entries (§3.5)', () => {
     expect(reg.entryForRoute('POST', '/sessions/spawn')).toBeNull();
     expect(reg.entryForRoute('DELETE', '/attention/att-1')).toBeNull();
   });
+
+  it('classifies apprenticeship instance mutations as cluster-shared', () => {
+    const entry = reg.entryForRoute('POST', '/apprenticeship/instances/example/rung-transition');
+    expect(entry?.domain).toBe('cluster-shared');
+  });
 });
 
 describe('registry↔wiring identity (the PR-#334 dead-code lesson)', () => {
