@@ -113,6 +113,8 @@ describe('ApprenticeshipProgram', () => {
         priorInstanceId: null,
       });
       expect(inst.status).toBe('pending');
+      expect(inst.ladderRung).toBe(0);
+      expect(inst.rungHistory).toEqual([{ rung: 0, at: inst.createdAt, evidenceRef: 'instance-created' }]);
       expect(inst.harvestFrom).toBe('echo');
       expect(inst.harvestTo).toBe('codey');
       expect(inst.harvestRef).toBe('docs/apprenticeship/retro-harvests/echo-to-codey-mentorship.md');
@@ -144,6 +146,66 @@ describe('ApprenticeshipProgram', () => {
       const p2 = program();
       expect(p2.get('persisted')).toBeTruthy();
       expect(p2.list()).toHaveLength(1);
+    });
+  });
+
+  describe('independence ladder registry', () => {
+    it('requires evidence, permits adjacent promotion/demotion, and appends history', () => {
+      const p = program();
+      const inst = p.createInstance({ id: 'ladder', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+      expect(p.transitionRung(inst.id, 1, '').ok).toBe(false);
+      expect(p.transitionRung(inst.id, 2, 'pr:1').ok).toBe(false);
+
+      const promoted = p.transitionRung(inst.id, 1, 'cycles:5faea978; prs:1479,1480,1481');
+      expect(promoted.ok).toBe(true);
+      expect(promoted.instance?.ladderRung).toBe(1);
+      expect(promoted.instance?.rungHistory).toHaveLength(2);
+      expect(promoted.instance?.rungHistory[1]).toMatchObject({ rung: 1, evidenceRef: 'cycles:5faea978; prs:1479,1480,1481' });
+
+      const demoted = p.transitionRung(inst.id, 0, 'cycle:queue-stall');
+      expect(demoted.ok).toBe(true);
+      expect(demoted.instance?.rungHistory.map((h) => h.rung)).toEqual([0, 1, 0]);
+    });
+
+    it('migrates a pre-ladder instance to R0 with durable provenance', () => {
+      const p = program();
+      p.createInstance({ id: 'legacy', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+      const storePath = path.join(stateDir, 'apprenticeship', 'instances.json');
+      const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+      delete store.instances[0].ladderRung;
+      delete store.instances[0].rungHistory;
+      fs.writeFileSync(storePath, JSON.stringify(store));
+
+      const reloaded = program();
+      expect(reloaded.get('legacy')?.ladderRung).toBe(0);
+      expect(reloaded.get('legacy')?.rungHistory[0].evidenceRef).toBe('migration:pre-ladder-registry');
+      const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+      expect(persisted.instances[0].ladderRung).toBe(0);
+    });
+
+    it('fails closed when persisted ladder state is malformed', () => {
+      const p = program();
+      p.createInstance({ id: 'broken', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+      const storePath = path.join(stateDir, 'apprenticeship', 'instances.json');
+      const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+      store.instances[0].ladderRung = 99;
+      store.instances[0].rungHistory = [];
+      fs.writeFileSync(storePath, JSON.stringify(store));
+
+      const reloaded = program();
+      expect(reloaded.isCorrupt()).toBe(true);
+      expect(reloaded.list()).toEqual([]);
+    });
+
+    it('audits refused and accepted rung transitions', () => {
+      const p = program();
+      const inst = p.createInstance({ id: 'ladder-audit', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+      p.transitionRung(inst.id, 2, 'pr:skip');
+      p.transitionRung(inst.id, 1, 'pr:accepted');
+      const logPath = path.join(stateDir, 'logs', 'apprenticeship-decisions.jsonl');
+      const entries = fs.readFileSync(logPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(entries.map((e) => [e.gate, e.allow])).toEqual([['ladder', false], ['ladder', true]]);
+      expect(entries[1]).toMatchObject({ fromRung: 0, toRung: 1, evidenceRef: 'pr:accepted' });
     });
   });
 

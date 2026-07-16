@@ -745,12 +745,36 @@ describe('/apprenticeship routes (integration)', () => {
     expect(created.status).toBe(201);
     expect(created.body.harvestFrom).toBe('echo');
     expect(created.body.status).toBe('pending');
+    expect(created.body.ladderRung).toBe(0);
 
     const fetched = await request(app).get('/apprenticeship/instances/echo-to-codey').set(auth());
     expect(fetched.status).toBe(200);
     expect(fetched.body.id).toBe('echo-to-codey');
 
     const missing = await request(app).get('/apprenticeship/instances/no-such').set(auth());
+    expect(missing.status).toBe(404);
+  });
+
+  it('transitions ladder rung only with adjacent evidence-backed changes', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram()));
+    await request(app).post('/apprenticeship/instances').set(auth()).send({
+      id: 'ladder-route', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli',
+    }).expect(201);
+
+    const noEvidence = await request(app)
+      .post('/apprenticeship/instances/ladder-route/rung-transition').set(auth()).send({ to: 1 });
+    expect(noEvidence.status).toBe(409);
+
+    const promoted = await request(app)
+      .post('/apprenticeship/instances/ladder-route/rung-transition').set(auth())
+      .send({ to: 1, evidenceRef: 'cycle:5faea978; prs:1479,1480,1481' });
+    expect(promoted.status).toBe(200);
+    expect(promoted.body.instance.ladderRung).toBe(1);
+    expect(promoted.body.instance.rungHistory).toHaveLength(2);
+
+    const missing = await request(app)
+      .post('/apprenticeship/instances/no-such/rung-transition').set(auth())
+      .send({ to: 1, evidenceRef: 'pr:1' });
     expect(missing.status).toBe(404);
   });
 

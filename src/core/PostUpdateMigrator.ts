@@ -5735,6 +5735,7 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/apprenticeship/instances\` · \`GET /apprenticeship/instances/:id\`
 - Create: \`POST /apprenticeship/instances\` \`{"id":"codey-to-gemini","instanceType":"mentorship","overseer":"echo","mentor":"codey","mentee":"gemini","framework":"gemini-cli","priorInstanceId":null}\` (id/overseer/mentor/mentee/framework charset-clamped to \`^[a-z0-9-]+$\`; dup id rejected; harvestFrom=mentor / harvestTo=mentee).
 - Transition status (the ONLY way it changes — runs the gate): \`POST /apprenticeship/instances/:id/transition\` \`{"to":"active"}\` (refused + 409 on a failed gate or illegal transition; \`complete\` is terminal). Preview without mutating: \`.../can-start\` · \`.../can-complete\`.
+- Independence ladder: each instance carries \`ladderRung\` (R0–R5) plus append-only \`rungHistory\`. Move exactly one rung with \`POST /apprenticeship/instances/:id/rung-transition\` and \`{"to":1,"evidenceRef":"cycles:...; prs:..."}\`; promotion and demotion both require evidence, and accepted/refused attempts are audited.
 - Record a manual cycle: \`POST /apprenticeship/cycles\` with \`instanceId\`, positive \`cycleNumber\`, \`task\`, \`menteeOutput\`, optional \`mentorFlagged\` / \`overseerDifferential\` / \`coaching\` / \`infraItems\`, \`kind\` (\`mentor-mentee-differential\`, \`overseer-apprentice-devreview\`, \`overseer-mentee-direct\`), and \`channel\` (\`telegram-playwright\`, \`threadline-backup\`, \`direct-shortcut\`, \`unknown\`). A \`telegram-playwright\` cycle additionally REQUIRES a \`transcriptAudit\` block — \`{ topicIds, window: {start,end}, summary, findingDedupKeys, generatedAt, ledger: 'local'|'remote'|'dry-run'|'failed' }\` — built from \`instar dev:post-drive-transcript-audit\` run over the drive window (use \`--history-base-url\` when the transcript lives on the mentee's server; \`ledger:'local'\` claims are cross-checked against the real framework ledger). Use this when the overseer or manual loop found a differential outside the automated mentor tick.
 - **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.
 - Layer-balance health: \`GET /apprenticeship/instances/:id/role-coverage\` returns a \`keystoneBalance\` block — \`{ keystoneAxis, keystoneCycleCount, lastKeystoneAt, oversightSinceKeystone, starved, reason }\` — answering "is my deepest layer (the real mentor→mentee drive) actually firing, or have I drifted into just reviewing/overseeing?" \`starved:true\` = the mentee layer is under-firing relative to ongoing activity (the silent "mentor-heavy/mentee-light" drift). Observe-only; tune via \`?oversightStarvationThreshold=N\`. **When to use** (PROACTIVE): before deciding the loop is healthy — if starved, drive the mentee layer (a real \`mentor-mentee-differential\` cycle through the dogfooded channel), not another review.
@@ -5742,6 +5743,22 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
       content += '\n' + apprenticeshipSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Apprenticeship Program section');
+    }
+
+    // Existing agents with the program section need the same independence-
+    // ladder route and evidence contract emitted for fresh scaffolds.
+    if (
+      content.includes('**Apprenticeship Program**') &&
+      !content.includes('/apprenticeship/instances/:id/rung-transition')
+    ) {
+      const anchor = '- **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance';
+      const index = content.indexOf(anchor);
+      if (index !== -1) {
+        const ladderLine = '- Independence ladder: each instance carries `ladderRung` (R0–R5) plus append-only `rungHistory`. Move exactly one rung with `POST /apprenticeship/instances/:id/rung-transition` and `{"to":1,"evidenceRef":"cycles:...; prs:..."}`; promotion and demotion both require evidence, and accepted/refused attempts are audited.\n';
+        content = content.slice(0, index) + ladderLine + content.slice(index);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added apprenticeship independence-ladder awareness');
+      }
     }
 
     // Layer-balance signal (2026-06-06): agents that ALREADY carry the

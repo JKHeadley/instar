@@ -313,7 +313,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'apprenticeshipProgram',
     prefixes: ['/apprenticeship'],
-    description: 'Apprenticeship Program — instance registry + lifecycle gates for onboarding agent frameworks. Each onboarding is a tracked instance (overseer / mentor / mentee). The retro-gate refuses starting an instance without a valid prior retro-harvest; the doc-as-required-artifact gate refuses completing one without its lessons captured. Gates are structural preconditions on objective artifacts; verdicts audited to logs/apprenticeship-decisions.jsonl.',
+    description: 'Apprenticeship Program — instance registry, evidence-backed independence ladder, and lifecycle gates for onboarding agent frameworks. Each onboarding is a tracked instance (overseer / mentor / mentee). Ladder transitions are adjacent, require evidence, and retain append-only history. Gate and ladder verdicts are audited to logs/apprenticeship-decisions.jsonl.',
     build: ({ ctx }) => ({
       configured: !!ctx.apprenticeshipProgram || !!ctx.apprenticeshipCycleStore,
       endpoints: [
@@ -326,6 +326,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /apprenticeship/cycles/:id',
         'POST /apprenticeship/instances',
         'POST /apprenticeship/instances/:id/transition',
+        'POST /apprenticeship/instances/:id/rung-transition',
         'POST /apprenticeship/instances/:id/can-start',
         'POST /apprenticeship/instances/:id/can-complete',
         'POST /apprenticeship/cycles',

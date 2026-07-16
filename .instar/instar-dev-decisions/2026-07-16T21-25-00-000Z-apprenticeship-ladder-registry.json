@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-16T21:25:00.000Z",
+  "slug": "apprenticeship-ladder-registry",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "persistent state schema migration",
+    "new authenticated state-mutating route"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 300,
+  "causalAutopsy": "The apprenticeship design defined R0-R5 independence semantics, but instances had no durable rung state, evidence history, or registry transition authority, leaving advancement as conversational memory rather than auditable program state.",
+  "classClosure": null,
+  "verdict": "pass"
+}

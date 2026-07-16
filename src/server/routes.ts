@@ -21787,6 +21787,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ ok: true, reason: result.reason, instance: result.instance });
   });
 
+  router.post('/apprenticeship/instances/:id/rung-transition', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const body = req.body ?? {};
+    const result = ctx.apprenticeshipProgram.transitionRung(
+      req.params.id,
+      body.to,
+      typeof body.evidenceRef === 'string' ? body.evidenceRef : '',
+    );
+    if (!result.ok) {
+      res.status(result.reason.includes('not found') ? 404 : 409).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
   router.post('/apprenticeship/instances/:id/can-start', (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const inst = ctx.apprenticeshipProgram.get(req.params.id);

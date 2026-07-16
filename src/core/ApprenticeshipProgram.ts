@@ -68,6 +68,10 @@ export interface ApprenticeshipInstance {
   /** ^[a-z0-9-]+$ (flows into the ledger-count query). */
   framework: string;
   status: InstanceStatus;
+  /** Independence ladder rung, per approved ladder spec §5.1. */
+  ladderRung: 0 | 1 | 2 | 3 | 4 | 5;
+  /** Append-only evidence trail for rung changes. */
+  rungHistory: Array<{ rung: 0 | 1 | 2 | 3 | 4 | 5; at: string; evidenceRef: string }>;
   /** for the retro-gate; must resolve to a `complete` instance (or null = bootstrap). */
   priorInstanceId: string | null;
   /** the CHECKLIST DEFINITION (what's required), not evidence. Immutable after create. */
@@ -227,7 +231,43 @@ export class ApprenticeshipProgram {
         const data = JSON.parse(raw);
         if (data && data.version === 1 && Array.isArray(data.instances)) {
           this.corrupt = false;
-          return data as InstanceStore;
+          let normalized = false;
+          const instances = (data.instances as ApprenticeshipInstance[]).map((instance) => {
+            const hasRung = Object.prototype.hasOwnProperty.call(instance, 'ladderRung');
+            const hasHistory = Object.prototype.hasOwnProperty.call(instance, 'rungHistory');
+            if (hasRung || hasHistory) {
+              const validRung = Number.isInteger(instance.ladderRung)
+                && instance.ladderRung >= 0 && instance.ladderRung <= 5;
+              const validHistory = Array.isArray(instance.rungHistory)
+                && instance.rungHistory.length > 0
+                && instance.rungHistory.every((entry) => entry
+                  && Number.isInteger(entry.rung) && entry.rung >= 0 && entry.rung <= 5
+                  && typeof entry.at === 'string' && entry.at.trim().length > 0
+                  && typeof entry.evidenceRef === 'string' && entry.evidenceRef.trim().length > 0)
+                && instance.rungHistory.at(-1)?.rung === instance.ladderRung;
+              if (!validRung || !validHistory || !hasRung || !hasHistory) {
+                throw new Error('invalid apprenticeship ladder state');
+              }
+              return instance;
+            }
+            normalized = true;
+            const rung = 0 as const;
+            return {
+              ...instance,
+              ladderRung: rung,
+              rungHistory: [{
+                rung,
+                at: instance.createdAt ?? new Date().toISOString(),
+                evidenceRef: 'migration:pre-ladder-registry',
+              }],
+            };
+          });
+          const loaded = { ...data, instances } as InstanceStore;
+          if (normalized) {
+            this.store = loaded;
+            this.saveStore();
+          }
+          return loaded;
         }
         // Present but unparseable shape → fail closed (do NOT silently reset).
         this.corrupt = true;
@@ -350,6 +390,8 @@ export class ApprenticeshipProgram {
       mentee: input.mentee,
       framework: input.framework,
       status: 'pending',
+      ladderRung: 0,
+      rungHistory: [{ rung: 0, at: now, evidenceRef: 'instance-created' }],
       priorInstanceId: input.priorInstanceId ?? null,
       requiredArtifacts: {
         retroHarvest: input.requiredArtifacts?.retroHarvest ?? true,
@@ -565,14 +607,55 @@ export class ApprenticeshipProgram {
     return { ok: true, reason: `transitioned ${instance.status}→${to}`, instance: updated };
   }
 
+  /** Evidence-gated, adjacent independence-ladder transition (§5.1). */
+  transitionRung(
+    id: string,
+    to: number,
+    evidenceRef: string,
+  ): { ok: boolean; reason: string; instance?: ApprenticeshipInstance } {
+    const instance = this.get(id);
+    const refuse = (reason: string) => {
+      this.recordDecision({
+        gate: 'ladder', instanceId: id, allow: false, reason,
+        fromRung: instance?.ladderRung, toRung: to, evidenceRef,
+      });
+      return { ok: false as const, reason };
+    };
+    if (this.corrupt) return refuse('instance store is corrupt — fail closed');
+    if (!instance) return refuse(`instance "${id}" not found`);
+    if (!Number.isInteger(to) || to < 0 || to > 5) return refuse('to must be an integer from 0 through 5');
+    const evidence = typeof evidenceRef === 'string' ? evidenceRef.trim() : '';
+    if (!evidence || evidence.length > 2_000) return refuse('evidenceRef is required and must be at most 2000 characters');
+    if (Math.abs(to - instance.ladderRung) !== 1) {
+      return refuse(`ladder transitions must be adjacent (${instance.ladderRung}→${to} refused)`);
+    }
+
+    const at = new Date().toISOString();
+    const rung = to as ApprenticeshipInstance['ladderRung'];
+    const updated = this.mutate(id, (current) => ({
+      ...current,
+      ladderRung: rung,
+      rungHistory: [...(current.rungHistory ?? []), { rung, at, evidenceRef: evidence }],
+    }));
+    this.recordDecision({
+      gate: 'ladder', instanceId: id, allow: true,
+      reason: `transitioned R${instance.ladderRung}→R${rung}`,
+      fromRung: instance.ladderRung, toRung: rung, evidenceRef: evidence,
+    });
+    return { ok: true, reason: `transitioned R${instance.ladderRung}→R${rung}`, instance: updated };
+  }
+
   // ── Decision audit (§3.6) ───────────────────────────────────────────
 
   private recordDecision(entry: {
-    gate: 'start' | 'completion';
+    gate: 'start' | 'completion' | 'ladder';
     instanceId: string;
     allow: boolean;
     reason: string;
     missing?: string[];
+    fromRung?: number;
+    toRung?: number;
+    evidenceRef?: string;
   }): void {
     try {
       const dir = path.dirname(this.decisionLogPath);
@@ -585,6 +668,9 @@ export class ApprenticeshipProgram {
           allow: entry.allow,
           reason: entry.reason,
           ...(entry.missing && entry.missing.length ? { missing: entry.missing } : {}),
+          ...(entry.fromRung !== undefined ? { fromRung: entry.fromRung } : {}),
+          ...(entry.toRung !== undefined ? { toRung: entry.toRung } : {}),
+          ...(entry.evidenceRef ? { evidenceRef: entry.evidenceRef } : {}),
         }) + '\n';
       fs.appendFileSync(this.decisionLogPath, line);
     } catch {

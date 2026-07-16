@@ -1,0 +1,25 @@
+# Apprenticeship independence ladder registry
+
+<!-- bump: minor -->
+
+## What Changed
+
+Apprenticeship instances now persist an evidence-backed independence rung from R0 through R5 and an append-only rung history. A new authenticated transition route permits one-rung promotions or demotions only when the caller supplies an evidence reference. Accepted and refused attempts are written to the existing apprenticeship decision audit.
+
+Existing pre-ladder instances migrate durably to R0 with explicit migration provenance. Persisted ladder fields that are present but malformed fail closed as corrupt state rather than being silently repaired.
+
+## What to Tell Your User
+
+- "Apprenticeship progress can now be tracked explicitly from R0 to R5. Every promotion or demotion requires evidence and remains visible in the instance history."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| Inspect independence state | Read `ladderRung` and `rungHistory` on an apprenticeship instance |
+| Promote or demote one rung | `POST /apprenticeship/instances/:id/rung-transition` with `to` and `evidenceRef` |
+| Audit ladder decisions | Read the existing apprenticeship decision log; both accepted and refused attempts are recorded |
+
+## Evidence
+
+Unit, integration, and E2E coverage verifies initialization, legacy migration, malformed-state rejection, adjacent transitions, evidence requirements, audit entries, and the live HTTP route. Fresh scaffolds and existing-agent migration both teach the route and evidence contract.
