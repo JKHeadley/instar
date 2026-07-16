@@ -22,6 +22,7 @@ import Database from 'better-sqlite3';
 
 import {
   PendingRelayStore,
+  cleanupLegacyEmptyPendingRelayStores,
   resolvePendingRelayPath,
   assertSqliteAvailable,
 } from '../../src/messaging/pending-relay-store.js';
@@ -41,6 +42,42 @@ afterEach(() => {
 });
 
 describe('PendingRelayStore — schema and path', () => {
+  it('atomically quarantines only zero-byte legacy stores and preserves evidence', () => {
+    const state = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(state, 'state'), { recursive: true });
+    fs.mkdirSync(path.join(state, 'server-data'), { recursive: true });
+    const emptyLegacy = [
+      path.join(state, 'pending-relay.db'),
+      path.join(state, 'pending-relay.echo.sqlite'),
+      path.join(state, 'server-data', 'pending-relay.echo.sqlite'),
+      path.join(state, 'state', 'pending-relay.sqlite3'),
+    ];
+    for (const p of emptyLegacy) fs.writeFileSync(p, '');
+    const nonEmpty = path.join(state, 'state', 'pending-relay.db');
+    fs.writeFileSync(nonEmpty, 'evidence');
+
+    const quarantined = cleanupLegacyEmptyPendingRelayStores(state, 'echo');
+    expect(quarantined).toHaveLength(emptyLegacy.length);
+    for (const p of emptyLegacy) expect(fs.existsSync(p)).toBe(false);
+    for (const p of quarantined) {
+      expect(p).toContain('.legacy-empty-quarantine-');
+      expect(fs.readFileSync(p)).toHaveLength(0);
+    }
+    expect(fs.readFileSync(nonEmpty, 'utf8')).toBe('evidence');
+  });
+
+  it('preserves bytes written after zero-byte classification under the quarantine name', () => {
+    const state = path.join(tmpDir, '.instar');
+    fs.mkdirSync(state, { recursive: true });
+    const legacy = path.join(state, 'pending-relay.db');
+    fs.writeFileSync(legacy, '');
+    const quarantined = cleanupLegacyEmptyPendingRelayStores(state, 'echo', (candidate) => {
+      fs.writeFileSync(candidate, 'late writer evidence');
+    });
+    expect(quarantined).toHaveLength(1);
+    expect(fs.readFileSync(quarantined[0], 'utf8')).toBe('late writer evidence');
+  });
+
   it('creates the entries table on first open', () => {
     const store = PendingRelayStore.open('echo', tmpDir);
     expect(store.count()).toBe(0);

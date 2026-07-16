@@ -370,8 +370,9 @@ export class DeliveryFailureSentinel extends EventEmitter {
     const nowIso = new Date(this.deps.now()).toISOString();
     try {
       const rows = this.deps.store.selectClaimable(nowIso, 100);
-      // Filter claimed rows whose lease has not expired AND whose bootId matches
-      // (otherwise reclaimable).
+      // A boot-id change does not itself make an active network send stale.
+      // Reclaim only after the timestamped lease expires; the owner renews it
+      // while awaiting I/O.
       return rows.filter((row) => {
         if (row.state !== 'claimed') return true;
         return this.isLeaseStale(row);
@@ -387,8 +388,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     // Format: "<bootId>:<pid>:<leaseUntilIso>"
     const parts = row.claimed_by.split(':');
     if (parts.length < 3) return true;
-    const [bootId, , leaseUntilIso] = [parts[0], parts[1], parts.slice(2).join(':')];
-    if (bootId !== this.deps.bootId) return true;
+    const leaseUntilIso = parts.slice(2).join(':');
     const lease = Date.parse(leaseUntilIso);
     if (Number.isNaN(lease)) return true;
     return lease < this.deps.now();
@@ -397,12 +397,40 @@ export class DeliveryFailureSentinel extends EventEmitter {
   private async processRow(row: PendingRelayRow): Promise<'recovered' | 'escalated' | 'tone-gated' | 'retry' | 'ambiguous'> {
     // Claim the row — write the lease.
     const leaseUntil = new Date(this.deps.now() + this.cfg.leaseDurationMs).toISOString();
-    const claimedBy = `${this.deps.bootId}:${process.pid}:${leaseUntil}`;
-    const claimed = this.deps.store.transition(row.delivery_id, 'claimed', { claimed_by: claimedBy });
+    let claimedBy = `${this.deps.bootId}:${process.pid}:${leaseUntil}`;
+    // Atomic claim at the drain chokepoint. `transition()` was read-then-write:
+    // two sentinel instances that selected the same queued row could both
+    // report success and both POST it. CAS binds the claim to the selected
+    // state/owner so exactly one drain may send a delivery_id.
+    const claimed = this.deps.store.claimCas(row.delivery_id, claimedBy, {
+      state: row.state,
+      claimed_by: row.claimed_by,
+    });
     if (!claimed) {
       // Lost the race — another instance grabbed it (shared worktree case).
       return 'retry';
     }
+
+    let ownershipLost = false;
+    const renew = (): boolean => {
+      if (ownershipLost) return false;
+      const nextLease = new Date(this.deps.now() + this.cfg.leaseDurationMs).toISOString();
+      const nextToken = `${this.deps.bootId}:${process.pid}:${nextLease}`;
+      if (!this.deps.store.renewClaim(row.delivery_id, claimedBy, nextToken)) {
+        ownershipLost = true;
+        return false;
+      }
+      claimedBy = nextToken;
+      return true;
+    };
+    const heartbeat = setInterval(renew, Math.max(1, Math.floor(this.cfg.leaseDurationMs / 3)));
+    heartbeat.unref();
+    const transitionOwned = (
+      state: Parameters<PendingRelayStore['transitionClaimed']>[2],
+      fields: Parameters<PendingRelayStore['transitionClaimed']>[3] = {},
+    ): boolean => !ownershipLost && this.deps.store.transitionClaimed(row.delivery_id, claimedBy, state, fields);
+
+    try {
 
     // Re-resolve config — operator may have rotated port/token since enqueue.
     const cfg = this.deps.readConfig();
@@ -419,7 +447,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
         attempts: row.attempts,
         timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
         now: this.deps.now,
-      }));
+      }), undefined, transitionOwned);
     }
     if (whoami.agentId !== cfg.agentId) {
       return this.handlePolicyDecision(row, evaluatePolicy({
@@ -428,7 +456,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
         attempts: row.attempts,
         timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
         now: this.deps.now,
-      }));
+      }), undefined, transitionOwned);
     }
 
     // Re-tone-gate the queued text. Apply redaction first so secrets in
@@ -440,12 +468,13 @@ export class DeliveryFailureSentinel extends EventEmitter {
       channel: 'telegram',
     });
     if (!toneResult.passed) {
-      return this.finalizeToneGated(row, toneResult.rule);
+      return this.finalizeToneGated(row, transitionOwned, toneResult.rule);
     }
 
     // POST /telegram/reply with the delivery-id header for server-side dedup.
     let resp: { status: number; body: string };
     try {
+      if (!renew()) return 'retry';
       resp = await this.deps.postReply(
         cfg.port,
         cfg.authToken,
@@ -463,7 +492,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
         attempts: row.attempts + 1,
         timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
         now: this.deps.now,
-      }));
+      }), undefined, transitionOwned);
     }
 
     const decision = evaluatePolicy({
@@ -477,11 +506,11 @@ export class DeliveryFailureSentinel extends EventEmitter {
     if (decision.action === 'finalize-success') {
       // Update last-delivery time for per-topic rate cap.
       this.lastTopicDelivery.set(row.topic_id, this.deps.now());
-      this.deps.store.transition(row.delivery_id, 'delivered-recovered', {
+      if (!transitionOwned('delivered-recovered', {
         attempts: row.attempts + 1,
         http_code: resp.status,
         error_body: null,
-      });
+      })) return 'retry';
       this.emit('sentinel:recovered', { delivery_id: row.delivery_id, topic_id: row.topic_id });
       // Fire-and-forget recovered-marker follow-up (~2s later, gated on 200).
       const shortId = row.delivery_id.slice(0, 8);
@@ -497,13 +526,20 @@ export class DeliveryFailureSentinel extends EventEmitter {
       return 'recovered';
     }
 
-    return this.handlePolicyDecision(row, decision, resp.status);
+    return this.handlePolicyDecision(row, decision, resp.status, transitionOwned);
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 
-  private async finalizeToneGated(row: PendingRelayRow, rule?: string): Promise<'tone-gated'> {
-    this.deps.store.transition(row.delivery_id, 'delivered-tone-gated', {
+  private async finalizeToneGated(
+    row: PendingRelayRow,
+    transitionOwned: (state: Parameters<PendingRelayStore['transitionClaimed']>[2], fields?: Parameters<PendingRelayStore['transitionClaimed']>[3]) => boolean,
+    rule?: string,
+  ): Promise<'tone-gated' | 'retry'> {
+    if (!transitionOwned('delivered-tone-gated', {
       attempts: row.attempts + 1,
-    });
+    })) return 'retry';
     this.emit('sentinel:tone-gated', { delivery_id: row.delivery_id, topic_id: row.topic_id, rule });
 
     // Send the tone-gate-rejection meta-notice on the original topic.
@@ -522,6 +558,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     row: PendingRelayRow,
     decision: PolicyDecision,
     httpCode?: number,
+    transitionOwned?: (state: Parameters<PendingRelayStore['transitionClaimed']>[2], fields?: Parameters<PendingRelayStore['transitionClaimed']>[3]) => boolean,
   ): Promise<'recovered' | 'escalated' | 'retry' | 'ambiguous' | 'tone-gated'> {
     switch (decision.action) {
       case 'finalize-success':
@@ -529,34 +566,40 @@ export class DeliveryFailureSentinel extends EventEmitter {
         return 'recovered';
 
       case 'finalize-tone-gated':
-        return this.finalizeToneGated(row);
+        if (!transitionOwned) return 'retry';
+        return this.finalizeToneGated(row, transitionOwned);
 
       case 'finalize-ambiguous':
-        this.deps.store.transition(row.delivery_id, 'delivered-ambiguous', {
+        if (!transitionOwned?.('delivered-ambiguous', {
           attempts: row.attempts + 1,
           http_code: httpCode ?? null,
-        });
+        })) return 'retry';
         return 'ambiguous';
 
       case 'retry':
-        this.deps.store.transition(row.delivery_id, 'queued', {
+        if (!transitionOwned?.('queued', {
           attempts: row.attempts + 1,
           next_attempt_at: decision.nextAttemptAt ?? null,
           claimed_by: null,
           http_code: httpCode ?? null,
-        });
+        })) return 'retry';
         return 'retry';
 
       case 'escalate':
-        return this.escalate(row, decision);
+        if (!transitionOwned) return 'retry';
+        return this.escalate(row, decision, transitionOwned);
     }
   }
 
-  private async escalate(row: PendingRelayRow, decision: PolicyDecision): Promise<'escalated'> {
+  private async escalate(
+    row: PendingRelayRow,
+    decision: PolicyDecision,
+    transitionOwned: (state: Parameters<PendingRelayStore['transitionClaimed']>[2], fields?: Parameters<PendingRelayStore['transitionClaimed']>[3]) => boolean,
+  ): Promise<'escalated' | 'retry'> {
     const category = reasonToCategory(decision.reason);
-    this.deps.store.transition(row.delivery_id, 'escalated', {
+    if (!transitionOwned('escalated', {
       attempts: row.attempts + 1,
-    });
+    })) return 'retry';
     this.emit('sentinel:escalated', { delivery_id: row.delivery_id, topic_id: row.topic_id, category });
 
     if (!this.templatesValid) {

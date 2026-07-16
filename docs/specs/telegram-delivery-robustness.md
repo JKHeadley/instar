@@ -9,6 +9,7 @@ review-report: "docs/specs/reports/telegram-delivery-robustness-convergence.md"
 approved: true
 approved-by: "justin"
 approved-at: "2026-04-27T18:40:00Z"
+parent-principle: "Verify the State, Not Its Symbol"
 ---
 
 # Telegram Delivery Robustness
