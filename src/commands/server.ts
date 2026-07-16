@@ -21913,6 +21913,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return { owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, status: r.status ?? null };
                 },
                 isMachineAlive: seamIsAlive,
+                readHardPinOwner: (sk) => {
+                  const pin = _pinPlacementMetadata ? _pinPlacementMetadata(sk) : _topicPinStore?.asTopicMetadata(sk);
+                  return pin?.pinned === true && pin.preferredMachine ? pin.preferredMachine : null;
+                },
                 durableCustodyLive: () => !!_inboundQueue,
                 journal: (row) => ownerDarkAudit.append(row),
                 raiseAttention: (item) => {

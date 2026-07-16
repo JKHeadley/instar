@@ -90,4 +90,9 @@ describe('SpawnAdmission callsite pins (src/commands/server.ts)', () => {
     expect(src).toContain('void _ownerDarkLadder.handleOwnerDark({');
     expect(src).toContain("d.refusalAction === 'owner-dark-ladder' || d.refusalAction === 'rung3-notice'");
   });
+
+  it('(g) respawn-dead graduation reads the effective hard pin and retains owner-dark fail-safe', () => {
+    expect(src).toContain('readHardPinOwner: (sk) => {');
+    expect(src).toContain("admitLocalSpawn('telegram-respawn-dead')");
+  });
 });
