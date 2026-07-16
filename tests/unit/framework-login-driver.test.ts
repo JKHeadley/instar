@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { FrameworkLoginDriver, enrollPaneSessionName } from '../../src/core/FrameworkLoginDriver.js';
+import { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv } from '../../src/core/FrameworkLoginDriver.js';
 import { loadCapturedFixture } from '../helpers/loadCapturedFixture.js';
 
 describe('enrollPaneSessionName (shared pane-name source of truth — ws52-code-paste-back / codex #1)', () => {
@@ -23,6 +23,14 @@ describe('enrollPaneSessionName (shared pane-name source of truth — ws52-code-
     const configHome = '/Users/x/.instar/agents/echo/.claude-followme-adriana';
     const slug = configHome.replace(/[^a-zA-Z0-9]+/g, '-').slice(-24);
     expect(enrollPaneSessionName('claude-code', configHome)).toBe(`instar-enroll-claude-code-${slug}`);
+  });
+});
+
+describe('enrollmentBrowserEnv consent boundary', () => {
+  it('suppresses the provider browser opener only for background renewal', () => {
+    expect(enrollmentBrowserEnv(false)).toEqual({ BROWSER: 'true' });
+    expect(enrollmentBrowserEnv(true)).toEqual({});
+    expect(enrollmentBrowserEnv(undefined)).toEqual({});
   });
 });
 

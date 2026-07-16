@@ -101,6 +101,23 @@ describe('EnrollmentWizard', () => {
     expect(w.pending()[0].userCode).toBe('7EHB-L23HC');
   });
 
+  it('auto-reissue refreshes the stored link without browser-open consent', async () => {
+    const requests: Parameters<LoginDriver>[0][] = [];
+    const w = new EnrollmentWizard({
+      store, now: () => clock,
+      driveLogin: async (req) => {
+        requests.push(req);
+        return { verificationUrl: `https://claude.com/oauth/${requests.length}`, ttlMs: 15 * 60_000 };
+      },
+    });
+    await w.start({ id: 'claude-1', label: 'Claude', provider: 'anthropic', framework: 'claude-code' });
+    clock = T0 + 16 * 60_000;
+    const renewed = await w.reissueExpired();
+    expect(requests.map((r) => r.openBrowser)).toEqual([true, false]);
+    expect(renewed[0].verificationUrl).toBe('https://claude.com/oauth/2');
+    expect(store.get('claude-1')?.verificationUrl).toBe('https://claude.com/oauth/2');
+  });
+
   it('a driver failure during reissue is skipped (sweep continues, login stays expired)', async () => {
     let n = 0;
     const w = wizard(async () => {
