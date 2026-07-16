@@ -158,7 +158,7 @@ import {
 } from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
 import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
-import { sendAgentMessage, A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
+import { A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
 import { AgentTelegramLedger, defaultLedgerPaths as defaultA2aLedgerPaths } from '../messaging/AgentTelegramLedger.js';
 import { DEFAULT_MENTEE_CONFIG, type MenteeConfig } from '../messaging/MenteeReceiverConfig.js';
 import { ProcessedIdStore } from '../messaging/ProcessedIdStore.js';
@@ -258,6 +258,14 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  private deliverA2aToMachine?: (input: {
+    machineId: string;
+    targetAgent: string;
+    text: string;
+    topicId: number;
+    senderAgent: string;
+    senderBotId: string;
+  }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
@@ -510,6 +518,8 @@ export class AgentServer {
     getMachineCoherence?: () => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
+    /** Signed cross-machine carrier into the recipient's existing A2A inbox. */
+    deliverA2aToMachine?: AgentServer['deliverA2aToMachine'];
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
      *  POST /coherence/fetch-working-set. Absent while the layer is dark. */
     workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator;
@@ -838,6 +848,7 @@ export class AgentServer {
     this.poolLink = options.poolLink ?? undefined;
     this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
+    this.deliverA2aToMachine = options.deliverA2aToMachine;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
     this.toneGate = options.messagingToneGate ?? null;
@@ -3415,7 +3426,7 @@ export class AgentServer {
    *      the session is killed and an empty reply is logged — no partial
    *      transcript is sent.
    *   3. Captures the tmux pane transcript as the reply.
-   *   4. Sends the reply back via `sendAgentMessage` with
+   *   4. Sends the reply back through the canonical A2A delivery seam with
    *      `role='mentor-reply'` and `corr=msg.corr || msg.id` so the
    *      mentor's `OutstandingPromptTracker` can clear by correlation.
    *
@@ -3532,6 +3543,7 @@ export class AgentServer {
           // (knownAgents[instar-codey].botId === senderBotId) passes.
           fromBotId: self.ownPrimaryBotId(),
           toBotId: menteeCfg.knownMentors[msg.from]?.botId,
+          targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
         });
       };
       roleHandlers.set('mentor', mentorMessageHandler);
@@ -3620,6 +3632,7 @@ export class AgentServer {
     body: string;
     allowedRoles: ReadonlySet<string>;
     telegramTopicId?: number;
+    targetMachineId?: string;
     /** The recipient's bot id — used ONLY by the Telegram fallback's toBotId. */
     toBotId?: string;
     /** The SENDER's own bot id — sent as the inbox `senderBotId` so the
@@ -3691,36 +3704,42 @@ export class AgentServer {
       console.warn(`[a2a] local-inbox delivery attempt failed (to=${opts.toAgent}): ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // ── Cross-machine Telegram fallback (mentor→mentee only; currently
-    //    unreachable due to bot-to-bot block — tracked follow-up). ──
-    if (opts.telegramBot && opts.telegramTopicId !== undefined && opts.toBotId && opts.botToken) {
-      try {
-        const result = await sendAgentMessage(
-          {
-            fromAgent: opts.fromAgent, toAgent: opts.toAgent, role: opts.role,
-            toTopicId: opts.telegramTopicId, message: opts.body, id, correlationId: opts.corr,
-          },
-          {
-            send: async (topicId, text) => {
-              try {
-                const res = await opts.telegramBot!.sendToTopic(topicId, text);
-                return { ok: true, messageId: String(res.messageId) };
-              } catch (e) { return { ok: false, error: e }; }
-            },
-            appendAudit: (row) => ledger.appendSent(row),
-            now: () => Date.now(),
-            mintId: () => id,
-            allowedRoles: opts.allowedRoles,
-            botToken: opts.botToken,
-            fromBotId: opts.botToken.split(':')[0],
-            toBotId: opts.toBotId,
-          },
-        );
-        return result.ok;
-      } catch (err) {
-        console.warn(`[a2a] telegram fallback failed (to=${opts.toAgent}): ${err instanceof Error ? err.message : String(err)}`);
+    // ── Cross-machine: signed MeshRpc → recipient's EXISTING inbox hook ──
+    // Telegram remains a visible mirror only. It can never make this branch
+    // successful because Telegram bots do not receive other bots' messages.
+    if (opts.targetMachineId && this.deliverA2aToMachine && opts.telegramTopicId !== undefined) {
+      const tsNow = Date.now();
+      const marker = `[a2a:from=${opts.fromAgent} to=${opts.toAgent} role=${opts.role} id=${id} corr=${opts.corr} ts=${tsNow} v=${A2A_VERSION}]`;
+      const result: { ok: boolean; agentMessage?: boolean; reason?: string } = await this.deliverA2aToMachine({
+        machineId: opts.targetMachineId,
+        targetAgent: opts.toAgent,
+        text: `${marker}\n\n${opts.body}`,
+        topicId: opts.telegramTopicId,
+        senderAgent: opts.fromAgent,
+        senderBotId: opts.fromBotId ?? `${opts.fromAgent}-mesh`,
+      }).catch((err) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+      if (result.ok && result.agentMessage === true) {
+        try {
+          ledger.appendSent({
+            ts: tsNow, from: opts.fromAgent, to: opts.toAgent, role: opts.role,
+            id, corr: opts.corr, result: 'sent', transport: 'a2a-inbox-mesh',
+          } as never);
+        } catch { /* best-effort */ }
+        console.log(`[a2a] delivered → ${opts.toAgent} via signed mesh inbox (machine=${opts.targetMachineId}, role=${opts.role}, corr=${opts.corr})`);
+        if (opts.visibleEcho) {
+          void sendMentorVisibleEcho(opts.body, opts.visibleEcho).catch((err) => {
+            console.warn(`[mentor-echo] unexpected failure after mesh delivery: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+        return true;
       }
+      console.warn(`[a2a] signed mesh inbox refused (machine=${opts.targetMachineId}, to=${opts.toAgent}, role=${opts.role}, reason=${result.reason ?? 'not-routed'})`);
+      return false;
     }
+
+    // Telegram bot-to-bot sends are never a delivery authority: bots do not
+    // receive other bots' messages. A visible mirror is emitted only above,
+    // after the local or signed-mesh inbox explicitly accepts the envelope.
     return false;
   }
 
@@ -4092,6 +4111,7 @@ export class AgentServer {
             // session) and the Telegram fallback, so the whole exchange moves
             // together. Falls back to menteeTopicId (backward-compatible).
             telegramTopicId: resolveMentorDeliveryTopic(cfg),
+            targetMachineId: cfg.menteeMachineId,
             // fromBotId = echo's mentor-bot id, so the mentee's allowlist
             // (knownMentors[echo].botId === senderBotId) passes.
             fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,

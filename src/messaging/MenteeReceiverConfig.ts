@@ -26,6 +26,8 @@
 export interface MenteeKnownMentor {
   /** The mentor's Telegram bot id (as a string — Telegram ids exceed JS number safety). */
   botId: string;
+  /** Machine identity allowed to represent this mentor over signed MeshRpc. */
+  machineId?: string;
 }
 
 export interface MenteeConfig {
