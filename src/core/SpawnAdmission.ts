@@ -421,6 +421,8 @@ export class SpawnAdmission {
       if (!owner || owner === this.deps.selfMachineId()) return null;
       return this.deps.isMachineAlive(owner) ? owner : null;
     } catch {
+      // @silent-fallback-ok — an erroring pin read falls toward the existing dry-run path,
+      // the deliberate fail-safe direction; enforcement is never fabricated from uncertainty.
       return null;
     }
   }

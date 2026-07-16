@@ -72,3 +72,7 @@ The change is narrowly fitted to the recurring live incident and closes it at th
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect and no self-triggered controller — not applicable. The respawn is triggered by an inbound user message; its recurrence guard is nevertheless covered by the callsite pin plus unit/integration/E2E admission matrix.
+
+## CI ratchet fix-forward
+
+The hard-pin read catch is explicitly annotated `@silent-fallback-ok`: an erroring read returns to the pre-existing dry-run admission path, which is the deliberate fail-safe direction and never fabricates enforcement authority from uncertainty. Runtime behavior is unchanged.
