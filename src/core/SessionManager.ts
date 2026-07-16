@@ -4331,6 +4331,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  tree, not the module-level project dir. Unset = projectDir (today's
      *  behavior, byte-for-byte). */
     cwd?: string;
+    /** Do not return control to the bridge until the initial bootstrap has
+     * actually been injected. Used for framework handoffs so a newly mapped
+     * session cannot receive a user turn before its continuation context. */
+    awaitInitialInjection?: boolean;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -4646,7 +4650,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         initialMessage: effectiveInitialMessage,
         telegramTopicId: options?.telegramTopicId,
       });
-      this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options).catch((err) => {
+      const injection = this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options);
+      if (options?.awaitInitialInjection) {
+        await injection;
+      } else injection.catch((err) => {
         console.error(`[SessionManager] Error during ready-and-inject for "${tmuxSession}": ${err}`);
       });
     }
@@ -5776,8 +5783,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // blank lines or separators push them around.
     const tail = lines.slice(-6).join('\n');
 
-    // Primary: the prompt character
-    if (tail.includes('❯')) return true;
+    // Primary: framework prompt characters. Codex uses ›; keeping this probe
+    // Claude-only delayed its continuation bootstrap until the 105s timeout.
+    if (tail.includes('❯') || tail.includes('›')) return true;
 
     // Secondary: permission mode indicators (visible in status bar)
     if (tail.includes('bypass permissions')) return true;

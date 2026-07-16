@@ -935,9 +935,10 @@ async function spawnSessionForTopic(
   /** Reap-notify spec R2.8 / L13 — explicit per-spawn working directory (the
    *  resume-queue drainer passes a queue entry's recorded cwd so interrupted
    *  worktree work resumes in ITS tree). Omitted = module project dir. */
-  spawnOpts?: { cwd?: string },
+  spawnOpts?: { cwd?: string; awaitInitialInjection?: boolean },
 ): Promise<string> {
-  const msg = latestMessage || 'Session started — send a message to continue.';
+  const hasLatestMessage = typeof latestMessage === 'string' && latestMessage.length > 0;
+  const msg = hasLatestMessage ? latestMessage : 'Session started — send a message to continue.';
 
   // If memory is elevated/critical and we have the reaper, try to free memory
   // by cleaning orphans before spawning. Interactive sessions are NEVER blocked
@@ -1090,14 +1091,19 @@ async function spawnSessionForTopic(
       parts.push(``);
     }
 
-    parts.push(
-      inlineContext,
-      ``,
-      `IMPORTANT: Your response MUST acknowledge and continue the conversation above. Do NOT introduce yourself or ask "how can I help" — the user has been talking to you. Pick up where the conversation left off.`,
-      ``,
-      `The user's latest message:`,
-      `[telegram:${topicId}] ${msg}`,
-    );
+    parts.push(inlineContext, ``);
+    if (hasLatestMessage) {
+      parts.push(
+        `IMPORTANT: Your response MUST acknowledge and continue the conversation above. Do NOT introduce yourself or ask "how can I help" — the user has been talking to you. Pick up where the conversation left off.`,
+        ``,
+        `The user's latest message:`,
+        `[telegram:${topicId}] ${msg}`,
+      );
+    } else {
+      parts.push(
+        `HANDOFF ONLY: No new user message accompanies this framework switch. Load the context above, do not narrate or re-scope it, and wait silently for the next user message.`,
+      );
+    }
 
     bootstrapMessage = parts.join('\n');
   } else {
@@ -1236,6 +1242,7 @@ async function spawnSessionForTopic(
     ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
     // R2.8/L13: per-spawn cwd from the resume-queue entry. Unset = projectDir.
     ...(spawnOpts?.cwd ? { cwd: spawnOpts.cwd } : {}),
+    ...(spawnOpts?.awaitInitialInjection ? { awaitInitialInjection: true } : {}),
   });
 
   // Clear the resume entry after successful spawn to prevent stale reuse
@@ -1311,7 +1318,7 @@ async function respawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   recoveryPrompt?: string,
-  options?: { silent?: boolean; configHome?: string; accountId?: string },
+  options?: { silent?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean },
 ): Promise<void> {
   console.log(`[telegram→session] Session "${targetSession}" needs respawn for topic ${topicId}`);
 
@@ -1359,8 +1366,18 @@ async function respawnSessionForTopic(
     ? `${recoveryPrompt}\n\n${latestMessage || 'Session recovered — continue where you left off.'}`
     : latestMessage;
 
-  const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, effectiveMessage, topicMemory, userProfile, undefined,
-    (options?.configHome || options?.accountId) ? { configHome: options?.configHome, accountId: options?.accountId } : undefined);
+  const newSessionName = await spawnSessionForTopic(
+    sessionManager,
+    telegram,
+    topicName,
+    topicId,
+    effectiveMessage,
+    topicMemory,
+    userProfile,
+    undefined,
+    (options?.configHome || options?.accountId) ? { configHome: options?.configHome, accountId: options?.accountId } : undefined,
+    options?.awaitInitialInjection ? { awaitInitialInjection: true } : undefined,
+  );
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
   if (!options?.silent) {
@@ -1639,7 +1656,7 @@ function wireTelegramCallbacks(
     try {
       await respawnSessionForTopic(
         sessionManager, telegram, existingSession, topicId, undefined,
-        topicMemory, undefined, undefined, { silent: true },
+        topicMemory, undefined, undefined, { silent: true, awaitInitialInjection: true },
       );
       return { respawned: true };
     } catch (err) {
@@ -23302,7 +23319,18 @@ export async function startServer(options: StartOptions): Promise<void> {
               const topicName = telegram.getTopicName(n) || `topic-${n}`;
               _orchestratorSpawnInFlight.add(topicKey);
               try {
-                await spawnSessionForTopic(sessionManager, telegram, topicName, n, undefined, topicMemory);
+                await spawnSessionForTopic(
+                  sessionManager,
+                  telegram,
+                  topicName,
+                  n,
+                  undefined,
+                  topicMemory,
+                  undefined,
+                  undefined,
+                  undefined,
+                  { awaitInitialInjection: true },
+                );
                 return { ok: true };
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);

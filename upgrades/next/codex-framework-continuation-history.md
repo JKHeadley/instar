@@ -1,0 +1,17 @@
+# Codex framework-switch continuation
+
+## What Changed
+
+Framework switches into Codex now recognize the Codex prompt promptly and wait until the continuation
+bootstrap is injected before handing the new session back to the messaging bridge. A switch with no
+new user message loads its history silently instead of inventing a new scope response.
+
+## What to Tell Your User
+
+Switching a live topic from Claude to Codex now carries the recent conversation before Codex can
+answer the next message.
+
+## Summary of New Capabilities
+
+- Framework-aware interactive readiness recognizes both Claude and Codex prompts.
+- Framework handoffs can require bootstrap delivery before session registration completes.
