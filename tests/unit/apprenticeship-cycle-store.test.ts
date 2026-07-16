@@ -166,6 +166,38 @@ describe('ApprenticeshipCycleStore', () => {
   });
 
   describe('keystoneBalance — observe-only deepest-layer health (2026-06-06 mentor/mentee balance)', () => {
+    it('folds peer-agent cycle evidence into the instance coverage without double-counting mirrored ids', () => {
+      const store = makeStore();
+      const remote = {
+        id: 'remote-keystone', instanceId: 'i', cycleNumber: 1,
+        createdAt: '2026-06-03T07:00:00.000Z', task: 'peer drive', menteeOutput: 'output',
+        mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [],
+        kind: 'mentor-mentee-differential' as const, status: 'open', channel: 'threadline-backup' as const,
+        operatorSeatUx: null, transcriptAudit: null,
+      };
+      const coverage = store.roleCoverage('i', {}, [remote, remote]);
+      expect(coverage.axes['mentor-mentee-differential']).toMatchObject({ fired: true, cycleCount: 1 });
+      expect(coverage.keystoneBalance.starved).toBe(false);
+      expect(coverage.coverageConflictingCycleIds).toEqual([]);
+      store.close();
+    });
+
+    it('flags a duplicate UUID whose peer copy changes coverage-relevant evidence', () => {
+      const store = makeStore();
+      const base = {
+        id: 'conflicted', instanceId: 'i', cycleNumber: 1,
+        createdAt: '2026-06-03T07:00:00.000Z', task: 'peer drive', menteeOutput: 'output',
+        mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [], status: 'open',
+        operatorSeatUx: null, transcriptAudit: null,
+      };
+      const coverage = store.roleCoverage('i', {}, [
+        { ...base, kind: 'mentor-mentee-differential', channel: 'threadline-backup' },
+        { ...base, kind: 'overseer-apprentice-devreview', channel: 'threadline-backup' },
+      ] as never);
+      expect(coverage.coverageConflictingCycleIds).toEqual(['conflicted']);
+      store.close();
+    });
+
     const rec = (store: ApprenticeshipCycleStore, id: string, n: number, kind: string, at: string, inst = 'i') =>
       store.record({ id, instanceId: inst, cycleNumber: n, createdAt: at, task: 't', menteeOutput: 'm', kind, operatorSeatUx: ux() });
 

@@ -1179,6 +1179,8 @@ export interface RouteContext {
   /** Apprenticeship differential-cycle store. Null when SQLite/state init fails
    *  → /apprenticeship/cycles* 503s. */
   apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
+  /** Read-only same-host peer aggregation for apprenticeship cycle evidence. */
+  apprenticeshipPeerCycleReader?: ((instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>) | null;
   /** Observe-only overdue-cycle SLA monitor. Null when disabled/unavailable. */
   apprenticeshipCycleSlaMonitor?: import('../monitoring/ApprenticeshipCycleSlaMonitor.js').ApprenticeshipCycleSlaMonitor | null;
   /** Observe-only Gemini long-capacity-block escalation monitor. Null when disabled.
@@ -21616,6 +21618,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit }) });
   });
 
+  // Same-host cross-agent read leg for role coverage. The general API bearer
+  // cannot authenticate to another agent (tokens are deliberately per-agent),
+  // so this narrow read-only endpoint uses the existing target-agent token
+  // boundary shared by /a2a/inbox. It exposes only bounded cycle rows for one
+  // exact instance; no write or lifecycle authority crosses agents.
+  router.get('/a2a/apprenticeship/cycles', (req, res) => {
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!bearerToken || !verifyAgentToken(ctx.config.projectName, bearerToken)) {
+      res.status(401).json({ error: 'Invalid or missing agent token' });
+      return;
+    }
+    if (!ctx.apprenticeshipCycleStore) {
+      res.status(503).json({ error: 'apprenticeship cycle store disabled' });
+      return;
+    }
+    const instanceId = typeof req.query.instanceId === 'string' ? req.query.instanceId.trim() : '';
+    if (!instanceId) {
+      res.status(400).json({ error: 'instanceId is required' });
+      return;
+    }
+    res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit: 500 }) });
+  });
+
   router.get('/apprenticeship/cycles/overdue', (req, res) => {
     if (!ctx.apprenticeshipCycleSlaMonitor) { res.status(503).json({ error: 'apprenticeship cycle SLA monitor disabled' }); return; }
     const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim() !== ''
@@ -21664,7 +21690,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ instances: ctx.apprenticeshipProgram.list() });
   });
 
-  router.get('/apprenticeship/instances/:id/role-coverage', (req, res) => {
+  router.get('/apprenticeship/instances/:id/role-coverage', async (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
     try {
       // Optional ?oversightStarvationThreshold=N tunes the keystone-balance
@@ -21678,7 +21704,39 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const rawDormancy = req.query.keystoneDormancyMs;
       const parsedDormancy = typeof rawDormancy === 'string' ? Number.parseInt(rawDormancy, 10) : NaN;
       if (Number.isFinite(parsedDormancy) && parsedDormancy > 0) opts.keystoneDormancyMs = parsedDormancy;
-      res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts));
+      let peerRead: import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead = {
+        cycles: [], sources: [], complete: true, omittedPeerCount: 0,
+      };
+      if (ctx.apprenticeshipPeerCycleReader) {
+        try {
+          peerRead = await ctx.apprenticeshipPeerCycleReader(req.params.id);
+        } catch (error) {
+          // @silent-fallback-ok — the failure is returned explicitly in aggregation.peerSources
+          // The local store remains valid evidence. Preserve the read and name
+          // the missing cross-agent census instead of turning observability into
+          // a 400 or silently presenting a complete local-only answer.
+          peerRead = {
+            cycles: [],
+            sources: [{
+              agent: 'registry', port: 0, cycleCount: 0, truncated: false,
+              error: error instanceof Error ? error.message : String(error),
+            }],
+            complete: false,
+            omittedPeerCount: 0,
+          };
+        }
+      }
+      const coverage = ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts, peerRead.cycles);
+      res.json({
+        ...coverage,
+        aggregation: {
+          scope: ctx.apprenticeshipPeerCycleReader ? 'registered-agents' : 'local',
+          complete: peerRead.complete && coverage.coverageConflictingCycleIds.length === 0,
+          peerSources: peerRead.sources,
+          omittedPeerCount: peerRead.omittedPeerCount,
+          conflictingCycleIds: coverage.coverageConflictingCycleIds,
+        },
+      });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }

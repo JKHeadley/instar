@@ -97,7 +97,10 @@ import { buildBuiltinInsightPages } from '../monitoring/dashboardInsightCollecto
 import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
+import { readApprenticeshipPeerCycles } from '../monitoring/ApprenticeshipPeerCycleReader.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
+import { listAgents } from '../core/AgentRegistry.js';
+import { getAgentToken } from '../messaging/AgentTokenManager.js';
 import { GeminiCapacityEscalationMonitor } from '../monitoring/GeminiCapacityEscalationMonitor.js';
 import { SafeGitExecutor, auditBootCredentialCoherence } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
@@ -426,6 +429,8 @@ export class AgentServer {
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
+    /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
+    apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
     state: StateManager;
     scheduler?: JobScheduler;
     telegram?: TelegramAdapter;
@@ -2977,6 +2982,12 @@ export class AgentServer {
       growthDigestPublisher: this.growthDigestPublisher,
       apprenticeshipProgram: this.apprenticeshipProgram,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
+      apprenticeshipPeerCycleReader: options.apprenticeshipPeerCycleReader ?? ((instanceId: string) =>
+        readApprenticeshipPeerCycles(instanceId, {
+          selfAgent: options.config.projectName,
+          listAgents,
+          getAgentToken,
+        })),
       apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,
       geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,

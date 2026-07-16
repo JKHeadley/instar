@@ -92,13 +92,29 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
       messaging: [], monitoring: { apprenticeshipCycleSla: { enabled: true, overdueAfterMinutes: 120 } }, updates: {},
     } as InstarConfig;
 
-    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    server = new AgentServer({
+      config,
+      sessionManager: createMockSessionManager() as any,
+      state: new StateManager(stateDir),
+      apprenticeshipPeerCycleReader: async (instanceId) => ({
+        cycles: instanceId === 'cross-agent-layer' ? [{
+          id: 'echo-owned-keystone', instanceId, cycleNumber: 1,
+          createdAt: '2026-07-16T18:00:00.000Z', task: 'Echo drove Codey remotely', menteeOutput: 'output',
+          mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [],
+          kind: 'mentor-mentee-differential', status: 'open', channel: 'threadline-backup',
+          operatorSeatUx: null, transcriptAudit: null,
+        }] : [],
+        sources: [{ agent: 'echo', port: 4042, cycleCount: instanceId === 'cross-agent-layer' ? 1 : 0, truncated: false }],
+        complete: true,
+        omittedPeerCount: 0,
+      }),
+    });
     await server.start();
     app = server.getApp();
 
     // Cycle recording is referentially tied to LIVE registry state. Seed the
     // active instances used by the drive/coverage tests through the real API.
-    for (const id of ['echo-to-codey', 'role-drift', 'dormant-layer']) {
+    for (const id of ['echo-to-codey', 'role-drift', 'dormant-layer', 'cross-agent-layer']) {
       await request(app)
         .post('/apprenticeship/instances')
         .set({ Authorization: `Bearer ${AUTH}` })
@@ -273,6 +289,15 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     expect(res.body.keystoneBalance.dormant).toBe(true); // but long silent → dormant
     expect(res.body.keystoneBalance.lastKeystoneAgeMs).toBeGreaterThan(6 * 60 * 60 * 1000);
     expect(res.body.keystoneBalance.reason).toMatch(/dormant/i);
+  });
+
+  it('cross-agent keystone evidence is ALIVE through AgentServer and prevents a false starved result', async () => {
+    const res = await request(app).get('/apprenticeship/instances/cross-agent-layer/role-coverage').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.axes['mentor-mentee-differential']).toMatchObject({ fired: true, cycleCount: 1 });
+    expect(res.body.keystoneBalance.starved).toBe(false);
+    expect(res.body.aggregation).toMatchObject({ scope: 'registered-agents', complete: true });
+    expect(res.body.aggregation.peerSources).toContainEqual(expect.objectContaining({ agent: 'echo', cycleCount: 1 }));
   });
 
   it('requires Bearer auth', async () => {

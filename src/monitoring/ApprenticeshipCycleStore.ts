@@ -230,6 +230,8 @@ export interface ApprenticeshipRoleCoverage {
   /** Observe-only deepest-layer health (the 2026-06-06 mentor/mentee balance
    *  signal). Never gates; surfaces the imbalance so it can't silently drift. */
   keystoneBalance: ApprenticeshipKeystoneBalance;
+  /** Same UUID observed with different coverage-relevant fields across stores. */
+  coverageConflictingCycleIds: string[];
 }
 
 export interface RoleCoverageOptions {
@@ -674,9 +676,29 @@ export class ApprenticeshipCycleStore {
     return row ? this.rowToRecord(row) : null;
   }
 
-  roleCoverage(instanceId: string, opts: RoleCoverageOptions = {}): ApprenticeshipRoleCoverage {
+  roleCoverage(
+    instanceId: string,
+    opts: RoleCoverageOptions = {},
+    additionalRecords: readonly ApprenticeshipCycleRecord[] = [],
+  ): ApprenticeshipRoleCoverage {
     const id = requireString(instanceId, 'instanceId');
-    const rows = this.stmts.listAllByInstance.all(id) as Row[];
+    const localRecords = (this.stmts.listAllByInstance.all(id) as Row[]).map((row) => this.rowToRecord(row));
+    // A cycle may have been mirrored or recorded by more than one participating
+    // agent. Its UUID is the transport-stable identity, so the local copy wins
+    // and peer copies are folded exactly once.
+    const recordsById = new Map(localRecords.map((record) => [record.id, record]));
+    const coverageConflictingCycleIds = new Set<string>();
+    const coverageFingerprint = (record: ApprenticeshipCycleRecord): string =>
+      JSON.stringify([record.instanceId, record.createdAt, record.kind, record.channel]);
+    for (const record of additionalRecords) {
+      if (record.instanceId !== id) continue;
+      const existing = recordsById.get(record.id);
+      if (!existing) {
+        recordsById.set(record.id, record);
+      } else if (coverageFingerprint(existing) !== coverageFingerprint(record)) {
+        coverageConflictingCycleIds.add(record.id);
+      }
+    }
     const blank = (): ApprenticeshipRoleAxisCoverage => ({ fired: false, cycleCount: 0, lastAt: null });
     const axes = Object.fromEntries(
       APPRENTICESHIP_CYCLE_AXES.map((axis) => [axis, blank()]),
@@ -687,9 +709,9 @@ export class ApprenticeshipCycleStore {
     // many landed AFTER the last keystone drive (the starvation signal).
     const oversightTimestamps: string[] = [];
 
-    for (const row of rows) {
-      const kind = normalizeStoredKind(row.kind);
-      const channel = normalizeChannel(row.channel);
+    for (const record of recordsById.values()) {
+      const kind = normalizeStoredKind(record.kind);
+      const channel = normalizeChannel(record.channel);
       // §4a ENFORCEMENT: a mentor-mentee-differential cycle that ran through a
       // `direct-shortcut` (bypassing the dogfooded Telegram-Playwright UX-under-test)
       // is recorded for honesty but does NOT count toward the keystone axis — a
@@ -702,9 +724,9 @@ export class ApprenticeshipCycleStore {
       const target = kind === 'unknown' ? unknown : axes[kind];
       target.fired = true;
       target.cycleCount += 1;
-      if (!target.lastAt || row.created_at > target.lastAt) target.lastAt = row.created_at;
+      if (!target.lastAt || record.createdAt > target.lastAt) target.lastAt = record.createdAt;
       if ((APPRENTICESHIP_OVERSIGHT_AXES as string[]).includes(kind)) {
-        oversightTimestamps.push(row.created_at);
+        oversightTimestamps.push(record.createdAt);
       }
     }
 
@@ -720,7 +742,10 @@ export class ApprenticeshipCycleStore {
       opts.keystoneDormancyMs,
     );
 
-    return { instanceId: id, axes, unknown, dormantAxes, driftWarning, shortcutDifferentialCount, keystoneBalance };
+    return {
+      instanceId: id, axes, unknown, dormantAxes, driftWarning, shortcutDifferentialCount,
+      keystoneBalance, coverageConflictingCycleIds: [...coverageConflictingCycleIds].sort(),
+    };
   }
 
   /**

@@ -28,6 +28,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ApprenticeshipCycleStore } from '../../src/monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../../src/monitoring/ApprenticeshipCycleSlaMonitor.js';
 import { FrameworkIssueLedger } from '../../src/monitoring/FrameworkIssueLedger.js';
+import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
 
 const AUTH = 'apprenticeship-routes-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
@@ -66,6 +67,7 @@ function ctxFor(
   program: ApprenticeshipProgram | null,
   cycleStore: ApprenticeshipCycleStore | null = null,
   cycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null,
+  peerCycleReader: RouteContext['apprenticeshipPeerCycleReader'] = null,
 ): RouteContext {
   return {
     config: {
@@ -80,6 +82,7 @@ function ctxFor(
     watchdog: null, triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null,
     discoveryEvaluator: null, correctionLedger: null, apprenticeshipProgram: program,
     apprenticeshipCycleStore: cycleStore, apprenticeshipCycleSlaMonitor: cycleSlaMonitor,
+    apprenticeshipPeerCycleReader: peerCycleReader,
     startTime: new Date(),
   } as unknown as RouteContext;
 }
@@ -110,6 +113,7 @@ describe('/apprenticeship routes (integration)', () => {
   });
 
   afterEach(() => {
+    deleteAgentToken('apprenticeship-routes');
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/apprenticeship-routes.test.ts:afterEach' });
   });
 
@@ -402,6 +406,55 @@ describe('/apprenticeship routes (integration)', () => {
     const tuned = await request(app).get('/apprenticeship/instances/tuned/role-coverage?oversightStarvationThreshold=2').set(auth());
     expect(tuned.body.keystoneBalance.starved).toBe(true);
     expect(tuned.body.keystoneBalance.starvationThreshold).toBe(2);
+    store.close();
+  });
+
+  it('role-coverage merges remote agent cycles and names incomplete peer reads', async () => {
+    const store = makeCycleStore();
+    const peerCycle = {
+      id: 'peer-keystone', instanceId: 'echo-to-codey', cycleNumber: 7,
+      createdAt: '2026-06-03T07:30:00.000Z', task: 'Echo drove Codey', menteeOutput: 'output',
+      mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [],
+      kind: 'mentor-mentee-differential' as const, status: 'open', channel: 'threadline-backup' as const,
+      operatorSeatUx: null, transcriptAudit: null,
+    };
+    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store, null, async () => ({
+      cycles: [peerCycle],
+      sources: [
+        { agent: 'echo', port: 4042, cycleCount: 1, truncated: false },
+        { agent: 'gemini', port: 4048, cycleCount: 0, truncated: false, error: 'HTTP 503' },
+      ],
+      complete: false,
+      omittedPeerCount: 0,
+    })));
+
+    const response = await request(app).get('/apprenticeship/instances/echo-to-codey/role-coverage').set(auth());
+    expect(response.status).toBe(200);
+    expect(response.body.axes['mentor-mentee-differential']).toMatchObject({ fired: true, cycleCount: 1 });
+    expect(response.body.keystoneBalance.starved).toBe(false);
+    expect(response.body.aggregation).toMatchObject({ scope: 'registered-agents', complete: false });
+    expect(response.body.aggregation.peerSources).toContainEqual(expect.objectContaining({ agent: 'gemini', error: 'HTTP 503' }));
+    store.close();
+  });
+
+  it('serves the bounded peer-cycle read only to the target agent token', async () => {
+    const store = makeCycleStore();
+    store.record({
+      id: 'peer-readable-cycle', instanceId: 'echo-to-codey', cycleNumber: 1,
+      task: 'drive', menteeOutput: 'output', operatorSeatUx: UXOK,
+    });
+    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+
+    await request(app)
+      .get('/a2a/apprenticeship/cycles?instanceId=echo-to-codey')
+      .set({ Authorization: 'Bearer wrong-token' })
+      .expect(401);
+    const token = generateAgentToken('apprenticeship-routes');
+    const response = await request(app)
+      .get('/a2a/apprenticeship/cycles?instanceId=echo-to-codey')
+      .set({ Authorization: `Bearer ${token}` });
+    expect(response.status).toBe(200);
+    expect(response.body.cycles).toContainEqual(expect.objectContaining({ id: 'peer-readable-cycle' }));
     store.close();
   });
 
