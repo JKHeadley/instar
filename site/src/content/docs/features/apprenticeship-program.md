@@ -86,7 +86,11 @@ program never fabricates coverage it cannot prove.
   record.
 - `GET /apprenticeship/instances/:id/role-coverage` — read the observe-only role coverage surface
   for one instance. It returns per-axis `{ fired, cycleCount, lastAt }`, an `unknown` bucket,
-  `dormantAxes`, and `driftWarning`. The warning is true when the mentor-mentee differential axis is
+  `dormantAxes`, and `driftWarning`. `ApprenticeshipPeerCycleReader` performs bounded,
+  target-agent-authenticated reads from other registered agents on the same host, and the store
+  merges those cycles with local evidence before calculating coverage. The response names every
+  source and marks itself incomplete when a peer fails, the registry exceeds the peer cap, or
+  duplicate cycle ids conflict. The warning is true when the mentor-mentee differential axis is
   dormant while the overseer-apprentice dev-review axis has fired at least twice.
 
 If the SQLite store is unavailable, the cycle routes return 503 instead of pretending the feature
