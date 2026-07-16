@@ -74,6 +74,7 @@ import {
   withClaudeUltracodePrompt,
   claudeHeadlessExtraFlags,
   resolveInteractiveFramework,
+  resolveInteractiveLaunchModel,
   resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
@@ -4615,7 +4616,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Left undefined only when no model was pinned (the CLI uses its own
       // account default).
       framework,
-      ...(resolveModelForFramework(framework, launchDefaultModel) ? { model: resolveModelForFramework(framework, launchDefaultModel) } : {}),
+      ...(resolveInteractiveLaunchModel(framework, launchDefaultModel, options?.codexLocalProvider)
+        ? { model: resolveInteractiveLaunchModel(framework, launchDefaultModel, options?.codexLocalProvider) }
+        : {}),
       // P1.3: which subscription-pool account this session runs under (an explicit
       // quota-aware swap/placement, OR the resolver-pinned account for B1 — the
       // user-facing interactive lane is now tagged just like the headless lane).

@@ -140,3 +140,18 @@ Both follow-ups are documentation precision, not behavior defects. No protection
 - Wiring integrity: `tests/unit/topic-profile-server-wiring.test.ts` (20 assertions over the composition root — construction, object-identity late-bind, real-deps-not-noops, lifecycle hooks, carrier mesh verb, the §11 conservative-canary flags, the obligation-7 bridge).
 - Canary both arms: `tests/unit/classifyProfileChange.test.ts` (canary-passed→in-flight, canary-off→resume, idle-unconfirmed→never-in-flight, cross-model/level/off↔on/codex-rollout rows).
 - Recovery ledger: `docs/specs/reports/topic-profile-BUILD-PROGRESS.local.md`.
+
+## 2026-07-16 addendum — resolved door/model confirmation
+
+Post-swap disclosure now consumes the newly spawned session's applied profile. The interactive
+launch default resolver is shared with the Codex and Gemini argv builders, so an unpinned/defaulted
+model is reported from the same decision that launched it. Successful framework, model, and tier
+respawns all emit `Now driving this topic: <Door> door, <concrete model> model.` The fallback text
+`account-default` remains only for doors whose CLI owns an opaque account default (Claude/Pi), where
+inventing a concrete identifier would be dishonest.
+
+Interaction review: the spawn port's optional `applied` result is backward-compatible with existing
+ports and tests; when absent, the orchestrator retains its prior resolved-profile behavior. The
+terminal disclosure still uses the existing audited, duplicate-bypass send path, and no new timer,
+write authority, kill decision, persistent schema, or external endpoint is introduced. Rollback is
+a code-only revert with no data repair.

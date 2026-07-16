@@ -96,6 +96,26 @@ export function resolveModelForFramework(
 }
 
 /**
+ * Concrete model an interactive launch will use after applying the builder's
+ * own default. Keep user-facing post-spawn reporting on this same seam so a
+ * defaulted model is never guessed independently from the argv builder.
+ */
+export function resolveInteractiveLaunchModel(
+  framework: IntelligenceFramework,
+  configuredModel: string | undefined,
+  codexLocalProvider?: 'ollama' | 'lmstudio',
+): string | undefined {
+  if (framework === 'codex-cli') {
+    if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
+    return resolveModelForFramework(framework, configuredModel) ?? 'gpt-5.5';
+  }
+  if (framework === 'gemini-cli') {
+    return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
+  }
+  return resolveModelForFramework(framework, configuredModel);
+}
+
+/**
  * Build the Codex `-c` config overrides that pin the threadline MCP server to
  * a specific agent's stdio entry. This wins over whatever `[mcp_servers."threadline"]`
  * the SHARED ~/.codex/config.toml currently holds — fixing the multi-agent
@@ -322,9 +342,11 @@ const codexCliBuilder: Builder = (options) => {
   // vocabulary) and pass the model verbatim. Builder also appends
   // --oss --local-provider <p> below.
   const isLocal = options.codexLocalProvider !== undefined;
-  const resolvedModel = isLocal
-    ? (options.defaultModel ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.defaultModel) ?? 'gpt-5.5');
+  const resolvedModel = resolveInteractiveLaunchModel(
+    'codex-cli',
+    options.defaultModel,
+    options.codexLocalProvider,
+  )!;
 
   // Codex's `resume` is a subcommand (`codex resume <SESSION_ID>`), not a
   // flag. When resuming, insert it as the first argument after the binary
@@ -398,8 +420,7 @@ const geminiCliBuilder: Builder = (options) => {
   // (`--approval-mode default`, no tools) lives ONLY on the one-shot
   // intelligence-provider EVALUATION path (GeminiCliIntelligenceProvider —
   // the analog of `codex exec --sandbox read-only`), never here.
-  const resolvedModel =
-    resolveModelForFramework('gemini-cli', options.defaultModel) ?? 'gemini-2.5-flash';
+  const resolvedModel = resolveInteractiveLaunchModel('gemini-cli', options.defaultModel)!;
   const argv: string[] = [options.binaryPath, '-m', resolvedModel, '--yolo'];
   if (options.resumeSessionId) {
     // Gemini resumes by `latest` or a numeric index. The tracked resume id is

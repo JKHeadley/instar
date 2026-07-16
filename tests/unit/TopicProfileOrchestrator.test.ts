@@ -515,6 +515,16 @@ describe('kill-path precision', () => {
   it('a framework switch PARKS both resume stores before a FRESH kill and discloses the honest loss', async () => {
     const h = makeHarness();
     liveSession(h);
+    h.spawnImpl.fn = async () => ({
+      ok: true,
+      applied: {
+        framework: 'codex-cli',
+        model: 'gpt-5.5',
+        modelTier: null,
+        thinkingMode: null,
+        effort: null,
+      },
+    });
     await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
     await waitUntil(() => h.spawns.length === 1);
     expect(h.claude.parks).toContain('7:mid-framework-switch');
@@ -522,6 +532,9 @@ describe('kill-path precision', () => {
     expect(h.kills[0].mode).toBe('fresh'); // never the resume-saving kill
     expect(
       h.disclosures.some((d) => d.text.includes("full transcript can't follow")),
+    ).toBe(true);
+    expect(
+      h.disclosures.some((d) => d.text.includes('Now driving this topic: Codex door, gpt-5.5 model.')),
     ).toBe(true);
     // Profile-triggered kill cleared the escalation marker slot.
     expect(h.escalation.cleared).toContain('7');

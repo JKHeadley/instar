@@ -23319,7 +23319,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               const topicName = telegram.getTopicName(n) || `topic-${n}`;
               _orchestratorSpawnInFlight.add(topicKey);
               try {
-                await spawnSessionForTopic(
+                const spawnedName = await spawnSessionForTopic(
                   sessionManager,
                   telegram,
                   topicName,
@@ -23331,7 +23331,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                   undefined,
                   { awaitInitialInjection: true },
                 );
-                return { ok: true };
+                const spawned = sessionManager.listRunningSessions()
+                  .find((session) => session.tmuxSession === spawnedName);
+                return {
+                  ok: true,
+                  applied: {
+                    ...resolvedToApplied(_resolved),
+                    framework: spawned?.framework ?? _resolved.framework,
+                    model: spawned?.model ?? _resolved.model ?? null,
+                  },
+                };
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
                 let cls: ProfileSpawnFailureClass = 'unknown';
