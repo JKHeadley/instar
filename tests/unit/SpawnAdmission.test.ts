@@ -57,6 +57,26 @@ beforeEach(() => {
   fakeNow = T0;
 });
 
+describe('respawn-dead live hard-pin graduation', () => {
+  const queued = { messageId: 'm1', action: 'queued', acked: true };
+
+  it('enforces forward for respawn-dead when the hard-pin owner is remotely alive', () => {
+    const deps = makeDeps({ readHardPinOwner: vi.fn(() => 'machine-b'), isMachineAlive: vi.fn(() => true) });
+    const decision = new SpawnAdmission(LIVE_OWNER_BINDING, deps).admit(admitInput({ callsite: 'telegram-respawn-dead', routerVerdict: queued }));
+    expect(decision).toMatchObject({ allow: false, mode: 'enforce', row: 'router-queued-suppress', refusalAction: 'forward', ownership: { kind: 'other-alive', owner: 'machine-b' } });
+  });
+
+  it.each([
+    ['owner dark', { readHardPinOwner: vi.fn(() => 'machine-b'), isMachineAlive: vi.fn(() => false) }, 'telegram-respawn-dead'],
+    ['no hard pin', { readHardPinOwner: vi.fn(() => null), isMachineAlive: vi.fn(() => true) }, 'telegram-respawn-dead'],
+    ['different callsite', { readHardPinOwner: vi.fn(() => 'machine-b'), isMachineAlive: vi.fn(() => true) }, 'telegram-cold-spawn'],
+  ] as const)('leaves %s on the existing dry-run path', (_name, over, callsite) => {
+    const decision = new SpawnAdmission(LIVE_OWNER_BINDING, makeDeps(over)).admit(admitInput({ callsite, routerVerdict: queued }));
+    expect(decision).toMatchObject({ allow: true, mode: 'dry-run', row: 'router-queued-suppress', wouldBlock: true });
+    expect(decision.refusalAction).toBeUndefined();
+  });
+});
+
 // ── resolveOwnershipSafe ──────────────────────────────────────────────
 
 describe('resolveOwnershipSafe', () => {

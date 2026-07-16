@@ -141,6 +141,8 @@ export interface SpawnAdmissionDeps {
   readOwnership: (sessionKey: string) => { owner: string | null; epoch: number; status: string | null } | null;
   /** The pool's existing liveness input (heartbeat-fresh view). */
   isMachineAlive: (machineId: string) => boolean;
+  /** Effective hard-pin owner for this topic, or null when genuinely unpinned. */
+  readHardPinOwner?: (sessionKey: string) => string | null;
   /** Durable inbound-queue custody live on this machine (enforcement precondition). */
   durableCustodyLive: () => boolean;
   /** Appender for logs/owner-dark-ladder.jsonl (scrubbed, metadata-only rows). */
@@ -321,10 +323,14 @@ export class SpawnAdmission {
       this.counters.routerVerdictsConsumed++;
       const action = input.routerVerdict.action;
       if (action === 'queued' || action === 'placement-blocked') {
-        return this.decide(input, mode, {
+        const pinnedOwner = this.livePinnedRespawnOwner(input, mode);
+        return this.decide(input, pinnedOwner ? 'enforce' : mode, {
           row: 'router-queued-suppress',
-          refusalAction: 'rung3-notice',
-          reason: `router-verdict=${action} (acked=${input.routerVerdict.acked}) suppresses local spawn independently of acked`,
+          refusalAction: pinnedOwner ? 'forward' : 'rung3-notice',
+          reason: pinnedOwner
+            ? `router-verdict=${action} at respawn-dead with live hard-pin owner ${pinnedOwner} — forward, never a local spawn`
+            : `router-verdict=${action} (acked=${input.routerVerdict.acked}) suppresses local spawn independently of acked`,
+          ownership: pinnedOwner ? { kind: 'other-alive', owner: pinnedOwner, epoch: 0 } : undefined,
           consumedRouterVerdict: action,
         });
       }
@@ -392,6 +398,31 @@ export class SpawnAdmission {
       return 'enforce';
     }
     return mode;
+  }
+
+  /**
+   * Incident 2026-07-16: graduate only the respawn-dead + queued verdict row
+   * when a hard pin names a different, currently-live machine. Owner-dark,
+   * missing/error pin, other callsites, and fleet-dark posture remain on their
+   * existing ladder/dry-run paths.
+   */
+  private livePinnedRespawnOwner(input: AdmitInput, mode: AdmissionMode): string | null {
+    if (
+      mode !== 'dry-run' ||
+      input.callsite !== 'telegram-respawn-dead' ||
+      this.flag.enforceLiveOwner !== true ||
+      this.deps.poolStage() === 'dark' ||
+      !this.deps.selfMachineId() ||
+      !this.deps.durableCustodyLive() ||
+      !this.deps.readHardPinOwner
+    ) return null;
+    try {
+      const owner = this.deps.readHardPinOwner(input.sessionKey);
+      if (!owner || owner === this.deps.selfMachineId()) return null;
+      return this.deps.isMachineAlive(owner) ? owner : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Shared dry-run/enforce decision shaping for the blocking rows. */
