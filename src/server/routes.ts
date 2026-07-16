@@ -21549,6 +21549,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //   POST /apprenticeship/cycles/:id/close   — mark row closed (404 missing)
   router.post('/apprenticeship/cycles', (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled — cycle referential integrity unavailable' }); return; }
     try {
       const body = req.body ?? {};
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -21583,6 +21584,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           );
         }
       }
+      const instanceId = typeof body.instanceId === 'string' ? body.instanceId.trim() : '';
+      const instance = instanceId ? ctx.apprenticeshipProgram.get(instanceId) : null;
+      if (!instance) {
+        throw new Error(`instanceId "${instanceId}" does not exist in the apprenticeship registry`);
+      }
+      // Cycles are evidence of work performed inside a live instance. Pending
+      // has not passed its start gate; blocked is paused; complete/abandoned
+      // are terminal history. Active-only keeps the registry authoritative.
+      if (instance.status !== 'active') {
+        throw new Error(
+          `instanceId "${instanceId}" is ${instance.status}; cycles are recordable only while the instance is active`,
+        );
+      }
       const cycle = ctx.apprenticeshipCycleStore.record({
         ...body,
         kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',
@@ -21608,6 +21622,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? req.query.instanceId
       : undefined;
     res.json({ overdue: ctx.apprenticeshipCycleSlaMonitor.listOverdue(instanceId) });
+  });
+
+  // Honest read-only audit of historical cycle rows against the live registry.
+  // Never rewrites or deletes legacy rows. Bounded to the store's public 500-row
+  // read ceiling and names truncation explicitly.
+  router.get('/apprenticeship/cycles/integrity', (_req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled — cycle referential integrity unavailable' }); return; }
+    const cycles = ctx.apprenticeshipCycleStore.list({ limit: 500 });
+    const dangling = cycles
+      .filter((cycle) => !ctx.apprenticeshipProgram!.get(cycle.instanceId))
+      .map((cycle) => ({ cycleId: cycle.id, instanceId: cycle.instanceId, createdAt: cycle.createdAt }));
+    res.json({ scanned: cycles.length, danglingCount: dangling.length, dangling, truncated: cycles.length === 500 });
   });
 
   // GET /gemini/capacity — observe-only live view of the Gemini capacity gate
@@ -21688,8 +21715,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.post('/apprenticeship/instances/:id/transition', (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const to = (req.body ?? {}).to;
-    if (!['pending', 'active', 'complete', 'blocked'].includes(to)) {
-      res.status(400).json({ error: 'to must be one of pending | active | complete | blocked' });
+    if (!['pending', 'active', 'complete', 'blocked', 'abandoned'].includes(to)) {
+      res.status(400).json({ error: 'to must be one of pending | active | complete | blocked | abandoned' });
       return;
     }
     const result = ctx.apprenticeshipProgram.transition(req.params.id, to);

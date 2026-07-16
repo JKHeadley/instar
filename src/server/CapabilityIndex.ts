@@ -322,6 +322,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /apprenticeship/instances/:id/role-coverage',
         'GET /apprenticeship/cycles',
         'GET /apprenticeship/cycles/overdue',
+        'GET /apprenticeship/cycles/integrity',
         'GET /apprenticeship/cycles/:id',
         'POST /apprenticeship/instances',
         'POST /apprenticeship/instances/:id/transition',

@@ -42,7 +42,7 @@ import {
 // ── Types ────────────────────────────────────────────────────────────
 
 export type InstanceType = 'apprenticeship' | 'mentorship';
-export type InstanceStatus = 'pending' | 'active' | 'complete' | 'blocked';
+export type InstanceStatus = 'pending' | 'active' | 'complete' | 'blocked' | 'abandoned';
 
 /** A tracked program-need with its target step + a resolvable honoredBy slot (§4). */
 export interface ProgramNeed {
@@ -161,12 +161,13 @@ export const noopApprenticeshipOverseer: ApprenticeshipOverseer = {
 
 const CHARSET_RE = /^[a-z0-9-]+$/;
 
-/** Legal status transitions (§3.4). `complete` is terminal. */
+/** Legal status transitions (§3.4). `complete` and `abandoned` are terminal. */
 const TRANSITIONS: Record<InstanceStatus, InstanceStatus[]> = {
-  pending: ['active'],
+  pending: ['active', 'abandoned'],
   active: ['complete', 'blocked'],
   blocked: ['active'],
   complete: [], // terminal
+  abandoned: [], // terminal — retained disposal for a never-started mistake
 };
 
 export interface ApprenticeshipProgramConfig {
@@ -515,7 +516,9 @@ export class ApprenticeshipProgram {
   /**
    * The ONLY way status changes (§3.4). pending→active runs evaluateStartGate
    * and refuses on !allow; active→complete runs evaluateCompletionGate;
-   * active→blocked / blocked→active (re-gate) allowed; complete is terminal.
+   * active→blocked / blocked→active (re-gate) allowed; pending→abandoned is
+   * the retained disposal path for a mis-created never-started instance;
+   * complete and abandoned are terminal.
    * Any transition not in the table is rejected with a reason. Every gate
    * verdict is appended to the decision audit.
    */

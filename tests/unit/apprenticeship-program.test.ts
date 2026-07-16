@@ -308,6 +308,25 @@ describe('ApprenticeshipProgram', () => {
 
   // ── status transition table ───────────────────────────────────────────
   describe('transition table', () => {
+    it('pending→abandoned retains the record as terminal disposal', () => {
+      const p = program();
+      const inst = p.createInstance({ id: 'mistake', instanceType: 'mentorship', mentor: 'echo', mentee: 'wrong', framework: 'codex-cli' });
+      const r = p.transition(inst.id, 'abandoned');
+      expect(r.ok).toBe(true);
+      expect(p.get(inst.id)?.status).toBe('abandoned');
+      expect(p.transition(inst.id, 'active').ok).toBe(false);
+      expect(p.list().map((i) => i.id)).toContain('mistake');
+    });
+
+    it('refuses active→abandoned so disposal cannot erase started work', () => {
+      const p = program({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
+      const inst = p.createInstance({ id: 'started', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+      expect(p.transition(inst.id, 'active').ok).toBe(true);
+      const r = p.transition(inst.id, 'abandoned');
+      expect(r.ok).toBe(false);
+      expect(r.reason).toContain('illegal transition active→abandoned');
+    });
+
     it('pending→active runs the start gate and refuses on !allow', () => {
       const p = program({ readHarvest: () => null, validate: validateRetroHarvest });
       const inst = p.createInstance({ id: 'i1', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
