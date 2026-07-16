@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-16T06:09:58.546Z",
+  "slug": "mentor-cross-machine-a2a-relay",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 184,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

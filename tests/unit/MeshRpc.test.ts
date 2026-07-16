@@ -138,6 +138,18 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     }
   });
 
+  it('a2a inbox delivery requires a signed registered-machine envelope before handler reach', async () => {
+    const command: MeshCommand = {
+      type: 'a2a-inbox-deliver', targetAgent: 'instar-codey', text: '[a2a:test]',
+      topicId: 458, senderAgent: 'echo', senderBotId: '123',
+    };
+    expect(checkCommandRBAC(command, 'REGISTERED', rbac())).toEqual({ ok: true, reason: 'ok' });
+    const env = envFrom({ sender: 'MENTOR-MACHINE', recipient: 'MENTEE-MACHINE', command });
+    expect(acceptEnvelope(env, verifyDeps('MENTEE-MACHINE'), rbac())).toEqual({ ok: true, reason: 'ok' });
+    expect(acceptEnvelope(env, verifyDeps('MENTEE-MACHINE', { isRegisteredPeer: () => false }), rbac()).reason).toBe('unknown-sender');
+    expect(acceptEnvelope({ ...env, signature: 'forged' }, verifyDeps('MENTEE-MACHINE'), rbac()).reason).toBe('signature-invalid');
+  });
+
   it('slice-renew (WS5.2 R7a): operator-mandate-gated with its OWN refusal — NOT the any-peer class', () => {
     const cmd: MeshCommand = {
       type: 'slice-renew', mandateId: 'M1', accountId: 'acct', requestingMachineFp: 'fp-mini', amount: 0.3, expiresAt: 9_000_000_000_000,

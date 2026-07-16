@@ -1,5 +1,6 @@
 ---
 title: Agent-to-Agent Telegram comms primitive + Mentor live-readiness (its first consumer)
+parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
 owning-layer: messaging (new primitive) + scheduler/server (mentor consumer)
 status: converged
 review-convergence: true
