@@ -30,3 +30,6 @@ This ships as one bounded change: the host-wide lease primitive, one authenticat
 ## What you actually need to decide
 
 The dispatched design choice is resolved as a lease, rather than profile cloning, because the contention is over one physical authenticated browser seat.
+# CI follow-up
+
+The lease class itself is now directly documented so generated capability documentation recognizes it.

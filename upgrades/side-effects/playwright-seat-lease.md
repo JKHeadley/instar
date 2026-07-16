@@ -79,3 +79,6 @@ Concur for the dispatched dogfood contention case after the review-driven correc
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. This closes a missing concurrency primitive rather than a malformed prompt/hook contract class.
+# CI follow-up
+
+Added class-level documentation only; runtime behavior and the reviewed safety boundary are unchanged.

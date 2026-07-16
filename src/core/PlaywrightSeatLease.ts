@@ -33,6 +33,11 @@ export interface PlaywrightSeatLeaseOptions {
   ttlMs?: number;
 }
 
+/**
+ * Serializes access to the host's single logged-in Playwright browser profile.
+ * Same-session calls renew the lease; conflicting live holders receive a
+ * bounded retry interval, and expired holders are reclaimed automatically.
+ */
 export class PlaywrightSeatLease {
   private readonly filePath: string;
   private readonly lockPath: string;
