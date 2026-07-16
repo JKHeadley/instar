@@ -1428,6 +1428,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // inbound queue is live on this machine (durable custody).
       ownershipGatedSpawn: {
         dryRun: true,
+        // Tier 1.4: bind only the verified live-other-owner row when durable
+        // custody is live. Owner-dark/error rows remain dry-run until their
+        // separate hold + stale-release prerequisites graduate.
+        enforceLiveOwner: true,
       },
       // Duplicate-session reconciler (same spec §3.2 — Layer B). `enabled`
       // OMITTED (dev gate; DEV_GATED_FEATURES). dryRun:true logs intended

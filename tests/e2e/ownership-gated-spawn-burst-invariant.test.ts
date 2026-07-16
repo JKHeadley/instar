@@ -118,6 +118,20 @@ beforeEach(() => {
 });
 
 describe('ownership-gated spawn — burst invariant (E2E composition)', () => {
+  it('INCREMENT 1.4: 1,000 inbounds on a non-owner while the real owner is alive create ZERO local sessions', async () => {
+    const h = makeHarness({
+      flag: { enabled: true, dryRun: true, enforceLiveOwner: true },
+      ownerAlive: () => true,
+    });
+    for (let i = 0; i < 1_000; i++) {
+      fakeNow = T0 + i * 250;
+      await h.inbound(777);
+    }
+    expect(h.spawnCount()).toBe(0);
+    expect(h.notices).toHaveLength(0); // live owner forwards; no owner-dark notice
+    expect(h.journalRows.filter((r) => r.row === 'other-alive' && r.allow === false)).toHaveLength(1_000);
+  });
+
   it('ENFORCE: 1,000 inbound messages for a dark-owner topic → ZERO local sessions + exactly ONE notice', async () => {
     const h = makeHarness({ flag: { enabled: true, dryRun: false } });
     for (let i = 0; i < 1_000; i++) {

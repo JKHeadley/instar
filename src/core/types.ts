@@ -2976,6 +2976,8 @@ export interface SessionPoolConfig {
   ownershipGatedSpawn?: {
     enabled?: boolean;
     dryRun?: boolean;
+    /** Bind a verified live-other-owner refusal when durable custody is live. */
+    enforceLiveOwner?: boolean;
   };
   /**
    * Duplicate-session reconciler (same spec §3.2 — Layer B). `enabled` OMITTED

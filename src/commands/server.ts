@@ -21871,6 +21871,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               {
                 enabled: resolveDevAgentGate(ogsCfg.enabled, config),
                 dryRun: ogsCfg.dryRun !== false,
+                enforceLiveOwner: ogsCfg.enforceLiveOwner === true,
               },
               {
                 selfMachineId: () => _meshSelfId,
