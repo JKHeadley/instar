@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-16T22:34:00.000Z",
+  "slug": "standby-live-signal",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "user-facing monitoring classification changes",
+    "deterministic live evidence now short-circuits an interpretive tier-3 verdict"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 77,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The Codex live-activity regex encoded only the seconds timer observed in the original harness. After sixty seconds the signal disappeared, and PresenceProxy allowed a weaker LLM assessment to override the otherwise-correct deterministic terminal evidence because in-process Codex work has no child process."
+  },
+  "verdict": "pass"
+}

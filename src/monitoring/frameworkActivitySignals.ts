@@ -108,11 +108,11 @@ const CODEX_CLI_SIGNAL: FrameworkActivitySignal = {
   // that streamed events THEN froze is silence-eligible (the OutputActivity-
   // Tracker's observed-change requirement still gates "frozen before we watched").
   // These are structured JSON markers, not idle status text.
-  toolCallOrSpinner: /Working\s*\(\d+\s*s|•\s*Ran\b|exec\(|shell\(|apply_patch\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b|"type":\s*"(thread|turn|item)\./i,
+  toolCallOrSpinner: /Working\s*\(\d+\s*(?:m\s*\d+\s*)?s|•\s*Ran\b|exec\(|shell\(|apply_patch\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b|"type":\s*"(thread|turn|item)\./i,
   // Live-only: the working status line + spinner + "generating". Excludes "• Ran"
   // and exec(/shell(/apply_patch( + the event-stream markers, which persist in
   // scrollback / the JSONL after a turn ends.
-  liveActivity: /Working\s*\(\d+\s*s|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b/i,
+  liveActivity: /Working\s*\(\d+\s*(?:m\s*\d+\s*)?s|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b/i,
   // Codex shows a BARE "esc to interrupt" (no "press"/"hit" prefix) inside
   // its working status line, so the Claude-style prefixed pattern never
   // matched a real Codex pane. Match the bare form.

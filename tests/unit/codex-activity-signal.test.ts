@@ -65,6 +65,10 @@ describe('looksActivelyWorking — codex-cli (empirical)', () => {
     expect(looksActivelyWorking('• Working (3s • esc to interrupt)', 'codex-cli')).toBe(true);
   });
 
+  it('keeps detecting the live status after Codex switches to minutes', () => {
+    expect(looksActivelyWorking('• Working (2m 17s • esc to interrupt)', 'codex-cli')).toBe(true);
+  });
+
   it('does NOT treat the model-name status line alone as working', () => {
     expect(looksActivelyWorking('gpt-5.3-codex medium · ~/proj', 'codex-cli')).toBe(false);
   });

@@ -1592,8 +1592,20 @@ export class PresenceProxy {
       // Active child processes = working
       assessment = 'working';
       summary = 'Active child processes detected.';
+    } else if (
+      snapshot
+      && looksActivelyWorking(snapshot, this.config.agentFramework)
+      && state.tier2SnapshotHash !== crypto.createHash('sha256').update(snapshot).digest('hex')
+    ) {
+      // An affirmative live framework signal is stronger than an interpretive
+      // model verdict. In-process Codex work has no child process to discover,
+      // so allowing tier 3 to override fresh terminal evidence created false
+      // "stuck" alarms. A frozen live-looking marker is not freshness proof;
+      // unchanged output still proceeds to the stall assessment below.
+      assessment = 'working';
+      summary = 'The session still shows an active-work signal.';
     } else {
-      // No active processes — use LLM to assess
+      // No active processes or deterministic live signal — use LLM to assess.
       try {
         const llmResult = await this.callLlm(
           this.buildTier3Prompt(state, snapshot, processes),
