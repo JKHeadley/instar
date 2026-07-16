@@ -1,0 +1,21 @@
+---
+title: Warm Threadline replies survive quota reaping
+audience: agents
+---
+
+## What Changed
+
+An inbound Threadline message being processed by a warm reply worker is now retained in the durable resume queue when quota pressure reaps that worker. After pressure clears, Instar rechecks that the exact authenticated canonical inbound is still pending and routes it back through the existing Threadline router. Outbound replies now carry the exact inbound ID they answer, preventing both duplicate recovery and false settlement of interleaved messages.
+
+## Evidence
+
+Unit coverage verifies exact-message custody, HMAC tamper rejection, and outbound settlement. Integration coverage locks the production reap-to-queue wiring. E2E coverage reaps a warm worker mid-processing, drains after pressure clears, and observes one redrive.
+
+## What to Tell Your User
+
+Agent-to-agent conversations are more resilient under resource pressure: Instar can recover a reply that was interrupted when its warm worker was reclaimed.
+
+## Summary of New Capabilities
+
+- Durable recovery of an exact inbound Threadline message after quota reaping.
+- Authenticated, drain-time duplicate suppression before the reply worker restarts.

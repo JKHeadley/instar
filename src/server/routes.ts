@@ -27252,6 +27252,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const {
       targetAgent,
       message,
+      inReplyTo,
       threadId,
       waitForReply,
       timeoutSeconds,
@@ -27264,6 +27265,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!targetAgent || !message) {
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
+    }
+    const replyClaimOwner = typeof originSessionName === 'string' && originSessionName
+      ? originSessionName : `relay-send:${randomUUID()}`;
+    const boundWarmInbound = typeof originSessionName === 'string' && typeof threadId === 'string'
+      && ctx.threadResumeMap?.get(threadId)?.sessionName === originSessionName
+      ? ctx.listenerManager?.readLatestCanonicalInboxForThread(threadId) : null;
+    if (boundWarmInbound && inReplyTo !== boundWarmInbound.id) {
+      res.status(400).json({ success: false, error: 'Warm Threadline replies require inReplyTo for the current inbound message.' });
+      return;
+    }
+    if (typeof inReplyTo === 'string') {
+      const claimedInbound = ctx.listenerManager?.readCanonicalInboxEntry(inReplyTo);
+      if (!claimedInbound || typeof threadId !== 'string' || claimedInbound.threadId !== threadId) {
+        res.status(400).json({ success: false, error: 'inReplyTo must name an authenticated inbound on this thread.' });
+        return;
+      }
+    }
+    if (typeof inReplyTo === 'string' && ctx.listenerManager
+      && !ctx.listenerManager.tryClaimReply(inReplyTo, replyClaimOwner)) {
+      res.status(409).json({ success: false, error: 'A reply for this inbound message is already in flight.' });
+      return;
+    }
+    if (typeof inReplyTo === 'string' && ctx.listenerManager) {
+      res.once('finish', () => {
+        if (res.statusCode >= 400) ctx.listenerManager?.releaseReplyClaim(inReplyTo, replyClaimOwner);
+      });
     }
 
     // ── Outbound credential-share intent (Secure A2A Verified Pairing §3.5) ──
@@ -27831,10 +27858,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                         threadId: effectiveThreadId,
                         text: message,
                         messageId: msgId,
+                        inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
                         outcome,
                       });
+                      if (typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
                     } catch (err) {
                       console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+                      if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
                     }
                   }
                   // (The canonical-log append for this outbound leg already ran
@@ -27977,10 +28007,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             threadId: effectiveRelayThreadId,
             text: message,
             messageId: relayMsgId,
+            inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
             outcome: 'relay-sent',
           });
+          if (typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
         } catch (err) {
           console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+          if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
         }
       }
       // Robustness Phase 2 (D-B): append the relay-delivered outbound leg to the

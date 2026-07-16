@@ -8978,6 +8978,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     const rqCfg = config.monitoring?.resumeQueue ?? {};
     let resumeQueue: import('../monitoring/ResumeQueue.js').ResumeQueue | null = null;
     let resumeDrainer: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null = null;
+    // Constructed later in boot than the resume queue. These late-bound refs let
+    // the queue's callbacks recover an unbound warm Threadline worker without
+    // weakening boot ordering or inventing a second recovery loop.
+    let threadlineRouterForResume: ThreadlineRouter | null = null;
+    let listenerManagerForResume: ListenerSessionManager | null = null;
+    const { createThreadlineReapRecovery } = await import('../threadline/ThreadlineReapRecovery.js');
+    const threadlineReapRecovery = createThreadlineReapRecovery({
+      localAgent: config.projectName,
+      manager: () => listenerManagerForResume,
+      router: () => threadlineRouterForResume,
+    });
     let autonomousLivenessReconciler:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null = null;
@@ -9270,6 +9281,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 { cwd: entry.worktreePath ?? entry.cwd },
               );
             },
+            threadlineMessagePending: threadlineReapRecovery.pending,
+            respawnThread: threadlineReapRecovery.respawn,
             triggerJob: async (slug) => {
               if (!scheduler) return 'skipped';
               return await scheduler.triggerJob(slug, 'resume-queue');
@@ -9922,6 +9935,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           // a throw fails toward NO injection (status-quo no-revive), never a spawn.
           let candidateReason = e.reason;
           let candidateWorkEvidence = e.workEvidence ?? [];
+          const threadMatch = threadResumeMap.getBySessionName(e.session.tmuxSession)[0];
+          const threadInbound = threadMatch && listenerManagerForResume
+            ? listenerManagerForResume.readLatestCanonicalInboxForThread(threadMatch.threadId)
+            : null;
+          const unsettledThreadInbound = threadInbound && listenerManagerForResume
+            && !listenerManagerForResume.hasCanonicalReplyFor(threadInbound.threadId, threadInbound.id)
+            ? threadInbound
+            : null;
+          if (unsettledThreadInbound) {
+            // The durable canonical inbound plus absence of a later outbound is
+            // direct evidence that an injected turn still needs completion.
+            // Reuse the existing strong `pending-injection` vocabulary so an
+            // unbound A2A worker is eligible without relaxing weak-evidence rules.
+            candidateWorkEvidence = [...candidateWorkEvidence, 'pending-injection'];
+          }
           if (
             e.reason === 'age-limit' &&
             topicId != null &&
@@ -9946,6 +9974,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             sessionName: e.session.name,
             tmuxSession: e.session.tmuxSession,
             topicId,
+            threadId: unsettledThreadInbound?.threadId,
+            threadlineMessageId: unsettledThreadInbound?.id,
             jobSlug: e.session.jobSlug,
             jobResumeOptIn: jobDef?.resumeOnReap === true,
             resumeUuid: topicId != null ? (_topicResumeMap?.get(topicId) ?? null) : null,
@@ -15662,6 +15692,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       warmTrustFloor,
       warmEnabled ? killWarmSessionByName : null,
     );
+    threadlineRouterForResume = threadlineRouter;
 
     // Warm-Session A2A reap tick — kill warm sessions idle past their TTL so a
     // flood can't pin processes. Gated on warmEnabled; .unref() so it never holds
@@ -15794,6 +15825,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const listenerManager = config.threadline?.relayEnabled
       ? new ListenerSessionManager(config.stateDir, config.authToken ?? '', config.threadline as Partial<import('../threadline/ListenerSessionManager.js').ListenerConfig>)
       : null;
+    listenerManagerForResume = listenerManager;
 
     // A2A Delivery Tracker — durable per-peer delivery lifecycle + peer-health
     // ("communications never just die out", A2A-DURABLE-DELIVERY-SPEC.md / #939).
