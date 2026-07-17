@@ -59,9 +59,9 @@ updated_at: "2026-07-17T01:00:00Z"
 - [ ] L — scripted Playwright lease
 ```
 
-Only CommonMark task boxes in the body are task authority. `- [ ]` is open; `- [x]` and `- [X]` are closed. An empty body, zero boxes, malformed front matter, or zero open boxes is terminal/allow. Unlike autonomous completion discipline, “no task structure” does not conservatively invent one open item.
+Only task boxes parsed by the repository's bounded task-line parser are task authority. An eligible task is a physical line outside fenced code blocks, HTML comments, and blockquotes, matching `^[ ]{0,3}- \[([ xX])\] \S`; nesting, escaped brackets, ordered-list boxes, and boxes beyond the body byte cap are ineligible. Input is normalized from CRLF to LF before parsing. `- [ ]` is open; `- [x]` and `- [X]` are closed. Ordinals are the stable eligible-line order in the current generation. An empty body, zero eligible boxes, malformed front matter, or zero open boxes is terminal/allow. Unlike autonomous completion discipline, “no task structure” does not conservatively invent one open item. Unit fixtures pin every exclusion so a later parser refactor cannot broaden authority accidentally.
 
-The writer uses atomic temp-file + rename and clamps fields and body size. The ledger is local runtime state and is excluded from git and cross-machine sync.
+The writer uses atomic temp-file + rename and clamps fields and body size. Every generation includes a server-minted random `generation` and a content digest over the normalized task body. All supported mutation goes through `CodexTaskContinuationStore` via the authenticated API/CLI; direct file edits are unsupported drift. On a digest mismatch the decision path records `invalid-state`, deactivates, and allows the stop rather than adopting hand-edited authority. The ledger is local runtime state and is excluded from git and cross-machine sync.
 
 ### 4.2 Lifecycle API and CLI
 
@@ -73,7 +73,7 @@ Add a server-owned lifecycle surface and an `instar continuation` CLI wrapper:
 - `stop --topic <id>` writes the operator-stop tombstone, then deactivates the ledger;
 - `stop-all` writes the global operator-stop tombstone before deactivating all ledgers.
 
-This is an explicit work declaration, not a classifier. The agent may create/update it as the durable plan for a multi-step assignment; the mechanism never derives tasks on its behalf.
+This is an explicit work declaration, not a classifier. The agent may create/update it as the durable plan for a multi-step assignment; the mechanism never derives tasks on its behalf. The API is the mutation boundary even when the caller is the agent—the operator is never asked to run the CLI or edit the file.
 
 ## 5. Turn-boundary decision order
 
@@ -81,10 +81,10 @@ Extend the existing `autonomous-stop-hook.sh --codex` path after its global Code
 
 1. **Hard off-switch:** if `autonomousSessions.codexTaskContinuation.enabled !== true`, approve.
 2. **Operator stop:** if the global or topic tombstone is newer than the ledger, deactivate and approve. This check precedes all recovery, task, or completion logic.
-3. **Ownership:** resolve the topic through the existing topic/session registry. Require the ledger topic to match. Require the recorded session id to match the hook session id, except for one server-authored restart adoption carrying the existing topic/session resume evidence. Unknown ownership approves.
+3. **Ownership:** resolve the topic through the existing topic/session registry. Require the ledger topic and recorded session id to match the hook. Unknown ownership or a restart/session-id mismatch approves. Restart adoption is deliberately deferred from v1; the agent can explicitly start a new generation after resume.
 4. **Bounds:** invalid/missing start time, duration outside the configured maximum, elapsed duration, invalid continuation count, or count at ceiling deactivates and approves. Parsing fails toward stop, not continue.
 5. **Task truth:** parse the bounded body. Zero task boxes or zero unchecked boxes deactivates and approves.
-6. **Continue:** atomically increment `continuation_count`, append an audit row, and emit one Codex Stop block object. The reason names the remaining task count and instructs Codex to reread the ledger and continue the first open item. It does not quote task prose into the control instruction.
+6. **Continue:** under a cross-process atomic lock, re-read and revalidate the tombstone timestamps, generation, digest, ownership, bounds, and current task count; then increment `continuation_count`, persist by atomic rename, append an audit row, and release the lock. A changed generation or tombstone during lock acquisition returns allow. Only after that transition commits does the endpoint emit one Codex Stop block object. The reason names the remaining task count and instructs Codex to reread the ledger and continue the first open item. It does not quote task prose into the control instruction.
 
 Operator stop has temporal precedence: after a stop tombstone, no stale hook process may reactivate or rewrite the ledger. Start requires a new ledger generation newer than the tombstone.
 
@@ -134,12 +134,12 @@ No task text, conversation text, or raw session id is logged. Rotation enforces 
 - **Autonomous job present:** the existing autonomous path owns the stop. The task ledger is ignored and its counter does not advance.
 - **Other Stop hooks block:** Codex combines the existing group decisions. This feature adds no separate group or trust slot.
 - **Inbound operator message:** ordinary delivery remains possible. A stop/emergency-stop message first writes the tombstone through the existing stop funnel; later delivery cannot be fought by a stale continuation.
-- **Session restart:** default is fail-open on session-id mismatch. The existing server-controlled resume path may atomically adopt the ledger to the new session id once, preserving topic and generation and auditing `restart-adopted` as metadata.
+- **Session restart:** v1 fails open on session-id mismatch and never adopts automatically. A resumed agent may explicitly start a new bounded generation from its still-visible plan.
 - **Empty list:** stop immediately. The hook never asks a completion judge to manufacture another task.
 
 ## 9. Implementation shape
 
-1. Add a typed `CodexTaskContinuationStore` for atomic ledger/tombstone/audit operations and bounded parsing.
+1. Add a typed `CodexTaskContinuationStore` for atomic ledger/tombstone/audit operations, digest validation, bounded parsing, and a bounded cross-process lock. Lock timeout or stale-lock ambiguity fails open and is audited when possible.
 2. Add authenticated local lifecycle routes plus the CLI wrapper. Mutating stop routes reuse the existing emergency-stop/operator-origin plumbing.
 3. Add a small framework-neutral decision helper whose result is serialized by the shell hook. Keep shell responsible only for hook input/output and invoking the local decision endpoint; keep state transitions in TypeScript.
 4. Extend the existing Codex Stop hook’s no-autonomous-job branch to call that endpoint. Empty response means allow; one validated `{decision:"block",reason}` object means continue.
@@ -162,7 +162,7 @@ No task text, conversation text, or raw session id is logged. Rotation enforces 
 - Invoke topic stop and stop-all between two decisions and prove the second decision cannot continue.
 - Toggle the config off between two decisions and prove the next Stop approves without restart.
 - An autonomous state plus a task ledger exercises only the autonomous path.
-- Restart adoption succeeds only through the server-authored resume seam; arbitrary session mismatch approves.
+- Any session-id mismatch approves; restart adoption is not present in v1.
 
 ### Tier 3 — feature alive
 
@@ -189,3 +189,11 @@ Rollback is one config flip. Because the hook reads it on every turn and approve
 - Audit failure fails open.
 - Separate spec and implementation PRs: this touches hook lifecycle, state concurrency, and operator-stop precedence, so review the contract before source changes.
 
+## 13. Alternatives considered
+
+- **Codex plan-tool state:** not exposed as a stable, server-readable contract across CLI versions and cannot currently be used by the Stop hook without guessing at UI state.
+- **Existing autonomous-job state:** already has the right hook primitive but carries autonomous registration, completion-judge, concurrency-cap, and notification semantics that ordinary interactive work should not silently acquire.
+- **SQLite as the sole task store:** gives stronger transactions, but makes the explicit plan opaque to the working agent and operator and duplicates the readable task artifact that already survives compaction. V1 keeps Markdown as the readable source with a server-minted generation/digest and a cross-process critical section. If live testing shows lock or rewrite churn, SQLite plus a generated Markdown view is the named fallback—not an in-place improvisation.
+- **A watcher that injects messages after idle:** races prompt detection and inbound operator turns, and duplicates a native Stop-boundary primitive that is already installed and trusted.
+
+This feature is a liveness controller only. Checked boxes and successful audit rows are not evidence that the engineering work is correct; correctness remains governed by tests, review, and the normal delivery bar.
