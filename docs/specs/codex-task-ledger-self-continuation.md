@@ -1,9 +1,12 @@
 ---
 title: Codex task-ledger self-continuation
-status: draft
+status: approved
 author: instar-codey
 date: 2026-07-16
-approved: false
+review-convergence: "2026-07-16 — codex/gpt-5.5 round found six minor issues; all folded in b2af931bc (mutation boundary, exact parser grammar, atomic generation+tombstone recheck, restart adoption deferred, alternatives, liveness-only framing). Operator review then approved with no required fixes."
+review-iterations: 2
+approved: true
+approval-note: "Justin, topic 458, 2026-07-16 18:17 PDT: APPROVED, no required fixes; arm #1489 and proceed to implementation."
 ---
 
 # Codex task-ledger self-continuation
