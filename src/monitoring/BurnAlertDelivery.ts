@@ -43,8 +43,8 @@ interface TerminalTopicState {
 }
 
 export function isTerminalBurnAlertTopicError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /message thread not found|thread not found|topic[ _-]?deleted|topic[ _-]?closed|chat not found/i.test(message);
+  const errorText = error instanceof Error ? error.message : String(error);
+  return /message thread not found|thread not found|topic[ _-]?deleted|topic[ _-]?closed|chat not found/i.test(errorText);
 }
 
 export class BurnAlertDelivery {
@@ -202,7 +202,10 @@ export class BurnAlertDelivery {
       fs.renameSync(tmp, this.deps.stateFile);
       return true;
     } catch (error) {
-      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'BurnAlertDelivery.saveState cleanup' }); } catch { /* best effort cleanup */ }
+      // @silent-fallback-ok — this failure is explicitly surfaced through the
+      // injected logger and the caller receives false so it can require the
+      // independent durable Attention handoff before accepting custody.
+      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'BurnAlertDelivery.saveState cleanup' }); } catch { /* @silent-fallback-ok — cleanup is best effort; the persistence failure is logged below */ }
       this.log(`[burn-detection] failed to persist terminal topic state: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }

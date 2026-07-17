@@ -67,6 +67,12 @@ the controller is absent and can be ignored; no migration or cleanup is needed.
 - Changed-topic recovery test.
 - Existing Phase 4 and Phase 6 burn suites.
 - TypeScript build and full lint.
+- The terminal-response classifier uses an error-specific variable rather than a
+  conversational-message signature, preserving the keyword-intent ratchet's
+  distinction between transport errors and operator intent.
+- State-write and temporary-file cleanup degradation are explicitly observable:
+  the former is logged and returned to the independent Attention-custody guard;
+  the latter is a documented best-effort cleanup after the primary failure.
 
 ## Independent second pass
 
