@@ -27,6 +27,11 @@ export type PlaywrightSeatLeaseResult =
   | { acquired: true; lease: PlaywrightSeatLeaseRecord }
   | { acquired: false; holderLabel: string; retryAfterMs: number; expiresAt: string };
 
+export type PlaywrightSeatReleaseResult =
+  | { released: true }
+  | { released: false; reason: 'not-held' }
+  | { released: false; reason: 'ownership-mismatch'; holderLabel: string; expiresAt: string };
+
 export interface PlaywrightSeatLeaseOptions {
   filePath?: string;
   now?: () => number;
@@ -79,6 +84,29 @@ export class PlaywrightSeatLease {
       };
       this.persist(lease);
       return { acquired: true, lease };
+    });
+  }
+
+  /**
+   * Voluntary release for standalone browser drives. Only the current holder
+   * can release; a stale script can never clear a successor's live lease.
+   */
+  release(holderId: string): PlaywrightSeatReleaseResult {
+    const id = clamp(holderId, 256);
+    if (!id) throw new Error('holderId is required');
+    return this.withLock(() => {
+      const current = this.read();
+      if (!current) return { released: false, reason: 'not-held' };
+      if (current.holderId !== id) {
+        return {
+          released: false,
+          reason: 'ownership-mismatch',
+          holderLabel: current.holderLabel,
+          expiresAt: current.expiresAt,
+        };
+      }
+      SafeFsExecutor.safeUnlinkSync(this.filePath, { operation: 'PlaywrightSeatLease voluntary release' });
+      return { released: true };
     });
   }
 

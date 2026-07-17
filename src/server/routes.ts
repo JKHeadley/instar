@@ -21128,6 +21128,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // POST /playwright-profiles/seat/release — voluntary standalone-script path.
+  // Ownership is checked by the shared lease store, so a late cleanup cannot
+  // release a newer browser drive's lease.
+  router.post('/playwright-profiles/seat/release', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    const holderId = typeof req.body?.holderId === 'string' ? req.body.holderId : '';
+    if (!holderId) {
+      res.status(400).json({ error: 'holderId is required' });
+      return;
+    }
+    try {
+      const result = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).release(holderId);
+      if (!result.released && result.reason === 'ownership-mismatch') {
+        res.status(409).json({ error: 'playwright operator seat is held by another drive', ...result });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
+    }
+  });
+
   // GET /playwright-profiles/session-context — the compact boot pointer (?full=1 bypasses the cap).
   router.get('/playwright-profiles/session-context', (req, res) => {
     if (!playwrightFeatureEnabled()) {

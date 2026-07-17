@@ -61,4 +61,13 @@ describe('PlaywrightSeatLease', () => {
     expect(acquired.acquired).toBe(true);
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).holderId).toBe('agent-a:topic-1');
   });
+
+  it('voluntarily releases only for the current holder', () => {
+    lease().acquire('script-a', 'standalone A');
+    expect(lease().release('script-b')).toMatchObject({ released: false, reason: 'ownership-mismatch' });
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(lease().release('script-a')).toEqual({ released: true });
+    expect(fs.existsSync(filePath)).toBe(false);
+    expect(lease().release('script-a')).toEqual({ released: false, reason: 'not-held' });
+  });
 });

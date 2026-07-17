@@ -236,7 +236,6 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'machine id embedded in the kv key — single writer per file; peers’ copies ride git-sync inertly',
     },
   });
-
   // ── Route seam, wave 1: the P2-6 family (§3.5) ─────────────────────────
   // Both families are machine-local ⇒ admit everywhere — the user-visible
   // P2-6 fix. Stories per §3.1 + frontloaded decision §9.3.
@@ -265,6 +264,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       logical: 'per-machine-path',
       onSharedGitSyncedPath: false,
       note: 'the lease protects browser cookies/user-data physically resident on this host; ~/.instar/state is outside every agent project and git sync',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/playwright-profiles/seat/release',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'ownership-checked release mutates the same host-wide browser-seat lease outside project git sync',
     },
   });
 

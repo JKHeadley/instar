@@ -1,0 +1,24 @@
+# Standalone Playwright seat lease
+
+## What Changed
+
+Standalone Playwright scripts can now voluntarily acquire and release the same
+machine-local operator-seat lease used by Playwright MCP calls. Ownership-checked
+release prevents late cleanup from clearing a successor's lease, while idempotent
+cleanup keeps `finally` blocks simple.
+
+## What to Tell Your User
+
+One-off Playwright scripts can coordinate with normal agent browser drives instead of
+quietly bypassing the shared browser-seat lock.
+
+## Summary of New Capabilities
+
+The `playwright-seat` command and authenticated seat-release route expose the existing
+host-wide lease to trusted standalone scripts.
+
+## Evidence
+
+TypeScript and the full lint chain pass. Thirty-nine focused unit/integration tests and
+a real temporary-home CLI smoke cover acquire, conflict, ownership-safe release,
+idempotent cleanup, and successor acquisition.
