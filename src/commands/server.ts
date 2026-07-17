@@ -125,6 +125,7 @@ import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
+import { confirmLocalPlacementAfterDelivery } from '../core/SessionPoolLocalClaim.js';
 import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
@@ -545,6 +546,11 @@ let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null =
 // is byte-identical to today's always-local dispatch. Set once in startServer().
 let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
 let _sessionPoolStage: () => string = () => 'dark';
+// Self-placement deliberately falls through from SessionRouter into this file's
+// established local inject/spawn tail. Confirming inside SessionRouter would be
+// premature because handleLocally is only that fall-through marker. This callback
+// advances placing → active only after the local tail has actually succeeded.
+let _confirmLocalSessionPoolClaim: ((sessionKey: string) => boolean) | null = null;
 // ── Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md) ──
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
@@ -2619,6 +2625,20 @@ export function wireTelegramRouting(
       }
     }
 
+    // Safe after any successful local delivery. The registry-side callback is
+    // idempotent and confirms only a placing row already owned by this machine,
+    // so ordinary active-session traffic is a strict no-op.
+    const confirmLocalSessionPoolClaim = (): void => {
+      try {
+        _confirmLocalSessionPoolClaim?.(String(topicId));
+      } catch (err) {
+        // Delivery has already succeeded. A registry read/CAS/emit error must
+        // avoid reclassifying delivery as a spawn failure (or throwing out of
+        // the live-injection handler). The row is re-read by normal routing.
+        console.warn(`[session-pool] local claim confirmation errored for topic ${topicId}; ownership outcome will be re-read: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
     // ── SpawnAdmission — the binding-verdict seam (ownership-gated-spawn §3.1,
     // Layer A / the Ownership-Gated Side Effects standard). Consulted before
     // EVERY local session-creating action below. Increment-1 posture: dryRun
@@ -2688,10 +2708,11 @@ export function wireTelegramRouting(
         // Use toInjection() — types guarantee sender identity is included in the tag
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        sessionManager.injectTelegramMessage(
+        const injected = sessionManager.injectTelegramMessage(
           targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
           parseInt(pipeline.id.replace('tg-', ''), 10) || undefined,
         );
+        if (injected) confirmLocalSessionPoolClaim();
         // Delivery confirmation — only when WE own polling. When lifeline owns
         // polling (--no-telegram / standby), it already sends its own confirmation.
         if (telegram.isPolling) {
@@ -2741,6 +2762,7 @@ export function wireTelegramRouting(
             _topicResumeMap.remove(topicId);
           }
           respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+            .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Context exhaustion respawn failed:`, err);
               telegram.sendToTopic(topicId, `❌ Fresh session restart failed. Try sending your message again.`).catch(() => {});
@@ -2763,6 +2785,7 @@ export function wireTelegramRouting(
           const _spawnTokB = spawningTopics.add(topicId);
           telegram.sendToTopic(topicId, `🔄 Session restarting — message queued.`).catch(() => {});
           respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+            .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Respawn failed:`, err);
               // G1 "Agent Is Always Reachable" corollary (2): no silent resource
@@ -2829,6 +2852,7 @@ export function wireTelegramRouting(
       // Use the shared spawn helper that includes topic history + user context
       spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined).then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName, spawnName);
+        confirmLocalSessionPoolClaim();
         telegram.sendToTopic(topicId, `Session starting up — reading your message now. One moment.`).catch(() => {});
         console.log(`[telegram→session] Auto-spawned "${newSessionName}" for topic ${topicId}`);
       }).catch((err) => {
@@ -21600,6 +21624,23 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             },
           });
+          _confirmLocalSessionPoolClaim = (sk: string): boolean => {
+            return confirmLocalPlacementAfterDelivery({
+              selfMachineId: meshSelfId,
+              readOwnership: (sessionKey) => ownReg.read(sessionKey),
+              claimOwnership: (sessionKey, machineId) => {
+                const prevOwner = ownReg.read(sessionKey)?.ownerMachineId;
+                const r = ownReg.cas({ type: 'claim', machineId }, { sessionKey, sender: meshSelfId, nonce: `${meshSelfId}:lcl:${++routerNonce}` });
+                return {
+                  confirmed: r.ok,
+                  afterConfirm: () => emitPlacement(sessionKey, r, 'placed', prevOwner),
+                };
+              },
+              onError: (err) => {
+                console.warn(`[session-pool] local ownership confirmation observer failed for ${sk}; authoritative state will be re-read: ${err instanceof Error ? err.message : String(err)}`);
+              },
+            }, sk);
+          };
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(undefined, {
@@ -21664,6 +21705,12 @@ export async function startServer(options: StartOptions): Promise<void> {
               const r = ownReg.cas({ type: 'claim', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:cl:${++routerNonce}` });
               emitPlacement(sk, r, 'placed', prevOwner); // placing→active confirmation: a real epoch bump in the registry
             },
+            // The local delivery tail runs outside SessionRouter. Confirm its
+            // self-placement only after that tail reports a successful inject or
+            // spawn; a thrown/failed spawn therefore leaves the row in placing.
+            // Guarding the current row makes repeated live injections idempotent.
+            // The adjacent _confirmLocalSessionPoolClaim callback shares this
+            // authoritative registry and nonce stream for the local tail.
             deliverMessage: async (target, env) => {
               const url = peerUrl(target);
               if (!url) throw new Error(`no peer url for ${target}`);
