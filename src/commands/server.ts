@@ -20184,9 +20184,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Durable Inbound Message Queue §3.4 remote path: the queue store's
             // remote receipt (canonical-id keyed, carries the `injected` marker
             // that makes peer-crash-between-receipt-and-inject boot-detectable —
-            // loss window 6). Recorded ALONGSIDE the existing ledger receipt;
-            // engine dark → the prior posture, named in the spec's skew note.
-            try { _inboundQueue?.recordRemoteReceipt(session, messageId); } catch { /* receipt best-effort; ledger is authoritative for dedupe */ }
+            // loss window 6). Its INSERT OR IGNORE result is authoritative when
+            // the queue is live; discarding it reopened duplicates after every
+            // owner restart whenever the optional exactly-once ledger was dark.
+            try {
+              if (_inboundQueue) return _inboundQueue.recordRemoteReceipt(session, messageId);
+            } catch { /* receipt unavailable — fall through to the next durable tier */ }
             if (messageLedger) return messageLedger.record(messageId, { platform: 'mesh', topic: session }).firstSeen;
             if (deliverSeenFallback.has(messageId)) return false;
             deliverSeenFallback.add(messageId);

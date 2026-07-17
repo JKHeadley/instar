@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-17T00:20:00.000Z",
+  "slug": "single-agent-cross-machine-forward-replay",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "changes inbound cursor settlement semantics",
+    "changes cross-machine duplicate suppression authority"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 110,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Forwarding was launched without awaiting its acknowledgment, while the owner wrote a durable remote receipt but discarded the INSERT OR IGNORE verdict. When the optional exactly-once ledger was unavailable, dedup degraded to a boot-local set and every restart reopened the old messages."
+  },
+  "verdict": "pass"
+}

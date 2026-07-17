@@ -4848,11 +4848,16 @@ export class TelegramAdapter implements MessagingAdapter {
     // Fire topic message callback (always fires — General topic falls back to ID 1)
     if (this.onTopicMessage) {
       try {
-        Promise.resolve(this.onTopicMessage(message)).catch(err => {
-          console.error(`[telegram] Topic message handler error: ${err}`);
-        });
+        // The poll offset advances only after processUpdate returns. Await the
+        // routing acknowledgment so restart redrive cannot race an unsettled
+        // single-agent cross-machine forward.
+        await this.onTopicMessage(message);
       } catch (err) {
-        console.error(`[telegram] Topic message handler sync error: ${err}`);
+        console.error(`[telegram] Topic message handler error: ${err}`);
+        // Propagate to poll(): it must NOT persist this update's offset. The
+        // original platform identity makes a late completion + redelivery
+        // idempotent at the owner receipt seam.
+        throw err;
       }
     }
 
