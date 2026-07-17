@@ -93,6 +93,7 @@ import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
 import type { StopSignals } from '../core/CompletionEvaluator.js';
+import { CodexTaskContinuationStore, parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
@@ -5171,6 +5172,76 @@ export function createRoutes(ctx: RouteContext): Router {
   // These routes are the management surface; the stop hook is the per-session enforcer.
   router.get('/autonomous/sessions', (_req, res) => {
     res.json({ sessions: listAutonomousJobs(ctx.config.stateDir) });
+  });
+
+  // Ordinary Codex task-ledger continuation. This is deliberately separate
+  // from autonomous registration/completion semantics, but shares the trusted
+  // Stop-hook execution primitive.
+  const continuationStore = () => new CodexTaskContinuationStore(
+    ctx.config.stateDir,
+    ctx.liveConfig?.get(
+      'autonomousSessions.codexTaskContinuation',
+      ctx.config.autonomousSessions?.codexTaskContinuation,
+    ) ?? ctx.config.autonomousSessions?.codexTaskContinuation,
+  );
+
+  router.get('/continuation/:topic/status', (req, res) => {
+    const store = continuationStore();
+    const ledger = store.read(req.params.topic);
+    res.json({
+      enabled: store.enabled,
+      active: ledger?.active === true,
+      topicId: req.params.topic,
+      continuationCount: ledger?.continuationCount ?? 0,
+      maxContinuations: ledger?.maxContinuations ?? null,
+      taskCount: ledger ? parseContinuationTasks(ledger.body).length : 0,
+      openTaskCount: ledger ? parseContinuationTasks(ledger.body).filter((t) => t.open).length : 0,
+    });
+  });
+
+  router.post('/continuation/start', (req, res) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const ledger = continuationStore().start({
+        topicId: String(body.topicId ?? ''),
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        tasks: Array.isArray(body.tasks) ? body.tasks.map(String) : [],
+        durationSeconds: typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined,
+        maxContinuations: typeof body.maxContinuations === 'number' ? body.maxContinuations : undefined,
+      });
+      res.status(201).json({ ok: true, topicId: ledger.topicId, generation: ledger.generationId });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'invalid-request';
+      res.status(reason === 'continuation-disabled' ? 503 : 400).json({ ok: false, error: reason });
+    }
+  });
+
+  router.post('/continuation/:topic/complete', (req, res) => {
+    try {
+      const ordinal = Number((req.body as Record<string, unknown>)?.ordinal);
+      const ledger = continuationStore().complete(req.params.topic, ordinal);
+      res.json({ ok: true, continuationCount: ledger.continuationCount });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+    }
+  });
+
+  router.post('/continuation/:topic/stop', (req, res) => {
+    const stopped = continuationStore().stop(req.params.topic);
+    try { ctx.operatorStopRecorder?.(Number(req.params.topic)); } catch { /* stop remains authoritative */ }
+    res.json({ ok: true, stopped });
+  });
+
+  router.post('/continuation/stop-all', (_req, res) => {
+    const stopped = continuationStore().stopAll();
+    try { ctx.operatorStopRecorder?.(null); } catch { /* stop remains authoritative */ }
+    res.json({ ok: true, stopped });
+  });
+
+  router.post('/continuation/decide', (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const decision = continuationStore().decide(String(body.topicId ?? ''), String(body.sessionId ?? ''));
+    res.json(decision);
   });
 
   // Level-triggered liveness reconciler status (spec: autonomous-liveness-reconciler.md).

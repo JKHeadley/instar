@@ -3,7 +3,8 @@ title: Codex task-ledger self-continuation
 status: approved
 author: instar-codey
 date: 2026-07-16
-review-convergence: "2026-07-16 — codex/gpt-5.5 round found six minor issues; all folded in b2af931bc (mutation boundary, exact parser grammar, atomic generation+tombstone recheck, restart adoption deferred, alternatives, liveness-only framing). Operator review then approved with no required fixes."
+parent-principle: "The Agent Carries the Loop"
+review-convergence: "2026-07-16 — codex/gpt-5.5 round found six minor issues; all folded in b2af931bc (mutation boundary, exact parser grammar, atomic generation+tombstone recheck, restart adoption excluded, alternatives, liveness-only framing). Operator review then approved with no required fixes."
 review-iterations: 2
 approved: true
 approval-note: "Justin, topic 458, 2026-07-16 18:17 PDT: APPROVED, no required fixes; arm #1489 and proceed to implementation."
@@ -84,7 +85,7 @@ Extend the existing `autonomous-stop-hook.sh --codex` path after its global Code
 
 1. **Hard off-switch:** if `autonomousSessions.codexTaskContinuation.enabled !== true`, approve.
 2. **Operator stop:** if the global or topic tombstone is newer than the ledger, deactivate and approve. This check precedes all recovery, task, or completion logic.
-3. **Ownership:** resolve the topic through the existing topic/session registry. Require the ledger topic and recorded session id to match the hook. Unknown ownership or a restart/session-id mismatch approves. Restart adoption is deliberately deferred from v1; the agent can explicitly start a new generation after resume.
+3. **Ownership:** resolve the topic through the existing topic/session registry. Require the ledger topic and recorded session id to match the hook. Unknown ownership or a restart/session-id mismatch approves. Restart adoption is a deliberate v1 non-goal; the agent can explicitly start a new generation after resume.
 4. **Bounds:** invalid/missing start time, duration outside the configured maximum, elapsed duration, invalid continuation count, or count at ceiling deactivates and approves. Parsing fails toward stop, not continue.
 5. **Task truth:** parse the bounded body. Zero task boxes or zero unchecked boxes deactivates and approves.
 6. **Continue:** under a cross-process atomic lock, re-read and revalidate the tombstone timestamps, generation, digest, ownership, bounds, and current task count; then increment `continuation_count`, persist by atomic rename, append an audit row, and release the lock. A changed generation or tombstone during lock acquisition returns allow. Only after that transition commits does the endpoint emit one Codex Stop block object. The reason names the remaining task count and instructs Codex to reread the ledger and continue the first open item. It does not quote task prose into the control instruction.

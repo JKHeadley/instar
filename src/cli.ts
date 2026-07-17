@@ -270,6 +270,22 @@ async function addQuota(opts: { stateFile?: string }): Promise<void> {
 
 const program = new Command();
 
+async function callLocalContinuation(pathname: string, method = 'GET', body?: unknown): Promise<unknown> {
+  const cfgPath = path.join(process.cwd(), '.instar', 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { port?: number; authToken?: string };
+  const response = await fetch(`http://127.0.0.1:${cfg.port ?? 4040}${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${cfg.authToken ?? ''}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const parsed = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(String(parsed.error ?? `HTTP ${response.status}`));
+  return parsed;
+}
+
 function rejectUnknownTopLevelCommand(program: Command, argv: string[]): void {
   const firstArg = argv[2];
   if (!firstArg || firstArg.startsWith('-')) {
@@ -384,6 +400,44 @@ program
   .action((projectName, opts) => {
     return initProject({ ...opts, name: projectName });
   });
+
+// ── Codex ordinary-work continuation ─────────────────────────────
+
+const continuationCmd = program
+  .command('continuation')
+  .description('Manage the bounded Codex task-continuation ledger');
+
+continuationCmd
+  .command('start')
+  .requiredOption('--topic <id>', 'Topic id')
+  .requiredOption('--task <text...>', 'One or more explicit tasks')
+  .option('--duration <seconds>', 'Duration ceiling', (v: string) => Number(v))
+  .option('--max-continuations <count>', 'Turn ceiling', (v: string) => Number(v))
+  .action(async (opts) => {
+    const result = await callLocalContinuation('/continuation/start', 'POST', {
+      topicId: opts.topic,
+      tasks: opts.task,
+      durationSeconds: opts.duration,
+      maxContinuations: opts.maxContinuations,
+    });
+    console.log(JSON.stringify(result));
+  });
+
+continuationCmd.command('status <topic>').action(async (topic) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/status`)));
+});
+
+continuationCmd.command('complete <topic> <ordinal>').action(async (topic, ordinal) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/complete`, 'POST', { ordinal: Number(ordinal) })));
+});
+
+continuationCmd.command('stop <topic>').action(async (topic) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/stop`, 'POST')));
+});
+
+continuationCmd.command('stop-all').action(async () => {
+  console.log(JSON.stringify(await callLocalContinuation('/continuation/stop-all', 'POST')));
+});
 
 // ── Add ───────────────────────────────────────────────────────────
 

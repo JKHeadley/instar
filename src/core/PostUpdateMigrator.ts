@@ -3653,11 +3653,14 @@ export class PostUpdateMigrator {
     // SCOPE_ACCRETION sentinel is present ONLY in the new bundled hook; bumping
     // re-deploys it to agents carrying REALCHECK_VERIFY but not SCOPE_ACCRETION;
     // customized hooks (no stock fingerprint) are still left untouched.
+    // Marker bumped `SCOPE_ACCRETION` → `TASK_CONTINUATION`: the same trusted
+    // Codex Stop hook can now consult the server-owned ordinary-work ledger
+    // when no autonomous job owns the turn. Dark unless explicitly enabled.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'SCOPE_ACCRETION',
+      'TASK_CONTINUATION',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (scope-accretion: Layer B scan + runId echo + run-end call on every exit surface)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (Codex task-ledger continuation at the existing trusted Stop boundary)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal

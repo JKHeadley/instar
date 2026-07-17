@@ -51,6 +51,8 @@ for _arg in "$@"; do [[ "$_arg" == "--codex" ]] && IS_CODEX=1; done
 # ratification state there), and run_end_call fired on EVERY terminal exit surface (R40/R44) so
 # no exit is silent. This sentinel is the PostUpdateMigrator marker that re-deploys this hook to
 # existing agents that carry REALCHECK_VERIFY but not SCOPE_ACCRETION.
+# hook-capability: TASK_CONTINUATION — ordinary Codex interactive work may use
+# the same trusted Stop boundary when an explicit bounded task ledger is live.
 # emit — human-facing approve/status text. In codex mode the Stop hook's STDOUT must be
 # ONLY valid decision-JSON (the `{"decision":"block",...}` case far below) or empty:
 # codex rejects ANY other stdout as "invalid stop hook JSON output" and reports the stop
@@ -91,17 +93,21 @@ fi
 # autonomousSessions.codexLoopDriver.enabled is true. Otherwise approve (exit 0) so a
 # normal codex stop is unaffected — this is the instant-rollback flag (flip it off and
 # the standing hook is a no-op again, no redeploy). Claude (IS_CODEX=0) skips this.
+CODEX_TASK_CONTINUATION_ENABLED=0
 if [[ "$IS_CODEX" == "1" ]]; then
-  CODEX_LOOP_ENABLED=$(python3 -c "
+  CODEX_GATES=$(python3 -c "
 import json
 try:
     c = json.load(open('.instar/config.json'))
     a = (c.get('autonomousSessions') or {}).get('codexLoopDriver') or {}
-    print('1' if a.get('enabled') else '0')
+    t = (c.get('autonomousSessions') or {}).get('codexTaskContinuation') or {}
+    print(('1' if a.get('enabled') else '0') + ':' + ('1' if t.get('enabled') else '0'))
 except Exception:
-    print('0')
-" 2>/dev/null || echo "0")
-  if [[ "$CODEX_LOOP_ENABLED" != "1" ]]; then
+    print('0:0')
+" 2>/dev/null || echo "0:0")
+  CODEX_LOOP_ENABLED="${CODEX_GATES%%:*}"
+  CODEX_TASK_CONTINUATION_ENABLED="${CODEX_GATES##*:}"
+  if [[ "$CODEX_LOOP_ENABLED" != "1" ]] && [[ "$CODEX_TASK_CONTINUATION_ENABLED" != "1" ]]; then
     exit 0
   fi
 fi
@@ -188,7 +194,27 @@ elif [[ -f "$LEGACY_STATE" ]]; then
     STATE_FILE="$LEGACY_STATE"
   fi
 else
-  # No autonomous job for this session anywhere — allow exit.
+  # No autonomous job for this session. Ordinary Codex interactive work may
+  # still own an explicit bounded continuation ledger. The server is the sole
+  # mutation/decision authority; empty/invalid state returns allow.
+  if [[ "$IS_CODEX" == "1" ]] && [[ "$CODEX_TASK_CONTINUATION_ENABLED" == "1" ]] && [[ -n "$MY_TOPIC" ]]; then
+    _PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+    _AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+    _DECISION=$(jq -nc --arg topicId "$MY_TOPIC" --arg sessionId "$HOOK_SESSION" '{topicId:$topicId,sessionId:$sessionId}' \
+      | curl -sS -m 5 -H "Authorization: Bearer $_AUTH" -H 'Content-Type: application/json' \
+        --data-binary @- "http://127.0.0.1:${_PORT}/continuation/decide" 2>/dev/null || echo "")
+    if [[ "$(printf '%s' "$_DECISION" | jq -r '.decision // ""' 2>/dev/null)" == "continue" ]]; then
+      _REASON=$(printf '%s' "$_DECISION" | jq -r '.reasonText // "Continue the explicit open task list."' 2>/dev/null)
+      jq -nc --arg reason "$_REASON" '{decision:"block",reason:$reason}'
+    fi
+  fi
+  # No autonomous job or open continuation ledger — allow exit.
+  exit 0
+fi
+
+# An autonomous state owns this turn. Its own Codex gate remains authoritative;
+# enabling ordinary task continuation must never implicitly enable autonomous jobs.
+if [[ "$IS_CODEX" == "1" ]] && [[ "$CODEX_LOOP_ENABLED" != "1" ]]; then
   exit 0
 fi
 

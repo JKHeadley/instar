@@ -4329,6 +4329,17 @@ export interface InstarConfig {
       enabled?: boolean;
     };
     /**
+     * Bounded continuation of ordinary Codex interactive work from an explicit
+     * per-topic task ledger. Separate from autonomous jobs; ships dark.
+     */
+    codexTaskContinuation?: {
+      enabled?: boolean;
+      maxDurationSeconds?: number;
+      maxContinuations?: number;
+      auditRetentionDays?: number;
+      auditMaxRows?: number;
+    };
+    /**
      * Gemini multi-turn loop-driver (need-gem-002; docs/specs/gemini-multi-turn-
      * loop-driver.md). When enabled, the GeminiLoopRunner can drive a gemini
      * mentee across turns via the native resume path (turn 1 one-shot establishes

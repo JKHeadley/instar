@@ -38,7 +38,10 @@ describe('Multi-session autonomy API (integration)', () => {
       stateDir: project.stateDir,
       projectName: 'test-project',
       agentName: 'test-agent',
-      autonomousSessions: { maxConcurrent: 2 },
+      autonomousSessions: {
+        maxConcurrent: 2,
+        codexTaskContinuation: { enabled: true, maxDurationSeconds: 3600, maxContinuations: 3 },
+      },
     } as InstarConfig;
     const state = new StateManager(project.stateDir);
 
@@ -152,6 +155,33 @@ describe('Multi-session autonomy API (integration)', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('drives the task-continuation lifecycle through the real HTTP routes', async () => {
+    const started = await fetch(`${baseUrl}/continuation/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '458', tasks: ['first', 'second'] }),
+    });
+    expect(started.status).toBe(201);
+
+    const first = await fetch(`${baseUrl}/continuation/decide`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '458', sessionId: 'codex-session' }),
+    });
+    expect(await first.json()).toMatchObject({ decision: 'continue', openTaskCount: 2 });
+
+    await fetch(`${baseUrl}/continuation/458/complete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ordinal: 1 }),
+    });
+    const status = await (await fetch(`${baseUrl}/continuation/458/status`)).json();
+    expect(status).toMatchObject({ active: true, taskCount: 2, openTaskCount: 1 });
+
+    await fetch(`${baseUrl}/continuation/458/stop`, { method: 'POST' });
+    const stopped = await fetch(`${baseUrl}/continuation/decide`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '458', sessionId: 'codex-session' }),
+    });
+    expect(await stopped.json()).toMatchObject({ decision: 'deactivate', reason: 'operator-stop' });
   });
 
   it('POST /autonomous/native-goal/set injects /goal <condition> and flips goal_mode', async () => {

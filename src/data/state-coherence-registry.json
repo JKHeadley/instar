@@ -201,6 +201,25 @@
       "grandfathered": false
     },
     {
+      "category": "codex-task-continuation",
+      "description": "Machine-local bounded ordinary-work continuation ledgers, generation-ordered operator-stop tombstones, and privacy-clamped decision audit. Session ownership is local by design and never replicated.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        ".instar/continuation/",
+        "state/continuation/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 1000,
+        "note": "Inactive ledgers and topic tombstones age out with auditRetentionDays; audit is independently age- and row-capped. New topics are refused at 1000 ledger files."
+      }
+    },
+    {
       "category": "threadline-conversation-state",
       "description": "Threadline conversation store plus context-thread-map, thread-resume-map, telegram-bridge-bindings.",
       "scope": "must-be-coherent",
