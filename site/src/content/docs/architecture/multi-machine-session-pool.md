@@ -31,6 +31,8 @@ Ownership of a conversation is movable and fenced by a `(status, epoch)` pair. `
 
 For each inbound message the `SessionRouter` resolves ownership and dispatches: handle locally if it owns the session, forward over `MeshRpc` to the owner otherwise, re-place on owner death, or — for a brand-new conversation — call `PlacementExecutor`, claim ownership synchronously, and spawn. The owner side runs `DeliverMessageHandler`, which records each forwarded message in the processing ledger *before* acting on it; a redelivered message is ACKed as a duplicate and never re-processed, so a handoff can't double-reply. The `SessionRouter` dispatches strictly in order per session and advances the platform offset only after `DeliverMessageHandler` confirms durable receipt.
 
+Self-placement confirmation stays outside the router: `SessionPoolLocalClaim` advances a self-owned `placing` row only after the established local inject or spawn tail succeeds. Active, remote-owned, and missing rows are no-ops; a failed local delivery never confirms ownership, while a later observer failure does not reverse a compare-and-set that already committed.
+
 When you say "move this to the mini" or "run this on the workstation", the `NicknameCommand` recognizer parses that — conservatively, only on an explicit relocation verb plus a known nickname, so a passing mention of a machine never triggers a move. `NicknameCommand` resolves the nickname against the registry; an unknown name is rejected with the valid options rather than mis-routed.
 
 ### L5 — Transfer / handoff (`TransferByNickname`, `TransferOrchestrator`)

@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "sessionId": "a7be9a7c-77ec-4ed1-807a-5a3180f5f3ca",
+  "timestamp": "2026-07-17T09:05:56.806Z",
+  "artifactPath": "upgrades/side-effects/session-pool-self-placement-confirmation.md",
+  "artifactSha256": "040c61a4a5bcacea77c1c5c997ce89e21ecde287ffa000b7692b0477c654d6d2",
+  "specPath": "docs/specs/ownership-applier-meshself-ordering-fix.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SessionPoolLocalClaim.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Session lifecycle ownership confirmation on the live single-agent CROSS-MACHINE dispatch path requires the Tier-2 risk floor.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "continuation_impl_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  }
+}
