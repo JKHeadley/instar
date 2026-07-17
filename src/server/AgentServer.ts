@@ -610,7 +610,11 @@ export class AgentServer {
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
     resolveRouterUrl?: () => string | null;
     /** WS1.2 sender leg: order the topic's owner (local or remote) to drain for a transfer. */
-    sendDrain?: (ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>;
+    sendDrain?: (ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }>;
+    /** WS1.4 consent preflight against the machine that owns the run registry. */
+    autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
+    /** Kick the working-set carrier on the machine that just acquired a topic. */
+    kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
     /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — behind GET /guards. */
@@ -2792,6 +2796,66 @@ export class AgentServer {
     } catch { /* sweep is best-effort; a wiring fault never breaks boot */ }
 
     // Routes
+    const autonomousRunOnMachine = options.autonomousRunOnMachine ?? (options.resolvePeerUrls
+      ? async (machineId: string, topic: string) => {
+          const peer = options.resolvePeerUrls!().find((p) => p.machineId === machineId);
+          if (!peer) throw new Error('no-peer-url');
+          const authToken = process.env.INSTAR_AUTH_TOKEN || options.config.authToken || '';
+          const response = await fetch(`${peer.url}/autonomous/sessions`, {
+            headers: { Authorization: `Bearer ${authToken}` },
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!response.ok) throw new Error(`owner-run-probe-${response.status}`);
+          const body = await response.json() as { sessions?: Array<{ topic?: string; active?: boolean; paused?: boolean; goal?: string | null; startedAt?: string | null; durationSeconds?: number | null }> };
+          const job = body.sessions?.find((j) => String(j.topic) === topic && j.active === true && j.paused !== true);
+          if (!job) return null;
+          const remainingMinutes = job.startedAt && job.durationSeconds != null
+            ? Math.max(0, Math.round((Date.parse(job.startedAt) + job.durationSeconds * 1000 - Date.now()) / 60_000))
+            : null;
+          return { goal: job.goal ?? null, remainingMinutes, runKey: job.startedAt ?? null };
+        }
+      : null);
+    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topic: number) => {
+      if (machineId === options.meshSelfId) {
+        const coordinator = options.workingSetPullCoordinator;
+        if (!coordinator) return;
+        void (async () => {
+          // Ownership arrives through the replicated journal and can legitimately
+          // trail the fenced drain response by more than one heartbeat/cadence.
+          // Keep this fire-and-forget retry window long enough to cross that
+          // convergence boundary; `not-owner` does not consume the coordinator's
+          // reflex rate limit, and every attempt still rechecks ownership before
+          // applying bytes.
+          for (const delayMs of [250, 750, 1_500, 3_000, 5_000, 10_000, 15_000, 30_000]) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            try {
+              const result = await coordinator.fetchWorkingSet(topic);
+              if (result.scheduled === true || result.skipReason !== 'not-owner') return;
+            } catch { /* @silent-fallback-ok — bounded retry continues; the explicit fetch reflex remains available */ }
+          }
+        })();
+        return;
+      }
+      const peer = options.resolvePeerUrls?.().find((p) => p.machineId === machineId);
+      if (!peer) return;
+      const authToken = process.env.INSTAR_AUTH_TOKEN || options.config.authToken || '';
+      void (async () => {
+        for (const delayMs of [250, 750, 1_500, 3_000, 5_000, 10_000, 15_000, 30_000]) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          try {
+            const response = await fetch(`${peer.url}/coherence/fetch-working-set`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ topic }),
+              signal: AbortSignal.timeout(5_000),
+            });
+            if (!response.ok) continue;
+            const result = await response.json() as { scheduled?: boolean; skipReason?: string };
+            if (result.scheduled === true || result.skipReason !== 'not-owner') return;
+          } catch { /* @silent-fallback-ok — bounded retry continues; final failure leaves the explicit fetch reflex available */ }
+        }
+      })();
+    });
     const routeCtx = {
       config: options.config,
       sessionManager: options.sessionManager,
@@ -3065,6 +3129,8 @@ export class AgentServer {
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
       sendDrain: options.sendDrain ?? null,
+      autonomousRunOnMachine,
+      kickWorkingSetOnMachine,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,

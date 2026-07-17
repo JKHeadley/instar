@@ -6584,10 +6584,29 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     // via the unique `autonomousRunSuspended` marker.
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('autonomousRunSuspended')) {
       const ws14line = `
-- **Moving a topic with an autonomous run in flight (consent gate):** a transfer answers 409 \`needsConfirmation\` when the topic has a LIVE autonomous run on this machine — moving suspends real work, so it always asks first. A confirmed move (\`"confirm":true\`) suspends the run at its next turn boundary (the state file survives with \`moved_to\` markers and rides the working-set carrier to the new machine — never deleted, never shipped mid-write); the response reports \`autonomousRunSuspended\`.`;
+- **Moving a topic with an autonomous run in flight (consent gate):** a transfer answers 409 \`needsConfirmation\` when the topic has a LIVE autonomous run on its current owner — moving suspends real work, so it always asks first. Confirm by re-sending the same request with \`"confirm":true\` and the returned \`confirmationChallenge\`; changed conditions return a fresh challenge. A confirmed move suspends the run at its next turn boundary (the state file survives with \`moved_to\` markers and rides the working-set carrier to the new machine — never deleted, never shipped mid-write); the response reports \`autonomousRunSuspended\`.`;
       content += '\n' + ws14line + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added WS1.4 autonomous-run transfer consent line');
+    }
+    // Challenge-bound confirmation supersedes the legacy bare confirm:true
+    // instruction. Existing agents already contain autonomousRunSuspended, so
+    // this needs its own idempotent marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('confirmationChallenge')) {
+      content = content.replace(
+        '(re-send with `"confirm":true`)',
+        '(re-send with `"confirm":true` and the returned `confirmationChallenge`; changed conditions return a fresh challenge)',
+      );
+      content = content.replace(
+        'A confirmed move (`"confirm":true`) suspends the run',
+        'A challenge-bound confirmed move suspends the run',
+      );
+      content = content.replace(
+        'a LIVE autonomous run on this machine',
+        'a LIVE autonomous run on its current owner',
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: challenge-bound WS1.4 transfer consent');
     }
 
     // Pool-wide session visibility (2026-06-05): agents that ALREADY have the pool

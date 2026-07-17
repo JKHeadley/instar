@@ -1375,7 +1375,12 @@ export interface RouteContext {
    *  current owner — local or remote — to DRAIN its live session for a
    *  transfer (finish the turn bounded, close, land the target's claim).
    *  Null/absent → the transfer route uses today's pin-and-release path. */
-  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>) | null;
+  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }>) | null;
+  /** WS1.4 cross-machine consent preflight: ask the current owner whether this
+   *  topic has a live autonomous run before the holder authorizes a move. */
+  autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
+  /** Working-set acquire kick for an explicit transfer target. */
+  kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
@@ -16049,14 +16054,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // POST /pool/transfer — deterministic topic transfer that does NOT depend on
-  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm? }.
+  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm?, confirmationChallenge? }.
   // Runs the SAME validated planner as "move this to <nickname>" (rate-limit, online,
   // already-there checks), sets the placement pin, and releases local ownership so the
   // next message re-places onto the target. A non-holder PROXIES to the holder (whose
   // pin store drives routing). This is the reliable lever a session can call directly
   // instead of hoping a phrase is recognized. 503 when the pool isn't wired (dark).
   router.post('/pool/transfer', async (req, res) => {
-    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown };
+    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown; confirmationChallenge?: unknown };
     const topicId = body.topic != null ? String(body.topic).trim() : '';
     const to = typeof body.to === 'string' ? body.to.trim() : '';
     if (!topicId || !to) {
@@ -16074,11 +16079,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const r = await fetch(`${holderUrl}/pool/transfer`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topic: topicId, to, confirm: body.confirm === true }),
+          body: JSON.stringify({
+            topic: topicId,
+            to,
+            confirm: body.confirm === true,
+            ...(typeof body.confirmationChallenge === 'string'
+              ? { confirmationChallenge: body.confirmationChallenge }
+              : {}),
+          }),
         });
         // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
         // status code with an empty object; the status is the signal, not the body.
         const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        // A proxied transfer returns before the holder-only implementation below,
+        // so the machine that received the operator request must also arm the
+        // acquire carrier after the holder proves the seat moved. This is
+        // deliberately redundant with the holder's remote kick: when this machine
+        // is the destination it has the shortest, most reliable path to its local
+        // coordinator, while duplicate kicks are collapsed by coordinator
+        // single-flight/rate limiting. Bind the kick to the holder-authored target
+        // rather than the caller's nickname so a forged/misresolved request cannot
+        // fetch a different topic onto this machine.
+        if (r.ok && j.seatMoved === true && typeof j.targetMachine === 'string') {
+          const topicNum = Number(topicId);
+          if (Number.isFinite(topicNum)) {
+            try { ctx.kickWorkingSetOnMachine?.(j.targetMachine, topicNum); }
+            catch { /* @silent-fallback-ok — transfer already completed; bounded carrier retries and the manual fetch reflex remain available */ }
+          }
+        }
         res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
       } catch (err) {
         // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the
@@ -16107,7 +16135,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     };
     // WS1.4: a LIVE autonomous run on this topic (this machine's stateDir is
     // the run registry — the run lives where its state file lives).
-    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null } | null => {
+    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null; runKey: string | null } | null => {
       try {
         const job = listAutonomousJobs(ctx.config.stateDir).find((j) => j.topic === sk && j.active && !j.paused);
         if (!job) return null;
@@ -16116,9 +16144,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const endMs = Date.parse(job.startedAt) + job.durationSeconds * 1000;
           if (Number.isFinite(endMs)) remainingMinutes = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
         }
-        return { goal: job.goal, remainingMinutes };
+        return { goal: job.goal, remainingMinutes, runKey: job.startedAt };
       } catch { return null; /* @silent-fallback-ok — unreadable run registry → veto not applied; the transfer behaves as before WS1.4 */ }
     };
+    // The holder is authoritative for the pin, but the autonomous state file
+    // lives on the current OWNER. Probe that owner before planning, otherwise a
+    // holder/owner split silently bypasses the consent gate and the drain
+    // suspends real work without confirmation.
+    const ownershipBeforePlan = ctx.sessionOwnershipRegistry.read(topicId);
+    const ownerBeforePlan = ownershipBeforePlan?.ownerMachineId ?? null;
+    let ownerAutonomousRun: { goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null = null;
+    if (ownerBeforePlan && ownerBeforePlan !== self) {
+      if (!ctx.autonomousRunOnMachine) {
+        ownerAutonomousRun = { goal: 'owner run state could not be verified', remainingMinutes: null, runKey: 'unverified' };
+      } else {
+        try {
+          ownerAutonomousRun = await ctx.autonomousRunOnMachine(ownerBeforePlan, topicId);
+        } catch {
+          // Fail closed: an unreachable owner cannot prove that moving it will not
+          // suspend a live run. The confirmation remains explicit and retryable.
+          ownerAutonomousRun = { goal: 'owner run state could not be verified', remainingMinutes: null, runKey: 'unverified' };
+        }
+      }
+      const ownershipAfterProbe = ctx.sessionOwnershipRegistry.read(topicId);
+      if (
+        ownershipAfterProbe?.ownerMachineId !== ownershipBeforePlan?.ownerMachineId ||
+        ownershipAfterProbe?.ownershipEpoch !== ownershipBeforePlan?.ownershipEpoch
+      ) {
+        res.status(409).json({
+          retryRequired: true,
+          error: 'topic ownership changed while transfer conditions were being checked; retry the transfer',
+        });
+        return;
+      }
+    }
+    const selectedAutonomousRun = liveAutonomousRun(topicId) ?? ownerAutonomousRun;
     const plan = planTransferByNickname(
       { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
       {
@@ -16134,7 +16194,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // the confirmed call re-evaluates the full chain and a confirm can
         // never silently consent to a condition the caller was not shown
         // (second-pass finding, 2026-06-13).
-        autonomousRunActive: liveAutonomousRun,
+        autonomousRunActive: () => selectedAutonomousRun,
       },
       topicId,
     );
@@ -16148,11 +16208,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       return;
     }
-    if (plan.action === 'confirm-required' && body.confirm !== true) {
+    if (plan.action === 'confirm-required') {
+      const confirmationChallenge = createHash('sha256').update(JSON.stringify({
+        topicId,
+        targetMachine: plan.targetMachine,
+        detail: plan.detail,
+        owner: ownershipBeforePlan?.ownerMachineId ?? null,
+        ownershipEpoch: ownershipBeforePlan?.ownershipEpoch ?? null,
+        runKey: selectedAutonomousRun?.runKey ?? null,
+        runGoal: selectedAutonomousRun?.goal ?? null,
+      })).digest('hex');
       // `detail` names every condition the confirm would consent to
       // ('+'-joined) — callers relay the prompt, which already states all of them.
-      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail });
-      return;
+      if (body.confirm !== true || body.confirmationChallenge !== confirmationChallenge) {
+        res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail, confirmationChallenge });
+        return;
+      }
     }
     // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
     const target = plan.targetMachine!;
@@ -16170,10 +16241,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
     //     (recorded in the response; the reconciler + closeout converge it).
     // The capability gate means an old peer is never sent a doomed order.
-    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string } = { attempted: false };
+    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string; claimLanded?: boolean } = { attempted: false };
     let drainRunSuspended = false;
     try {
       const currentOwner = plan.action !== 'noop' ? ctx.sessionOwnershipRegistry.ownerOf(topicId) : null;
+      const ownershipAtDrain = ctx.sessionOwnershipRegistry.read(topicId);
+      if (
+        plan.action !== 'noop' &&
+        (ownershipAtDrain?.ownerMachineId !== ownershipBeforePlan?.ownerMachineId ||
+          ownershipAtDrain?.ownershipEpoch !== ownershipBeforePlan?.ownershipEpoch)
+      ) {
+        res.status(409).json({
+          retryRequired: true,
+          error: 'topic ownership changed before drain; retry the transfer',
+        });
+        return;
+      }
       const ownerCap = currentOwner && currentOwner !== self ? ctx.machinePoolRegistry?.getCapacity(currentOwner) : null;
       const ownerCanDrain =
         currentOwner != null &&
@@ -16184,7 +16267,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (ownerCanDrain) {
         const observedEpoch = ctx.sessionOwnershipRegistry.read(topicId)?.ownershipEpoch ?? 0;
         const r = await ctx.sendDrain!(currentOwner!, topicId, target, observedEpoch);
-        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason };
+        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason, claimLanded: r.claimLanded };
         drainRunSuspended = r.runSuspended === true;
         if (r.status === 'aborted-emergency-stop') {
           res.status(409).json({
@@ -16429,14 +16512,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const post = ctx.sessionOwnershipRegistry.read(topicId);
       if (plan.action === 'noop') {
         seatMoved = true; // already-there / no move required — the seat is at the target
-      } else if (post?.status === 'active' && ownerNow === target) {
-        seatMoved = true; // the target is the confirmed active owner — a real move
+      } else if (
+        (post?.status === 'active' && ownerNow === target) ||
+        (drainLeg.ok === true &&
+          (drainLeg.status === 'drained' || drainLeg.status === 'drained-interrupted') &&
+          drainLeg.claimLanded === true)
+      ) {
+        // Either the local echo already converged, or the authenticated owner
+        // directly proved that its fenced target-claim CAS landed.
+        seatMoved = true;
       } else {
         seatMoved = false;
         seatMoveReason =
           drainLeg.attempted && drainLeg.ok === false
             ? 'drain failed — the seat did not move (topic stays whole on its current machine)'
             : 'ownership did not transfer to the target (the pin is set, but the target is not the active owner)';
+      }
+    }
+    if (seatMoved && plan.action !== 'noop') {
+      const topicNum = Number(topicId);
+      if (Number.isFinite(topicNum)) {
+        try { ctx.kickWorkingSetOnMachine?.(target, topicNum); }
+        catch { /* @silent-fallback-ok — the kick has bounded retries and the manual fetch surface remains available; transfer authority is already complete */ }
       }
     }
     res.json({
