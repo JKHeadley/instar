@@ -628,30 +628,38 @@ describe('TelegramAdapter messaging', () => {
     });
 
     it('does not advance the poll offset when topic routing rejects', async () => {
+      const redeliveredUpdate = {
+        update_id: 3003,
+        message: {
+          message_id: 703,
+          from: { id: 12345, first_name: 'Test' },
+          chat: { id: -100123456789 },
+          message_thread_id: 55,
+          text: 'Retry after failed forward',
+          date: Math.floor(Date.now() / 1000),
+        },
+      };
       global.fetch = vi.fn()
         .mockResolvedValueOnce({
           ok: true,
-          json: async () => ({ ok: true, result: [{
-            update_id: 3003,
-            message: {
-              message_id: 703,
-              from: { id: 12345, first_name: 'Test' },
-              chat: { id: -100123456789 },
-              message_thread_id: 55,
-              text: 'Retry after failed forward',
-              date: Math.floor(Date.now() / 1000),
-            },
-          }] }),
+          json: async () => ({ ok: true, result: [redeliveredUpdate] }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ ok: true, result: [redeliveredUpdate] }),
         })
         .mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: [] }) });
       adapter.onTopicMessage = async () => { throw new Error('owner unavailable'); };
       vi.spyOn(adapter, 'ensureLifelineTopic').mockResolvedValue(null);
 
       await adapter.start();
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 250));
       await adapter.stop();
 
       expect(fs.existsSync(path.join(tmpDir, 'telegram-poll-offset.json'))).toBe(false);
+      const logLines = fs.readFileSync(path.join(tmpDir, 'telegram-messages.jsonl'), 'utf-8').trim().split('\n');
+      expect(logLines).toHaveLength(1);
+      expect(JSON.parse(logLines[0]).messageId).toBe(703);
     });
 
     it('logs incoming messages to JSONL', async () => {

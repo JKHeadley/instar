@@ -470,6 +470,9 @@ export class TelegramAdapter implements MessagingAdapter {
   private topicToPurpose: Map<number, string> = new Map();
   private registryPath: string;
   private messageLogPath: string;
+  /** Durable append-seam dedupe, seeded from the bounded JSONL on first use. */
+  private loggedMessageKeys = new Set<string>();
+  private messageLogDedupeSeeded = false;
   private offsetPath: string;
   private stateDir: string;
   /** Per-bot state root. Equals stateDir for the primary bot; a namespaced sub-dir for
@@ -3723,23 +3726,13 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   private appendToLog(entry: LogEntry): void {
-    // Maintain the per-topic change signal + tail cache FIRST — both paths below
-    // (shared logger / legacy file) persist the same entry, and every logged
-    // message must be visible to getTopicHistory/getTopicContentVersion callers
-    // regardless of which writer is active. Only a topic already seeded gets a
-    // cache append (an unseeded topic seeds lazily from the file on first read).
-    if (typeof entry.topicId === 'number') {
-      this.topicContentVersion.set(entry.topicId, (this.topicContentVersion.get(entry.topicId) ?? 0) + 1);
-      const tail = this.topicTailCache.get(entry.topicId);
-      if (tail) {
-        tail.push(entry);
-        if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
-      }
-    }
+    this.seedMessageLogDedupe();
+    const dedupeKey = this.messageLogDedupeKey(entry);
+    if (this.loggedMessageKeys.has(dedupeKey)) return;
 
     // Phase 1b: Delegate to shared MessageLogger when flag is enabled
     if (this.sharedLogger) {
-      this.sharedLogger.append({
+      const persisted = this.sharedLogger.append({
         messageId: entry.messageId,
         channelId: entry.topicId,
         text: entry.text,
@@ -3751,6 +3744,8 @@ export class TelegramAdapter implements MessagingAdapter {
         platformUserId: entry.telegramUserId,
         platform: 'telegram',
       });
+      if (!persisted) return;
+      this.rememberLoggedEntry(entry, dedupeKey);
       // Also notify the Telegram-specific callback for backward compatibility
       if (this.onMessageLogged) {
         try {
@@ -3795,7 +3790,9 @@ export class TelegramAdapter implements MessagingAdapter {
         reason: `Failed to write message log: ${err instanceof Error ? err.message : String(err)}`,
         impact: 'Conversation history gap — message may be missing from JSONL backup.',
       });
+      return;
     }
+    this.rememberLoggedEntry(entry, dedupeKey);
 
     // Notify subscribers (TopicMemory for SQLite dual-write)
     if (this.onMessageLogged) {
@@ -3824,6 +3821,42 @@ export class TelegramAdapter implements MessagingAdapter {
         senderUsername: entry.senderUsername,
         platformUserId: entry.telegramUserId?.toString(),
       }).catch(err => console.error(`[telegram] EventBus message:logged error: ${err}`));
+    }
+  }
+
+  private messageLogDedupeKey(entry: Pick<LogEntry, 'messageId' | 'topicId' | 'fromUser'>): string {
+    return `${entry.fromUser ? 'in' : 'out'}:${entry.topicId ?? 'root'}:${entry.messageId}`;
+  }
+
+  /** Seed from disk so a process restart or Telegram batch replay stays idempotent. */
+  private seedMessageLogDedupe(): void {
+    if (this.messageLogDedupeSeeded) return;
+    this.messageLogDedupeSeeded = true;
+    if (!fs.existsSync(this.messageLogPath)) return;
+    try {
+      const lines = fs.readFileSync(this.messageLogPath, 'utf-8').split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const raw = JSON.parse(line) as LogEntry & { channelId?: number };
+          if (typeof raw.messageId !== 'number' || typeof raw.fromUser !== 'boolean') continue;
+          const topicId = raw.topicId ?? raw.channelId ?? null;
+          this.loggedMessageKeys.add(this.messageLogDedupeKey({ messageId: raw.messageId, topicId, fromUser: raw.fromUser }));
+        } catch { /* @silent-fallback-ok — malformed historical rows do not block new logging */ }
+      }
+    } catch (err) {
+      console.error(`[telegram] message-log dedupe seed failed: ${err}`);
+    }
+  }
+
+  /** Update memory only after the canonical append succeeds. */
+  private rememberLoggedEntry(entry: LogEntry, dedupeKey: string): void {
+    this.loggedMessageKeys.add(dedupeKey);
+    if (typeof entry.topicId !== 'number') return;
+    this.topicContentVersion.set(entry.topicId, (this.topicContentVersion.get(entry.topicId) ?? 0) + 1);
+    const tail = this.topicTailCache.get(entry.topicId);
+    if (tail) {
+      tail.push(entry);
+      if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
     }
   }
 
