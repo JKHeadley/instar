@@ -244,14 +244,16 @@ export class CodexTaskContinuationStore {
         ledger.updatedAt = new Date().toISOString();
         this.write(ledger);
         try { this.audit(ledger, 'continue', 'open-tasks', open, ledger.continuationCount); }
-        catch { return this.deactivate(ledger, 'audit-failed', false); }
+        catch { /* @silent-fallback-ok: audit failure is a typed fail-open stop decision, never an unreported continuation */
+          return this.deactivate(ledger, 'audit-failed', false);
+        }
         return {
           decision: 'continue', reason: 'open-tasks', openTaskCount: open,
           continuationCount: ledger.continuationCount,
           reasonText: `Continue the current assignment. ${open} explicit task(s) remain. Re-read the continuation ledger and proceed with the first open item; do not invent additional work.`,
         };
       }));
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: every failure becomes an enumerated allow reason; self-continuation must fail open
       if (err instanceof Error && err.message === 'lock-unavailable') return this.recordAllow(null, topicId, sessionId, 'lock-unavailable');
       return this.recordAllow(null, topicId, sessionId, 'invalid-state');
     }
@@ -260,8 +262,14 @@ export class CodexTaskContinuationStore {
   list(): ContinuationLedger[] {
     try {
       return fs.readdirSync(this.root).filter((f) => /^\d+\.local\.json$/.test(f))
-        .map((f) => this.read(f.replace(/\.local\.json$/, ''))).filter((v): v is ContinuationLedger => !!v);
-    } catch { return []; }
+        .map((f) => this.readStrict(f.replace(/\.local\.json$/, '')));
+    } catch (err) {
+      // @silent-fallback-ok: an absent directory is the legitimate fresh-store
+      // state. Other enumeration failures must stay loud: treating EACCES/I/O
+      // as empty could weaken stopAll generation ordering or the capacity cap.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
   }
 
   private deactivate(ledger: ContinuationLedger, reason: ContinuationReason, writeAudit = true): ContinuationDecision {
@@ -283,6 +291,15 @@ export class CodexTaskContinuationStore {
     const ledger = this.read(topicId);
     if (!ledger || !this.isStructurallyValid(ledger)) throw new Error('invalid-state');
     return ledger;
+  }
+
+  /** Enumeration consumers drive global generation/capacity decisions, so a
+   * discovered file must never be silently omitted on read, parse, or schema
+   * failure. Direct point reads remain tolerant for fail-open Stop decisions. */
+  private readStrict(topicId: string): ContinuationLedger {
+    const parsed = JSON.parse(fs.readFileSync(this.ledgerPath(topicId), 'utf8')) as ContinuationLedger;
+    if (!this.isStructurallyValid(parsed)) throw new Error('invalid-state');
+    return parsed;
   }
 
   private isStructurallyValid(v: ContinuationLedger): boolean {
@@ -311,7 +328,7 @@ export class CodexTaskContinuationStore {
     const rows = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
     const cutoff = Date.now() - this.cfg.auditRetentionDays * 86_400_000;
     const kept = rows.filter((row) => {
-      try { return Date.parse(JSON.parse(row).ts) >= cutoff; } catch { return false; }
+      try { return Date.parse(JSON.parse(row).ts) >= cutoff; } catch { /* @silent-fallback-ok: malformed audit rows are rejected during bounded retention compaction */ return false; }
     }).slice(-this.cfg.auditMaxRows);
     atomicWrite(file, kept.length ? `${kept.join('\n')}\n` : '');
   }

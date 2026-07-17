@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +16,7 @@ const temp = () => {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'CodexTaskContinuationStore.test.cleanup' });
 });
 
@@ -107,6 +108,29 @@ describe('CodexTaskContinuationStore', () => {
 
     store.stopAll();
     expect(store.decide('458', 's')).toMatchObject({ decision: 'deactivate', reason: 'operator-stop' });
+  });
+
+  it('never treats an unreadable ledger directory as empty during stop-all', () => {
+    const dir = temp();
+    const store = live(dir);
+    store.start({ topicId: '458', sessionId: 's', tasks: ['one'] });
+    vi.spyOn(fs, 'readdirSync').mockImplementation(() => {
+      throw Object.assign(new Error('enumeration-failed'), { code: 'EACCES' });
+    });
+    expect(() => store.stopAll()).toThrow('enumeration-failed');
+  });
+
+  it('never omits a discovered but unreadable ledger during stop-all', () => {
+    const dir = temp();
+    const store = live(dir);
+    store.start({ topicId: '458', sessionId: 's', tasks: ['one'] });
+    const ledgerPath = path.join(dir, 'continuation', '458.local.json');
+    const readFileSync = fs.readFileSync.bind(fs);
+    vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+      if (String(file) === ledgerPath) throw Object.assign(new Error('ledger-read-failed'), { code: 'EACCES' });
+      return readFileSync(file, options as never);
+    }) as typeof fs.readFileSync);
+    expect(() => store.stopAll()).toThrow('ledger-read-failed');
   });
 
   it('enforces the independent continuation ceiling', () => {

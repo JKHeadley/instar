@@ -764,6 +764,25 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'codexTaskContinuation',
+    prefixes: ['/continuation'],
+    description: 'Bounded ordinary-work continuation for Codex — explicit per-topic task ledgers keep a local Codex session moving only while unchecked tasks and both duration/count budgets remain. Operator stop, ownership mismatch, malformed state, lock contention, or audit failure all fail toward normal stop. Off by default.',
+    build: ({ ctx }) => ({
+      enabled: (ctx.liveConfig?.get(
+        'autonomousSessions.codexTaskContinuation',
+        ctx.config.autonomousSessions?.codexTaskContinuation,
+      ) ?? ctx.config.autonomousSessions?.codexTaskContinuation)?.enabled === true,
+      endpoints: [
+        'GET /continuation/:topic/status',
+        'POST /continuation/start',
+        'POST /continuation/:topic/complete',
+        'POST /continuation/:topic/stop',
+        'POST /continuation/stop-all',
+        'POST /continuation/decide',
+      ],
+    }),
+  },
+  {
     key: 'geminiCapacity',
     prefixes: ['/gemini'],
     description: 'Gemini capacity — live view of whether Gemini calls are currently deferred by the capacity policy (quota/rate-limit) and for how long. The escalation monitor (observe-only, ships OFF behind monitoring.geminiCapacityEscalation) raises one attention item per long block. Read-only.',

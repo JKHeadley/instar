@@ -153,6 +153,22 @@ describe('wave-1 route entries (§3.5)', () => {
     expect(entry?.story?.logical).toBe('per-machine-path');
     expect(entry?.story?.onSharedGitSyncedPath).toBe(false);
   });
+
+  it('Codex continuation mutations stay with the local owning session', () => {
+    for (const path of [
+      '/continuation/start',
+      '/continuation/123/complete',
+      '/continuation/123/stop',
+      '/continuation/stop-all',
+      '/continuation/decide',
+    ]) {
+      const entry = reg.entryForRoute('POST', path);
+      expect(entry?.domain, path).toBe('machine-local');
+      expect(entry?.story?.logical, path).toBe('git-sync-excluded');
+      expect(entry?.story?.onSharedGitSyncedPath, path).toBe(true);
+      expect(entry?.story?.fileLevel, path).toBe('git-sync-excluded');
+    }
+  });
 });
 
 describe('registry↔wiring identity (the PR-#334 dead-code lesson)', () => {

@@ -259,6 +259,18 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route',
     method: 'POST',
+    pathPrefix: '/continuation/',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'continuation ledgers bind to one local Codex session and Stop hook under the project stateDir; .instar/continuation is explicitly excluded from git sync so another machine never adopts or actuates them',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
     pathPrefix: '/playwright-profiles/seat/acquire',
     domain: 'machine-local',
     story: {

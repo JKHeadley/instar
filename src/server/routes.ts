@@ -5202,6 +5202,7 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/continuation/start', (req, res) => {
     try {
       const body = req.body as Record<string, unknown>;
+      if (refuseInadmissibleWrite(req, res, { topicId: String(body.topicId ?? '') })) return;
       const ledger = continuationStore().start({
         topicId: String(body.topicId ?? ''),
         sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
@@ -5217,6 +5218,7 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/continuation/:topic/complete', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
     try {
       const ordinal = Number((req.body as Record<string, unknown>)?.ordinal);
       const ledger = continuationStore().complete(req.params.topic, ordinal);
@@ -5227,12 +5229,14 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/continuation/:topic/stop', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
     const stopped = continuationStore().stop(req.params.topic);
     try { ctx.operatorStopRecorder?.(Number(req.params.topic)); } catch { /* stop remains authoritative */ }
     res.json({ ok: true, stopped });
   });
 
-  router.post('/continuation/stop-all', (_req, res) => {
+  router.post('/continuation/stop-all', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
     const stopped = continuationStore().stopAll();
     try { ctx.operatorStopRecorder?.(null); } catch { /* stop remains authoritative */ }
     res.json({ ok: true, stopped });
@@ -5240,6 +5244,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/continuation/decide', (req, res) => {
     const body = req.body as Record<string, unknown>;
+    if (refuseInadmissibleWrite(req, res, { topicId: String(body.topicId ?? '') })) return;
     const decision = continuationStore().decide(String(body.topicId ?? ''), String(body.sessionId ?? ''));
     res.json(decision);
   });
