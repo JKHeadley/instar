@@ -56,6 +56,15 @@ service. `POST /playwright-profiles/:id/activate` rewrites the Playwright MCP
 intended config rewrite and session refresh and performs neither until that is
 deliberately turned off. It is reversible by activating the `default` profile.
 
+## Sharing the operator browser seat
+
+`PlaywrightSeatLease` serializes access to the shared operator browser profile. A
+session acquires the lease before driving that seat, renews it while active, and
+releases it when finished. Contenders receive the current holder and expiry instead
+of starting a second browser against the same profile directory. Expired leases can
+be reclaimed after their recorded deadline, so a crashed session cannot strand the
+seat indefinitely.
+
 ## Routes
 
 - `GET /playwright-profiles` — list every profile and the accounts it holds (full
