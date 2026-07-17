@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-17T03:12:16.671Z",
+  "slug": "codex-hour-activity",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 7,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

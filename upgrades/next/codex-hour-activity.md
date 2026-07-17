@@ -1,0 +1,17 @@
+# Codex hour-scale activity detection
+
+## What Changed
+
+Codex live-activity detection now recognizes the hour-scale working timer that the TUI renders as `Nh Nm Ns`, in addition to its existing seconds and minutes forms. The spinner-immune output hash also ignores that hour timer as it ticks.
+
+## What to Tell Your User
+
+Very long Codex turns no longer lose their “still working” signal after crossing one hour, so monitoring is less likely to mistake genuine long-running work for an idle or stuck session.
+
+## Summary of New Capabilities
+
+Codex activity monitoring handles real seconds, minutes, and hours TUI duration formats.
+
+## Evidence
+
+The hour fixture uses the real Codex rendering `Working (10h 19m 44s • esc to interrupt)`. TypeScript passes, and 36 focused activity and spinner-normalization assertions pass.

@@ -500,6 +500,7 @@ export function stripVolatileStatus(
       line
         .replace(/[⠀-⣿]/g, '') // Braille spinner glyphs
         .replace(escPhrase, '') // the "esc to interrupt" affordance phrase
+        .replace(/\b\d+h\s*\d+m\s*\d+s\b/g, '') // elapsed "10h 19m 44s"
         .replace(/\b\d+m\s*\d+s\b/g, '') // elapsed "26m 16s"
         .replace(/\(\s*\d+\s*s\b/g, '(') // "(12s …" working-status seconds
         .replace(/[↑↓]\s*[\d.,]+\s*k?\s*tokens?/gi, '') // token counter
