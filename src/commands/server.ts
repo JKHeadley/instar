@@ -555,6 +555,9 @@ let _confirmLocalSessionPoolClaim: ((sessionKey: string) => boolean) | null = nu
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
+// Late-bound self-capacity refresh. The heartbeat writer is constructed before
+// the durable inbound queue, whose live handle is one of the advertised fields.
+let _refreshPoolHeartbeat: () => void = () => {};
 // Module-level handle for the machine-coherence guard (machine-coherence-guard
 // §6) so `GET /pool/machine-coherence` can read the sentinel constructed deep in
 // the mesh peer-presence wiring. Null when the guard is dark (route 503s).
@@ -19181,6 +19184,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               )
               .catch(() => { /* @silent-fallback-ok — G2 eval is best-effort signal */ });
           };
+          _refreshPoolHeartbeat = refreshPool;
           refreshPool();
           const poolTimer = setInterval(refreshPool, 30_000);
           if (typeof poolTimer.unref === 'function') poolTimer.unref();
@@ -21900,6 +21904,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const tickHandle = setInterval(() => { void _inboundQueue?.tick(); }, qcfg.drainTickMs);
                 tickHandle.unref?.();
                 console.log(pc.dim(`  [inbound-queue] engine live — tick every ${qcfg.drainTickMs}ms, tenure ${_inboundQueue.currentTenure()}`));
+                // WS1.1 capability truth is late-bound to `_inboundQueue`, but the
+                // first self heartbeat is emitted earlier in boot while that handle
+                // is still null. Refresh immediately now that durable receive is
+                // genuinely live; otherwise peers retain `ws11DeliverReceive:false`
+                // until a later beat and queue/fall through instead of forwarding
+                // during the boot window (live CROSS-MACHINE finding, 2026-07-17).
+                _refreshPoolHeartbeat();
 
                 // Survivor arm (spec §5.1, loss window 1): the machine that
                 // holds the routing role checks — once heartbeats have had a
