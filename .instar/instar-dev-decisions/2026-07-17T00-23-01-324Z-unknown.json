@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-17T00:23:01.324Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 22,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
