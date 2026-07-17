@@ -4943,6 +4943,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // construction (far below) can wire the /api/lease[/pull] receivers to real registry fns.
     let peerEndpointRecorder: PeerEndpointRecorder | undefined;
     let getSelfMeshEndpoints: (() => import('../core/types.js').MeshEndpoint[] | undefined) | undefined;
+    let meshResolver!: PeerEndpointResolver;
     // mesh-coherence-live-state-honesty (Fix (b) / Decision #5): the resolved server bind host,
     // a BOOT CONSTANT. Declared `let` at OUTER scope (the same scope as getSelfMeshEndpoints)
     // and assigned inside the mesh-init block so the peerPresenceTimer closure (far below) can
@@ -5113,7 +5114,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // single-`url` legacy path (byte-for-byte today).
         const meshCfg = config.multiMachine?.meshTransport;
         const meshEnabled = () => meshCfg?.enabled !== false; // default ON
-        const meshResolver = new PeerEndpointResolver({
+        meshResolver = new PeerEndpointResolver({
           config: {
             enabled: meshCfg?.enabled !== false,
             hedgeDelayMs: meshCfg?.hedgeDelayMs ?? 1500,
@@ -20872,8 +20873,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             nonce: () => `${meshSelfId}:r:${Date.now()}:${++routerNonce}`,
             now: () => Date.now(),
           });
-          const peerUrl = (machineId: string): string | null =>
-            meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
+          const peerUrl = (machineId: string): string | null => {
+            const entry = meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry;
+            if (!entry) return null;
+            return meshResolver.resolve(machineId, entry.endpoints, entry.lastKnownUrl)[0]?.url ?? null;
+          };
           _meshSelfId = meshSelfId;
           // U4.4 — the offer transport (HOLDER side) + the post-hand-back delivery
           // canary (PREFERRED side), both over the signed mesh RPC.
@@ -23730,35 +23734,35 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Failure on initial start is non-fatal: the manager keeps trying
     // in the background, and the post-exhausted retry timer keeps the
     // agent recoverable without requiring a server restart.
+    let bootTunnelUrl: string | null = null;
     if (tunnel) {
       try {
-        const tunnelUrl = await tunnel.start();
-        console.log(pc.green(`  Tunnel active: ${pc.bold(tunnelUrl)}`));
-        // Mesh URL advertisement: record THIS machine's reachable URL into its
-        // registry entry so cross-machine routing (deliver/transfer/lease) can
-        // reach it. Without this, lastKnownUrl is null and every peer is filtered
-        // out (the session pool is inert across machines). The existing
-        // RegistrySyncDebouncer propagates the populated entry to peers.
-        if (coordinator.enabled && coordinator.identity) {
-          const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
-          advertiseSelfMeshUrl(
-            coordinator.managers.identityManager,
-            coordinator.identity.machineId,
-            cfUrl,
-            (m) => console.log(pc.dim(m)),
-          );
-          // multi-transport-mesh-comms (Layer 0) — advertise the full endpoint set.
-          await advertiseSelfMeshEndpointsNow(
-            coordinator.managers.identityManager,
-            coordinator.identity.machineId,
-            config,
-            cfUrl,
-          );
-        }
+        bootTunnelUrl = await tunnel.start();
+        console.log(pc.green(`  Tunnel active: ${pc.bold(bootTunnelUrl)}`));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(pc.red(`  Tunnel start failed (manager will keep retrying in background): ${msg}`));
       }
+    }
+
+    // Mesh endpoint advertisement is independent of optional tunnel success.
+    // A rate-limited quick tunnel must not suppress healthy LAN/Tailscale ropes:
+    // doing so makes reachable peers appear offline and removes the HTTP lease
+    // medium. Cloudflare is simply omitted when it has no resolved URL.
+    if (coordinator.enabled && coordinator.identity) {
+      const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, bootTunnelUrl);
+      advertiseSelfMeshUrl(
+        coordinator.managers.identityManager,
+        coordinator.identity.machineId,
+        cfUrl,
+        (m) => console.log(pc.dim(m)),
+      );
+      await advertiseSelfMeshEndpointsNow(
+        coordinator.managers.identityManager,
+        coordinator.identity.machineId,
+        config,
+        cfUrl,
+      );
     }
 
     // ── Dashboard Topic: always-available link ──────────────────────────

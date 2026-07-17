@@ -1,0 +1,24 @@
+# Mesh endpoints no longer depend on tunnel startup
+
+## What Changed
+
+Multi-machine agents now advertise and consume healthy LAN and Tailscale
+endpoints even when an optional Cloudflare tunnel is disabled or fails to
+start.
+
+## Evidence
+
+- Live single-agent CROSS-MACHINE reproduction: LAN and Tailscale health checks
+  passed while a quick tunnel returned a rate limit.
+- Mesh advertisement and endpoint unit suites: 40/40 passed.
+- TypeScript `--noEmit` compilation passed.
+
+## What to Tell Your User
+
+If one remote-access path is temporarily unavailable, paired machines can keep
+seeing and coordinating with each other through their other working paths.
+
+## Summary of New Capabilities
+
+No new setting. This fixes startup wiring for the existing multi-transport
+machine mesh.
