@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-17T00:41:00.000Z",
+  "slug": "token-burn-fresh-cost",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "changes the signal that feeds an automatic token-burn throttle runbook",
+    "changes rolling share and rate calculations across all attribution keys"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The ledger correctly retained cache-read usage for observability, but BurnDetector reused the gross total for cost-shaped shares and rates. That collapsed cheap warm-cache reuse into fresh spend and could mis-rank sessions. The repair preserves gross totals and adds a separate fresh-cost aggregation consumed only by burn decisions."
+  },
+  "verdict": "pass"
+}

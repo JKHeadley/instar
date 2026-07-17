@@ -132,7 +132,10 @@ The column is populated on the write side by the `IntelligenceProvider` chokepoi
 
 ### Threshold logic
 
-Two trigger conditions, OR'd:
+Two trigger conditions, OR'd. Both use **fresh-cost tokens**: gross ledger
+tokens minus cache-read tokens. Cache creation remains cost-bearing; warm-cache
+reads remain visible in gross observability but can never increase a key's burn
+share, current rate, baseline, or projected daily burn.
 
 1. **Absolute share**: a single attribution key consumed > 25% of the agent's total token spend in the last 24h.
 2. **Rolling baseline divergence**: the key's last-1h rate is > 2× its trailing-7-day median rate, AND the 1h rate exceeds a floor of 10M tokens/h (avoid alerting on tiny absolute spend even if relatively spiked).

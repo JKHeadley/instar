@@ -101,7 +101,7 @@ export class BurnVerifier {
     const sinceMs = this.now() - this.sampleWindowMs;
     const rows = this.ledger.byAttributionKey({ sinceMs });
     const row = rows.find((r) => r.attributionKey === attributionKey);
-    const postThrottleTokens = row ? row.totalTokens : 0;
+    const postThrottleTokens = row ? (row.freshTokens ?? row.totalTokens) : 0;
     const postThrottleRate = postThrottleTokens * (60 * 60 * 1000 / this.sampleWindowMs);
     const ratio = preThrottleRate > 0 ? postThrottleRate / preThrottleRate : 0;
     const successfullyThrottled = ratio < this.successRatio;
