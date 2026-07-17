@@ -72,6 +72,8 @@ for new self-placements.
 - `tests/unit/SessionPoolLocalClaim.test.ts`
 - `tests/unit/session-pool-activation-wiring.test.ts`
 - `tests/integration/session-pool-local-claim.integration.test.ts`
+- `tests/unit/no-silent-fallbacks.test.ts` (both contained error paths are
+  explicitly annotated and continue to report through `onError`)
 - Live single-agent CROSS-MACHINE topic 3462 placement: owner Mini, epoch 2,
   status `active`.
 

@@ -34,12 +34,16 @@ export function confirmLocalPlacementAfterDelivery(
     try {
       outcome.afterConfirm?.();
     } catch (error) {
+      // @silent-fallback-ok — observer failure is reported through onError;
+      // the authoritative ownership transition has already committed.
       // The authoritative transition already committed. Observer emission is
       // best-effort and cannot reverse or falsify the confirmed outcome.
       deps.onError?.(error);
     }
     return true;
   } catch (error) {
+    // @silent-fallback-ok — registry failure is reported through onError;
+    // local message delivery has already succeeded and must not be falsified.
     // Delivery already succeeded before this helper is called. Ownership
     // confirmation is best-effort and never turns a registry failure into a
     // false delivery failure. The exact row state is intentionally not claimed.
