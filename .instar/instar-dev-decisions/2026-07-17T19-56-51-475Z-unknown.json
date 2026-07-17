@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-17T19:56:51.475Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 82,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot, user-message-driven notice: the lifeline sends this queued-ack in direct response to a single inbound user message when a forward fails. It is not a self-triggered loop/monitor/sentinel/reaper/scheduler/recovery path. The matched verbs (restarting/reconnect) appear only in the notice text and comments, not in any self-firing controller."
+  },
+  "verdict": "pass"
+}
