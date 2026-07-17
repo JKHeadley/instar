@@ -1,0 +1,27 @@
+# Read-only standby scheduler startup containment
+
+## What Changed
+
+Multi-machine standbys now stop scheduled jobs at the common trigger boundary
+after fenced-lease demotion makes their state read-only. Startup missed-job
+evaluation returns a normal skip instead of attempting shared bookkeeping and
+crashing the server.
+
+## Evidence
+
+- Added a regression test for a never-run job triggered after read-only
+  demotion.
+- Existing scheduler role-guard suite: 8/8 passed.
+- Focused total: 10/10 passed.
+- TypeScript `--noEmit` compilation passed.
+- Root cause reproduced on a real single-agent CROSS-MACHINE Mini enrollment.
+
+## What to Tell Your User
+
+When your agent runs on multiple machines, a standby can now remain healthy
+after startup even if scheduled jobs were missed while it was offline.
+
+## Summary of New Capabilities
+
+No new capability or setting. This is a reliability fix for existing
+multi-machine standby behavior.

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-17T07:01:52.392Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 31,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/job-scheduler-standby-startup.test.ts",
+      "howCaught": "The ratchet covers stable standby and in-flight lease demotion, proves each missed-job evaluation settles with zero spawn, and the scheduler callbacks contain trigger errors so repeated ticks cannot become a crash/restart loop."
+    },
+    "component": "JobScheduler"
+  },
+  "verdict": "pass"
+}
