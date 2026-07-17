@@ -9,13 +9,15 @@ These subsystems are mostly invisible until something goes wrong. When they do s
 
 ## Token burn detection
 
-Components: `BurnDetector`, `BurnDetectionSubscriber`, `BurnThrottleRunbook`, `BurnVerifier`, `BurnAlertButtons`.
+Components: `BurnDetector`, `BurnDetectionSubscriber`, `BurnThrottleRunbook`, `BurnVerifier`, `BurnAlertButtons`, `BurnAlertDelivery`.
 
 The burn detector watches token consumption per-session and per-job. If a session burns through tokens at an unusually high rate — measured against the agent's historical pattern — the detector fires a burn-alert. The alert lands in Telegram with action buttons so you can pause the offending session, throttle the responsible job, or acknowledge and continue.
 
 The throttle runbook is automated: once a burn alert escalates past a configured threshold without user response, the runbook engages and reduces job concurrency to a safe rate. This prevents an unattended burn from running the daily cap to zero.
 
 The verifier double-checks the detector's signals. Burn detection is a brittle signal by design (rates can spike legitimately during heavy work); the verifier asks a higher-context check (is this session doing meaningful work, or stuck in a retry loop?) before escalating.
+
+`BurnAlertDelivery` owns terminal delivery state. If Telegram reports that the configured burn-alert topic is permanently gone, it quarantines that destination across restarts and transfers the warning to the durable Attention hub. The original warning remains pending until the hub accepts custody, while temporary network failures remain retryable.
 
 ## LLM rate-limit circuit breaker
 
