@@ -685,6 +685,34 @@ const duplicateConvergeWrite: SelfActionController = {
   },
 };
 
+/**
+ * burn-alert-terminal-delivery — a permanently deleted configured Telegram
+ * topic under endless detector pressure. The first terminal response latches
+ * the topic; every later alert bypasses that target for durable Attention.
+ * Therefore primary sends settle at exactly one, independent of horizon.
+ */
+const burnAlertTerminalDelivery: SelfActionController = {
+  id: 'burn-alert-terminal-delivery',
+  actionVerb: 'burn-alert-sendToTopic',
+  models: 'src/monitoring/BurnAlertDelivery.ts (terminal topic quarantine)',
+  modelsPath: 'src/monitoring/BurnAlertDelivery.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 60,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    let terminal = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (terminal) return;
+        sink.emit({ verb: 'burn-alert-sendToTopic', target: 'deleted-topic' });
+        terminal = true;
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -700,4 +728,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   spendStalePriceAlert,
   ownerDarkNotice,
   duplicateConvergeWrite,
+  burnAlertTerminalDelivery,
 ];

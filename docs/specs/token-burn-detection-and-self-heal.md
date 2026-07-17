@@ -8,6 +8,7 @@ approved: true
 approved-by: justin
 approved-at: "2026-05-15T20:35:00Z"
 approved-via: "Telegram topic 8615 (uid:7812716706)"
+parent-principle: "Bounded Notification Surface — no feature may flood the user"
 ---
 
 # Token-Burn Detection and Auto-Heal — Spec
@@ -180,6 +181,23 @@ If `successfullyThrottled === false` (the rate didn't drop materially), the runb
 ### Telegram payloads
 
 All three messages (alert, follow-up after auto-cut, escalation on cut-failure) go through the existing tone-gate authority (`MessagingToneGate`). They are structured templates filled at runbook-time, narrative in tone, and pass ELI16. No backticks, no camelCase config keys — the agent's "interface" rule applies (`feedback_no_cli_recommendations` and `feedback_eli16_default` in Echo's MEMORY.md).
+
+Delivery has a terminal-state invariant. If Telegram reports that the configured
+alert topic is deleted, closed, or otherwise permanently gone, the sender
+durably quarantines that topic and stops attempting it across process restarts.
+The failed alert is rerouted as one stable item through the existing durable
+Attention queue, whose hub can self-heal; later burn messages use that same
+route. A changed configured topic is treated as a new destination and tried
+normally. Network and other ambiguous failures are not classified as terminal
+and are not blindly duplicated, because Telegram may have accepted the message
+before the response was lost.
+
+The terminal record is written before the Attention handoff and temporarily
+retains the original alert. Boot recovery replays that stable notice until the
+Attention store confirms custody, then removes the pending body. If controller
+state cannot be written, the durable Attention notice becomes the restart
+witness. Corrupt terminal state fails the burn subsystem closed rather than
+silently reopening delivery to a possibly dead destination.
 
 ### Universality / opt-in shape
 

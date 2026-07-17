@@ -267,13 +267,13 @@ export class BurnThrottleRunbook {
   private fireTelegram(text: string): void {
     if (!this.sendTelegram) return;
     try {
-      // Caller may return a promise; we don't await — the runbook is on the
-      // signal-handling hot path and must not block. Errors are swallowed:
-      // a failed alert can't block the throttle decision, which is the
-      // important part.
-      void this.sendTelegram(this.alertTopicId, text);
-    } catch {
-      // Intentional swallow.
+      // Delivery stays off the signal-handling hot path, but promise rejection
+      // is observed. The production sender owns terminal-vs-transient handling.
+      void Promise.resolve(this.sendTelegram(this.alertTopicId, text)).catch((error: unknown) => {
+        console.warn(`[burn-detection] alert delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    } catch (error) {
+      console.warn(`[burn-detection] alert delivery threw: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

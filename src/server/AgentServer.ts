@@ -115,6 +115,7 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
@@ -4382,15 +4383,24 @@ export class AgentServer {
               const reporter = DegradationReporter.getInstance();
               const gate = LlmRateGate.instance();
               const telegram = this.telegramAdapter;
-              const sendTelegram = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
-                ? (topicId: number, text: string) => {
-                    // Fire-and-forget — the runbook and verifier do not block on
-                    // alert delivery; failed sends are logged elsewhere.
-                    const send = (telegram as { sendToTopic: (t: number, s: string) => Promise<unknown> }).sendToTopic;
-                    void send.call(telegram, topicId, text).catch((err: unknown) => {
-                      console.warn(`[burn-detection] telegram send failed (non-fatal): ${(err as Error)?.message ?? err}`);
-                    });
-                  }
+              const burnAlertDelivery = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
+                && typeof (telegram as { createAttentionItem?: unknown }).createAttentionItem === 'function'
+                ? new BurnAlertDelivery({
+                    sendToTopic: (topicId, text) => telegram.sendToTopic(topicId, text),
+                    raiseAttention: (item) => telegram.createAttentionItem(item),
+                    hasAttentionItem: (id) => telegram.getAttentionItem(id) !== undefined,
+                    stateFile: this.config.stateDir
+                      ? path.join(this.config.stateDir, 'state', 'burn-alert-delivery.json')
+                      : undefined,
+                  })
+                : undefined;
+              if (burnAlertDelivery) {
+                void burnAlertDelivery.recoverPending().catch((err: unknown) => {
+                  console.error(`[burn-detection] pending terminal notice recovery failed: ${(err as Error)?.message ?? err}`);
+                });
+              }
+              const sendTelegram = burnAlertDelivery
+                ? (topicId: number, text: string) => burnAlertDelivery.deliver(topicId, text)
                 : undefined;
 
               // Build partial configs WITHOUT undefined keys — a `{ x: undefined }`
@@ -4409,7 +4419,7 @@ export class AgentServer {
                 alertTopicId: burnCfg?.alertTopicId,
                 config: runbookConfig,
               });
-              this.burnVerifier = new BurnVerifier({ ledger, sendTelegram });
+              this.burnVerifier = new BurnVerifier({ ledger, sendTelegram, alertTopicId: burnCfg?.alertTopicId });
               registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
                 this.burnVerifier!.scheduleVerification(outcome, event);
               });

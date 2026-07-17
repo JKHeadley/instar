@@ -136,9 +136,11 @@ export class BurnVerifier {
   private fireTelegram(text: string): void {
     if (!this.sendTelegram) return;
     try {
-      void this.sendTelegram(this.alertTopicId, text);
-    } catch {
-      // Intentional swallow.
+      void Promise.resolve(this.sendTelegram(this.alertTopicId, text)).catch((error: unknown) => {
+        console.warn(`[burn-verifier] follow-up delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    } catch (error) {
+      console.warn(`[burn-verifier] follow-up delivery threw: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }
