@@ -171,6 +171,19 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     expect(conflict.status).toBe(409);
     expect(conflict.body.holderLabel).toBe('topic-1');
     expect(conflict.body.retryAfterMs).toBeGreaterThan(0);
+
+    const wrongRelease = await request(app).post('/playwright-profiles/seat/release').set(auth())
+      .send({ holderId: 'agent-b:topic-2' });
+    expect(wrongRelease.status).toBe(409);
+
+    const release = await request(app).post('/playwright-profiles/seat/release').set(auth())
+      .send({ holderId: 'agent-a:topic-1' });
+    expect(release.status).toBe(200);
+    expect(release.body).toEqual({ released: true });
+
+    const successor = await request(app).post('/playwright-profiles/seat/acquire').set(auth())
+      .send({ holderId: 'agent-b:topic-2', holderLabel: 'topic-2' });
+    expect(successor.status).toBe(200);
   });
 
   it('seat safety remains available when the optional profile registry is dark', async () => {

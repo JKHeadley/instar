@@ -2106,6 +2106,33 @@ program
   .option('-d, --dir <path>', 'Project directory')
   .action(doctor);
 
+// ── Playwright physical-seat lease ──────────────────────────────
+
+const playwrightSeatCmd = program
+  .command('playwright-seat')
+  .description('Voluntarily coordinate standalone Playwright scripts with the host-wide operator-seat lease');
+
+playwrightSeatCmd
+  .command('acquire')
+  .requiredOption('--holder <id>', 'Unique drive-invocation id reused only for its release')
+  .option('--label <label>', 'Human-readable drive label', 'standalone Playwright script')
+  .action(async (opts) => {
+    const { PlaywrightSeatLease } = await import('./core/PlaywrightSeatLease.js');
+    const result = new PlaywrightSeatLease().acquire(opts.holder, opts.label);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (!result.acquired) process.exitCode = 2;
+  });
+
+playwrightSeatCmd
+  .command('release')
+  .requiredOption('--holder <id>', 'Same unique drive-invocation id used to acquire')
+  .action(async (opts) => {
+    const { PlaywrightSeatLease } = await import('./core/PlaywrightSeatLease.js');
+    const result = new PlaywrightSeatLease().release(opts.holder);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (!result.released && result.reason === 'ownership-mismatch') process.exitCode = 2;
+  });
+
 // ── Channels ─────────────────────────────────────────────────────
 
 const channelsCmd = program

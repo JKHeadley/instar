@@ -148,10 +148,12 @@ describe('wave-1 route entries (§3.5)', () => {
   });
 
   it('the physical Playwright seat lease is machine-local outside git sync', () => {
-    const entry = reg.entryForRoute('POST', '/playwright-profiles/seat/acquire');
-    expect(entry?.domain).toBe('machine-local');
-    expect(entry?.story?.logical).toBe('per-machine-path');
-    expect(entry?.story?.onSharedGitSyncedPath).toBe(false);
+    for (const path of ['/playwright-profiles/seat/acquire', '/playwright-profiles/seat/release']) {
+      const entry = reg.entryForRoute('POST', path);
+      expect(entry?.domain).toBe('machine-local');
+      expect(entry?.story?.logical).toBe('per-machine-path');
+      expect(entry?.story?.onSharedGitSyncedPath).toBe(false);
+    }
   });
 });
 

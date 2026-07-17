@@ -65,6 +65,13 @@ of starting a second browser against the same profile directory. Expired leases 
 be reclaimed after their recorded deadline, so a crashed session cannot strand the
 seat indefinitely.
 
+Playwright calls made through MCP acquire automatically. Standalone Playwright scripts
+can honor the same lease voluntarily with `instar playwright-seat acquire --holder ...`
+before launching the browser and `instar playwright-seat release --holder ...` in a
+`finally` cleanup. The holder ID must be unique to that active drive invocation and
+reused only for its matching release. Release is ownership-checked, so a cleanup from
+a distinct old or competing drive cannot clear a successor's live lease.
+
 ## Routes
 
 - `GET /playwright-profiles` — list every profile and the accounts it holds (full
@@ -82,6 +89,10 @@ seat indefinitely.
 - `DELETE /playwright-profiles/:id/accounts` — remove an account from a profile.
 - `POST /playwright-profiles/:id/activate` — switch the browser onto a profile (config
   rewrite + session restart; dry-run by default).
+- `POST /playwright-profiles/seat/acquire` — acquire or renew the machine-local shared
+  browser-seat lease.
+- `POST /playwright-profiles/seat/release` — release the lease only when the submitted
+  holder currently owns it.
 
 ## Rollout and safety
 
