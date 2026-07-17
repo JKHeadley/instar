@@ -10,7 +10,7 @@ The focused eight-test pool-view proxy integration suite passes.
 
 ## What to Tell Your User
 
-The test can no longer pass or fail accidentally because an unrelated value happens to contain the common sequence `1234`.
+The test can no longer pass or fail accidentally because an unrelated value happens to contain the common sequence 1234.
 
 ## Summary of New Capabilities
 
