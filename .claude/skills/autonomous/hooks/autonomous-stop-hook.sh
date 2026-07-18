@@ -1098,12 +1098,19 @@ run_verification() {
   # Run in a subshell so the resolved CWD + scrubbed env never disturb the hook itself.
   # Combined stdout+stderr is byte-capped AT THE SOURCE (head -c) so a runaway log can
   # never buffer whole. Exit code via ${PIPESTATUS[0]} (the command's, not head's).
+  # SIGNAL-DEATH MAPPING (cardinal invariant): when the child dies from a SIGNAL —
+  # e.g. SIGPIPE, the routine outcome once head -c hits the byte cap and closes the
+  # pipe while the command is still writing — the perl runner must report 128+signal
+  # (mirroring GNU timeout and shell $? semantics), NEVER `$?>>8` alone: the low byte
+  # holds the signal and the HIGH byte is 0, so a bare `$?>>8` would map a
+  # killed-by-signal FAILING check to exit 0 == PASS and allow a premature exit.
+  # (Observed on macOS, where no GNU timeout exists and the perl rung is the default.)
   if [[ "$rc_runner" == "perl" ]]; then
     rc_raw=$(
       env "${rc_env_args[@]}" PATH="$rc_path" \
         bash -c '
           cd "$1" 2>/dev/null || true
-          "$5" -e '\''my($t,@c)=@ARGV; my $p=fork; if($p==0){setpgrp(0,0); exec @c or exit 127} $SIG{ALRM}=sub{kill("-KILL",$p); exit 124}; alarm($t); waitpid($p,0); exit($?>>8)'\'' "$2" bash -c "$3" 2>&1 | head -c "$4"
+          "$5" -e '\''my($t,@c)=@ARGV; my $p=fork; if($p==0){setpgrp(0,0); exec @c or exit 127} $SIG{ALRM}=sub{kill("-KILL",$p); exit 124}; alarm($t); waitpid($p,0); exit(($?&127) ? 128+($?&127) : ($?>>8))'\'' "$2" bash -c "$3" 2>&1 | head -c "$4"
           exit "${PIPESTATUS[0]}"
         ' _ "$cwd" "$RC_TIMEOUT_S" "$cmd" "$RC_CAPTURE_BYTES" "$rc_runner_bin"
     )
@@ -1131,8 +1138,15 @@ run_verification() {
   # 1b. UTF-8 scrub: a source head -c byte-cap can split a multibyte char, leaving a lone
   #     continuation byte that would later break jq --arg. iconv -c drops invalid bytes;
   #     fall back to an LC_ALL=C printable-only filter when iconv is absent.
+  #     PORTABILITY: macOS (BSD/citrus) iconv -c EMITS the correctly-scrubbed prefix but
+  #     still EXITS NON-ZERO on a truncated trailing multibyte char — so the fallback must
+  #     key on "produced no output from non-empty input", never on iconv's exit code
+  #     (an exit-code `||` would APPEND the fallback's output to iconv's, duplicating text).
   if command -v iconv >/dev/null 2>&1; then
-    rc_utf8=$(printf '%s' "$rc_san" | iconv -c -f utf-8 -t utf-8 2>/dev/null || printf '%s' "$rc_san" | LC_ALL=C tr -cd '\11\12\15\40-\176')
+    rc_utf8=$(printf '%s' "$rc_san" | iconv -c -f utf-8 -t utf-8 2>/dev/null || true)
+    if [[ -z "$rc_utf8" && -n "$rc_san" ]]; then
+      rc_utf8=$(printf '%s' "$rc_san" | LC_ALL=C tr -cd '\11\12\15\40-\176')
+    fi
   else
     rc_utf8=$(printf '%s' "$rc_san" | LC_ALL=C tr -cd '\11\12\15\40-\176')
   fi
