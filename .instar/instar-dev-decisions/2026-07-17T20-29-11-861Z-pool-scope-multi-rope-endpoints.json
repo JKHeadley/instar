@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-17T20:29:11.861Z",
+  "slug": "pool-scope-multi-rope-endpoints",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

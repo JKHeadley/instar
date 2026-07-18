@@ -21026,11 +21026,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;
           };
+          // Pool-scope readers must use the same validated multi-rope resolver as
+          // routing and lease traffic. A freshly enrolled peer can have live
+          // LAN/Tailscale endpoints without the legacy lastKnownUrl field; the
+          // old filter silently omitted that online machine from every pool view.
           _resolvePeerUrls = () =>
             meshIdMgr
               .getActiveMachines()
-              .filter((m) => m.machineId !== meshSelfId && !!m.entry.lastKnownUrl)
-              .map((m) => ({ machineId: m.machineId, url: m.entry.lastKnownUrl as string }));
+              .filter((m) => m.machineId !== meshSelfId)
+              .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) }))
+              .filter((m): m is { machineId: string; url: string } => m.url != null);
           // EVERY registered non-revoked machine — URL or not — so the /guards
           // pool view can account for each by name (no-known-url is a NAMED row,
           // never a silent omission — GUARD-POSTURE-ENDPOINT-SPEC §2.3).
