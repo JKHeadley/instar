@@ -67,6 +67,17 @@ describe('StandingDriveExtensionV1 canonical schema', () => {
     expect(computeEnvelopeDigest(ext.envelope)).toBe(computeEnvelopeDigest(reversed));
   });
 
+  it('canonicalizes without locale-dependent collation', () => {
+    const original = String.prototype.localeCompare;
+    Object.defineProperty(String.prototype, 'localeCompare', { configurable: true, value: () => { throw new Error('locale collation used'); } });
+    try {
+      expect(() => computeEnvelopeDigest(extension().envelope)).not.toThrow();
+      expect(() => computeSemanticFingerprint({ phaseStates: [{ id: 'z', state: 'active' }, { id: 'A', state: 'pending' }], evidenceIds: ['z', 'A'], closedDefectIds: [], blockState: 'none' })).not.toThrow();
+    } finally {
+      Object.defineProperty(String.prototype, 'localeCompare', { configurable: true, value: original });
+    }
+  });
+
   it('validates a complete extension and rejects tampered digests/future versions', () => {
     expect(validateStandingDriveExtensionV1(extension(), '458')).toBe(true);
     expect(validateStandingDriveExtensionV1({ ...extension(), creationKey: h('f') }, '458')).toBe(false);
@@ -94,6 +105,16 @@ describe('StandingDriveExtensionV1 canonical schema', () => {
     expect(validateStandingDriveExtensionV1({ ...ext, envelope: redigest(dangling) })).toBe(false);
     const crossDomain = { ...ext.envelope, allowedActions: [{ ...ext.envelope.allowedActions[0], domain: 'message-review' as const }] };
     expect(validateStandingDriveExtensionV1({ ...ext, envelope: redigest(crossDomain) })).toBe(false);
+  });
+
+  it('validates every optional field when present', () => {
+    const ext = extension();
+    expect(validateStandingDriveExtensionV1({ ...ext, commitmentRef: 'commitment-1', disposition: { state: 'superseded', at: now, reasonCode: 'replaced', supersededByRunId: 'run-2' }, breaker: { state: 'tripped', consecutiveNoProgress: 3, trippedAt: now, rearmBasis: 'operator-transition' } })).toBe(true);
+    expect(validateStandingDriveExtensionV1({ ...ext, commitmentRef: 'x'.repeat(161) })).toBe(false);
+    expect(validateStandingDriveExtensionV1({ ...ext, disposition: { state: 'stopped', at: 'not-a-date' } })).toBe(false);
+    expect(validateStandingDriveExtensionV1({ ...ext, disposition: { state: 'stopped', at: 'July 17, 2026' } })).toBe(false);
+    expect(validateStandingDriveExtensionV1({ ...ext, authority: { ...ext.authority, authorizedAt: '2026-07-18T00:00:00Z' } })).toBe(false);
+    expect(validateStandingDriveExtensionV1({ ...ext, breaker: { state: 'tripped', consecutiveNoProgress: 1, rearmBasis: 'timer' } })).toBe(false);
   });
 });
 

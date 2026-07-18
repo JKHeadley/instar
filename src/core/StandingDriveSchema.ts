@@ -84,6 +84,11 @@ const MAX_RULES = 256;
 const MAX_CRITERIA = 256;
 const ACTION_DOMAINS: readonly StandingDriveActionDomain[] = ['git', 'external-operation', 'message-review', 'local-read-test', 'operator-transition'];
 const boundedText = (value: unknown, max = 500): value is string => typeof value === 'string' && value.length > 0 && value.length <= max && !/[\r\n\0]/.test(value);
+const canonicalIso = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+};
 const uniqueStrings = (values: unknown[], max: number): values is string[] =>
   values.length <= max && values.every((value) => typeof value === 'string' && ID.test(value)) && new Set(values).size === values.length;
 const validConstraints = (value: unknown): boolean => {
@@ -95,8 +100,9 @@ const validConstraints = (value: unknown): boolean => {
 };
 
 const hash = (input: string): string => createHash('sha256').update(input).digest('hex');
+const codeUnitCompare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 const orderedObject = (value: Record<string, string | string[] | boolean> | undefined): unknown[] =>
-  Object.entries(value ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, Array.isArray(v) ? [...v].sort() : v]);
+  Object.entries(value ?? {}).sort(([a], [b]) => codeUnitCompare(a, b)).map(([k, v]) => [k, Array.isArray(v) ? [...v].sort(codeUnitCompare) : v]);
 
 export function canonicalizeCreationKey(
   topicId: string,
@@ -112,9 +118,9 @@ export function computeCreationKey(topicId: string, authority: Pick<StandingDriv
 }
 
 export function canonicalizeEnvelope(input: Omit<StandingDriveEnvelopeV1, 'digest'>): string {
-  const phases = [...input.phases].sort((a, b) => a.id.localeCompare(b.id)).map((p) => [p.id, p.domain, [...p.criterionIds].sort(), [...p.actionRuleIds].sort()]);
-  const criteria = [...input.acceptanceCriteria].sort((a, b) => a.id.localeCompare(b.id)).map((c) => [c.id, c.kind]);
-  const rules = [...input.allowedActions].sort((a, b) => a.id.localeCompare(b.id)).map((r) => [r.id, r.domain, r.operation, [...r.targets].sort(), orderedObject(r.constraints)]);
+  const phases = [...input.phases].sort((a, b) => codeUnitCompare(a.id, b.id)).map((p) => [p.id, p.domain, [...p.criterionIds].sort(codeUnitCompare), [...p.actionRuleIds].sort(codeUnitCompare)]);
+  const criteria = [...input.acceptanceCriteria].sort((a, b) => codeUnitCompare(a.id, b.id)).map((c) => [c.id, c.kind]);
+  const rules = [...input.allowedActions].sort((a, b) => codeUnitCompare(a.id, b.id)).map((r) => [r.id, r.domain, r.operation, [...r.targets].sort(codeUnitCompare), orderedObject(r.constraints)]);
   return JSON.stringify(['standing-drive-envelope-v1', phases, criteria, rules]);
 }
 
@@ -129,8 +135,8 @@ export function computeSemanticFingerprint(input: {
   blockState: string;
 }): string {
   return hash(JSON.stringify(['standing-drive-progress-v1',
-    [...input.phaseStates].sort((a, b) => a.id.localeCompare(b.id)).map((p) => [p.id, p.state]),
-    [...input.evidenceIds].sort(), [...input.closedDefectIds].sort(), input.blockState,
+    [...input.phaseStates].sort((a, b) => codeUnitCompare(a.id, b.id)).map((p) => [p.id, p.state]),
+    [...input.evidenceIds].sort(codeUnitCompare), [...input.closedDefectIds].sort(codeUnitCompare), input.blockState,
   ]));
 }
 
@@ -141,7 +147,7 @@ export function validateStandingDriveExtensionV1(value: unknown, topicId?: strin
     if (v.schemaVersion !== 1 || !HEX_64.test(v.requestDigest) || !HEX_64.test(v.creationKey)) return false;
     if (!v.authority || !['telegram', 'local-operator'].includes(v.authority.source) || !ID.test(v.authority.verifiedEventId)) return false;
     if (![v.authority.operatorPrincipalHash, v.authority.topicBindingDigest, v.authority.projectBindingDigest].every((x) => HEX_64.test(x))) return false;
-    if (!Number.isFinite(Date.parse(v.authority.authorizedAt))) return false;
+    if (!canonicalIso(v.authority.authorizedAt)) return false;
     const e = v.envelope;
     if (!e || !Array.isArray(e.phases) || !Array.isArray(e.allowedActions) || !Array.isArray(e.acceptanceCriteria)) return false;
     if (!HEX_64.test(e.digest) || e.phases.length > MAX_PHASES || e.allowedActions.length > MAX_RULES || e.acceptanceCriteria.length > MAX_CRITERIA) return false;
@@ -161,15 +167,22 @@ export function validateStandingDriveExtensionV1(value: unknown, topicId?: strin
       && p.actionRuleIds.every((id) => rulesById.get(id)?.domain === p.domain))) return false;
     if (!e.phases.some((p) => p.id === v.cursor?.phaseId) || !['pending', 'active', 'completed'].includes(v.cursor?.state)) return false;
     if (!['active', 'stopped', 'abandoned', 'superseded'].includes(v.disposition?.state)) return false;
+    if (v.disposition.at !== undefined && !canonicalIso(v.disposition.at)) return false;
+    if (v.disposition.reasonCode !== undefined && !boundedText(v.disposition.reasonCode, 160)) return false;
+    if (v.disposition.supersededByRunId !== undefined && !ID.test(v.disposition.supersededByRunId)) return false;
+    if (v.commitmentRef !== undefined && !ID.test(v.commitmentRef)) return false;
     if (!Number.isSafeInteger(v.revision) || v.revision < 1 || !Number.isSafeInteger(v.semanticProgress?.version) || v.semanticProgress.version < 0) return false;
-    if (!HEX_64.test(v.semanticProgress?.fingerprint) || !Number.isFinite(Date.parse(v.semanticProgress?.lastProgressAt))) return false;
+    if (!HEX_64.test(v.semanticProgress?.fingerprint) || !canonicalIso(v.semanticProgress?.lastProgressAt)) return false;
     if (!['closed', 'tripped'].includes(v.breaker?.state) || !Number.isSafeInteger(v.breaker.consecutiveNoProgress) || v.breaker.consecutiveNoProgress < 0) return false;
+    if (v.breaker.trippedAt !== undefined && !canonicalIso(v.breaker.trippedAt)) return false;
+    if (v.breaker.rearmBasis !== undefined && !['operator-transition', 'semantic-progress'].includes(v.breaker.rearmBasis)) return false;
     return true;
   } catch {
     return false;
   }
 }
 
+/** Scope membership only; effects must also compose aliveness, breaker eligibility, and authority rebind. */
 export function deriveActionDecision(extension: unknown, phaseId: string, request: StandingDriveActionRequest): StandingDriveActionDecision {
   if (!extension || typeof extension !== 'object') return 'hold:corrupt';
   if ((extension as { schemaVersion?: unknown }).schemaVersion !== 1) return 'hold:ineligible-extension';

@@ -19,5 +19,5 @@ No user-facing StandingDrive execution is enabled yet. This release establishes 
 
 ## Evidence
 
-- 17 StandingDrive schema/validator/store tests and 15 existing AutonomousRunStore tests pass.
+- 23 StandingDrive schema/validator/store tests and 15 existing AutonomousRunStore tests pass.
 - TypeScript build and full repository lint pass locally.

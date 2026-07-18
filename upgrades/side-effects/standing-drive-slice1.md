@@ -52,6 +52,7 @@ No static heuristic is added at a competing-signals judgment point. Action eligi
 - **Races:** all record writers serialize with the repository-standard crash-recoverable file lock. Generic updates refuse any extension change; extension writers compare the shared revision before an atomic record write. Stale writers refuse instead of overwriting, and stale crash-left locks are reclaimed.
 - **Feedback loops:** none; the new helpers are inert until called by later reviewed slices.
 - **Compatibility:** absent extension leaves current readers, writers, and status enums unchanged. `commitmentRef` remains advisory; CommitmentTracker remains promise authority.
+- **Tracked lifecycle binding:** existing R28a registration-time archive and R28b daily archive do not yet inspect active drive disposition. The continuation/lease integration slice must exempt or resurrect `status=expired × disposition=active` before any runtime consumer ships; this remains bound to the StandingDrive continuation integration slice and cannot be declared complete without its archive-boundary canary. <!-- tracked: topic-458-standing-drive-continuation-integration -->
 
 ## 6. External surfaces
 
@@ -63,7 +64,7 @@ No operator surface — not applicable.
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-**Replicated-ready inert state:** this slice defines the envelope that later cross-surface replay/replication work may carry, but it does not add a replication path itself. A carried record is structurally inert on another machine until exact local operator-principal, topic, and project-digest rebinding succeeds. Machine identity stored in the receipt is advisory evidence, never portable authority.
+**Replicated-ready inert state:** this slice defines the envelope that later cross-surface replay/replication work may carry, but it does not add a replication path itself. A carried record is structurally inert on another machine until exact locally verified operator-principal, topic, and project-digest rebinding succeeds. The stored receipt is evidence, never portable authority; it deliberately stores no machine identity.
 
 It emits no user-facing notices, so one-voice gating is not needed here. It holds optional durable state in the existing run record; topic-transfer behavior remains with the existing run owner and later replication slice. It generates no URLs. A future enrollment surface requires a reviewed enum and truth-table extension; existing creation keys are never eagerly recomputed.
 
@@ -87,9 +88,9 @@ Concur: Slice 1 enforces unambiguous frozen-envelope references and shared revis
 
 ## Evidence pointers
 
-- `tests/unit/standing-drive-schema.test.ts`: 21 schema, truth-table, authority, stop, compatibility, and CAS tests.
+- `tests/unit/standing-drive-schema.test.ts`: 23 schema, truth-table, authority, stop, compatibility, and CAS tests.
 - `tests/unit/autonomous-run-store.test.ts`: 15 existing store regression tests.
-- Focused Vitest run: 36/36 passing.
+- Focused Vitest run: 38/38 passing.
 - `npm run build`, `npm run lint`, and `git diff --check`: passing.
 
 ## Class-Closure Declaration (display-only mirror)
