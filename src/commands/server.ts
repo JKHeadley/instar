@@ -20463,7 +20463,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             const secretSyncMod = await import('../core/SecretSync.js');
             const secretStoreMod = await import('../core/SecretStore.js');
             const cryptoMod = await import('node:crypto');
-            const secretStore = new secretStoreMod.SecretStore({ stateDir: config.stateDir });
+            // Honor the configured at-rest key policy, as every other SecretStore writer does.
+            // This is load-bearing for headless joined homes: their OS-keychain
+            // context may differ across SSH/bootstrap and daemon restart, while
+            // `secrets.forceFileKey` deliberately selects the durable file key.
+            const secretStore = new secretStoreMod.SecretStore({
+              stateDir: config.stateDir,
+              forceFileKey: config.secrets?.forceFileKey,
+            });
             _secretShareHandler = new secretSyncMod.SecretShareHandler({
               ownEncryptionPrivateKey: () => cryptoMod.createPrivateKey(meshIdMgr.loadEncryptionKey()),
               store: { set: (k, v) => secretStore.set(k, v) },
@@ -21542,7 +21549,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               const secretSyncMod = await import('../core/SecretSync.js');
               const secretStoreMod = await import('../core/SecretStore.js');
               const cryptoModOut = await import('node:crypto');
-              const provStore = new secretStoreMod.SecretStore({ stateDir: config.stateDir });
+              const provStore = new secretStoreMod.SecretStore({
+                stateDir: config.stateDir,
+                forceFileKey: config.secrets?.forceFileKey,
+              });
               const readSecrets = (): import('../core/SecretStore.js').Secrets => {
                 // @silent-fallback-ok — no vault on disk (or unreadable) ⇒ nothing to sync; an
                 // empty set makes provisionAll a clean no-op rather than crashing the boot path.
