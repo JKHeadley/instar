@@ -12,7 +12,7 @@ related-principles:
   - Bounded Blast Radius
   - "A Dark Feature Guards Nothing"
 source-investigation: "Joint Echo↔sagemind live investigation 2026-07-17→18; evidence bank at canonical thread 6d424ea3 seq 22 (msg-1784347128313-i1zme5)"
-status: "DRAFT v2 — round-1 findings folded (6 internal reviewers + codex-cli:gpt-5.5 + gemini-cli:gemini-3.1-pro-preview, both OK). Awaiting round 2. NOT built. Grounded against canonical main v1.3.869 (ab5e7223c)."
+status: "DRAFT v3 — round-2 findings folded (6 internal lenses, security+adversarial+scalability each run twice for corroboration, + codex-cli:gpt-5.5 + gemini-cli:gemini-3.1-pro-preview both OK MINOR). Round-2 root themes: the validation/ownership checks must move to a synchronous routing-resolution seat computed before append AND response on every ingest branch; the membership primitive must carry eligibility (has() cannot); the keyed-epoch model needs a positional discriminator + domain-separated key + OR-semantics correction. Awaiting round 3. NOT built. Grounded against canonical main v1.3.869 (ab5e7223c)."
 approved: false
 tracked-commitments: "CMT-1976, CMT-1979, CMT-1980 (deliver together at fix-PR merge); CMT-1981 (ship ping to sagemind on thread ebf68943). NOT this spec's: CMT-1986 is the sibling lifeline workstream's (CMT-1975) two-ping protocol."
 ---
@@ -121,6 +121,25 @@ consequences: the dashboard observability tab (which reads the inbox) stays
 one-sided for pre-fix local-path history, and inbox-based warm recovery sees only
 post-epoch local inbounds — both accepted; a backfill would launder unkeyed rows
 into the keyed store (see Leg B's trust model) for observability alone.
+
+**Union semantics correction (round-2, load-bearing):** the union read is an **OR**
+across the two arms — a reply validates if EITHER arm holds an eligible entry. So the
+integrity claim is NOT "forging reply authority requires the secret on both arms";
+each arm must be **independently** trustworthy, because an attacker only needs to
+plant in the ONE arm they can reach. Leg B therefore keys the log arm going forward
+(so neither arm is a soft target) AND scopes the unkeyed pre-epoch acceptance to a
+frozen, positionally-bounded bridge (below).
+
+**Key-rotation posture:** the inbox HMAC key is `HKDF(authToken)`-derived; rotating
+`authToken` invalidates existing inbox HMACs. Because Leg B keys the log arm with a
+DOMAIN-SEPARATED key (own HKDF info label, §Leg B), a rotation is still a fleet event —
+so the eligibility rule does NOT AND-gate a reply on both arms verifying: an entry is
+eligible if it verifies on EITHER arm's current-or-prior key. Rotation carries a
+`keyEpoch` id stamped into each keyed row; verify tries the current then the immediately-
+prior key (a bounded, standard rotation window), so a rotation re-keys forward without
+wedging post-epoch history. This is called out explicitly because the naive "same key,
+both arms" reading would turn an `authToken` rotation into the exact fleet-wide wedge
+this spec exists to end.
 
 ## Evidence bank
 
@@ -232,6 +251,22 @@ is accepted on the cold branch (A2) — cold is membership, not latest.
 - P2 phantoms (prompt-only ephemerals) come from drain-path spawns that never run the
   binder; the dead-bind path is already correct (existence proof: 21:07Z healthy
   rebind, no mint, full history).
+- **The guard fires on only ONE of three ingest branches, and only when a live bind
+  exists** (round-2). Relay-ingest fans out three ways — pipe-spawn (`server.ts`
+  ~16425) and warm-listener (~16478) both `return` before the router; only cold-spawn
+  reaches `handleInboundMessage` (~16507). And even there the guard runs only
+  `if (threadResumeMap.get(threadId))` — on a box whose resume map is stale (A1: two
+  months untouched) NO thread is guarded. So "record the post-guard threadId" is
+  vacuous wherever the guard never runs — a foreign presented-threadId row lands under
+  the victim's id with no ownership check on the warm-listener/pipe/cold-unbound paths.
+- **The append seats are pre-guard AND, on the local path, post-response** (round-2).
+  Local `recordThreadMessage` (`routes.ts` ~26647) runs synchronously BEFORE the HTTP
+  200; `handleInboundMessage` is deliberately fire-and-forget AFTER `res.json`
+  (`routes.ts` ~26776, the ACCEPT-BOUNDARY duplicate-reply fix #581). "Append after the
+  guard" would therefore mean append after the response — a crash window in which the
+  peer got `accepted:true` but no store holds the message. The fix is NOT "reorder the
+  append after the guard"; it is a synchronous routing-resolution seat computed BEFORE
+  both the append and the response (§Leg A′).
 - Store trust asymmetry (load-bearing for Leg B's design): inbox rows are
   HMAC-verified under a derived secret at every read; ThreadLog's chain is UNKEYED
   (tamper-evidence for honest processes, not a forgery bar — its own header scopes
@@ -239,496 +274,221 @@ is accepted on the cold branch (A2) — cold is membership, not latest.
 
 ## Fix — four legs, one PR (Legs B+C are atomicity-coupled)
 
-### Leg A — ingest parity: one funnel writes BOTH stores, post-guard
+The round-2 review established that the round-1 legs were architecturally right but under-pinned at the seams. The load-bearing addition this round is **Leg A′** — a single synchronous routing-resolution seat — because three separate findings (post-guard threadId unimplementable at the real seats; the guard firing on only one branch; the append/response ordering) share one root: ownership + threadId must be resolved ONCE, synchronously, before anything is persisted or answered, on every ingest branch.
 
-**Normative rule (bidirectional):** every authenticated inbound-persisting path
-appends BOTH canonical stores — through ONE chokepoint. The three paths and their
-current one-store writes: local-delivery (`/messages/relay-agent`) and direct-receive
-(`/threadline/messages/receive`, ThreadlineEndpoints ~499) write log-only;
-relay-ingest (including drain arrivals) writes inbox-only. One-directional parity
-would leave the mirror-image split alive.
+### Leg A′ — the routing-resolution seat (new; the root fix)
 
-Implementation shape (frontloaded — see §Frontloaded Decisions):
-`recordThreadMessage` grows a canonical-inbox sink for `direction: 'inbound'`
-records, with the funnel's existing non-fatal/loud-on-repeat failure discipline —
-and **relay-ingest routes through the funnel too** (its direct
-`appendCanonicalInboxEntry` call is REMOVED in the same change; the funnel writes
-both stores for it, closing its log-absence as well). The wiring-integrity test's
-enumeration anchor is **the set of `direction:'inbound'` `recordThreadMessage`
-callsites plus the relay-ingest accept point** — derived from code, not from this
-spec's prose, so a fourth ingest path added later fails the test instead of
-reopening the split.
+Extract a synchronous, side-effect-free `resolveRoutedThreadId(message, relayContext, opts)` that returns `{ routedThreadId, ownershipVerdict }` where:
+
+1. **First-contact resolution** — affinity reuse or fresh mint for a threadId-less inbound (today done inside the router at `ThreadlineRouter.ts` ~533-543; the relay accept point currently uses `getSyntheticThreadId` at `server.ts` ~16321 — a store-vs-routing divergence with no guard involved). The seat unifies this so persistence and routing use the SAME id.
+2. **Ownership verdict (the anti-hijack decision), engaged on durable evidence — not just a live bind.** The guard engages whenever the presented threadId resolves to a known owner via ANY of: a `threadResumeMap` binding, a `ConversationStore` record, OR a `ThreadLog` with a recorded participant set (`ThreadLog.participants(threadId)`, already used by threadSymmetry). This closes the cold-box hole (A1): a stale/empty resume map no longer means "no thread is guarded." Unresolvable owner ⇒ isolate (fail-safe, unchanged).
+
+`resolveRoutedThreadId` is called **once at each of the three accept points** (relay-ingest before its three-way fan-out; local-delivery and direct-receive before `res.json`), BEFORE the unified append and BEFORE the response. Its `routedThreadId` is used for BOTH persistence AND delivery routing on every branch (pipe-spawn, warm-listener, cold-spawn). `handleInboundMessage` **CONSUMES** the carried verdict and never recomputes it — this closes a TOCTOU: `threadResumeMap` can change between the synchronous accept and the async router run, so a recompute could persist on thread X while routing the session to thread Y (a brand-new single-message split). Regression items 5–7 pin this.
+
+Durability note (round-2 M/F on the crash window): the append runs synchronously at the accept point (pre-response), so the agreement invariant is "in both stores at accept," NOT "in both stores only after the async router" — there is no post-response append gap. The coherence audit's drift check still allows a bounded grace for any genuinely-async write path.
+
+### Leg A — ingest parity: one funnel writes BOTH stores, at the resolved threadId
+
+**Normative rule (bidirectional):** every authenticated inbound-persisting path appends BOTH canonical stores — through ONE chokepoint, keyed on Leg A′'s `routedThreadId` (never the presented value). The three paths and their current one-store writes: local-delivery (`/messages/relay-agent`) and direct-receive (`/threadline/messages/receive`, ThreadlineEndpoints ~499) write log-only; relay-ingest (including drain arrivals) writes inbox-only.
+
+Implementation shape (frontloaded): `recordThreadMessage` grows a canonical-inbox sink for `direction: 'inbound'` records, and **relay-ingest routes through the funnel too** (its direct `appendCanonicalInboxEntry` call is REMOVED; the funnel writes both stores for it). The wiring-integrity test's enumeration anchor is code-derived: the set of `direction:'inbound'` `recordThreadMessage` callsites plus the relay-ingest accept point; PLUS a **zero-direct-callers ratchet** asserting nothing calls `appendCanonicalInboxEntry`/the log appender outside the funnel (round-2 m4 — a future direct caller must fail the test, not silently reopen the split).
 
 Hard requirements on the unified append:
 
-1. **Post-guard threadId (union-poisoning fix).** Canonical-store appends record the
-   FINAL ROUTED threadId — the append runs after (or takes its threadId from) the
-   anti-hijack verdict in `handleInboundMessage`, never the presented value. A
-   guard-isolated message is recorded on its FRESH isolation thread, not the victim's.
-   This is what keeps a hostile presented-threadId row from ever becoming reply
-   authority or the warm-recovery injection source on the victim thread.
-2. **Id-idempotent, first-write-wins.** `appendCanonicalInboxEntry` gains a same-id
-   check (mirroring ThreadLog's `(messageId, direction)` dedup): a duplicate id is a
-   no-op returning the existing row; a same-id-DIFFERENT-content append is recorded as
-   a collision signal (audit row), never appended — so a replayed/planted id can
-   neither shadow the original in newest-match reads nor rotate `latest` backwards.
-3. **Provenance recorded honestly.** Inbox rows gain an `ingress` field
-   (`relay-verified` | `e2e-verified` | `local-token` | `drain-redelivery`) and the
-   sender is recorded as **resolved-fingerprint-or-null plus the claimed name** on the
-   local path — never a raw name laundered into the fp field. The local route
-   authenticates LOCALITY (possession of the receiving agent's machine-local token),
-   not sender identity; its rows must say so. `trustLevel` is the evaluated verdict
-   for the path, never a hardcoded constant. Reply validation accepts every
-   authenticated-ingress row as a reply target (the validation question is "did this
-   box durably accept this inbound", not "how trusted is the sender" — trust gating
-   stays at routing); consumers that DO care about trust (warm-recovery injection,
-   bridges) read the provenance fields.
-4. **Growth bound.** The inbox gets the same live-segment rotation discipline as
-   ThreadLog plus an inline body cap (store-ref beyond the funnel's existing
-   `inlineMaxBytes`); rotation window ≥ the redelivery TTL so exactly-once id-dedup
-   (Leg D) never loses its reference. Today the file is unbounded, uncapped, and
-   whole-file-synchronously read on every send — Leg A must not multiply writers into
-   an unbounded hot-path index (this is the EvolutionManager-journal lesson).
-5. **Append order:** thread log first (history authority), inbox second; either store
-   landing suffices for validation (union); failures follow the funnel's
-   loud-on-repeat discipline.
+1. **Resolved threadId, not presented** — the append records Leg A′'s `routedThreadId`. A guard-isolated message is recorded on its FRESH isolation thread; a resolved-owner-mismatch is isolated before the append ever runs.
+2. **Id-idempotent, first-write-wins, ONE dedup key across both stores.** The dedup key is `(sender-fp-or-ingress-class, routedThreadId, messageId)` — used IDENTICALLY by the inbox append and the thread-log append (round-2: Leg A and Leg D must not specify different keys, or the two stores dedup differently and the agreement invariant breaks). A duplicate is a no-op returning the existing row. A same-key-DIFFERENT-content arrival is a collision: recorded as an audit signal, never appended — with the rule that **a collision from a non-owner/unauthenticated ingress is discarded so a later owner write can still land** (round-2: ThreadLog's raw collision path returns "not appended," which would otherwise let a first attacker-planted row under a chosen id block the honest message; regression item 9 states the honest-first precondition and this discard rule). The `local-token` ingress has a null sender-fp, so all local senders collapse into one dedup scope — accepted (same trust domain), stated.
+3. **Provenance recorded honestly.** Inbox AND log rows gain an `ingress` field (`relay-verified` | `e2e-verified` | `local-token` | `drain-redelivery`); the sender is recorded as resolved-fingerprint-or-null plus the claimed name on the local path — never a raw name laundered into the fp field. `trustLevel` is the evaluated verdict, never a hardcoded constant. Reply validation accepts every authenticated-ingress row as a reply target (the question is "did this box durably accept this inbound", not sender trust); consumers that care about trust (warm-recovery injection, bridges) read the provenance fields.
+4. **Growth bound — time-floored rotation on BOTH the inbox and the outbox.** Rotation evicts a row only when it is BOTH beyond the count threshold (ThreadLog's 2000-entry live-segment shape) AND older than the retention floor `max(redelivery TTL 6h, a declared reply-validation horizon)`. Time-floor wins; the count becomes a soft target; a live segment exceeding N× the count cap raises ONE loud audit/attention signal (a burst that large is itself an incident). This reconciles the round-2 count-vs-time contradiction and guarantees Leg D's id-dedup reference survives its TTL window. The **outbox gets the same discipline** (round-2: the claim-hardening below newly reads it on the hot path) plus an inline body cap (store-ref beyond `inlineMaxBytes`). Prefix-only eviction (oldest rows only, never reorder/rewrite survivors), `.active` stays the live-segment path, atomic tmp+rename rewrite — so `readNewestJsonlMatch` and `readLatestCanonicalInboxForThread` stay correct and torn reads fail-toward-refusal.
+5. **Append order** — thread log first, inbox second; either store landing suffices for validation; failures follow the funnel's loud-on-repeat discipline.
 
 Precedent: PR #1458 (path-scoped store write widened to path parity).
 
-### Leg B — validator union: both branches read inbox ∪ thread-log, with an honest trust model
+### Leg B — validator union: both branches read inbox ∪ thread-log, with an eligibility-carrying primitive
 
-`POST /threadline/relay-send` (`src/server/routes.ts` ~27598-27612 @v1.3.869):
+`POST /threadline/relay-send` (`src/server/routes.ts` ~27598-27612 @v1.3.869). The validation property is renamed for honesty: it proves an `acceptedInbound` (this box durably accepted this inbound), NOT an "authenticated sender inbound" — the `local-token` ingress authenticates locality, not sender identity (round-2 codex/security).
 
-**Membership predicate (bounded, ordered):** `unionHasInbound(threadId, id)` =
-1. `ThreadLog.has(threadId, id, 'inbound')` — the O(1) seen-map membership authority
-   (one bounded live-segment load per thread, LRU-cached). Probed FIRST (per-thread
-   bounded store before the global one).
-2. else early-exit `readCanonicalInboxEntry(id)` with threadId match (HMAC-verified,
-   as today).
+**Membership + eligibility primitive (bounded, ordered, eligibility-carrying):** the round-1 "`ThreadLog.has()`" primitive is INSUFFICIENT — `has()` returns a bare boolean off a seen-map valued only by `contentDigest`, and the seen-map is populated for `backfilled` rows too, so it cannot enforce Leg B's eligibility rule (three reviewers). Replace it with `getInboundIfEligible(routedThreadId, id)`:
 
-The reader REUSES the existing `canonicalHistoryRead` inbox∪log union machinery
-(adapted to a membership predicate) rather than hand-rolling a second, subtly
-different union definition — two union readers in one subsystem is the next drift
-bug. The parity ratchet (regression item 17) is likewise DEFINED over the union read
-(it is unsatisfiable per-store on relay-path threads until Leg A's epoch).
+1. **Log arm** — a bounded lookup that returns the entry's eligibility tri«`backfilled`, `peerFingerprint`, `hmacValid`» from a WIDENED per-thread cache. The `ThreadState` seen-map value is extended (or a parallel bounded map added) to carry `{contentDigest, backfilled, peerFingerprint-present, hmacValid, eligible}`, computed ONCE — at append time for live appends, at `loadState` for cold loads (HMAC verified THERE, ~≤2000 small HMACs per cold thread ≈ low ms, amortized by the existing 512-thread LRU) — NEVER re-verified per membership check. So the check stays O(1) after a bounded one-time load, AND carries eligibility. `eligible` = `direction==='inbound'` AND NOT `backfilled` AND has `peerFingerprint` AND (post-`keyedFromSeq`) `hmacValid` AND the entry's `peerFingerprint` is a participant of the thread (round-2 adversarial F1: eligibility must match the entry's fp against the thread owner/participant set, else a foreign row on an unbound thread is reply authority).
+2. **Inbox arm** — early-exit `readCanonicalInboxEntry(id)` with routedThreadId match (HMAC-verified, as today).
 
-NO per-send chain verification: `lookupSeen`/`has()` is the membership authority;
-chain verification remains the tamper-evidence layer, run on the existing
-symmetry/health cadence — never on the reply hot path. Store-read errors are TYPED
-(below), never crash-open.
+Probe order: log arm first (per-thread bounded), inbox arm second. **DO NOT reuse `canonicalHistoryRead`** (round-2, three reviewers): it is a full-history materializer (`read(…{limit})` + a backfill that does whole-outbox `readFileSync` + funnel WRITES + async) whose union is `log ∪ outbox/aggregate`, NOT `inbox ∪ log` — calling it per-send reintroduces the whole-file cost, adds write amplification on a read, and computes the WRONG set. Only the eligibility RULES are shared, as a pure function; the two readers stay separate (a shared test asserts both consult (log, inbox), not shared code).
 
-**Log-arm eligibility (the trust model, stated honestly):** the ThreadLog chain is
-unkeyed — "chain-valid" proves append-through-an-honest-process, not possession of a
-secret. The union therefore does NOT blindly equate the stores:
+**Log-arm keying (the trust model, corrected).** The ThreadLog chain is unkeyed — chain-validity proves append-through-an-honest-process, not a secret. What the log-arm HMAC defends against is a NON-funnel process-level writer (the local-FS attacker stays scoped out, per ThreadLog's own threat model); it is not a fantasy of stopping disk access. Rules:
 
-- A log entry is reply-eligible only if: `direction === 'inbound'`, **NOT**
-  `backfilled: true` (peer-supplied reconciliation and outbox-reconstruction records
-  are "recorded, not trusted" and never validate replies), and it carries a recorded
-  `peerFingerprint`.
-- **Keyed going forward:** the Leg A funnel adds the SAME HKDF(authToken)-derived HMAC
-  field to inbound thread-log entries at append time. A post-epoch log entry missing
-  or failing its HMAC is NOT reply-eligible — post-fix, forging reply authority
-  requires the derived secret on BOTH arms.
-- **Bounded bridge for pre-epoch rows (accepted risk, recorded):** pre-epoch log
-  entries carry no HMAC and are accepted on the eligibility predicate alone. Basis:
-  ThreadLog's own threat model already scopes the local-FS attacker out; the bridge
-  population is frozen at the epoch and only shrinks (Leg A keeps the inbox complete
-  going forward); the alternative (refusing pre-epoch log-resident pointers) preserves
-  the wedge for every existing conversation — the exact harm this spec exists to end.
+- **Keyed going forward, with a positional epoch.** The Leg A funnel adds an HKDF-derived HMAC to inbound thread-log entries at append, under a DOMAIN-SEPARATED info label (`instar-threadlog-signing`, distinct from the inbox's `instar-inbox-signing`) so an outbox/inbox row can never transplant verbatim into the log arm and verify (round-2 security F2). The HMAC covers, at minimum, `(routedThreadId, messageId, direction, backfilled, peerFingerprint, contentDigest, seq, keyEpoch)` — binding the row to its thread, position, and eligibility bits so none can be stripped/flipped while still verifying. **The HMAC field is stored OUTSIDE `canonicalEntry`'s hash-chain whitelist** (round-2 integration M4) — it is NOT chain-bound; adding it to the positional whitelist would make a downgraded/unfixed box recompute a different chain hash for every post-fix entry and quarantine every thread. Machine-local, never crosses the wire → no cross-box format break.
+- **The epoch discriminator is POSITIONAL and outside the attacker-writable log** (round-2 security F1 / adversarial ADV2-3). At the first keyed append per thread, record `keyedFromSeq` in the thread's base sidecar (`ThreadLog`'s `RotationBase`, which already survives rotation). Eligibility rule: `entry.seq >= keyedFromSeq && (missing HMAC || HMAC fails) ⇒ ineligible`. `seq` is monotone and inside the hash chain. Timestamp fields (`at`/`createdAt`, appender-supplied) and HMAC-absence are EXPLICITLY FORBIDDEN as discriminators — both are forgeable, and both would let an attacker mint pre-epoch reply authority with no key or re-grow the bridge on a rollback→re-upgrade.
+- **Bounded pre-epoch bridge (accepted risk, recorded).** Entries before `keyedFromSeq` carry no HMAC and are accepted on the eligibility predicate alone. Basis: ThreadLog's threat model already scopes the local-FS attacker out; the bridge is positionally frozen per thread and only shrinks; refusing pre-epoch log-resident pointers would preserve the wedge for every existing conversation. The rollback-window regrowth (a revert-PR box writes unkeyed rows; re-upgrade sees them pre-`keyedFromSeq` on that thread) is owned honestly here — bounded to the rollback window, same local-attacker threat model.
+- **OR-semantics (corrected).** The union is an OR: a reply validates on EITHER arm. So each arm is INDEPENDENTLY keyed/trusted — an attacker needs only the one arm they can reach; there is no "requires the secret on both arms" guarantee (that sentence is deleted).
 
-**Warm branch:** relax `inReplyTo === latest-inbox-row.id` to
-`unionHasInbound(threadId, inReplyTo)`. This dissolves the wedge deterministically: a
-log-resident pointer carries its own reply slot, so the single-flight claim no longer
-deadlocks against a claimed stale `latest`.
+**Warm branch:** relax `inReplyTo === latest-inbox-row.id` to `getInboundIfEligible(routedThreadId, inReplyTo) != null`. This dissolves the wedge deterministically: a log-resident eligible pointer carries its own reply slot, so single-flight no longer deadlocks on a claimed stale `latest`. *Honest loosening:* membership preserves the pointer-REQUIRED property but DROPS the which-pointer property (===latest); a warm session may answer a stale inbound while the latest stays claimable. The trade is supported by the evidence (===latest is the wedge mechanism; per-inbound slots keep the latest answerable).
 
-*Honest statement of the loosening:* membership preserves the pointer-REQUIRED
-property but deliberately DROPS the which-pointer property (===latest forced answering
-the current inbound). A warm session may now answer a stale inbound while the latest
-stays unanswered — its slot merely remains claimable. The evidence supports this
-trade: ===latest is precisely what wedges, and per-inbound claim slots keep the latest
-answerable.
+**Pointer-required rule.** The warm branch requires a pointer iff the thread's union has ≥1 NON-ACK eligible inbound member. This emptiness signal is a MAINTAINED per-thread counter, direction/ack/union-scoped, sticky-monotonic once true, persisted in the thread meta sidecar (round-2: it does NOT exist today — `head().count` is both-directions, outbound-inclusive, ack-inclusive, and has no inbox arm; a builder must BUILD it, and the ack-classification coupling to Leg A's append path is called out here). Pure-ack rows (Leg D's pinned predicate) are EXCLUDED from the emptiness test (ack-only thread accepts pointerless) but tolerated as membership targets. **Pre-epoch inbox-only threads:** a relay-path thread with inbox rows and zero log rows must count as non-empty for the pointer rule (round-2 M3 — resolving emptiness to the log arm only would silently WIDEN pointerless acceptance on exactly the wedged threads); the counter is fed by BOTH arms.
 
-**Pointer-required rule:** the warm branch requires a pointer iff the thread's union
-has at least one NON-ACK inbound member (emptiness is an O(1) cached per-thread
-signal, not a scan). Pure-ack rows (see Leg D's pinned predicate) are EXCLUDED from
-the emptiness test — an ack-only thread accepts pointerless — but tolerated as
-membership targets if named. Pointerless with an empty (non-ack) union stays accepted,
-now over the union.
+**Claims:** `tryClaimReply` shape unchanged, three hardenings: (a) the claim step also consults the durable `hasCanonicalReplyFor(routedThreadId, inReplyTo)` and refuses when a canonical reply is already recorded — closing the restart-released in-memory-claim double-reply window the union widens; this consult is backed by an **in-memory `(threadId, inReplyTo)→bool` reply index** maintained at outbox append (LRU-bounded, live-segment rebuild on cold load) so it is O(1), NOT a whole-file outbox scan (round-2, three reviewers — plus the outbox rotation from Leg A req 4 bounds the rebuild); (b) claims release on response `'close'` as well as `'finish'`-with-4xx; (c) the claim map is LRU-bounded.
 
-**Claims:** `tryClaimReply` is unchanged in shape, with three hardenings: (a) the
-claim step also consults the durable `hasCanonicalReplyFor(threadId, inReplyTo)` and
-refuses when a canonical reply is already recorded — closing the restart-released
-in-memory-claim double-reply window the union would otherwise widen; (b) claims
-release on response `'close'` as well as `'finish'`-with-4xx (an aborted connection
-must not leak the slot forever); (c) the claim map inherits a size bound (LRU) —
-claimable id-space now spans all log-resident ids.
+**Typed refusals + degraded-read audit.** Negative outcomes are distinguishable (the evidence bank documents two agents burning two days on ambiguous 400 strings):
+- `absent-from-union` — self-correcting string: "inReplyTo must name an authenticated inbound on this thread (log-resident pointers now validate — supply the real message id)". Never interpolates message ids, fingerprints, or paths (round-2 security).
+- `store-unreadable` — an fs/parse error, audited (scrubbed metadata), NEVER silently mapped to absent. **But an unreadable arm does NOT refuse when the OTHER arm already has a positive eligible hit** (round-2 codex): the probe returns the hit; `store-unreadable` is returned only when there is no hit AND an arm was unreadable. (Ordered probe makes this natural: a log-arm hit short-circuits before the inbox is read; the only refusal-on-unreadable case is log-miss + inbox-unreadable, or log-arm-load-error + inbox-miss.)
+- Rotation-window honesty (both pre- AND post-epoch): an inbound beyond BOTH arms' retention windows (rotated out of the ≤2000 log live segment AND older than the inbox retention floor) leaves the union and refuses `absent-from-union`. Named as a bounded residual (very long-lived threads); the latest inbound is always recent so the wedge cannot recur; the forced-mint fallback remains.
+- A chain break follows ThreadLog's existing quarantine-and-continue — never poisons the whole thread's membership.
 
-**Typed refusals + degraded-read audit:** the validator's negative outcomes become
-distinguishable (A-Refusal-Stays-a-Refusal; the evidence bank documents two agents
-burning two days on ambiguous 400 strings):
+**Fail direction (P20, derived):** unknown store state → typed refusal, because a false-accept mints reply authority (irreversible toward the peer) while a false-refuse is retryable, typed, audited, and no longer wedge-shaped (the union removed the only systematic refusal loop).
 
-- `absent-from-union` — names the stores consulted; the string is SELF-CORRECTING for
-  the transition window: "inReplyTo must name an authenticated inbound on this thread
-  (log-resident pointers now validate — supply the real message id)". A
-  stale-convention sender self-corrects in one round trip.
-- `store-unreadable` — an fs/parse error on either store; audited (scrubbed,
-  metadata-only row) and NEVER silently mapped to absent.
-- Rotation-window honesty: an inbound rotated out of the log's live segment
-  (>2000-entry thread) leaves the log arm's membership; post-epoch the inbox arm
-  still holds it (Leg A). Pre-epoch + rotated + inbox-absent = refused; named here as
-  a known, bounded residual (long-lived pre-fix threads), acceptable because the
-  forced-mint fallback remains and the population is frozen.
-- A chain break in a thread log follows ThreadLog's existing quarantine-and-continue
-  posture — it never poisons the whole thread's membership (entries before the break
-  remain readable; the break itself is already a loud collision signal).
-
-**Fail direction (P20, derived not inherited):** unknown store state → refusal
-(`store-unreadable`), because a false-accept mints reply authority (irreversible
-side-effect toward the peer) while a false-refuse is retryable and now TYPED —
-distinguishable from absent, audited, and no longer wedge-shaped (the union has
-removed the only systematic refusal loop). The wedge cost was weighed: it was a
-product of the wrong-store model, not of the refusal direction.
-
-**Cold branch:** keeps running for any supplied pointer (defense in depth), over the
-same predicate.
+**Cold branch:** keeps running for any supplied pointer (defense in depth), over the same eligibility-carrying primitive.
 
 ### Leg C — bind/mint coherence (the 0-prime fix; ships ATOMICALLY with Leg B)
 
-1. **Identity-resolution authority chain (the precedence floor).** Compare-time
-   normalization resolves BOTH sides of the anti-hijack compare to canonical
-   fingerprints via, in order of authority:
-   1. the verified-pairing store (mutual-verified fingerprints),
-   2. handshake-pinned relay keys (crypto-verified transport identity),
-   3. the known-agents registry — LAST resort, and structurally distrusted: it is
-      name-keyed, last-writer-wins, and self-asserted (`discoverLocal()` wholesale-
-      replaces it; its "verify" checks key length only). A resolution that would FLIP
-      a raw-compare mismatch into a match MUST come from a trust-anchored source
-      (1 or 2); known-agents alone can corroborate a match, never mint one.
+The ownership verdict now lives in Leg A′'s `resolveRoutedThreadId` (engaged on durable evidence, every branch), so Leg C is the CONTENT of that verdict:
 
-   Conflicts between sources → isolate. An alias resolving to multiple fingerprints →
-   isolate. Unresolvable → isolate (unchanged fail-safe direction). The dangerous case
-   is resolvable-but-attacker-controlled, and the chain is built so poisoning the
-   weakest store cannot flip the verdict toward trust.
+1. **Identity-resolution authority chain (the precedence floor), applied PER SIDE.** The compare is `resolve(owner) === resolve(sender)` over canonical fingerprints, where owner = the thread's recorded participant/owner (from `ThreadLog.participants`/`ConversationStore`/`threadResumeMap.remoteAgent` — an ALIAS on local binds) and sender = the inbound identity. Each side is resolved via, in order of authority:
+   1. verified-pairing store (mutual-verified),
+   2. handshake-pinned relay keys — scoped to `fingerprint→key` (transport liveness) and `fp-prefix→full-fp` extension ONLY; a NAME→fingerprint resolution that would flip a mismatch into a match does NOT come from here (round-2 security F4/adversarial ADV2-2: handshake NAMEs are self-asserted, TOFU-squattable),
+   3. known-agents registry — LAST resort, corroboration-only (name-keyed, last-writer-wins, `discoverLocal()` wholesale-replaces it).
+   **A resolution that would FLIP a raw mismatch into a match MUST come from rank 1 on the side being flipped** (round-2: the flip rule applies PER SIDE — a tier-3 flip on EITHER the owner or the sender side ⇒ isolate). Conflict between sources ⇒ isolate. Alias→multiple-fps ⇒ isolate. Unresolvable ⇒ isolate.
+   Inbound-identity source precedence (stated): `relayContext.senderFingerprint` → `opts.inboundSenderFingerprint` (now supplied by BOTH local and relay ingress) → registry-resolved `message.from.agent`, resolved-fp-or-null.
+   **Owned residual (honest):** a peer known ONLY through known-agents (no pairing, no handshake-pin) keeps phantom-minting post-fix — A3's promise is delivered for paired/handshake-pinned peers, not for registry-only peers. Stated so the operator knows verified-pairing is the durable cure.
+2. **The crypto-verified exemption is CLOSED.** Participant equality applies to verified senders too: **verified-and-foreign ⇒ isolate, never resume/join.** Verdict matrix:
 
-   Inbound-identity source precedence (post-fix, stated):
-   `relayContext.senderFingerprint` → `opts.inboundSenderFingerprint` (now supplied by
-   BOTH local and relay ingress) → registry-resolved `message.from.agent`, resolved-
-   fp-or-null.
-2. **The crypto-verified exemption is CLOSED.** `kind:'verified'` proves transport
-   identity, not thread ownership. Post-normalization the participant equality check
-   is cheap and reliable for verified senders — so it now applies to them too:
-   **verified-and-foreign ⇒ isolate, never resume/join.** The full verdict matrix:
+   | Owner resolution | Sender resolution | Participant match | Verdict |
+   |---|---|---|---|
+   | any (rank 1/2) | crypto-verified, rank 1/2 | fp === fp | resume/join canonical |
+   | any | crypto-verified | fp ≠ fp | ISOLATE (exemption closed) |
+   | rank 1/2 | rank 1/2 | match | resume/join |
+   | flip needs rank-3 on EITHER side | — | would-flip | ISOLATE (registry can't mint a match) |
+   | owner unresolvable | — | — | ISOLATE |
+   | no owner record at all (genuine first-contact) | any | n/a | spawn fresh (not a hijack — nobody owns it) |
+   | conflict / alias→multi-fp | — | — | ISOLATE |
+3. **Drain-path spawns run the resolver** (c1): a queue-drain delivery goes through Leg A′ exactly like the live relay-agent path — no stale binds + P2 prompt-only phantoms.
+4. **Live-bind collision joins, never mints** (c2): a delivery that PASSES the participant check and lands on a thread with a LIVE bound session reuses the routedThreadId (leave-bind + deliver into the live session). A delivery that FAILS takes isolation — join is unreachable for foreign senders by construction.
 
-   | Sender resolution | Participant match | Verdict |
-   |---|---|---|
-   | crypto-verified | matches owner fp | resume/join canonical |
-   | crypto-verified | ≠ owner fp | ISOLATE (new: exemption closed) |
-   | resolved via chain (1)/(2) | matches | resume/join canonical |
-   | resolved via chain (3) only | would flip mismatch→match | ISOLATE (registry can't mint a match) |
-   | conflict / multi-fp / unresolvable | — | ISOLATE |
-3. **Drain-path spawns run the binder** (c1): a queue-drain delivery rebinds
-   `threadResumeMap` to canonical exactly as the live relay-agent path does — no more
-   stale binds + P2 prompt-only phantoms.
-4. **Live-bind collision joins, never mints** (c2): when a delivery passes the
-   (now-universal) participant check and lands on a thread whose bound session is
-   LIVE, the delivery layer reuses the canonical threadId — leave-bind + deliver into
-   the live session (frontloaded; least-authority, no session churn). A delivery that
-   FAILS the participant check takes the isolation path — join is unreachable for
-   foreign senders by construction.
+**A3 HARD SEQUENCING CONSTRAINT:** Leg C's resolver re-binds spawns to canonical threads → re-engages the warm gate → without Leg B's union in place FIRST, replies break the other way. Leg C MUST NOT land without Leg B. Single PR enforces this.
 
-**A3 HARD SEQUENCING CONSTRAINT (agreed by both agents):** Leg C re-binds spawns to
-canonical threads → re-engages the warm gate on boxes that warm-bind → without Leg B's
-union in place FIRST, replies break the other way. Leg C MUST NOT land in any release
-without Leg B. Single PR enforces this structurally.
+### Leg D — idempotent redelivery / bounded duplicate suppression (A2ARedeliverySentinel)
 
-### Leg D — drain exactly-once (A2ARedeliverySentinel)
+Renamed from "exactly-once" (round-2 codex): with local files, retries, crash windows, and peer replay TTLs, the honest guarantee is idempotent redelivery + bounded dedup, RECEIVER-side and skew-degraded.
 
-`src/commands/server.ts` ~17005 redeliver closure + `src/monitoring/A2ARedeliverySentinel.ts`:
+1. **Re-sends reuse the ORIGINAL message — id AND wire bytes verbatim** (body + original wire `createdAt`). Byte-identity makes the receiver's dedup return a clean `duplicate`, never `collision` (a tamper alarm). Achieving this requires the outbox to persist the exact `wireCreatedAt` (round-2 adversarial F2: the outbox today stores an append-time `timestamp` and `readCanonicalOutboxEntry` returns no timestamp at all; `sendAuto` has no createdAt param) — so FD11 is corrected: a `wireCreatedAt` field IS added to the outbox row + returned by the reader + accepted as an override on the redelivery chokepoint; "no schema change" is scoped to attempt-accounting only. The inbox collision check compares BODY/contentDigest, not the append-time timestamp. The re-send routes through the SAME canonical outbound chokepoint (recordThreadMessage funnel) with a `redelivery` marker — never a `sendAuto` bypass.
+2. **Durable ingest id-dedup (the idempotency floor) — WIRED to short-circuit.** The Leg A unified append's id-idempotence IS the dedup, keyed `(sender-fp-or-ingress-class, routedThreadId, messageId)`. Critically (round-2 adversarial F7): relay-ingest must CONSULT the append/dedup verdict and short-circuit BEFORE the warrants-reply gate and spawn on a duplicate — today the ingest handler discards `appendCanonicalInboxEntry`'s return and spawns unconditionally. A deduped redelivery: no new rows, no spawn, tracker/ack updated, one `redelivery` audit row. The dedup reference survives rotation because Leg A req 4's time-floor keeps it ≥ the redelivery TTL (closing the rotated-out-id hole).
+3. **Digest backstop — body-scoped, marker-gated, transition-only.** `contentDigest` hashes `{routedThreadId, messageId, body, createdAt}` — an id-mutation changes it by construction, so it can't back-stop id-mutated legacy re-mints. The backstop uses `sha256(normalized body)` matched within `(authenticated sender fp, routedThreadId, direction: inbound)`, a bounded window (redelivery TTL 6h), a length floor (≥200 chars), an in-memory structure carrying the precedent's `maxEntries` cap (restart-lossy, accepted for a transition backstop). **Only arrivals carrying a `redelivery` marker are backstop-eligible** (round-2 adversarial F5) — this closes the false-positive where a peer legitimately sends the same ≥200-char body twice within 6h and it gets silently reclassified. Every suppression writes an audit row and records the arrival as `redelivery` (delivered-and-classified, never a silent drop). Transition-only: retires when fleet-min ≥ fix version (tracked marker). Owned residual: an unfixed peer's id-mutated re-mint carrying no marker is deduped by body+scope+window+floor only during the skew; a legitimate marked ≥200-char exact repeat within 6h is the accepted transition-window cost.
+4. **Ack-class discipline.** The pure-ack predicate is structural: an envelope-level ack flag on our own emissions + exact-template match on the configured `autoAckMessage` for legacy — never a substring heuristic over untrusted body text. Blast radius of a sender-set ack flag is bounded: it only ever downgrades guarantees for the flagged message itself; flagged rows stay membership-eligible and never affect any other message's validation. Ack-class lines never enter the resend queue; the auto-ack emitter consults the same predicate — never ack an ack. **Migration (condition-driven, not marker-gated):** each boot/sweep purges any ack-class rows FOUND in the delivery tracker (round-2 integration m7 — a one-shot marker is not bounce-idempotent across fixed→unfixed→fixed; a condition-driven purge is downgrade-safe). The tracker is runtime state, so this runs in the boot state-sweep, not `PostUpdateMigrator`.
+5. **Replay-gate interaction — inverted receiver-side (no spoofable wire signal).** A `redelivery`-marked arrival consults durable union membership: durably present ⇒ idempotent confirm (re-emit the ack the sender awaits); durably absent ⇒ ADMIT it (the id-dedup floor makes admission idempotent). This kills the TTL-skew coupling and needs NO new wire trust — the earlier "treat a replay-block as delivery-confirmed" clause is dropped (round-2 security F6/adversarial m2: the receiver's replay block is in-process, invisible to the sender; any NACK to make it observable would be a forgeable delivery-confirmation primitive). If a NACK is ever added, it must ride the authenticated E2E channel only, never plaintext.
+6. Cosmetic: the sweep log line reports the real peer count.
 
-1. **Re-sends reuse the ORIGINAL message — id AND wire bytes verbatim** (body and the
-   original wire `createdAt`, not a re-stamp): byte-identical re-sends make the
-   receiver's ThreadLog dedup return `duplicate` (clean idempotent no-op), never
-   `collision` (which is a tamper alarm — an honest redelivery must not trip it). The
-   re-send routes through the SAME canonical outbound chokepoint as a first send
-   (recordThreadMessage funnel) carrying a `redelivery` marker — never a sibling
-   `sendAuto` bypass; the sender-side log append is idempotent by the same
-   `(messageId, direction)` key.
-2. **Durable ingest id-dedup (the exactly-once floor).** Named structure: the Leg A
-   unified append's id-idempotence IS the dedup — lookup-before-append keyed
-   `(threadId, messageId)` scoped by authenticated sender fingerprint (a different
-   sender re-using a quoted id can never suppress the true sender's message, and a
-   pre-planted junk row under a known id cannot swallow the later honest re-send —
-   the collision path records and alerts instead). A deduped redelivery arrival:
-   no new rows, no spawn, tracker/ack updated, one audit row (`redelivery`).
-3. **Digest backstop — redefined, scoped, and windowed (transition-only).** The
-   existing `contentDigest` hashes `{threadId, messageId, body, createdAt}` — an
-   id-mutated re-mint changes it BY CONSTRUCTION, so it cannot back-stop anything.
-   The backstop uses a **body-scoped key**: `sha256(normalized body)` matched within
-   scope `(authenticated sender fp, threadId, direction: inbound)` and a bounded
-   window (the redelivery TTL, 6h), with a length floor (≥200 chars — the episode's
-   39-char acks and short legitimate repeats like "yes"/"done" can never dedup).
-   Every suppression writes an audit row and records the arrival as a `redelivery`
-   (delivered-and-classified, never silently dropped). Purpose: the mixed-fleet skew
-   window ONLY — unfixed peers keep re-minting fresh ids until upgraded; the backstop
-   retires when fleet-min ≥ fix version (tracked marker). Precedent: the relay
-   content-dedup window at routes.ts ~26596 (sender, thread, content, window).
-4. **Ack-class discipline.** The pure-ack predicate is pinned STRUCTURALLY: an
-   envelope-level ack flag on our own emissions + exact-template match on the
-   configured `autoAckMessage` for legacy peers — never a substring heuristic over
-   untrusted body text. Ack-class lines never enter the durable resend queue; the
-   auto-ack emitter consults the same predicate — never ack an ack. **Migration:** a
-   one-time purge of ack-class rows from deployed delivery trackers (the evidence
-   shows 1.3.865 trackers DO hold ack rows; without the purge the first post-upgrade
-   sweep replays them once).
-5. Cosmetic: the sweep log line reports the real peer count.
+**Rollout honesty for Leg D:** the re-send changes ride A2ARedeliverySentinel (ships `enabled:false`); the ingest-side id-dedup + digest backstop land in the always-on accept path (the fixed box's defense against UNFIXED peers' drains, so they can't wait behind the sentinel's flag).
 
-6. **Peer replay-gate interaction (pinned):** the receiving `InboundMessageGate`
-   holds a seen-messageId replay cache with a 10-minute TTL — a same-id re-send
-   inside that window is blocked as `replay_detected` while still consuming a
-   redelivery attempt. Pin: the sentinel's `sweepIntervalMs` must be ≥ the replay
-   TTL (enforced at config load, clamp + warn), and a replay-blocked re-send is
-   treated as delivery-confirmed (the id was provably ingested once) rather than a
-   failed attempt.
+## Alternative designs considered (round-2 externals)
 
-**Exactly-once scope, honestly:** the guarantee is RECEIVER-side and skew-degraded —
-during the mixed-fleet window a FIXED sender's byte-identical re-sends are cleanly
-deduped by unfixed peers only within their in-memory replay TTL; an unfixed peer past
-that window can still duplicate-spawn (no worse than today's fresh-id behavior). Full
-exactly-once holds once both ends run the fix.
+Both external reviewers asked why two canonical stores persist rather than collapsing to one. Considered and rejected for this fix:
 
-**Rollout honesty for Leg D:** the re-send changes ride A2ARedeliverySentinel, which
-ships `enabled:false` (its own existing dark gate); the ingest-side id-dedup +
-digest backstop land in the always-on accept path (they are the fixed box's defense
-against UNFIXED peers' drains, so they cannot wait behind the sentinel's flag).
-
-## Observability & self-detection (new)
-
-- **Coherence audit:** the declared agreement invariant joins the cadenced
-  coherence-audit walk — sampled post-epoch inbounds are checked present-in-both;
-  drift raises ONE deduped attention item (never a flood). This restores the alarm the
-  union read removes.
-- **Wedge counter:** N consecutive validator refusals on one thread within a window →
-  one deduped audit/attention signal (the wedge class ran 7+ occurrences over two days
-  with zero tripwire; that must not recur post-fix).
-- **Identity counter:** repeated anti-hijack isolations of the SAME resolved,
-  trust-anchored fingerprint → one deduped signal (the phantom-mint storm signature
-  lived as bare console.warn lines for weeks).
-- **Degraded-read audit:** every `store-unreadable` and every digest-backstop
-  suppression writes a scrubbed metadata row.
-- **Local (single-operator) verification surface:** a per-branch validator outcome
-  counter distinguishing inbox-hit / log-union-fallback-hit / refusal-by-type. A
-  non-zero union-fallback rate on POST-EPOCH inbounds is a direct Leg A drift
-  detector (new messages must be inbox-resident; only pre-epoch history should need
-  the fallback). Existing surfaces named for the operator: `GET
-  /threadline/threads/:id/health` (union counts + symmetry) for Legs A/B; the
-  ABSENCE of the `[ThreadlineRouter] Anti-hijack` log signature for a
-  trust-anchored peer for Leg C. The cross-agent retest (CMT-1981) is the live
-  proof, not the only proof.
-All these are SIGNAL-ONLY surfaces (Signal vs. Authority) riding existing funnels
-(audit JSONL + the deduped attention path); none gates delivery.
+- **Single append-only event log with derived inbox/history indexes** (the textbook CQRS-ish shape for this split class). Rejected as the FIX (not forever): it is a store-model rewrite touching every reader (dashboard, telegram bridge, symmetry, warm recovery, canonicalHistoryRead) — a far larger blast radius than the live wedge warrants, and it would itself need a migration of all existing thread logs + inboxes. The two-store model with a DECLARED agreement invariant + writer unification + divergence-tolerant read achieves the correctness goal at a fraction of the blast radius, and leaves the event-log consolidation as a possible future refactor once the invariant + coherence audit are in place (they are exactly the scaffolding that refactor would need).
+- **Inbox as a pure read-optimized projection of the log** (drop the inbox as an authority). Rejected: the inbox is the HMAC-keyed store that proves "this box durably accepted this inbound" — the log arm is keyed only going forward and unkeyed pre-epoch, so demoting the inbox to a projection would weaken the post-epoch forgery bar to the log arm's, not strengthen anything.
+- **Refuse pre-epoch log-resident pointers** (no bridge). Rejected: preserves the wedge for every existing conversation — the exact harm this spec ends.
 
 ## Decision points touched
 
 | Decision point | Classification | Justification |
 |---|---|---|
-| `relay-send` reply validation (warm + cold branches, Leg B) | `invariant` | Deterministic membership over the two authenticated stores via the ordered, bounded predicate (§Leg B); refusals typed; fail direction derived per P20 (unknown → typed refusal). No competing signals — an existence fact. |
-| Warm-branch pointer requirement (pointer iff non-ack union non-empty) | `invariant` | O(1) cached emptiness signal over the same authenticated union; ack exclusion uses the pinned pure-ack predicate. |
-| `tryClaimReply` single-flight + durable `hasCanonicalReplyFor` consult | `invariant` | Mutex + durable-record lookup; release-on-close fixes a leak, adds no judgment. |
-| Anti-hijack isolation verdict (Leg C) | `invariant` | Deterministic AFTER the declared resolution floor: authority chain (pairing > handshake > registry-corroboration-only), conflict/multi-fp/unresolvable ⇒ isolate, participant equality universal (verified included). The competing-signals hazard (which source wins) is resolved BY the floor, in code, with fail-toward-isolation. |
-| Live-bind collision handling (Leg C c2: join, never mint) | `invariant` | Deterministic rule, reachable only post-participant-check; rebind-vs-leave-bind frontloaded (leave-bind). |
-| Drain-spawn binder (Leg C c1) | `invariant` | Reuses the live relay-agent path's binder verbatim — one bind rule for all delivery paths. |
-| Redelivery decision (overdue ⇒ re-send under caps, Leg D) | `invariant` | Existing deterministic threshold machinery; this spec changes what is sent (original bytes) and what may enter the queue (never ack-class), not the decision shape. |
-| Ingest id-dedup + digest backstop accept/reject (Leg D) | `invariant` | Complete deterministic rule: id-dedup keyed (sender fp, threadId, messageId) first-write-wins; digest backstop body-hash within (sender fp, thread, direction, 6h window, ≥200-char floor); suppression always recorded as `redelivery` + audited — never a silent drop. |
-| Pure-ack predicate (Leg D 4) | `invariant` | Envelope flag + exact configured-template match — structural, never a body-text heuristic over untrusted input. |
+| Routing-resolution seat `resolveRoutedThreadId` (Leg A′) | `invariant` | Deterministic first-contact resolution + ownership verdict computed once; no competing-signals judgment beyond the identity floor (below). |
+| `relay-send` reply validation over `getInboundIfEligible` (Leg B) | `invariant` | Deterministic eligibility-carrying membership over the two authenticated stores; refusals typed; fail direction derived per P20. |
+| Warm-branch pointer requirement (pointer iff ≥1 non-ack eligible member) | `invariant` | Maintained union-scoped counter; ack exclusion via the pinned pure-ack predicate; both arms feed it. |
+| `tryClaimReply` + durable `hasCanonicalReplyFor` (indexed) | `invariant` | Mutex + O(1) durable-record lookup; release-on-close fixes a leak. |
+| Anti-hijack ownership verdict (Leg C, inside Leg A′) | `invariant` | Deterministic AFTER the declared per-side resolution floor (pairing > handshake-fp-only > registry-corroboration); conflict/multi-fp/tier-3-flip/unresolvable ⇒ isolate; participant equality universal (verified included). The competing-signals hazard (which source wins, per side) is resolved BY the floor, in code, fail-toward-isolation. |
+| Live-bind collision (Leg C c2: join, never mint) | `invariant` | Deterministic, reachable only post-participant-check. |
+| Drain-spawn resolver (Leg C c1) | `invariant` | Reuses Leg A′ verbatim — one resolution rule for every delivery path. |
+| Redelivery decision (overdue ⇒ re-send under caps, Leg D) | `invariant` | Existing threshold machinery; this spec changes what is sent (original bytes) + what may enter the queue (never ack-class), not the decision shape. |
+| Ingest id-dedup + digest backstop accept/reject (Leg D) | `invariant` | One key `(sender-fp-or-ingress-class, routedThreadId, messageId)` first-write-wins + non-owner-collision discard; digest backstop body-hash within (fp, thread, direction, 6h, ≥200-char, redelivery-marked); suppression always recorded as `redelivery` + audited. |
+| Pure-ack predicate (Leg D 4) | `invariant` | Envelope flag + exact configured-template match — structural, never a body-text heuristic. |
+| Redelivery-marked replay resolution (Leg D 5) | `invariant` | Deterministic durable-membership consult (present ⇒ confirm, absent ⇒ admit); no LLM, no wire-trust. |
 
 ## Multi-machine posture
 
-All state surfaces this spec touches live inside one machine's Threadline identity:
-
-- `threadline/inbox.jsonl.active`, `threadline/threads/<id>.log.jsonl`, the A2A
-  delivery tracker/outbox — **machine-local BY DESIGN.**
-  `machine-local-justification: physical-credential-locality` — these stores are
-  namespaced by the machine's Threadline routing identity (the Ed25519 relay keypair
-  on that disk); an A2A conversation deliberately does NOT move between machines
-  because the relay address is part of that machine's identity (existing design:
-  Threadline Conversation Coherence — the mesh view names the HOLDER rather than
-  replicating the thread). This spec changes read/write parity WITHIN one machine's
-  stores and does not alter that posture.
-- `thread-resume-map.json` — **machine-local BY DESIGN.**
-  `machine-local-justification: hardware-bound-resource` — it maps threadIds to
-  LOCAL tmux sessions; its locality comes from the session being a machine-bound
-  resource, not from the keypair (distinct key, same posture).
-- No new user-facing notices, no generated URLs, no durable state that rides a topic
-  transfer. The content-free conversation-lifecycle journal replication (holder
-  mapping) is unaffected. The new attention signals ride the existing single-hub
-  attention routing (already pool-aware).
+- `threadline/inbox.jsonl.active`, `threadline/threads/<id>.log.jsonl` (+ the new keyed-HMAC field + base-sidecar `keyedFromSeq`), the A2A delivery tracker/outbox — **machine-local BY DESIGN.** `machine-local-justification: physical-credential-locality` — namespaced by the machine's Ed25519 relay identity; an A2A conversation does NOT move between machines (Threadline Conversation Coherence names the HOLDER). The new keyed-HMAC field and `keyedFromSeq` are machine-local on-disk, never cross the wire — no cross-box format concern.
+- `thread-resume-map.json` — **machine-local BY DESIGN.** `machine-local-justification: hardware-bound-resource` — maps threadIds to LOCAL tmux sessions.
+- No new user-facing notices, no generated URLs, no durable state that rides a topic transfer. The new attention signals ride the existing single-hub attention routing. The `threadline.identityNormalization.emergencyDisable` flag gets a `GUARD_MANIFEST` entry (so it surfaces on `/guards`) AND a `machineCoherenceManifest` entry (so a mixed-fleet divergence on it is detectable) — precedent `selfActionGovernor.emergencyDisable` (round-2 integration m8).
+- **Non-interaction with the Threadline Single-Negotiator lease** (round-2 integration m11): that lease is a per-conversation OUTBOUND-ownership gate (structural: who may speak); this spec's `tryClaimReply` + validator govern per-INBOUND reply-pointer validity. Orthogonal — the negotiator lease decides whether this session speaks at all; the validator decides whether a given pointer is valid. No shared state.
 
 ## Frontloaded Decisions
 
-1. **Leg A seat:** extend the `recordThreadMessage` funnel with the canonical-inbox
-   sink; remove the relay-ingest direct append in the same change. Basis: one
-   chokepoint (Structure > Willpower), both stores' contents byte-equivalent under
-   either shape, wiring-integrity test asserts the funnel.
-2. **Post-guard threadId at every canonical append** (union-poisoning fix). Basis:
-   security/adversarial round-1 findings; the guard verdict already exists in the
-   routing path.
-3. **Log-arm trust model:** keyed-HMAC on inbound log entries going forward +
-   backfilled-excluded + bounded pre-epoch bridge as an accepted-risk record. Basis:
-   §Leg B; refusing the bridge preserves the wedge; the bridge population is frozen.
-4. **No retroactive inbox backfill.** Basis: §Store-of-record model — the union's log
-   arm IS the bridge; a backfill would launder unkeyed rows into the keyed store.
-5. **Membership primitives + probe order:** ThreadLog.has() first, early-exit inbox
-   second; no per-send chain verification; O(1) cached emptiness. Basis: scalability
-   round-1 findings; whole-file scans on the send hot path are the known event-loop
-   wedge class.
-6. **Which-pointer property dropped, stated:** warm branch validates membership, not
-   latest. Basis: ===latest is the wedge mechanism; per-inbound slots keep the latest
-   answerable.
-7. **c2 policy:** leave-bind + deliver into the live session (never rebind-churn,
-   never sibling-mint), reachable only post-participant-check. Basis: least
-   authority; the verified-foreign injection hole is closed by decision 8.
-8. **Crypto-verified exemption closed:** participant equality applies to verified
-   senders; verified-and-foreign isolates. Basis: adversarial round-1; transport
-   identity ≠ thread ownership.
-9. **Identity authority chain:** pairing > handshake-pinned > registry
-   (corroboration-only); conflict/multi/unresolvable ⇒ isolate. Basis: known-agents
-   is poisonable (self-asserted, last-writer-wins); a flip-to-match requires a
-   trust-anchored source.
-10. **Re-send = original bytes verbatim through the canonical outbound chokepoint
-    with a `redelivery` marker.** Basis: byte-identity keeps honest redelivery out of
-    the tamper-alarm path; the funnel doctrine forbids a second blessed bypass.
-11. **Exactly-once floor = Leg A id-idempotent append keyed (sender fp, threadId,
-    messageId), first-write-wins + collision audit.** Basis: no durable id-dedup
-    exists on the relay path today; in-memory windows don't survive the 6h backoff
-    tail. Tracker state suffices for attempt accounting (verified: entries carry
-    `attempts`/`maxAttempts`) — no outbox schema change.
-12. **Digest backstop:** body-scoped, sender+thread+direction-scoped, 6h window,
-    ≥200-char floor, audit-on-suppression, transition-only with a retirement marker.
-    Basis: contentDigest cannot catch id-mutations by construction; unwindowed
-    body-dedup suppresses legitimate repeats (Telegram duplicate-suppression
-    precedent: windowed, length-gated, bypassable).
-13. **Pure-ack predicate:** envelope flag + exact-template match, never substring.
-    Basis: a body-text heuristic over untrusted input is both evadable and
-    exploitable.
-14. **Ship live, no new config flag; rollback = revert PR.** Basis: a correctness
-    repair of an always-on broken path — a dark flag would leave the fleet broken
-    ("A Dark Feature Guards Nothing"; the Maturation Path's dark-gate logic is for
-    NEW capabilities, not repairs). Leg D's re-send half already rides the sentinel's
-    existing `enabled:false` gate; no Leg-C-only flag (it cannot be decoupled from
-    Leg B per A3). The earlier draft cited "User-Facing Fixes Ship Live", which does
-    not resolve in the registry (it is in-flight amendment PR #800) — the resolved
-    standards above carry the decision.
-15. **Refusal typing + self-correcting transition string.** Basis: the evidence bank
-    itself — ambiguous refusal strings cost two agents a two-day joint investigation.
-16. **Claim hardenings:** durable `hasCanonicalReplyFor` consult at claim; release on
-    `close`; LRU bound. Basis: restart-released in-memory claims + widened id-space =
-    duplicate replies; aborted responses must not leak slots.
-17. **One emergency valve, safe-direction only:** a live-read
-    `threadline.identityNormalization.emergencyDisable` flag that reverts Leg C's
-    resolution to today's RAW compare (= fail-toward-isolation, strictly the safe
-    direction — it can re-open phantom mints, never a hijack). Basis: Leg C rewires
-    a security guard's identity comparison; revert-PR propagates at auto-update
-    cadence, too slow for a mis-resolution incident. This does NOT dark-gate the fix
-    (decision 14 stands) — it is a kill-switch on the one security-behavior change,
-    and its OFF state is audited + surfaced on `/guards` like every deliberate
-    disable.
+1. **Leg A seat:** extend the `recordThreadMessage` funnel with the canonical-inbox sink; remove the relay-ingest direct append; add the zero-direct-callers ratchet.
+2. **Leg A′ routing-resolution seat:** a synchronous `resolveRoutedThreadId` at all three accept points, before append AND response; `handleInboundMessage` consumes the carried verdict (TOCTOU-safe), never recomputes.
+3. **Ownership engaged on durable evidence** (participants/ConversationStore/resume-map), not just a live bind — closes the cold-box hole.
+4. **Log-arm trust model:** domain-separated keyed-HMAC going forward (own info label, HMAC field OUTSIDE the chain whitelist), positional `keyedFromSeq` epoch in the base sidecar, backfilled-excluded, bounded pre-epoch bridge as recorded accepted-risk. OR-semantics (each arm independently trusted). Key-rotation carries `keyEpoch` (current+prior key tried).
+5. **No retroactive inbox backfill.**
+6. **Eligibility-carrying membership primitive** `getInboundIfEligible` (flags cached once at load, HMAC verified at load); DO NOT reuse `canonicalHistoryRead`; extract only the eligibility rules as a pure function.
+7. **Which-pointer property dropped, stated:** warm validates membership, not latest.
+8. **Non-ack emptiness counter** built + maintained (union-scoped, ack-excluded, sticky-monotonic, meta sidecar, fed by both arms incl. pre-epoch inbox-only).
+9. **c2 policy:** leave-bind + deliver into the live session; reachable only post-participant-check.
+10. **Crypto-verified exemption closed:** verified-and-foreign isolates.
+11. **Identity authority chain, per side:** pairing > handshake-fp-only > registry-corroboration; tier-3 flip on either side ⇒ isolate; owned residual (registry-only peers keep phantom-minting).
+12. **Re-send = original bytes verbatim** (incl. `wireCreatedAt`, an outbox schema addition) through the canonical outbound chokepoint with a `redelivery` marker.
+13. **One dedup key everywhere** `(sender-fp-or-ingress-class, routedThreadId, messageId)`, first-write-wins, non-owner-collision discard; local-token null-fp collapses local senders to one scope (stated).
+14. **Digest backstop:** body-scoped, sender+thread+direction-scoped, 6h window, ≥200-char floor, redelivery-marker-gated, maxEntries-capped, restart-lossy, audit-on-suppression, transition-only.
+15. **Pure-ack predicate:** envelope flag + exact-template; ack-purge condition-driven at boot-sweep (bounce-idempotent).
+16. **Idempotent-redelivery replay resolution:** durable-membership consult, no wire NACK.
+17. **Time-floored rotation on inbox AND outbox** (evict only beyond count AND older than max(TTL 6h, reply-validation horizon)); loud audit if live > N× count cap; prefix-only, atomic rewrite.
+18. **`hasCanonicalReplyFor` backed by an in-memory `(threadId,inReplyTo)→bool` index** (LRU, live-segment rebuild) — no whole-file outbox scan on the hot path.
+19. **Claim hardenings:** durable indexed consult at claim; release on `close`; LRU bound.
+20. **store-unreadable only on no-hit:** an unreadable arm never refuses when the other arm has an eligible hit.
+21. **Ship live, no new dark flag; rollback = revert PR.** A correctness repair of an always-on broken path ("A Dark Feature Guards Nothing"). Leg D's re-send half rides the sentinel's existing `enabled:false`; no Leg-C-only flag (A3 coupling). Rollback-safe: inbox rows verify under the unchanged HKDF key; the log-HMAC + `keyedFromSeq` are additive + off-chain (no downgrade quarantine); `wireCreatedAt`/`ingress` are additive fields a reverted reader ignores.
+22. **One emergency valve, normalization-ONLY, safe-direction:** `threadline.identityNormalization.emergencyDisable` reverts Leg C's alias→fp NORMALIZATION step only; the universal participant check (FD10) and c2 post-check are NEVER valve-revertible (so it can re-open phantom mints, never a hijack). Live-read, audited, surfaced on `/guards` + `machineCoherenceManifest`.
+23. **Refusal typing + self-correcting transition string;** refusal strings never interpolate ids/fps/paths.
+24. **Config-migration parity:** neither new knob (`emergencyDisable`, the sweep clamp) needs a `migrateConfig()` entry (default-absent → safe behavior); the sweep clamp is a load-time clamp, downgrade-safe.
 
 ## Open questions
 
 *(none — all resolved into Frontloaded Decisions above)*
 
-## Regression set (every item live-observed or reviewer-derived this episode)
+## Observability & self-detection
 
-Tiers: U = unit, I = integration (HTTP pipeline), E = e2e lifecycle. The live
-two-agent retest (CMT-1981 protocol) is the L7 live-proof artifact for the bug-fix
-evidence bar.
+- **Coherence audit:** the declared agreement invariant joins the cadenced coherence-audit walk — a BOUNDED sample (N per tick) of post-epoch inbounds checked present-in-both; drift raises ONE deduped attention item. Restores the alarm the union read removes.
+- **Wedge counter:** N consecutive `absent-from-union` refusals on one thread within a window → one deduped signal. Counter map LRU/TTL-bounded.
+- **Identity counter:** repeated isolations of the SAME resolved, trust-anchored fingerprint → one deduped signal. Map LRU/TTL-bounded.
+- **Degraded-read + suppression audit:** every `store-unreadable` and every digest-backstop suppression writes a scrubbed metadata row.
+- **Local verification surface:** an IN-MEMORY per-branch validator outcome counter (inbox-hit / log-union-fallback-hit / refusal-by-type) served on a route — NOT a per-send JSONL append. A non-zero union-fallback rate on POST-epoch inbounds is a direct Leg A drift detector. Plus `GET /threadline/threads/:id/health` and the ABSENCE of the anti-hijack log signature for a trust-anchored peer.
+All signal-only; none gates delivery.
 
-1. (I) Local-delivered inbound (co-located peer) → plain pointered reply accepted on
-   BOTH branches; inbox row present with `ingress: local-token` + resolved-fp-or-null.
-2. (I) Zero-inbound-row thread → pointerless-with-threadId accepted (over the union).
-3. (I) NON-latest union member supplied as pointer → accepted (A2's membership proof).
-4. (I) **The wedge case:** warm-bound session; latest inbox row's slot claimed by an
-   earlier 2xx sibling; new inbound log-resident/inbox-absent → pointered reply to the
-   new inbound ACCEPTED. The headline test.
-5. (U) Paired same-turn mint/no-mint (live-bind collision): passing-participant
-   delivery onto a LIVE bind joins (no sibling record); dead/pruned bind rebinds
-   cleanly.
-6. (U) Anti-hijack matrix — every row of the Leg C verdict table, INCLUDING
-   verified-and-foreign ⇒ isolate, registry-only flip ⇒ isolate,
-   conflict/multi-fp ⇒ isolate; alias-recorded binding + raw-fp relay inbound from the
-   SAME trust-anchored peer ⇒ no isolation, no phantom.
-7. (U) Pre-guard poisoning: unverified sender presents victim threadId → its rows land
-   on the ISOLATION thread in both stores; the victim thread's union gains nothing;
-   `readLatestCanonicalInboxForThread(victim)` unchanged.
-8. (U) Drain re-send: original id + original bytes → receiver ThreadLog returns
-   `duplicate` (never `collision`); no spawn; tracker acked; one `redelivery` audit
-   row. Id-mutated legacy re-mint (unfixed peer shape) → digest backstop classifies
-   within window/floor/scope; identical short text ("done") twice → NOT deduped
-   (length floor); same body from a DIFFERENT sender → NOT deduped (fp scope);
-   same body outside the window → NOT deduped.
-9. (U) Pre-planted junk row under a known id (quoted-id replay) → collision audit,
-   original never shadowed, honest re-send still lands (first-write-wins semantics).
-10. (U) Backfilled log entries (`backfilled: true`) are never reply-eligible; post-epoch
-    log entries without a valid HMAC are never reply-eligible.
-11. (U) Ack-class: ack rows excluded from the emptiness test (ack-only thread accepts
-    pointerless); never enter the resend queue; never acked back; legacy tracker
-    ack-row purge runs once.
-12. (I) Restart mid-reply: claims lost, durable `hasCanonicalReplyFor` still refuses a
-    second reply to the same inbound; aborted-connection claim releases on `close`.
-13. (U) Typed refusals: absent-from-union vs store-unreadable distinguishable; the
-    absent string carries the self-correcting remedy text; degraded reads audited.
-14. (U) Chain break mid-log → quarantine-and-continue; membership before the break
-    unaffected; no whole-thread poison.
-15. (I) Mixed-fleet legacy shapes against a FIXED box: stale-id pointer (accepted —
-    it names a real inbox row), pointerless-on-canonical with non-ack rows (typed 400
-    with remedy string), forced-mint RECONCILE header (ordinary new thread; no special
-    casing), id-mutated drain re-mint (backstop, item 8).
-16. (U) Wiring-integrity: enumerate inbound-persisting routes; assert each rides the
-    unified funnel (both stores, post-guard threadId, provenance fields).
-17. (U) Parity ratchet: `messageCount == historyCount == peerThreadSync.count` on
-    healthy turns; plus the new invariant sample check (post-epoch inbound present in
-    both stores).
-18. (U) Growth bounds: inbox rotation + inline cap honored; membership reads never
-    whole-file-scan (probe order asserted); rotation window ≥ redelivery TTL.
-19. Forensics hygiene (A4): all store assertions parse the id FIELD; no positive
-    substring greps.
-20. (E) Feature-alive: a co-located two-agent exchange (send → spawn → pointered
-    reply → ack) completes end-to-end on the production init path.
+## Regression set (every item live-observed or reviewer-derived)
+
+Tiers: U = unit, I = integration (HTTP pipeline), E = e2e. The live two-agent retest (CMT-1981) is the L7 live-proof artifact.
+
+1. (I) Local-delivered inbound → pointered reply accepted on both branches; inbox row present, `ingress: local-token`, resolved-fp-or-null.
+2. (I) Zero-inbound-row thread → pointerless-with-threadId accepted.
+3. (I) NON-latest eligible union member as pointer → accepted (membership, not latest).
+4. (I) **The wedge case:** warm-bound; latest inbox slot claimed by an earlier 2xx sibling; new inbound log-resident/inbox-absent → pointered reply ACCEPTED. Headline test.
+5. (U) Leg A′ resolution: threadId-less inbound gets ONE id used for BOTH persistence and routing (no synthetic-vs-minted divergence); `handleInboundMessage` consumes the carried verdict, never recomputes (TOCTOU: resume-map mutated between accept and async router → no split).
+6. (U) Guard fires on ALL branches: trusted-tier sender + foreign presented threadId via the warm-LISTENER branch → isolated (not just cold-spawn); pipe-spawn branch likewise.
+7. (U) Cold-box: hostile presented threadId with an EMPTY resume map but a persisted ThreadLog participant set → resolved via participants → isolated; rows land on the isolation thread; victim thread's union + `latest` unchanged.
+8. (U) Anti-hijack matrix — every row incl. verified-and-foreign ⇒ isolate; tier-3-flip either side ⇒ isolate; owner-alias-via-registry-only ⇒ isolate; genuine first-contact (no owner) ⇒ spawn; alias→multi-fp ⇒ isolate; same trust-anchored peer, alias-recorded binding + raw-fp inbound ⇒ no isolation, no phantom.
+9. (U) Dedup: same id + original bytes (incl. wireCreatedAt) → `duplicate`, never `collision`; no spawn (ingest short-circuits); one `redelivery` audit row. Non-owner collision under a chosen id → discarded, honest owner write lands (honest-first NOT required). Id-mutated legacy re-mint w/ redelivery marker → body backstop within scope/window/floor; unmarked → not backstopped; identical ≥200-char body twice from same sender w/o marker → NOT suppressed; different sender / outside window / <200 char → NOT suppressed.
+10. (U) Eligibility: `backfilled:true` never reply-eligible; post-`keyedFromSeq` entry w/o valid HMAC never eligible; entry whose `peerFingerprint` is not a thread participant never eligible; pre-`keyedFromSeq` unkeyed entry eligible (bridge).
+11. (U) Ack-class: excluded from emptiness test (ack-only thread → pointerless accepted); never in resend queue; never acked back; condition-driven tracker purge runs every boot-sweep (idempotent across a fixed→unfixed→fixed bounce).
+12. (I) Restart mid-reply: in-memory claims lost, durable indexed `hasCanonicalReplyFor` still refuses a second reply; aborted connection releases the claim on `close`.
+13. (U) Typed refusals: absent-from-union vs store-unreadable distinguishable; absent carries the self-correcting remedy; store-unreadable NEVER refuses when the other arm has an eligible hit; no id/fp/path interpolation; degraded reads audited.
+14. (U) Chain break mid-log → quarantine-and-continue; membership before the break unaffected.
+15. (I) Mixed-fleet legacy shapes against a FIXED box: stale-id pointer (accepted), pointerless-on-canonical with non-ack rows (typed 400 + remedy), forced-mint RECONCILE header (ordinary new thread), id-mutated drain re-mint (item 9).
+16. (U) Wiring-integrity: enumerate inbound-persisting routes; assert each rides the funnel (both stores, routedThreadId, provenance); zero-direct-callers ratchet for the append primitives.
+17. (U) Parity ratchet over the UNION read: post-epoch inbound present in both stores on healthy turns.
+18. (U) Growth bounds: inbox AND outbox time-floored rotation (never evict < max(TTL, horizon)); membership reads never whole-file-scan (probe order + index asserted); `hasCanonicalReplyFor` uses the index; eligibility path never whole-file-scans (cached flags).
+19. (U) Rotation invariants: prefix-only eviction, atomic rewrite, `readNewestJsonlMatch`/`readLatestCanonicalInboxForThread` correct after rotation; null-tolerant latest consumers.
+20. (U) Key rotation: an `authToken` rotation with `keyEpoch` current+prior → post-epoch history stays eligible (no fleet wedge).
+21. (U) Emergency valve: `emergencyDisable:true` reverts normalization only; verified-and-foreign STILL isolates; participant check STILL runs; flag surfaces on `/guards`.
+22. (U) Rollback: log-HMAC + keyedFromSeq off-chain (a downgraded reader does not quarantine); inbox rows verify under unchanged key; `wireCreatedAt`/`ingress` ignored by reverted reader.
+23. Forensics hygiene (A4): all store assertions parse the id FIELD; no positive substring greps.
+24. (E) Feature-alive: co-located two-agent exchange (send → spawn → pointered reply → ack) completes on the production init path.
 
 ## Rollout / rollback
 
-- Single PR, all four legs. Justification for one PR (contested by round-1 external
-  review, resolved): B+C are hard-coupled (A3); A is the WRITE side of B's declared
-  invariant — shipping B without A leaves the divergence generator live, so the
-  just-declared invariant is violated at birth; D's ingest half is the fixed box's
-  defense against unfixed peers' drain traffic during the exact skew window the B+C
-  rollout creates. The build may stage legs as reviewable commits within the one PR.
-- Ships LIVE (Frontloaded Decision 14). Rollback = revert PR. Rollback safety: rows
-  the fixed version writes that the reverted version reads — inbox rows from new
-  ingresses verify under the SAME HMAC key (key derivation unchanged) and carry only
-  additive fields; thread-log entries' added HMAC field is additive; a reverted box
-  simply resumes the old (split) behavior.
-- **Transition honesty (corrected claim):** the union WIDENS pointered acceptance;
-  the pointer-required rule NARROWS pointerless acceptance on threads whose union has
-  non-ack inbound rows — which includes the pointerless-on-canonical convention both
-  agents run today on wedged threads. Mitigations: the self-correcting refusal string
-  (one round trip to adapt), and convention retirement is announced AT release via the
-  CMT-1981 ship ping — not after a leisurely retest. Unfixed peers' legacy shapes are
-  enumerated in regression item 15.
-- Post-merge protocol (registered commitments): deliver CMT-1976/1979/1980 with the
-  merged PR; CMT-1981 ship ping on ebf68943 → sagemind retests plain inReplyTo against
-  a fresh co-located inbound (+ the warm-wedge case if arrangeable) → both sides
-  retire the stale-id/pointerless workaround convention.
-- Known vestige until this ships: pings from Echo phantom-mint on sagemind's box
-  (pre-registered by them 2026-07-18 — vestige, not regression; they reconcile onto
-  canonical).
+- Single PR, all legs (A′/A/B/C/D). One-PR justification (contested by round-1 external review, resolved): B+C hard-coupled (A3); A is the WRITE side of B's invariant; A′ is the shared seat all of A/B/C depend on; D's ingest half is the fixed box's defense against unfixed peers during the skew. The build may stage legs as reviewable commits within the one PR.
+- Ships LIVE (FD21). Rollback = revert PR; rollback-safety pinned in FD21 (off-chain HMAC, additive fields, unchanged key derivation).
+- **Transition honesty:** the union WIDENS pointered acceptance; the pointer-required rule NARROWS pointerless acceptance on threads whose union has non-ack rows (incl. the pointerless-on-canonical convention both agents run today). Mitigations: the self-correcting refusal string (one round trip), convention retirement announced AT release via the CMT-1981 ship ping. Unfixed peers' legacy shapes enumerated in regression 15.
+- Post-merge protocol (registered commitments): deliver CMT-1976/1979/1980 with the merged PR; CMT-1981 ship ping on ebf68943 → sagemind retests plain inReplyTo against a fresh co-located inbound (+ the warm-wedge case if arrangeable) → both sides retire the workaround convention.
+- Known vestige until this ships: pings from Echo phantom-mint on sagemind's box (pre-registered — vestige, not regression).
 
 ## Explicitly out of scope
 
 - `messages/index/inbox.jsonl` (different subsystem; A4).
-- The forced-mint reconciliation-header convention (dies naturally when this ships).
-- Retroactive inbox backfill (Frontloaded Decision 4).
-- Rider promise taken in the same investigation: ISO-timestamp the lifeline stderr
-  writer — registered for delivery alongside CMT-1976's brief at build time (Close
-  the Loop: named here so it is not silently dropped; the build PR checklist carries
-  it).
+- The forced-mint reconciliation-header convention (dies when this ships).
+- Retroactive inbox backfill (FD5).
+- Full store-model collapse to a single event log (Alternatives Considered — a possible future refactor, not this fix).
+- Rider promise: ISO-timestamp the lifeline stderr writer — registered for delivery alongside CMT-1976's brief at build time (Close the Loop; the build PR checklist carries it).
