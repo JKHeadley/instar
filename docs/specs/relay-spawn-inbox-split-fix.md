@@ -3,7 +3,8 @@ title: "Threadline Store-Split Fix — reply validation over inbox ∪ thread-lo
 slug: relay-spawn-inbox-split-fix
 author: Echo
 date: 2026-07-18
-parent-principle: The Agent Is Always Reachable
+parent-principle: "The Agent Is Always Reachable — A Guaranteed Reachability Floor"
+parent-principle-fit: "A2A replies are the agent-to-agent reachability surface: the store-split makes an agent exists-but-rejects on every on-thread egress path (the observed total wedge) — reachable in name, unable to respond in fact. Corollary 1 (liveness, not existence) is the exact class: this spec restores the guaranteed reply floor by validating against the union of the authenticated stores instead of the one store most delivery paths never write."
 related-principles:
   - Structure beats Willpower
   - Signal vs. Authority
@@ -285,6 +286,34 @@ structurally.
 - Known vestige until this ships: pings from Echo phantom-mint on sagemind's box
   (pre-registered by them 2026-07-18 — vestige, not regression; they reconcile onto
   canonical).
+
+## Decision points touched
+
+| Decision point | Classification | Justification |
+|---|---|---|
+| `relay-send` reply validation (warm + cold branches, Leg B) | `invariant` | Deterministic membership check over the two authenticated stores (HMAC-verified inbox rows; chain-verified log entries). It proves "an authenticated inbound with this id exists on this thread" — an existence fact, not a competing-signals judgment. Fail direction on store-read error: treat as absent → refusal (today's shape), never crash-open. |
+| Warm-branch pointer requirement (pointer required iff the union has inbound rows, Leg B) | `invariant` | Pure set-emptiness test over the same authenticated union; preserves today's zero-row pointerless acceptance deterministically. |
+| `tryClaimReply` single-flight reply claim (unchanged, re-keyed by union membership) | `invariant` | Mutex semantics on a message id; no signal weighing. Unchanged by this spec except that log-resident ids now carry their own claim slot. |
+| Anti-hijack isolation verdict (Leg C, normalization) | `invariant` | The verdict itself stays deterministic: crypto-verified ⇒ pass; else canonical-fingerprint equality after registry/pairing resolution. The fix REMOVES a false signal (alias-vs-fp string inequality), it does not add judgment. Unresolvable identity still fails toward isolation (fail-safe direction unchanged). |
+| Live-bind collision handling (Leg C c2: join, never mint) | `invariant` | Deterministic rule replacing an accidental branch; no arbiter needed. The rebind-vs-leave-bind choice is a frontloaded design decision, not a runtime judgment. |
+| Redelivery decision (overdue ⇒ re-send under caps, Leg D) | `invariant` | Existing deterministic threshold machinery (sweep interval, TTL, attempt caps) — this spec changes only WHAT is sent (original id) and what may enter the queue (never ack-class), not the decision shape. |
+
+## Multi-machine posture
+
+All state surfaces this spec touches live inside one machine's Threadline identity:
+
+- `threadline/inbox.jsonl.active`, `threadline/threads/<id>.log.jsonl`,
+  `thread-resume-map.json`, the A2A delivery tracker/outbox — **machine-local BY
+  DESIGN.** `machine-local-justification: physical-credential-locality` — these
+  stores are namespaced by the machine's Threadline routing identity (the Ed25519
+  relay keypair on that disk); an A2A conversation deliberately does NOT move
+  between machines because the relay address is part of that machine's identity
+  (existing design: Threadline Conversation Coherence — the mesh view names the
+  HOLDER rather than replicating the thread). This spec changes read/write parity
+  WITHIN one machine's stores and does not alter that posture.
+- No new user-facing notices, no generated URLs, no durable state that rides a
+  topic transfer. The existing content-free conversation-lifecycle journal
+  replication (holder mapping) is unaffected.
 
 ## Explicitly out of scope
 
