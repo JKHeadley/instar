@@ -92,6 +92,7 @@ Concur: Slice 1 enforces unambiguous frozen-envelope references and shared revis
 - `tests/unit/autonomous-run-store.test.ts`: 15 existing store regression tests.
 - Focused Vitest run: 38/38 passing.
 - `npm run build`, `npm run lint`, and `git diff --check`: passing.
+- `tests/unit/no-silent-fallbacks.test.ts`: passing; the boundary-validator catch is explicitly documented as fail-closed.
 
 ## Class-Closure Declaration (display-only mirror)
 

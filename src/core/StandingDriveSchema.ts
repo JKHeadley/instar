@@ -178,6 +178,8 @@ export function validateStandingDriveExtensionV1(value: unknown, topicId?: strin
     if (v.breaker.rearmBasis !== undefined && !['operator-transition', 'semantic-progress'].includes(v.breaker.rearmBasis)) return false;
     return true;
   } catch {
+    /* @silent-fallback-ok — boundary validator converts malformed nested input to false;
+       callers receive the explicit fail-closed corrupt/hold decision. */
     return false;
   }
 }

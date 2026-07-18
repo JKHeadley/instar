@@ -6,4 +6,6 @@ The section freezes the operator-authorized phases and allowed actions. Code com
 
 Canonical digests use fixed code-unit ordering rather than the machine's locale, so moving between machines, shell environments, or Node versions cannot falsely turn a valid drive into corrupt state. Every timestamp must also use one canonical ISO form, and every optional reference is bounded and validated when present.
 
+Malformed nested input is intentionally converted into an explicit invalid result, which later composition turns into a corrupt/hold decision; it never becomes an implicit allow.
+
 This does not wake sessions, replay messages, dispatch external effects, or grant new authority. Those behaviors remain in later reviewed slices and must compose with their existing owners.
