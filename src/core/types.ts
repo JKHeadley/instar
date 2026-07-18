@@ -3307,6 +3307,19 @@ export interface InstarConfig {
     autoExpiry?: EvolutionManagerConfig['autoExpiry'];
   };
   /**
+   * Apprenticeship-program gates (docs/specs/framework-stall-coverage-matrix.md
+   * §3.4). `stallCoverageGate` is read LIVE at the gate callsite — no restart.
+   * Absence resolves to the inline code default {enabled: true, dryRun: true};
+   * a malformed block resolves to the safe default with a loud log line.
+   * Deliberately NO migrateConfig entry (absence = default, spec §3.4).
+   */
+  apprenticeship?: {
+    stallCoverageGate?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+    };
+  };
+  /**
    * Feedback-factory operated-instance config (docs/specs/feedback-factory-migration.md).
    * `receiverPersistence` is the Option-B receiving end: the canonical front (Vercel)
    * writes accepted reports to a durable Blob inbox; the InboxDrainer on THIS machine

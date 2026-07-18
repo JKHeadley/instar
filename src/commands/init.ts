@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
+import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
@@ -4076,6 +4077,14 @@ Use \`threadline_relay explain\` for full details.
 }
 
 function installHooks(stateDir: string): void {
+  // Install provenance (framework-stall-coverage-matrix §3.2 degraded rung):
+  // classify this install source-carrying vs fleet ONCE, from the same signals
+  // the dev-agent gate uses + presence of the analyzable tree, and append the
+  // tamper-evident record the stall-coverage gate reads. Presence-scan
+  // idempotent; installHooks is the one seam every init path funnels through
+  // (fresh, existing, standalone, refreshHooksAndSettings).
+  recordInstallProvenanceIfAbsent(path.dirname(stateDir), stateDir);
+
   const hooksBaseDir = path.join(stateDir, 'hooks');
   const hooksDir = path.join(hooksBaseDir, 'instar');
   const customHooksDir = path.join(hooksBaseDir, 'custom');

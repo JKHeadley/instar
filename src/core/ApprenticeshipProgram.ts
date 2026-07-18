@@ -38,6 +38,11 @@ import {
   safeArtifactPath,
   type ValidateResult,
 } from './retroHarvestValidator.js';
+import {
+  ApprenticeshipStallGate,
+  appendApprenticeshipDecisionRow,
+  type StallGateReport,
+} from './ApprenticeshipStallGate.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -122,6 +127,11 @@ export interface CompletionGateVerdict {
   allow: boolean;
   reason: string;
   missing: string[];
+  /** Non-blocking advisories (e.g. the grandfathered stall-matrix warning row
+   *  on can-complete — stall-coverage spec Decision 10). */
+  warnings?: string[];
+  /** The stall-coverage matrix gate report (stall-coverage spec §3.2). */
+  stallMatrix?: StallGateReport;
 }
 
 /**
@@ -183,6 +193,12 @@ export interface ApprenticeshipProgramConfig {
   decisionLogPath?: string;
   /** Override gate deps (tests). Defaults read the real fs + validator. */
   deps?: Partial<GateDeps>;
+  /**
+   * The stall-coverage matrix gate (stall-coverage spec §2.3). `undefined` ⇒
+   * construct the default gate (live-read config, worker-bounded validation);
+   * explicit `null` disables the branch entirely (tests of the legacy gates).
+   */
+  stallGate?: ApprenticeshipStallGate | null;
 }
 
 // ── Implementation ───────────────────────────────────────────────────
@@ -195,12 +211,21 @@ export class ApprenticeshipProgram {
   /** True when the on-disk store was unparseable → gates fail closed. */
   private corrupt = false;
   private deps: GateDeps;
+  private stallGate: ApprenticeshipStallGate | null;
 
   constructor(config: ApprenticeshipProgramConfig) {
     this.storePath = path.join(config.stateDir, 'apprenticeship', 'instances.json');
     this.decisionLogPath =
       config.decisionLogPath ?? path.join(config.stateDir, 'logs', 'apprenticeship-decisions.jsonl');
     this.projectDir = config.projectDir;
+    this.stallGate =
+      config.stallGate === undefined
+        ? new ApprenticeshipStallGate({
+            projectDir: config.projectDir,
+            stateDir: config.stateDir,
+            decisionLogPath: this.decisionLogPath,
+          })
+        : config.stallGate;
     this.deps = {
       readHarvest: config.deps?.readHarvest ?? ((rel) => this.defaultReadHarvest(rel)),
       validate: config.deps?.validate ?? validateRetroHarvest,
@@ -337,6 +362,11 @@ export class ApprenticeshipProgram {
   /** True when the on-disk store was present but unparseable (gates fail closed). */
   isCorrupt(): boolean {
     return this.corrupt;
+  }
+
+  /** The stall-coverage matrix gate wired into this program (null = disabled). */
+  getStallGate(): ApprenticeshipStallGate | null {
+    return this.stallGate;
   }
 
   // ── Create ─────────────────────────────────────────────────────────
@@ -509,8 +539,15 @@ export class ApprenticeshipProgram {
    * harvestExists+validates, an instance-scoped ledger count ≥1, detectorAudit
    * present. A stored requiredArtifacts:true is NEVER treated as evidence of
    * presence.
+   *
+   * Async since PR-B: the stall-coverage matrix check (stall-coverage spec
+   * §2.3 — "a SINGLE new branch inside the existing completion gate") runs
+   * bounded validation + loopback liveness checks. The matrix requirement is
+   * derived from the canonical checklist function of (instanceType,
+   * createdAt) — deliberately NOT from the per-instance requiredArtifacts
+   * flags (spec §2.3's named design change for this artifact class).
    */
-  evaluateCompletionGate(instance: ApprenticeshipInstance): CompletionGateVerdict {
+  async evaluateCompletionGate(instance: ApprenticeshipInstance): Promise<CompletionGateVerdict> {
     if (this.corrupt) {
       return { allow: false, reason: 'instance store is corrupt — fail closed', missing: ['store-corrupt'] };
     }
@@ -543,14 +580,38 @@ export class ApprenticeshipProgram {
       if (!this.deps.detectorAuditExists(instance)) missing.push('detectorAudit:absent');
     }
 
+    // ── Stall-coverage matrix branch (stall-coverage spec §2.3 full gate) ──
+    let warnings: string[] | undefined;
+    let stallMatrix: StallGateReport | undefined;
+    let stallReason: string | null = null;
+    if (this.stallGate) {
+      const verdict = await this.stallGate.evaluateForTransition(instance, 'full');
+      stallMatrix = verdict.report;
+      if (verdict.report.warnings.length > 0) warnings = [...verdict.report.warnings];
+      if (!verdict.allow) {
+        missing.push(`stallMatrix:${verdict.report.verdict}`);
+        stallReason = verdict.reason; // class ids + rule names only (Decision 16)
+      }
+    }
+
     if (missing.length > 0) {
       return {
         allow: false,
-        reason: `completion blocked — missing live artifacts: ${missing.join(', ')}`,
+        reason: `completion blocked — missing live artifacts: ${missing.join(', ')}${
+          stallReason ? ` (stall-coverage: ${stallReason})` : ''
+        }`,
         missing,
+        ...(warnings ? { warnings } : {}),
+        ...(stallMatrix ? { stallMatrix } : {}),
       };
     }
-    return { allow: true, reason: 'all declared-required artifacts verified present from live state', missing: [] };
+    return {
+      allow: true,
+      reason: 'all declared-required artifacts verified present from live state',
+      missing: [],
+      ...(warnings ? { warnings } : {}),
+      ...(stallMatrix ? { stallMatrix } : {}),
+    };
   }
 
   // ── Status transitions (the gates are not advisory) ─────────────────
@@ -564,7 +625,7 @@ export class ApprenticeshipProgram {
    * Any transition not in the table is rejected with a reason. Every gate
    * verdict is appended to the decision audit.
    */
-  transition(id: string, to: InstanceStatus): { ok: boolean; reason: string; instance?: ApprenticeshipInstance } {
+  async transition(id: string, to: InstanceStatus): Promise<{ ok: boolean; reason: string; instance?: ApprenticeshipInstance }> {
     if (this.corrupt) {
       return { ok: false, reason: 'instance store is corrupt — fail closed' };
     }
@@ -584,6 +645,16 @@ export class ApprenticeshipProgram {
       const verdict = this.evaluateStartGate(instance);
       this.recordDecision({ gate: 'start', instanceId: id, allow: verdict.allow, reason: verdict.reason });
       if (!verdict.allow) return { ok: false, reason: `start gate refused: ${verdict.reason}` };
+      // Sibling branch (stall-coverage spec §2.3): a PROVISIONAL matrix must
+      // exist before live/on-task operation — hermetic depth only. dryRun
+      // suppresses identically to the completion arm (would-refuse logged by
+      // the gate itself).
+      if (this.stallGate) {
+        const matrix = await this.stallGate.evaluateForTransition(instance, 'provisional');
+        if (!matrix.allow) {
+          return { ok: false, reason: `provisional stall-coverage matrix gate refused: ${matrix.reason}` };
+        }
+      }
     }
     if (instance.status === 'blocked' && to === 'active') {
       // Re-gate on resume from blocked.
@@ -592,7 +663,7 @@ export class ApprenticeshipProgram {
       if (!verdict.allow) return { ok: false, reason: `start gate refused (re-gate): ${verdict.reason}` };
     }
     if (instance.status === 'active' && to === 'complete') {
-      const verdict = this.evaluateCompletionGate(instance);
+      const verdict = await this.evaluateCompletionGate(instance);
       this.recordDecision({
         gate: 'completion',
         instanceId: id,
@@ -657,25 +728,19 @@ export class ApprenticeshipProgram {
     toRung?: number;
     evidenceRef?: string;
   }): void {
-    try {
-      const dir = path.dirname(this.decisionLogPath);
-      fs.mkdirSync(dir, { recursive: true });
-      const line =
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          gate: entry.gate,
-          instanceId: entry.instanceId,
-          allow: entry.allow,
-          reason: entry.reason,
-          ...(entry.missing && entry.missing.length ? { missing: entry.missing } : {}),
-          ...(entry.fromRung !== undefined ? { fromRung: entry.fromRung } : {}),
-          ...(entry.toRung !== undefined ? { toRung: entry.toRung } : {}),
-          ...(entry.evidenceRef ? { evidenceRef: entry.evidenceRef } : {}),
-        }) + '\n';
-      fs.appendFileSync(this.decisionLogPath, line);
-    } catch {
-      // @silent-fallback-ok — the audit is observability; a write failure must
-      // not block the (already-decided) transition.
-    }
+    // Funnel through the shared recordDecision primitive (PR-B): the
+    // stall-matrix gate, acceptance artifacts, and install-provenance rows
+    // append through the same helper, so the audit has ONE write path.
+    appendApprenticeshipDecisionRow(this.decisionLogPath, {
+      ts: new Date().toISOString(),
+      gate: entry.gate,
+      instanceId: entry.instanceId,
+      allow: entry.allow,
+      reason: entry.reason,
+      ...(entry.missing && entry.missing.length ? { missing: entry.missing } : {}),
+      ...(entry.fromRung !== undefined ? { fromRung: entry.fromRung } : {}),
+      ...(entry.toRung !== undefined ? { toRung: entry.toRung } : {}),
+      ...(entry.evidenceRef ? { evidenceRef: entry.evidenceRef } : {}),
+    });
   }
 }

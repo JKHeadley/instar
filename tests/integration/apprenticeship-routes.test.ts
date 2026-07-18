@@ -121,11 +121,11 @@ describe('/apprenticeship routes (integration)', () => {
     return new ApprenticeshipProgram({ stateDir, projectDir, deps });
   }
 
-  function makeActiveProgram(): ApprenticeshipProgram {
+  async function makeActiveProgram(): Promise<ApprenticeshipProgram> {
     const p = makeProgram({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
     for (const id of ['echo-to-codey', 'other-instance', 'tuned', 'dorm']) {
       p.createInstance({ id, instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      expect(p.transition(id, 'active').ok).toBe(true);
+      expect((await p.transition(id, 'active')).ok).toBe(true);
     }
     return p;
   }
@@ -177,7 +177,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('records, lists, gets, filters, and closes cycle rows over HTTP', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const bad = await request(app)
       .post('/apprenticeship/cycles')
@@ -274,7 +274,7 @@ describe('/apprenticeship routes (integration)', () => {
     const p = makeProgram();
     p.createInstance({ id: 'pending-one', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
     p.createInstance({ id: 'abandoned-one', instanceType: 'mentorship', mentor: 'echo', mentee: 'wrong', framework: 'codex-cli' });
-    expect(p.transition('abandoned-one', 'abandoned').ok).toBe(true);
+    expect((await p.transition('abandoned-one', 'abandoned')).ok).toBe(true);
     const app = appWith(ctxFor(stateDir, p, store));
     const base = { cycleNumber: 1, task: 't', menteeOutput: 'o', operatorSeatUx: UXOK };
 
@@ -294,7 +294,7 @@ describe('/apprenticeship routes (integration)', () => {
   it('reports legacy dangling cycles without mutating them', async () => {
     const store = makeCycleStore();
     store.record({ instanceId: 'phantom', cycleNumber: 1, task: 'legacy', menteeOutput: 'kept', operatorSeatUx: UXOK });
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const report = await request(app).get('/apprenticeship/cycles/integrity').set(auth());
     expect(report.status).toBe(200);
@@ -313,7 +313,7 @@ describe('/apprenticeship routes (integration)', () => {
     db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind');
     db.close();
     store = new ApprenticeshipCycleStore({ dbPath });
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const report = await request(app).get('/apprenticeship/cycles/integrity').set(auth());
     expect(report.status).toBe(200);
@@ -325,7 +325,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('REFUSES a cycle without operatorSeatUx over HTTP with the self-describing shape (UX-blindspot gate)', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const refused = await request(app)
       .post('/apprenticeship/cycles')
@@ -344,7 +344,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('records manual overseer cycle rows with their execution channel', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const created = await request(app)
       .post('/apprenticeship/cycles')
@@ -388,7 +388,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('role-coverage honors the ?oversightStarvationThreshold tuning query', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
     const base = (id: string, n: number, kind: string, at: string) => ({
       id, instanceId: 'tuned', cycleNumber: n, task: 't', menteeOutput: 'm', kind, createdAt: at, operatorSeatUx: UXOK,
     });
@@ -418,7 +418,7 @@ describe('/apprenticeship routes (integration)', () => {
       kind: 'mentor-mentee-differential' as const, status: 'open', channel: 'threadline-backup' as const,
       operatorSeatUx: null, transcriptAudit: null,
     };
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store, null, async () => ({
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store, null, async () => ({
       cycles: [peerCycle],
       sources: [
         { agent: 'echo', port: 4042, cycleCount: 1, truncated: false },
@@ -443,7 +443,7 @@ describe('/apprenticeship routes (integration)', () => {
       id: 'peer-readable-cycle', instanceId: 'echo-to-codey', cycleNumber: 1,
       task: 'drive', menteeOutput: 'output', operatorSeatUx: UXOK,
     });
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     await request(app)
       .get('/a2a/apprenticeship/cycles?instanceId=echo-to-codey')
@@ -460,7 +460,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('role-coverage surfaces dormancy and honors the ?keystoneDormancyMs tuning query', async () => {
     const store = makeCycleStore(); // fixed now() = 2026-06-03T08:00:00Z
-    const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
     // one keystone drive 8h before now, nothing since — the masked-as-healthy shape
     await request(app).post('/apprenticeship/cycles').set(auth()).send({
       id: 'k', instanceId: 'dorm', cycleNumber: 1, task: 't', menteeOutput: 'm',
@@ -510,7 +510,7 @@ describe('/apprenticeship routes (integration)', () => {
 
     it('REFUSES a telegram-playwright cycle without the audit, teaching the producing CLI', async () => {
       const store = makeCycleStore();
-      const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+      const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
       const refused = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle());
       expect(refused.status).toBe(400);
       expect(refused.body.error).toContain('transcriptAudit is required for telegram-playwright cycles');
@@ -520,7 +520,7 @@ describe('/apprenticeship routes (integration)', () => {
 
     it('ACCEPTS a dry-run audit block and round-trips it on GET', async () => {
       const store = makeCycleStore();
-      const app = appWith(ctxFor(stateDir, makeActiveProgram(), store));
+      const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
       const created = await request(app).post('/apprenticeship/cycles').set(auth())
         .send(tpCycle({ id: 'cycle-audited', transcriptAudit: AUDIT_OK }));
       expect(created.status).toBe(201);
@@ -536,7 +536,7 @@ describe('/apprenticeship routes (integration)', () => {
     it("REFUSES a ledger:'local' claim whose dedup keys do NOT resolve in the real ledger (anti-fabrication)", async () => {
       const store = makeCycleStore();
       const ledger = makeLedger();
-      const ctx = ctxFor(stateDir, makeActiveProgram(), store);
+      const ctx = ctxFor(stateDir, await makeActiveProgram(), store);
       (ctx as unknown as Record<string, unknown>).frameworkIssueLedger = ledger;
       const app = appWith(ctx);
 
@@ -564,7 +564,7 @@ describe('/apprenticeship routes (integration)', () => {
         title: 'Post-drive transcript asked the operator to resend',
         dedupKey,
       });
-      const ctx = ctxFor(stateDir, makeActiveProgram(), store);
+      const ctx = ctxFor(stateDir, await makeActiveProgram(), store);
       (ctx as unknown as Record<string, unknown>).frameworkIssueLedger = ledger;
       const app = appWith(ctx);
 
@@ -585,7 +585,7 @@ describe('/apprenticeship routes (integration)', () => {
 
     it('skips the ledger cross-check gracefully when no ledger is wired (declaration still recorded)', async () => {
       const store = makeCycleStore();
-      const app = appWith(ctxFor(stateDir, makeActiveProgram(), store)); // no frameworkIssueLedger on ctx
+      const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store)); // no frameworkIssueLedger on ctx
       const created = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle({
         transcriptAudit: {
           ...AUDIT_OK,
