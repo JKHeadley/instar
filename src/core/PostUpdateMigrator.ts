@@ -10700,7 +10700,21 @@ for c in "\$(command -v claude 2>/dev/null)" /opt/homebrew/bin/claude "\$HOME"/.
 done
 [ -n "\$CLAUDE_BIN" ] || exit 0
 
-LIST=\$(timeout 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+# Bounded 'claude mcp list' — portable timeout LADDER (timeout → gtimeout → perl-alarm),
+# mirroring the autonomous stop hook's real-check runner. Bare 'timeout' does not exist
+# on coreutils-less macOS (the platform agents actually run on), which previously left
+# LIST empty and made this hook SILENTLY INERT in production there. The perl rung maps
+# signal-death to 128+signal (GNU-timeout semantics — never \$?>>8 alone, whose high
+# byte is 0 for a signal-killed child). A bounded runner is REQUIRED: with none present
+# we stay dark (exit 0) rather than run the command unbounded.
+LIST=""
+if command -v timeout >/dev/null 2>&1; then
+  LIST=\$(timeout 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+elif command -v gtimeout >/dev/null 2>&1; then
+  LIST=\$(gtimeout 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+elif command -v perl >/dev/null 2>&1; then
+  LIST=\$(perl -e 'my(\$t,@c)=@ARGV; my \$p=fork; if(\$p==0){setpgrp(0,0); exec @c or exit 127} \$SIG{ALRM}=sub{kill("-KILL",\$p); exit 124}; alarm(\$t); waitpid(\$p,0); exit((\$?&127) ? 128+(\$?&127) : (\$?>>8))' 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+fi
 [ -n "\$LIST" ] || exit 0
 
 # Allowlisted servers reporting "Failed to connect"
