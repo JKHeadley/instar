@@ -20,7 +20,7 @@ Renewal refuses malformed ledgers and ledgers with no open tasks. A legitimate b
 
 ## 2. Under-block
 
-An authenticated caller may renew a still-live ledger and reset its clock/count, just as it may call authenticated `start` with the same tasks. This is not an authority expansion, but operators should use renew for expired or intentionally extended work. The audit's distinct `renewed` reason makes every such action visible.
+An authenticated caller may renew a stopped, expired, or still-live ledger and reset its clock/count. Post-stop/post-expiry revival is deliberately lower-friction than `start` because it retains the digest-verified checklist, but it mints above the tombstone with the same fresh authority as authenticated `start`; it does not adopt stale authority. Operators should use renew for expired or intentionally extended work. The audit's distinct `renewed` reason makes every such action visible.
 
 ## 3. Level-of-abstraction fit
 
