@@ -13,6 +13,7 @@ import {
   computeEnvelopeDigest,
   computeSemanticFingerprint,
   deriveActionDecision,
+  deriveActionDecisionDetailed,
   isStandingDriveAlive,
   readBreakerEligibility,
   validateStandingDriveExtensionV1,
@@ -130,6 +131,108 @@ describe('closed deterministic action validator', () => {
   it('fails closed for corrupt and future extensions', () => {
     expect(deriveActionDecision(null, 'phase-1', { domain: 'git', operation: 'modify', target: 'src/' })).toBe('hold:corrupt');
     expect(deriveActionDecision({ ...extension(), schemaVersion: 2 }, 'phase-1', { domain: 'git', operation: 'modify', target: 'src/' })).toBe('hold:ineligible-extension');
+  });
+
+  it('holds a plausibly related action that differs from the frozen envelope', () => {
+    const decision = deriveActionDecisionDetailed(extension(), 'phase-1', {
+      domain: 'git',
+      operation: 'modify',
+      target: 'site/src/content/docs/features/standing-drive.md',
+      constraints: { paths: ['src/'], branch: 'agent/test' },
+    });
+
+    expect(decision).toMatchObject({
+      decision: 'hold:constraint-mismatch',
+      matchedRuleId: null,
+      envelopeDigest: extension().envelope.digest,
+    });
+    expect(decision.decisionDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('uses deterministic project-relative prefix semantics without traversal escape', () => {
+    const ext = extension();
+    const request = { domain: 'git' as const, operation: 'modify', constraints: { paths: ['src/'], branch: 'agent/test' } };
+    expect(deriveActionDecision(ext, 'phase-1', { ...request, target: 'src/core/StandingDriveSchema.ts' })).toBe('allow');
+    expect(deriveActionDecision(ext, 'phase-1', { ...request, target: 'src/../docs/standing-drive.md' })).toBe('hold:constraint-mismatch');
+    expect(deriveActionDecision(ext, 'phase-1', { ...request, target: '/src/core/StandingDriveSchema.ts' })).toBe('hold:constraint-mismatch');
+    expect(deriveActionDecision(ext, 'phase-1', { ...request, target: 'src\\core\\StandingDriveSchema.ts' })).toBe('hold:constraint-mismatch');
+    expect(deriveActionDecision(ext, 'phase-1', { ...request, target: 'C:/Windows/system.ini' })).toBe('hold:constraint-mismatch');
+    expect(deriveActionDecision(ext, 'phase-1', { ...request, target: 'C:Windows/system.ini' })).toBe('hold:constraint-mismatch');
+    expect(deriveActionDecision(ext, 'phase-1', { ...request, target: 'src//core/StandingDriveSchema.ts' })).toBe('hold:constraint-mismatch');
+  });
+
+  it('rejects drive-qualified requests and frozen targets even under a root rule', () => {
+    const ext = extension();
+    const rootRule = { ...ext.envelope.allowedActions[0], targets: ['.'] };
+    const envelope = { ...ext.envelope, allowedActions: [rootRule] };
+    const rooted = { ...ext, envelope: { ...envelope, digest: computeEnvelopeDigest(envelope) } };
+    const badFrozenRule = { ...rootRule, targets: ['C:/'] };
+    const badEnvelope = { ...ext.envelope, allowedActions: [badFrozenRule] };
+    const badFrozen = { ...ext, envelope: { ...badEnvelope, digest: computeEnvelopeDigest(badEnvelope) } };
+    const request = { domain: 'git' as const, operation: 'modify', target: 'C:/Windows/system.ini', constraints: { paths: ['src/'], branch: 'agent/test' } };
+
+    expect(deriveActionDecision(rooted, 'phase-1', request)).toBe('hold:constraint-mismatch');
+    expect(deriveActionDecision(badFrozen, 'phase-1', { ...request, target: 'C:/' })).toBe('hold:corrupt');
+  });
+
+  it('returns the matched frozen rule and a stable cross-machine decision digest', () => {
+    const ext = extension();
+    const request = { domain: 'git' as const, operation: 'modify', target: 'src/', constraints: { paths: ['src/'], branch: 'agent/test' } };
+    const first = deriveActionDecisionDetailed(ext, 'phase-1', request);
+    const reordered = deriveActionDecisionDetailed(ext, 'phase-1', {
+      ...request,
+      constraints: { branch: 'agent/test', paths: ['src/'] },
+    });
+
+    expect(first).toMatchObject({ decision: 'allow', matchedRuleId: 'rule-1', envelopeDigest: ext.envelope.digest });
+    expect(reordered).toEqual(first);
+    expect(deriveActionDecisionDetailed(ext, 'phase-1', { ...request, target: 'src' }).decisionDigest).toBe(first.decisionDigest);
+  });
+
+  it('chooses the same matching rule regardless of replicated array order', () => {
+    const ext = extension();
+    const duplicate = { ...ext.envelope.allowedActions[0], id: 'rule-0' };
+    const envelope = {
+      ...ext.envelope,
+      phases: [{ ...ext.envelope.phases[0], actionRuleIds: ['rule-1', 'rule-0'] }],
+      allowedActions: [ext.envelope.allowedActions[0], duplicate],
+    };
+    const redigested = { ...ext, envelope: { ...envelope, digest: computeEnvelopeDigest(envelope) } };
+    const reversedEnvelope = { ...redigested.envelope, allowedActions: [...redigested.envelope.allowedActions].reverse() };
+    const reversed = { ...redigested, envelope: { ...reversedEnvelope, digest: computeEnvelopeDigest(reversedEnvelope) } };
+    const request = { domain: 'git' as const, operation: 'modify', target: 'src/core/StandingDriveSchema.ts', constraints: { paths: ['src/'], branch: 'agent/test' } };
+
+    expect(deriveActionDecisionDetailed(redigested, 'phase-1', request)).toEqual(deriveActionDecisionDetailed(reversed, 'phase-1', request));
+    expect(deriveActionDecisionDetailed(redigested, 'phase-1', request).matchedRuleId).toBe('rule-0');
+  });
+
+  it('fails closed without throwing for malformed runtime requests', () => {
+    const malformed = [null, {}, { domain: 'git', operation: 'modify', target: 'src/', constraints: null }, {
+      domain: 'git', operation: 'modify', target: 'src/', constraints: { branch: { semantic: 'close enough' } },
+    }, { domain: 'git', operation: 'modify', target: 'src/', semanticHint: 'close enough' }];
+
+    for (const request of malformed) {
+      expect(() => deriveActionDecisionDetailed(extension(), 'phase-1', request)).not.toThrow();
+      expect(deriveActionDecisionDetailed(extension(), 'phase-1', request).decision).toBe('hold:corrupt');
+    }
+  });
+
+  it('does not consult a model, network, locale, or clock seam', () => {
+    const originalFetch = globalThis.fetch;
+    const originalLocaleCompare = String.prototype.localeCompare;
+    const originalNow = Date.now;
+    globalThis.fetch = (() => { throw new Error('network seam consulted'); }) as typeof fetch;
+    Object.defineProperty(String.prototype, 'localeCompare', { configurable: true, value: () => { throw new Error('locale seam consulted'); } });
+    Date.now = () => { throw new Error('clock seam consulted'); };
+    try {
+      expect(deriveActionDecisionDetailed(extension(), 'phase-1', {
+        domain: 'git', operation: 'push', target: 'src/', constraints: { paths: ['src/'], branch: 'agent/test' },
+      }).decision).toBe('hold:not-enumerated');
+    } finally {
+      globalThis.fetch = originalFetch;
+      Object.defineProperty(String.prototype, 'localeCompare', { configurable: true, value: originalLocaleCompare });
+      Date.now = originalNow;
+    }
   });
 });
 

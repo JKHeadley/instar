@@ -10,3 +10,5 @@ The `AutonomousRunStore` remains the single persistence owner. It enrolls a comp
 `StandingDriveSchema` owns versioned canonicalization and deterministic validation. It rejects duplicate or dangling phase references, unknown enrollment sources, corrupt breaker state, authority-binding mismatches, and actions outside the frozen phase envelope. These checks are closed structural predicates; they do not ask a model whether an action merely sounds related.
 
 This foundation is intentionally inert. Replay, wake recovery, effect reconciliation, and semantic-progress breakers are separate reviewed slices that must compose with their existing authorities before StandingDrive can execute autonomously.
+
+Slice 2 makes action derivation auditable. A detailed pure result names the matched frozen rule, envelope digest, typed decision, and a stable decision digest. Git and local-test roots use traversal-safe project-relative prefix semantics; other targets remain exact. Malformed input and actions that merely sound related but differ from the enumerated envelope hold without consulting a model, network, clock, or machine locale.
