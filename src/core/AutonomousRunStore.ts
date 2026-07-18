@@ -24,6 +24,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash, randomBytes } from 'crypto';
+import lockfile from 'proper-lockfile';
+import { validateStandingDriveExtensionV1, type StandingDriveExtensionV1 } from './StandingDriveSchema.js';
 
 /** Snapshot of the scopeAccretion config sub-object taken at registration (R13). */
 export interface ScopeAccretionSnapshot {
@@ -133,6 +135,8 @@ export interface AutonomousRunRecord {
   lastStopRationaleCorrelationId?: string;
   /** ISO timestamp of the `lastStopRationaleCorrelationId` write. */
   lastStopRationaleCorrelationAt?: string;
+  /** Optional StandingDrive composition extension. Absent preserves plain-run behavior. */
+  standingDrive?: StandingDriveExtensionV1;
 }
 
 /** Which enrolled completion decision point a correlation id belongs to (§5.3).
@@ -204,6 +208,23 @@ export class AutonomousRunStore {
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(rec, null, 2));
     fs.renameSync(tmp, file);
+  }
+
+  private withRunLock<T>(topicId: string, runId: string, fn: () => T): T {
+    const target = this.recordPath(topicId, runId);
+    if (!fs.existsSync(target)) return fn();
+    let release: (() => void) | undefined;
+    try {
+      release = lockfile.lockSync(target, { stale: 10_000, realpath: false });
+      return fn();
+    } catch (error) {
+      if (error instanceof Error && ((error as NodeJS.ErrnoException).code === 'ELOCKED' || error.message.includes('ELOCKED'))) {
+        throw new Error('standing-drive-mutation-busy');
+      }
+      throw error;
+    } finally {
+      try { release?.(); } catch { /* stale detection recovers a crash-left lock */ }
+    }
   }
 
   private readRecordFile(file: string): AutonomousRunRecord | null {
@@ -344,13 +365,50 @@ export class AutonomousRunStore {
     return { ok: true, runId, endAt, clamped };
   }
 
-  /** Load-modify-save under the single-server assumption (one writer: this process). */
+  /** Load-modify-save serialized with StandingDrive writers; generic updates may not mutate the extension. */
   update(topicId: string, runId: string, mutate: (rec: AutonomousRunRecord) => void): AutonomousRunRecord | null {
-    const rec = this.getByPair(topicId, runId);
-    if (!rec) return null;
-    mutate(rec);
-    this.writeRecord(rec);
-    return rec;
+    return this.withRunLock(topicId, runId, () => {
+      const rec = this.getByPair(topicId, runId);
+      if (!rec) return null;
+      const standingDriveBefore = rec.standingDrive === undefined ? undefined : JSON.stringify(rec.standingDrive);
+      mutate(rec);
+      const standingDriveAfter = rec.standingDrive === undefined ? undefined : JSON.stringify(rec.standingDrive);
+      if (standingDriveAfter !== standingDriveBefore) throw new Error('standing-drive-mutation-requires-cas');
+      this.writeRecord(rec);
+      return rec;
+    });
+  }
+
+  enrollStandingDrive(topicId: string, runId: string, extension: StandingDriveExtensionV1): AutonomousRunRecord {
+    return this.withRunLock(topicId, runId, () => {
+      const rec = this.getByPair(topicId, runId);
+      if (!rec) throw new Error('standing-drive-run-not-found');
+      if (rec.standingDrive) throw new Error('standing-drive-already-enrolled');
+      if (!validateStandingDriveExtensionV1(extension, String(topicId))) throw new Error('standing-drive-invalid-extension');
+      rec.standingDrive = structuredClone(extension);
+      this.writeRecord(rec);
+      return rec;
+    });
+  }
+
+  mutateStandingDrive(
+    topicId: string,
+    runId: string,
+    expectedRevision: number,
+    mutate: (extension: StandingDriveExtensionV1) => StandingDriveExtensionV1,
+  ): AutonomousRunRecord {
+    return this.withRunLock(topicId, runId, () => {
+      const rec = this.getByPair(topicId, runId);
+      if (!rec?.standingDrive) throw new Error('standing-drive-not-enrolled');
+      if (!validateStandingDriveExtensionV1(rec.standingDrive, String(topicId))) throw new Error('standing-drive-corrupt');
+      if (rec.standingDrive.revision !== expectedRevision) throw new Error('standing-drive-revision-conflict');
+      const next = mutate(structuredClone(rec.standingDrive));
+      if (next.revision !== expectedRevision + 1) throw new Error('standing-drive-revision-not-bumped');
+      if (!validateStandingDriveExtensionV1(next, String(topicId))) throw new Error('standing-drive-invalid-extension');
+      rec.standingDrive = next;
+      this.writeRecord(rec);
+      return rec;
+    });
   }
 
   markTerminal(topicId: string, runId: string, status: 'met' | 'ended' | 'expired', reason?: string): AutonomousRunRecord | null {
