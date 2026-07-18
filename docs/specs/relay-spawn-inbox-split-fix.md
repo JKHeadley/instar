@@ -12,9 +12,18 @@ related-principles:
   - Bounded Blast Radius
   - "A Dark Feature Guards Nothing"
 source-investigation: "Joint Echo↔sagemind live investigation 2026-07-17→18; evidence bank at canonical thread 6d424ea3 seq 22 (msg-1784347128313-i1zme5)"
-status: "DRAFT v4 — round-3 findings folded (all 6 lenses in verify mode + codex-cli:gpt-5.5 OK-MINOR + gemini-cli:gemini-3.1-pro-preview 'serious'=the single-event-log architectural recommendation, already documented as a deferred follow-up in Alternatives Considered). Round-3 was near-converged: ONE MATERIAL ROOT (N1/F1, confirmed by two independent lenses) — the participant-match resolved owner from the self-referential ThreadLog.participants(); fixed by resolving owner-IDENTITY only from an authoritative store (participants() = existence-detection only), with the owner-match a LIVE ConversationStore-cached check (not a cached per-entry bit). Plus 2 decision pins (reply-validation-horizon=6h; rotation prior-key residual owned honestly) and ~12 one-clause minors (fp+direction in dedup key; error-surfacing read for store-unreadable typing; reuse cached load; outbox domain label; two-store write-atomicity intent-record; mint uniqueness; global vs per-thread count caps; unfixed-rotation-drops-keyedFromSeq residual; backfilled residual; latch-not-counter; manifest inverted-polarity wiring; negotiator path non-interaction). Awaiting round-4 confirm. NOT built. Grounded against canonical main v1.3.869 (ab5e7223c)."
+status: "CONVERGED at round 4 (2026-07-18) — the round-4 all-lens confirm pass returned 0 material findings with every new code claim grounded against canonical v1.3.869; codex-cli:gpt-5.5 ran clean-MINOR all four rounds; gemini-cli:gemini-3.1-pro-preview ran all rounds (r3/r4 'serious' = a persistent single-event-log ARCHITECTURAL RECOMMENDATION, considered and documented as a deferred follow-up in §Alternatives Considered — an accepted cross-model dissent, not a fix defect). 4 iterations; ~60 distinct findings folded rounds 1-4. Convergence path: v2 (24 material) → v3 (~30, all 6 lenses, sec/adv/scal 2x) → v4 (1 material root N1/F1 self-referential owner-resolution + 2 decision pins + ~12 one-clause minors) → round-4 confirm (0 material, 3 cosmetic doc-scrubs applied). Open questions: zero. Awaiting operator approval (approved: true) after reading the convergence report + rendered ELI16. NOT built — /instar-dev build follows approval. Grounded against canonical main v1.3.869 (ab5e7223c)."
 approved: false
 tracked-commitments: "CMT-1976, CMT-1979, CMT-1980 (deliver together at fix-PR merge); CMT-1981 (ship ping to sagemind on thread ebf68943). NOT this spec's: CMT-1986 is the sibling lifeline workstream's (CMT-1975) two-ping protocol."
+review-convergence: "2026-07-18T10:17:04.844Z"
+review-iterations: 4
+review-completed-at: "2026-07-18T10:17:04.844Z"
+review-report: "docs/specs/reports/relay-spawn-inbox-split-fix-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 31
+cheap-to-change-tags: 3
+contested-then-cleared: 2
 ---
 
 # Threadline Store-Split Fix (relay-spawn inbox split)
@@ -402,7 +411,7 @@ Both external reviewers asked why two canonical stores persist rather than colla
 |---|---|---|
 | Routing-resolution seat `resolveRoutedThreadId` (Leg A′) | `invariant` | Deterministic first-contact resolution + ownership verdict computed once; no competing-signals judgment beyond the identity floor (below). |
 | `relay-send` reply validation over `getInboundIfEligible` (Leg B) | `invariant` | Deterministic eligibility-carrying membership over the two authenticated stores; refusals typed; fail direction derived per P20. |
-| Warm-branch pointer requirement (pointer iff ≥1 non-ack eligible member) | `invariant` | Maintained union-scoped counter; ack exclusion via the pinned pure-ack predicate; both arms feed it. |
+| Warm-branch pointer requirement (pointer iff ≥1 non-ack eligible member) | `invariant` | Maintained union-scoped LATCH (sticky boolean, both arms); ack exclusion via the pinned pure-ack predicate. |
 | `tryClaimReply` + durable `hasCanonicalReplyFor` (indexed) | `invariant` | Mutex + O(1) durable-record lookup; release-on-close fixes a leak. |
 | Anti-hijack ownership verdict (Leg C, inside Leg A′) | `invariant` | Deterministic AFTER the declared per-side resolution floor (pairing > handshake-fp-only > registry-corroboration); conflict/multi-fp/tier-3-flip/unresolvable ⇒ isolate; participant equality universal (verified included). The competing-signals hazard (which source wins, per side) is resolved BY the floor, in code, fail-toward-isolation. |
 | Live-bind collision (Leg C c2: join, never mint) | `invariant` | Deterministic, reachable only post-participant-check. |
@@ -424,11 +433,11 @@ Both external reviewers asked why two canonical stores persist rather than colla
 1. **Leg A seat:** extend the `recordThreadMessage` funnel with the canonical-inbox sink; remove the relay-ingest direct append; add the zero-direct-callers ratchet.
 2. **Leg A′ routing-resolution seat:** a synchronous `resolveRoutedThreadId` at all three accept points, before append AND response; `handleInboundMessage` consumes the carried verdict (TOCTOU-safe), never recomputes.
 3. **Ownership engaged on durable evidence** (participants/ConversationStore/resume-map), not just a live bind — closes the cold-box hole.
-4. **Log-arm trust model:** domain-separated keyed-HMAC going forward (own info label, HMAC field OUTSIDE the chain whitelist), positional `keyedFromSeq` epoch in the base sidecar, backfilled-excluded, bounded pre-epoch bridge as recorded accepted-risk. OR-semantics (each arm independently trusted). Key-rotation carries `keyEpoch` (current+prior key tried).
+4. **Log-arm trust model:** domain-separated keyed-HMAC going forward (own info label, HMAC field OUTSIDE the chain whitelist), positional `keyedFromSeq` epoch in the base sidecar, backfilled-excluded, bounded pre-epoch bridge as recorded accepted-risk. OR-semantics (each arm independently trusted). Key-rotation posture is the owned residual of FD31 (a `keyEpoch`→prior-key retention is an UNBUILT precondition, not shipped — absent it, an `authToken` rotation narrows post-epoch eligibility to bridge+forced-mint, never a wedge).
 5. **No retroactive inbox backfill.**
 6. **Eligibility-carrying membership primitive** `getInboundIfEligible` (flags cached once at load, HMAC verified at load); DO NOT reuse `canonicalHistoryRead`; extract only the eligibility rules as a pure function.
 7. **Which-pointer property dropped, stated:** warm validates membership, not latest.
-8. **Non-ack emptiness counter** built + maintained (union-scoped, ack-excluded, sticky-monotonic, meta sidecar, fed by both arms incl. pre-epoch inbox-only).
+8. **Non-ack emptiness LATCH** built + maintained (a sticky boolean, NOT a live count — union-scoped, ack-excluded, meta sidecar, rebuilt from both arms at first cold load, fed by both arms incl. pre-epoch inbox-only).
 9. **c2 policy:** leave-bind + deliver into the live session; reachable only post-participant-check.
 10. **Crypto-verified exemption closed:** verified-and-foreign isolates.
 11. **Identity authority chain, per side:** pairing > handshake-fp-only > registry-corroboration; tier-3 flip on either side ⇒ isolate; owned residual (registry-only peers keep phantom-minting).
@@ -455,7 +464,7 @@ Both external reviewers asked why two canonical stores persist rather than colla
 
 ## Open questions
 
-*(none — all resolved into Frontloaded Decisions above)*
+*(none)*
 
 ## Observability & self-detection
 
@@ -478,7 +487,7 @@ Tiers: U = unit, I = integration (HTTP pipeline), E = e2e. The live two-agent re
 6. (U) Guard fires on ALL branches: trusted-tier sender + foreign presented threadId via the warm-LISTENER branch → isolated (not just cold-spawn); pipe-spawn branch likewise.
 7. (U) Cold-box: hostile presented threadId with an EMPTY resume map but a persisted ThreadLog → existence detected, owner-IDENTITY NOT authoritatively resolvable (no ConversationStore record) → ISOLATED (never "sender fp is in participants()"); rows land on the isolation thread; victim thread's union + `latest` unchanged. Companion: a foreign pre-fix row already in the victim's log (its fp in participants()) is NOT reply-eligible, because eligibility matches the AUTHORITATIVE owner, not the log-derived set (round-3 N1).
 8. (U) Anti-hijack matrix — every row incl. verified-and-foreign ⇒ isolate; tier-3-flip either side ⇒ isolate; owner-alias-via-registry-only ⇒ isolate; genuine first-contact (no owner) ⇒ spawn; alias→multi-fp ⇒ isolate; same trust-anchored peer, alias-recorded binding + raw-fp inbound ⇒ no isolation, no phantom.
-9. (U) Dedup: same id + original bytes (incl. wireCreatedAt) → `duplicate`, never `collision`; no spawn (ingest short-circuits); one `redelivery` audit row. Non-owner collision under a chosen id → discarded, honest owner write lands (honest-first NOT required). Id-mutated legacy re-mint w/ redelivery marker → body backstop within scope/window/floor; unmarked → not backstopped; identical ≥200-char body twice from same sender w/o marker → NOT suppressed; different sender / outside window / <200 char → NOT suppressed.
+9. (U) Dedup: same id + original bytes (incl. wireCreatedAt) → `duplicate`, never `collision`; no spawn (ingest short-circuits); one `redelivery` audit row. Attacker row + owner row under the same chosen id have DISTINCT keys (different fp) → both land as separate rows, no collision; the honest owner row wins at read via owner-match (honest-first NOT required — see reg 28). Id-mutated legacy re-mint w/ redelivery marker → body backstop within scope/window/floor; unmarked → not backstopped; identical ≥200-char body twice from same sender w/o marker → NOT suppressed; different sender / outside window / <200 char → NOT suppressed.
 10. (U) Eligibility: `backfilled:true` never reply-eligible; post-`keyedFromSeq` entry w/o valid HMAC never eligible; entry whose `peerFingerprint` is not a thread participant never eligible; pre-`keyedFromSeq` unkeyed entry eligible (bridge).
 11. (U) Ack-class: excluded from emptiness test (ack-only thread → pointerless accepted); never in resend queue; never acked back; condition-driven tracker purge runs every boot-sweep (idempotent across a fixed→unfixed→fixed bounce).
 12. (I) Restart mid-reply: in-memory claims lost, durable indexed `hasCanonicalReplyFor` still refuses a second reply; aborted connection releases the claim on `close`.
