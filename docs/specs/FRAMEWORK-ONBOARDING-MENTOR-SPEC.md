@@ -374,6 +374,13 @@ regressedFromIssueId  if a regression of a previously-fixed issue (nullable)
 playbookStatus      none | candidate | extracted | superseded
 wontFixReason       required when status=wont-fix (§13.7)
 relatedSpec         optional spec slug
+rootGapInfrastructure  REQUIRED (§13.9) — what is lacking in current infrastructure
+                    that allowed this gap?
+rootGapSentinel     REQUIRED (§13.9) — failing | missing | neither-unpromoted: does
+                    this signal a FAILING sentinel or a MISSING one?
+                    (neither-unpromoted = the guard exists but sits watch-only/dark)
+rootGapStandard     REQUIRED (§13.9) — what standard would have guided past
+                    development to close this class ahead of time?
 createdAt / updatedAt
 ```
 Indexes: `framework_issues(dedupKey)`, composite on `(framework, playbookStatus)` for the playbook
@@ -443,6 +450,29 @@ through a single-writer / CAS `mutate()` pattern (the CommitmentTracker preceden
 ticks / multi-framework jobs can't drop observations on `SQLITE_BUSY`. All queries use parameterized
 prepared statements (no string interpolation); enum columns (`bucket`, `status`, `playbookStatus`)
 validated against fixed allowlists on write.
+
+### 13.9 Fundamental-gap analysis is REQUIRED on every issue (the three questions)
+
+Operator directive (2026-07-17, topic 29723, apprenticeship drive 5): observing a
+failure and logging it is tracking, not diagnosis. Every `framework_issues` record
+MUST answer three questions before it counts as logged — write-time validation
+refuses an insert without them, exactly like the `bucket` requirement (§6):
+
+1. **`rootGapInfrastructure`** — what is lacking in current infrastructure that
+   allowed this gap?
+2. **`rootGapSentinel`** — does this signal a FAILING sentinel or a MISSING one?
+   Enum `failing | missing | neither-unpromoted`; the third value names the drive-5
+   recurring case where the guard exists but sits watch-only/dark, so the answer is
+   a promotion decision rather than new machinery.
+3. **`rootGapStandard`** — what standard would have guided past development to close
+   this class ahead of time?
+
+A defect without root-gap analysis is incomplete the same way a feature without tests
+is incomplete. This converts the operator's questioning discipline into schema —
+Structure > Willpower applied to judgment itself. Canonical concept statement:
+`docs/apprenticeship/PROGRAM-CONCEPTS.md` §4. First entries in this schema: drive-5
+defects #9 (interrupted-conversation stall), #10 (stream-disconnect stall), #11
+(operator pin erased by agent-authority unpin).
 
 ## 14. Migration & deployment (three distinct mechanisms — named)
 
