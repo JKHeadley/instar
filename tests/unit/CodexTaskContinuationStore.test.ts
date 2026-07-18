@@ -173,6 +173,7 @@ describe('CodexTaskContinuationStore', () => {
       { open: false, line: 0 },
       { open: true, line: 1 },
     ]);
+    expect(fs.readFileSync(path.join(dir, 'continuation', 'audit.local.jsonl'), 'utf8')).toContain('"reason":"renewed"');
     expect(store.decide('458', 'new-session')).toMatchObject({ decision: 'continue', openTaskCount: 1 });
   });
 

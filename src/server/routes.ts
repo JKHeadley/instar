@@ -5188,6 +5188,10 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/continuation/:topic/status', (req, res) => {
     const store = continuationStore();
     const ledger = store.read(req.params.topic);
+    const startedAtMs = ledger ? Date.parse(ledger.startedAt) : Number.NaN;
+    const expiresAtMs = ledger && Number.isFinite(startedAtMs)
+      ? startedAtMs + ledger.durationSeconds * 1000
+      : Number.NaN;
     res.json({
       enabled: store.enabled,
       active: ledger?.active === true,
@@ -5195,7 +5199,7 @@ export function createRoutes(ctx: RouteContext): Router {
       continuationCount: ledger?.continuationCount ?? 0,
       maxContinuations: ledger?.maxContinuations ?? null,
       startedAt: ledger?.startedAt ?? null,
-      expiresAt: ledger ? new Date(Date.parse(ledger.startedAt) + ledger.durationSeconds * 1000).toISOString() : null,
+      expiresAt: Number.isFinite(expiresAtMs) ? new Date(expiresAtMs).toISOString() : null,
       taskCount: ledger ? parseContinuationTasks(ledger.body).length : 0,
       openTaskCount: ledger ? parseContinuationTasks(ledger.body).filter((t) => t.open).length : 0,
     });

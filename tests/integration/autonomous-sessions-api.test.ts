@@ -182,6 +182,20 @@ describe('Multi-session autonomy API (integration)', () => {
       body: JSON.stringify({ topicId: '458', sessionId: 'codex-session' }),
     });
     expect(await stopped.json()).toMatchObject({ decision: 'deactivate', reason: 'operator-stop' });
+
+    const renewed = await fetch(`${baseUrl}/continuation/458/renew`, { method: 'POST' });
+    expect(renewed.status).toBe(201);
+    const renewedStatus = await (await fetch(`${baseUrl}/continuation/458/status`)).json();
+    expect(renewedStatus).toMatchObject({ active: true, taskCount: 2, openTaskCount: 1 });
+    expect(renewedStatus.startedAt).toBeTypeOf('string');
+    expect(renewedStatus.expiresAt).toBeTypeOf('string');
+
+    const ledgerPath = path.join(project.stateDir, 'continuation', '458.local.json');
+    const corruptTimestamp = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    corruptTimestamp.startedAt = 'not-a-date';
+    fs.writeFileSync(ledgerPath, JSON.stringify(corruptTimestamp));
+    const corruptStatus = await (await fetch(`${baseUrl}/continuation/458/status`)).json();
+    expect(corruptStatus.expiresAt).toBeNull();
   });
 
   it('POST /autonomous/native-goal/set injects /goal <condition> and flips goal_mode', async () => {

@@ -39,6 +39,7 @@ export type ContinuationReason =
   | 'continuation-ceiling'
   | 'no-task-structure'
   | 'all-tasks-complete'
+  | 'renewed'
   | 'open-tasks'
   | 'audit-failed'
   | 'lock-unavailable';
@@ -189,7 +190,7 @@ export class CodexTaskContinuationStore {
         updatedAt: now,
       };
       this.write(ledger);
-      try { this.audit(ledger, 'allow', 'open-tasks', tasks.filter((task) => task.open).length, 0); }
+      try { this.audit(ledger, 'allow', 'renewed', tasks.filter((task) => task.open).length, 0); }
       catch (err) { ledger.active = false; this.write(ledger); throw err; }
       return ledger;
     }));
