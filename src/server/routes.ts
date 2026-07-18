@@ -5194,9 +5194,27 @@ export function createRoutes(ctx: RouteContext): Router {
       topicId: req.params.topic,
       continuationCount: ledger?.continuationCount ?? 0,
       maxContinuations: ledger?.maxContinuations ?? null,
+      startedAt: ledger?.startedAt ?? null,
+      expiresAt: ledger ? new Date(Date.parse(ledger.startedAt) + ledger.durationSeconds * 1000).toISOString() : null,
       taskCount: ledger ? parseContinuationTasks(ledger.body).length : 0,
       openTaskCount: ledger ? parseContinuationTasks(ledger.body).filter((t) => t.open).length : 0,
     });
+  });
+
+  router.post('/continuation/:topic/renew', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
+    try {
+      const body = req.body as Record<string, unknown>;
+      const ledger = continuationStore().renew(req.params.topic, {
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        durationSeconds: typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined,
+        maxContinuations: typeof body.maxContinuations === 'number' ? body.maxContinuations : undefined,
+      });
+      res.status(201).json({ ok: true, topicId: ledger.topicId, generation: ledger.generationId });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'invalid-request';
+      res.status(reason === 'continuation-disabled' ? 503 : 400).json({ ok: false, error: reason });
+    }
   });
 
   router.post('/continuation/start', (req, res) => {

@@ -272,11 +272,15 @@ const program = new Command();
 
 async function callLocalContinuation(pathname: string, method = 'GET', body?: unknown): Promise<unknown> {
   const cfgPath = path.join(process.cwd(), '.instar', 'config.json');
-  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { port?: number; authToken?: string };
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { port?: number; authToken?: string | { env?: string } };
+  const configuredToken = typeof cfg.authToken === 'string'
+    ? cfg.authToken
+    : (cfg.authToken?.env ? process.env[cfg.authToken.env] : undefined);
+  const authToken = process.env.INSTAR_AUTH_TOKEN ?? configuredToken ?? '';
   const response = await fetch(`http://127.0.0.1:${cfg.port ?? 4040}${pathname}`, {
     method,
     headers: {
-      Authorization: `Bearer ${cfg.authToken ?? ''}`,
+      Authorization: `Bearer ${authToken}`,
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -426,6 +430,18 @@ continuationCmd
 continuationCmd.command('status <topic>').action(async (topic) => {
   console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/status`)));
 });
+
+continuationCmd
+  .command('renew <topic>')
+  .description('Mint a fresh bounded generation while preserving the existing task checklist')
+  .option('--duration <seconds>', 'Duration ceiling', (v: string) => Number(v))
+  .option('--max-continuations <count>', 'Turn ceiling', (v: string) => Number(v))
+  .action(async (topic, opts) => {
+    console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/renew`, 'POST', {
+      durationSeconds: opts.duration,
+      maxContinuations: opts.maxContinuations,
+    })));
+  });
 
 continuationCmd.command('complete <topic> <ordinal>').action(async (topic, ordinal) => {
   console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/complete`, 'POST', { ordinal: Number(ordinal) })));

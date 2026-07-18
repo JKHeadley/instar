@@ -154,6 +154,28 @@ describe('CodexTaskContinuationStore', () => {
     expect(store.decide('459', 's')).toMatchObject({ decision: 'deactivate', reason: 'invalid-state' });
   });
 
+  it('renews an expired ledger as a fresh audited generation without reopening completed tasks', () => {
+    const dir = temp();
+    const store = live(dir);
+    const first = store.start({ topicId: '458', sessionId: 'old-session', tasks: ['done', 'still open'], durationSeconds: 1 });
+    store.complete('458', 1);
+    first.startedAt = new Date(Date.now() - 2_000).toISOString();
+    first.body = store.read('458')!.body;
+    first.bodyDigest = store.read('458')!.bodyDigest;
+    fs.writeFileSync(path.join(dir, 'continuation', '458.local.json'), JSON.stringify(first));
+    expect(store.decide('458', 'old-session')).toMatchObject({ decision: 'deactivate', reason: 'duration-expired' });
+
+    const renewed = store.renew('458', { durationSeconds: 60 });
+    expect(renewed.generation).toBeGreaterThan(first.generation);
+    expect(renewed.sessionId).toBe('__bind_on_first_stop__');
+    expect(renewed.continuationCount).toBe(0);
+    expect(parseContinuationTasks(renewed.body)).toEqual([
+      { open: false, line: 0 },
+      { open: true, line: 1 },
+    ]);
+    expect(store.decide('458', 'new-session')).toMatchObject({ decision: 'continue', openTaskCount: 1 });
+  });
+
   it('hard-disables without mutating into a continuation', () => {
     const dir = temp();
     live(dir).start({ topicId: '458', sessionId: 's', tasks: ['one'] });

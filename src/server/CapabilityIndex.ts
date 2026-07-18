@@ -775,6 +775,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: [
         'GET /continuation/:topic/status',
         'POST /continuation/start',
+        'POST /continuation/:topic/renew',
         'POST /continuation/:topic/complete',
         'POST /continuation/:topic/stop',
         'POST /continuation/stop-all',

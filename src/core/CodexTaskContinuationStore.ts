@@ -158,6 +158,43 @@ export class CodexTaskContinuationStore {
     });
   }
 
+  /** Explicitly mint a fresh bounded generation for the existing task body.
+   * This is the supported recovery path after a duration expiry; callers must
+   * never hand-edit startedAt because that bypasses generation/audit ordering. */
+  renew(topicId: string, input: {
+    sessionId?: string;
+    durationSeconds?: number;
+    maxContinuations?: number;
+  } = {}): ContinuationLedger {
+    if (!this.cfg.enabled) throw new Error('continuation-disabled');
+    if (!/^\d+$/.test(topicId)) throw new Error('invalid-owner');
+    return this.withNamedLock('maintenance', () => this.withLock(topicId, () => {
+      const prior = this.requireValid(topicId);
+      const tasks = parseContinuationTasks(prior.body);
+      if (tasks.length === 0 || tasks.every((task) => !task.open)) throw new Error('no-open-tasks');
+      const tombstone = this.readTombstone(topicId);
+      const generationBase = Math.max(prior.generation, tombstone, this.readGlobalTombstone());
+      if (!Number.isSafeInteger(generationBase) || generationBase >= Number.MAX_SAFE_INTEGER) throw new Error('operator-stop');
+      const now = new Date().toISOString();
+      const ledger: ContinuationLedger = {
+        ...prior,
+        active: true,
+        sessionId: input.sessionId?.trim() || FIRST_STOP_BIND,
+        generation: generationBase + 1,
+        generationId: randomUUID(),
+        startedAt: now,
+        durationSeconds: Math.max(1, Math.min(input.durationSeconds ?? this.cfg.maxDurationSeconds, this.cfg.maxDurationSeconds)),
+        continuationCount: 0,
+        maxContinuations: Math.max(1, Math.min(input.maxContinuations ?? this.cfg.maxContinuations, this.cfg.maxContinuations)),
+        updatedAt: now,
+      };
+      this.write(ledger);
+      try { this.audit(ledger, 'allow', 'open-tasks', tasks.filter((task) => task.open).length, 0); }
+      catch (err) { ledger.active = false; this.write(ledger); throw err; }
+      return ledger;
+    }));
+  }
+
   read(topicId: string): ContinuationLedger | null {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.ledgerPath(topicId), 'utf8')) as ContinuationLedger;
