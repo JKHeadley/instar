@@ -17,11 +17,14 @@ describe('secret-sync SecretStore key-policy wiring', () => {
       'utf8',
     );
 
-    const secretSyncRegion = source.slice(
-      source.indexOf('// ── Secret-sync inbound handler'),
-      source.indexOf('// ── Durable Inbound Message Queue: engine construction'),
-    );
-    expect(secretSyncRegion).not.toBe('');
+    const startMarker = '// ── Secret-sync inbound handler';
+    const endMarker = '// ── Durable Inbound Message Queue: engine construction';
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker);
+    expect(start, 'secret-sync start marker must exist').toBeGreaterThanOrEqual(0);
+    expect(end, 'secret-sync end marker must exist').toBeGreaterThan(start);
+
+    const secretSyncRegion = source.slice(start, end);
 
     const inheritedPolicy = secretSyncRegion.match(
       /forceFileKey:\s*config\.secrets\?\.forceFileKey/g,
