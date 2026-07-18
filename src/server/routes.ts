@@ -288,6 +288,13 @@ import {
 } from '../core/ScopeAccretionSweep.js';
 import { resolveCorroboration } from '../core/ScopeAccretionCorroboration.js';
 import { ScopeAccretionRatifier } from '../core/ScopeAccretionRatifier.js';
+import {
+  runStallGateValidation,
+  readInstallProvenance,
+  degradedAcceptanceHash,
+  canonicalRowHash,
+  canonicalRowSetHash,
+} from '../core/ApprenticeshipStallGate.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
@@ -1180,6 +1187,9 @@ export interface RouteContext {
    *  instance-as-project registry, the retro-gate (pending→active) and the
    *  doc-as-required-artifact gate (active→complete). */
   apprenticeshipProgram?: import('../core/ApprenticeshipProgram.js').ApprenticeshipProgram | null;
+  /** Stall-coverage matrix acceptance machinery (framework-stall-coverage-matrix
+   *  §2.2). Null when the program is unavailable → matrix-acceptance routes 503. */
+  apprenticeshipMatrixAcceptance?: import('../core/ApprenticeshipMatrixAcceptance.js').MatrixAcceptanceStore | null;
   /** Apprenticeship differential-cycle store. Null when SQLite/state init fails
    *  → /apprenticeship/cycles* 503s. */
   apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
@@ -5004,12 +5014,93 @@ export function createRoutes(ctx: RouteContext): Router {
     recordMetric: (o) => scopeAccretionMetric(o, 'ratification'),
     log: (m) => console.warn(m),
   });
+  // ── Stall-coverage matrix acceptance helpers (framework-stall-coverage-matrix §2.2) ──
+  // The CURRENT matrix state for an instance: on a fleet (no-source) install
+  // the degraded verdict hash; else the whole-matrix content hash + the parsed
+  // rows keyed by rowId. Used at mint AND re-run at bind time for every scope
+  // (accept-then-edit voids the challenge).
+  type MatrixRowLike = Parameters<typeof canonicalRowHash>[0];
+  const resolveMatrixState = (
+    instanceId: string,
+    framework: string,
+  ):
+    | { kind: 'degraded'; contentHash: string }
+    | { kind: 'source'; contentHash: string; rowsById: Map<string, MatrixRowLike> }
+    | null => {
+    try {
+      const logPath = path.join(ctx.config.stateDir, 'logs', 'apprenticeship-decisions.jsonl');
+      const prov = readInstallProvenance(logPath);
+      if (prov.ok && prov.installClass === 'fleet') {
+        return { kind: 'degraded', contentHash: degradedAcceptanceHash(instanceId, framework) };
+      }
+      const out = runStallGateValidation({
+        repoRoot: ctx.config.projectDir,
+        framework,
+        nowIso: new Date().toISOString(),
+      });
+      if (out.fileMissing || !out.result) return null;
+      const rowsById = new Map<string, MatrixRowLike>();
+      for (const r of out.rawRows ?? []) {
+        if (typeof r.class === 'string') rowsById.set(`${framework}:${r.class}`, r);
+      }
+      return { kind: 'source', contentHash: out.result.contentHash, rowsById };
+    } catch {
+      // @silent-fallback-ok — null = "nothing enumerable"; the routes answer an
+      // explicit 409 / hash-mismatch refusal on it, never a silent success.
+      return null;
+    }
+  };
+  const ROW_ID_RE = /^[a-z0-9-]+:[a-z0-9-]+$/;
+  const RULE_RE = /^[a-z0-9-]{1,64}$/;
+  /** The CURRENT content hash for a challenge's SCOPE (Decision 20 binding
+   *  granularity) — recomputed at bind time so accept-then-edit voids. */
+  const resolveChallengeCurrentHash = (challenge: {
+    instanceId: string; framework: string; scope: string; rowIds: string[];
+  }): string | null => {
+    const state = resolveMatrixState(challenge.instanceId, challenge.framework);
+    if (!state) return null;
+    if (challenge.scope === 'degraded') return state.kind === 'degraded' ? state.contentHash : null;
+    if (state.kind !== 'source') return null;
+    if (challenge.scope === 'whole-set') return state.contentHash;
+    if (challenge.scope === 'rows') {
+      const entries: Array<{ rowId: string; row: MatrixRowLike }> = [];
+      for (const id of challenge.rowIds) {
+        const row = state.rowsById.get(id);
+        if (!row) return null;
+        entries.push({ rowId: id, row });
+      }
+      return canonicalRowSetHash(entries);
+    }
+    if (challenge.scope === 'override') {
+      const row = challenge.rowIds.length === 1 ? state.rowsById.get(challenge.rowIds[0]) : undefined;
+      return row ? canonicalRowHash(row) : null;
+    }
+    return null;
+  };
+  // Conversational bind (mirrors the ratifier's reply-anchor mechanic): a
+  // verified-operator reply onto a recorded enumeration message binds the
+  // challenge. Signal-only — fire-and-forget on both ingress paths.
+  const observeMatrixAcceptanceInbound = (evt: {
+    topicId: number; text: string; senderUid: string; messageId: number; replyToMessageId?: number;
+  }): void => {
+    const store = ctx.apprenticeshipMatrixAcceptance;
+    if (!store) return;
+    void store.observeInbound(evt, {
+      getOperatorUid: (topicId: number) => ctx.topicOperatorStore?.getOperator(topicId)?.uid ?? null,
+      resolveCurrentContentHash: (challenge) => resolveChallengeCurrentHash(challenge),
+      ack: async (topicId: number, text: string) => {
+        if (ctx.telegram) await ctx.telegram.sendToTopic(topicId, text);
+      },
+    });
+  };
+
   if (ctx.telegram) {
     // Direct-poll ingress (the server long-polls Telegram itself, R45). The
-    // lifeline-forward ingress fires the same observer inside
+    // lifeline-forward ingress fires the same observers inside
     // POST /internal/telegram-forward below.
     ctx.telegram.onScopeAccretionInbound = (evt) => {
       void scopeAccretionRatifier.observeInbound(evt);
+      observeMatrixAcceptanceInbound(evt);
     };
   }
 
@@ -19347,6 +19438,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         replyToMessageId: fwdReplyTo,
         at: Date.now(),
       });
+      observeMatrixAcceptanceInbound({
+        topicId: Number(topicId),
+        text: String(text),
+        senderUid: String(fromUserId ?? ''),
+        messageId: Number(messageId) || 0,
+        replyToMessageId: fwdReplyTo,
+      });
     }
 
     // ── Exactly-once ingress gate (spec §8 G3a) ──────────────────────
@@ -22024,14 +22122,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.post('/apprenticeship/instances/:id/transition', (req, res) => {
+  router.post('/apprenticeship/instances/:id/transition', async (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const to = (req.body ?? {}).to;
     if (!['pending', 'active', 'complete', 'blocked', 'abandoned'].includes(to)) {
       res.status(400).json({ error: 'to must be one of pending | active | complete | blocked | abandoned' });
       return;
     }
-    const result = ctx.apprenticeshipProgram.transition(req.params.id, to);
+    const result = await ctx.apprenticeshipProgram.transition(req.params.id, to);
     if (!result.ok) {
       // 404 for a missing instance; 409 for a refused/illegal transition.
       const code = result.reason.includes('not found') ? 404 : 409;
@@ -22063,11 +22161,145 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(ctx.apprenticeshipProgram.evaluateStartGate(inst));
   });
 
-  router.post('/apprenticeship/instances/:id/can-complete', (req, res) => {
+  router.post('/apprenticeship/instances/:id/can-complete', async (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const inst = ctx.apprenticeshipProgram.get(req.params.id);
     if (!inst) { res.status(404).json({ error: 'not found' }); return; }
-    res.json(ctx.apprenticeshipProgram.evaluateCompletionGate(inst));
+    res.json(await ctx.apprenticeshipProgram.evaluateCompletionGate(inst));
+  });
+
+  // ── Stall-coverage matrix acceptance (framework-stall-coverage-matrix §2.2) ──
+  //
+  //   POST /apprenticeship/instances/:id/matrix-acceptance/enumerate — Bearer;
+  //     the SERVER renders + records the exact enumerated set (a challenge).
+  //     Optional { topicId } posts the enumeration to the topic so the
+  //     verified operator can bind it with a reply-anchored yes/approve (the
+  //     ScopeAccretionRatifier mechanic).
+  //   POST /apprenticeship/instances/:id/matrix-acceptance — dashboard-PIN
+  //     bind: { pin, challengeId }. Requester ≠ acceptor is structural — the
+  //     Bearer token alone can NEVER record an acceptance (Decision 14).
+  router.post('/apprenticeship/instances/:id/matrix-acceptance/enumerate', async (req, res) => {
+    if (!ctx.apprenticeshipProgram || !ctx.apprenticeshipMatrixAcceptance) {
+      res.status(503).json({ error: 'apprenticeship program disabled' });
+      return;
+    }
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    const state = resolveMatrixState(inst.id, inst.framework);
+    if (!state) {
+      res.status(409).json({ error: `no stall-coverage matrix content to enumerate for framework '${inst.framework}'` });
+      return;
+    }
+    // Scope-aware mint (Decision 20): whole-set (default) / rows / override.
+    // Rows + override are the production path for `acceptanceRef:` clears and
+    // the §3.4 per-instance relief — hashed via the SAME canonical-row
+    // serialization the gate re-derives at verify time.
+    const requestedScope = typeof req.body?.scope === 'string' ? req.body.scope : 'whole-set';
+    let enumerated: { scope: 'whole-set' | 'degraded' | 'rows' | 'override'; contentHash: string; rowIds: string[]; rule?: string };
+    if (state.kind === 'degraded') {
+      if (requestedScope !== 'whole-set' && requestedScope !== 'degraded') {
+        res.status(409).json({ error: 'row/override-scoped acceptance is not available on a no-source install (degraded verdict only)' });
+        return;
+      }
+      enumerated = { scope: 'degraded', contentHash: state.contentHash, rowIds: [] };
+    } else if (requestedScope === 'whole-set') {
+      enumerated = { scope: 'whole-set', contentHash: state.contentHash, rowIds: [...state.rowsById.keys()] };
+    } else if (requestedScope === 'rows') {
+      const rowIds = Array.isArray(req.body?.rowIds)
+        ? (req.body.rowIds as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+      if (rowIds.length === 0 || rowIds.length > 64 || !rowIds.every((id) => ROW_ID_RE.test(id))) {
+        res.status(400).json({ error: '"rowIds" (non-empty array of "<framework>:<classId>" strings) required for scope "rows"' });
+        return;
+      }
+      const entries: Array<{ rowId: string; row: Parameters<typeof canonicalRowHash>[0] }> = [];
+      for (const id of rowIds) {
+        const row = state.rowsById.get(id);
+        if (!row) {
+          res.status(409).json({ error: `rowId '${id}' does not resolve to a current matrix row` });
+          return;
+        }
+        entries.push({ rowId: id, row });
+      }
+      enumerated = { scope: 'rows', contentHash: canonicalRowSetHash(entries), rowIds: [...rowIds].sort() };
+    } else if (requestedScope === 'override') {
+      const rule = typeof req.body?.rule === 'string' ? req.body.rule : '';
+      const classId = typeof req.body?.classId === 'string' ? req.body.classId : '';
+      if (!RULE_RE.test(rule) || !/^[a-z0-9-]+$/.test(classId)) {
+        res.status(400).json({ error: '"rule" (kebab rule name) and "classId" required for scope "override"' });
+        return;
+      }
+      const rowId = `${inst.framework}:${classId}`;
+      const row = state.rowsById.get(rowId);
+      if (!row) {
+        res.status(409).json({ error: `classId '${classId}' does not resolve to a current matrix row` });
+        return;
+      }
+      enumerated = { scope: 'override', contentHash: canonicalRowHash(row), rowIds: [rowId], rule };
+    } else {
+      res.status(400).json({ error: '"scope" must be one of whole-set | rows | override' });
+      return;
+    }
+    const challenge = ctx.apprenticeshipMatrixAcceptance.mintChallenge({
+      instanceId: inst.id,
+      framework: inst.framework,
+      scope: enumerated.scope,
+      contentHash: enumerated.contentHash,
+      rowIds: enumerated.rowIds,
+      ...(enumerated.rule ? { rule: enumerated.rule } : {}),
+    });
+    const renderedText = ctx.apprenticeshipMatrixAcceptance.renderEnumeration(challenge);
+    // Conversational arm: post the server-authored enumeration to the topic so
+    // a reply-anchored verified-operator confirmation can bind it.
+    let posted: { topicId: number; messageId: number } | null = null;
+    const topicId = typeof req.body?.topicId === 'number' ? req.body.topicId : null;
+    if (topicId !== null && ctx.telegram) {
+      try {
+        const sent = await ctx.telegram.sendToTopic(topicId, renderedText);
+        posted = { topicId, messageId: sent.messageId };
+        ctx.apprenticeshipMatrixAcceptance.attachMessage(challenge.challengeId, posted);
+      } catch {
+        // @silent-fallback-ok — a failed Telegram post only loses the
+        // conversational anchor; the challenge is recorded and the PIN path
+        // remains fully available (the response reports posted: null).
+        posted = null;
+      }
+    }
+    res.json({
+      challengeId: challenge.challengeId,
+      scope: challenge.scope,
+      contentHash: challenge.contentHash,
+      rowIds: challenge.rowIds,
+      ...(challenge.rule ? { rule: challenge.rule } : {}),
+      renderedText,
+      posted,
+    });
+  });
+
+  router.post('/apprenticeship/instances/:id/matrix-acceptance', (req, res) => {
+    if (!ctx.apprenticeshipProgram || !ctx.apprenticeshipMatrixAcceptance) {
+      res.status(503).json({ error: 'apprenticeship program disabled' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return; // PIN-gated: a Bearer token is structurally insufficient
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    const challengeId = typeof req.body?.challengeId === 'string' ? req.body.challengeId : '';
+    if (!challengeId) { res.status(400).json({ error: '"challengeId" (string) required' }); return; }
+    const challenge = ctx.apprenticeshipMatrixAcceptance.getChallenge(challengeId);
+    if (!challenge || challenge.instanceId !== inst.id) {
+      res.status(404).json({ error: 'unknown challenge for this instance' });
+      return;
+    }
+    // Re-resolve the CURRENT content for the challenge's SCOPE at bind time —
+    // accept-then-edit voids the challenge (§2.2 / Decision 20).
+    const bound = ctx.apprenticeshipMatrixAcceptance.bind({
+      challengeId,
+      principal: { kind: 'operator-pin', id: 'dashboard-pin' },
+      currentContentHash: resolveChallengeCurrentHash(challenge),
+    });
+    if (!bound.ok) { res.status(409).json({ ok: false, reason: bound.reason }); return; }
+    res.json({ ok: true, reason: bound.reason, challengeRef: challengeId });
   });
 
   // ORG-INTENT.md tradeoff resolution (Phase 3 of the ORG-INTENT runtime

@@ -329,6 +329,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /apprenticeship/instances/:id/rung-transition',
         'POST /apprenticeship/instances/:id/can-start',
         'POST /apprenticeship/instances/:id/can-complete',
+        'POST /apprenticeship/instances/:id/matrix-acceptance/enumerate',
+        'POST /apprenticeship/instances/:id/matrix-acceptance',
         'POST /apprenticeship/cycles',
         'POST /apprenticeship/cycles/:id/close',
       ],

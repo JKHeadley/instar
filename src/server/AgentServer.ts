@@ -96,6 +96,8 @@ import { DashboardInsightEngine } from '../monitoring/DashboardInsightEngine.js'
 import { buildBuiltinInsightPages } from '../monitoring/dashboardInsightCollectors.js';
 import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
+import { ApprenticeshipStallGate } from '../core/ApprenticeshipStallGate.js';
+import { MatrixAcceptanceStore } from '../core/ApprenticeshipMatrixAcceptance.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { readApprenticeshipPeerCycles } from '../monitoring/ApprenticeshipPeerCycleReader.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
@@ -397,6 +399,7 @@ export class AgentServer {
    *  via the developmentAgent gate) → /insights* 503s. */
   private dashboardInsightEngine: DashboardInsightEngine | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
+  private apprenticeshipMatrixAcceptance: MatrixAcceptanceStore | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
   private geminiCapacityEscalationMonitor: GeminiCapacityEscalationMonitor | null = null;
@@ -2428,9 +2431,23 @@ export class AgentServer {
     try {
       if (options.config.stateDir) {
         const frameworkLedger = this.frameworkIssueLedger;
+        // PR-B (framework-stall-coverage-matrix §2.3/§2.2): the stall-coverage
+        // matrix gate + the acceptance machinery. Loopback carries the resolved
+        // auth token so the gate's non-hermetic checks (commitments liveness,
+        // /guards posture) reach the local server (Frontloaded Decision 17).
+        this.apprenticeshipMatrixAcceptance = new MatrixAcceptanceStore({
+          stateDir: options.config.stateDir,
+        });
+        const stallGate = new ApprenticeshipStallGate({
+          projectDir: options.config.projectDir,
+          stateDir: options.config.stateDir,
+          loopback: { port: options.config.port, authToken: options.config.authToken },
+          acceptance: this.apprenticeshipMatrixAcceptance,
+        });
         this.apprenticeshipProgram = new ApprenticeshipProgram({
           stateDir: options.config.stateDir,
           projectDir: options.config.projectDir,
+          stallGate,
           deps: {
             countInstanceLedgerEntries: (instance) => {
               if (!frameworkLedger) return 0;
@@ -3046,6 +3063,7 @@ export class AgentServer {
       growthMilestoneAnalyst: this.growthMilestoneAnalyst,
       growthDigestPublisher: this.growthDigestPublisher,
       apprenticeshipProgram: this.apprenticeshipProgram,
+      apprenticeshipMatrixAcceptance: this.apprenticeshipMatrixAcceptance,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
       apprenticeshipPeerCycleReader: options.apprenticeshipPeerCycleReader ?? ((instanceId: string) =>
         readApprenticeshipPeerCycles(instanceId, {

@@ -968,6 +968,28 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     component: 'TopicCreationBudget',
     description: 'Bounded Notification Surface — last-resort budget on every auto-created topic (default-ON in code).',
   },
+  // ── Stall-coverage matrix gate (framework-stall-coverage-matrix §3.4) ──
+  {
+    key: 'apprenticeship.stallCoverageGate.enabled',
+    kind: 'config',
+    configPath: 'apprenticeship.stallCoverageGate.enabled',
+    defaultEnabled: true,
+    dryRunConfigPath: 'apprenticeship.stallCoverageGate.dryRun',
+    // Read LIVE at the gate callsite (no restart) → diverged-pending-restart
+    // would lie; suppress it.
+    liveConfig: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ApprenticeshipStallGate',
+    description: 'Stall-coverage matrix gate — apprenticeship onboarding transitions verify the framework stall-coverage matrix (provisional at pending→active; full + liveness/posture/acceptance at active→complete). Ships enabled + dry-run; the enforce flip is operator-owned on named evidence.',
+    // §3.4: while dry-run, the gate registers as load-bearing-SOAKING with a
+    // soak deadline so an unflipped gate lapses into visible debt instead of
+    // rotting ("A Dark Feature Guards Nothing" applies to this gate itself).
+    loadBearing: true,
+    criticalPath: 'apprenticeship onboarding sign-off (stall-coverage matrix gate)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-18',
+  },
 ] as const;
 
 /**

@@ -101,7 +101,7 @@ describe('ApprenticeshipProgram', () => {
 
   // ── createInstance: charset clamp + dup-reject ────────────────────────
   describe('createInstance', () => {
-    it('creates a valid instance and computes harvestFrom=mentor / harvestTo=mentee', () => {
+    it('creates a valid instance and computes harvestFrom=mentor / harvestTo=mentee', async () => {
       const p = program();
       const inst = p.createInstance({
         id: 'echo-to-codey',
@@ -122,7 +122,7 @@ describe('ApprenticeshipProgram', () => {
       expect(inst.version).toBe(0);
     });
 
-    it('clamps charset — rejects an id/mentor with illegal chars', () => {
+    it('clamps charset — rejects an id/mentor with illegal chars', async () => {
       const p = program();
       expect(() =>
         p.createInstance({ id: 'Echo/Codey', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' }),
@@ -132,7 +132,7 @@ describe('ApprenticeshipProgram', () => {
       ).toThrow(/mentor/);
     });
 
-    it('rejects a duplicate id', () => {
+    it('rejects a duplicate id', async () => {
       const p = program();
       p.createInstance({ id: 'dup', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       expect(() =>
@@ -140,7 +140,7 @@ describe('ApprenticeshipProgram', () => {
       ).toThrow(/duplicate id/);
     });
 
-    it('persists across instances (file-backed store)', () => {
+    it('persists across instances (file-backed store)', async () => {
       const p1 = program();
       p1.createInstance({ id: 'persisted', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       const p2 = program();
@@ -150,7 +150,7 @@ describe('ApprenticeshipProgram', () => {
   });
 
   describe('independence ladder registry', () => {
-    it('requires evidence, permits adjacent promotion/demotion, and appends history', () => {
+    it('requires evidence, permits adjacent promotion/demotion, and appends history', async () => {
       const p = program();
       const inst = p.createInstance({ id: 'ladder', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       expect(p.transitionRung(inst.id, 1, '').ok).toBe(false);
@@ -167,7 +167,7 @@ describe('ApprenticeshipProgram', () => {
       expect(demoted.instance?.rungHistory.map((h) => h.rung)).toEqual([0, 1, 0]);
     });
 
-    it('migrates a pre-ladder instance to R0 with durable provenance', () => {
+    it('migrates a pre-ladder instance to R0 with durable provenance', async () => {
       const p = program();
       p.createInstance({ id: 'legacy', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       const storePath = path.join(stateDir, 'apprenticeship', 'instances.json');
@@ -183,7 +183,7 @@ describe('ApprenticeshipProgram', () => {
       expect(persisted.instances[0].ladderRung).toBe(0);
     });
 
-    it('fails closed when persisted ladder state is malformed', () => {
+    it('fails closed when persisted ladder state is malformed', async () => {
       const p = program();
       p.createInstance({ id: 'broken', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       const storePath = path.join(stateDir, 'apprenticeship', 'instances.json');
@@ -197,7 +197,7 @@ describe('ApprenticeshipProgram', () => {
       expect(reloaded.list()).toEqual([]);
     });
 
-    it('audits refused and accepted rung transitions', () => {
+    it('audits refused and accepted rung transitions', async () => {
       const p = program();
       const inst = p.createInstance({ id: 'ladder-audit', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       p.transitionRung(inst.id, 2, 'pr:skip');
@@ -223,14 +223,14 @@ describe('ApprenticeshipProgram', () => {
       });
     }
 
-    it('ALLOWS bootstrap when the seed harvest exists + validates (complete)', () => {
+    it('ALLOWS bootstrap when the seed harvest exists + validates (complete)', async () => {
       const p = program({ readHarvest: () => buildHarvest({ completeness: 'complete' }), validate: validateRetroHarvest });
       const inst = bootstrapInstance(p);
       const v = p.evaluateStartGate(inst);
       expect(v.allow).toBe(true);
     });
 
-    it('REFUSES bootstrap when the seed harvest is missing', () => {
+    it('REFUSES bootstrap when the seed harvest is missing', async () => {
       const p = program({ readHarvest: () => null, validate: validateRetroHarvest });
       const inst = bootstrapInstance(p);
       const v = p.evaluateStartGate(inst);
@@ -238,7 +238,7 @@ describe('ApprenticeshipProgram', () => {
       expect(v.reason).toMatch(/missing at canonical path/);
     });
 
-    it('REFUSES bootstrap when the seed harvest is invalid', () => {
+    it('REFUSES bootstrap when the seed harvest is invalid', async () => {
       const p = program({ readHarvest: () => buildHarvest({ schema: 'wrong/v9' }), validate: validateRetroHarvest });
       const inst = bootstrapInstance(p);
       const v = p.evaluateStartGate(inst);
@@ -246,7 +246,7 @@ describe('ApprenticeshipProgram', () => {
       expect(v.reason).toMatch(/invalid/);
     });
 
-    it('partial-accepted PASSES only with acceptance metadata', () => {
+    it('partial-accepted PASSES only with acceptance metadata', async () => {
       const accepted = buildHarvest({
         completeness: 'partial-accepted',
         acceptedBy: 'justin',
@@ -266,7 +266,7 @@ describe('ApprenticeshipProgram', () => {
       expect(p.evaluateStartGate(inst).allow).toBe(true);
     });
 
-    it('partial-accepted REFUSES without acceptance metadata', () => {
+    it('partial-accepted REFUSES without acceptance metadata', async () => {
       const unaccepted = buildHarvest({
         completeness: 'partial-accepted',
         sourcesCovered: {
@@ -285,7 +285,7 @@ describe('ApprenticeshipProgram', () => {
       expect(v.reason).toMatch(/awaiting acceptance/);
     });
 
-    it('REFUSES a non-bootstrap instance when the prior instance is not complete', () => {
+    it('REFUSES a non-bootstrap instance when the prior instance is not complete', async () => {
       const p = program({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
       const prior = p.createInstance({ id: 'prior', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       const next = p.createInstance({
@@ -302,7 +302,7 @@ describe('ApprenticeshipProgram', () => {
       expect(v.reason).toMatch(/must be "complete"/);
     });
 
-    it('REFUSES a non-bootstrap instance when the prior id does not resolve', () => {
+    it('REFUSES a non-bootstrap instance when the prior id does not resolve', async () => {
       const p = program({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
       const next = p.createInstance({
         id: 'orphan',
@@ -323,36 +323,36 @@ describe('ApprenticeshipProgram', () => {
       return p.createInstance({ id: 'inst', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
     }
 
-    it('ALLOWS when ALL declared-required artifacts are present in live state', () => {
+    it('ALLOWS when ALL declared-required artifacts are present in live state', async () => {
       const p = program(passingDeps(buildHarvest()));
       const inst = activeInstance(p);
-      const v = p.evaluateCompletionGate(inst);
+      const v = await p.evaluateCompletionGate(inst);
       expect(v.allow).toBe(true);
       expect(v.missing).toEqual([]);
     });
 
-    it('REFUSES when the harvest is absent (live)', () => {
+    it('REFUSES when the harvest is absent (live)', async () => {
       const p = program({ ...passingDeps(buildHarvest()), readHarvest: () => null });
-      const v = p.evaluateCompletionGate(activeInstance(p));
+      const v = await p.evaluateCompletionGate(activeInstance(p));
       expect(v.allow).toBe(false);
       expect(v.missing).toContain('retroHarvest:absent');
     });
 
-    it('REFUSES when there are zero instance-scoped ledger entries', () => {
+    it('REFUSES when there are zero instance-scoped ledger entries', async () => {
       const p = program({ ...passingDeps(buildHarvest()), countInstanceLedgerEntries: () => 0 });
-      const v = p.evaluateCompletionGate(activeInstance(p));
+      const v = await p.evaluateCompletionGate(activeInstance(p));
       expect(v.allow).toBe(false);
       expect(v.missing).toContain('ledgerEntries:none');
     });
 
-    it('REFUSES when the detector audit is absent', () => {
+    it('REFUSES when the detector audit is absent', async () => {
       const p = program({ ...passingDeps(buildHarvest()), detectorAuditExists: () => false });
-      const v = p.evaluateCompletionGate(activeInstance(p));
+      const v = await p.evaluateCompletionGate(activeInstance(p));
       expect(v.allow).toBe(false);
       expect(v.missing).toContain('detectorAudit:absent');
     });
 
-    it('NEVER trusts a stored requiredArtifacts flag — only declared-required artifacts are checked', () => {
+    it('NEVER trusts a stored requiredArtifacts flag — only declared-required artifacts are checked', async () => {
       // Only ledgerEntries is declared required; harvest + detectorAudit not.
       const p = program({ readHarvest: () => null, validate: validateRetroHarvest, countInstanceLedgerEntries: () => 5, detectorAuditExists: () => false });
       const inst = p.createInstance({
@@ -363,99 +363,99 @@ describe('ApprenticeshipProgram', () => {
         framework: 'codex-cli',
         requiredArtifacts: { retroHarvest: false, ledgerEntries: true, detectorAudit: false },
       });
-      const v = p.evaluateCompletionGate(inst);
+      const v = await p.evaluateCompletionGate(inst);
       expect(v.allow).toBe(true); // harvest/detector not required → not checked
     });
   });
 
   // ── status transition table ───────────────────────────────────────────
   describe('transition table', () => {
-    it('pending→abandoned retains the record as terminal disposal', () => {
+    it('pending→abandoned retains the record as terminal disposal', async () => {
       const p = program();
       const inst = p.createInstance({ id: 'mistake', instanceType: 'mentorship', mentor: 'echo', mentee: 'wrong', framework: 'codex-cli' });
-      const r = p.transition(inst.id, 'abandoned');
+      const r = await p.transition(inst.id, 'abandoned');
       expect(r.ok).toBe(true);
       expect(p.get(inst.id)?.status).toBe('abandoned');
-      expect(p.transition(inst.id, 'active').ok).toBe(false);
+      expect((await p.transition(inst.id, 'active')).ok).toBe(false);
       expect(p.list().map((i) => i.id)).toContain('mistake');
     });
 
-    it('refuses active→abandoned so disposal cannot erase started work', () => {
+    it('refuses active→abandoned so disposal cannot erase started work', async () => {
       const p = program({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
       const inst = p.createInstance({ id: 'started', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      expect(p.transition(inst.id, 'active').ok).toBe(true);
-      const r = p.transition(inst.id, 'abandoned');
+      expect((await p.transition(inst.id, 'active')).ok).toBe(true);
+      const r = await p.transition(inst.id, 'abandoned');
       expect(r.ok).toBe(false);
       expect(r.reason).toContain('illegal transition active→abandoned');
     });
 
-    it('pending→active runs the start gate and refuses on !allow', () => {
+    it('pending→active runs the start gate and refuses on !allow', async () => {
       const p = program({ readHarvest: () => null, validate: validateRetroHarvest });
       const inst = p.createInstance({ id: 'i1', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      const r = p.transition(inst.id, 'active');
+      const r = await p.transition(inst.id, 'active');
       expect(r.ok).toBe(false);
       expect(r.reason).toMatch(/start gate refused/);
       expect(p.get(inst.id)!.status).toBe('pending');
     });
 
-    it('pending→active succeeds when the start gate allows', () => {
+    it('pending→active succeeds when the start gate allows', async () => {
       const p = program({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
       const inst = p.createInstance({ id: 'i2', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      const r = p.transition(inst.id, 'active');
+      const r = await p.transition(inst.id, 'active');
       expect(r.ok).toBe(true);
       expect(p.get(inst.id)!.status).toBe('active');
     });
 
-    it('active→complete runs the completion gate and refuses on !allow', () => {
+    it('active→complete runs the completion gate and refuses on !allow', async () => {
       const p = program({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest, countInstanceLedgerEntries: () => 0, detectorAuditExists: () => true });
       const inst = p.createInstance({ id: 'i3', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      p.transition(inst.id, 'active');
-      const r = p.transition(inst.id, 'complete');
+      await p.transition(inst.id, 'active');
+      const r = await p.transition(inst.id, 'complete');
       expect(r.ok).toBe(false);
       expect(r.reason).toMatch(/completion gate refused/);
     });
 
-    it('active→complete succeeds and complete is TERMINAL', () => {
+    it('active→complete succeeds and complete is TERMINAL', async () => {
       const p = program(passingDeps(buildHarvest()));
       const inst = p.createInstance({ id: 'i4', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      p.transition(inst.id, 'active');
-      expect(p.transition(inst.id, 'complete').ok).toBe(true);
+      await p.transition(inst.id, 'active');
+      expect((await p.transition(inst.id, 'complete')).ok).toBe(true);
       // terminal — no further transitions
-      const back = p.transition(inst.id, 'active');
+      const back = await p.transition(inst.id, 'active');
       expect(back.ok).toBe(false);
       expect(back.reason).toMatch(/illegal transition|terminal/);
     });
 
-    it('active→blocked and blocked→active (re-gate) are legal', () => {
+    it('active→blocked and blocked→active (re-gate) are legal', async () => {
       const p = program(passingDeps(buildHarvest()));
       const inst = p.createInstance({ id: 'i5', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      p.transition(inst.id, 'active');
-      expect(p.transition(inst.id, 'blocked').ok).toBe(true);
+      await p.transition(inst.id, 'active');
+      expect((await p.transition(inst.id, 'blocked')).ok).toBe(true);
       expect(p.get(inst.id)!.status).toBe('blocked');
       // blocked→active re-gates (start gate); deps allow → ok
-      expect(p.transition(inst.id, 'active').ok).toBe(true);
+      expect((await p.transition(inst.id, 'active')).ok).toBe(true);
     });
 
-    it('rejects an illegal transition (pending→complete)', () => {
+    it('rejects an illegal transition (pending→complete)', async () => {
       const p = program(passingDeps(buildHarvest()));
       const inst = p.createInstance({ id: 'i6', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      const r = p.transition(inst.id, 'complete');
+      const r = await p.transition(inst.id, 'complete');
       expect(r.ok).toBe(false);
       expect(r.reason).toMatch(/illegal transition/);
     });
 
-    it('requiredArtifacts is immutable after create (mutate restores it)', () => {
+    it('requiredArtifacts is immutable after create (mutate restores it)', async () => {
       const p = program(passingDeps(buildHarvest()));
       const inst = p.createInstance({ id: 'i7', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       const before = JSON.stringify(inst.requiredArtifacts);
-      p.transition(inst.id, 'active');
+      await p.transition(inst.id, 'active');
       expect(JSON.stringify(p.get(inst.id)!.requiredArtifacts)).toBe(before);
     });
   });
 
   // ── path confinement ──────────────────────────────────────────────────
   describe('path confinement', () => {
-    it('ignores a stored traversal harvestRef — resolves via canonical path', () => {
+    it('ignores a stored traversal harvestRef — resolves via canonical path', async () => {
       let readArg = '';
       const p = program({
         readHarvest: (rel) => {
@@ -488,7 +488,7 @@ describe('ApprenticeshipProgram', () => {
 
   // ── wiring integrity ──────────────────────────────────────────────────
   describe('wiring integrity (deps are real, not no-ops)', () => {
-    it('uses the REAL validator against a REAL on-disk harvest (default deps, no fakes)', () => {
+    it('uses the REAL validator against a REAL on-disk harvest (default deps, no fakes)', async () => {
       // Write a real harvest to the canonical path under projectDir and use the
       // DEFAULT readHarvest + validate (no injected fakes) — proves the real fs
       // reader + real validator are wired, not no-ops.
@@ -505,11 +505,11 @@ describe('ApprenticeshipProgram', () => {
       expect(p.evaluateStartGate(inst).allow).toBe(false);
     });
 
-    it('the default ledger-counter is a real function (returns 0 by default, not undefined)', () => {
+    it('the default ledger-counter is a real function (returns 0 by default, not undefined)', async () => {
       const p = program(); // default countInstanceLedgerEntries
       const inst = p.createInstance({ id: 'wiring', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
       // No harvest on disk → completion blocked, and ledger count defaults to 0.
-      const v = p.evaluateCompletionGate(inst);
+      const v = await p.evaluateCompletionGate(inst);
       expect(v.allow).toBe(false);
       expect(v.missing).toContain('ledgerEntries:none');
     });
@@ -517,10 +517,10 @@ describe('ApprenticeshipProgram', () => {
 
   // ── decision audit ────────────────────────────────────────────────────
   describe('decision audit', () => {
-    it('appends a gate verdict line to logs/apprenticeship-decisions.jsonl', () => {
+    it('appends a gate verdict line to logs/apprenticeship-decisions.jsonl', async () => {
       const p = program({ readHarvest: () => null, validate: validateRetroHarvest });
       const inst = p.createInstance({ id: 'audit', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
-      p.transition(inst.id, 'active'); // refused → audited
+      await p.transition(inst.id, 'active'); // refused → audited
       const logPath = path.join(stateDir, 'logs', 'apprenticeship-decisions.jsonl');
       expect(fs.existsSync(logPath)).toBe(true);
       const lines = fs.readFileSync(logPath, 'utf-8').trim().split('\n');
@@ -533,7 +533,7 @@ describe('ApprenticeshipProgram', () => {
 
   // ── corrupt store fails closed ────────────────────────────────────────
   describe('fail-closed on corrupt store', () => {
-    it('a corrupt store refuses gates and create', () => {
+    it('a corrupt store refuses gates and create', async () => {
       const storePath = path.join(stateDir, 'apprenticeship', 'instances.json');
       fs.mkdirSync(path.dirname(storePath), { recursive: true });
       fs.writeFileSync(storePath, '{ this is not valid json ]');
@@ -545,7 +545,7 @@ describe('ApprenticeshipProgram', () => {
 
   // ── overseer stub ─────────────────────────────────────────────────────
   describe('ApprenticeshipOverseer no-op stub (Step-4 location resolved)', () => {
-    it('computeDifferential returns an explicit not-implemented marker (never silent)', () => {
+    it('computeDifferential returns an explicit not-implemented marker (never silent)', async () => {
       const inst = {
         id: 'x', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey',
         framework: 'codex-cli', status: 'active', priorInstanceId: null,

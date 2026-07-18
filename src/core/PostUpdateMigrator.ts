@@ -34,6 +34,7 @@ import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
+import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
 import { installAutoStart, installBootWrapper } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
@@ -306,6 +307,23 @@ export function AUDIT_CONVERGENCE_CLAUDEMD_SECTION(_port: number): string {
 Any **audit-shaped** task — a SWEEP over a surface (find-all-X, a security/safety sweep, a compliance/coverage check, "review everything of kind K") — runs as the **converging loop**, not a single pass: audit → fix/classify each finding → RE-audit the FULL surface → repeat until a clean re-sweep finds **zero new**. A single-pass audit is INCOMPLETE by definition and must be reported as such — never dressed up as thorough. (A single-artifact review — one PR, one doc, one function — is NOT an audit and pays no convergence cost.)
 - **The mechanics live in the \`/iterative-converging-audit\` skill** — engage it whenever thoroughness matters. The durable ledger IS a canonical report at \`docs/audits/<slug>.md\`; in a repo carrying \`scripts/write-audit-convergence.mjs\` the \`converged\` claim is machine-EARNED (the validator refuses an unearned stamp; the commit gate + CI re-check it), never asserted.
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to say "I checked, looks clean" after ONE pass, or a task says "find all / audit / sweep / make sure we got everything" → run the converging loop, not the pass. Constitution: "Iterative Audit to Convergence" (\`docs/STANDARDS-REGISTRY.md\`).
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the stall-coverage matrix gate
+ * (framework-stall-coverage-matrix §3.4/§3.5 item 5 — Agent Awareness
+ * Standard + Migration Parity). The unique heading substring
+ * `Stall-Coverage Matrix Gate` is the content-sniff marker.
+ */
+export function APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Stall-Coverage Matrix Gate (apprenticeship onboarding)
+
+Onboarding a framework REQUIRES a stall-coverage matrix (\`docs/frameworks/<framework>-stall-coverage.md\`): the enumerated session-stop classes × detection + recovery per class. The apprenticeship lifecycle now enforces it: \`pending→active\` needs a PROVISIONAL matrix (complete enumeration; gaps allowed), \`active→complete\` verifies the FULL matrix from live state — closePath refs must resolve to OPEN commitments/actions, \`posture:\` claims are cross-checked against \`GET /guards\`, and sign-off needs a recorded operator acceptance. A refusal is a 409 naming the class id + violated rule ONLY (rejected matrix content is never echoed).
+- **Config knob**: \`apprenticeship.stallCoverageGate\` in \`.instar/config.json\`, read LIVE (no restart). Absence = \`{enabled: true, dryRun: true}\` — dry-run logs would-refuse verdicts to \`logs/apprenticeship-decisions.jsonl\` without blocking; the enforce flip (\`dryRun: false\`) is the operator's, on named evidence.
+- **On a no-source (fleet npm) install** the verdict is honestly \`matrix-unverifiable-no-source\` — the transition then rides the recorded overseer-acceptance path, NEVER a presence-check refusal for a reason unrelated to matrix quality.
+- **Ratify via the dashboard-PIN acceptance route, never prose**: \`POST http://localhost:${port}/apprenticeship/instances/:id/matrix-acceptance/enumerate\` (Bearer — the server renders the exact enumerated set), then the operator binds it with \`POST .../matrix-acceptance\` \`{"pin":"<dashboard PIN>","challengeId":"MAC-…"}\` (single-use challenge; content-hash-bound — accept-then-edit voids it). An agent-authored prose claim of acceptance is structurally insufficient.
+- **When to use** (PROACTIVE): a \`transition\` 409 naming \`stallMatrix:\` → read the named class/rule and fix the matrix row (or drive the acceptance flow for declared gaps); "why won't this onboarding complete?" → \`POST .../can-complete\` shows the gate report incl. the stall-matrix verdict. Spec: \`docs/specs/framework-stall-coverage-matrix.md\`.
 `;
 }
 
@@ -1149,6 +1167,7 @@ export class PostUpdateMigrator {
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
     this.migrateFixtureIdentityQuarantine(result);
+    this.migrateStallGateInstallProvenance(result);
 
     return result;
   }
@@ -1166,6 +1185,32 @@ export class PostUpdateMigrator {
    * a re-run is a no-op. NOTE (§6 rollback): the quarantine is NOT git-revertable
    * — a wrongly-quarantined legitimate user is recovered from the timestamped backup.
    */
+  // ── Stall-coverage install-provenance backfill (framework-stall-coverage-matrix §3.2) ──
+  //
+  // Existing installs predate the init-time install-provenance derivation the
+  // stall-coverage gate's degraded rung binds to. ONE-TIME tamper-evident
+  // backfill: derive the install class with the SAME logic init uses and
+  // append the same decisions-log record. Idempotent by presence-scan of the
+  // log (the record itself is the marker — mirroring the ws3 backfill's
+  // check-before-patch shape without a separate config flag, since the
+  // authoritative artifact is durable and greppable).
+  private migrateStallGateInstallProvenance(result: MigrationResult): void {
+    try {
+      const stateDir = this.config.stateDir;
+      const logPath = path.join(stateDir, 'logs', 'apprenticeship-decisions.jsonl');
+      if (hasInstallProvenanceRecord(logPath)) {
+        result.skipped.push('stall-gate install provenance: already recorded');
+        return;
+      }
+      const outcome = recordInstallProvenanceIfAbsent(path.dirname(stateDir), stateDir);
+      if (outcome === 'recorded') result.upgraded.push('stall-gate install provenance: recorded (one-time backfill)');
+      else if (outcome === 'present') result.skipped.push('stall-gate install provenance: already recorded');
+      else result.errors.push('stall-gate install provenance: backfill failed');
+    } catch (err) {
+      result.errors.push(`stall-gate install provenance: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateFixtureIdentityQuarantine(result: MigrationResult): void {
     const usersFile = path.join(this.config.stateDir, 'users.json');
     if (!fs.existsSync(usersFile)) {
@@ -5027,6 +5072,17 @@ setTimeout(() => process.exit(0), 2000);
       content += SCOPE_ACCRETION_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Scope-Accretion Completion Discipline section');
+    }
+
+    // Stall-Coverage Matrix Gate (spec: framework-stall-coverage-matrix §3.4) —
+    // Agent Awareness Standard + Migration Parity: existing agents learn the
+    // gate's refusal class, the live-read config knob, the
+    // matrix-unverifiable-no-source honesty line, and that ratification goes
+    // through the dashboard-PIN acceptance route, never prose. Content-sniffed.
+    if (!content.includes('Stall-Coverage Matrix Gate')) {
+      content += APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Stall-Coverage Matrix Gate section');
     }
 
     // External-Hog Zombie Auto-Kill Sentinel (spec: external-hog-zombie-autokill-sentinel,
