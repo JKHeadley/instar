@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-18T18:10:49.505Z",
+  "slug": "decision-trace-identity",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 27,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/instar-dev-precommit.js",
+      "skills/instar-dev/scripts/write-trace.mjs"
+    ],
+    "addedLines": 23,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

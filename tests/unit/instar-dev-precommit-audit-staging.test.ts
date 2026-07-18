@@ -225,7 +225,6 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
       path.join(sandbox, '.instar', 'instar-dev-traces', `${Date.now()}-pass-fixture.json`),
       JSON.stringify({
         phase: 'complete',
-        slug: 'pass-fixture',
         tier: 1,
         coveredFiles: [srcRel, eli16Rel, seRel],
         eli16Path: eli16Rel,
@@ -245,6 +244,12 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     );
     expect(entry.verdict).toBe('pass');
     expect(entry.slug).toBe('pass-fixture');
+    expect(entry.scope).toEqual({
+      basis: 'staged-in-scope-additions-plus-deletions',
+      files: [srcRel],
+      addedLines: 1,
+      deletedLines: 0,
+    });
   });
 });
 

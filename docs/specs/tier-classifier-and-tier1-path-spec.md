@@ -2,6 +2,7 @@
 title: "Tier classifier + Tier-1 PR path (Step A of the tiered development process)"
 date: 2026-06-01
 author: echo
+parent-principle: "The Body and the Mind"
 review-convergence: abbreviated-internal-2026-06-01
 approved: true
 approved-by: Justin

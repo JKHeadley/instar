@@ -91,6 +91,7 @@ describe('write-trace.mjs — tier declaration (Step A)', () => {
     expect(trace).not.toHaveProperty('specPath');
     // Existing fields still present + correct.
     expect(trace.phase).toBe('complete');
+    expect(trace.slug).toBe('widget');
     expect(trace.artifactPath).toBe(artifact);
     expect(trace.coveredFiles).toEqual(['src/a.ts', 'src/b.ts']);
     expect(typeof trace.artifactSha256).toBe('string');

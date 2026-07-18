@@ -1,5 +1,7 @@
 # Plain-English overview: the gate that suggests a tier and opens a lighter lane
 
+**Constitutional anchor:** This process implements **The Body and the Mind**: deterministic infrastructure supplies risk signals and durable evidence, while the agent retains the contextual tier decision and makes that decision reviewable.
+
 ## What this is
 
 This is the first build step of the tiered-development project you approved. It changes
