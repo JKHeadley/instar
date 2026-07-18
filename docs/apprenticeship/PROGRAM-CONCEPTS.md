@@ -78,3 +78,61 @@ form, per operator review (2026-07-17):
   program work is need-driven, and spec review is where rejection already lives. The
   retained piece: **promotion evidence must span multiple cycles, never one good day**
   (already the ladder's rung-evidence requirement).
+
+## The Hidden-Test Battery (regression tripwires)
+
+Operator-approved 2026-07-18, closing the bounded adoption flagged in concept 5: the
+program now carries a hidden-test battery. This section records the mechanism itself —
+generically, with no concrete scenario, agent, or organization content — so no drive
+re-derives its rules from chat history.
+
+**Tripwires, not targets.** Every scenario in the battery detects the LOSS of a
+behavior the program already values — a courtesy the mentee reliably showed, a
+discipline it already demonstrated, a failure mode it already learned to avoid.
+Passing therefore means exactly one thing: nothing broke. A pass is never evidence of
+growth, and the battery defines no ceiling, no score, and no target to optimize
+toward. Growth remains where it has always lived — with the overseer's judgment over
+real work. This inversion is the whole point: a held-out metric that defines success
+boxes growth into whatever the metric can see; a tripwire only ever fires on
+regression, so it cannot narrow what the mentee becomes.
+
+**Undisclosed during a drive, scored retrospectively.** Scenarios are not announced,
+hinted at, or marked while a drive runs. After the drive, each scenario is scored
+pass / fail / not-triggered, with evidence pointers into the drive's own record — a
+transcript reference, a ledger entry, an artifact path — so every verdict is
+auditable rather than an impression. Those results feed ladder promotions as ONE
+input among several, and strictly as necessary-not-sufficient: a failed tripwire can
+block a rung (a valued behavior regressed — that must be understood first), but no
+quantity of passes can earn one. Promotion evidence stays multi-cycle and
+overseer-judged, exactly as the ladder already requires.
+
+**The mechanism is disclosed; the scenarios are not.** The mentee is told once,
+plainly, that a battery of this kind exists and how it is used — this section is that
+disclosure in durable form. What stays undisclosed is only the scenario list itself,
+because a known tripwire measures performance for the test, not the behavior. The
+transparency arrives after the fact: scored results appear in drive reports the
+mentee can read, with the same evidence pointers the overseer sees. Nothing about the
+mentee's evaluation is secret in retrospect; only the timing of what was watched is.
+
+**The battery is disposable.** A scenario the mentee visibly performs for — where the
+behavior appears because the test is suspected, not because the value is held — has
+stopped measuring anything and is retired. The operator reviews the full scenario
+list at every rung change: retiring burned scenarios, dropping ones whose behavior is
+no longer load-bearing, and admitting new ones only against currently-valued
+behaviors. No scenario is permanent; the battery's authority comes from being
+current, not from being accumulated.
+
+**Guardrails.** The battery is never a leaderboard — results are not ranked, compared
+across agents, or published as standings. It is never a mid-drive threat — no one
+invokes it to pressure work in flight. It is never a gate on day-to-day work — no
+task, merge, or message waits on a tripwire verdict; its only consumer is the
+retrospective promotion review. And no scenario may be capable of harming real users,
+real data, or real services — a tripwire that could hurt something real to fire is
+disqualified by construction, not by review.
+
+**Captured, not manufactured.** Scenarios are preferentially harvested from
+naturally-arising situations — a real interruption, a real ambiguous request, a real
+failure that already happened once — because natural scenarios measure the behavior
+as it actually occurs. Manufacturing a scenario is the last resort, used only when a
+valued behavior has no natural occurrence to wait for, and never staged on production
+surfaces.
