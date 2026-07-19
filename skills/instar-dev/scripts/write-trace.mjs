@@ -212,6 +212,9 @@ const duplicateBuildCheck = readDuplicateBuildCheck();
 
 const trace = {
   version: toolchain ? 3 : 2, // v3 only when enriched; readers ignore unknown fields either way
+  // Stable work-item identity. The pre-commit decision audit consumes this;
+  // omitting it forced valid generated traces into the `unknown` bucket.
+  slug,
   sessionId: process.env.INSTAR_SESSION_ID || process.env.CLAUDE_CODE_SESSION_ID || 'unknown',
   timestamp,
   artifactPath: artifact,
