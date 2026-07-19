@@ -63,6 +63,12 @@ Install the following bot scopes. The live preflight compares the response's `x-
 
 Adding scopes is not enough: reinstall the app to the workspace so the bot token actually carries the new grants. Validate the token after reinstall; do not infer grants from the portal UI.
 
+### Updating an existing demo app
+
+Prefer a manifest-backed scope update when the authenticated Slack app-configuration API is available: update the app's manifest, then reinstall it to mint a bot token carrying the revised grants. A successful manifest update is configuration evidence, not token evidence; the `x-oauth-scopes` header after reinstall remains authoritative.
+
+If the app-configuration API is unavailable, use the Slack portal while signed in as the demo workspace's verified owner test identity. A bot token, an app-level Socket Mode token, or an agent's ordinary Slack seat does not confer app-administration authority. Treat an expired owner browser session as an operator-only sign-in gate rather than trying to copy browser cookies or switch identities silently.
+
 ## 3. Scope-and-invite gate
 
 Before adapter configuration, prove all of the following from live Slack API responses:
@@ -73,6 +79,8 @@ Before adapter configuration, prove all of the following from live Slack API res
 - no canary channel is archived.
 
 Invite the bot explicitly to each private or shared-mode channel. A channel ID in config is not membership evidence. If the bot lacks membership and cannot join with its own scoped token, mark the gate operator-only; do not weaken the smoke matrix or fabricate a channel pass.
+
+For public demo channels, a bot carrying `channels:join` can self-join through the supported API path. Re-read `conversations.info` afterward and require `is_member:true`; a successful join call without that read-back is not sufficient. Private channels still require an authorized member or workspace owner to invite the bot.
 
 Recommended demo channels:
 
