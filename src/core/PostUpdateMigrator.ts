@@ -8639,6 +8639,13 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      // Owned-Identities Registry (correction-derived-hardening): framework-
+      // agnostic — a Codex/Gemini agent provisions identities too, and its
+      // self-unblock exhaustion consults the same server-side probe. It must
+      // learn the registration trigger (.instar/owned-identities.json, pointer
+      // not value, canonical service:scope tags) or the founding wrong-
+      // escalation recurs on non-Claude agents.
+      '### Owned-Identities Registry (self-unblock Rung 0 includes what YOU created — register identities you provision in `.instar/owned-identities.json` with scopeTags in canonical service:scope form and credentialRef POINTERS, never secret values; prune stale entries)',
       // Self-Action Backpressure Governor (unified-self-action-backpressure §11
       // / LA9-1): framework-agnostic server behavior — a Codex/Gemini agent
       // also needs the GET /self-action-governor read surface, the three

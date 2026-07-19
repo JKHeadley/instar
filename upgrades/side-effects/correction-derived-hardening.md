@@ -151,6 +151,16 @@ This REDUCES Change A's authority below what the earlier sections review
 existing judgment rules to advisory is recorded in the spec as tracked intent
 (CMT-904).
 
+## Feature-delivery ratchet compliance (post-suite fix)
+
+The whole-tree feature-delivery-completeness ratchet caught that the new
+migrateClaudeMd section was untracked: registered `'owned-identities'` in
+featureSections and added the migrateFrameworkShadowCapabilities marker so
+Codex/Gemini agents (which provision identities too) also learn the registry —
+without the marker, the founding wrong-escalation would recur on non-Claude
+frameworks (the exact Secret-Drop/Commitments gap class the ratchet was built
+from).
+
 ## Second-pass review
 
 Required (the change touches a gate). Performed as a REAL independent
