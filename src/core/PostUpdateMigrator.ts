@@ -13843,6 +13843,9 @@ process.stdin.on('end', async () => {
     // reopen-and-prove). Shipped through v1.3.834; recognize it so stock
     // deployed relays upgrade in place rather than being treated as drift.
     '24a638766fc8a2473e23e032dde39ff7ef046c37e893ff878323d18d9dad2d52',
+    // Recovery-queue reopen-and-prove + outbound advisory acknowledgement
+    // version shipped through v1.3.882 (pre bounded final transport outcome).
+    'd55feb9a203c7835c36b6bf0e23972c79a1e26fe6ea29683f31f831fb956c0f3',
   ]);
 
   /**
@@ -14058,8 +14061,17 @@ MSG="\${*:-$(cat)}"
 PORT="\${INSTAR_PORT:-${port}}"
 JSON_MSG=$(printf '%s' "$MSG" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null)
 RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST "http://localhost:\${PORT}/telegram/reply/\${TOPIC_ID}" \\
+  --connect-timeout 3 \\
+  --max-time 125 \\
   -H 'Content-Type: application/json' \\
   -d "{\\"text\\":\${JSON_MSG}}")
+CURL_STATUS=$?
+if [ "$CURL_STATUS" -ne 0 ]; then
+  echo "AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl \${CURL_STATUS})." >&2
+  echo "  The message MAY still be delivered. Do NOT retry blindly; verify the conversation first." >&2
+  echo "AMBIGUOUS: no HTTP outcome — verify delivery before retrying"
+  exit 0
+fi
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 if [ "$HTTP_CODE" = "200" ]; then

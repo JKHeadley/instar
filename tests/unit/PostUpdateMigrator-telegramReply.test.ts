@@ -16,7 +16,8 @@
  * user-modification safety guard.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +46,14 @@ const OLD_SHIPPED_SCRIPT = fs.readFileSync(
   path.resolve(__dirname, '..', 'fixtures', 'telegram-reply-pre-port-config.sh'),
   'utf-8'
 );
+
+const CURRENT_TEMPLATE = fs.readFileSync(
+  path.resolve(__dirname, '..', '..', 'src', 'templates', 'scripts', 'telegram-reply.sh'),
+  'utf-8',
+);
+const IMMEDIATELY_PRIOR_SHIPPED_SCRIPT = CURRENT_TEMPLATE
+  .replace('  --connect-timeout 3\n  --max-time 125\n', '')
+  .replace(/\nCURL_STATUS=\$\?[\s\S]*?\nHTTP_CODE=/, '\n\nHTTP_CODE=');
 
 // User-customized script — no shipped-header marker, so migration must not touch.
 const USER_CUSTOM_SCRIPT = `#!/bin/bash
@@ -78,6 +87,32 @@ describe('PostUpdateMigrator — telegram-reply.sh 408 migration', () => {
     expect(script).toMatch(/ambiguous/i);
     expect(script).toContain('INSTAR_AGENT_HOME');
     expect(script).toContain('refusing to create an undrainable pending-relay.unknown.sqlite store');
+  });
+
+  it('the fallback script also bounds transport and renders non-HTTP ambiguity', () => {
+    const migrator = createMigrator(projectDir);
+    vi.spyOn(migrator as never, 'loadRelayTemplate' as never).mockReturnValue(null as never);
+    const script = (migrator as unknown as { getTelegramReplyScript(): string }).getTelegramReplyScript();
+    expect(script).toContain('--connect-timeout 3');
+    expect(script).toContain('--max-time 125');
+    expect(script).toContain('CURL_STATUS=$?');
+    expect(script).toContain('AMBIGUOUS: no HTTP outcome');
+    expect(script).toContain('Do NOT retry blindly');
+  });
+
+  it('upgrades the immediately prior stock template in place to the bounded outcome version', async () => {
+    expect(crypto.createHash('sha256').update(IMMEDIATELY_PRIOR_SHIPPED_SCRIPT).digest('hex'))
+      .toBe('d55feb9a203c7835c36b6bf0e23972c79a1e26fe6ea29683f31f831fb956c0f3');
+    fs.writeFileSync(scriptPath, IMMEDIATELY_PRIOR_SHIPPED_SCRIPT, { mode: 0o755 });
+
+    const migrator = createMigrator(projectDir);
+    const result = await migrator.migrate();
+
+    const updated = fs.readFileSync(scriptPath, 'utf8');
+    expect(updated).toContain('--max-time 125');
+    expect(updated).toContain('CURL_STATUS=$?');
+    expect(result.upgraded.some((u) => u.includes('telegram-reply.sh'))).toBe(true);
+    expect(fs.existsSync(`${scriptPath}.new`)).toBe(false);
   });
 
   it('installs telegram-reply.sh when file is missing', async () => {

@@ -373,6 +373,8 @@ ATTEMPTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
 # from config — the server uses it to reject wrong-port requests before
 # evaluating the token.
 CURL_ARGS=(-s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/telegram/reply/${TOPIC_ID}"
+  --connect-timeout 3
+  --max-time 125
   -H 'Content-Type: application/json'
   -d "$JSON_BODY")
 if [ -n "$AUTH_TOKEN" ]; then
@@ -386,6 +388,19 @@ if [ -n "$DELIVERY_ID" ]; then
 fi
 
 RESPONSE=$(curl "${CURL_ARGS[@]}")
+CURL_STATUS=$?
+
+# A transport failure after request start is inherently ambiguous: the server
+# may still finish its tone review or Telegram send after our bounded client
+# window closes. Always render a terminal outcome so a yielded/reattached tool
+# call cannot complete silently, and never auto-enqueue/retry an unknown send.
+if [ "$CURL_STATUS" -ne 0 ]; then
+  echo "AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl ${CURL_STATUS})." >&2
+  echo "  The message MAY still be delivered. Do NOT retry blindly; verify the conversation first." >&2
+  [ -n "$DELIVERY_ID" ] && echo "  Delivery id: ${DELIVERY_ID}" >&2
+  echo "AMBIGUOUS: no HTTP outcome — verify delivery before retrying"
+  exit 0
+fi
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
