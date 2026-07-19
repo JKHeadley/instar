@@ -1,0 +1,24 @@
+---
+change_type: fix
+---
+
+## What Changed
+
+- Threadline reply authorization now recognizes authenticated inbound messages in the modern hash-chained canonical log as well as the legacy listener inbox.
+- Wrong-thread, outbound-only, malformed, unconfined, or unreadable evidence remains fail-closed.
+- Reply evidence cannot authorize a send unless the durable at-most-once claim authority is available.
+
+## What to Tell Your User
+
+Cross-agent conversations no longer stall when a spawned worker replies to a message stored by Threadline's newer canonical history path. The security boundary is unchanged: replies still have to point to the exact authenticated inbound message on the same thread.
+
+## Summary of New Capabilities
+
+- Reliable replies from spawned Threadline sessions across both canonical history generations.
+
+## Evidence
+
+- Feedback: `fb-63d7c1fb-50a`
+- Unit: `tests/unit/threadline/ThreadlineReplyValidation.test.ts`
+- Behavioral route: `tests/integration/threadline-relay-send-priority.test.ts`
+- Wiring: `tests/integration/threadline-reap-recovery-wiring.test.ts`

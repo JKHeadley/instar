@@ -24,6 +24,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { vi } from 'vitest';
 
 let projectDir: string;
 let stateDir: string;
@@ -33,6 +34,15 @@ let fakeTargetServer: Server;
 let fakeTargetPort: number;
 let capturedEnvelopes: Array<unknown>;
 let tokenFilePath: string;
+const MODERN_THREAD = 'cfe01486-a896-4357-88a8-0251aacd2979';
+const MODERN_INBOUND = 'msg-modern-inbound';
+const activeReplyClaims = new Set<string>();
+const tryClaimReply = vi.fn((messageId: string) => {
+  if (activeReplyClaims.has(messageId)) return false;
+  activeReplyClaims.add(messageId);
+  return true;
+});
+const releaseReplyClaim = vi.fn((messageId: string) => activeReplyClaims.delete(messageId));
 const TEST_TARGET_NAME = `priority-test-target-${randomBytes(3).toString('hex')}`;
 
 describe('/threadline/relay-send caller-supplied priority', () => {
@@ -165,7 +175,20 @@ describe('/threadline/relay-send caller-supplied priority', () => {
       threadlineRouter: null,
       handshakeManager: null,
       threadlineRelayClient: stubRelayClient as any,
-      listenerManager: null,
+      listenerManager: {
+        readCanonicalInboxEntry: vi.fn(() => null),
+        readLatestCanonicalInboxForThread: vi.fn(() => null),
+        tryClaimReply,
+        releaseReplyClaim,
+        retainReplyClaimFailure: vi.fn(),
+        appendCanonicalOutboxEntry: vi.fn(),
+      },
+      threadLog: {
+        isPathConfined: vi.fn(() => true),
+        has: vi.fn((threadId: string, messageId: string, direction: string) =>
+          threadId === MODERN_THREAD && messageId === MODERN_INBOUND && direction === 'inbound'),
+        head: vi.fn(() => ({ count: 0, setAccum: '0'.repeat(64) })),
+      },
       responseReviewGate: null,
       telemetryHeartbeat: null,
       pasteManager: null,
@@ -315,5 +338,49 @@ describe('/threadline/relay-send caller-supplied priority', () => {
     const body = await res.json();
     expect(body.error).toMatch(/Invalid priority/i);
     expect(capturedEnvelopes).toHaveLength(0);
+  });
+
+  it('accepts modern-only inbound evidence, claims it, and releases after delivery', async () => {
+    activeReplyClaims.clear();
+    tryClaimReply.mockClear();
+    releaseReplyClaim.mockClear();
+
+    const res = await fetch(`${baseUrl}/threadline/relay-send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetAgent: TEST_TARGET_NAME,
+        message: 'canonical modern reply',
+        threadId: MODERN_THREAD,
+        inReplyTo: MODERN_INBOUND,
+        waitForReply: false,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(tryClaimReply).toHaveBeenCalledWith(MODERN_INBOUND, expect.any(String));
+    expect(releaseReplyClaim).toHaveBeenCalledWith(MODERN_INBOUND, expect.any(String));
+    expect(activeReplyClaims.has(MODERN_INBOUND)).toBe(false);
+  });
+
+  it('returns 409 when the modern inbound already has an active reply claim', async () => {
+    activeReplyClaims.add(MODERN_INBOUND);
+    capturedEnvelopes.length = 0;
+
+    const res = await fetch(`${baseUrl}/threadline/relay-send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetAgent: TEST_TARGET_NAME,
+        message: 'duplicate canonical modern reply',
+        threadId: MODERN_THREAD,
+        inReplyTo: MODERN_INBOUND,
+        waitForReply: false,
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(capturedEnvelopes).toHaveLength(0);
+    activeReplyClaims.clear();
   });
 });

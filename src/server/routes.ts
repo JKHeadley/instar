@@ -328,6 +328,7 @@ import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
 import { THREAD_ID_RE } from '../threadline/ThreadLog.js';
 import { readThreadHistoryUnion, type CanonicalReadDeps, type AggregateMessage } from '../threadline/canonicalHistoryRead.js';
+import { isAuthenticatedThreadlineInbound } from '../threadline/ThreadlineReplyValidation.js';
 import { computeSymmetryState, localThreadSync, honorPeerThreadSync, type SymmetryState } from '../threadline/threadSymmetry.js';
 import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
 import { evaluateOutboundCredentialShare } from '../threadline/CredentialShareGate.js';
@@ -27940,8 +27941,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (typeof inReplyTo === 'string') {
-      const claimedInbound = ctx.listenerManager?.readCanonicalInboxEntry(inReplyTo);
-      if (!claimedInbound || typeof threadId !== 'string' || claimedInbound.threadId !== threadId) {
+      if (!isAuthenticatedThreadlineInbound(
+        { listenerManager: ctx.listenerManager, threadLog: ctx.threadLog },
+        threadId,
+        inReplyTo,
+      )) {
         res.status(400).json({ success: false, error: 'inReplyTo must name an authenticated inbound on this thread.' });
         return;
       }

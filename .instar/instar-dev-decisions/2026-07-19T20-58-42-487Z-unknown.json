@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-19T20:58:42.487Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 51,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The canonical ThreadLog migration moved modern inbound evidence without updating the relay-send reply authorization consumer, leaving it bound to the legacy inbox only."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/threadline/ThreadlineReplyValidation.ts#isAuthenticatedThreadlineInbound",
+      "howCaught": "The live reply gate now requires exact thread, message, and inbound evidence from either canonical generation while also requiring durable claim authority; the behavioral route regression reproduces modern-only evidence, claim release, and duplicate-claim rejection."
+    }
+  },
+  "verdict": "pass"
+}

@@ -17,7 +17,8 @@ describe('Threadline reap recovery production wiring', () => {
     const routes = fs.readFileSync(new URL('../../src/server/routes.ts', import.meta.url), 'utf8');
     expect(routes).toContain('Warm Threadline replies require inReplyTo for the current inbound message.');
     expect(routes).toContain('tryClaimReply(inReplyTo, replyClaimOwner)');
-    expect(routes).toContain('claimedInbound.threadId !== threadId');
+    expect(routes).toContain('isAuthenticatedThreadlineInbound(');
+    expect(routes).toContain('{ listenerManager: ctx.listenerManager, threadLog: ctx.threadLog }');
     expect(routes).toContain('inReplyTo must name an authenticated inbound on this thread.');
     expect(routes).toContain('if (res.statusCode >= 400) ctx.listenerManager?.releaseReplyClaim');
   });
