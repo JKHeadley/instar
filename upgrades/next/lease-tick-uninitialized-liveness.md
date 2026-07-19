@@ -1,0 +1,24 @@
+# Lease watchdog stops reporting ordinary startup as a recovered stall
+
+## What Changed
+
+The multi-machine lease-tick watchdog now distinguishes three liveness states: no first tick observed yet, a recently observed tick, and a genuinely stale observed tick. Before this change, its first callback after server startup saw the initial `0` watermark and immediately treated it as an ancient tick. That re-armed a healthy timer and emitted a misleading `[DEGRADATION] MultiMachine.leaseTick` event roughly one minute after an ordinary boot.
+
+Only positive cadence evidence whose measured age crosses the configured ceiling can now authorize recovery or a degradation report. Before the first tick, the successful timer-arm event supplies that baseline: ordinary startup stays silent, while a timer lost before callback #1 still recovers after the full stale window. The shared `classifyCadenceLiveness` helper makes `uninitialized` an explicit typed outcome so future cadence monitors can reuse the same safe boundary. The P20 “Verify the State, Not Its Symbol” standard now names the rule directly: absent evidence is unknown, never stale.
+
+## What to Tell Your User
+
+If you run an Instar agent across multiple machines, normal server starts and restarts no longer appear as recovered coordination failures. Genuine lease-tick stalls are still detected, repaired, and reported exactly as before.
+
+## Summary of New Capabilities
+
+- Explicit uninitialized/healthy/stale classification for cadence liveness.
+- Boot-safe multi-machine lease watchdog notifications.
+- A reusable structural guard for other cadence monitors.
+
+## Evidence
+
+- Unit: cadence classifier boundary matrix plus the lease watchdog’s zero-watermark regression.
+- Integration: a booted coordinator with lease mode attached neither re-arms nor reports before its first sample.
+- E2E: the real 60-second watchdog timer fires after boot without producing recovery; a main interval deliberately lost before callback #1 recovers once after the arm baseline becomes stale; a subsequently proven stale tick still recovers and reports.
+- Existing lease-tick self-heal suite remains green, including stuck-guard recovery, slow-live protection, self-disarm, and per-episode notification dedupe.
