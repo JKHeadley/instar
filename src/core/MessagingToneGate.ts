@@ -231,6 +231,20 @@ export interface ToneReviewResult {
   latencyMs: number;
   /** True if the LLM call failed and we fail-opened */
   failedOpen?: boolean;
+  /**
+   * True when the cited rule's DISPOSITION is `advisory` (RULE_DISPOSITIONS):
+   * the verdict is a NUDGE returned to the agent, never a terminal block. The
+   * route seam maps it to a not-sent-yet advisory response with a deterministic
+   * resend path (acknowledge → send, override recorded). Operator directive
+   * 2026-07-18: the agent holds the ultimate decision on advisory rules.
+   */
+  advisory?: boolean;
+  /**
+   * True when an advisory verdict was OVERRIDDEN by the agent's explicit
+   * acknowledgment and the message was delivered unchanged. Recorded for the
+   * decision-quality meter — a signal, never authority. Set by the route seam.
+   */
+  advisoryOverridden?: boolean;
   /** True if the LLM's rule citation was invalid (not in B1..B21) — gate failed open. */
   invalidRule?: boolean;
   /**
@@ -373,6 +387,47 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
  * and a future reader sees the migration landed rather than wondering if it was
  * dropped.
  */
+/**
+ * Per-rule DISPOSITION (operator directive 2026-07-18, topic 29723): an
+ * `advisory` rule NUDGES — the gate names the pitfall and returns the message
+ * to the AGENT, who holds the ultimate decision (revise, or resend unchanged
+ * with an explicit acknowledgment that is RECORDED). It can never produce a
+ * terminal hard-block. A `blocking` rule keeps today's behavior. The route
+ * seam (`evaluateOutbound`) enforces the split; the ratchet test asserts this
+ * map's key set equals VALID_RULES so a new rule cannot ship undispositioned.
+ *
+ * MIGRATION INTENT (tracked, CMT-904): B21 ships advisory-only from day one.
+ * Existing judgment-shaped rules (B15–B19 and the paths/technical-detail
+ * artifact classes) are candidates to migrate to advisory-with-audited-
+ * override in a follow-up spec; ONLY mechanical secret-VALUE leaks keep a
+ * hard blocking floor. Agent overrides feed the decision-quality meter as a
+ * signal — never authority.
+ */
+export type GateRuleDisposition = 'blocking' | 'advisory';
+
+export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
+  B1_CLI_COMMAND: 'blocking',
+  B2_FILE_PATH: 'blocking',
+  B3_CONFIG_KEY: 'blocking',
+  B4_COPY_PASTE_CODE: 'blocking',
+  B5_API_ENDPOINT: 'blocking',
+  B6_ENV_VAR: 'blocking',
+  B7_CRON_OR_SLUG: 'blocking',
+  B8_LEAKED_DEBUG_PAYLOAD: 'blocking',
+  B9_RESPAWN_RACE_DUPLICATE: 'blocking',
+  B11_STYLE_MISMATCH: 'blocking',
+  B12_HEALTH_ALERT_INTERNALS: 'blocking',
+  B13_HEALTH_ALERT_SUPPRESSED_BY_HEAL: 'blocking',
+  B14_HEALTH_ALERT_NO_CTA: 'blocking',
+  B15_CONTEXT_DEATH_STOP: 'blocking',
+  B16_UNVERIFIED_WALL: 'blocking',
+  B17_FALSE_BLOCKER: 'blocking',
+  B18_AUTONOMY_STOP: 'blocking',
+  B19_PARKED_ON_USER: 'blocking',
+  B20_INTERNAL_ID_LEAK: 'blocking',
+  B21_USER_TASK_SUBSTITUTION: 'advisory',
+};
+
 export const PHASE2_MIGRATION_DEBT = {
   rules: [] as const,
   commitment: 'CMT-1793',
@@ -923,6 +978,12 @@ export class MessagingToneGate {
         issue: parsed.issue,
         suggestion: parsed.suggestion,
         latencyMs: Date.now() - start,
+        // Advisory disposition (operator directive 2026-07-18): a cited
+        // advisory rule is a NUDGE, not a block — the seam gives the agent the
+        // final call with a recorded override path.
+        ...(!parsed.pass && RULE_DISPOSITIONS[parsed.rule] === 'advisory'
+          ? { advisory: true }
+          : {}),
       },
     };
   }

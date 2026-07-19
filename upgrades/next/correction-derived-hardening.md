@@ -2,10 +2,16 @@
 
 ## What Changed
 
-- The outbound tone gate gains rule `B21_USER_TASK_SUBSTITUTION`: a message
-  handing the USER a multi-step procedure (portal click-paths, UI steps,
-  command sequences) for work the agent could do itself given at most a
-  credential or an approval is caught before it sends. Explicit carve-outs keep
+- The outbound tone gate gains rule `B21_USER_TASK_SUBSTITUTION` — the gate's
+  FIRST ADVISORY-disposition rule (operator directive: sentinels nudge, the
+  agent decides, overrides are recorded). A message handing the USER a
+  multi-step procedure (portal click-paths, UI steps, command sequences) for
+  work the agent could do itself given at most a credential or an approval is
+  returned to the agent as a named nudge (422 tone-gate-advisory, notSent) —
+  never hard-blocked; the agent may revise, or resend unchanged with
+  `metadata.toneAdvisoryAck` (the override is recorded for the decision-quality
+  meter). A new `RULE_DISPOSITIONS` registry makes the advisory/blocking split
+  structural; the ack can never override a blocking rule. Explicit carve-outs keep
   legitimate messages flowing: user-requested walkthroughs, structurally
   human-reserved actions (dashboard-PIN, physical, payment/legal, CAPTCHA,
   decisions), single one-tap links/codes, genuinely non-delegable personal
@@ -34,10 +40,12 @@
 
 ## What to Tell Your User
 
-Two of your July 18 corrections are now built into the shared machinery. I can
-no longer send you step-by-step click instructions for something I could do
-myself — the message gate catches that shape before it reaches you; the most
-I'll ask for is a credential or a yes/no. And before I ever claim something
+Two of your July 18 corrections are now built into the shared machinery. When
+I draft a message handing you step-by-step click work I could do myself, the
+gate now hands it BACK to me with the pitfall named — I make the final call,
+and if I consciously overrule the nudge, that decision is recorded and
+reviewable. This is the nudge-not-block sentinel architecture you asked for,
+applied to its first rule. And before I ever claim something
 "needs you," my blocked-task checker now also consults a registry of accounts
 and identities I myself created — so I can't again ask you about
 infrastructure I built.

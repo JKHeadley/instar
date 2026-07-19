@@ -34,9 +34,14 @@ vault, the org password manager, cloud accounts, browser sessions, and so on.
 
 ## What's new
 
-1. **A new rule in the message gate (B21):** if an outgoing message hands the
-   user a multi-step procedure for something the agent could do itself with at
-   most a credential or an approval, the gate flags it before it sends. Sending
+1. **A new rule in the message gate (B21) — and it NUDGES, it doesn't block:**
+   if an outgoing message hands the user a multi-step procedure for something
+   the agent could do itself with at most a credential or an approval, the
+   gate hands the message BACK to the agent with the pitfall named. The agent
+   makes the final call: rewrite it, or consciously send it anyway with an
+   acknowledgment — and that override is recorded where it can be reviewed.
+   This is the operator's chosen architecture for these sentinels (blocking
+   proved too much power; reviewing after sending is too late). Sending
    a one-tap link (like a secure credential-drop link), asking for an approval,
    or walking through something that genuinely only a human can do (a PIN-gated
    dashboard action, a payment, a CAPTCHA) all still pass. What gets caught is

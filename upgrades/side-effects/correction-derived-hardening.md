@@ -138,6 +138,19 @@ migrator text, and honest disclosure of the resolving-but-stale residual and
 the B21 token cost. Full catalog:
 `docs/specs/reports/correction-derived-hardening-convergence.md`.
 
+## Operator design redirect (2026-07-18 23:00 PDT, incorporated pre-merge)
+
+Mid-build the operator directed that B21 must NOT hold blocking authority:
+outbound sentinels nudge a drafted message once; the agent decides; overrides
+are recorded. Implemented as the structural `RULE_DISPOSITIONS` split (B21 as
+`advisory`; the seam returns `tone-gate-advisory`/notSent with the
+`toneAdvisoryAck` resend path; the override is logged as `advisoryOverridden`
+for the decision-quality meter; the ack can never override a blocking rule).
+This REDUCES Change A's authority below what the earlier sections review
+(their over-block analyses become strictly conservative). Migration of
+existing judgment rules to advisory is recorded in the spec as tracked intent
+(CMT-904).
+
 ## Second-pass review
 
 Required (the change touches a gate). Performed as a REAL independent

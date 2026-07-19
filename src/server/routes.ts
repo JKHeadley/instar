@@ -1986,6 +1986,14 @@ export function createRoutes(ctx: RouteContext): Router {
       // forgetting to opt in. Also gated by the global failClosedOnExhaustion
       // kill-switch (false reverts every path to fail-open without a deploy).
       failClosedOnBudgetTimeout?: boolean;
+      /**
+       * The FULL rule id the sender explicitly acknowledges (advisory-rule
+       * override, operator directive 2026-07-18). When it matches a cited
+       * ADVISORY rule, the message is delivered unchanged and the override is
+       * RECORDED (decision log + acked-advisory audit) — a signal for the
+       * decision-quality meter, never authority. Never overrides a blocking rule.
+       */
+      toneAdvisoryAck?: string;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -2339,6 +2347,40 @@ export function createRoutes(ctx: RouteContext): Router {
       });
 
       if (!result.pass) {
+        // ── Advisory disposition (operator directive 2026-07-18, topic 29723) ──
+        // An advisory-rule citation is a NUDGE, never a terminal block: the
+        // message is returned to the AGENT (not sent, not dropped) with the
+        // pitfall named, and the agent holds the ultimate decision — revise, or
+        // resend unchanged with metadata.toneAdvisoryAck = "<rule>" to
+        // acknowledge; the override is RECORDED (a decision-quality signal,
+        // never authority). A blocking rule can NEVER be overridden this way.
+        if (result.advisory === true) {
+          if (options.toneAdvisoryAck === result.rule) {
+            const overridden = { ...result, advisoryOverridden: true };
+            logToneGateDecision({
+              text,
+              channel,
+              topicId: options.topicId,
+              signals,
+              result: overridden,
+            });
+            return { ok: true };
+          }
+          return {
+            ok: false,
+            status: 422,
+            reason: 'tone-gate-advisory',
+            body: {
+              error: 'tone-gate-advisory',
+              notSent: true,
+              rule: result.rule,
+              issue: result.issue,
+              suggestion: result.suggestion,
+              howToProceed: `ADVISORY — the message was NOT sent, and the decision is yours: revise and re-send, or re-send unchanged with metadata.toneAdvisoryAck set to "${result.rule}" to acknowledge and deliver (the override is recorded).`,
+              latencyMs: result.latencyMs,
+            },
+          };
+        }
         return {
           ok: false,
           status: 422,
@@ -2375,6 +2417,7 @@ export function createRoutes(ctx: RouteContext): Router {
       allowLocalhostLink?: boolean;
       messageKind?: MessageKind;
       failClosedOnBudgetTimeout?: boolean;
+      toneAdvisoryAck?: string;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -12780,6 +12823,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const senderClass = coerceSenderClass(metadata?.senderClass);
     const advisoryAck = metadata?.advisoryAck === true;
     const advisoryCodes = coerceAdvisoryCodes(metadata?.advisoryCodes);
+    // Advisory-rule override (operator directive 2026-07-18): the FULL rule id
+    // the sender explicitly acknowledges. Length-clamped; validated against the
+    // cited rule at the seam (a mismatch or a blocking rule is never overridden).
+    const toneAdvisoryAck =
+      typeof metadata?.toneAdvisoryAck === 'string'
+        ? metadata.toneAdvisoryAck.slice(0, 64)
+        : undefined;
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
 
     // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
@@ -12864,6 +12914,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         allowDuplicate,
         allowLocalhostLink,
         messageKind,
+        toneAdvisoryAck,
       }))
     )
       return;
@@ -13786,6 +13837,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'slack', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
+        toneAdvisoryAck:
+          typeof metadata?.toneAdvisoryAck === 'string'
+            ? metadata.toneAdvisoryAck.slice(0, 64)
+            : undefined,
         // Kind threading mirrors /telegram/reply — the jargon/filePath signal
         // computation is single-sourced inside evaluateOutbound, so every
         // channel gets it uniformly (spec outbound-jargon-filepath-gap §2.2).

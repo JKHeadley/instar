@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { MessagingToneGate, VALID_RULES, RULE_CLASSES } from '../../src/core/MessagingToneGate.js';
+import { MessagingToneGate, VALID_RULES, RULE_CLASSES, RULE_DISPOSITIONS } from '../../src/core/MessagingToneGate.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 
 function captureProvider(response: object) {
@@ -37,6 +37,40 @@ describe('MessagingToneGate — B21_USER_TASK_SUBSTITUTION', () => {
   it('registers B21 in VALID_RULES and classifies it behavioral-judgment', () => {
     expect(VALID_RULES.has('B21_USER_TASK_SUBSTITUTION')).toBe(true);
     expect(RULE_CLASSES['B21_USER_TASK_SUBSTITUTION']).toBe('behavioral-judgment');
+  });
+
+  it('DISPOSITION ratchet: RULE_DISPOSITIONS covers exactly VALID_RULES; B21 is advisory (operator directive 2026-07-18)', () => {
+    expect(Object.keys(RULE_DISPOSITIONS).sort()).toEqual([...VALID_RULES].sort());
+    expect(RULE_DISPOSITIONS['B21_USER_TASK_SUBSTITUTION']).toBe('advisory');
+    // Every OTHER rule keeps its blocking disposition until its own migration spec.
+    for (const rule of VALID_RULES) {
+      if (rule !== 'B21_USER_TASK_SUBSTITUTION') {
+        expect(RULE_DISPOSITIONS[rule]).toBe('blocking');
+      }
+    }
+  });
+
+  it('a B21 citation carries advisory:true (a nudge, never a terminal block); a blocking rule does not', async () => {
+    const { provider } = captureProvider({
+      pass: false,
+      rule: 'B21_USER_TASK_SUBSTITUTION',
+      issue: 'hands the user a click procedure',
+      suggestion: 'do it yourself',
+    });
+    const gate = new MessagingToneGate(provider);
+    const r = await gate.review('Open the portal and click through these four steps.', { channel: 'telegram' });
+    expect(r.pass).toBe(false);
+    expect(r.advisory).toBe(true);
+
+    const { provider: p18 } = captureProvider({
+      pass: false,
+      rule: 'B18_AUTONOMY_STOP',
+      issue: 'stops the run on a judgment reason',
+      suggestion: 'derive the standard and continue',
+    });
+    const r18 = await new MessagingToneGate(p18).review('Ending the run — needs your judgment.', { channel: 'telegram' });
+    expect(r18.pass).toBe(false);
+    expect(r18.advisory).toBeFalsy();
   });
 
   it('renders the B21 rule definition in the prompt for every review', async () => {

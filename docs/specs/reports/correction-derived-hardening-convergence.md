@@ -2,11 +2,13 @@
 
 ## Cross-model review: codex-cli:gpt-5.5
 
-RAN. A real GPT-tier external pass ran through the agent's codex CLI in BOTH
-rounds (round 1: MINOR ISSUES — capability-context concern, folded into the
-round-1 synthesis; round 2: MINOR ISSUES — a cosmetic suggestion to add
-PASS/BLOCK example pairs, non-material: both decision boundaries are already
-exercised in `tests/unit/messaging-tone-gate-b21.test.ts`).
+RAN. A real GPT-tier external pass ran through the agent's codex CLI in ALL
+THREE rounds (round 1: MINOR ISSUES — capability-context concern, folded into
+the round-1 synthesis; round 2: MINOR ISSUES — cosmetic example-pair
+suggestion, non-material: both decision boundaries are exercised in
+`tests/unit/messaging-tone-gate-b21.test.ts`; round 3, on the advisory
+revision: MINOR ISSUES — rollback-wording contradiction + ack-contract seam
+scope, both fixed in-round).
 
 ## ELI10 Overview
 
@@ -73,8 +75,9 @@ two review rounds fixed:
 |-----------|-----------------------|-------------------|--------------|
 | 1 | security(2), scalability(2), adversarial(2), integration(5), decision-completeness(4), lessons-aware(4), codex(1 overlapping) | 18 (with overlaps ~15 distinct) | jail + clamps + bounds + loud-unparseable in provider; capability-uncertainty default-PASS in B21; canonicalization frontloaded; decision-table honesty; machine-local-justification key; migration text reconciled; wiring ratchet; CMT-905/906 tracked follow-ups; cost/exposure disclosure |
 | 2 | (converged) — all six internal RESOLVED + no new material; codex MINOR (cosmetic) | 0 material | none |
+| 3 | OPERATOR DESIGN REDIRECT (23:00 PDT): B21 must be advisory-only — sentinels nudge, the agent decides, overrides recorded. Codex re-pass: MINOR (rollback wording contradiction; ack-contract seam scope) — both fixed | 1 directive + 2 minor | RULE_DISPOSITIONS map (B21 advisory, ratchet keyset==VALID_RULES); seam split 422 tone-gate-advisory/notSent + toneAdvisoryAck recorded-override path (telegram + slack conversational seams); advisory can never block, ack can never override a blocking rule (both test-enforced incl. end-to-end route test); spec/decision-table/rollback/fragment rewritten to the nudge model; migration intent for B15-B19 tracked (CMT-904) |
 
-Standards-Conformance Gate: ran round 1 (0 flags) and round 2 (0 flags), not
+Standards-Conformance Gate: ran rounds 1, 2, and 3 (0 flags each), not
 degraded. Per-round reviewer models: internal reviewers ran as fresh-context
 `claude -p` one-shots on claude-opus-4-8 (the fork's authoring session runs
 claude-fable-5; the one-shot door pins opus — recorded honestly per D7);
@@ -153,8 +156,20 @@ pairs — cosmetic; both boundaries are test-exercised; the worked block example
 lives in the b21 unit test rather than the prompt to keep the always-on token
 cost down).
 
+### Round 3 — operator redirect + codex re-pass
+
+The operator's mid-build directive (nudge-not-block for outbound sentinels) was
+incorporated as a structural disposition layer; conformance gate re-ran clean
+(0 flags); codex-cli:gpt-5.5 re-reviewed the advisory revision (MINOR ISSUES:
+a rollback-wording contradiction and the ack-contract seam scope — both fixed
+in the same round). The advisory disposition strictly REDUCES Change A's
+authority, so rounds 1-2's over-block analyses remain valid as conservative
+bounds.
+
 ## Convergence verdict
 
-Converged at iteration 2. No material findings in the final round; zero open
+Converged at iteration 3 (iteration 2 on findings; iteration 3 incorporated an
+operator design directive and its codex re-pass with zero remaining material
+findings). No material findings in the final round; zero open
 questions; both residuals disclosed and commitment-tracked (CMT-905, CMT-906).
 Spec is ready for user review and approval.

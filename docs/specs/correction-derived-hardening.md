@@ -4,17 +4,17 @@ status: draft
 owner: echo
 created: 2026-07-18
 parent-principle: "Structure beats Willpower"
-review-convergence: "2026-07-19T05:44:59.282Z"
-review-iterations: 2
-review-completed-at: "2026-07-19T05:44:59.282Z"
+approved: true
+approved-basis: "Operator blanket pre-approval for drive 6, 2026-07-18 (topic 29723: all specs and decisions pre-approved; corrections-become-infrastructure directive 21:56 PDT) — same basis as PR #1512/#1516/#1517"
+review-convergence: "2026-07-19T06:19:17.250Z"
+review-iterations: 3
+review-completed-at: "2026-07-19T06:19:17.250Z"
 review-report: "docs/specs/reports/correction-derived-hardening-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
 single-run-completable: true
 frontloaded-decisions: 5
 cheap-to-change-tags: 0
 contested-then-cleared: 0
-approved: true
-approved-basis: "Operator blanket pre-approval for drive 6, 2026-07-18 (topic 29723: all specs and decisions pre-approved; corrections-become-infrastructure directive 21:56 PDT) — same basis as PR #1512/#1516/#1517"
 ---
 
 # Correction-Derived Hardening
@@ -101,19 +101,60 @@ agent work to the human.
   human-only walkthrough must pass; block only the clear pattern of agent-doable
   work handed to the human as steps.
 
+### Disposition: ADVISORY-ONLY (operator directive, 2026-07-18 23:00 PDT)
+
+Mid-build the operator set the architectural direction for outbound sentinels:
+they review a DRAFTED message pre-send and get ONE opportunity to NUDGE the
+agent — name the pitfall, explain why — and the AGENT holds the ultimate
+decision to revise or proceed. Blocking is too much power (it has burned us:
+path-blocking of content the user asked for); post-send review is too late.
+Agent overrides are RECORDED — a signal for the decision-quality meter, never
+authority.
+
+B21 therefore ships with a structural `advisory` disposition from day one:
+
+- A per-rule `RULE_DISPOSITIONS` map (`'blocking' | 'advisory'`) with the
+  ratchet invariant key-set == `VALID_RULES` (test-enforced). B21 is the first
+  `advisory` rule; every existing rule keeps `blocking` until its own
+  migration spec.
+- On an advisory citation the seam (`evaluateOutbound`) returns
+  `422 tone-gate-advisory` with `notSent: true`, the citation + reasoning, and
+  a deterministic resend path: re-send unchanged with
+  `metadata.toneAdvisoryAck: "<full rule id>"` to acknowledge and deliver. The
+  override is recorded in the tone-gate decision log
+  (`advisoryOverridden: true`) — joinable by the decision-quality meter.
+- The ack can NEVER override a blocking rule (test-enforced), and an advisory
+  rule can never produce a terminal `tone-gate-blocked` (the seam split is the
+  invariant; integration-tested through the real `/telegram/reply` route).
+- **Ack-contract seam scope (stated honestly):** the acknowledgment metadata
+  is threaded on the CONVERSATIONAL seams — `/telegram/reply` and the Slack
+  reply route — where a live agent receives the nudge and decides.
+  Non-conversational callers (post-update, digests) receive the distinct
+  `tone-gate-advisory` reason and treat not-sent the same way they treat any
+  gate refusal today; those sends run without a live agent to exercise a
+  nudge, so advisory-vs-blocking is behaviorally equivalent on them by
+  construction, not by omission.
+- **Migration intent (tracked):** existing judgment-shaped rules (B15–B19 and
+  the paths/technical-detail artifact classes) are candidates to migrate to
+  advisory-with-audited-override in a follow-up spec; ONLY mechanical
+  secret-VALUE leaks keep a hard blocking floor. <!-- tracked: CMT-904 -->
+
 ### Signal-vs-authority
 
-No new authority is created: the rule text feeds the EXISTING single outbound
-authority (the tone gate LLM). No deterministic detector gains blocking power.
+No new authority is created — and under the advisory disposition B21 holds
+even LESS than the gate's usual power: it can only nudge-and-return; the agent
+retains delivery authority with a recorded override. No deterministic detector
+gains blocking power.
 
 ### Cost + exposure (round-1 scalability finding, stated honestly)
 
 The rule bullet adds a permanent ~350-token cost to EVERY outbound-message
-review, and — like every tone-gate rule before it (B19, B20) — it ships live
-fleet-wide on release, with no dark/soak stage: gate rules are prompt content
-in code, and their soak mechanism is the severity bias (favor false-negatives,
-default PASS) plus the visible review-history audit, not a config flag.
-Rollback is a one-commit registry removal.
+review, and it ships live fleet-wide on release with no dark/soak stage — but
+under the ADVISORY disposition its worst failure is a nudge the agent
+acknowledges past (one extra round-trip), never a withheld message: strictly
+less power than every prior gate-rule ship (B19, B20 shipped as blocking). The
+soak mechanism is the severity bias + the visible decision log including
+recorded overrides. Rollback is a one-commit registry removal.
 
 ## Change B — `owned-identities` self-unblock probe
 
@@ -247,7 +288,7 @@ wrong block.
 
 | Decision point | Classification | Notes |
 |---|---|---|
-| B21 citation (tone gate block/pass) | judgment-candidate | Floor: bounded action space {pass, block-with-suggestion}; conservative default = PASS (favor false-negatives, explicit in the rule text); fallback ladder = the gate's existing degradation ladder ending at the deterministic leak floor (which knows nothing of B21 → a degraded gate PASSES B21-shaped messages — the safe direction). Arbiter: the EXISTING single outbound tone-gate LLM authority; no new arbiter is created. |
+| B21 citation (tone gate advisory/pass) | judgment-candidate | Floor: bounded action space {pass, advisory-nudge-with-suggestion} — B21 structurally CANNOT produce a terminal block (RULE_DISPOSITIONS + seam split, test-enforced); conservative default = PASS (favor false-negatives + capability-uncertainty default, explicit in the rule text); fallback ladder = the gate's existing degradation ladder ending at the deterministic leak floor (which knows nothing of B21 → a degraded gate PASSES B21-shaped messages — the safe direction). Arbiter: the AGENT holds the ultimate delivery decision (operator directive 2026-07-18); the tone-gate LLM only nudges; overrides are recorded for the decision-quality meter. |
 | owned-identities `holdsRelevantCred` | invariant | Deterministic by design: the checklist's existing `isScopeRelevant` match over the liveness-gated, explicitly-declared scopeTags — never an LLM, never inference. The probe produces evidence only; settle authority (BlockerLedger's Tier-1 gate) is unchanged. |
 | credentialRef liveness gate | invariant | A boolean stat / vault-key-name presence check (fail-closed, jailed to the agent home). A false NEGATIVE biases toward exhaustion → escalation (recoverable). HONEST LIMIT (round-1 decision-completeness finding): a ref that RESOLVES but whose credential is stale/irrelevant still advertises its tags → `holdsRelevantCred:true` → not-exhausted → BlockerLedger refuses the true-blocker settle until the entry is pruned. This escalation-path coupling is INHERITED from the foundation (the ledger's refuse-settle-while-not-exhausted design — a deterministic signal gating an escalation surface); the spec surfaces rather than hides it, and recovery is deleting/fixing the entry (documented in the CLAUDE.md section). The liveness gate narrows the trap from "any stale entry, forever" to "a resolving-but-stale entry, until pruned". |
 
@@ -264,7 +305,15 @@ wrong block.
 
 ## Test plan
 
-- `tests/unit/messaging-tone-gate-b21.test.ts` — mirrors the b18 file: rule
+- `tests/integration/telegram-reply-b21-advisory.test.ts` — the advisory
+  contract end-to-end through the REAL route: B21 citation leads to 422
+  `tone-gate-advisory` + notSent (message held for the agent, not dropped);
+  resend with `toneAdvisoryAck` delivers unchanged; the ack can NEVER
+  override a blocking rule (B17 stays hard).
+- `tests/unit/messaging-tone-gate-b21.test.ts` — disposition ratchet
+  (RULE_DISPOSITIONS keyset == VALID_RULES; B21 advisory, all others
+  blocking); a B21 citation carries `advisory: true`, a blocking citation does
+  not; plus, mirroring the b18 file: rule
   text renders in every prompt; carve-outs render; extended precedence chain
   renders; B21 is citable without `invalidRule`; a pass verdict flows through.
 - `tests/unit/gate-prompts-judge-by-meaning.test.ts` +
@@ -321,9 +370,12 @@ subsystem with its own dark/dry-run ladder. <!-- tracked: CMT-906 -->
 
 ## Rollback
 
-- Change A: remove the rule from the three registries (one commit). Until then
-  the rule can only cause a false BLOCK, surfaced immediately in the gate's
-  review history + suggestion; no data migration.
+- Change A: remove the rule from the four registries (VALID_RULES,
+  RULE_CLASSES, RULE_DISPOSITIONS, the prompt bullet) in one commit; no data
+  migration. Under the advisory disposition the worst failure is a false
+  NUDGE — the message is held pre-send until the agent acknowledges or
+  revises (a `422 tone-gate-advisory`, structurally distinct from a terminal
+  `tone-gate-blocked`), surfaced immediately in the decision log.
 - Change B: remove the source + provider (one commit). The registry file is
   inert data; leaving it in place has no effect once the probe is gone. The
   CLAUDE.md sentence is prose; the migration is content-sniffed and would
