@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-19T23:59:26.685Z",
+  "slug": "jobrunhistory-cap-outcome",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 291,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,32 @@
+# JobRunHistory cap enforcement now reports truthfully
+
+## What Changed
+
+Successful 2 KB JobRunHistory budget enforcement no longer files a degradation
+as though the write path broke. Capped rows still preserve the beginning and end
+of large errors, retain `truncated: true`, and now contribute to the additive
+`budgetCondensedRuns` job statistic. A typed capacity-outcome contract and
+registry lint prevent future bounded writers from skipping the same distinction;
+an essential-fields overflow is rechecked, refused, and reported explicitly.
+
+## What to Tell Your User
+
+The feedback and health surfaces will stop filling with repeated JobRunHistory
+row-cap bugs when the history ledger is behaving exactly as designed. Oversized
+job errors remain visible in shortened form and remain measurable in job stats.
+
+## Summary of New Capabilities
+
+- Durable per-job counts of history rows condensed to their storage budget.
+- A structural guard against misclassifying successful capacity enforcement as
+  a system degradation.
+
+## Evidence
+
+- 65 focused unit tests, including strict schema, duplicate-marker,
+  retirement-ratchet, essential-field, and source-tree canaries.
+- 330-test changed-file smoke set, including the legacy scheduler consumer.
+- Integration proof across four reopened JobRunHistory instances.
+- End-to-end restart and legacy-window proof with zero feedback submissions.
+- Disk-read proof that an impossible-to-fit row is absent while its explicit
+  invariant-failure event survives a reporter reset.
