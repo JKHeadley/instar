@@ -62,6 +62,8 @@ describe('PostUpdateMigrator — telegram-reply.sh 408 migration', () => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'post-update-mig-test-'));
     scriptsDir = path.join(projectDir, '.claude', 'scripts');
     fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.instar', 'config.json'), JSON.stringify({ messaging: [{ type: 'slack', enabled: true }] }));
     scriptPath = path.join(scriptsDir, 'telegram-reply.sh');
   });
 
@@ -221,21 +223,22 @@ describe('PostUpdateMigrator — slack-reply.sh 408 migration', () => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'post-update-mig-slack-'));
     scriptsDir = path.join(projectDir, '.claude', 'scripts');
     fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.instar', 'config.json'), JSON.stringify({ messaging: [{ type: 'slack', enabled: true }] }));
     scriptPath = path.join(scriptsDir, 'slack-reply.sh');
   });
   afterEach(() => {
     SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-telegramReply.test.ts:185' });
   });
 
-  it('upgrades the shipped-but-old slack-reply.sh to the new 408-aware version', async () => {
+  it('preserves an unknown-header-retaining copy and writes the current candidate', async () => {
     fs.writeFileSync(scriptPath, OLD_SHIPPED_SLACK, { mode: 0o755 });
     const migrator = createMigrator(projectDir);
     const result = await migrator.migrate();
 
-    const updated = fs.readFileSync(scriptPath, 'utf-8');
-    expect(updated).toContain('HTTP_CODE" = "408"');
-    expect(updated).toMatch(/ambiguous/i);
-    expect(result.upgraded.some(u => u.includes('slack-reply.sh') && u.includes('HTTP 408'))).toBe(true);
+    expect(fs.readFileSync(scriptPath, 'utf-8')).toBe(OLD_SHIPPED_SLACK);
+    expect(fs.readFileSync(`${scriptPath}.new`, 'utf-8')).toContain('slack-reply-feature: session-bound-v1');
+    expect(result.skipped.some(u => u.includes('customized content preserved'))).toBe(true);
   });
 
   it('leaves a custom slack-reply.sh untouched', async () => {
@@ -245,10 +248,11 @@ describe('PostUpdateMigrator — slack-reply.sh 408 migration', () => {
     expect(fs.readFileSync(scriptPath, 'utf-8')).toBe(USER_CUSTOM_SCRIPT);
   });
 
-  it('does nothing when slack-reply.sh is not installed', async () => {
+  it('installs missing neutral and compatibility relays when Slack is configured', async () => {
     const migrator = createMigrator(projectDir);
     await migrator.migrate();
-    expect(fs.existsSync(scriptPath)).toBe(false);
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, '.instar', 'scripts', 'slack-reply.sh'))).toBe(true);
   });
 
   it('refreshes a 408+auth-current slack-reply.sh that LACKS the thread_ts feature marker (§5.3 parity)', async () => {
@@ -268,10 +272,9 @@ if [ "$HTTP_CODE" = "200" ]; then echo "Sent"; elif [ "$HTTP_CODE" = "408" ]; th
     const migrator = createMigrator(projectDir);
     const result = await migrator.migrate();
 
-    const updated = fs.readFileSync(scriptPath, 'utf-8');
-    expect(updated).toContain('slack-reply-feature: thread-ts-arg');
-    expect(updated).toContain('THREAD_TS');
-    expect(result.upgraded.some(u => u.includes('slack-reply.sh') && /thread_ts/i.test(u))).toBe(true);
+    expect(fs.readFileSync(scriptPath, 'utf-8')).toBe(CURRENT_BUT_NO_THREAD);
+    expect(fs.readFileSync(`${scriptPath}.new`, 'utf-8')).toContain('slack-reply-feature: session-bound-v1');
+    expect(result.skipped.some(u => u.includes('customized content preserved'))).toBe(true);
   });
 
   it('leaves a fully-current slack-reply.sh (with thread marker) alone', async () => {

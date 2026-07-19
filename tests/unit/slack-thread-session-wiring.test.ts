@@ -131,7 +131,7 @@ describe('thread→session: SessionManager carries the thread_ts', () => {
 });
 
 describe('thread→session: reply route resolves the routing key for promise tracking', () => {
-  const start = ROUTES_TS.indexOf("router.post('/slack/reply/:channelId'");
+  const start = ROUTES_TS.indexOf('const handleSlackReply = async');
   // Bound the window to the ACTUAL /slack/reply route body (up to the next route
   // registration) rather than a fixed char count — the delivery-id (§2.6/R8-M1
   // Arm C) + messageKind blocks grew the handler and pushed the resolveRoutingKey
@@ -143,7 +143,7 @@ describe('thread→session: reply route resolves the routing key for promise tra
     : ROUTES_TS.slice(start);
   it('the reply route resolves the routing key when a thread_ts is present', () => {
     expect(start).toBeGreaterThan(-1);
-    expect(block).toContain('resolveRoutingKey(channelId, thread_ts');
+    expect(ROUTES_TS.slice(start, ROUTES_TS.indexOf("router.post('/slack/session-reply'", start))).toContain('resolveRoutingKey(channelId, thread_ts');
   });
 });
 
@@ -156,12 +156,8 @@ describe('thread→session: slack-reply.sh supports the optional thread_ts arg +
   it('the template carries the feature marker the migrator keys on', () => {
     expect(REPLY_SH).toContain('slack-reply-feature: thread-ts-arg');
   });
-  it('the migrator refreshes a deployed-but-stale slack-reply.sh lacking the feature marker', () => {
-    // The migrator keys on the SUPERSEDING marker: delivery-id (§2.6/R8-M1 Arm C)
-    // implies thread-ts-arg — the shipped template carries BOTH, so a deployed
-    // thread-ts-arg-but-no-delivery-id script is still correctly refreshed. The
-    // migrator source therefore references the newest marker it detects on.
-    expect(MIGRATOR_TS).toContain('slack-reply-feature: delivery-id');
-    expect(MIGRATOR_TS).toContain('featureMarker');
+  it('the migrator uses the shared SHA-provenance installer', () => {
+    expect(MIGRATOR_TS).toContain('ensureSlackReplyRelay');
+    expect(MIGRATOR_TS).toContain('SlackReplyRelayInstaller');
   });
 });

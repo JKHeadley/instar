@@ -323,11 +323,9 @@ try:
         print('!' * 60)
     print()
     print('--- END SLACK CONTEXT ---')
-    import os
-    ch = os.environ.get('INSTAR_SLACK_CHANNEL', '')
     print()
     print('CRITICAL: Relay your response back to Slack:')
-    print('cat <<\"SLACKEOF\" | .claude/scripts/slack-reply.sh ' + ch)
+    print('cat <<\"SLACKEOF\" | .instar/scripts/slack-reply.sh')
     print('Your response text here')
     print('SLACKEOF')
 except Exception:

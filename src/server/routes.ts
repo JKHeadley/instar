@@ -64,6 +64,7 @@ import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
+import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
@@ -13749,7 +13750,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Slack ──────────────────────────────────────────────────────
 
-  router.post('/slack/reply/:channelId', async (req, res) => {
+  const handleSlackReply = async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
     if (!ctx.slack) {
       res.status(503).json({ error: 'Slack not configured' });
       return;
@@ -13862,7 +13863,56 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  };
+
+  // Spawned-session relay. Destination fields are deliberately absent: the
+  // authenticated bootstrap conversation is the only source of channel/thread
+  // authority (slack-session-reply-relay §Authority and source binding).
+  router.post('/slack/session-reply', async (req, res) => {
+    const bodyKeys = Object.keys(req.body ?? {}).sort();
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text')) {
+      res.status(400).json({ error: 'spawned Slack session body permits only conversationId and text' });
+      return;
+    }
+    if ('channelId' in (req.body ?? {}) || 'thread_ts' in (req.body ?? {}) || 'threadTs' in (req.body ?? {})) {
+      res.status(400).json({ error: 'caller-supplied Slack destination is forbidden' });
+      return;
+    }
+    const conversationId = Number(req.body?.conversationId);
+    if (!Number.isSafeInteger(conversationId) || conversationId >= 0) {
+      res.status(400).json({ error: 'negative conversationId required' });
+      return;
+    }
+    const bindHeader = req.headers['x-instar-bind-token'];
+    const rawToken = Array.isArray(bindHeader) ? bindHeader[0] : bindHeader;
+    const verdict = verifyConversationBind({
+      bindAuth: ctx.conversationBindAuth,
+      numericTopicId: conversationId,
+      rawToken: typeof rawToken === 'string' ? rawToken : undefined,
+      attention: ctx.telegram,
+    });
+    if (!verdict.ok) {
+      res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail });
+      return;
+    }
+    const target = ctx.conversationRegistry?.resolve(conversationId);
+    if (!target || target.platform !== 'slack' || target.origin === 'replicated') {
+      res.status(409).json({ error: 'slack-adapter-authority-unavailable' });
+      return;
+    }
+    if (!SLACK_CHANNEL_ID_RE.test(target.channelId)
+      || (target.threadTs !== null && !SLACK_THREAD_TS_RE.test(target.threadTs))) {
+      res.status(409).json({ error: 'conversation-target-invalid' });
+      return;
+    }
+    (req.params as Record<string, string>).channelId = target.channelId;
+    req.body.thread_ts = target.threadTs ?? undefined;
+    await handleSlackReply(req, res);
   });
+
+  // System/legacy sender surface. Spawned session prompts never use this raw
+  // destination route; keeping it preserves existing internal callers.
+  router.post('/slack/reply/:channelId', handleSlackReply);
 
   router.post('/internal/slack-forward', async (req, res) => {
     // ── Typed refusal (spec slack-outbound-robustness §2.7, round-1 M6) ──

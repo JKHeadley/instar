@@ -102,6 +102,13 @@ After the identity, scope, Socket Mode, and membership gates pass:
 
 Restart the agent and require boot evidence for the intended workspace, Socket Mode connection, observe-only attachment, admitted test-cast seats, and adapter self-verification.
 
+Before admitting a spawned Slack session, verify relay readiness on the adapter-owning machine:
+
+- `.instar/scripts/slack-reply.sh` is a regular non-symlink file, mode `0755`, and its SHA matches the packaged template;
+- if `.claude/scripts/slack-reply.sh` exists, record whether it is current, a known safely migrated prior copy, or a preserved customized copy with a `.new` candidate;
+- a customized or invalid canonical copy is a blocking `slack-relay-not-ready` outcome; a customized compatibility copy is visible degradation but does not override a healthy canonical copy;
+- on a multi-machine agent, prove the Slack session is placed on the machine with the matching local-origin conversation entry and live adapter. An off-authority or owner-dark fixture must refuse rather than post from another machine.
+
 ## 5. Live smoke and cleanup
 
 Run a bounded canary in this order:
@@ -113,6 +120,7 @@ Run a bounded canary in this order:
 5. Human thread reply; verify the thread routing key resumes the same thread session rather than the channel root.
 6. Confirm observe-only decision evidence resolves the authenticated principal and does not enforce a refusal.
 7. Delete agent-authored canary messages and record the outcome. Never claim deletion of human-authored messages without platform evidence.
+8. Spawn a non-Claude-framework session from a directed human thread reply and have it answer through `.instar/scripts/slack-reply.sh` with no channel/thread arguments. Require exactly one adapter call in the source thread and zero channel-root calls. Repeat once after compaction/recovery to prove the binding and neutral path survive.
 
 Record non-secret evidence: team/app/bot IDs, scope difference, channel membership, connection/self-verification lines, Slack timestamps, delivery dedupe verdict, session routing keys, permission-decision summary, and cleanup results.
 

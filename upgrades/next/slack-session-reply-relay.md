@@ -1,0 +1,20 @@
+# Slack spawned-session reply relay
+
+## What Changed
+
+Slack-created agent sessions now receive a framework-neutral reply helper that is installed for both fresh and upgraded Slack agents. The helper is mechanically bound to the verified source conversation, preserves the source thread, uses the existing outbound review and duplicate protections, and refuses foreign or off-authority destinations.
+
+## What to Tell Your User
+
+A Slack thread can now create a Codex, Claude, or Gemini working session and receive its answer back in that same thread. The session no longer depends on a Claude-only script path, and it cannot accidentally choose another channel.
+
+## Summary of New Capabilities
+
+- Framework-neutral Slack reply helper for spawned sessions.
+- Source-bound channel/thread authority through the existing session bind token.
+- Safe fresh-install and upgrade reconciliation that preserves customized scripts.
+- Bounded, honest timeout handling with same-delivery-id retry support.
+
+## Evidence
+
+Unit tests cover install predicates, executable modes, custom preservation and prompt census. Integration tests drive the real route with the conversation registry and bind verifier, proving a thread-exact adapter call and foreign/missing binding refusal. Existing Slack reply, timeout, threading, idempotency and migration suites remain green.

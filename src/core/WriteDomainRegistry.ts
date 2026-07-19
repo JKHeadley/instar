@@ -258,6 +258,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route',
     method: 'POST',
+    pathPrefix: '/slack/session-reply',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the route accepts only a ConversationRegistry row whose origin is this machine, then emits through this machine\'s physical Slack adapter credentials; replicated or foreign-origin rows are refused and no git-synced store is mutated',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
     pathPrefix: '/continuation/',
     domain: 'machine-local',
     story: {

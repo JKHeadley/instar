@@ -66,6 +66,7 @@ import { dashboardRefreshGateScript, dashboardRefreshScript } from '../server/Da
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
+import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -3829,6 +3830,24 @@ function isWhatsAppConfigured(stateDir: string): boolean {
   return !!messaging?.some(m => m.type === 'whatsapp' && m.enabled);
 }
 
+function refreshSlackRelay(projectDir: string, stateDir: string, port: number, claudeCompatibility: boolean): void {
+  const config = readConfig(stateDir);
+  if (!config || !isSlackConfigured(config)) return;
+  const outcome = ensureSlackReplyRelay({
+    projectDir,
+    stateDir,
+    config,
+    template: loadRelayTemplate('slack-reply.sh', port),
+    claudeCompatibility,
+  });
+  if (outcome.errors.length > 0) {
+    throw new Error(`Slack reply relay install failed: ${outcome.errors.join('; ')}`);
+  }
+  const canonical = path.join(stateDir, 'scripts', 'slack-reply.sh');
+  const canonicalDegradation = outcome.degraded.find(line => line.startsWith(`${canonical}:`));
+  if (canonicalDegradation) throw new Error(`Slack reply relay not ready: ${canonicalDegradation}`);
+}
+
 /**
  * Install scripts for configured integrations (e.g., Telegram relay, WhatsApp relay).
  * Called during refresh to ensure scripts exist for all configured integrations.
@@ -3862,6 +3881,8 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   if (isWhatsAppConfigured(stateDir)) {
     installWhatsAppRelay(projectDir, port);
   }
+
+  refreshSlackRelay(projectDir, stateDir, port, claudeEnabled);
 
   // smart-fetch.py + git-sync-gate.sh both target `.claude/scripts/` and
   // are Claude-Code-specific (the agentic-web fetch script and the

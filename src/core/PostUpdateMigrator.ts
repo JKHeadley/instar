@@ -53,6 +53,7 @@ import {
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { ensureSlackReplyRelay, isSlackConfigured } from './SlackReplyRelayInstaller.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
 import { PlaywrightProfileRegistry } from './PlaywrightProfileRegistry.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
@@ -8959,24 +8960,35 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       }
     }
 
-    // Slack reply script — file-presence gated (migrator has no hasSlack
-    // signal and init.ts doesn't install this one; scripts get deployed
-    // through the template manifest). If the script is present and matches
-    // the shipped header but lacks 408 handling, migrate it. Custom scripts
-    // are preserved by the shipped-marker check.
-    this.migrateReplyScriptTo408({
-      scriptPath: path.join(scriptsDir, 'slack-reply.sh'),
-      templateFilename: 'slack-reply.sh',
-      shippedMarker: 'slack-reply.sh — Send a message to a Slack channel via the instar server',
-      label: 'scripts/slack-reply.sh',
-      result,
-      // slack-outbound-robustness §2.6/R8-M1 Arm C: refresh a deployed script
-      // that lacks the pre-POST X-Instar-DeliveryId mint + 409-non-losing
-      // classification. This marker supersedes the thread-ts-arg one (the new
-      // template contains BOTH), so a deployed thread-ts-arg-but-no-delivery-id
-      // script is correctly refreshed.
-      featureMarker: 'slack-reply-feature: delivery-id',
-    });
+    // Slack session reply relay — one SHA-provenance installer owns both the
+    // framework-neutral authority and the Claude compatibility mirror.
+    const slackConfigPath = path.join(this.config.stateDir, 'config.json');
+    if (fs.existsSync(slackConfigPath)) try {
+      const rawConfig = JSON.parse(fs.readFileSync(slackConfigPath, 'utf8')) as unknown;
+      // Configuration is the admission signal. Do not even resolve the
+      // packaged Slack template for non-Slack agents: test/minimal installs
+      // legitimately omit that asset, and an unused adapter must not make an
+      // otherwise healthy migration report an error.
+      if (isSlackConfigured(rawConfig)) {
+        const template = this.loadRelayTemplate('slack-reply.sh');
+        if (!template) throw new Error('packaged slack-reply.sh template unavailable');
+        const installed = ensureSlackReplyRelay({
+          projectDir: this.config.projectDir,
+          stateDir: this.config.stateDir,
+          config: rawConfig,
+          template,
+          claudeCompatibility: fs.existsSync(path.join(this.config.projectDir, '.claude')),
+        });
+        result.upgraded.push(...installed.installed.map(p => `${p} (Slack session reply relay)`));
+        result.skipped.push(...installed.current.map(p => `${p} (already current)`));
+        const canonical = path.join(this.config.stateDir, 'scripts', 'slack-reply.sh');
+        result.errors.push(...installed.degraded.filter(line => line.startsWith(`${canonical}:`)));
+        result.skipped.push(...installed.degraded.filter(line => !line.startsWith(`${canonical}:`)));
+        result.errors.push(...installed.errors);
+      }
+    } catch (err) {
+      result.errors.push(`Slack reply relay migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // WhatsApp reply script — lives in .instar/scripts/ per init.ts, not
     // .claude/scripts/. File-presence gated same as Slack.

@@ -20,6 +20,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // (A.5) wake-handler amplifier guard — the post-wake tmux re-validation is bounded
 // async (9s + SIGKILL) instead of a sync execFileSync that can wedge the event loop.
 const execFileAsync = promisify(execFile);
+
+function packagedSlackReplyRelay(): string | null {
+  for (const candidate of [
+    path.resolve(__dirname, '..', 'templates', 'scripts', 'slack-reply.sh'),
+    path.resolve(__dirname, '..', '..', 'src', 'templates', 'scripts', 'slack-reply.sh'),
+  ]) {
+    try { return fs.readFileSync(candidate, 'utf8'); } catch { /* try packaged/dev alternative */ }
+  }
+  return null;
+}
+
+function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: false; reason: string } {
+  const template = packagedSlackReplyRelay();
+  if (!template) return { ready: false, reason: 'packaged Slack reply relay template is unavailable' };
+  return slackReplyRelayReadiness(stateDir, template);
+}
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
@@ -35,6 +51,7 @@ import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
+import { slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import {
@@ -8180,7 +8197,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           admissionVerdict?: { messageId: string; action: string; acked: boolean },
         ): Promise<void> => {
           const channelId = message.channel.identifier;
-          const isDM = message.metadata?.isDM as boolean;
           const senderName = message.metadata?.senderName as string || 'User';
 
           // ── Thread → session routing (§5.3) ──────────────────────────────────
@@ -8261,15 +8277,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextLines.push('CRITICAL: You MUST relay your response back to Slack after responding.');
           contextLines.push('Use the relay script (write ONLY your reply text — do NOT pipe or cat this file into the script):');
           contextLines.push('');
-          // Thread session: pass the thread_ts as the 2nd arg so the reply lands IN
-          // the thread (not the channel root). Channel session: channelId only.
-          const replyTarget = replyThreadTs ? `${channelId} ${replyThreadTs}` : `${channelId}`;
-          contextLines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${replyTarget}`);
+          // The bind-token-scoped conversation id is the destination authority;
+          // never interpolate a caller-chosen channel/thread into the command.
+          contextLines.push("cat <<'EOF' | .instar/scripts/slack-reply.sh");
           contextLines.push('Your response text here');
           contextLines.push('EOF');
           if (replyThreadTs) {
             contextLines.push('');
-            contextLines.push('(This is a THREAD conversation — keep your reply in this thread by passing the thread id shown above as the 2nd argument.)');
+            contextLines.push('(This is a THREAD conversation — the session binding keeps the reply in this exact thread.)');
           }
           contextLines.push('');
           contextLines.push('Strip the [slack:] prefix before interpreting the message.');
@@ -8369,10 +8384,23 @@ export async function startServer(options: StartOptions): Promise<void> {
             slackAdapter!.removeChannelResume(routingKey);
           }
 
-          // Route: DMs go to lifeline session, channels/threads spawn new sessions.
-          // A thread session NEVER folds into the DM lifeline — it is its own
-          // isolated work session (DMs don't carry thread_ts anyway).
-          const targetSession = (isDM && !isThreadSession) ? 'lifeline' : undefined;
+          // Readiness gates actual spawn only. Existing live sessions keep
+          // receiving inbound work even if a later filesystem drift is found;
+          // their next reply reports the helper failure rather than dropping
+          // the user's message before injection.
+          const relayReadiness = localSlackRelayReadiness(config.stateDir);
+          if (conversationId === null || !relayReadiness.ready) {
+            const reason = conversationId === null
+              ? 'conversation identity unavailable'
+              : (!relayReadiness.ready ? relayReadiness.reason : 'unknown readiness failure');
+            console.error(`[slack→session] spawn refused: slack-relay-not-ready (${reason})`);
+            return;
+          }
+
+          // Slack DMs are isolated 1:1 bound sessions too. A shared lifeline
+          // intentionally has no single INSTAR_CONVERSATION_ID, so routing DMs
+          // there would make a destination-free reply impossible to authorize.
+          const targetSession = undefined;
           // ── SpawnAdmission (ownership-gated-spawn §3.1) — the Slack inbound
           // spawn callsite. Refusal floor: durable-queue custody where live;
           // Slack has no telegram-topic notice surface, so the ladder records
@@ -8609,12 +8637,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (slackAttentionChannel) {
             slackAdapter!.sendToChannel(slackAttentionChannel,
               `⚠️ Stall detected in session "${sessionName}" (channel ${channelId}). Message may not have been answered: "${messageText.slice(0, 100)}"`
-            ).catch(() => {});
+            ).catch(err => {
+              // @silent-fallback-ok best-effort advisory; failure is surfaced in server logs
+              console.warn(`[slack] Failed to send stall notice to attention channel: ${err instanceof Error ? err.message : String(err)}`);
+            });
           }
           // Also notify in the originating channel
           slackAdapter!.sendToChannel(channelId,
             `⚠️ The session appears to have stalled. Use \`!restart\` to restart or \`!interrupt\` to nudge it.`
-          ).catch(() => {});
+          ).catch(err => {
+            // @silent-fallback-ok best-effort advisory; failure is surfaced in server logs
+            console.warn(`[slack] Failed to send stall notice to originating channel: ${err instanceof Error ? err.message : String(err)}`);
+          });
         };
 
         // Wire voice transcription (reuses Telegram's provider resolution: Groq → OpenAI)
@@ -10926,6 +10960,12 @@ export async function startServer(options: StartOptions): Promise<void> {
               const slackApiChannel = parsedTarget.channelId;
               const slackReplyThread = parsedTarget.threadTs;
 
+              const relayReadiness = localSlackRelayReadiness(config.stateDir);
+              if (!relayReadiness.ready) {
+                console.error(`[slack→recovery] spawn refused: slack-relay-not-ready (${relayReadiness.reason})`);
+                return;
+              }
+
               // Kill existing session (already flagged in contextExhaustionKills via event listener)
               const session = sessionManager.listRunningSessions().find(s => s.tmuxSession === _sessionName);
               if (session) sessionManager.killSession(session.id);
@@ -10962,9 +11002,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               lines.push('');
               lines.push('CRITICAL: You MUST relay your response back to Slack.');
-              // Thread session: include the thread_ts so the recovered reply threads.
-              const recoveryReplyTarget = slackReplyThread ? `${slackApiChannel} ${slackReplyThread}` : `${slackApiChannel}`;
-              lines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${recoveryReplyTarget}`);
+              // The recovered session receives a freshly minted bind token;
+              // destination selection stays server-side and thread-exact.
+              lines.push("cat <<'EOF' | .instar/scripts/slack-reply.sh");
               lines.push('Your response text here');
               lines.push('EOF');
 
