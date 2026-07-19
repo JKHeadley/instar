@@ -23,6 +23,8 @@
  *    never inside a synchronous per-message CAS (FD-2).
  */
 
+// canonical-migration-producer: threadline-inbound-canonical-store@1
+
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ThreadLog, ThreadLogAuthor, ThreadDirection, ThreadTextRef } from './ThreadLog.js';

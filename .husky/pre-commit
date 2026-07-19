@@ -1,4 +1,5 @@
 npm run lint
+node scripts/lint-migration-consumer-completeness.js --staged
 
 # Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 # The precommit script reads no config (it runs pre-compile), so we export the

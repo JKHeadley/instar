@@ -11,6 +11,8 @@
  * validates it against MessagePriority ('critical' | 'high' | 'medium' |
  * 'low'), defaults to 'medium' when omitted, and rejects invalid values
  * with 400.
+ *
+ * canonical-migration-validator: threadline-inbound-canonical-store@1
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';

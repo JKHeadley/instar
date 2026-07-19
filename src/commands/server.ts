@@ -9062,10 +9062,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // weakening boot ordering or inventing a second recovery loop.
     let threadlineRouterForResume: ThreadlineRouter | null = null;
     let listenerManagerForResume: ListenerSessionManager | null = null;
+    let threadLogForResume: ThreadLog | null = null;
+    let messageStoreForResume: MessageStore | null = null;
     const { createThreadlineReapRecovery } = await import('../threadline/ThreadlineReapRecovery.js');
     const threadlineReapRecovery = createThreadlineReapRecovery({
       localAgent: config.projectName,
       manager: () => listenerManagerForResume,
+      threadLog: () => threadLogForResume,
+      messageStore: () => messageStoreForResume,
       router: () => threadlineRouterForResume,
     });
     let autonomousLivenessReconciler:
@@ -15349,6 +15353,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Inter-Agent Messaging — structured communication between sessions
     const messageStore = new MessageStore(path.join(config.stateDir, 'messages'));
+    messageStoreForResume = messageStore;
     await messageStore.initialize();
     const threadResumeMap = new ThreadResumeMap(config.stateDir, config.stateDir);
     // Threadline Phase 1 keystone: the Conversation single-source-of-truth +
@@ -15375,6 +15380,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       seenSetMaxPerThread: _canonHist.seenSetMaxPerThread,
       seenSetMaxThreads: _canonHist.seenSetMaxThreads,
     });
+    threadLogForResume = threadLog;
     const threadMessageRecorder = new ThreadMessageRecorder({
       threadLog,
       conversationStore,

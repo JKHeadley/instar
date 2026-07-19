@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
+// canonical-migration-validator: threadline-inbound-canonical-store@1
+
 describe('Threadline reap recovery production wiring', () => {
   it('carries canonical message identity from sessionReaped into the shared resume drainer', () => {
     const source = fs.readFileSync(new URL('../../src/commands/server.ts', import.meta.url), 'utf8');
@@ -9,8 +11,14 @@ describe('Threadline reap recovery production wiring', () => {
     expect(source).toContain("candidateWorkEvidence = [...candidateWorkEvidence, 'pending-injection']");
     expect(source).toContain('threadlineMessagePending: threadlineReapRecovery.pending');
     expect(source).toContain('respawnThread: threadlineReapRecovery.respawn');
+    expect(source).toContain('threadLog: () => threadLogForResume');
+    expect(source).toContain('threadLogForResume = threadLog');
+    expect(source).toContain('messageStore: () => messageStoreForResume');
+    expect(source).toContain('messageStoreForResume = messageStore');
     const recovery = fs.readFileSync(new URL('../../src/threadline/ThreadlineReapRecovery.ts', import.meta.url), 'utf8');
-    expect(recovery).toContain('inbound.threadId === entry.threadId');
+    expect(recovery).toContain('legacy?.threadId === threadId');
+    expect(recovery).toContain("candidate.direction === 'inbound'");
+    expect(recovery).toContain('candidate.entry.contentDigest');
     expect(recovery).toContain('manager.hasCanonicalReplyFor(entry.threadId, inbound.id)');
     expect(recovery).toContain('router.handleInboundMessage(envelope');
     expect(recovery).toContain("preferWarmSession: false");
