@@ -33,6 +33,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import * as fs from 'node:fs';
 import type { ExecFileOptions } from 'node:child_process';
 import type { DurableVaultSession } from './DurableVaultSession.js';
 import type {
@@ -127,6 +128,24 @@ export interface SelfUnblockProbeDeps {
   execFileBounded?: ExecFileBounded;
   /** Injectable fetch (tests pass a fake; production uses global fetch). */
   fetchImpl?: typeof fetch;
+  /**
+   * Absolute path of the per-agent owned-identities registry
+   * (`.instar/owned-identities.json`) — identities the agent ITSELF provisioned
+   * (test users, service accounts, workspace owners), each carrying explicit
+   * non-secret `scopeTags` and a credential POINTER (`credentialRef`), never a
+   * value. Absent → the owned-identities probe reports unreachable, fail-closed.
+   * Spec: docs/specs/correction-derived-hardening.md (the 2026-07-18 gap: an
+   * exhaustion verdict that never consulted identities the agent created).
+   */
+  ownedIdentitiesPath?: string;
+  /** Injectable file reader for the owned-identities registry (tests pass a fake). */
+  readFileUtf8?: (path: string, maxBytes: number) => string;
+  /**
+   * Injectable existence check for owned-identities credentialRef LIVENESS
+   * (a stat, never a read — no value is ever touched). Tests pass a fake;
+   * production uses fs.existsSync.
+   */
+  fileExists?: (path: string) => boolean;
 }
 
 // ─── Tag helpers (fail-closed) ──────────────────────────────────────────────────
@@ -145,7 +164,7 @@ function declaredTags(deps: SelfUnblockProbeDeps, key: string): string[] {
 /** Remote CLI/network probe budget for an injected exec (the runner also class-bounds). */
 const REMOTE_EXEC_MS = 10_000;
 
-// ─── The nine providers ─────────────────────────────────────────────────────────
+// ─── The ten providers ──────────────────────────────────────────────────────────
 
 /** 1. own-vault — the agent's own per-agent vault (names only, never values). */
 function ownVaultProvider(deps: SelfUnblockProbeDeps): ProbeProvider {
@@ -175,6 +194,191 @@ function ownVaultProvider(deps: SelfUnblockProbeDeps): ProbeProvider {
       detail: `own-vault reachable (${keys.length} key${keys.length === 1 ? '' : 's'})`,
     };
   };
+}
+
+/**
+ * 1b. owned-identities — identities the agent ITSELF provisioned, from the
+ * per-agent registry `.instar/owned-identities.json` (spec:
+ * correction-derived-hardening). The registry is agent/operator-AUTHORED
+ * declaration data — the same trust class as `credentialScopeTags` (rule (c)):
+ * advertised tags are EXACTLY the union of each valid entry's explicit
+ * `scopeTags` strings. No inference from service/identity names, and NO other
+ * entry field is ever read into the result — an entry carrying a stray
+ * password/token-shaped field can never leak it into tags or detail. Missing,
+ * unreadable, oversized, malformed, or non-array registry → unreachable
+ * (fail-closed, mirrors own-vault).
+ */
+const OWNED_IDENTITIES_MAX_BYTES = 256 * 1024;
+/** Hard bound on entries PROCESSED per probe run — rule (b): never an unbounded loop. */
+const OWNED_IDENTITIES_MAX_ENTRIES = 500;
+/**
+ * Per-string clamp for anything read OUT of the registry (names/tags). The
+ * registry is agent-authored but its strings flow into the settle authority's
+ * untrusted-data envelope; clamp + control-char strip so an oversized/crafted
+ * string can never ride the probe result (round-1 security finding).
+ */
+const OWNED_IDENTITIES_MAX_STRING = 128;
+
+function clampRegistryString(v: string): string {
+  // eslint-disable-next-line no-control-regex
+  return v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, OWNED_IDENTITIES_MAX_STRING);
+}
+
+interface OwnedIdentityEntry {
+  identity?: unknown;
+  service?: unknown;
+  scopeTags?: unknown;
+  credentialRef?: unknown;
+}
+
+/**
+ * LIVENESS GATE (second-pass review, 2026-07-18): an entry advertises its tags
+ * ONLY when its `credentialRef` pointer RESOLVES right now — `file:<path>` must
+ * stat (path relative to the agent home when not absolute; any `#fragment` is
+ * ignored), `vault:<key>` must be a present vault key NAME. A missing ref, an
+ * unknown scheme, or a dangling pointer contributes NOTHING (fail-closed).
+ * Without this, a STALE entry could advertise a phantom credential forever —
+ * `holdsRelevantCred:true` → `exhausted:false` → BlockerLedger refuses the
+ * true-blocker settle → the agent can never escalate: static declaration would
+ * hold blocking authority over the escalation path. The stat/name-presence
+ * check mirrors own-vault's live-presence gate and reads NO secret value.
+ */
+function credentialRefResolves(
+  deps: SelfUnblockProbeDeps,
+  ref: unknown,
+  agentHomeDir: string,
+  statCache: Map<string, boolean>,
+): boolean {
+  if (typeof ref !== 'string' || ref.trim().length === 0) return false;
+  const exists = deps.fileExists ?? ((p: string): boolean => fs.existsSync(p));
+  if (ref.startsWith('file:')) {
+    const rawPath = ref.slice('file:'.length).split('#')[0].trim();
+    if (rawPath.length === 0) return false;
+    // JAIL (round-1 security finding): refs resolve ONLY inside the agent home —
+    // an absolute path outside it, or a `..` traversal escaping it, never
+    // resolves. The liveness bar is honestly WEAK (existence of the pointed-to
+    // file, not credential validity); the jail keeps it from being satisfiable
+    // by arbitrary host files like /etc/hosts.
+    const resolved = rawPath.startsWith('/') ? rawPath : `${agentHomeDir}/${rawPath}`;
+    const segments = resolved.split('/').reduce<string[]>((acc, seg) => {
+      if (seg === '..') acc.pop();
+      else if (seg !== '.' && seg !== '') acc.push(seg);
+      return acc;
+    }, []);
+    const normalizedPath = `/${segments.join('/')}`;
+    const home = agentHomeDir.endsWith('/') ? agentHomeDir : `${agentHomeDir}/`;
+    if (!normalizedPath.startsWith(home)) return false;
+    const cached = statCache.get(normalizedPath);
+    if (cached !== undefined) return cached;
+    let ok: boolean;
+    try {
+      ok = exists(normalizedPath);
+    } catch {
+      // @silent-fallback-ok — a stat failure means the ref does not resolve (fail-closed).
+      ok = false;
+    }
+    statCache.set(normalizedPath, ok);
+    return ok;
+  }
+  if (ref.startsWith('vault:')) {
+    const key = ref.slice('vault:'.length).trim();
+    if (key.length === 0 || typeof deps.getVaultKeys !== 'function') return false;
+    try {
+      return deps.getVaultKeys().includes(key);
+    } catch {
+      // @silent-fallback-ok — an unreadable vault cannot confirm liveness (fail-closed).
+      return false;
+    }
+  }
+  // Unknown scheme → unverifiable → never advertised (fail-closed).
+  return false;
+}
+
+function ownedIdentitiesProvider(deps: SelfUnblockProbeDeps): ProbeProvider {
+  return async (): Promise<ProbeProviderResult> => {
+    const regPath = deps.ownedIdentitiesPath;
+    if (typeof regPath !== 'string' || regPath.trim().length === 0) {
+      return { reachable: false, detail: 'owned-identities registry path not wired' };
+    }
+    let raw: string;
+    try {
+      const read = deps.readFileUtf8 ?? defaultReadFileUtf8;
+      raw = read(regPath, OWNED_IDENTITIES_MAX_BYTES);
+    } catch {
+      // @silent-fallback-ok — missing/unreadable/oversized registry → unreachable (fail-closed).
+      return { reachable: false, detail: 'owned-identities registry absent or unreadable' };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // PRESENT-but-unparseable is the silent-recurrence trap (round-1 adversarial
+      // finding: fail-closed here re-creates the founding wrong-escalation bug with
+      // no signal). Loud server-log line — bounded, no content — so the breakage is
+      // visible outside the probe detail.
+      console.warn('[self-unblock] owned-identities registry PRESENT but not valid JSON — probe advertising nothing (fix or remove the file)');
+      return { reachable: false, detail: 'owned-identities registry PRESENT but not valid JSON — fix or remove it' };
+    }
+    if (!Array.isArray(parsed)) {
+      console.warn('[self-unblock] owned-identities registry PRESENT but root is not an array — probe advertising nothing');
+      return { reachable: false, detail: 'owned-identities registry PRESENT but root is not an array — fix or remove it' };
+    }
+    // The registry lives at <agentHome>/.instar/owned-identities.json → the agent
+    // home (the base + jail for relative file: refs) is two levels up.
+    const agentHomeDir = regPath.split('/').slice(0, -2).join('/') || '/';
+    const statCache = new Map<string, boolean>();
+    const tags = new Set<string>();
+    const liveNames: string[] = [];
+    let skipped = 0;
+    let truncated = 0;
+    const entries = parsed as OwnedIdentityEntry[];
+    for (let i = 0; i < entries.length; i++) {
+      // Rule (b): a bounded loop — beyond the cap, entries are COUNTED, not processed.
+      if (i >= OWNED_IDENTITIES_MAX_ENTRIES) {
+        truncated = entries.length - OWNED_IDENTITIES_MAX_ENTRIES;
+        break;
+      }
+      const entry = entries[i];
+      if (entry == null || typeof entry !== 'object') continue;
+      // ONLY identity (a NAME), scopeTags, and the credentialRef POINTER (for a
+      // stat/name-presence liveness check — never a value read) are consulted.
+      // Every other field — note, roles, or anything password-shaped someone
+      // mistakenly stored — stays in the file. Strings are clamped + control-
+      // char-stripped before they can ride the result.
+      const hasIdentity = typeof entry.identity === 'string' && entry.identity.trim().length > 0;
+      if (!credentialRefResolves(deps, entry.credentialRef, agentHomeDir, statCache)) {
+        if (hasIdentity || Array.isArray(entry.scopeTags)) skipped += 1;
+        continue;
+      }
+      if (hasIdentity) liveNames.push(clampRegistryString(entry.identity as string));
+      if (Array.isArray(entry.scopeTags)) {
+        for (const t of entry.scopeTags) {
+          if (typeof t === 'string' && t.trim().length > 0) tags.add(clampRegistryString(t));
+        }
+      }
+    }
+    const truncNote = truncated > 0 ? `; ${truncated} beyond the ${OWNED_IDENTITIES_MAX_ENTRIES}-entry cap not processed` : '';
+    if (liveNames.length === 0 && tags.size === 0) {
+      return {
+        reachable: false,
+        detail: `owned-identities registry has no live entries${skipped > 0 ? ` (${skipped} skipped: unverifiable credentialRef)` : ''}${truncNote}`,
+      };
+    }
+    return {
+      reachable: true,
+      advertisedScopeTags: [...tags],
+      detail: `owned-identities registry: ${liveNames.length} live identit${liveNames.length === 1 ? 'y' : 'ies'}${liveNames.length > 0 ? ` (${liveNames.slice(0, 5).join(', ')}${liveNames.length > 5 ? ', …' : ''})` : ''}${skipped > 0 ? `; ${skipped} skipped (unverifiable credentialRef)` : ''}${truncNote}`,
+    };
+  };
+}
+
+/** Default bounded UTF-8 file read for the owned-identities registry (size-capped BEFORE reading). */
+function defaultReadFileUtf8(filePath: string, maxBytes: number): string {
+  const stat = fs.statSync(filePath);
+  if (stat.size > maxBytes) {
+    throw new Error(`owned-identities registry exceeds ${maxBytes} bytes`);
+  }
+  return fs.readFileSync(filePath, 'utf8');
 }
 
 /** 2. org-bitwarden — the org vault via the warm DurableVaultSession (§5.3). */
@@ -360,12 +564,13 @@ export function deriveBitwardenSession(opts: {
 }
 
 /**
- * Build the full production provider set — a REAL provider for EVERY one of the 9
+ * Build the full production provider set — a REAL provider for EVERY one of the 10
  * sources in `SELF_UNBLOCK_PROBE_SOURCES`. No source is left unwired.
  */
 export function buildProductionProbeProviders(deps: SelfUnblockProbeDeps): ProbeProviders {
   const providers: Required<Record<SelfUnblockProbeSource, ProbeProvider>> = {
     'own-vault': ownVaultProvider(deps),
+    'owned-identities': ownedIdentitiesProvider(deps),
     'org-bitwarden': orgBitwardenProvider(deps),
     'cloud-vercel': cliReachabilityProvider(
       deps,

@@ -5095,6 +5095,18 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added External-Hog Zombie Auto-Kill Sentinel section');
     }
 
+    // Owned-Identities Registry (spec: correction-derived-hardening) — Agent
+    // Awareness Standard + Migration Parity: existing agents learn that Rung 0 of
+    // self-unblock now includes identities they themselves provisioned, and the
+    // registration trigger (the 2026-07-18 gap: an exhaustion verdict that never
+    // consulted the agent's own created identities). Content-sniffed; the shipped
+    // template carries the same content inline for new installs.
+    if (!content.includes('owned-identities')) {
+      content += `\n### Owned-Identities Registry (self-unblock Rung 0 includes what YOU created)\n\nIdentities you yourself provisioned — test users, workspace owners, service accounts — are part of your self-unblock Rung 0: an "operator-only" verdict about infrastructure YOU built is suspect by construction, and your own records are the first place to look. The \`SelfUnblockChecklist\` structurally consults your per-agent registry at \`.instar/owned-identities.json\` (an array of \`{identity, service, roles, scopeTags, credentialRef}\` entries; \`credentialRef\` is a POINTER to where the credential lives, never a secret value).\n- **Register what you create** (PROACTIVE — this is the trigger): the moment you provision a test/service identity, add it to the registry — an unregistered identity is invisible to your future exhaustion checks, which is exactly how a wrong "this needs the operator" escalation happens. Register scopeTags in the SAME canonical service:scope form blocker targets use (an opaque id like slack:T0BA1DR0U3D, never a display name), and prune entries whose credential is gone — a resolving-but-stale entry blocks true-blocker settles until pruned.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Owned-Identities Registry section');
+    }
+
     // Permission-Prompt Floor (spec: framework-permission-prompt-robustness) — Agent
     // Awareness Standard + Migration Parity: existing agents learn that an always-on
     // floor auto-answers a framework approval prompt the host can't otherwise clear,

@@ -2277,6 +2277,10 @@ export class AgentServer {
                 return null;
               }
             },
+            // Owned-identities registry (correction-derived-hardening spec):
+            // identities the agent itself provisioned. stateDir IS the .instar dir,
+            // so the registry lives at .instar/owned-identities.json.
+            ownedIdentitiesPath: path.join(stateDir, 'owned-identities.json'),
           });
           this.selfUnblockChecklist = new SelfUnblockChecklist({
             providers,

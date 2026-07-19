@@ -231,7 +231,7 @@ export interface ToneReviewResult {
   latencyMs: number;
   /** True if the LLM call failed and we fail-opened */
   failedOpen?: boolean;
-  /** True if the LLM's rule citation was invalid (not in B1..B18) — gate failed open. */
+  /** True if the LLM's rule citation was invalid (not in B1..B21) — gate failed open. */
   invalidRule?: boolean;
   /**
    * True if the gate review exceeded the outbound route's hard budget and the
@@ -305,6 +305,7 @@ export const VALID_RULES = new Set([
   'B18_AUTONOMY_STOP',
   'B19_PARKED_ON_USER',
   'B20_INTERNAL_ID_LEAK',
+  'B21_USER_TASK_SUBSTITUTION',
 ]);
 
 /**
@@ -358,6 +359,10 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
   // B20 gates on the internal-id-leak DETECTOR SIGNAL (same shape as B8/B9) —
   // signal-driven, NOT a literal-gate (round-3 catch: omitting it would fail CI).
   B20_INTERNAL_ID_LEAK: 'signal-driven',
+  // B21: an infinitely-rephrasable INTENT (handing the user a procedure for
+  // agent-doable work) — meaning-judged like B15–B18, no deterministic detector.
+  // Origin: operator correction 2026-07-18 (correction-derived-hardening spec).
+  B21_USER_TASK_SUBSTITUTION: 'behavioral-judgment',
 };
 
 /**
@@ -1251,7 +1256,7 @@ You are the single outbound-messaging authority. You make ONE decision per call:
 
 Your decision must be traceable to EXACTLY ONE of the explicit rules below. You MUST identify the rule id you applied in your response. Inventing rules, citing "internal implementation details," "too technical," "exposing internals," or any abstract reason not in this list is a violation. If no rule applies, pass must be true.
 
-## ARTIFACT rules (B1–B7) — SIGNAL-DRIVEN, judged in context (NOT in-prompt literal-matching). A deterministic detector finds each artifact and reports it in the "ARTIFACT SIGNALS" section above; do NOT scan the candidate yourself for these patterns. For each artifact rule, block ONLY when its signal is \`detected: true\` AND the artifact is being shown to the user TO ACT ON (copy/paste/run/edit) — judged from the surrounding context. An artifact merely mentioned, named in passing, or discussed conceptually is NOT a block even when detected. When you block, cite the detected artifact from the signal (citation, not a self-scan). (The behavioral-judgment rules B15–B18 below are likewise meaning-judged.)
+## ARTIFACT rules (B1–B7) — SIGNAL-DRIVEN, judged in context (NOT in-prompt literal-matching). A deterministic detector finds each artifact and reports it in the "ARTIFACT SIGNALS" section above; do NOT scan the candidate yourself for these patterns. For each artifact rule, block ONLY when its signal is \`detected: true\` AND the artifact is being shown to the user TO ACT ON (copy/paste/run/edit) — judged from the surrounding context. An artifact merely mentioned, named in passing, or discussed conceptually is NOT a block even when detected. When you block, cite the detected artifact from the signal (citation, not a self-scan). (The behavioral-judgment rules B15–B18 and B21 below are likewise meaning-judged.)
 
 - **B1_CLI_COMMAND** — the \`cli-command\` signal is detected AND the command is presented for the user to run themselves ("run \`npm install\`", "type 'git push'"). A command name in prose discussion ("the npm registry"), or one the agent reports having run ITSELF, is NOT a block.
 - **B2_FILE_PATH** — the \`file-path\` signal is detected AND a concrete path is shown for the user to open/edit. Conceptual references ("the config file") are fine even if a path-shaped token appears. (The legacy \`raw-file-path\` upstream signal, if present, corroborates this one.)
@@ -1387,6 +1392,19 @@ These rules only fire when the producer has explicitly marked the candidate as a
   Do NOT apply B20 if: the user EXPLICITLY asked for the identifier (a direct answer to "what's the commitment id?" passes), or the message is discussing internals the user opted into.
 
   Severity: favor FALSE-NEGATIVES. Block ONLY unsolicited agent-initiated plumbing-leak with the signal set, and suggest restating in plain English the user can act on. When uncertain, PASS.
+
+- **B21_USER_TASK_SUBSTITUTION** — JUDGE BY MEANING, NOT BY LITERAL PHRASE. The candidate hands the USER a multi-step procedure — portal click-paths ("open X → go to Settings → add these scopes → reinstall"), UI navigation steps, command sequences — for work the AGENT could perform itself given at most a credential or an approval. This is the "user-task substitution" anti-pattern (operator correction 2026-07-18: any solution requiring step-by-step clicking on the user side is unacceptable; the agent owns browser tasks; the only acceptable asks are credentials and approvals). When the agent's self-unblock exhausts, the legitimate escalation SHAPES are: (a) a yes/no approval, (b) a credential request (e.g. a Secret Drop link the user opens once), (c) a single mid-flow challenge code. A procedure for the human to execute is NEVER an escalation shape — and offering the click list "as an option, whenever convenient" ALONGSIDE a legitimate ask is exactly the violation (the option itself outsources agent work; judge the offered procedure on its own, mirroring per-item bundling under B17).
+
+  LEGITIMATE — do NOT apply B21 if ANY of these holds for the procedure in question:
+  - The user EXPLICITLY asked to do it themselves, to learn the steps, or asked for a walkthrough (including mobile-friendly walkthroughs they requested).
+  - The steps are for an action STRUCTURALLY reserved to the human: a dashboard-PIN-gated action (PIN entry is the human's by design), a physical/hardware action, a payment/billing/legal authorization, a CAPTCHA / human-presence challenge, or the decision/approval itself.
+  - The action is one the agent GENUINELY LACKS THE MEANS to perform even with a credential the user could hand over: a non-delegable personal credential or session (the user's personal inbox, their personal device's 2FA/passkey, an account bound to their person), or a third-party surface that structurally requires the account owner. CAPABILITY-UNCERTAINTY DEFAULT: you usually cannot see the agent's real capability inventory — when you cannot tell whether the agent has (or could request) the means to do this itself, default to PASS; cite B21 only when the message itself makes the agent-doability plain (e.g. it names a credential path or an agent-held session alongside the click list, or the steps are on a surface agents demonstrably drive — an app-config portal, a cloud console, a settings page).
+  - A SINGLE one-tap action: open a link the agent minted for them (a Secret Drop link, a dashboard link, a private view), tap approve/deny, or supply one challenge code. One tap is a Rung-1/2 ask, not a procedure — do not count "click the link, then fill the two fields on the page it opens" as multi-step; the page the agent built IS the one tap's destination.
+  - The message is DISCUSSING this rule, the anti-pattern, or a past instance (a memo / correction write-up, not a live instance).
+
+  RELATIONSHIP TO B17/B19 (de-confliction): B17 fires on DEFERRING a task claiming a person is required; B19 on passively PARKING follow-through; B21 on actively SUPPLYING the human a procedure for agent-doable work. B21 exists for the shape that survives B17's carve-outs — a message whose escalation is otherwise legitimate (credential path offered, inventory shown) but which ALSO hands over a click list. Citation precedence when more than one of B15/B16/B17/B18/B21 would independently block: B15 > B16 > B17 > B18 > B21.
+
+  Severity: favor FALSE-NEGATIVES over false-positives, exactly like B15–B18. A genuinely human-only walkthrough, a requested how-to, and a one-tap ask MUST pass. Block only the clear pattern: agent-doable work handed to the human as steps to execute. When you block, name the procedure and suggest the agent perform it itself and ask only for the credential/approval it actually lacks.
 
 ## STYLE rule — applies ONLY when a TARGET STYLE is configured below:
 
