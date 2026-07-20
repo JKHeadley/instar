@@ -20,7 +20,15 @@ lessons-engaged:
   - "Anti-confabulation / Verify the State Not Its Symbol (an intervention is only 'effective' with a verified follow-on deliverable delta; a send-ACK alone records DELIVERED, not EFFECTIVE)"
   - "Token-Audit Completeness + Decision Provenance (the flatline classifier carries attribution.component AND enrolls in the JudgmentProvenanceLog + decision-quality meter)"
   - "Migration Parity + Agent Awareness (migrateConfig entry + CLAUDE.md template + DEV_GATED_FEATURES + self-action lane-member ratchet)"
+review-convergence: "2026-07-20T19:10:55.215Z"
+review-iterations: 2
+review-completed-at: "2026-07-20T19:10:55.215Z"
+review-report: "docs/specs/reports/autonomous-throughput-floor-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
 single-run-completable: true
+frontloaded-decisions: 7
+cheap-to-change-tags: 0
+contested-then-cleared: 1
 ---
 
 # Autonomous Throughput Floor
@@ -75,9 +83,9 @@ Per tick (`throughputFloor.tickMs`, default 15 min) compute a **meaningful deliv
 Every rung is gated on **"THIS machine owns the run + holds the lease + is not mid-move"** (adopting `AutonomousLivenessReconciler` criteria 4–5 + the heartbeat's `movedTo`/`moveSuspended` suppress) and admitted through the `SelfActionGovernor` controller (§8). On a confirmed flatline:
 
 1. **Live mentee-state read** (§4). Classify STRUCTURAL-PRIMARY (§4.1): PRODUCING / STALLED / IDLE / UNREACHABLE.
-   - **PRODUCING** (a monotonic deliverable advanced, or `lastInboundAt` advanced on non-manager traffic) → not a flatline; record corroboration, reset the window, hold this tick. (The anti-thrash guard — heavy convergence must not read as a stall. NOTE this rung is signal-anchored, NOT a free "hold" — it requires a REAL advance, so it cannot be a hold-rationalization.)
+   - **PRODUCING** (a monotonic DELIVERABLE advanced — a merged/advanced SHA; an inbound-ACK advance alone is NOT PRODUCING, it is only liveness) → not a flatline; record corroboration, reset the window, hold this tick. (The anti-thrash guard — heavy convergence must not read as a stall. NOTE this rung is signal-anchored to a REAL deliverable advance, NOT a free "hold" and NOT mere chatter, so it cannot be a hold-rationalization nor a chatty-stalled suppression path.)
    - **STALLED** (a stopped-session signal is the mentee's newest structural state) → **re-dispatch** to re-spawn (§5), success judged by EFFECT-ACK (§5).
-   - **IDLE** (alive, `pendingCount:0`, no advancing deliverable, no active lane) → **surface + (Phase 2) auto-refeed** the next backlog lane (§10). In v1, IDLE with an operator-preauthorized run → re-dispatch the next known priority; without a lane-backlog structure it SURFACES the idle to the operator rather than guessing a lane.
+   - **IDLE** (alive, `pendingCount:0`, no advancing deliverable, no active lane) → **v1: SURFACE the idle to the operator** (v1 has no lane-backlog structure to source a "next lane" from — that is §10b — so it does NOT guess a lane; it surfaces honestly). The autonomous **auto-refeed** of the next backlog lane is the §10b follow-on (Phase 2). So v1 fully kills the SILENT idle (it forces a live check + a surfaced idle within the flatline window) but defers autonomous throughput-restoration-for-IDLE to §10b.
    - **UNREACHABLE** (the read failed) → SURFACE honestly (§4.2 fail-safe); do NOT assume PRODUCING or IDLE; apply UNREACHABLE backoff.
 2. **The legitimate-HOLD permission is a DETERMINISTIC INVARIANT — NOT an LLM verdict** (this is the load-bearing round-2 fix, per Judgment Within Floors §538). A hold this tick is permitted ONLY when BOTH:
    - `blockedOnUser == true` derived from an **actual open approval-gate record** (a commitment with `blockedOn:user-authorization`/`user-input`, or an open operator-approval item for the run) — NEVER from the classifier inferring "the mentee seems to be waiting"; AND
@@ -92,7 +100,7 @@ Every rung is gated on **"THIS machine owns the run + holds the lease + is not m
 ## 4. The cross-agent mentee-liveness read (v1 = real infra; rich probe = §10)
 
 ### 4.1 v1 signal (grounded on what exists)
-- **Primary:** `GET /threadline/peers/health` for the mentee's **verified fingerprint** → `{ lastInboundAt, lastAckedAt, pendingCount, stale }` (ack-liveness), joined with the manager's existing **git-SHA sweep** (deliverable advance). Classification is STRUCTURAL: STALLED requires a structural stopped-session signal; PRODUCING requires a monotonic deliverable advance or non-manager inbound-ack advance; IDLE = alive + no advance + no active lane; UNREACHABLE = health read failed.
+- **Primary:** `GET /threadline/peers/health` for the mentee's **verified fingerprint** → `{ lastInboundAt, lastAckedAt, pendingCount, stale }` (ack-liveness), joined with the manager's existing **git-SHA sweep** (deliverable advance). Classification is STRUCTURAL: STALLED requires a structural stopped-session signal; **PRODUCING requires a monotonic DELIVERABLE advance** (a non-manager inbound-ACK advance is liveness only — it separates alive from STALLED/UNREACHABLE, it does NOT make the mentee PRODUCING); IDLE = alive + no deliverable advance + no active lane; UNREACHABLE = health read failed.
 - **Know Your Principal:** the read binds to the mentee's canonical fingerprint (never a name from content); for a non-fleet mentee it routes through verified-pairing/trust, never raw mesh.
 - **No prose all-clear:** any LLM step over mentee output treats it as delimited, neutralized untrusted data (the `<replicated-untrusted-data>` / cartographer-summary precedent) and may only LOWER confidence — it may NEVER assert PRODUCING on prose alone (S-M3: suppression is the dangerous direction; a false "fine" is the silent killer).
 
@@ -117,11 +125,13 @@ The mentee's own external-operation/coherence gates independently re-evaluate th
 
 Both are Instar-general (me↔Codey now, any overseer↔mentee, Luna next). A manager that can silently idle for hours is, by definition, not load-bearing. Positioned as the work-side twin of *Conservative Outbound: Act, Don't Notify*.
 
-## 7. Multi-machine posture (P21 — decomposed; state RIDES THE RUN)
+## Multi-machine posture (P21 — decomposed; state RIDES THE RUN)
 
 The round-1 reviewers converged here: a single `machine-local` label was WRONG because it conflated actuation-locality with state-locality and let a topic-move/restart reset the P19 budget. Decomposed:
 
-- **The acting turn-loop (actuation): machine-local BY DESIGN** — only the machine hosting the manager loop can intervene. `machine-local-justification: hardware-bound-resource` (the running manager turn-loop is bound to the executing process/machine; a peer cannot intervene on a run it does not host). *(This marker line is in the front-matter-parseable `## Multi-machine posture` form so `scripts/lint-machine-local-justification.js` parses it.)*
+- **The acting turn-loop (actuation): machine-local BY DESIGN** — only the machine hosting the manager loop can intervene (the running manager turn-loop is bound to the executing process/machine; a peer cannot intervene on a run it does not host). Its justification marker is the standalone `key: value` line below — this section heading is the un-numbered `## Multi-machine posture` form that `scripts/lint-machine-local-justification.js`'s `POSTURE_SECTION_RE` actually matches (a numbered `## 7. …` heading is NOT matched by that regex, which would silently skip the A1/A2 checks — round-2.1 fix):
+
+machine-local-justification: hardware-bound-resource
 - **The breaker / cap / flatline-window CONVERGENCE state: RIDES THE RUN (carried on transfer; NOT machine-local).** It is topic-scoped, not process-bound. On a `POST /pool/transfer` it moves with the run-state (alongside the `moved_to` markers on the working-set carrier); the SelfActionGovernor controller class is declared `resource: 'pool-shared'` so the count ceiling is cross-machine (proactive-swap-monitor precedent). **Restart-survival corollary (P19 §503):** a manager-machine restart or a topic-move MUST NOT mint a fresh intervention budget against unchanged pressure — the breaker state is reconstructed from the durable run-carried record, never re-armed to zero.
 - **Ownership/lease/mid-move gate:** every ladder rung gates on THIS machine owning + holding-lease + not-mid-move (adopting the reconciler's criteria 4–5), so a transfer window cannot produce a double re-dispatch.
 - **Operator escalation** (flapping-mentee breaker trip): one aggregated attention item through the existing bounded surface.
@@ -154,7 +164,7 @@ Two pieces the round-1 reviewers correctly identified as new foundation (and the
 - **10a — the rich mentee-output probe (two-ended).** A cheap `{ alive, lastDeliverableAt, activeLaneCount, lastStateSignal }` surface the MENTEE exposes over an authenticated, fingerprint-bound, receiver-rate-limited, source-scrubbed Threadline request/response — replacing v1's ack-liveness+SHA approximation with a direct deliverable-rate read. Requires building the mentee side; specced as its own increment. Until then v1's structural signal (§4.1) is the floor's input.
 - **10b — the persisted lane-backlog + auto-refeed.** A standing prioritized lane-record structure on the run (the run registry today snapshots config+SHAs, NOT a lane backlog), so a freed lane auto-dispatches the next item (Delegation-Default's runtime arm, §6.2), budget-and-ceiling-aware, respecting the mentee's declared concurrency ceiling (source: the run/instance record) and mentee quota. Until then v1 SURFACES an IDLE mentee to the operator rather than guessing a lane.
 
-v1 ships the CORE forcing function (flatline → deterministic-gated live-check → surface/re-dispatch, Capacity-Safety-registered, breaker-rides-run) — which is what actually prevents the Drive-7 failure — on real existing foundation. 10a/10b make it richer.
+v1 ships the CORE forcing function (flatline → deterministic-gated live-check → surface/re-dispatch, Capacity-Safety-registered, breaker-rides-run) on real existing foundation. Honest scope of what v1 prevents: it fully kills the **silent** Drive-7 failure — within the flatline window it FORCES a live check and a structurally-forbidden passive-hold (a hold is impossible while non-gated work exists), and it auto-re-dispatches a STALLED mentee. It does NOT autonomously RESTORE throughput for an IDLE (parked-not-crashed) mentee — that requires the §10b lane-backlog auto-refeed; v1 SURFACES an IDLE mentee instead. 10a/10b make it complete.
 
 ## Frontloaded Decisions
 
@@ -173,4 +183,4 @@ v1 ships the CORE forcing function (flatline → deterministic-gated live-check 
 
 ## Open questions
 
-*(none blocking — FD-A..G frontload the reversible calls; §10 names the two genuinely-new-foundation pieces as scoped follow-ons with required contracts, so the buildable v1 has no un-frontloaded mid-run stop. The one design commitment worth an explicit operator nod at approval: the §6 proposal to ADD "Delegation-Default" as a new constitutional standard, since it is currently only a memory directive.)*
+*(none)*
