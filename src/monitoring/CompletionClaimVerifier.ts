@@ -84,19 +84,39 @@ export class CompletionClaimVerifier {
     this.recent.set(fingerprint, now);
     this.queued++;
     setImmediate(() => {
-      void this.observe(message, evidence).then(async (result) => {
-        const arbitration = result.arbitration ?? { clauses: [], authoritative: false };
+      void this.processQueuedObservation(message, evidence, onArbitrated);
+    });
+    return { accepted: true };
+  }
+
+  private async processQueuedObservation(
+    message: string,
+    evidence: TurnEvidence,
+    onArbitrated?: (arbitration: ClaimClauseArbitration) => void | Promise<void>,
+  ): Promise<void> {
+    try {
+      let arbitration: ClaimClauseArbitration;
+      try {
+        const result = await this.observe(message, evidence);
+        arbitration = result.arbitration ?? { clauses: [], authoritative: false };
+      } catch { /* @silent-fallback-ok — unexpected observation failure routes one conservative result */
+        arbitration = { clauses: [], authoritative: false };
+      }
+
+      try {
         // Route every clause before publishing suppression authority. If the
         // process or callback fails in between, the legacy sentinel remains
         // authoritative and no future commitment can be lost.
         if (onArbitrated) await onArbitrated(arbitration);
-        if (arbitration.authoritative) {
-          this.authoritativeMessages.set(messageFingerprint(message), { at: Date.now(), arbitration });
-        }
-      }).catch(async () => { if (onArbitrated) await onArbitrated({ clauses: [], authoritative: false }); })
-        .finally(() => { this.queued--; });
-    });
-    return { accepted: true };
+      } catch { /* @silent-fallback-ok — callback failure leaves legacy authority and is never retried */
+        return;
+      }
+      if (arbitration.authoritative) {
+        this.authoritativeMessages.set(messageFingerprint(message), { at: Date.now(), arbitration });
+      }
+    } finally {
+      this.queued--;
+    }
   }
 
   getRecentAuthoritativeArbitration(message: string, now = Date.now()): ClaimClauseArbitration | null {
@@ -147,7 +167,7 @@ export class CompletionClaimVerifier {
         rationale: scrubSecrets(claim.rationale).slice(0, 500), hadToolCalls: evidence.hadToolCalls,
       });
       return { flagged, verdict, claim, arbitration, ...(verdict === 'not-eligible' ? { reason: 'not-eligible' } : {}) };
-    } catch {
+    } catch { /* @silent-fallback-ok — content-free provider-unavailable metric records conservative fallback */
       this.bump('providerUnavailableTurns');
       return { flagged: false, reason: 'provider-failure' };
     }
@@ -167,8 +187,8 @@ export class CompletionClaimVerifier {
       const file = path.join(this.opts.stateDir, 'logs', 'completion-claim-audit.jsonl');
       if (!fs.existsSync(file)) return [];
       return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-Math.max(1, Math.min(limit, 500)))
-        .flatMap((line) => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; } });
-    } catch { return []; }
+        .flatMap((line) => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { /* @silent-fallback-ok — malformed untrusted audit row is excluded */ return []; } });
+    } catch { /* @silent-fallback-ok — read surface is advisory and cannot gain authority */ return []; }
   }
 
   private appendAudit(row: Record<string, unknown>): void {
@@ -179,7 +199,7 @@ export class CompletionClaimVerifier {
         fs.renameSync(file, `${file}.1`);
       }
       fs.appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
-    } catch { /* audit failure never affects the response */ }
+    } catch { /* @silent-fallback-ok — observe-only audit cannot alter or suppress the response */ }
   }
 
   private statsFile(): string { return path.join(this.opts.stateDir, 'logs', 'completion-claim-stats.json'); }
@@ -199,7 +219,7 @@ export class CompletionClaimVerifier {
         if (typeof count === 'number' && Number.isFinite(count) && count >= 0) empty.verdicts[verdict] = Math.floor(count);
       }
       if (typeof parsed.updatedAt === 'string') empty.updatedAt = parsed.updatedAt;
-    } catch { /* first boot or corrupt counters starts safely at zero */ }
+    } catch { /* @silent-fallback-ok — counters are signal-only; corrupt/absent state restarts at zero */ }
     return empty;
   }
 
@@ -221,7 +241,7 @@ export class CompletionClaimVerifier {
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, `${JSON.stringify(this.counters)}\n`, { mode: 0o600 });
       fs.renameSync(tmp, file);
-    } catch { /* metrics cannot affect the response */ }
+    } catch { /* @silent-fallback-ok — metrics are signal-only and cannot affect the response */ }
   }
 }
 
@@ -257,7 +277,7 @@ export function parseCompletionClaim(raw: string): CompletionClaim | null {
       corroborated: v.corroborated,
       rationale: typeof v.rationale === 'string' ? v.rationale : '',
     };
-  } catch { return null; }
+  } catch { /* @silent-fallback-ok — malformed model output is non-authoritative */ return null; }
 }
 
 export function decideVerdict(claim: CompletionClaim, evidence: TurnEvidence): CompletionObservationVerdict {

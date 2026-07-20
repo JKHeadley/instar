@@ -22163,7 +22163,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // record to the next run; any other non-201 is a guard rejection (don't
           // retry). The driver serializes the batch + stops on the first 429.
           return { posted: resp.status === 201, rateLimited: resp.status === 429 };
-        } catch { return { posted: false }; }
+        } catch { /* @silent-fallback-ok — driver retains the source row for bounded retry */ return { posted: false }; }
       };
       const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
         try {
@@ -22177,7 +22177,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             body: JSON.stringify({ source: 'correction-loop', body: item.summary, ...item }),
           });
           return resp.status === 201;
-        } catch { return false; }
+        } catch { /* @silent-fallback-ok — missing attention never changes correction work authority */ return false; }
       };
 
       const driver = new CorrectionLoopDriver(ctx.correctionLedger, analyzer, {

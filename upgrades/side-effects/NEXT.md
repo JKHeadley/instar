@@ -24,6 +24,8 @@ The structural self-action model now reloads its open-artifact identities from d
 
 The coherence advert contract includes `class-review-record` explicitly, so peers discover the replicated stream from an empty journal instead of relying on incidental later writes; the exact-kind regression expectation guards this wire-level surface.
 
+The final structural census now accounts for every surface introduced by the feature: both model-attribution components are categorized and carry intentional nature-B entries in the LLM routing registry, every new mutating route has an explicit write-domain convergence story, `ClassReviewStore` is enrolled in the process-lifetime SQLite shutdown registry, and the new CLAUDE.md section is tracked by the feature-delivery guard. Conservative error paths carry explicit bounded-fallback annotations, holding the no-silent-fallback ratchet at its existing baseline rather than weakening it. The hand-audited dark-gate line map was re-attributed after the new config blocks shifted source positions; its 25-path semantic set is unchanged.
+
 ## 6. External surfaces
 
 New authenticated surfaces are the class-review list/detail/backfill/lifecycle routes, completion observe/audit routes, feature metrics, and the existing Preferences dashboard sections. The completion hook submits only a closed structural evidence vocabulary and a scrubbed bounded message; commands, raw tool inputs/results, transcript paths, and correction learning are excluded. Class-review intelligence receives only scrubbed summaries and bounded standard titles. Pool reads use credential-safe peer allowlisting and clamp proxied fields before returning them.
@@ -51,3 +53,5 @@ Operator-surface second-pass review: Concur. All known outcomes, verdicts, and a
 Restart-model second-pass review: Concur. The durable fixture reload accurately mirrors the production open-artifact cap and introduces no unreviewed side effect.
 
 Coherence-advert second-pass review: Concur. The test now matches the already-emitted replicated kind and closes the exact wire-contract omission.
+
+Structural-census second-pass review: Concur after repair. The detached completion callback is invoked at most once; a callback failure leaves suppression authority unpublished, decrements queue state in `finally`, and cannot escape as an unhandled rejection. The regression covers those four properties, and the attribution, write-domain, SQLite, feature-section, fallback, and dark-gate census repairs accurately preserve their existing structural ratchets.

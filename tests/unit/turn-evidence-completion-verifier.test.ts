@@ -162,6 +162,37 @@ describe('CompletionClaimVerifier', () => {
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'completion-detach-test' }); }
   });
 
+  it('does not retry or publish authority when the arbitration callback throws', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'completion-callback-'));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const arbitration = { authoritative: true, clauses: [{
+        clauseId: 0, text: 'I pushed feature-x', label: 'completed-or-in-progress-assertion' as const,
+        actionKind: 'pushed' as const, completionScope: 'this-turn' as const,
+        corroborated: true, rationale: 'test',
+      }] };
+      const arbiter = { arbitrate: vi.fn().mockResolvedValue(arbitration) } as any;
+      const callback = vi.fn().mockRejectedValue(new Error('callback failed'));
+      const verifier = new CompletionClaimVerifier({
+        intelligence: {} as any, arbiter, stateDir: dir, enabled: true, dryRun: false,
+      });
+
+      expect(verifier.enqueue('I pushed feature-x', evidence, callback)).toEqual({ accepted: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(verifier.getRecentAuthoritativeArbitration('I pushed feature-x')).toBeNull();
+      expect((verifier as any).queued).toBe(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'completion-callback-test' });
+    }
+  });
+
   it('durably counts candidate verdicts, failures, duplicates, and reviewer dispositions without content', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'completion-stats-'));
     try {

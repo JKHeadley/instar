@@ -255,6 +255,26 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
+  const classReviewStory: ConvergenceStory = {
+    logical: 'ws2x-replicated',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'class-review rows live in a machine-local SQLite/WAL store under the .instar sync exclusion; own-origin shells/outcomes converge through the class-review-record replicated store and remote terminal state remains advisory',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
+  reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/completion-claim/observe',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'completion evidence belongs to the executing machine/session; the route writes bounded audit/counter state under the .instar sync exclusion and pool reads proxy scrubbed observations without merging write authority',
+    },
+  });
   reg.add({
     kind: 'route',
     method: 'POST',

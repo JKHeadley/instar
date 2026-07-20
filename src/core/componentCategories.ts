@@ -144,6 +144,8 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   openConversationBrief: 'reflector',    // generate an A2A conversation brief
   'a2a-checkin': 'reflector',            // summarize A2A check-in threads (server:a2a-checkin)
   'correction-learning': 'reflector',    // distill recurring corrections → preference (server:correction-learning)
+  'correction-class-review': 'reflector', // standards/process class review proposal for each correction
+  'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
 };
 

@@ -58,6 +58,9 @@ const LONG_LIVED_STORES = [
   // registers its handle in the constructor (registerSqliteHandle), process-
   // lifetime, closed once at shutdown like FeatureMetricsLedger beside it.
   'src/monitoring/ProviderCostReportStore.ts',
+  // Correction-class review is durable process-lifetime state and registers
+  // its handle in the constructor like the other monitoring stores above.
+  'src/monitoring/ClassReviewStore.ts',
 ];
 
 /**

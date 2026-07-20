@@ -198,7 +198,7 @@ export class CorrectionClassReview {
       filled = this.opts.store.attachArtifacts(correction.dedupeKey, { initiativeId, actionId }) ?? filled;
       this.opts.audit?.({ event: 'filled', dedupeKey: correction.dedupeKey, initiativeId, actionId });
       return filled;
-    } catch (error) {
+    } catch (error) { /* @silent-fallback-ok — durable bounded retry/dead-letter records the failed attempt */
       return this.failAttempt(correction.dedupeKey, error instanceof Error ? error.message : String(error));
     } finally {
       this.inFlight--;
@@ -263,7 +263,7 @@ export function parseClassReviewJudgment(raw: string): ClassReviewJudgment | nul
       ...(typeof value.semanticMatchId === 'string' && value.semanticMatchId.trim()
         ? { semanticMatchId: value.semanticMatchId.trim() } : {}),
     };
-  } catch { return null; }
+  } catch { /* @silent-fallback-ok — malformed model proposal cannot create artifacts or authority */ return null; }
 }
 
 function buildPrompt(summary: string, standards: string[], candidates: Array<{ semanticClassId: string; standardRef?: string; descriptor: string }>): string {

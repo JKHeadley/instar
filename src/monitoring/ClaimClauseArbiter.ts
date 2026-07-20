@@ -138,7 +138,7 @@ export function parseClauseArbitration(raw: string, sourceClauses: string[]): Ar
       completionScope: 'none', corroborated: false, rationale: '',
     });
     return out.sort((a, b) => a.clauseId - b.clauseId);
-  } catch { return null; }
+  } catch { /* @silent-fallback-ok — malformed model output conservatively grants no arbitration authority */ return null; }
 }
 
 function buildArbiterPrompt(clauses: string[], evidence: TurnEvidence): string {

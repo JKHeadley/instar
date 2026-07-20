@@ -2088,7 +2088,7 @@ export class AgentServer {
                 sourceTreeReadOk: true,
               });
               return out.split('\n').map((s) => s.trim()).filter(Boolean);
-            } catch { return []; }
+            } catch { /* @silent-fallback-ok — missing registry yields no proposed standards, never invented authority */ return []; }
           },
         });
 
@@ -2250,7 +2250,7 @@ export class AgentServer {
               const audit = path.join(options.config.stateDir!, 'logs', 'correction-class-review.jsonl');
               fs.mkdirSync(path.dirname(audit), { recursive: true });
               fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, { mode: 0o600 });
-            } catch { /* fail-open audit */ }
+            } catch { /* @silent-fallback-ok — authoritative class-review state remains in SQLite; mirror audit is best-effort */ }
           },
         });
       }
@@ -2276,7 +2276,7 @@ export class AgentServer {
             fs.mkdirSync(path.dirname(audit), { recursive: true });
             fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), evaluated: false,
               flagged: false, event: 'turn-evidence-canary-drift', reason })}\n`, { mode: 0o600 });
-          } catch { /* once-only drift signal must not break boot */ }
+          } catch { /* @silent-fallback-ok — in-memory canary metric still records drift; mirror append cannot break boot */ }
         });
       }
     } catch (err) {
