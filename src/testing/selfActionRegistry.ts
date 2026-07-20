@@ -783,13 +783,21 @@ const correctionClassReviewOutcomes: SelfActionController = {
   perTargetBoundK: 1,
   ticks: 200,
   tickMs: 1_000,
-  makeUnderPressure(_f, sink) {
-    const seen = new Set<string>();
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      return correctionClassReviewOutcomes.makeUnderPressure(f, sink);
+    },
+  },
+  makeUnderPressure(f, sink) {
+    const durableKey = 'correction-class-review-open-artifacts';
+    const seen = new Set<string>((f.durableState.get(durableKey) as string[] | undefined) ?? []);
     return { tick() {
       sink.considered += 1;
       const target = `semantic-class-${sink.considered}`;
       if (seen.size >= 50 || seen.has(target)) return;
       seen.add(target);
+      f.durableState.set(durableKey, [...seen]);
       sink.emit({ verb: 'class-review-escalate', target });
     } };
   },

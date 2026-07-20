@@ -20,6 +20,8 @@ Model output is proposal and signal only. It cannot ratify or relax a standard, 
 
 Correction recurrence analysis remains independent and correction status is unchanged. The shared Action-Claim sentinel keeps exact legacy behavior while completion verification is disabled, dry-run, uncertain, or unavailable; in live posture the shared arbitration prevents duplicate future commitments. Deferrals create tracked Commitments, recurrence may reopen a retained review, and supersession is explicit and audited. Backup includes the class-review database/WAL plus bounded completion audit and statistics files. Existing hooks are migrated idempotently and remain installed on rollback, where disabled routes make them quiet no-ops.
 
+The structural self-action model now reloads its open-artifact identities from durable fixture state during restart storms. This mirrors the production SQLite-backed cap: reconstruction cannot mint a fresh allowance or exceed the shared 50-open-artifact bound under unchanged pressure.
+
 ## 6. External surfaces
 
 New authenticated surfaces are the class-review list/detail/backfill/lifecycle routes, completion observe/audit routes, feature metrics, and the existing Preferences dashboard sections. The completion hook submits only a closed structural evidence vocabulary and a scrubbed bounded message; commands, raw tool inputs/results, transcript paths, and correction learning are excluded. Class-review intelligence receives only scrubbed summaries and bounded standard titles. Pool reads use credential-safe peer allowlisting and clamp proxied fields before returning them.
@@ -38,8 +40,10 @@ Rollback is a reversible configuration change: disable both development gates or
 
 ## Class-Closure Declaration (display-only mirror)
 
-`defectClass: unbounded-self-action`, `closure: guard`, `guardEvidence: { enforcementType: ratchet, citation: tests/unit/self-action-convergence.test.ts, howCaught: correction-review retries are durably bounded by maxAttempts and dead-letter terminal state; the registered controller convergence ratchet proves sustained pressure settles }`.
+`defectClass: unbounded-self-action`, `closure: guard`, `guardEvidence: { enforcementType: ratchet, citation: tests/unit/self-action-convergence.test.ts, howCaught: correction-review retries and open artifacts are durably bounded across reconstruction; the registered controller convergence ratchet proves sustained pressure settles without restart-minted allowance }`.
 
 Independent second-pass review: Concur with the review. The completion arbiter publishes suppression authority only after authoritative classification and downstream clause routing complete; all pending, failure, callback-error, and hook-order races preserve the legacy Action-Claim path without waiting.
 
 Operator-surface second-pass review: Concur. All known outcomes, verdicts, and actions have closed plain-language mappings with non-leaking fallbacks; expandable cards provide the next detail layer; and the adversarial renderer regression proves raw enum slugs are absent.
+
+Restart-model second-pass review: Concur. The durable fixture reload accurately mirrors the production open-artifact cap and introduces no unreviewed side effect.
