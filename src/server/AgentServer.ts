@@ -2246,9 +2246,9 @@ export class AgentServer {
             if (!isCanonicalOwner()) return;
             backupCadence.maybeHourly(() => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch));
           };
-          setImmediate(() => { try { backupTick(); } catch (error) { console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
+          setImmediate(() => { try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
           this.feedbackDrainBackupTimer = setInterval(() => {
-            try { backupTick(); } catch (error) { console.warn('[feedback-factory] hourly checkpoint failed:', error); }
+            try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); }
           }, 15 * 60 * 1000);
           this.feedbackDrainBackupTimer.unref?.();
         }
@@ -2260,8 +2260,8 @@ export class AgentServer {
       console.warn('[feedback-factory] operated drain init failed (non-fatal):', err);
       this.feedbackDrain = null;
       this.feedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
-      const message = err instanceof Error ? err.message : String(err);
-      if (options.config.stateDir && /(corrupt|malformed|integrity|database disk image|wal)/i.test(message)) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      if (options.config.stateDir && /(corrupt|malformed|integrity|database disk image|wal)/i.test(errorText)) {
         const critical = new FeedbackDrainSelfHeal({
           stateDir: options.config.stateDir,
           raiseAttention: this.telegramAdapter?.createAttentionItem
@@ -2269,7 +2269,7 @@ export class AgentServer {
             : undefined,
         });
         void critical.run({
-          episodeKey: `critical-corruption:${createHash('sha256').update(message).digest('hex').slice(0, 16)}`,
+          episodeKey: `critical-corruption:${createHash('sha256').update(errorText).digest('hex').slice(0, 16)}`,
           classification: 'critical-corruption',
           repair: () => { throw new Error('critical corruption repair must never execute'); },
           restart: () => { throw new Error('critical corruption restart must never execute'); },
@@ -5198,7 +5198,7 @@ export class AgentServer {
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
       this.followMeConsumerTimer = null;
     }
-    try { if (this.feedbackDrainBackupTimer) clearInterval(this.feedbackDrainBackupTimer); } catch { /* best-effort */ }
+    try { if (this.feedbackDrainBackupTimer) clearInterval(this.feedbackDrainBackupTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
     this.feedbackDrainBackupTimer = null;
     // Stop the growth-digest publisher's cron + pending catch-up timer.
     if (this.growthDigestPublisher) {

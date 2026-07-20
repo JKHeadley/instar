@@ -92,6 +92,7 @@ The dashboard addition is a read-only Feedback Drain status tab; it adds no oper
 
 ## Verification evidence
 
+- Repository-wide delivery ratchets classify the dashboard tab on the glance floor, account for the process-lifetime SQLite handle, declare cancellation and failover as cluster-shared writes, preserve the keyword-intent baseline, and keep the no-silent-fallback baseline unchanged.
 - Structural guard negative fixtures: missing intake/stage/owner/handoff/cadence/metrics/citation/CI collection.
 - Runtime guard negative fixtures: unconstructed consumer, disabled cadence, ineffective idempotency, missing progress, fake wiring.
 - Unit/integration: authority generations/restore/spend/demotion/canaries, proposal-set nonce binding, token fencing, stale owner epochs, exact idempotency, isolated simulation, crash-after-artifact recovery, source append/projection/handoff crash recovery, generated defaults/self-heal/posture, cancellation boundaries, retention tombstones, backlog analysis, write-domain census, and destructive restore/failover finalization.
