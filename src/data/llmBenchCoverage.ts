@@ -138,6 +138,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   openConversationBrief: { pending: 'wave-3' },
   'a2a-checkin': { pending: 'wave-3' },
   'mentor-stage-b': { pending: 'wave-3' },
+  'correction-class-review': { pending: 'wave-3' },
+  'completion-claim-verify': { pending: 'wave-3' },
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -223,6 +225,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   openConversationBrief: true,
   'a2a-checkin': true, // A2A peer-authored threads
   'correction-learning': true,
+  'correction-class-review': true, // correction summary + prior model-derived candidates + standards/tool context
+  'completion-claim-verify': true, // outbound model text + structural tool evidence
   'mentor-stage-b': true,
   DashboardInsightEngine: true, // summarizes page data incl. user/peer-authored rows (relationships/threadline/commitments)
 
@@ -397,6 +401,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   openConversationBrief: false, // generates an A2A conversation brief
   'a2a-checkin': false, // summarizes A2A check-in threads
   'correction-learning': false, // distills recurring corrections → preference
+  'correction-class-review': false, // proposes standards/process treatment, not completion credit
+  'completion-claim-verify': { claimKind: 'completionClaim' },
   PipeSessionSpawner: false, // spawns from task descriptions
   CartographerSweep: false, // authors doc-tree summaries over code
   StandardsCoverageEnrichment: false, // enriches standards-coverage rows
@@ -593,6 +599,12 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   'correction-learning': {
     false:
       'distills recurring corrections into a preference (content) — no closed taught output vocabulary a parser gates on',
+  },
+  'correction-class-review': {
+    contractTest: 'tests/unit/correction-class-review.test.ts',
+  },
+  'completion-claim-verify': {
+    contractTest: 'tests/unit/turn-evidence-completion-verifier.test.ts',
   },
   'mentor-stage-b': {
     false:
@@ -826,6 +838,8 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   openConversationBrief: exposed(EXPOSED_TOOL), // A2A peer content
   'a2a-checkin': exposed(EXPOSED_TOOL), // A2A peer-authored threads
   'correction-learning': exposed(EXPOSED_USER_MODEL),
+  'correction-class-review': exposed(EXPOSED_ALL),
+  'completion-claim-verify': exposed(EXPOSED_MODEL_TOOL),
   'mentor-stage-b': exposed(EXPOSED_MODEL_TOOL), // mentor signals over mentee output
   ResumeValidator: exposed(EXPOSED_TOOL), // matches a resume UUID against topic/session state
   DashboardInsightEngine: exposed(EXPOSED_ALL), // summarizes page data that can embed user + model + tool content (fail-safe: never onto a non-injection door)
