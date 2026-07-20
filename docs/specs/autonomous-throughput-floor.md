@@ -2,8 +2,9 @@
 title: "Autonomous Throughput Floor — the manager-side mentee-output forcing function"
 slug: "autonomous-throughput-floor"
 author: "echo"
-status: draft
-approved: false
+status: approved
+approved: true
+approved-by: "justin (operator, topic 29723, 2026-07-20) — 'yes on the autonomous throughput spec'"
 parent-principle: "Close the Loop / Deferral = Deletion — an autonomous manager that goes idle while non-gated work exists has silently abandoned the loop"
 lessons-engaged:
   - "Structure > Willpower (the manager must not rely on REMEMBERING to keep the mentee fed — a forcing function makes 'manager idle while work exists' structurally visible)"
