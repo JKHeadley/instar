@@ -143,6 +143,12 @@ export const DP_COMPLETION_STOP_RATIONALE = 'completion-stop-rationale';
  * body or any plaintext slice of it. */
 export const DP_MESSAGING_TONE_GATE = 'messaging-tone-gate';
 
+/** Record-time standards/process review proposed for one correction. */
+export const DP_CORRECTION_CLASS_REVIEW = 'correction-class-review';
+
+/** Clause-level future-commitment vs completion-assertion arbitration. */
+export const DP_COMPLETION_CLAIM_VERIFY = 'completion-claim-verify';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -206,6 +212,24 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'The outbound tone/leak authority (spec §5.6 named high-volume point). Enrolled at budget:500/day, identity-only content — never the message body.',
+  },
+  {
+    decisionPoint: DP_CORRECTION_CLASS_REVIEW,
+    component: 'correction-class-review',
+    status: 'wired',
+    volumeClass: 'budget:100',
+    contentClass: 'content-bearing',
+    reason:
+      'Each durable correction receives one bounded standards/process proposal; identity-only context supports outcome grading without archiving correction text.',
+  },
+  {
+    decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
+    component: 'completion-claim-verify',
+    status: 'wired',
+    volumeClass: 'budget:500',
+    contentClass: 'content-bearing',
+    reason:
+      'Completion-language turns receive clause arbitration before optional suppression authority; identity-only context preserves auditability without transcript content.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not
