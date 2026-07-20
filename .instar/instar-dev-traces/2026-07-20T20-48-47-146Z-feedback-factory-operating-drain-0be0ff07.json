@@ -4,7 +4,7 @@
   "sessionId": "2aaad3e8-d2bb-4548-a5e9-3a5e274845b2",
   "timestamp": "2026-07-20T20:48:47.146Z",
   "artifactPath": "upgrades/side-effects/feedback-factory-operating-drain.md",
-  "artifactSha256": "273fe487b5ce24db05bd0ecf319f88f9e7bbcd6dae3579b2562fa37a4e1232c8",
+  "artifactSha256": "b5ff1a239f8b777d1ffda65871697b8d9fccba1fc25d75a664de29b66088d28a",
   "specPath": "docs/specs/feedback-factory-operating-drain.md",
   "coveredFiles": [
     ".instar/instar-dev-decisions/2026-07-20T20-46-52-771Z-feedback-factory-operating-drain.json",

@@ -173,8 +173,11 @@ describe('FeedbackDrainStore', () => {
       const activeRun = original.startRun({ ownerHost: 'machine-a', ownerEpoch: 5, leaseMs: 60_000 });
       original.transitionRun(activeRun.runId, 'accepted', 'running', '', { ownerHost: 'machine-a', ownerEpoch: 5 });
       const checkpoint = original.checkpointForBackup(5);
-      original.close();
+      // Copy the exact bytes authenticated by checkpointForBackup before
+      // closing SQLite. Some platforms update header bytes during close;
+      // copying afterward would no longer represent the signed checkpoint.
       fs.copyFileSync(dbPath, snapshotPath);
+      original.close();
 
       // Positive-control destructive fixture: remove the entire SQLite family,
       // then recover only from the checkpointed artifact.

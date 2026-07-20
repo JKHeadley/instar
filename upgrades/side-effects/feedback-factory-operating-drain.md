@@ -99,6 +99,7 @@ The dashboard addition is a read-only Feedback Drain status tab; it adds no oper
 - E2E: canonical feedback intake records are projected and clustered by the real processing service, then traverse real AgentServer + SQLite + InitiativeTracker with no PIN on normal agent readiness.
 - Multi-process/machine: two real OS processes create exactly one work/link pair; two conflicting approval writers create one approval plus an integrity hold; concurrent append+compaction loses no accepted source row. A separate network fixture uses two state trees, two SQLite/Initiative stores, asymmetric Ed25519 identities, real HTTP/fetch, and real services to prove only the registry owner executes and stale epoch/owner envelopes cannot mutate either side.
 - Performance: one real drain tick over a 150,000-row source under concurrent ingest projects/processes 500, performs readiness/enqueue/live bounded consumption, proves the oldest pre-existing eligible row is claimed first within one tick, stays under 90 seconds and 512 MiB, and exposes remaining lag.
+- CI correction: the destructive-restore fixture now copies the exact checkpoint-authenticated SQLite bytes before close (which can update header bytes on Linux), preserving the production checksum/identity guard instead of weakening it. The operated-drain initialization fallback is explicitly annotated because it logs, exposes unavailable posture, and raises an urgent item for integrity failures.
 
 ## Second-pass review
 
@@ -106,6 +107,4 @@ Independent correction-pass review: **CONCUR**. The final review inspected the s
 
 ## Class-Closure Declaration
 
-- `defectClass`: `unbounded-self-action`
-- `closure`: `guard`
-- `guardEvidence`: `{ enforcementType: ratchet, citation: tests/unit/self-action-convergence.test.ts, howCaught: "The registered feedback-drain recovery model carries its attempt count across restart, emits at most two repair/restart actions for unchanged episode pressure, and then settles behind the durable breaker; the N/2N plus restart-pressure ratchet would fail if reconstruction minted a fresh budget." }`
+No feedback-drain self-action controller ships in this landing. Runtime recovery is owned by the separately tracked shared SelfHealGate/P19 foundation lane, so this feature does not claim an unbounded-self-action closure.

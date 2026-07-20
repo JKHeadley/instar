@@ -2087,7 +2087,7 @@ export class AgentServer {
       try {
         const pkg = JSON.parse(fs.readFileSync(path.join(options.config.projectDir, 'package.json'), 'utf8')) as { name?: string };
         sourceCheckout = pkg.name === 'instar' && fs.existsSync(path.join(options.config.projectDir, '.git'));
-      } catch { /* a non-source install is expected fleet posture */ }
+      } catch { /* @silent-fallback-ok: package discovery is posture-only; an unreadable/non-source install must remain fleet-dark */ }
       this.feedbackDrainPosture = resolveFeedbackDrainPosture({ drainEnabled, developmentAgent: options.config.developmentAgent === true,
         sourceCheckout, hasCanonicalDataDir: Boolean(dataDir), dependenciesReady: Boolean(this.feedbackProcessing && options.initiativeTracker), initialized: false });
       if (drainEnabled && dataDir && this.feedbackProcessing && options.initiativeTracker) {
@@ -2199,7 +2199,7 @@ export class AgentServer {
           sourceCheckout, hasCanonicalDataDir: true, dependenciesReady: true, initialized: true, ownerConfigured: ownerHost !== null });
         console.log(`[feedback-factory] operated drain live (consumer: ${service.stats().consumerLive ? 'live' : 'simulation'})`);
       }
-    } catch (err) {
+    } catch (err) { /* @silent-fallback-ok: failure is logged and exposed as unavailable posture; integrity failures also raise an urgent operator item */
       console.warn('[feedback-factory] operated drain init failed (non-fatal):', err);
       this.feedbackDrain = null;
       this.feedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
