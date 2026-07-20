@@ -22,6 +22,8 @@ Correction recurrence analysis remains independent and correction status is unch
 
 The structural self-action model now reloads its open-artifact identities from durable fixture state during restart storms. This mirrors the production SQLite-backed cap: reconstruction cannot mint a fresh allowance or exceed the shared 50-open-artifact bound under unchanged pressure.
 
+The coherence advert contract includes `class-review-record` explicitly, so peers discover the replicated stream from an empty journal instead of relying on incidental later writes; the exact-kind regression expectation guards this wire-level surface.
+
 ## 6. External surfaces
 
 New authenticated surfaces are the class-review list/detail/backfill/lifecycle routes, completion observe/audit routes, feature metrics, and the existing Preferences dashboard sections. The completion hook submits only a closed structural evidence vocabulary and a scrubbed bounded message; commands, raw tool inputs/results, transcript paths, and correction learning are excluded. Class-review intelligence receives only scrubbed summaries and bounded standard titles. Pool reads use credential-safe peer allowlisting and clamp proxied fields before returning them.
@@ -47,3 +49,5 @@ Independent second-pass review: Concur with the review. The completion arbiter p
 Operator-surface second-pass review: Concur. All known outcomes, verdicts, and actions have closed plain-language mappings with non-leaking fallbacks; expandable cards provide the next detail layer; and the adversarial renderer regression proves raw enum slugs are absent.
 
 Restart-model second-pass review: Concur. The durable fixture reload accurately mirrors the production open-artifact cap and introduces no unreviewed side effect.
+
+Coherence-advert second-pass review: Concur. The test now matches the already-emitted replicated kind and closes the exact wire-contract omission.
