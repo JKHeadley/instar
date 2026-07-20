@@ -3,11 +3,15 @@ title: "Feedback Factory Operating Drain"
 slug: "feedback-factory-operating-drain"
 author: "Instar-codey"
 eli16-overview: "feedback-factory-operating-drain.eli16.md"
-review-convergence: "2026-07-20T02:34:02.814Z"
-review-iterations: 9
-review-completed-at: "2026-07-20T02:34:02.814Z"
+review-convergence: "2026-07-20T17:03:15.423Z"
+review-iterations: 10
+review-completed-at: "2026-07-20T17:03:15.423Z"
 review-report: "docs/specs/reports/feedback-factory-operating-drain-convergence.md"
-cross-model-review: "gemini-cli:gemini-3.1-pro-preview"
+cross-model-review: "codex-cli:gpt-5.5 + gemini-cli:gemini-3.1-pro-preview"
+approved: true
+approved-at: "2026-07-20T16:53:14.000Z"
+approval-note: "Operator approved with frontier-model Instar agent as default readiness authority and human approval as escalation-only."
+parent-principle: "Canonical Pipeline Operational Completeness — Accepted Intake Must Drain"
 single-run-completable: true
 frontloaded-decisions: 5
 cheap-to-change-tags: 0
@@ -40,7 +44,7 @@ The build must close the class before fixing the instance: register the standard
 3. Make the feedback factory drain eligible clusters into durable, idempotent work records and prove a consumer claims and advances them.
 4. Make development-agent operation explicit and structurally tested; fleet remains dark until promoted.
 5. Expose useful backlog, readiness, drain, claim, failure, and age metrics without leaking report content.
-6. Preserve curator authority over cluster readiness and all terminal outcome claims.
+6. Give the registered frontier-model readiness agent authority over bounded readiness decisions while preserving legacy curator authority over `Cluster.status` and all terminal product-outcome claims; human authority is escalation/break-glass only.
 
 ## Non-goals
 
@@ -54,7 +58,7 @@ The build must close the class before fixing the instance: register the standard
 
 ### Implementation sequence inside the single landing
 
-The operator requested one end-to-end merged PR, so the work is not split into partially operating releases. It is built and reviewed in three gated commits: A) manual readiness, minimal SQLite outbox, Initiative handoff, and real lifecycle E2E; B) narrow manifest coverage guard plus operated cadence/metrics; C) source-generation reconciliation, backup/failover, security, and performance hardening. Each commit has its own tests, but merge is allowed only when all three are green; no intermediate commit is deployed as a claimed operating drain.
+The operator requested one end-to-end merged PR, so the work is not split into partially operating releases. It is built and reviewed in three gated commits: A) agent-governed readiness, minimal SQLite outbox, Initiative handoff, and real lifecycle E2E; B) narrow manifest coverage guard plus operated cadence/metrics; C) source-generation reconciliation, backup/failover, security, and performance hardening. Each commit has its own tests, but merge is allowed only when all three are green; no intermediate commit is deployed as a claimed operating drain.
 
 | Step | Authoritative write | Result |
 |---|---|---|
@@ -83,24 +87,32 @@ Add `scripts/lint-canonical-pipeline-completeness.mjs` as a **structural coverag
 
 Register `feedback-factory` first, covering receive -> persist -> cluster -> eligibility -> durable work -> consumer claim. This closes the whole class for future canonical pipelines rather than special-casing two files.
 
-The lint emits **coverage evidence**, never a claim of semantic completeness. Every manifest entry also names a collected runtime smoke contract that constructs the real route/job/consumer graph and proves one bounded positive-control transition; semantic review and the full lifecycle E2E remain authoritative.
+The lint emits **coverage evidence**, never a claim of semantic completeness. Every manifest entry also names a collected runtime smoke contract that constructs the real route/job/consumer graph and proves one bounded positive-control transition; semantic review and the full lifecycle E2E remain authoritative. A fixture whose manifest claims real operation must use the production consumer adapter and authoritative read-back store; substituting a mock/no-op terminal consumer makes the positive-control fail.
 
 ### 2. Separate classification from readiness authority
+
+In plain language: a report becomes part of a cluster; a registered development agent reviews whether that cluster contains enough coherent evidence to justify owned work; one queue row creates one Initiative task; and queue completion means that task exists and is readable, not that the underlying product problem is fixed.
 
 Clustering is signal production. It may propose a cluster, merge reports, and compute priority/evidence, but it cannot authorize external work by itself.
 
 Introduce a durable `readinessState` that is strictly separate from the existing curated `Cluster.status` product lifecycle. The drain may never mutate legacy `status`, recurrence, reopen, partition, parity, or immutable-import fields. Imported and existing clusters project to `readinessState: collecting`, `readinessEpoch: 0`; readiness history records actor, authority evidence, prior/next state, epoch, and time.
 
 - `collecting`: more reports may merge; not eligible;
-- `ready`: operator or registered policy authority has approved creation of a work item;
+- `ready`: a registered frontier-model Instar readiness authority (or an explicitly invoked human escalation authority) has approved creation of a work item;
 - `queued`: one durable work item exists;
 - `held`: operator hold or invalid/corrupt state.
 
 Readiness has only `collecting | ready | queued | held`. Claim/retry/completion is derived from the uniquely linked work row. Product `resolved` remains exclusively in legacy `Cluster.status`.
 
-Existing clusters import as `collecting`. No historical cluster is auto-promoted merely because it is large. In v1, only the PIN-bound human operator may mark a cluster `ready`. Deterministic or LLM policy may propose `candidate-ready` with enumerated inputs and logged rationale, but has zero readiness authority. This prevents a poisoned or noisy cluster from autonomously creating work.
+Existing clusters import as `collecting`. No historical cluster is auto-promoted merely because it is large, old, or highly scored. The default readiness authority is a registered Instar agent using a frontier model through the repository's intelligence-provider/routing registry. The arbiter receives only a bounded, scrubbed evidence packet with enumerated candidate ids and output choices; it must return a schema-valid decision of `ready | collecting | escalate-human`, confidence, reason codes, and cited evidence ids. The deterministic floor rejects empty, corrupt, held, over-batch, stale-evidence, untrusted-instruction-bearing, or authority-mismatched candidates before the model runs. `held` is not a model output: only deterministic integrity rules or the explicit human break-glass path may impose it. The conservative fallback for timeout, parse failure, injection suspicion, unavailable frontier routing, low confidence, or disagreement is `collecting` or `escalate-human`, never `ready`.
 
-Manual readiness throughput is an explicit v1 safety tradeoff, operated in proposal-set-bound batches of at most 50. With the characterized 149-cluster backlog, the initial objective is three or fewer approval packets and oldest candidate review within 24 hours; the development operator owns that SLO, and overdue state raises one bounded attention after the declared self-heal/latency gate. Maturation to registered deterministic policy authority requires a separately named policy version, minimum 200 operator-settled proposals, zero unauthorized promotions, measured precision/recall and duplicate rate, a PIN-approved authority promotion record, per-policy batch/spend brakes, and instant rollback to proposal-only. Until every threshold is green, the governed waiting-room SLO exposes the bottleneck rather than silently granting classifier authority.
+Readiness authority is registered, not implied by being an agent. A closed `feedback-readiness-authorities.json` registry is rooted in operator-ratified configuration: only the PIN-bound operator mutation surface may create, replace, revoke, or restore an authority record. The runtime agent and model may never self-register, widen their batch/spend envelope, clear revocation, or replace the authority root. Each immutable-versioned record binds agent id, machine/owner epoch, resolved provider/model family, prompt and schema versions, decision-point id, maximum batch/token/daily-spend envelope, created/revoked/restored decision references, and registry generation. Every mutation appends a checksummed audit row and invalidates older generations; runtime rejects missing, self-authored, stale-owner, stale-generation, revoked, model-mismatched, or envelope-exceeding authority before inference. Backup/restore includes the registry and audit chain.
+
+The decision record binds the active authority generation to the evidence-set hash and nonce. The model judges whether the bounded evidence supports creating development work; it cannot select arbitrary ids, routes, commands, artifact keys, or authority. Every decision is provenance-recorded with identity-only envelopes—raw report bodies, prompts, model output, and transcripts never enter decision provenance. Prompt/version canaries and injection-exposure coverage are mandatory. Duplicate approval keys return the existing decision; conflicting authorities or evidence drift trigger a deterministic integrity hold and escalate.
+
+Agent approval is the normal operated path, in proposal-set-bound batches of at most 50, with per-tick and daily spend brakes. Human PIN approval is an optional escalation and break-glass path for ambiguous evidence, repeated arbiter disagreement, integrity repair, or explicit operator intervention; it is never the default throughput chokepoint. With the characterized 149-cluster backlog, the initial objective is three or fewer agent-reviewed packets and oldest candidate review within 24 hours. The canonical development agent owns that SLO; overdue state first self-heals routing/cadence boundedly and then raises one attention. Readiness quality is continuously measured against later artifact outcomes and any human-settled escalations. Authority is automatically demoted to proposal-only on unauthorized promotion, schema/provenance failure, duplicate-rate breach, precision regression, spend-brake trip, or prompt/model canary drift; restoration requires a new registered authority record. This makes autonomous agent judgment the class default while retaining a narrow human exception.
+
+This judgment is not reduced to a deterministic readiness score because cluster evidence contains competing semantic signals: distinct symptoms may share tokens, a high-volume cluster may be noise, a small cluster may expose a severe invariant break, and apparent duplicates may require different work. Deterministic rules remain the safety floor and exact transition authority; the frontier model resolves only that bounded competing-signal question. A deterministic policy may later replace the arbiter only after it demonstrates equivalent decisions on the same evidence contract and is registered through the same authority root—never by silently converting similarity or volume into actuation.
 
 “Must drain” means every accepted intake advances to either a consumer handoff or an explicit observable governed waiting/terminal disposition; it does not mean noisy input autonomously actuates work. `collecting` is therefore a named waiting disposition with `enteredAt`, `lastEvaluatedAt`, `nextReviewAt`, reason code, and oldest-age SLA. A separate indexed due-review scan keyed `(nextReviewAt, clusterId)` reevaluates at most 100 oldest-due collecting rows per tick; it uses a wraparound cursor, commits each bounded page transactionally, and leaves failed rows due for retry. Due count, oldest overdue age, scan lag, and last successful evaluation are metrics. `held`, `dead-lettered`, and completed handoff are explicit terminal/operator dispositions. No row may disappear into an unmeasured manual queue, and readiness authority does not waive the review-age SLO.
 
@@ -132,9 +144,9 @@ Closed readiness transitions:
 
 | From | To | Actor/precondition | Epoch/idempotency/failure |
 |---|---|---|---|
-| collecting | ready | PIN-bound operator; nonempty, not corrupt/held | increment epoch once per approval key; duplicate returns existing state |
-| collecting/ready | held | PIN-bound operator or corruption invariant | epoch unchanged; audit reason required |
-| held | collecting | PIN-bound operator after repair/review | increment epoch, invalidating prior proposals |
+| collecting | ready | registered frontier-model agent authority or explicit human escalation; deterministic floor passes | increment epoch once per authority+evidence approval key; duplicate returns existing state |
+| collecting/ready | held | deterministic corruption/integrity invariant or human break-glass authority only; model cannot choose `held` | epoch unchanged; audit reason required |
+| held | collecting | registered readiness authority only after the named deterministic integrity predicate revalidates the source/projection/authority invariants, or human break-glass | increment epoch, invalidating prior proposals; failed revalidation remains held |
 | ready | queued | canonical drain owner; atomic unique work insert | same epoch; failure leaves ready |
 | queued | held | operator/corruption; linked work held | invalidates work lease epoch |
 | queued | collecting | explicit supersession/reclassification | increments readiness epoch; old work terminal-held |
@@ -160,6 +172,8 @@ The first consumer is the existing user-visible Initiative work intake, not flee
 - persist the returned artifact references before acknowledging completion;
 - on timeout, reads by exact key before retry; incompatible existing ids/keys hold for operator repair;
 - never mark the feedback work completed until the linked artifact is readable back from the authoritative store.
+
+This is an outbox/saga boundary, not a distributed transaction. SQLite is authoritative for readiness, queue, lease, and acknowledgement history; InitiativeTracker is authoritative for whether the user-visible artifact exists. If an Initiative is readable by the exact `feedbackWorkKey` while SQLite remains `claimed` because linkage persistence repeatedly failed, reconciliation treats the artifact as the durable forward fact: it retries the linkage write under the current fence and then acknowledges completion. It never deletes or recreates the Initiative, and a stale claimant cannot settle it. If exact-key read-back is absent, SQLite remains claimed/retryable; neither store may infer completion from the other's timeout.
 
 This makes backlog work enter the normal work system. It does not claim the underlying product fix is complete. Later dispatch guidance can be produced only from evidence-backed outcomes through the existing dispatch authority.
 
@@ -211,18 +225,18 @@ Authenticated read surfaces expose:
 - last drain run, result, duration, and no-progress reason;
 - effective gate posture and reason.
 
-PIN/authority-gated lifecycle surfaces handle `ready`, `hold`, and release operations. They require PIN plus `X-Instar-Request`, CSRF/origin validation, and mutation rate limiting. Consumer routes require Bearer, `X-Instar-AgentId`, owner-machine binding, request nonce, and lease token. All responses use closed field allowlists and byte caps. Summary persistence uses `DurableOutputScrubber` and fails closed by holding the work if scrubbing cannot safely complete. JSONL/SQL inputs reject or escape control/newline injection.
+Authority-gated lifecycle surfaces handle `ready`, `hold`, and release operations. The default agent path requires Bearer authentication, `X-Instar-AgentId`, current owner-machine/authority-epoch binding, request nonce, registered readiness-authority evidence, and mutation rate limiting. The optional human escalation path requires PIN plus `X-Instar-Request` and CSRF/origin validation. Consumer routes additionally require the current lease token. All responses use closed field allowlists and byte caps. Summary persistence uses `DurableOutputScrubber` and fails closed by holding the work if scrubbing cannot safely complete. JSONL/SQL inputs reject or escape control/newline injection.
 
 ### 8. Backlog activation
 
-Historical clusters are loaded as `collecting`. Provide an authenticated backfill analysis that proposes bounded readiness batches using metadata only. The operator can approve a batch, after which the normal idempotent drain enqueues it. No one-click action may both classify and dispatch the entire historical backlog without a review packet showing counts, age distribution, priority distribution, duplicates, and estimated work-item volume.
+Historical clusters are loaded as `collecting`. Provide an authenticated backfill analysis that proposes bounded readiness batches using metadata only. The registered frontier-model readiness agent reviews and may approve each bounded batch, after which the normal idempotent drain enqueues it. A human may settle only escalated batches or intervene explicitly. No one-click action may both classify and dispatch the entire historical backlog without a review packet showing counts, age distribution, priority distribution, duplicates, and estimated work-item volume.
 
 ## Decision points touched
 
 | Decision point | Classification | Floor / authority |
 |---|---|---|
 | Is a feedback report assigned to an existing cluster? | judgment-candidate | Existing bounded similarity/classifier output is signal; schema validity and candidate bounds are deterministic; no external actuation follows directly. |
-| Is a cluster ready to become work? | judgment-candidate | Deterministic eligibility floor excludes corrupt/held/empty rows; arbiter may propose candidate-ready; registered operator/policy authority performs `ready`. Conservative fallback is stay `collecting`. |
+| Is a cluster ready to become work? | judgment-candidate | Deterministic eligibility floor excludes corrupt/held/empty/stale/instruction-bearing rows; a registered frontier-model Instar arbiter is the default authority inside the bounded output space. Conservative fallback is `collecting` or human escalation; human approval is exceptional, not the default gate. |
 | May a work row be claimed? | invariant | Queue state, retry time, breaker, lease expiry, and atomic fencing are exact concurrency invariants. |
 | Which existing development artifact matches this work? | judgment-candidate | Exact external-key match wins; semantic candidate selection is bounded; ambiguous matches conservatively create no link and hold for review. |
 | May a work row complete? | invariant | Current lease token plus readable authoritative artifact reference is required. This proves handoff, not product resolution. |
@@ -232,7 +246,7 @@ Historical clusters are loaded as `collecting`. Provide an authenticated backfil
 ## Frontloaded Decisions
 
 1. The terminal handoff for this increment is a durable development Initiative/Action, not an outbound fleet dispatch.
-2. Historical clusters require explicit readiness approval; size/age alone cannot actuate work creation.
+2. Historical clusters require explicit registered-agent readiness approval; size/age alone cannot actuate work creation, and human approval is only an escalation path.
 3. The drain is live on development agents and dark on fleet; the work consumer ships dry-run first, recording exact would-create artifacts before live promotion.
 4. Work completion means authoritative handoff exists, not that the product fix is complete.
 5. Durable queue state is unified through the canonical operated host; peer machines use authenticated proxied reads/triggers rather than independent competing drains.
@@ -250,7 +264,7 @@ Dark-on-development and stalled-drain degradation are `recoverable`. Remediation
 ## Security and privacy
 
 - All read/trigger routes require normal agent authentication.
-- Readiness/hold/backfill approval requires the operator PIN or equivalent registered authority.
+- Readiness and backfill approval default to a registered frontier-model Instar authority with authenticated agent identity, owner epoch, evidence-set hash, prompt/schema/model provenance, nonce, rate limit, and bounded spend; human PIN authority is an optional escalation/break-glass path. Imposing `held` is reserved to deterministic integrity transitions or human break-glass. An agent may release `held` only after the named deterministic source/projection/authority revalidation predicate passes; model judgment alone cannot impose or clear a hold.
 - Batch promotion is proposal-set bound: at most 50 work ids, sorted and hashed into `proposalSetHash`; the confirmation surface shows aggregate counts plus every bounded title/priority/id (raw report bodies excluded), and the mutation must present that exact hash. Any item drift rejects the whole batch. Rollback holds the exact promoted set without deleting its rows or rewinding epochs.
 - Claim and acknowledge require agent identity and an unguessable current lease token.
 - Every response clamps fields; raw feedback content stays out of metrics, logs, queue rows, reviewer prompts, and dashboard summaries.
@@ -270,7 +284,7 @@ Dark-on-development and stalled-drain degradation are `recoverable`. Remediation
 
 ## Rollout and rollback
 
-The first landing requires the whole safe vertical slice: registered standard + manifest/coverage guard, source projection, readiness/work/outbox tables, one real Initiative consumer, operated development cadence, metrics, and collected production-adapter lifecycle E2E. Promotion beyond simulation, larger historical batches, multi-host failover exercise, and deterministic-policy authority are rollout ratchets over that landed slice; they are not substitutes for missing first-landing correctness.
+The first landing requires the whole safe vertical slice: registered standard + manifest/coverage guard, source projection, registered frontier-model readiness authority, readiness/work/outbox tables, one real Initiative consumer, operated development cadence, metrics, and collected production-adapter lifecycle E2E. Promotion beyond simulation, larger historical batches, multi-host failover exercise, and broader readiness-authority enrollment are rollout ratchets over that landed slice; they are not substitutes for missing first-landing correctness.
 
 1. Before merge, fixtures exercise dark and live modes. The shipped development posture is processing+drain cadence live with consumer simulation; fleet is dark.
 2. Run development-agent simulation over real backlog; compare proposed work counts and duplicate rate.
@@ -280,13 +294,13 @@ The first landing requires the whole safe vertical slice: registered standard + 
 
 Rollback disables the drain/consumer flags. Existing feedback, clusters, readiness, queue, and artifact links remain readable and inert. No rollback deletes records or rewinds readiness epochs. The clustering-only path may remain available for diagnosis, but the dashboard must label it “classification only — work drain disabled.”
 
-BackupManager writes one versioned backup manifest at least hourly and after every promotion/failover operation. The set includes `feedback-drain.db` plus WAL/checkpoint metadata, every live or retention-pinned immutable source-generation JSONL file, generation-handoff manifests, tail cursor/checksum metadata, `consumer-live.json`, generated-default posture, and artifact-link rows. The Initiative store remains its separately backed authoritative dependency; restore must read every linked Initiative by immutable `feedbackWorkKey`, holding rather than duplicating any unresolved link. Development objectives are RPO ≤ 1 hour for settled drain state and RTO ≤ 4 hours for operator-restored service. While the canonical host is down, ingress remains durably queued at its existing source but no alternate writer self-elects; backlog age and owner-unavailable state remain visible. Bare-host restore orders source generations/manifests, DB/WAL integrity, promotion/default state, then Initiative link reconciliation; it verifies every checksum/read-back, increments authority epoch, and only then resumes cadence. A destructive-fixture positive control removes the entire operated-host state directory, restores this set, and proves no lost projection or duplicate artifact.
+BackupManager writes one versioned backup manifest at least hourly and after every promotion/failover operation. The set includes `feedback-drain.db` plus WAL/checkpoint metadata, every live or retention-pinned immutable source-generation JSONL file, generation-handoff manifests, tail cursor/checksum metadata, `feedback-readiness-authorities.json` plus its checksummed audit chain and registry-generation metadata, `consumer-live.json`, generated-default posture, and artifact-link rows. The Initiative store remains its separately backed authoritative dependency; restore must read every linked Initiative by immutable `feedbackWorkKey`, holding rather than duplicating any unresolved link. Development objectives are RPO ≤ 1 hour for settled drain state and RTO ≤ 4 hours for operator-restored service. While the canonical host is down, ingress remains durably queued at its existing source but no alternate writer self-elects; backlog age and owner-unavailable state remain visible. Bare-host restore orders source generations/manifests, readiness-authority registry/audit generation, DB/WAL integrity, promotion/default state, then Initiative link reconciliation; it verifies every checksum/read-back, increments authority epoch, and only then resumes cadence. A destructive-fixture positive control removes the entire operated-host state directory, restores this set, and proves no lost projection, authority decision, or duplicate artifact.
 
 ## Acceptance criteria
 
 1. The standards registry contains Canonical Pipeline Operational Completeness with a guard citation.
 2. `lint-canonical-pipeline-completeness` fails typed-registry fixtures for unregistered intake/stage metadata, missing owner/handoff/consumer citation, comment-only membership, or an uncollected cited smoke/E2E test.
-3. A real lifecycle test proves: receive report -> cluster -> operator-ready -> enqueue -> claim -> Initiative/Action readable -> work completed.
+3. A real lifecycle test proves: receive report -> cluster -> registered frontier-model agent-ready -> enqueue -> claim -> Initiative/Action readable -> work completed; a separate fixture proves ambiguous evidence escalates without making human approval the normal path.
 4. Repeating or concurrently triggering the lifecycle creates exactly one work row and one linked artifact.
 5. Crash/timeout after artifact creation recovers by external key without duplication.
 6. Stale lease acknowledgement is rejected and current-epoch acknowledgement succeeds.
@@ -302,11 +316,15 @@ BackupManager writes one versioned backup manifest at least hourly and after eve
 16. On the CI reference envelope (4 vCPU, 8 GiB RAM), the 150k-row fixture uses under 512 MiB RSS, processes at least 500 projected inputs per tick, completes a tick within 90 seconds, and claims the oldest eligible work within 10 ticks; regressions fail the performance lane.
 17. Crash points before/after source append, projection transaction, sidecar advance, and compaction-manifest publish replay without loss or duplicate projection; concurrent append+compaction follows the checksummed generation handoff.
 18. A collecting cluster with no new reports becomes due, is selected by the independent due index within its bounded fairness window, and makes overdue/lag metrics observable.
+19. The normal readiness lifecycle completes with no PIN or human mutation: a registered frontier-model agent approves a bounded proposal set and the exact set advances once.
+20. Authority fixtures reject unregistered, self-registered, revoked, stale-generation, stale-owner-epoch, wrong-model, and envelope-exceeding agents; only the PIN-bound operator surface can create, revoke, or restore registry generations, and registry/audit restore preserves those decisions.
+21. Proposal-set drift, prompt/schema/model canary drift, injection suspicion, low confidence, and spend-brake exhaustion never produce `ready`; they remain collecting or escalate, and the authority demotes to proposal-only where specified.
+22. The model cannot emit or cause `held`; schema fixtures reject that output, while deterministic corruption and the human break-glass path can hold with audited reasons. Agent-requested release remains held until the named deterministic source/projection/authority revalidation predicate passes.
 
 ## Glossary
 
 - **accepted intake**: an input durably acknowledged by a canonical ingress.
-- **readiness**: operator authority for one cluster epoch to create work; not product lifecycle status.
+- **readiness**: registered frontier-model Instar agent authority for one cluster epoch to create work, with optional human escalation; not product lifecycle status.
 - **work row**: the fenced SQLite queue record keyed to one readiness epoch.
 - **Action artifact**: the single user-visible `InitiativeTracker` task created for a work row.
 - **operated host**: the sole machine-registry owner permitted to mutate the canonical drain DB.
@@ -314,7 +332,7 @@ BackupManager writes one versioned backup manifest at least hourly and after eve
 
 ## Standard article to register
 
-**Canonical Pipeline Operational Completeness (Accepted Intake Must Drain).** Rule: a canonical accepted intake must have an authoritative admission decision, one durable owner/fenced lease, operated cadence, explicit terminal disposition, backlog-age/progress observability, and an end-to-end positive-control proving the real consumer advances the handoff. In practice: register every canonical pipeline in the closed manifest; every edge names wiring, idempotency, failure semantics, metrics, and collected E2E evidence. Earned from: the feedback factory accepted and clustered roughly 12k reports into roughly 149 clusters while producing zero owned work, and another development install was dark; individually present stages were mistaken for an operating loop. Traces to goal: self-hosting learning that converts fleet signal into verified improvement. Applied through: canonical manifest, marker/discovery lint, CI-collected positive controls, runtime stall metrics, and semantic review. This specializes Close the Loop, Self-Hosting, Maturation Path, and the Bug-Fix Evidence Bar; it does not replace them. The registry article and structural guard land together and require operator ratification through the spec approval.
+**Canonical Pipeline Operational Completeness (Accepted Intake Must Drain).** Rule: a canonical accepted intake must have an authoritative admission decision, one durable owner/fenced lease, operated cadence, explicit terminal disposition, backlog-age/progress observability, and an end-to-end positive-control proving the real consumer advances the handoff. A pipeline that makes a human its default approver is operationally incomplete unless a constitution-level requirement demands that gate: the default judgment authority must be a registered autonomous Instar agent using an appropriate frontier model within deterministic floors, with human review reserved for ambiguity, integrity repair, or explicit intervention. In practice: register every canonical pipeline in the closed manifest; every edge names wiring, idempotency, failure semantics, metrics, authority posture, and collected E2E evidence. Earned from: the feedback factory accepted and clustered roughly 12k reports into roughly 149 clusters while producing zero owned work, and another development install was dark; individually present stages—and a proposed manual approval queue—were mistaken for an operating loop. Traces to goal: self-hosting learning that converts fleet signal into verified improvement without moving the bottleneck onto operator attention. Applied through: canonical manifest, marker/discovery lint, CI-collected positive controls, runtime stall metrics, and semantic review. This specializes Close the Loop, Self-Hosting, Maturation Path, Judgment Within Floors, and the Bug-Fix Evidence Bar; it does not replace them. The registry article and structural guard land together and require operator ratification through the spec approval.
 
 ## Open questions
 

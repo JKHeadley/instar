@@ -24,7 +24,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface LifelineRestartSignal {
   requestedAt: string;
-  requestedBy: 'auto-updater' | 'server-426' | 'post-update-migrator-bootstrap';
+  requestedBy: 'auto-updater' | 'server-426' | 'post-update-migrator-bootstrap' | 'feedback-drain-default-migrator';
   reason: string;
   previousVersion: string;
   targetVersion: string;

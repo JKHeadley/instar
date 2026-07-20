@@ -149,6 +149,9 @@ export const DP_CORRECTION_CLASS_REVIEW = 'correction-class-review';
 /** Clause-level future-commitment vs completion-assertion arbitration. */
 export const DP_COMPLETION_CLAIM_VERIFY = 'completion-claim-verify';
 
+/** Feedback cluster evidence → owned-work readiness judgment. */
+export const DP_FEEDBACK_READINESS = 'feedback-readiness';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -230,6 +233,15 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Completion-language turns receive clause arbitration before optional suppression authority; identity-only context preserves auditability without transcript content.',
+  },
+  {
+    decisionPoint: DP_FEEDBACK_READINESS,
+    component: 'FeedbackReadinessArbiter',
+    status: 'wired',
+    volumeClass: 'budget:250',
+    contentClass: 'content-bearing',
+    reason:
+      'A bounded frontier-model judgment authorizes cluster-to-work readiness; provenance stores packet identity and enumerated outcomes, never feedback text or model output.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not

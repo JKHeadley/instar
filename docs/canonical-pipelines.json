@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "pipelines": [
+    {
+      "id": "feedback-factory",
+      "owner": "canonical-development-agent",
+      "stages": [
+        {
+          "id": "receive",
+          "metadataCitation": "src/core/canonicalPipelineRegistry.ts#FEEDBACK_FACTORY_RECEIVE_STAGE",
+          "implementationCitation": "src/feedback-factory/inbox/InboxDrainer.ts#InboxDrainer"
+        },
+        {
+          "id": "persist",
+          "metadataCitation": "src/core/canonicalPipelineRegistry.ts#FEEDBACK_FACTORY_PERSIST_STAGE",
+          "implementationCitation": "src/feedback-factory/store/JsonlFeedbackStore.ts#JsonlFeedbackStore"
+        },
+        {
+          "id": "cluster",
+          "metadataCitation": "src/core/canonicalPipelineRegistry.ts#FEEDBACK_FACTORY_CLUSTER_STAGE",
+          "implementationCitation": "src/feedback-factory/processing/FeedbackProcessingService.ts#FeedbackProcessingService"
+        },
+        {
+          "id": "readiness-authority",
+          "metadataCitation": "src/feedback-factory/drain/FeedbackReadinessArbiter.ts#FEEDBACK_READINESS_ARBITER_STAGE",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackReadinessArbiter.ts#FeedbackReadinessArbiter"
+        },
+        {
+          "id": "durable-work",
+          "metadataCitation": "src/feedback-factory/drain/FeedbackDrainStore.ts#FEEDBACK_DRAIN_STORE_STAGE",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackDrainStore.ts#FeedbackDrainStore"
+        },
+        {
+          "id": "operated-drain",
+          "metadataCitation": "src/feedback-factory/drain/FeedbackDrainService.ts#FEEDBACK_DRAIN_SERVICE_STAGE",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackDrainService.ts#FeedbackDrainService"
+        },
+        {
+          "id": "consumer-handoff",
+          "metadataCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FEEDBACK_INITIATIVE_CONSUMER_STAGE",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FeedbackInitiativeConsumer"
+        }
+      ],
+      "ingress": {
+        "surfaceIds": [
+          "feedback-factory-process-route",
+          "feedback-factory-process-job",
+          "feedback-factory-drain-route"
+        ],
+        "wiringCitation": "src/server/AgentServer.ts#AgentServer"
+      },
+      "transitions": [
+        {
+          "from": "receive",
+          "to": "persist",
+          "implementationCitation": "src/feedback-factory/inbox/InboxDrainer.ts#InboxDrainer",
+          "persistentState": "immutable feedback source generation",
+          "idempotencyKey": "feedback report id"
+        },
+        {
+          "from": "persist",
+          "to": "cluster",
+          "implementationCitation": "src/feedback-factory/processing/FeedbackProcessingService.ts#FeedbackProcessingService",
+          "persistentState": "feedback and cluster projections",
+          "idempotencyKey": "feedback report id and cluster id"
+        },
+        {
+          "from": "cluster",
+          "to": "readiness-authority",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackReadinessArbiter.ts#FeedbackReadinessArbiter",
+          "persistentState": "operator-rooted authority generation and exact evidence decision",
+          "idempotencyKey": "authority generation plus candidate evidence hash"
+        },
+        {
+          "from": "readiness-authority",
+          "to": "durable-work",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackDrainStore.ts#FeedbackDrainStore",
+          "persistentState": "readiness projection and transactional outbox",
+          "idempotencyKey": "feedback-work:<clusterId>:<readinessEpoch>"
+        },
+        {
+          "from": "durable-work",
+          "to": "operated-drain",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackDrainService.ts#FeedbackDrainService",
+          "persistentState": "fenced work lease",
+          "idempotencyKey": "work id and lease epoch"
+        },
+        {
+          "from": "operated-drain",
+          "to": "consumer-handoff",
+          "implementationCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FeedbackInitiativeConsumer",
+          "persistentState": "artifact linkage row",
+          "idempotencyKey": "feedbackWorkKey"
+        }
+      ],
+      "terminalHandoff": {
+        "stage": "consumer-handoff",
+        "consumer": "FeedbackInitiativeConsumer",
+        "consumerCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FeedbackInitiativeConsumer"
+      },
+      "cadence": {
+        "triggerCitation": "src/scaffold/templates/jobs/instar/feedback-factory-process.md#Feedback-Factory Operating Drain"
+      },
+      "metrics": {
+        "readinessCitation": "src/feedback-factory/drain/FeedbackDrainService.ts#FeedbackDrainService"
+      },
+      "runtimeSmoke": {
+        "test": "tests/e2e/feedback-factory-drain-lifecycle.test.ts",
+        "command": "test:canonical-pipeline-runtime",
+        "productionConsumerAdapter": true,
+        "authoritativeReadBack": true
+      },
+      "rollout": {
+        "posture": "development-live-drain-consumer-simulation-fleet-dark",
+        "rollbackSwitch": "feedbackFactory.drain.enabled"
+      }
+    }
+  ]
+}

@@ -1137,6 +1137,22 @@ export interface RouteContext {
    *  GET /feedback-factory/stats + POST /feedback-factory/process. Null when
    *  dev-gate dark (feedbackFactory.processing) → both routes 503. */
   feedbackProcessing?: import('../feedback-factory/processing/FeedbackProcessingService.js').FeedbackProcessingService | null;
+  /** Operated feedback drain, including its operator-rooted readiness authority
+   *  registry and consumer promotion record. */
+  feedbackDrain?: {
+    service: import('../feedback-factory/drain/FeedbackDrainService.js').FeedbackDrainService;
+    store: import('../feedback-factory/drain/FeedbackDrainStore.js').FeedbackDrainStore;
+    promotion: import('../feedback-factory/drain/FeedbackConsumerPromotionStore.js').FeedbackConsumerPromotionStore;
+    tickProxy: import('../feedback-factory/drain/FeedbackDrainTickProxy.js').FeedbackDrainTickProxy;
+    checkpointBackup: (trigger: 'promotion' | 'failover') => void;
+    finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+      oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+      ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
+      reconciliation: import('../feedback-factory/drain/FeedbackDrainStore.js').InitiativeLinkReconciliationResult;
+    };
+    isRestorePending: () => boolean;
+  } | null;
+  feedbackDrainPosture?: { state: 'dark' | 'unavailable' | 'live'; reason: 'intentionally-fleet-dark' | 'misclassified-development-install' | 'enabled-missing-canonical-data-directory' | 'enabled-missing-operated-host-owner' | 'initialization-failure' | 'live-healthy' };
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -10479,6 +10495,219 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       metrics: result.metrics,
       stats,
     });
+  });
+
+  router.get('/feedback-factory/drain/status', (_req, res) => {
+    if (!ctx.feedbackDrain) {
+      res.status(503).json({ error: 'feedback-factory drain unavailable', posture: ctx.feedbackDrainPosture ?? { state: 'unavailable', reason: 'initialization-failure' } });
+      return;
+    }
+    const authority = ctx.feedbackDrain.store.getAuthority('feedback-readiness-default');
+    res.json({
+      posture: ctx.feedbackDrainPosture ?? { state: 'live', reason: 'live-healthy' },
+      restorePending: ctx.feedbackDrain.isRestorePending(),
+      ...ctx.feedbackDrain.service.stats(),
+      authority: authority ? {
+        authorityId: authority.authorityId,
+        agentId: authority.agentId,
+        ownerEpoch: authority.ownerEpoch,
+        engineClass: 'registered-frontier-model',
+        generation: authority.generation,
+        revoked: authority.revoked,
+        mode: ctx.feedbackDrain.store.authorityPosture(authority.authorityId, authority.generation).mode,
+      } : null,
+      consumerPromotion: (() => {
+        const promotion = ctx.feedbackDrain!.promotion.read();
+        return promotion ? { live: ctx.feedbackDrain!.promotion.isLive(), approvedBatchBound: promotion.approvedBatchBound, approvedAt: promotion.approvedAt, revoked: promotion.revokedAt !== null } : null;
+      })(),
+    });
+  });
+
+  const feedbackRestorePendingGate = (res: import('express').Response): boolean => {
+    if (!ctx.feedbackDrain?.isRestorePending()) return false;
+    res.status(409).json({ error: 'feedback drain restore finalization is pending' });
+    return true;
+  };
+
+  router.post('/feedback-factory/drain/tick', (req, res) => {
+    void (async () => {
+      if (!ctx.feedbackDrain) {
+        res.status(503).json({ error: 'feedback-factory drain unavailable (dark or initialization failed)' });
+        return;
+      }
+      if (feedbackRestorePendingGate(res)) return;
+      if (req.headers['x-instar-request'] !== '1') {
+        res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+        return;
+      }
+      const proxyEnvelope = req.body?.proxyEnvelope as import('../feedback-factory/drain/FeedbackDrainTickProxy.js').DrainTickProxyEnvelope | undefined;
+      if (proxyEnvelope) {
+        const result = await ctx.feedbackDrain.tickProxy.receive(proxyEnvelope);
+        res.status(result.status).json(result.body);
+        return;
+      }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      const result = await ctx.feedbackDrain.tickProxy.request({ agentId, nonce });
+      res.status(result.status).json(result.body);
+    })();
+  });
+
+  router.post('/feedback-factory/drain/runs/:runId/cancel', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    try {
+      ctx.feedbackDrain.service.requestRunCancellation(String(req.params.runId));
+      res.json({ runId: String(req.params.runId), cancellationRequested: true });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'run cancellation failed' });
+    }
+  });
+
+  router.get('/feedback-factory/backlog/analysis', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    // This authenticated analysis admits a durable replay nonce, so it is a
+    // mutation for restore-pending purposes even though its response is read-only.
+    if (feedbackRestorePendingGate(res)) return;
+    const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+    const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+    if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+      res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+    }
+    if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    const limit = Number(req.query.limit ?? 50);
+    res.json(ctx.feedbackDrain.service.analyzeHistoricalBacklog(Number.isFinite(limit) ? limit : 50));
+  });
+
+  const feedbackMutationIntentValid = (req: import('express').Request, res: import('express').Response): boolean => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return false;
+    }
+    const origin = req.get('origin');
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.host !== req.get('host')) {
+          res.status(403).json({ error: 'same-origin mutation required' }); return false;
+        }
+      } catch { res.status(403).json({ error: 'same-origin mutation required' }); return false; }
+    }
+    return checkMandatePin(req, res);
+  };
+
+  router.post('/feedback-factory/drain/failover/finalize', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const result = ctx.feedbackDrain.finalizeFailoverRestore({
+        restoredOwnerAuthorityEpoch: Number(req.body?.restoredOwnerAuthorityEpoch),
+        operatorDecisionRef: String(req.body?.operatorDecisionRef ?? ''),
+        snapshotId: String(req.body?.snapshotId ?? ''), manifestChecksum: String(req.body?.manifestChecksum ?? ''),
+        oldOwnerQuiesced: req.body?.oldOwnerQuiesced === true,
+        splitBrainRecoveryPacket: req.body?.splitBrainRecoveryPacket,
+      });
+      res.json({ finalized: true, ...result });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'failover restore finalization failed' });
+    }
+  });
+
+  // Operator-rooted authority mutation. Runtime agents/models cannot call this
+  // with Bearer alone, so “registered” is a real security boundary.
+  router.post('/feedback-factory/readiness-authorities', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const body = req.body ?? {};
+      const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
+      if (!['create', 'replace', 'revoke', 'restore'].includes(action)) throw new Error('invalid authority action');
+      const existing = ctx.feedbackDrain.store.getAuthority(String(body.authorityId ?? 'feedback-readiness-default'));
+      const source = (action === 'revoke' || action === 'restore') && existing ? existing : body;
+      const record = ctx.feedbackDrain.store.mutateAuthority({
+        action,
+        operatorDecisionRef: String(body.operatorDecisionRef ?? ''),
+        authorityId: String(source.authorityId ?? 'feedback-readiness-default'),
+        agentId: String(source.agentId ?? ''), ownerMachineId: String(source.ownerMachineId ?? ''),
+        ownerEpoch: Number(source.ownerEpoch), provider: String(source.provider ?? ''),
+        modelFamily: String(source.modelFamily ?? ''), promptVersion: String(source.promptVersion ?? ''),
+        schemaVersion: String(source.schemaVersion ?? ''), decisionPointId: String(source.decisionPointId ?? ''),
+        maxBatch: Number(source.maxBatch), maxTokens: Number(source.maxTokens), maxDailySpendUsd: Number(source.maxDailySpendUsd),
+      });
+      res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
+    }
+  });
+
+  router.post('/feedback-factory/readiness/hold', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      const reason = String(req.body?.reason ?? 'human-break-glass');
+      if (!clusterId || clusterId.length > 200) throw new Error('bounded clusterId required');
+      const row = ctx.feedbackDrain.store.holdReadiness(clusterId, reason);
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'hold failed' }); }
+  });
+
+  router.post('/feedback-factory/readiness/release', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    const humanPath = typeof req.body?.pin === 'string';
+    if (humanPath) {
+      if (!feedbackMutationIntentValid(req, res)) return;
+    } else {
+      if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+        res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+      }
+      if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    }
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      if (req.body?.predicate !== 'source-projection-authority') throw new Error('named deterministic revalidation predicate required');
+      const sourcePresent = ctx.feedbackDrain.service.sourceClusterPresent(clusterId) &&
+        ctx.feedbackDrain.store.integrityCheck() && ctx.feedbackDrain.store.verifyAuthorityAudit() &&
+        Boolean(ctx.feedbackDrain.store.getAuthority('feedback-readiness-default'));
+      const row = ctx.feedbackDrain.store.releaseHeld(clusterId, { revalidated: sourcePresent, reason: 'source-projection-authority-revalidated' });
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'release failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/promote', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.promote({
+        approvedBatchBound: Number(req.body?.approvedBatchBound),
+        evidenceHash: String(req.body?.evidenceHash ?? ''),
+        operatorDecisionId: String(req.body?.operatorDecisionId ?? ''),
+      });
+      try { ctx.feedbackDrain.checkpointBackup('promotion'); }
+      catch (backupError) {
+        ctx.feedbackDrain.promotion.revoke();
+        throw new Error(`promotion checkpoint failed; consumer returned to simulation: ${backupError instanceof Error ? backupError.message : 'backup unavailable'}`);
+      }
+      res.json({ promoted: true, approvedBatchBound: record.approvedBatchBound, approvedAt: record.approvedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'promotion failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/revoke', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.revoke();
+      ctx.feedbackDrain.checkpointBackup('promotion');
+      res.json({ revoked: true, revokedAt: record.revokedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
   });
 
   // The readiness signal. Read-only.

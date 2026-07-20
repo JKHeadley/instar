@@ -12,10 +12,9 @@
  *
  * Mutation model: append-only log with LAST-WRITE-WINS on load. Every mutation
  * appends the FULL updated row; on construction all lines are folded into a Map by
- * id (later lines supersede earlier). A file with one row per entity — exactly what
- * the import produces — is therefore a valid, already-compact log. When superseded
- * lines pile up past a threshold the file is compacted at construction time via an
- * atomic temp+rename rewrite (crash mid-compaction leaves the original intact).
+ * id (later lines supersede earlier). Operated files remain append-only: rewriting
+ * an active path would invalidate durable tail cursors. Compaction belongs to the
+ * checksummed immutable-generation handoff protocol.
  *
  * JSONL (not SQLite) for the same reason as PersistedShadowImportTarget: dependency-
  * free, no native module, trivially inspectable, and append durability is a plain
@@ -23,16 +22,13 @@
  * 148k-row artifact parses in well under a second.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FeedbackItem, Cluster } from '../processor/types.js';
 import type { ReopenDecision } from '../processor/reopen.js';
 import type { DispatchRecord } from '../dispatch/dispatch.js';
 import type { FeedbackStore, FeedbackMetrics } from './FeedbackStore.js';
-
-/** Compact a file at load when more than half its lines are superseded AND it has real volume. */
-const COMPACT_MIN_LINES = 1000;
-const COMPACT_SUPERSEDED_RATIO = 0.5;
+import { FeedbackSourceGenerations, type FeedbackSourceGeneration, type FeedbackSourceHandoff } from './FeedbackSourceGenerations.js';
 
 interface LoadResult<T> {
   rows: Map<string, T>;
@@ -40,7 +36,9 @@ interface LoadResult<T> {
 }
 
 export class JsonlFeedbackStore implements FeedbackStore {
-  private readonly feedbackPath: string;
+  private feedbackPath: string;
+  private feedbackGenerationId: string;
+  private readonly sourceGenerations: FeedbackSourceGenerations;
   private readonly clustersPath: string;
   private readonly dispatchesPath: string;
 
@@ -48,10 +46,16 @@ export class JsonlFeedbackStore implements FeedbackStore {
   private clusters!: Map<string, Cluster>;
   private dispatches!: Map<string, DispatchRecord>;
   private counts: FeedbackMetrics = { captured: 0, created: 0, merged: 0, reopened: 0 };
+  private offsets = { feedback: 0, clusters: 0, dispatches: 0 };
+  private sourceLagBytes = 0;
+  private projectionRecords: Map<string, FeedbackItem> | null = null;
 
   constructor(private readonly dir: string) {
     mkdirSync(dir, { recursive: true });
-    this.feedbackPath = join(dir, 'feedback.jsonl');
+    this.sourceGenerations = new FeedbackSourceGenerations(dir);
+    const current = this.sourceGenerations.current();
+    this.feedbackPath = current.filePath;
+    this.feedbackGenerationId = current.generationId;
     this.clustersPath = join(dir, 'clusters.jsonl');
     this.dispatchesPath = join(dir, 'dispatches.jsonl');
 
@@ -80,46 +84,125 @@ export class JsonlFeedbackStore implements FeedbackStore {
   }
 
   private loadAll(): void {
-    this.feedback = this.loadAndMaybeCompact<FeedbackItem>(this.feedbackPath, (r) =>
+    this.feedback = this.loadAppendOnly<FeedbackItem>(this.feedbackPath, (r) =>
       pickId(r, 'feedbackId', 'feedback_id', 'id'),
     );
-    this.clusters = this.loadAndMaybeCompact<Cluster>(this.clustersPath, (r) =>
+    this.clusters = this.loadAppendOnly<Cluster>(this.clustersPath, (r) =>
       pickId(r, 'clusterId', 'cluster_id', 'id'),
     );
-    this.dispatches = this.loadAndMaybeCompact<DispatchRecord>(this.dispatchesPath, (r) =>
+    this.dispatches = this.loadAppendOnly<DispatchRecord>(this.dispatchesPath, (r) =>
       pickId(r, 'dispatchId', 'dispatch_id', 'id'),
     );
+    this.offsets = {
+      feedback: existsSync(this.feedbackPath) ? statSync(this.feedbackPath).size : 0,
+      clusters: existsSync(this.clustersPath) ? statSync(this.clustersPath).size : 0,
+      dispatches: existsSync(this.dispatchesPath) ? statSync(this.dispatchesPath).size : 0,
+    };
+    this.sourceLagBytes = 0;
   }
 
-  private loadAndMaybeCompact<T extends Record<string, unknown>>(
+  /**
+   * Fold only complete records appended by another process after our durable
+   * offsets. A torn trailing line is left behind for the next pass. This is the
+   * normal operating path; `reload()` remains an explicit recovery/import tool.
+   */
+  syncExternalAppends(maxRecords = 500): { projected: number; lagBytes: number } {
+    const current = this.sourceGenerations.current();
+    if (current.generationId !== this.feedbackGenerationId) {
+      this.feedbackGenerationId = current.generationId;
+      this.feedbackPath = current.filePath;
+      this.feedback = this.loadAppendOnly<FeedbackItem>(this.feedbackPath, (row) => pickId(row, 'feedbackId', 'feedback_id', 'id'));
+      this.offsets.feedback = existsSync(this.feedbackPath) ? statSync(this.feedbackPath).size : 0;
+    }
+    const bounded = Math.max(0, Math.min(500, Math.trunc(maxRecords)));
+    let remaining = bounded;
+    let projected = 0;
+    const fold = <T extends Record<string, unknown>>(
+      filePath: string, key: keyof typeof this.offsets, rows: Map<string, T>, idOf: (row: Record<string, unknown>) => string,
+    ): void => {
+      if (remaining === 0 || !existsSync(filePath)) return;
+      const size = statSync(filePath).size;
+      const offset = this.offsets[key];
+      if (size < offset) throw new Error(`feedback source truncated before persisted ${key} cursor`);
+      if (size === offset) return;
+      const bytes = Buffer.allocUnsafe(Math.min(size - offset, 4 * 1024 * 1024));
+      const fd = openSync(filePath, 'r');
+      let read = 0;
+      try { read = readSync(fd, bytes, 0, bytes.length, offset); } finally { closeSync(fd); }
+      const slice = bytes.subarray(0, read);
+      let consumed = 0;
+      for (let start = 0; start < slice.length && remaining > 0;) {
+        const newline = slice.indexOf(0x0a, start);
+        if (newline < 0) break;
+        const raw = slice.subarray(start, newline).toString('utf8').trim();
+        consumed = newline + 1;
+        start = newline + 1;
+        if (!raw) continue;
+        let parsed: Record<string, unknown>;
+        try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+        catch { throw new Error(`invalid complete JSONL record after persisted ${key} cursor`); }
+        const id = idOf(parsed);
+        if (!id) throw new Error(`source record after persisted ${key} cursor has no stable id`);
+        rows.set(id, parsed as T);
+        projected++; remaining--;
+      }
+      this.offsets[key] += consumed;
+    };
+    fold(this.feedbackPath, 'feedback', this.feedback, (row) => pickId(row, 'feedbackId', 'feedback_id', 'id'));
+    fold(this.clustersPath, 'clusters', this.clusters, (row) => pickId(row, 'clusterId', 'cluster_id', 'id'));
+    fold(this.dispatchesPath, 'dispatches', this.dispatches, (row) => pickId(row, 'dispatchId', 'dispatch_id', 'id'));
+    this.sourceLagBytes = [
+      [this.feedbackPath, this.offsets.feedback], [this.clustersPath, this.offsets.clusters], [this.dispatchesPath, this.offsets.dispatches],
+    ].reduce((sum, [file, offset]) => sum + (existsSync(file as string) ? Math.max(0, statSync(file as string).size - Number(offset)) : 0), 0);
+    return { projected, lagBytes: this.sourceLagBytes };
+  }
+
+  private loadAppendOnly<T extends Record<string, unknown>>(
     path: string,
     idOf: (row: Record<string, unknown>) => string,
   ): Map<string, T> {
-    const { rows, totalLines } = loadJsonl<T>(path, idOf);
-    const superseded = totalLines - rows.size;
-    if (totalLines >= COMPACT_MIN_LINES && superseded / totalLines >= COMPACT_SUPERSEDED_RATIO) {
-      // Atomic rewrite: full snapshot to a temp file in the same dir, then rename.
-      const tmp = `${path}.compact.tmp`;
-      writeFileSync(tmp, [...rows.values()].map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
-      renameSync(tmp, path);
-    }
-    return rows;
+    return loadJsonl<T>(path, idOf).rows;
   }
 
   private appendFeedback(row: FeedbackItem): void {
-    appendFileSync(this.feedbackPath, JSON.stringify(row) + '\n', 'utf8');
+    const priorSize = existsSync(this.feedbackPath) ? statSync(this.feedbackPath).size : 0;
+    this.sourceGenerations.append(row as unknown as Record<string, unknown>);
+    const current = this.sourceGenerations.current();
+    if (current.generationId !== this.feedbackGenerationId) {
+      this.feedbackGenerationId = current.generationId;
+      this.feedbackPath = current.filePath;
+      this.offsets.feedback = 0;
+    }
+    if (this.offsets.feedback === priorSize) this.offsets.feedback = statSync(this.feedbackPath).size;
   }
 
   private appendCluster(row: Cluster): void {
+    const priorSize = existsSync(this.clustersPath) ? statSync(this.clustersPath).size : 0;
     appendFileSync(this.clustersPath, JSON.stringify(row) + '\n', 'utf8');
+    if (this.offsets.clusters === priorSize) this.offsets.clusters = statSync(this.clustersPath).size;
   }
 
   // ── FeedbackStore ──────────────────────────────────────────────────────────
 
   getUnprocessedFeedback(): FeedbackItem[] {
-    return [...this.feedback.values()]
+    const authoritativeRows = this.projectionRecords ? [...this.projectionRecords.values()] : [...this.feedback.values()];
+    return authoritativeRows
       .filter((f) => (f.status ?? 'unprocessed') === 'unprocessed')
-      .sort((a, b) => String(a.receivedAt ?? '').localeCompare(String(b.receivedAt ?? '')));
+      .sort((a, b) => String(a.receivedAt ?? '').localeCompare(String(b.receivedAt ?? '')))
+      .slice(0, 500);
+  }
+
+  withProjectedFeedbackScope<T>(records: Array<Record<string, unknown>>, operation: () => T): T {
+    const exact = new Map<string, FeedbackItem>();
+    for (const record of records) {
+      const id = pickId(record, 'feedbackId', 'feedback_id', 'id');
+      if (!id) throw new Error('projected feedback record has no stable id');
+      if (exact.has(id)) throw new Error(`projected feedback batch duplicated id ${id}`);
+      exact.set(id, { ...record, feedbackId: id } as FeedbackItem);
+    }
+    this.projectionRecords = exact;
+    try { return operation(); }
+    finally { this.projectionRecords = null; }
   }
 
   getActiveClusters(): Cluster[] {
@@ -171,10 +254,12 @@ export class JsonlFeedbackStore implements FeedbackStore {
   }
 
   markProcessed(feedbackId: string, clusterId: string): void {
-    const f = this.feedback.get(feedbackId);
+    const projected = this.projectionRecords?.get(feedbackId);
+    const f = projected ? { ...projected } : this.feedback.get(feedbackId);
     if (f) {
       f.status = 'processing';
       f.clusterId = clusterId;
+      this.feedback.set(feedbackId, f);
       this.appendFeedback(f);
     }
     this.counts.captured++;
@@ -205,7 +290,9 @@ export class JsonlFeedbackStore implements FeedbackStore {
   createDispatch(record: DispatchRecord): void {
     const row: DispatchRecord = { active: true, ...record };
     this.dispatches.set(record.dispatchId, row);
+    const priorSize = existsSync(this.dispatchesPath) ? statSync(this.dispatchesPath).size : 0;
     appendFileSync(this.dispatchesPath, JSON.stringify(row) + '\n', 'utf8');
+    if (this.offsets.dispatches === priorSize) this.offsets.dispatches = statSync(this.dispatchesPath).size;
   }
 
   metrics(): FeedbackMetrics {
@@ -216,6 +303,12 @@ export class JsonlFeedbackStore implements FeedbackStore {
   sizes(): { feedback: number; clusters: number; dispatches: number } {
     return { feedback: this.feedback.size, clusters: this.clusters.size, dispatches: this.dispatches.size };
   }
+
+  lagBytes(): number { return this.sourceLagBytes; }
+  sourceFeedbackPath(): string { return this.sourceGenerations.current().filePath; }
+  sourceFeedbackGeneration(): FeedbackSourceGeneration { return this.sourceGenerations.current(); }
+  sourceFeedbackGenerationPlan(fromGenerationId?: string | null): FeedbackSourceGeneration[] { return this.sourceGenerations.planFrom(fromGenerationId); }
+  compactFeedbackSource(now?: number): FeedbackSourceHandoff | null { return this.sourceGenerations.compact(now); }
 
   /**
    * Read-only aggregate snapshot for `GET /feedback-factory/stats`. Pure read —

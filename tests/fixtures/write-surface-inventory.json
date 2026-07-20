@@ -118,7 +118,6 @@
     "POST /features/:id/transition",
     "POST /features/evaluate-context",
     "POST /feedback",
-    "POST /feedback-factory/process",
     "POST /feedback/retry",
     "POST /flows",
     "POST /flows/:flowId/cancel-flow",

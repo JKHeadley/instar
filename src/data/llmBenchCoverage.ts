@@ -48,6 +48,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   Usher: { task: 'usher' },
   'correction-learning': { task: 'correction-distiller' },
   CoherenceReviewer: { task: 'gate-triage' },
+  FeedbackReadinessArbiter: { task: 'feedback-readiness' },
 
   // ── Argued exemptions (pinned; each must carry a real reason) ──
   InteractivePoolCanaryJudge: {
@@ -191,6 +192,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   InputClassifier: true,
   SessionSummarySentinel: true,
   TelegramAdapter: true,
+  FeedbackReadinessArbiter: true,
 
   // ── Gates judging user/session/operation content → true ──
   HubIntentClassifier: true, // judges an inbound hub message's bind-intent (untrusted user text)
@@ -383,6 +385,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   OverrideDetector: false, // detects override intent in a turn
   TaskClassifier: false, // classifies task type
   ResumeValidator: false, // matches a resume UUID against a topic — a state match, not a claim
+  FeedbackReadinessArbiter: false, // judges whether cluster evidence warrants work, not a completion/health claim
 
   // Reflectors/jobs that extract/summarize/route but do not credit a completion/health claim.
   crossModelReviewer: false, // reviews a SPEC document, not a session's completion claim
@@ -497,6 +500,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   TaskClassifier: { pending: 'contract-wave-2' }, // closed task-type label set
   ResumeValidator: { pending: 'contract-wave-2' }, // closed resume-UUID match yes/no verdict
   CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
+  FeedbackReadinessArbiter: { contractTest: 'tests/unit/feedback-factory/readiness-arbiter.test.ts' },
 
   // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
   // No live LLM callsite, a fixed canary, or free-text / open-set content.
@@ -703,6 +707,7 @@ export const LLM_ROUTING_NATURE: Readonly<Record<string, RoutingNature>> = {
   ProjectDriftChecker: { nature: 'B', chain: 'JUDGE' },
   SessionWatchdog: { nature: 'B', chain: 'JUDGE' },
   UnjustifiedStopGate: { nature: 'B', chain: 'JUDGE' },
+  FeedbackReadinessArbiter: { nature: 'B', chain: 'JUDGE' },
 
   // ── Nature D — background digests/summaries (→ SORT; R7 redaction on secret-bearing) ──
   SessionActivitySentinel: { nature: 'D', chain: 'SORT' },
@@ -819,6 +824,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   LLMSanitizer: exposed(EXPOSED_USER_TOOL), // definitionally judges untrusted inbound content
   OverrideDetector: exposed(EXPOSED_USER),
   TaskClassifier: exposed(EXPOSED_USER), // classifies a user task (R8 input-classifier — must stay exposed)
+  FeedbackReadinessArbiter: exposed(EXPOSED_USER_TOOL), // feedback titles + canonical cluster metadata
 
   // ── Reflectors ──
   JobReflector: exposed(EXPOSED_MODEL_TOOL),

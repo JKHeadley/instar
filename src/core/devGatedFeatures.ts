@@ -44,6 +44,24 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'feedbackFactoryProcessing',
+    configPath: 'feedbackFactory.processing.enabled',
+    description: 'Canonical feedback clustering pass over the operated store.',
+    justification: 'Local bounded JSONL projection only; no external action, spend, or product-resolution authority.',
+  },
+  {
+    name: 'feedbackFactoryDrain',
+    configPath: 'feedbackFactory.drain.enabled',
+    description: 'Canonical feedback readiness/outbox drain cadence.',
+    justification: 'Bounded local SQLite transitions with durable leases and metrics; fleet stays dark and consumer promotion is separate.',
+  },
+  {
+    name: 'feedbackFactoryConsumer',
+    configPath: 'feedbackFactory.consumer.enabled',
+    description: 'Feedback work handoff into user-visible Initiative tasks.',
+    justification: 'Ships dryRun:true; development agents exercise the exact state machine without canonical queue or Initiative mutation until operator promotion.',
+  },
+  {
     name: 'ownershipGatedSpawn',
     configPath: 'multiMachine.sessionPool.ownershipGatedSpawn.enabled',
     description: 'SpawnAdmission — the binding-verdict seam at every conversation-bound session-creating callsite (ownership-gated-spawn-and-judgment-within-floors §3.1, Layer A; the Ownership-Gated Side Effects standard). Consults resolveOwnershipSafe (tri-state, non-throwing) and the router verdict (TOCTOU consumption) before Telegram cold-spawn/respawn + Slack inbound/recovery spawns; never a bootleg local copy of an owned-elsewhere conversation.',
