@@ -258,6 +258,18 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route',
     method: 'POST',
+    pathPrefix: '/internal/stop-gate/reset-breaker',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the breaker describes this host physical provider route and lives in the machine-local StopGateDb under the git-sync-excluded .instar state jail',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
     pathPrefix: '/slack/session-reply',
     domain: 'machine-local',
     story: {

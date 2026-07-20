@@ -36,6 +36,8 @@ export interface VirtualClock {
  */
 export interface PressureFixture {
   clock: VirtualClock;
+  /** Explicit restart-surviving state; restart callbacks receive no prior controller instance. */
+  durableState: Map<string, unknown>;
   /** All quota readings >= threshold, forever (the all-hot condition). */
   everyAccountHot(): boolean;
   /** All sessions mid-turn / carrying subagents (no idle window ever opens). */
@@ -110,6 +112,10 @@ export interface SelfActionController {
   tickMs: number;
   /** A declared Eternal Sentinel (P19 exemption) — replaces the count bound with a rate-floor bound. */
   eternalSentinel?: { reason: string; rateFloorMs: number };
+  /** Every controller must classify its restart boundary; omission is a ratchet failure. */
+  restartPosture:
+    | { pressureSurvives: false; resetSafeReason: string }
+    | { pressureSurvives: true; restartUnderPressure: (f: PressureFixture, sink: ActionSink) => { tick(): void } };
 }
 
 // ── The seeded controllers ─────────────────────────────────────────────────
@@ -129,6 +135,7 @@ const proactiveSwapMonitor: SelfActionController = {
   actionVerb: 'account-swap',
   models: 'src/monitoring/SubscriptionPool.ts (proactive pre-limit swap, antiThrash all-hot + projected-load brake)',
   modelsPath: 'src/core/ProactiveSwapMonitor.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The all-hot/projected-load refusal is stateless and recomputed after boot; reset cannot create an allowed swap.' },
   boundK: 1,
   perTargetBoundK: 1,
   ticks: 20,
@@ -171,6 +178,7 @@ const ageKillBackoff: SelfActionController = {
   actionVerb: 'age-kill',
   models: 'src/monitoring/SessionReaper.ts (age-limit kill-request; AgeKillBackoff — P19 backoff + breaker)',
   modelsPath: 'src/core/SessionManager.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Server restart begins a new reaper episode and re-reads protection/age before any kill request.' },
   boundK: 5,
   perTargetBoundK: 5, // legitimately the SAME session, bounded by the breaker (not a ping-pong)
   // Horizon chosen so N ticks FULLY reaches the breaker cap (cumulative
@@ -217,6 +225,7 @@ const promiseBeaconNotify: SelfActionController = {
   actionVerb: 'beacon-notify',
   models: 'src/monitoring/PromiseBeacon.ts (suppressUnchangedHeartbeats — progress-only heartbeat)',
   modelsPath: 'src/monitoring/PromiseBeacon.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The unchanged-progress refusal is stateless; reconstruction still observes no genuine progress and emits zero.' },
   boundK: 1,
   perTargetBoundK: 1,
   ticks: 20,
@@ -252,6 +261,7 @@ const livenessHeartbeat: SelfActionController = {
   actionVerb: 'liveness-notify',
   models: 'src/monitoring/PromiseBeacon.ts (beaconLivenessIntervalMs — sparse once-per-interval liveness line)',
   modelsPath: 'src/monitoring/PromiseBeacon.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A process restart begins a new liveness epoch; one new constant-cost heartbeat is the declared signal.' },
   delegatedGiveUp: 'the hard rateFloorMs (60 min) — emits can never exceed elapsed/rateFloorMs',
   boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor, not a total count
   perTargetBoundK: Number.POSITIVE_INFINITY,
@@ -299,6 +309,7 @@ const externalHogKillBreaker: SelfActionController = {
   actionVerb: 'kill',
   models: 'src/monitoring/ExternalHogKillLedger.ts (respawn breaker driven by the ExternalHogScanTick kill path — real pure functions, not a re-model)',
   modelsPath: 'src/monitoring/ExternalHogSentinel.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The real controller reloads its durable kill ledger; this model starts from one already-hydrated episode.' },
   boundK: 3,
   perTargetBoundK: 3, // legitimately the SAME respawning signature, bounded by the window breaker (not a ping-pong)
   ticks: 30,
@@ -340,6 +351,7 @@ const meteredReserveExpirySweep: SelfActionController = {
   actionVerb: 'expire-reserve-kill', // 'kill' detector token; the swept reserve is terminally closed
   models: 'src/core/MeteredSpendLedger.ts (sweepExpired; idempotent terminal reserve→expired) + src/server/AgentServer.ts 5-min cadence',
   modelsPath: 'src/core/MeteredSpendLedger.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Expiry is a one-shot durable row transition; reconstruction re-reads the handled row.' },
   boundK: 3, // exactly the 3 stale reserves in the fixture — never more
   perTargetBoundK: 1, // terminal: one expire per reserveId, ever
   ticks: 50,
@@ -379,6 +391,7 @@ const spendStalePriceAlert: SelfActionController = {
   actionVerb: 'stale-price-notify',
   models: 'src/core/SpendAlertResolver.ts (emit — edge latch on CONFIRMED delivery, 24h re-arm) + src/server/AgentServer.ts 6h staleCheck cadence',
   modelsPath: 'src/core/SpendAlertResolver.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The alert latch is persisted with the spend snapshot and rehydrated.' },
   delegatedGiveUp: 'the 24h confirmed-delivery edge latch (dispatcher re-arm window)',
   boundK: 3, // 3 emissions across the ~2.1-day horizon = 1 per 24h window (rate floor), one door
   perTargetBoundK: 3,
@@ -417,6 +430,7 @@ const spendDoorDarkBrakes: SelfActionController = {
   actionVerb: 'door-dark-notify',
   models: 'src/core/SpendAlertEmitters.ts (onChainExhausted — episode budget = chain length, widening backoff, flapping wording)',
   modelsPath: 'src/core/SpendAlertEmitters.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Door-dark brake state is derived from the durable provider report window on boot.' },
   delegatedGiveUp: 'the per-episode-bucket attempt budget (= chain length) + widening backoff',
   boundK: 6, // 2 episode buckets × chain length 3 over the horizon
   perTargetBoundK: 6, // same chain each time — bounded by the episode budgets, not a ping-pong
@@ -467,6 +481,7 @@ const spendFallbackSpike: SelfActionController = {
   actionVerb: 'fallback-spike-notify',
   models: 'src/core/SpendAlertEmitters.ts (onFallbackServed — hourly ceiling edge, one per hour bucket)',
   modelsPath: 'src/core/SpendAlertEmitters.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Fallback-spike episodes are keyed to durable metric windows, so restart re-enters the same episode.' },
   delegatedGiveUp: 'the hourly ceiling-crossing bucket edge (one digest line per hour bucket)',
   boundK: 3, // 3 hour-buckets over the horizon → at most one each
   perTargetBoundK: 3,
@@ -512,6 +527,7 @@ const spendCapApproach: SelfActionController = {
     'The FEEDBACK-driven surface is the edge latch (modeled here, horizon-independent); the daily window additionally ' +
     're-arms on the CALENDAR day boundary — clock-driven, not feedback-driven, bounded at 2 notices/key/day by construction.',
   modelsPath: 'src/core/SpendAlertEmitters.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Cap-approach notification state is persisted with the governance snapshot.' },
   boundK: 4, // 2 kinds × 2 thresholds — the latch bound, horizon-independent
   perTargetBoundK: 1, // each (kind, threshold, window) key emits ONCE, ever
   ticks: 96, // 96 × 5min = 8h of admits with committed parked ≥80% (inside one window)
@@ -551,6 +567,7 @@ const spendReconSweep: SelfActionController = {
   actionVerb: 'recon-drift-notify',
   models: 'src/monitoring/ProviderReconciliationSweep.ts (cadenced read-only comparator) + the Increment-C dispatcher latch (24h re-arm per (keyRef, door, driftBucket))',
   modelsPath: 'src/monitoring/ProviderReconciliationSweep.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Reconciliation consumes durable unsettled rows idempotently; restart cannot recreate a consumed row.' },
   delegatedGiveUp: 'the dispatcher 24h latch per (keyRef, door, driftBucket)',
   boundK: 3, // 3 re-arm windows over the horizon → one each
   perTargetBoundK: 3,
@@ -581,6 +598,7 @@ const evolutionActionExpirySweep: SelfActionController = {
   actionVerb: 'reap-expired-actions',
   models: 'src/core/EvolutionManager.ts (scheduled stale pending-action expiry; survivor-set brake)',
   modelsPath: 'src/core/EvolutionManager.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Expiry marks the durable action terminal; reconstruction sees terminal state.' },
   boundK: 3,
   perTargetBoundK: 1,
   ticks: 20,
@@ -613,6 +631,7 @@ const ownerDarkNotice: SelfActionController = {
   actionVerb: 'owner-dark-notify',
   models: 'src/core/OwnerDarkLadder.ts (handleOwnerDark — episode dedupe + noticeCooldownMs)',
   modelsPath: 'src/core/OwnerDarkLadder.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Notice cadence is derived from the durable owner-dark ladder record.' },
   boundK: 3, // 3 topics → at most one notice each while the episode persists
   perTargetBoundK: 1,
   ticks: 120,
@@ -648,6 +667,7 @@ const duplicateConvergeWrite: SelfActionController = {
   actionVerb: 'record-converge',
   models: 'src/monitoring/DuplicateSessionReconciler.ts (convergenceAttempts cap + breakerThreshold/breakerWindowMs clamp)',
   modelsPath: 'src/monitoring/DuplicateSessionReconciler.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Convergence writes a durable terminal episode marker and reloads it before another write.' },
   boundK: 9, // 3 episodes × 3 attempts, then the breaker clamps the topic
   perTargetBoundK: 9,
   ticks: 90,
@@ -696,6 +716,7 @@ const burnAlertTerminalDelivery: SelfActionController = {
   actionVerb: 'burn-alert-sendToTopic',
   models: 'src/monitoring/BurnAlertDelivery.ts (terminal topic quarantine)',
   modelsPath: 'src/monitoring/BurnAlertDelivery.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Terminal topic quarantine is durable and reloaded, so the deleted target remains suppressed.' },
   boundK: 1,
   perTargetBoundK: 1,
   ticks: 60,
@@ -710,6 +731,44 @@ const burnAlertTerminalDelivery: SelfActionController = {
         terminal = true;
       },
     };
+  },
+};
+
+/**
+ * The presenting restart-reset class: Stop-gate timeout feedback was bounded
+ * inside one process, but routine releases reconstructed the in-memory breaker
+ * and minted two fresh degradation submissions. This model guards the feedback
+ * emission bound (not the low-rate half-open health probe): durable failure state
+ * survives every reconstruction, so unchanged provider pressure emits at most
+ * threshold-1 timeout feedback records across the whole restart storm.
+ */
+const stopGateAuthorityProbe: SelfActionController = {
+  id: 'stop-gate-authority-probe',
+  actionVerb: 'degradation-notify',
+  models: 'src/core/UnjustifiedStopGate.ts + src/core/StopGateDb.ts (durable authority breaker suppresses restart-minted timeout feedback)',
+  modelsPath: 'src/core/UnjustifiedStopGate.ts',
+  boundK: 2,
+  perTargetBoundK: 2,
+  ticks: 20,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      return stopGateAuthorityProbe.makeUnderPressure(f, sink);
+    },
+  },
+  makeUnderPressure(f, sink) {
+    const tick = () => {
+      sink.considered += 1;
+      const failures = Number(f.durableState.get('stop-gate-failures') ?? 0);
+      if (failures >= 3) return;
+      const next = failures + 1;
+      f.durableState.set('stop-gate-failures', next);
+      // The threshold-crossing failure returns breakerOpen, so only failures
+      // before the threshold become timeout feedback submissions.
+      if (next < 3) sink.emit({ verb: 'degradation-notify', target: 'unjustifiedStopGate.timeout' });
+    };
+    return { tick };
   },
 };
 
@@ -729,4 +788,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   ownerDarkNotice,
   duplicateConvergeWrite,
   burnAlertTerminalDelivery,
+  stopGateAuthorityProbe,
 ];

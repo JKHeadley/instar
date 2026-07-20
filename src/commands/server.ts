@@ -16628,6 +16628,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (sharedIntelligence && stopGateDb) {
         try {
           const { UnjustifiedStopGate } = await import('../core/UnjustifiedStopGate.js');
+          const { stopGateBreakerKey } = await import('../core/StopGateBreakerState.js');
           const { resolveDevAgentGate } = await import('../core/devAgentGate.js');
           // Turn-End Self-Deferral Guard (Phase A / shadow) — dev-gated dark:
           // `monitoring.selfDeferralGuard` OMITS `enabled` so resolveDevAgentGate
@@ -16640,6 +16641,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           unjustifiedStopGate = new UnjustifiedStopGate({
             intelligence: sharedIntelligence,
             selfDeferralGuardEnabled,
+            breakerStateStore: stopGateDb,
+            breakerKey: stopGateBreakerKey({
+              defaultFramework: config.sessions?.framework,
+              gateCategoryFramework: config.sessions?.componentFrameworks?.categories?.gate,
+              stopGateOverride: config.sessions?.componentFrameworks?.overrides?.UnjustifiedStopGate,
+              failureSwap: config.sessions?.componentFrameworks?.failureSwap,
+            }),
+            onBreakerPersistenceError: (err) => {
+              DegradationReporter.getInstance().report({
+                feature: 'unjustifiedStopGate.breakerPersistence',
+                primary: 'Durable Stop-gate authority breaker state',
+                fallback: 'memory-only breaker + fail-open allow',
+                reason: err instanceof Error ? err.message : String(err),
+                impact: 'Restart-survival may be temporarily unavailable; Stop events remain fail-open.',
+              });
+            },
           });
         } catch (err) {
           DegradationReporter.getInstance().report({

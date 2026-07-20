@@ -3325,7 +3325,18 @@ export function createRoutes(ctx: RouteContext): Router {
         });
       }
     } catch { /* Layer 2 is a belt — never let it break the hot path */ }
-    res.json(state);
+    res.json({
+      ...state,
+      breaker: ctx.unjustifiedStopGate?.breakerState() ?? null,
+    });
+  });
+
+  router.post('/internal/stop-gate/reset-breaker', (_req, res) => {
+    if (!ctx.unjustifiedStopGate) {
+      res.status(503).json({ error: 'Stop-gate authority is not initialized' });
+      return;
+    }
+    res.json({ reset: true, breaker: ctx.unjustifiedStopGate.resetBreaker() });
   });
 
   router.get('/internal/stop-gate/kill-switch', (_req, res) => {
