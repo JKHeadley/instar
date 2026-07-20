@@ -407,6 +407,8 @@ The sections above describe what each subsystem does at a behavioral level. The 
 
 `AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLeaseCutoverGate`, `JobLeaseClaimStore`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
 
+`JobRunHistory` applies the shared `CapacityEnforcement` contract before each JSONL append. Rows within budget are written unchanged; oversized optional detail is condensed and recorded as a durable `truncated` outcome; a row whose essential fields still cannot fit is refused and reported as an invariant failure. This keeps expected bounded-storage behavior observable without misclassifying successful condensation as a service degradation.
+
 **WS4.3 journal-lease cutover.** On a multi-machine pool, scheduled-job claims start on the best-effort AgentBus broadcast (`JobClaimManager`) and upgrade to a durable, epoch-fenced lease over the replicated journal (`JobLeaseClaimStore`) — but only when the `JobLeaseCutoverGate` confirms every online peer advertises the `ws43JournalLease` capability (invariant-5 flag coherence). The gate is the single decision point that guarantees the two claim mechanisms are never both live for the same job set (the named migration hazard); a mixed or single-machine pool stays on the legacy bus path, byte-for-byte today's behavior. Ships dark behind `multiMachine.seamlessness.ws43JournalLease` (dry-run first).
 
 ### `src/identity/` — machine + agent cryptographic identity
