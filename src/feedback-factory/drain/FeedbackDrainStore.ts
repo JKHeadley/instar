@@ -22,6 +22,14 @@ export class DrainConflictError extends Error {
   constructor(message: string) { super(message); this.name = 'DrainConflictError'; }
 }
 
+function sqliteFileIdentity(filePath: string): string {
+  const stat = fs.statSync(filePath);
+  // dev+ino alone is not a durable replacement detector: Linux may recycle an
+  // inode immediately after the operated directory is destroyed. Birth time
+  // stays stable across routine close/reopen but changes for restored bytes.
+  return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+}
+
 export interface ReadinessProjection {
   clusterId: string;
   state: ReadinessState;
@@ -280,9 +288,8 @@ export class FeedbackDrainStore {
     }
     if (!this.integrityCheck()) throw new Error('feedback drain integrity check failed before backup');
     const bytes = fs.readFileSync(this.dbPath);
-    const stat = fs.statSync(this.dbPath);
     const payload = { schemaVersion: 1 as const, snapshotId: `feedback-drain:${randomUUID()}`, checksum: createHash('sha256').update(bytes).digest('hex'),
-      dbFileIdentity: `${stat.dev}:${stat.ino}`, ownerAuthorityEpoch, createdAt: new Date(this.now()).toISOString() };
+      dbFileIdentity: sqliteFileIdentity(this.dbPath), ownerAuthorityEpoch, createdAt: new Date(this.now()).toISOString() };
     const record = { ...payload, manifestChecksum: createHash('sha256').update(JSON.stringify(payload)).digest('hex') };
     const target = path.join(path.dirname(this.dbPath), 'feedback-drain-checkpoint.json');
     const tmp = `${target}.${process.pid}.tmp`;
@@ -307,8 +314,7 @@ export class FeedbackDrainStore {
     if (checkpoint.schemaVersion !== 1 || createHash('sha256').update(JSON.stringify(payload)).digest('hex') !== checkpoint.manifestChecksum) {
       throw new DrainConflictError('feedback drain checkpoint manifest checksum is invalid');
     }
-    const stat = fs.statSync(this.dbPath);
-    const currentIdentity = `${stat.dev}:${stat.ino}`;
+    const currentIdentity = sqliteFileIdentity(this.dbPath);
     if (currentIdentity === checkpoint.dbFileIdentity) return false;
     const currentChecksum = createHash('sha256').update(fs.readFileSync(this.dbPath)).digest('hex');
     if (currentChecksum !== checkpoint.checksum || this.ownerAuthorityEpoch() !== checkpoint.ownerAuthorityEpoch) {
@@ -746,7 +752,7 @@ export class FeedbackDrainStore {
     const restoredDbChecksum = createHash('sha256').update(fs.readFileSync(this.dbPath)).digest('hex');
     if (checkpoint.schemaVersion !== 1 || checkpoint.manifestChecksum !== expectedManifest || input.manifestChecksum !== checkpoint.manifestChecksum ||
         input.snapshotId !== checkpoint.snapshotId || checkpoint.checksum !== restoredDbChecksum || checkpoint.ownerAuthorityEpoch !== input.restoredOwnerAuthorityEpoch ||
-        checkpoint.dbFileIdentity === `${fs.statSync(this.dbPath).dev}:${fs.statSync(this.dbPath).ino}`) {
+        checkpoint.dbFileIdentity === sqliteFileIdentity(this.dbPath)) {
       throw new DrainConflictError('restored checkpoint identity or checksum verification failed');
     }
     }
