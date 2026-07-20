@@ -588,6 +588,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
+    // Both omit `enabled`: resolveDevAgentGate makes them live on development
+    // agents and dark on the fleet. v1 remains observe-only via dryRun:true.
+    correctionClassReview: {
+      dryRun: true,
+      maxReviewsPerTick: 5,
+      maxAttempts: 3,
+      maxOpenArtifacts: 50,
+      agingDays: 7,
+    },
+    completionClaimVerification: {
+      dryRun: true,
+      maxAuditBytes: 2_000_000,
+      maxQueued: 128,
+      redactIdentifiers: false,
+    },
     // Bias-to-Action standing-authorization signal (BIAS-TO-ACTION-SPEC, D8).
     // Dev-gated DARK: `enabled` is intentionally OMITTED so the development-agent
     // gate resolves it (live-on-dev / dark-on-fleet, the standard pattern). The
@@ -1621,6 +1636,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // authenticated setOperator binds the principal; Know-Your-Principal).
       topicOperator: {
         dryRun: false,
+      },
+      // Correction class-review lifecycle records are coherence-critical but
+      // ship dry-run first. `enabled` is intentionally omitted for the dev gate.
+      classReview: {
+        dryRun: true,
       },
       // Secure A2A Verified Pairing §3.8 (FD11) — `threadline-pairing-record`, the EIGHTH
       // replicated-store consumer. Replicates ONLY the verified-IDENTITY RESULT of a pairing

@@ -6383,6 +6383,23 @@ export interface MonitoringConfig {
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
   };
+  /** Un-gated correction durable-outcome drain; enabled on dev agents via DEV_GATED_FEATURES. */
+  correctionClassReview?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    maxReviewsPerTick?: number;
+    maxAttempts?: number;
+    maxOpenArtifacts?: number;
+    agingDays?: number;
+  };
+  /** Verify-Before-Done observe-only completion signal; never blocks in v1. */
+  completionClaimVerification?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    maxAuditBytes?: number;
+    maxQueued?: number;
+    redactIdentifiers?: boolean;
+  };
   /**
    * Bias-to-Action — standing-authorization signal for B17_FALSE_BLOCKER
    * (spec: docs/specs/BIAS-TO-ACTION-SPEC.md). Feeds the MessagingToneGate a

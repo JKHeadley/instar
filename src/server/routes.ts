@@ -126,6 +126,9 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
+import { validateTurnEvidence } from '../monitoring/TurnEvidence.js';
+import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
+import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/ClaimClauseArbiter.js';
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
@@ -1158,6 +1161,9 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  classReviewStore?: import('../monitoring/ClassReviewStore.js').ClassReviewStore | null;
+  correctionClassReview?: import('../monitoring/CorrectionClassReview.js').CorrectionClassReview | null;
+  completionClaimVerifier?: import('../monitoring/CompletionClaimVerifier.js').CompletionClaimVerifier | null;
   /** BlockerLedger — the resolution-workflow + memory layer completing Principle 1.
    *  Null/absent when monitoring.blockerLedger.enabled is false (default, ships dark)
    *  → /blockers/* 503s. Powers GET /blockers, GET /blockers/:id, POST /blockers,
@@ -8862,7 +8868,9 @@ export function createRoutes(ctx: RouteContext): Router {
           ),
         }
       : summary.totals;
-    res.json({ ...summary, totals, features });
+    const classReview = ctx.classReviewStore?.health() ?? null;
+    const completionClaim = ctx.completionClaimVerifier?.stats?.() ?? null;
+    res.json({ ...summary, totals, features, classReview, completionClaim });
   });
 
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
@@ -20426,7 +20434,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, description, priority, commitTo, dueBy, source, tags } = req.body;
+    const { title, description, priority, commitTo, dueBy, source } = req.body;
+    const tags = Array.isArray(req.body.tags) ? req.body.tags.filter((tag: unknown): tag is string => typeof tag === 'string') : [];
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -20440,10 +20449,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // has touched no store. (Wave 1 classifies this family machine-local ⇒
     // admit everywhere; the check still runs first in every mode, §9.15.)
     if (refuseInadmissibleWrite(req, res)) return;
-    const action = ctx.evolution.addAction({
-      title, description, priority, commitTo, dueBy, source, tags,
+    const originCorrection = tags.includes('origin:correction');
+    const admission = evaluateCorrectionInstanceFix({
+      originCorrection,
+      correctionId: typeof req.body.correctionId === 'string' ? req.body.correctionId : undefined,
+      claimedClassReviewRef: typeof req.body.classReviewRef === 'string' ? req.body.classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
     });
-    res.status(201).json(action);
+    if (!admission.allow) {
+      res.status(409).json({ error: 'correction-derived action requires a corresponding filled class review', reason: admission.reason });
+      return;
+    }
+    const stampedTags = admission.classReviewRef
+      ? [...tags.filter((tag: string) => !tag.startsWith('class-review:')), `class-review:${admission.classReviewRef}`]
+      : tags;
+    const action = ctx.evolution.addAction({
+      title, description, priority, commitTo, dueBy, source, tags: stampedTags,
+    });
+    res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
 
   router.patch('/evolution/actions/:id', (req, res) => {
@@ -20459,10 +20484,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
+    const currentAction = ctx.evolution.listActions({}).find((action) => action.id === req.params.id);
     const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
       return;
+    }
+    if (status === 'completed' && currentAction && ctx.classReviewStore) {
+      const refTag = currentAction.tags?.find((tag) => tag.startsWith('class-review:'));
+      if (refTag) ctx.classReviewStore.transitionOutcome(refTag.slice('class-review:'.length), 'process', 'shipped');
     }
     res.json({ ok: true, id: req.params.id, status });
   });
@@ -21853,7 +21883,219 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       topicId: typeof body.topicId === 'number' ? body.topicId : null,
     });
     if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    // This bearer-authenticated one-tap is agent-self. The caller cannot
+    // elevate origin with a request field; operator-attributed capture uses the
+    // authenticated messaging ingress seam.
+    ctx.correctionClassReview?.record(rec, 'agent-self');
     res.status(201).json(CorrectionLedger.toApiView(rec));
+  });
+
+  // Drive 7 WS1 read surface. Rows contain only boundary-scrubbed text and
+  // closed-enum lifecycle fields; raw CorrectionLedger.learning never appears.
+  router.get('/class-reviews', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const lifecycle = typeof req.query.status === 'string' && ['open', 'parked', 'resolved', 'superseded', 'reopened'].includes(req.query.status)
+      ? req.query.status as import('../monitoring/ClassReviewStore.js').ReviewLifecycle : undefined;
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 1000));
+    const records = ctx.classReviewStore.list({ lifecycle, limit });
+    res.json({ records, count: records.length, open: ctx.classReviewStore.countOpen() });
+  });
+
+  router.get('/class-reviews/:dedupeKey', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const record = ctx.classReviewStore.get(req.params.dedupeKey);
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.post('/class-reviews/backfill', (req, res) => {
+    if (!ctx.classReviewStore || !ctx.correctionClassReview || !ctx.correctionLedger) {
+      res.status(503).json({ error: 'correction-class-review disabled' }); return;
+    }
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.body?.limit) || 100, 1000));
+    const result = ctx.correctionClassReview.backfill(ctx.correctionLedger.list({ limit }), {}, limit);
+    const agingDays = Math.max(1, ctx.config.monitoring?.correctionClassReview?.agingDays ?? 7);
+    const activeActionIds = new Set((ctx.evolution?.listActions({ status: 'in_progress' }) ?? []).map((action) => action.id));
+    const aged = ctx.classReviewStore.ageExpiredUnreviewed(new Date(Date.now() - agingDays * 86_400_000), limit, activeActionIds);
+    if (aged.length > 0) void ctx.telegram?.createAttentionItem({
+      id: 'correction-class-review:expired-unreviewed', title: 'Correction class reviews need disposition',
+      summary: `${aged.length} proposed correction class-review arm(s) aged into parked-open status. They remain unresolved and will re-surface on the slow review cadence.`,
+      priority: 'NORMAL', category: 'general', sourceContext: 'correction-class-review-aging',
+    });
+    res.json({ ...result, aged: aged.length, dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false });
+  });
+
+  router.patch('/class-reviews/:dedupeKey/outcome', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0
+      && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const arm = req.body?.arm;
+    const outcome = req.body?.outcome;
+    if (!['standard', 'process'].includes(arm) || !['ratified', 'shipped', 'rejected', 'deferred'].includes(outcome)) {
+      res.status(400).json({ error: 'invalid arm or outcome' }); return;
+    }
+    let record;
+    if (outcome === 'deferred') {
+      if (!ctx.commitmentTracker) { res.status(503).json({ error: 'commitment tracker required for deferred disposition' }); return; }
+      const tracking = ctx.commitmentTracker.record({
+        type: 'one-time-action', source: 'manual', owner: 'agent', blockedOn: 'none',
+        userRequest: `Revisit deferred ${arm} outcome for correction class review ${req.params.dedupeKey}`,
+        agentResponse: 'I will re-surface this parked-open class review for a deliberate disposition.',
+        externalKey: `class-review-deferred:${req.params.dedupeKey}:${arm}`,
+      });
+      record = ctx.classReviewStore.defer(req.params.dedupeKey, arm, tracking.id);
+    } else {
+      record = ctx.classReviewStore.transitionOutcome(req.params.dedupeKey, arm, outcome);
+    }
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.patch('/class-reviews/:dedupeKey/lifecycle', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0 && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const action = req.body?.action;
+    let record = null;
+    if (action === 'reopen') record = ctx.classReviewStore.reopen(req.params.dedupeKey);
+    else if (action === 'supersede') {
+      if (typeof req.body?.supersededBy !== 'string' || typeof req.body?.reason !== 'string' || !req.body.reason.trim()) {
+        res.status(400).json({ error: 'supersededBy and non-empty reason are required' }); return;
+      }
+      record = ctx.classReviewStore.supersede(req.params.dedupeKey, req.body.supersededBy, { actor: 'operator-pin', reason: req.body.reason });
+    } else { res.status(400).json({ error: 'action must be reopen or supersede' }); return; }
+    if (!record) { res.status(404).json({ error: 'not found or invalid lifecycle transition' }); return; }
+    res.json(record);
+  });
+
+  const registerUnifiedFutureClaims = (input: {
+    message: string; topicId?: number; rawBindToken?: string; arbitration?: ClaimClauseArbitration;
+  }): { registered: number; reason?: string } => {
+    if (!ctx.commitmentTracker || typeof input.topicId !== 'number' || !Number.isSafeInteger(input.topicId)) {
+      return { registered: 0, reason: 'no-commitment-tracker-or-topic' };
+    }
+    const acGet = <T>(leaf: string, dflt: T): T =>
+      (ctx.liveConfig?.get<T | undefined>(`actionClaim.${leaf}`, undefined) ??
+        ctx.liveConfig?.get<T>(`messaging.actionClaim.${leaf}`, dflt)) as T;
+    if (!(acGet<boolean>('enabled', false) ?? false)) return { registered: 0, reason: 'action-claim-disabled' };
+    const topicId = input.topicId;
+    const isMinted = topicId < 0;
+    if (isMinted && !resolveDevAgentGate(acGet<boolean | undefined>('slack.enabled', undefined), ctx.config)) {
+      return { registered: 0, reason: 'slack-lane-dark' };
+    }
+    if (isMinted && (acGet<boolean>('slack.dryRun', true) ?? true)) return { registered: 0, reason: 'slack-dry-run' };
+    const bind = verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: topicId,
+      rawToken: input.rawBindToken, attention: ctx.telegram });
+    if (!bind.ok) return { registered: 0, reason: 'conversation-bind-not-authorized' };
+    const clauses = input.arbitration?.authoritative
+      ? input.arbitration.clauses.filter((clause) => clause.label === 'future-commitment').map((clause) => clause.text)
+      : [input.message];
+    let registered = 0;
+    for (const clause of clauses) {
+      const action = routeActionClaim(clause, { completionEnabled: true, completionDryRun: false },
+        input.arbitration?.authoritative
+          ? { authoritative: true, clauses: input.arbitration.clauses.filter((candidate) => candidate.text === clause) }
+          : input.arbitration);
+      let lane: 'action' | 'time'; let verb: string | undefined; let externalKey: string;
+      if (action.isActionClaim && action.claim) {
+        lane = 'action'; verb = action.claim.normalizedClaimVerb;
+        externalKey = `actionclaim:${createHash('sha256').update(`${topicId}|${verb}`).digest('hex').slice(0, 16)}`;
+      } else {
+        const timed = CommitmentTracker.detectTimePromise(clause.slice(0, 500));
+        if (!timed) continue;
+        lane = 'time';
+        externalKey = `timepromise:${createHash('sha256').update(`${topicId}|${clause.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`).digest('hex').slice(0, 16)}`;
+      }
+      const open = ctx.commitmentTracker.getActive().filter((commitment) => commitment.topicId === topicId
+        && typeof commitment.externalKey === 'string'
+        && (commitment.externalKey.startsWith('actionclaim:') || commitment.externalKey.startsWith('timepromise:')));
+      const cap = acGet<number>('perTopicCap', 5) ?? 5;
+      if (!open.some((commitment) => commitment.externalKey === externalKey) && open.length >= cap) continue;
+      ctx.commitmentTracker.record({ type: 'one-time-action', source: 'sentinel', topicId,
+        userRequest: lane === 'action' ? `(action-claim) follow through on: ${verb}` : '(time-promise) follow through on the promise made in this clause',
+        agentResponse: clause.slice(0, 500), externalKey,
+        expiresAt: new Date(Date.now() + (acGet<number>('expiresHours', 6) ?? 6) * 3_600_000).toISOString(),
+        ...(bind.boundBy ? { boundBy: bind.boundBy } : {}),
+      });
+      registered++;
+    }
+    return { registered };
+  };
+
+  // Observe-only v1. The Stop hook parses locally and sends structural-only
+  // evidence; a transcript path is never accepted by this server boundary.
+  router.post('/completion-claim/observe', (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return;
+    }
+    const message = typeof req.body?.message === 'string' ? req.body.message : '';
+    if (!message) { res.status(400).json({ error: 'message is required' }); return; }
+    if ('transcriptPath' in (req.body ?? {}) || 'transcript_path' in (req.body ?? {})) {
+      res.status(400).json({ error: 'transcript paths are not accepted; send structural TurnEvidence' }); return;
+    }
+    const evidence = validateTurnEvidence(req.body?.evidence);
+    if (!evidence) { res.status(400).json({ error: 'valid structural evidence is required' }); return; }
+    const topicId = typeof req.body?.topicId === 'number' && Number.isSafeInteger(req.body.topicId) ? req.body.topicId : undefined;
+    const rawBindHeader = req.headers['x-instar-bind-token'];
+    const rawBindToken = (Array.isArray(rawBindHeader) ? rawBindHeader[0] : rawBindHeader)
+      ?? (typeof req.body?.bindToken === 'string' ? req.body.bindToken : undefined);
+    const admission = ctx.completionClaimVerifier.enqueue(message, evidence, (arbitration) => {
+      if (ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+        registerUnifiedFutureClaims({ message, topicId, rawBindToken, arbitration });
+      }
+    });
+    if (!admission.accepted && ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+      // Queue pressure/duplicate/provider uncertainty must never suppress the
+      // already-shipped Action-Claim behavior.
+      registerUnifiedFutureClaims({ message, topicId, rawBindToken });
+    }
+    const status = admission.accepted ? 202 : admission.reason === 'queue-full' ? 429 : 200;
+    res.status(status).json({ observed: admission.accepted, queued: admission.accepted, blocked: false,
+      evidenceAvailable: !evidence.unavailable, canaryOk: evidence.canaryOk, reason: admission.reason });
+  });
+
+  router.get('/completion-claim/audit', async (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    const records = ctx.completionClaimVerifier.readAudit(limit);
+    if (req.query.scope !== 'pool') { res.json({ records, count: records.length, scope: 'local' }); return; }
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    const remote: Array<Record<string, unknown>> = [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    await Promise.all(peers.map(async (peer) => {
+      if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) {
+        failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
+      }
+      try {
+        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}` }); return; }
+        const body = await response.json() as { records?: Array<Record<string, unknown>> };
+        for (const row of (body.records ?? []).slice(0, limit)) {
+          // Explicit allowlist: peer audit prose and unknown fields never cross.
+          remote.push({ machineId: peer.machineId, remote: true,
+            ...(typeof row.ts === 'string' ? { ts: row.ts.slice(0, 64) } : {}),
+            ...(typeof row.evaluated === 'boolean' ? { evaluated: row.evaluated } : {}),
+            ...(typeof row.flagged === 'boolean' ? { flagged: row.flagged } : {}),
+            ...(typeof row.dryRun === 'boolean' ? { dryRun: row.dryRun } : {}),
+            ...(typeof row.verdict === 'string' ? { verdict: row.verdict.slice(0, 64) } : {}),
+            ...(typeof row.actionKind === 'string' ? { actionKind: row.actionKind.slice(0, 64) } : {}),
+            ...(typeof row.hadToolCalls === 'boolean' ? { hadToolCalls: row.hadToolCalls } : {}),
+          });
+        }
+      } catch (error) { failed.push({ machineId: peer.machineId, error: error instanceof Error ? error.name : 'unreachable' }); }
+    }));
+    const merged = [...records.map((row) => ({ ...row, remote: false })), ...remote].slice(0, limit * (peers.length + 1));
+    res.json({ records: merged, count: merged.length, scope: 'pool', pool: { peersQueried: peers.length, failed } });
   });
 
   // The recurrence analyzer + closed-loop tick (Correction & Preference Learning
@@ -24573,7 +24815,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             softDeadlineAt, hardDeadlineAt, sessionEpoch,
             ownerMachineId, externalKey, beaconCreatedBySource,
             // C1+C2 "The Agent Carries the Loop" state model (§4.1).
-            owner, blockedOn, actionClass, supersededBy } = req.body;
+            owner, blockedOn, actionClass, supersededBy,
+            correctionId, classReviewRef, origin } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
@@ -24581,6 +24824,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (!['config-change', 'behavioral', 'one-time-action'].includes(type)) {
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
+      return;
+    }
+    const correctionDerived = origin === 'correction' || typeof correctionId === 'string' || typeof classReviewRef === 'string';
+    const classReviewAdmission = evaluateCorrectionInstanceFix({
+      originCorrection: correctionDerived,
+      correctionId: typeof correctionId === 'string' ? correctionId : undefined,
+      claimedClassReviewRef: typeof classReviewRef === 'string' ? classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
+    });
+    if (!classReviewAdmission.allow) {
+      res.status(409).json({ error: 'correction-derived commitment requires a corresponding filled class review', reason: classReviewAdmission.reason });
       return;
     }
     // Beacon validation: must have topicId and at least one deadline marker.
@@ -24635,6 +24891,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         softDeadlineAt, hardDeadlineAt, sessionEpoch,
         ownerMachineId, externalKey, beaconCreatedBySource,
         owner, blockedOn, actionClass, supersededBy,
+        ...(typeof correctionId === 'string' ? { correctionId } : {}),
+        ...(classReviewAdmission.classReviewRef ? { classReviewRef: classReviewAdmission.classReviewRef } : {}),
         ...(boundBy ? { boundBy } : {}),
       });
       // §6.1 dark-window honesty (adversarial-A6/NEW#4): while followThrough
@@ -24658,7 +24916,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         } catch { /* attention is observability */ }
       }
-      res.status(201).json(commitment);
+      res.status(201).json({ ...commitment, classReviewAdmission: {
+        wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
+      } });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -24755,6 +25015,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { message, topicId } = req.body ?? {};
     if (typeof message !== 'string' || typeof topicId !== 'number') {
       res.status(400).json({ error: 'message (string) and topicId (number) are required' });
+      return;
+    }
+    const completionLive = !!ctx.completionClaimVerifier
+      && resolveDevAgentGate(ctx.config.monitoring?.completionClaimVerification?.enabled, ctx.config)
+      && ctx.config.monitoring?.completionClaimVerification?.dryRun === false;
+    if (completionLive && ctx.completionClaimVerifier!.getRecentAuthoritativeArbitration(message)?.authoritative) {
+      res.json({ observed: true, registered: false, reason: 'shared-arbiter-authoritative' });
       return;
     }
     const numericTopicId = Number.isSafeInteger(topicId) ? topicId : undefined;

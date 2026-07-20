@@ -293,6 +293,24 @@ describe('BackupManager', () => {
       expect(fs.readFileSync(path.join(stateDir, 'AGENT.md'), 'utf-8')).toBe('# Agent Identity\nI am a test agent.');
     });
 
+    it('round-trips retained class-review state and bounded completion evidence', () => {
+      fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(stateDir, 'class-reviews.db'), 'sqlite-main');
+      fs.writeFileSync(path.join(stateDir, 'class-reviews.db-wal'), 'sqlite-wal');
+      fs.writeFileSync(path.join(stateDir, 'logs', 'completion-claim-audit.jsonl'), '{"flagged":false}\n');
+      fs.writeFileSync(path.join(stateDir, 'logs', 'completion-claim-stats.json'), '{"candidateTurns":1}\n');
+      const manager = new BackupManager(stateDir);
+      const snapshot = manager.createSnapshot('manual');
+      expect(snapshot.files).toEqual(expect.arrayContaining([
+        'class-reviews.db', 'class-reviews.db-wal', 'logs/completion-claim-audit.jsonl', 'logs/completion-claim-stats.json',
+      ]));
+      fs.writeFileSync(path.join(stateDir, 'class-reviews.db'), 'corrupt');
+      fs.writeFileSync(path.join(stateDir, 'logs', 'completion-claim-stats.json'), '{}');
+      manager.restoreSnapshot(snapshot.id);
+      expect(fs.readFileSync(path.join(stateDir, 'class-reviews.db'), 'utf8')).toBe('sqlite-main');
+      expect(fs.readFileSync(path.join(stateDir, 'logs', 'completion-claim-stats.json'), 'utf8')).toContain('candidateTurns');
+    });
+
     it('creates a pre-restore backup before restoring', () => {
       const manager = new BackupManager(stateDir);
       const snapshot = manager.createSnapshot('manual');

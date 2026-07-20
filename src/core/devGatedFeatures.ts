@@ -598,6 +598,24 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'LLM-Decision Quality Meter uniform provenance seam (docs/specs/llm-decision-quality-meter.md §5.7) — the router-settlement side write that records each ENROLLED LLM decision (a ~250-byte decision_quality row always; a provenance JSONL row per the census volume valve) so per-decision-point right/wrong/unknown grading has parents. Read surface: GET /decision-quality (503 when the seam resolves off). dryRun defaults TRUE even on dev — metadata-only would-write logs, ALL durable writes suppressed — until a deliberate dryRun:false flip after the would-write soak.',
     justification: 'observe-only side write at the router-settlement seam; never gates/blocks/delays the decision call; no egress, no spend, no destructive action; failure is catch-logged.',
   },
+  {
+    name: 'correctionClassReview',
+    configPath: 'monitoring.correctionClassReview.enabled',
+    description: 'Record-time correction → standards/process class review and bounded durable-outcome drain.',
+    justification: 'Ships dryRun:true: dev agents exercise classification and would-route auditing, but create no Initiative, Action, Attention item, or blocking refusal until a deliberate dryRun:false. Bounded retries, per-tick/open-artifact caps, shared IntelligenceProvider attribution, scrubbedSummary-only egress, and no direct standards/memory writes.',
+  },
+  {
+    name: 'completionClaimVerification',
+    configPath: 'monitoring.completionClaimVerification.enabled',
+    description: 'Verify-Before-Done completion-claim corroboration against structural TurnEvidence.',
+    justification: 'Observe-only v1: never blocks, rewrites, or delays an outbound response. A broad deterministic prefilter only drops calls; unavailable evidence/provider fails toward not-flagging; transcript extraction is tail-bounded and structural-only; dryRun:true records scrubbed would-flags locally.',
+  },
+  {
+    name: 'classReviewStateSync',
+    configPath: 'multiMachine.stateSync.classReview.enabled',
+    description: 'Unified correction ClassReview lifecycle reach across the agent machine pool.',
+    justification: 'Ships dryRun:true: dev agents exercise record serialization and merge decisions without applying peer state. Replicates only scrubbed closed-enum lifecycle fields and observations, never raw correction learning; no external egress beyond the operator-owned encrypted mesh.',
+  },
 ];
 
 /**

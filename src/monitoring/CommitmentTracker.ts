@@ -75,6 +75,9 @@ export interface Commitment {
   boundBy?: string;
   /** Source: 'agent' (self-registered) or 'sentinel' (detected by LLM scanner) */
   source?: 'agent' | 'sentinel' | 'manual';
+  /** Exact motivating correction provenance for correspondence-gated work. */
+  correctionId?: string;
+  classReviewRef?: string;
 
   // ── C1+C2 "The Agent Carries the Loop" state model (owner ⟂ blockedOn) ──
   // Two ORTHOGONAL fields (spec agent-owned-followthrough §4.1, FD1/FD6):
@@ -593,6 +596,8 @@ export class CommitmentTracker extends EventEmitter {
     blockedOn?: 'none' | 'external' | 'user-input' | 'user-authorization';
     actionClass?: string;
     supersededBy?: string;
+    correctionId?: string;
+    classReviewRef?: string;
     /** §7: the verified bind principal (`session:<name>` from the verified
      *  token payload, or `server:<component>` for in-process callers) —
      *  recorded by the GATE, never trusted from a request body. */
@@ -668,6 +673,8 @@ export class CommitmentTracker extends EventEmitter {
       ...(boundTuple ? { boundTuple } : {}),
       ...(input.boundBy ? { boundBy: input.boundBy } : {}),
       source: input.source ?? 'agent',
+      ...(input.correctionId ? { correctionId: input.correctionId } : {}),
+      ...(input.classReviewRef ? { classReviewRef: input.classReviewRef } : {}),
       // C1+C2 "The Agent Carries the Loop" state model (spec §4.1).
       owner,
       blockedOn,

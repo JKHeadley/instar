@@ -1025,6 +1025,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'correctionClassReview',
+    prefixes: ['/class-reviews'],
+    description: 'Correction Class Review — durable record-time standards/process review and outcome tracking for every captured correction, independent of recurrence scoring.',
+    build: ({ ctx }) => ({
+      enabled: resolveDevAgentGate(ctx.config.monitoring?.correctionClassReview?.enabled, ctx.config),
+      endpoints: [
+        'GET /class-reviews — scrubbed review lifecycle and backlog health',
+        'GET /class-reviews/:dedupeKey — exact correction-correspondent review artifact',
+        'POST /class-reviews/backfill — bounded recovery sweep (requires X-Instar-Request)',
+        'PATCH /class-reviews/:dedupeKey/outcome — operator-PIN disposition of one standards/process arm',
+      ],
+      hint: 'Development-gated, dry-run first, and fleet-dark. The intelligence pass may propose but cannot ratify standards. Correction recurrence remains an independent consumer.',
+    }),
+  },
+  {
     key: 'skipLedger',
     prefixes: ['/skip-ledger'],
     description: 'Skip-ledger — workload-aware idempotency',
@@ -1335,6 +1350,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'usher', reason: 'operator-only observability — the mid-task re-surface signal pull surface + its precision metrics; signal-only, the agent-facing payoff is the future gated injection (rung 5), not a discoverable endpoint' },
   { prefix: 'rate-limit', reason: 'operator-only rate-limit-sentinel observability — agent-facing surface is the sentinel’s own notices' },
   { prefix: 'action-claim', reason: 'internal Stop-hook ingest for the action-claim follow-through sentinel (dark by default, messaging.actionClaim.enabled) — the hook posts here; the agent-facing payoff is the silent follow-through commitment, not a discoverable endpoint' },
+  { prefix: 'completion-claim', reason: 'internal observe-only Stop-hook ingest and operator audit for Verify Before Done; the agent-facing behavior is the structural evidence discipline, not direct HTTP use' },
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
   { prefix: 'flows', reason: 'surfaced inside `evolution` subsystems' },

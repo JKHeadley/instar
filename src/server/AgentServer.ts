@@ -85,6 +85,10 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { ClassReviewStore } from '../monitoring/ClassReviewStore.js';
+import { CorrectionClassReview } from '../monitoring/CorrectionClassReview.js';
+import { CompletionClaimVerifier } from '../monitoring/CompletionClaimVerifier.js';
+import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
 import { SelfUnblockRunStore, SelfUnblockChecklist } from '../monitoring/SelfUnblockChecklist.js';
@@ -119,6 +123,7 @@ import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
@@ -187,6 +192,7 @@ import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/Me
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
+import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -382,6 +388,9 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private classReviewStore: ClassReviewStore | null = null;
+  private correctionClassReview: CorrectionClassReview | null = null;
+  private completionClaimVerifier: CompletionClaimVerifier | null = null;
   private blockerLedger: BlockerLedger | null = null;
   /** Self-Unblock checklist run store (the read surface + the store BlockerLedger verifies). */
   private selfUnblockRunStore: SelfUnblockRunStore | null = null;
@@ -429,6 +438,12 @@ export class AgentServer {
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
   private telegramAdapter: TelegramAdapter | null = null;
+
+  /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
+   * local + peer lifecycle rows at its lowest read primitive. */
+  setClassReviewRemoteReader(reader: import('../monitoring/ClassReviewStore.js').ClassReviewRemoteReader | null): void {
+    this.classReviewStore?.setRemoteReader(reader);
+  }
 
   constructor(options: {
     config: InstarConfig;
@@ -2168,6 +2183,109 @@ export class AgentServer {
       this.correctionLedger = null;
     }
 
+    // Drive 7 WS1 — every captured correction receives a record-time class
+    // review shell and an async standards/process judgment. The feature is live
+    // only on development agents and remains dry-run/observe-only in v1.
+    try {
+      const classReviewEnabled = resolveDevAgentGate(
+        options.config.monitoring?.correctionClassReview?.enabled,
+        options.config,
+      );
+      if (classReviewEnabled && options.config.stateDir) {
+        const cfg = options.config.monitoring?.correctionClassReview ?? {};
+        this.classReviewStore = new ClassReviewStore({
+          dbPath: path.join(options.config.stateDir, 'class-reviews.db'),
+          machineId: options.meshSelfId ?? options.config.projectName,
+        });
+        if (options.replicatedRecordEmitter) {
+          const emitter = options.replicatedRecordEmitter;
+          this.classReviewStore.setReplicationEmitter({
+            emitPut: (record) => emitter.emit(
+              CLASS_REVIEW_STORE_KEY,
+              record.dedupeKey,
+              (hlc, origin, observed) => buildClassReviewRecordData({ record, hlc, op: 'put', origin, observed }),
+            ),
+          });
+        }
+        this.correctionClassReview = new CorrectionClassReview({
+          store: this.classReviewStore,
+          intelligence: options.intelligence,
+          dryRun: cfg.dryRun !== false,
+          maxAttempts: cfg.maxAttempts,
+          maxReviewsPerTick: cfg.maxReviewsPerTick,
+          maxOpenArtifacts: cfg.maxOpenArtifacts,
+          admitCorrectionAction: ({ correctionId, classReviewRef }) => evaluateCorrectionInstanceFix({
+            originCorrection: true, correctionId, claimedClassReviewRef: classReviewRef,
+            dryRun: cfg.dryRun !== false,
+            correctionLedger: this.correctionLedger,
+            classReviewStore: this.classReviewStore,
+          }),
+          standardTitles: () => {
+            try {
+              const registry = fs.readFileSync(path.join(options.config.projectDir, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
+              return [...registry.matchAll(/^###\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 100);
+            } catch { return []; }
+          },
+          createInitiative: options.initiativeTracker ? async (input) => {
+            const created = await options.initiativeTracker!.create({
+              id: String(input.id), title: String(input.title), description: String(input.description),
+              phases: [{ id: 'operator-ratification', name: 'Operator ratification' }],
+              needsUser: true,
+              needsUserReason: 'Standards amendments require explicit operator ratification.',
+            });
+            return { id: created.id };
+          } : undefined,
+          addAction: options.evolution ? (input) => {
+            const recovery = input.origin === 'correction-class-review-recovery';
+            const action = options.evolution!.addAction({
+              title: String(input.title),
+              description: `Correction-derived process improvement. classReviewRef=${String(input.classReviewRef)}; autonomous execution is forbidden.`,
+              priority: 'medium', source: { platform: 'correction-class-review', context: 'process-gap' },
+              tags: [recovery ? 'origin:class-review-recovery' : 'origin:correction', `class-review:${String(input.classReviewRef)}`],
+            });
+            return { id: action.id };
+          } : undefined,
+          audit: (event) => {
+            try {
+              const audit = path.join(options.config.stateDir!, 'logs', 'correction-class-review.jsonl');
+              fs.mkdirSync(path.dirname(audit), { recursive: true });
+              fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, { mode: 0o600 });
+            } catch { /* fail-open audit */ }
+          },
+        });
+      }
+      const completionEnabled = resolveDevAgentGate(
+        options.config.monitoring?.completionClaimVerification?.enabled,
+        options.config,
+      );
+      if (completionEnabled && options.config.stateDir) {
+        const cfg = options.config.monitoring?.completionClaimVerification ?? {};
+        this.completionClaimVerifier = new CompletionClaimVerifier({
+          intelligence: options.intelligence,
+          stateDir: options.config.stateDir,
+          enabled: true,
+          dryRun: cfg.dryRun !== false,
+          maxAuditBytes: cfg.maxAuditBytes,
+          maxQueued: cfg.maxQueued,
+        });
+        const completionVerifier = this.completionClaimVerifier;
+        runTurnEvidenceBootCanary((reason) => {
+          completionVerifier.recordCanaryDrift();
+          try {
+            const audit = path.join(options.config.stateDir!, 'logs', 'completion-claim-audit.jsonl');
+            fs.mkdirSync(path.dirname(audit), { recursive: true });
+            fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), evaluated: false,
+              flagged: false, event: 'turn-evidence-canary-drift', reason })}\n`, { mode: 0o600 });
+          } catch { /* once-only drift signal must not break boot */ }
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] correction-class-review init failed (non-fatal):', err);
+      this.classReviewStore = null;
+      this.correctionClassReview = null;
+      this.completionClaimVerifier = null;
+    }
+
     // BlockerLedger (docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md, Piece 1)
     // — the resolution-workflow + memory layer completing Principle 1 ("almost
     // every blocker is a false blocker — work it through"). Dev-gated dark feature
@@ -3061,6 +3179,9 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      classReviewStore: this.classReviewStore,
+      correctionClassReview: this.correctionClassReview,
+      completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,

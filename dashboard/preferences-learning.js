@@ -227,6 +227,81 @@ export function renderCorrections(doc, target, body, now = Date.now()) {
   }
 }
 
+export function renderClassReviews(doc, target, body) {
+  if (!target) return;
+  target.replaceChildren();
+  if (body && body.disabled) {
+    target.appendChild(el(doc, 'p', 'ph-empty', 'Class review is still dark on this agent.'));
+    return;
+  }
+  const records = body && Array.isArray(body.records) ? body.records.slice(0, 20) : [];
+  if (!records.length) { target.appendChild(el(doc, 'p', 'ph-empty', 'No class reviews yet.')); return; }
+  for (const record of records) {
+    const item = doc.createElement('details');
+    item.setAttribute('class', 'ph-item');
+    const heading = doc.createElement('summary');
+    heading.setAttribute('class', 'ph-item-summary');
+    heading.appendChild(el(doc, 'div', 'ph-item-text', `${friendlyReviewValue(record.standardReview?.verdict || record.fillState, 'Review pending')} · ${friendlyReviewValue(record.processReview?.verdict, 'Process review pending')}`));
+    item.appendChild(heading);
+    const detail = el(doc, 'div', 'ph-item-body');
+    detail.appendChild(labeledRow(doc, 'Lifecycle', friendlyReviewValue(record.reviewLifecycle, 'Open')));
+    detail.appendChild(labeledRow(doc, 'Standard outcome', friendlyReviewValue(record.standardOutcome, 'Proposed')));
+    detail.appendChild(labeledRow(doc, 'Process outcome', friendlyReviewValue(record.processOutcome, 'Proposed')));
+    item.appendChild(detail);
+    target.appendChild(item);
+  }
+}
+
+export function renderCompletionAudit(doc, target, body) {
+  if (!target) return;
+  target.replaceChildren();
+  if (body && body.disabled) { target.appendChild(el(doc, 'p', 'ph-empty', 'Verify-before-done is still dark on this agent.')); return; }
+  const records = body && Array.isArray(body.records) ? body.records.slice(-20).reverse() : [];
+  if (!records.length) { target.appendChild(el(doc, 'p', 'ph-empty', 'No completion observations yet.')); return; }
+  for (const record of records) {
+    const item = doc.createElement('details');
+    item.setAttribute('class', 'ph-item');
+    const heading = doc.createElement('summary');
+    heading.setAttribute('class', 'ph-item-summary');
+    heading.appendChild(el(doc, 'div', 'ph-item-text', friendlyReviewValue(record.verdict, 'Observed')));
+    item.appendChild(heading);
+    const detail = el(doc, 'div', 'ph-item-body');
+    detail.appendChild(labeledRow(doc, 'Action', friendlyActionKind(record.actionKind)));
+    detail.appendChild(labeledRow(doc, 'Blocked', 'No — advisory only'));
+    item.appendChild(detail);
+    target.appendChild(item);
+  }
+}
+
+const REVIEW_VALUE_LABELS = Object.freeze({
+  pending: 'Review pending', filled: 'Review complete', 'dead-lettered': 'Needs a manual retry',
+  covered: 'Covered by an existing standard', 'needs-upgrade': 'Needs a standard upgrade',
+  'new-standard-needed': 'Needs a new standard', 'not-applicable': 'No class change needed',
+  'process-gap': 'Process gap found', open: 'Open', parked: 'Parked for follow-up',
+  resolved: 'Resolved', superseded: 'Combined into another review', reopened: 'Reopened',
+  proposed: 'Proposed', ratified: 'Approved', shipped: 'Shipped', rejected: 'Declined',
+  deferred: 'Parked for follow-up', 'expired-unreviewed': 'Awaiting overdue review',
+  'no-action': 'No action needed', observed: 'Observed', corroborated: 'Evidence found',
+  'uncorroborated-contradicted': 'Evidence contradicts this claim',
+  'uncorroborated-unknown': 'Evidence was not found', 'not-eligible': 'Not eligible for this check',
+  'not-evaluated': 'Not evaluated',
+});
+
+export function friendlyReviewValue(value, fallback = 'Status unavailable') {
+  return typeof value === 'string' && REVIEW_VALUE_LABELS[value]
+    ? REVIEW_VALUE_LABELS[value]
+    : fallback;
+}
+
+const ACTION_KIND_LABELS = Object.freeze({
+  sent: 'Message sent', deployed: 'Deployment', 'handed-off': 'Handoff', committed: 'Commit',
+  pushed: 'Push', merged: 'Merge', restarted: 'Restart', fixed: 'Fix', other: 'Other action',
+});
+
+export function friendlyActionKind(value) {
+  return typeof value === 'string' && ACTION_KIND_LABELS[value] ? ACTION_KIND_LABELS[value] : 'Other action';
+}
+
 /**
  * Disabled (503) state. Pinned copy + operator hint as PLAIN PROSE — no
  * `<code>`, no monospace, no config-key string (Dashboard Standard).
@@ -245,7 +320,7 @@ export function renderDisabled(doc, els) {
     det.appendChild(el(doc, 'p', 'ph-operator-hint', 'You can switch it on in this agent’s settings.'));
     els.headline.appendChild(det);
   }
-  for (const k of ['preferences', 'corrections']) {
+  for (const k of ['preferences', 'corrections', 'classReviews', 'completionAudit']) {
     if (els[k]) els[k].replaceChildren();
   }
   if (els.stamp) els.stamp.textContent = '';
@@ -255,6 +330,8 @@ export function renderDisabled(doc, els) {
 const URLS = {
   prefs: '/preferences/session-context',
   corrections: '/corrections?limit=20',
+  classReviews: '/class-reviews?limit=20',
+  completionAudit: '/completion-claim/audit?limit=20',
 };
 
 /**
@@ -280,10 +357,10 @@ export function createController(opts) {
     timerId: null,
     inFlight: null,
     active: false,
-    snapshot: { prefs: null, corrections: null },
+    snapshot: { prefs: null, corrections: null, classReviews: null, completionAudit: null },
     last200At: 0,
     consecutiveFailedTicks: 0,
-    renderedSig: { headline: null, preferences: null, corrections: null, disabled: false },
+    renderedSig: { headline: null, preferences: null, corrections: null, classReviews: null, completionAudit: null, disabled: false },
   };
 
   async function fetchOne(key, controller) {
@@ -303,7 +380,7 @@ export function createController(opts) {
     state.inFlight = controller;
     let results;
     try {
-      results = await Promise.all(['prefs', 'corrections'].map((k) => fetchOne(k, controller)));
+      results = await Promise.all(['prefs', 'corrections', 'classReviews', 'completionAudit'].map((k) => fetchOne(k, controller)));
     } catch {
       if (controller.signal && controller.signal.aborted) return;
       state.inFlight = null;
@@ -315,7 +392,7 @@ export function createController(opts) {
     if (controller.signal && controller.signal.aborted) return;
     state.inFlight = null;
     // Feature OFF (503 on EITHER endpoint) → pinned disabled copy.
-    if (results.some((r) => r.status === 503)) {
+    if (results.some((r) => ['prefs', 'corrections'].includes(r.key) && r.status === 503)) {
       state.consecutiveFailedTicks = 0;
       if (state.renderedSig.disabled !== true) {
         renderDisabled(doc, els);
@@ -327,6 +404,7 @@ export function createController(opts) {
     state.renderedSig.disabled = false;
     for (const r of results) {
       if (r.status === 200) { state.snapshot[r.key] = r.body; }
+      else if (r.status === 503) { state.snapshot[r.key] = { disabled: true }; }
     }
     state.consecutiveFailedTicks = 0;
     state.last200At = now();
@@ -350,11 +428,15 @@ export function createController(opts) {
     const stale = headlineStale();
     const prefs = state.snapshot.prefs;
     const corrections = state.snapshot.corrections;
+    const classReviews = state.snapshot.classReviews;
+    const completionAudit = state.snapshot.completionAudit;
     const prefCount = prefs && Number.isFinite(prefs.count) ? prefs.count : 0;
 
     sectionRender('headline', sig(stale, prefCount), () => renderHeadline(doc, els.headline, { prefCount, stale }));
     sectionRender('preferences', sig(prefs), () => renderPreferences(doc, els.preferences, prefs));
     sectionRender('corrections', sig(corrections), () => renderCorrections(doc, els.corrections, corrections, now()));
+    sectionRender('classReviews', sig(classReviews), () => renderClassReviews(doc, els.classReviews, classReviews));
+    sectionRender('completionAudit', sig(completionAudit), () => renderCompletionAudit(doc, els.completionAudit, completionAudit));
 
     if (els.stamp) {
       const ageS = state.last200At ? Math.max(0, Math.round((now() - state.last200At) / 1000)) : null;

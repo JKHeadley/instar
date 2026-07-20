@@ -785,6 +785,32 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Correction & preference learning sentinel.',
   },
   {
+    key: 'monitoring.correctionClassReview.enabled',
+    kind: 'config',
+    configPath: 'monitoring.correctionClassReview.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.correctionClassReview.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'CorrectionClassReview',
+    description: 'Record-time correction class review plus correspondence-bound instance-fix admission.',
+    loadBearing: true,
+    criticalPath: 'correction-derived instance fixes receive a standards and development-process class review first',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-19',
+  },
+  {
+    key: 'monitoring.completionClaimVerification.enabled',
+    kind: 'config',
+    configPath: 'monitoring.completionClaimVerification.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.completionClaimVerification.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'CompletionClaimVerifier',
+    description: 'Observe-only completion-claim corroboration against structural TurnEvidence.',
+  },
+  {
     // Sub-guard: plain-boolean flag INSIDE the correctionLearning block (not
     // `.enabled`-shaped, so the generic extractor cannot see it).
     key: 'monitoring.correctionLearning.selfViolationSignal',

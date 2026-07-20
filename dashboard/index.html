@@ -3743,6 +3743,16 @@
         <p class="ph-h-sub">Patterns I've distilled from moments you corrected me. The exact words are never stored — just a short, scrubbed summary.</p>
         <div id="plCorrections"></div>
       </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Class reviews and outcomes</h3>
+        <p class="ph-h-sub">The standard and process question each correction opened, with their independent durable outcomes.</p>
+        <div id="plClassReviews"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Verify-before-done observations</h3>
+        <p class="ph-h-sub">Advisory evidence checks from recent completion claims. This never blocks a response.</p>
+        <div id="plCompletionAudit"></div>
+      </section>
     </div>
 
     <!-- machines tab (Multi-Machine Session Pool §L2) -->
@@ -8812,6 +8822,8 @@
           headline: document.getElementById('plHeadline'),
           preferences: document.getElementById('plPreferences'),
           corrections: document.getElementById('plCorrections'),
+          classReviews: document.getElementById('plClassReviews'),
+          completionAudit: document.getElementById('plCompletionAudit'),
           stamp: document.getElementById('plStamp'),
         };
         // Raw fetch (NOT apiFetch) so the controller sees 503 itself.

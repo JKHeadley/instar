@@ -4101,6 +4101,13 @@ export class PostUpdateMigrator {
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'completion-claim-observe.js'), this.getCompletionClaimObserveHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/completion-claim-observe.js (verify-before-done observer, signal-only)');
+    } catch (err) {
+      result.errors.push(`completion-claim-observe.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'pr-hand-lease-guard.js'), this.getPrHandLeaseGuardHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/pr-hand-lease-guard.js (parallel-hand PR-lease guard, PreToolUse Bash, fail-open)');
     } catch (err) {
@@ -5326,6 +5333,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
 
+    if (!content.includes('Verify Before Done (observe-only v1)')) {
+      content += `\n- **Verify Before Done (observe-only v1).** Before claiming a same-turn action is complete, rely on real structural evidence from the tool that performed it. A Claude Stop hook reads only a bounded local transcript tail, emits scrubbed structural \`TurnEvidence\` (tool/action/safe target/success — never commands, results, secrets, or the transcript path), and records advisory completion-claim observations. It never blocks or rewrites a response. Prior-turn and background outcomes are explicitly not accused. The feature is dev-gated, dry-run first, and dark on the fleet; non-Claude frameworks no-op until they have an equivalent verified trace.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Verify Before Done awareness');
+    }
+
     // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
     // Awareness Standard: an agent that doesn't know its messages pass an LLM
     // gate judging by MEANING will assume a reword evades the self-stop rules.
@@ -5885,7 +5898,6 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
         result.upgraded.push('CLAUDE.md: cycle-record line now teaches the transcript-audit gate');
       }
     }
-
     // Registry integrity + retained pending disposal. Existing agents must learn
     // both the stricter write precondition and the non-mutating legacy audit.
     if (
@@ -9558,6 +9570,27 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         result.upgraded.push('.claude/settings.json: added Stop action-claim-followthrough hook');
       }
     }
+    {
+      // Verify-Before-Done observer: always register for migration parity; the
+      // hook itself dev-gates and noops when the route is dark/503.
+      const stopHooks = (hooks.Stop ?? []) as Array<{ matcher?: string; hooks?: Array<{ command?: string; type?: string; timeout?: number }> }>;
+      const hasCompletionClaim = stopHooks.some(e =>
+        e.hooks?.some(h => h.command?.includes('completion-claim-observe.js')),
+      );
+      if (!hasCompletionClaim) {
+        stopHooks.push({
+          matcher: '',
+          hooks: [{
+            type: 'command',
+            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/completion-claim-observe.js',
+            timeout: 6000,
+          }],
+        });
+        hooks.Stop = stopHooks;
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added Stop completion-claim-observe hook');
+      }
+    }
     if (hooks.Stop) {
       this.migrateSettingsHookPaths(hooks.Stop as unknown[], result);
       patched = true;
@@ -10698,7 +10731,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler'): string {
+  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
@@ -10721,6 +10754,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       case 'build-stop-hook': return this.getBuildStopHook();
       case 'model-tier-skill-entry': return this.getModelTierSkillEntryHook();
       case 'model-tier-reconciler': return this.getModelTierReconcilerHook();
+      case 'completion-claim-observe': return this.getCompletionClaimObserveHook();
     }
   }
 
@@ -13153,6 +13187,128 @@ process.stdin.on('end', async () => {
     // bad stdin — ignore
   }
   process.exit(0); // ALWAYS exit 0 — never block a turn
+});
+`;
+  }
+
+  private getCompletionClaimObserveHook(): string {
+    return `#!/usr/bin/env node
+// Verify-Before-Done — observe-only Stop hook.
+// Reads a bounded Claude transcript tail LOCALLY and sends structural metadata
+// only. It never sends transcript_path, commands, tool results, or raw inputs.
+let data = '';
+process.stdin.on('data', chunk => (data += chunk));
+process.stdin.on('end', async () => {
+  try {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const crypto = await import('node:crypto');
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+    const cfg = JSON.parse(fs.readFileSync(path.join(projectDir, '.instar', 'config.json'), 'utf8'));
+    const feature = cfg.monitoring && cfg.monitoring.completionClaimVerification || {};
+    const enabled = feature.enabled !== undefined ? feature.enabled === true : cfg.developmentAgent === true;
+    if (!enabled) process.exit(0);
+    const input = JSON.parse(data || '{}');
+    const message = String(input.last_assistant_message || '').slice(0, 16384);
+    // High-recall, drop-only prefilter BEFORE any transcript I/O.
+    if (!message || !/\\b(done|sent|ship|shipped|deploy|deployed|handed|commit|committed|push|pushed|merge|merged|restart|restarted|fixed|live|getting\\s+.+\\s+done)\\b/i.test(message)) process.exit(0);
+    const transcript = typeof input.transcript_path === 'string' ? path.resolve(input.transcript_path) : '';
+    const claudeRoot = path.resolve(os.homedir(), '.claude', 'projects');
+    if (!transcript || (transcript !== claudeRoot && !transcript.startsWith(claudeRoot + path.sep))) process.exit(0);
+    const stat = fs.statSync(transcript);
+    if (!stat.isFile()) process.exit(0);
+    const max = 512 * 1024;
+    const start = Math.max(0, stat.size - max);
+    const fd = fs.openSync(transcript, 'r');
+    const buf = Buffer.alloc(stat.size - start);
+    try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
+    const lines = buf.toString('utf8').split('\\n');
+    if (start > 0) lines.shift();
+    const rows = [];
+    for (const line of lines) { try { if (line.trim()) rows.push(JSON.parse(line)); } catch {} }
+    let boundary = -1;
+    const isObj = value => value && typeof value === 'object' && !Array.isArray(value);
+    for (let i = 0; i < rows.length; i++) {
+      const m = isObj(rows[i].message) ? rows[i].message : {};
+      const content = Array.isArray(m.content) ? m.content : Array.isArray(rows[i].content) ? rows[i].content : [];
+      const toolResultOnly = content.length > 0 && content.every(block => isObj(block) && block.type === 'tool_result');
+      if (!toolResultOnly && (rows[i].type === 'user' || rows[i].role === 'user' || m.role === 'user')) boundary = i;
+    }
+    const calls = new Map();
+    let anon = 0;
+    const scrub = text => String(text)
+      .replace(/gh[pousr]_[A-Za-z0-9]{20,}/g, 'gh***_REDACTED')
+      .replace(/\b(sk|pk|rk)-[A-Za-z0-9]{16,}/g, '$1-REDACTED')
+      .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, 'xox*-REDACTED')
+      .replace(/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, 'TELEGRAM_BOT_TOKEN_REDACTED')
+      .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, 'AWS_ACCESS_KEY_REDACTED')
+      .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b/g, 'JWT_REDACTED');
+    const safe = value => {
+      const text = typeof value === 'number' ? String(value) : value;
+      if (typeof text !== 'string' || !/^[a-zA-Z0-9._/@:+-]{1,200}$/.test(text)) return undefined;
+      const cleaned = scrub(text).slice(0, 256);
+      return feature.redactIdentifiers === true
+        ? 'id:' + crypto.createHash('sha256').update(cleaned.split('/').pop() || cleaned).digest('hex').slice(0, 16)
+        : cleaned;
+    };
+    const extract = (name, rawInput) => {
+      const x = isObj(rawInput) ? rawInput : {};
+      const base = { tool: String(name).slice(0, 100), actionKind: 'other', ok: true };
+      if (name === 'Bash' || name === 'functions.exec_command') {
+        const command = typeof x.command === 'string' ? x.command : typeof x.cmd === 'string' ? x.cmd : '';
+        if (!/[;&|\\x60\\n\\r]/.test(command)) {
+          const push = command.trim().match(/^git\\s+push(?:\\s+--[a-z-]+)*\\s+([^\\s]+)(?:\\s+([^\\s]+))?$/i);
+          if (push) return { ...base, actionKind: 'pushed', targetSummary: [safe(push[1]), safe(push[2])].filter(Boolean).join('/') || undefined };
+          if (/^git\\s+commit(?:\\s+.*)?$/i.test(command.trim())) return { ...base, actionKind: 'committed' };
+          const merge = command.trim().match(/^git\\s+merge\\s+([^\\s]+)$/i);
+          if (merge) return { ...base, actionKind: 'merged', targetSummary: safe(merge[1]) };
+        }
+        return base;
+      }
+      if (['Edit','Write','MultiEdit','functions.apply_patch'].includes(name)) return { ...base, actionKind: 'fixed', targetSummary: typeof x.file_path === 'string' ? safe(path.basename(x.file_path)) : undefined };
+      if (/slack|telegram|send_message|reply/i.test(name)) return { ...base, actionKind: 'sent', targetSummary: safe(x.channel) || safe(x.topicId) || safe(x.target) };
+      if (/deploy/i.test(name)) return { ...base, actionKind: 'deployed', targetSummary: safe(x.project) };
+      if (/merge/i.test(name)) return { ...base, actionKind: 'merged', targetSummary: safe(x.pull_number) };
+      return base;
+    };
+    const result = block => {
+      const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : typeof block.id === 'string' ? block.id : '';
+      const item = calls.get(id);
+      if (item && (block.is_error === true || block.error != null || block.success === false)) calls.set(id, { ...item, ok: false, errorClass: 'tool-error' });
+    };
+    for (const row of rows.slice(boundary + 1)) {
+      const m = isObj(row.message) ? row.message : {};
+      const content = Array.isArray(m.content) ? m.content : Array.isArray(row.content) ? row.content : [];
+      for (const block of content) {
+        if (!isObj(block)) continue;
+        if (block.type === 'tool_use' && typeof block.name === 'string') calls.set(typeof block.id === 'string' ? block.id : 'anon-' + anon++, extract(block.name, block.input));
+        else if (block.type === 'tool_result') result(block);
+      }
+      if (row.type === 'tool_result') result(row);
+    }
+    const evidence = { hadToolCalls: calls.size > 0, toolCalls: [...calls.values()].slice(-200), truncated: start > 0, unavailable: false, canaryOk: rows.length === 0 || boundary >= 0 || calls.size > 0 };
+    const auth = typeof cfg.authToken === 'string' ? cfg.authToken : process.env.INSTAR_AUTH_TOKEN || '';
+    const topicRaw = process.env.INSTAR_CONVERSATION_ID;
+    const topicId = topicRaw && Number.isFinite(Number(topicRaw)) ? Number(topicRaw) : undefined;
+    const bindToken = process.env.INSTAR_BIND_TOKEN;
+    const controller = new AbortController();
+    // Dispatch and leave the hook path without awaiting either HTTP admission
+    // or intelligence. One short event-loop turn lets the localhost write
+    // begin; the hard exit bounds Stop-hook latency independently of server
+    // health while the server owns all durable async processing.
+    void fetch('http://127.0.0.1:' + (cfg.port || 4040) + '/completion-claim/observe', {
+        method: 'POST',
+        headers: Object.assign(
+          { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + auth, 'X-Instar-Request': '1' },
+          bindToken ? { 'X-Instar-Bind-Token': bindToken } : {},
+        ),
+        body: JSON.stringify({ message, evidence, topicId }), signal: controller.signal,
+      }).catch(() => {});
+    setTimeout(() => { controller.abort(); process.exit(0); }, 25);
+    return;
+  } catch {}
+  process.exit(0); // signal-only; never blocks or rewrites a turn
 });
 `;
   }

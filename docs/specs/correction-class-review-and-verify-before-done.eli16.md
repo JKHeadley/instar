@@ -61,6 +61,9 @@ rewrite a rule on its own. The riskiest new power — a gate that blocks creatin
 fix until the class-review exists — ships in "would-block, just log it" mode first, and the
 decision to make it really block is the operator's, on evidence.
 
+Class reviews follow the agent across its machines, while completion evidence stays on the
+machine that produced that turn and is shown to the pool only through a scrubbed read view.
+
 ## The honest limits
 
 - The completion-check runs on Claude Code (it reads that harness's session transcript for

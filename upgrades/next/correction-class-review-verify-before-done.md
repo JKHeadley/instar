@@ -1,0 +1,23 @@
+<!-- bump: patch -->
+
+## What Changed
+
+- Added a durable, record-time standards and development-process class review for every captured correction on development agents, independently of recurrence scoring.
+- Added Verify Before Done as an observe-only completion-claim signal backed by bounded structural turn evidence.
+- Added lifecycle, dashboard, backup, multi-machine, and recovery surfaces for both mechanisms under development gates and dry-run-first posture.
+
+## What to Tell Your User
+
+On development agents, a correction now immediately gets a durable review of both the missing standard and the process gap that allowed the broader class, instead of waiting for the same problem to recur. Completion assertions such as “pushed,” “sent,” or “deployed” also gain an advisory evidence check. This release records signals and outcomes without blocking replies or granting the agent authority to ratify its own standards changes.
+
+## Summary of New Capabilities
+
+- Every captured correction can be followed from its exact correction key through standards and process outcomes, bounded retries, and deliberate disposition.
+- Claude Code turns can emit a scrubbed structural evidence summary from a bounded transcript tail; Instar compares same-turn completion claims with that evidence and records advisory results.
+- Standards changes remain operator-ratified, correction-derived work is correspondence-gated, and fleet defaults remain dark.
+
+## Evidence
+
+- `src/monitoring/CorrectionClassReview.ts` and `src/monitoring/ClassReviewStore.ts`.
+- `src/monitoring/TurnEvidence.ts`, `src/monitoring/ClaimClauseArbiter.ts`, and `src/monitoring/CompletionClaimVerifier.ts`.
+- `tests/unit/correction-class-review.test.ts`, `tests/unit/turn-evidence-completion-verifier.test.ts`, and the WS1 integration/E2E acceptance suites.

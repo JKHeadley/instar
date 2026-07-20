@@ -4480,6 +4480,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // `multiMachine.stateSync.preferences.enabled` (default false ⇒ strict no-op).
     const { PREF_KIND_REGISTRATION } = await import('../core/PreferencesReplicatedStore.js');
     replicatedKindRegistry.register(PREF_KIND_REGISTRATION);
+    const { CLASS_REVIEW_KIND_REGISTRATION } = await import('../core/ClassReviewReplicatedStore.js');
+    replicatedKindRegistry.register(CLASS_REVIEW_KIND_REGISTRATION);
 
     // WS2.3 (ws23-relationships-userregistry-security) — register the SECOND concrete
     // replicated kind, `relationship-record`, onto the registry: the FIRST PII kind.
@@ -13291,6 +13293,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Census #8 (the E4a liar): when re-pointing is enabled and the ledger knows the `~/.claude`
     // tenant, the badge resolves from the ledger — NOT a stale `claude auth status` re-probe.
     const inUseAccountResolver = new InUseAccountResolver({ locationGate: credentialLocationGate });
+    // Late-bound across messaging-capture setup and the post-evolution
+    // class-review outcome wiring below.
+    let recordCorrectionClassReview:
+      | ((record: import('../monitoring/CorrectionLedger.js').CorrectionRecord) => void)
+      | undefined;
+    let correctionLedgerForClassReview: import('../monitoring/CorrectionLedger.js').CorrectionLedger | undefined;
 
     // EnrollmentWizard — mobile-first new-account login (P2.1 of the Subscription
     // & Auth Standard). Dark with the pool: the /subscription-pool/enroll routes
@@ -14025,6 +14033,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const correctionLedger = new CorrectionLedger({
               dbPath: path.join(config.stateDir, 'correction-ledger.db'),
             });
+            correctionLedgerForClassReview = correctionLedger;
             // Per-sentinel LlmQueue — object opts (do NOT pass a bare number; that
             // is the latent PresenceProxy bug §2). Dedicated daily cap.
             const correctionLlmQueue = new LlmQueue({
@@ -14111,6 +14120,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                       llmAvailable: () => llmCircuitAvailable(),
                       ttlMs: backlogTtlMs,
                       audit: (e) => correctionAudit({ decision: e.decision, topicId: e.topicId, detail: e.detail }),
+                      onRecorded: (record) => recordCorrectionClassReview?.(record),
                     },
                     backlogDrainPerTick,
                   );
@@ -14142,6 +14152,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   rateCeiling: { maxPerWindow: cl.distillPerTopicRatePerMinute ?? 8, windowMs: 60_000 },
                   backlog: captureBacklog,
                   audit: correctionAudit,
+                  onRecorded: (record) => recordCorrectionClassReview?.(record),
                 },
                 {
                   topicId: entry.topicId ?? null,
@@ -17249,6 +17260,100 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     const { InitiativeTracker } = await import('../core/InitiativeTracker.js');
     const initiativeTracker = new InitiativeTracker(config.stateDir);
+
+    // Drive 7 WS1 — bind the automated operator-attributed capture path to the
+    // same record-time class-review store used by the HTTP surface. This seam is
+    // independent of recurrence: every successful durable CorrectionLedger
+    // write invokes it, including backlog-drain writes.
+    if (sharedIntelligence && resolveDevAgentGate(config.monitoring?.correctionClassReview?.enabled, config)) {
+      try {
+        const [{ ClassReviewStore }, { CorrectionClassReview }] = await Promise.all([
+          import('../monitoring/ClassReviewStore.js'),
+          import('../monitoring/CorrectionClassReview.js'),
+        ]);
+        const { evaluateCorrectionInstanceFix } = await import('../monitoring/CorrectionInstanceFixGate.js');
+        const classReviewCfg = config.monitoring?.correctionClassReview ?? {};
+        const classReviewStore = new ClassReviewStore({
+          dbPath: path.join(config.stateDir, 'class-reviews.db'),
+          machineId: coordinator.identity?.machineId ?? os.hostname(),
+        });
+        if (replicatedRecordEmitter) {
+          const { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } = await import('../core/ClassReviewReplicatedStore.js');
+          classReviewStore.setReplicationEmitter({
+            emitPut: (record) => replicatedRecordEmitter.emit(
+              CLASS_REVIEW_STORE_KEY,
+              record.dedupeKey,
+              (hlc, origin, observed) => buildClassReviewRecordData({ record, hlc, op: 'put', origin, observed }),
+            ),
+          });
+        }
+        if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
+          const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
+          classReviewStore.setRemoteReader({
+            get: (dedupeKey) => replicatedPeerStreamReader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
+              .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
+            keys: () => replicatedPeerStreamReader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
+          });
+        }
+        const classReviewAuditPath = path.join(config.stateDir, 'logs', 'correction-class-review.jsonl');
+        const classReview = new CorrectionClassReview({
+          store: classReviewStore,
+          intelligence: sharedIntelligence,
+          dryRun: classReviewCfg.dryRun !== false,
+          maxAttempts: classReviewCfg.maxAttempts,
+          maxReviewsPerTick: classReviewCfg.maxReviewsPerTick,
+          maxOpenArtifacts: classReviewCfg.maxOpenArtifacts,
+          admitCorrectionAction: ({ correctionId, classReviewRef }) => evaluateCorrectionInstanceFix({
+            originCorrection: true, correctionId, claimedClassReviewRef: classReviewRef,
+            dryRun: classReviewCfg.dryRun !== false,
+            correctionLedger: correctionLedgerForClassReview ?? null,
+            classReviewStore,
+          }),
+          standardTitles: () => {
+            try {
+              const registry = fs.readFileSync(path.join(config.projectDir, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
+              return [...registry.matchAll(/^###\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 100);
+            } catch { return []; }
+          },
+          createInitiative: async (input) => {
+            const created = await initiativeTracker.create({
+              id: String(input.id), title: String(input.title), description: String(input.description),
+              phases: [{ id: 'operator-ratification', name: 'Operator ratification' }],
+              needsUser: true,
+              needsUserReason: 'Standards amendments require explicit operator ratification.',
+            });
+            return { id: created.id };
+          },
+          addAction: (input) => {
+            const recovery = input.origin === 'correction-class-review-recovery';
+            const action = evolution.addAction({
+              title: String(input.title),
+              description: `Correction-derived process improvement. classReviewRef=${String(input.classReviewRef)}; autonomous execution is forbidden.`,
+              priority: 'medium',
+              source: { platform: 'correction-class-review', context: 'process-gap' },
+              tags: [recovery ? 'origin:class-review-recovery' : 'origin:correction', `class-review:${String(input.classReviewRef)}`],
+            });
+            return { id: action.id };
+          },
+          attentionRoute: async (input) => {
+            await telegram?.createAttentionItem({
+              id: `correction-class-review:${input.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 48)}`,
+              title: input.title, summary: input.body, priority: input.priority === 'high' ? 'HIGH' : 'NORMAL',
+              category: 'general', sourceContext: 'correction-class-review',
+            });
+          },
+          audit: (event) => {
+            try {
+              fs.mkdirSync(path.dirname(classReviewAuditPath), { recursive: true });
+              fs.appendFileSync(classReviewAuditPath, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, { mode: 0o600 });
+            } catch { /* @silent-fallback-ok — audit is best-effort */ }
+          },
+        });
+        recordCorrectionClassReview = (record) => { classReview.record(record, 'operator-attributed'); };
+      } catch (error) {
+        console.warn('[CorrectionClassReview] automated capture wiring unavailable:', (error as Error).message);
+      }
+    }
 
     // Project-scope Phase 1.9 — wire the digest cache writer so every
     // project mutation re-renders `.instar/projects-digest.cache`. The
@@ -23320,6 +23425,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
+      const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
+      const reader = replicatedPeerStreamReader;
+      server.setClassReviewRemoteReader({
+        get: (dedupeKey) => reader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
+          .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
+        keys: () => reader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
+      });
+    }
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

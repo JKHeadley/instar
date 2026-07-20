@@ -4312,6 +4312,10 @@ fi
   // Shadow-mode by default; enforcement is controlled server-side.
   fs.writeFileSync(path.join(hooksDir, 'stop-gate-router.js'), migrator.getHookContent('stop-gate-router'), { mode: 0o755 });
 
+  // Verify-Before-Done observer — structural client-side TurnEvidence, always
+  // installed; fleet-dark/dev-dry-run gating occurs inside the hook + route.
+  fs.writeFileSync(path.join(hooksDir, 'completion-claim-observe.js'), migrator.getHookContent('completion-claim-observe'), { mode: 0o755 });
+
   // Hook event reporter — posts hook events to the Instar server for observability
   // and session resumption (claudeSessionId). Uses command hooks because Claude Code
   // HTTP hooks (type: "http") silently fail to fire as of v2.1.78.

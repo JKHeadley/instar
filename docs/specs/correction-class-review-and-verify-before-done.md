@@ -784,6 +784,8 @@ backlog; not part of this WS1 build.)
 *(Heading deliberately un-numbered so `lint-machine-local-justification.js`'s `POSTURE_SECTION_RE`
 scopes the marker-contract checks to this section — integration reviewer note.)*
 
+machine-local-justification: hardware-bound-resource
+
 | Surface | Posture | Mechanism / justification |
 |---|---|---|
 | **ClassReview store** | **`unified`** | A new `multiMachine.stateSync.classReview` kind keyed on the machine-independent `dedupeKey`, replicating **only** scrubbed fields + verdicts + outcomes + status (raw `learning` NEVER crosses the wire). Makes the instance-fix gate correct cross-machine (M3), dedupes proposals fleet-wide → one Initiative per class (M4), inherits CoherenceJournal durability/backup (M10). Ships dark + dryRun-first. **See the merge/hardening/coherence rows below.** |

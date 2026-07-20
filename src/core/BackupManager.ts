@@ -137,6 +137,15 @@ const DEFAULT_CONFIG: BackupConfig = {
     // The bulky per-thread `threadline/threads/*.log.jsonl` are EXCLUDED by design
     // (large, reconstructable via backfill; the symmetry surface flags any gap).
     'threadline/conversations.json',
+    // ClassReview is the retained audit/correspondence artifact. Include the
+    // SQLite main file plus active WAL/SHM companions as one glob so restore
+    // cannot strand a filled review behind a missing journal.
+    'class-reviews.db*',
+    // Verify-Before-Done soak evidence is intentionally machine-local but must
+    // survive backup/restore on that machine. Bounded rotation is included.
+    'logs/completion-claim-audit.jsonl',
+    'logs/completion-claim-audit.jsonl.1',
+    'logs/completion-claim-stats.json',
   ],
 };
 

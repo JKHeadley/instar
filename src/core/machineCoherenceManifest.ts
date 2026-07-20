@@ -59,7 +59,7 @@ export interface CoherenceCriticalFlag {
 }
 
 /**
- * The 7 WS2 replicated stores whose per-store `enabled` (+ dryRun) is
+ * The coherence-critical replicated stores whose per-store `enabled` (+ dryRun) is
  * coherence-critical (replicated-memory reach: a non-advertising peer silently
  * drops the kind). Shipped as a CODE constant, NOT config-derived, so the
  * manifest is fleet-uniform (a fleet config with no stateSync block still
@@ -73,6 +73,7 @@ export const COHERENCE_STATE_SYNC_STORES = [
   'evolutionActions',
   'userRegistry',
   'topicOperator',
+  'classReview',
 ] as const;
 
 function stateSyncEntries(): CoherenceCriticalFlag[] {
