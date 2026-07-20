@@ -47,13 +47,11 @@ import { FeedbackInitiativeConsumer } from '../feedback-factory/drain/FeedbackIn
 import { FeedbackReadinessArbiter } from '../feedback-factory/drain/FeedbackReadinessArbiter.js';
 import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainService.js';
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
-import { ensureFeedbackFactoryGeneratedDefaults, inspectFeedbackFactoryGeneratedDefaults } from '../feedback-factory/drain/FeedbackFactoryGeneratedDefaults.js';
-import { FeedbackDrainSelfHeal } from '../feedback-factory/drain/FeedbackDrainSelfHeal.js';
+import { inspectFeedbackFactoryGeneratedDefaults } from '../feedback-factory/drain/FeedbackFactoryGeneratedDefaults.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { BackupManager } from '../core/BackupManager.js';
-import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
@@ -2110,15 +2108,6 @@ export class AgentServer {
         const holdsCanonicalLease = () => ownerHost !== null && selfMachineId === ownerHost && (options.coordinator?.enabled ? options.coordinator.holdsLease() : true);
         const isCanonicalOwner = () => !restorePending && holdsCanonicalLease();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
-        const selfHeal = options.config.stateDir ? new FeedbackDrainSelfHeal({
-          stateDir: options.config.stateDir,
-          maxAttempts: 2,
-          maxWallClockMs: 120_000,
-          raiseAttention: this.telegramAdapter?.createAttentionItem
-            ? (item) => this.telegramAdapter!.createAttentionItem({ ...item, description: item.summary, category: 'monitoring' })
-            : undefined,
-        }) : null;
-        let recoveryTickRunning = false;
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
           store,
@@ -2133,31 +2122,6 @@ export class AgentServer {
           consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
           maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
-          onRecoverableStall: (reason) => {
-            if (!selfHeal || recoveryTickRunning || !isCanonicalOwner()) return;
-            const episode = `stalled:${reason}:${Math.floor(Date.now() / (30 * 60_000))}`;
-            void selfHeal.run({
-              episodeKey: episode,
-              classification: 'recoverable-stalled-drain',
-              repair: () => {
-                const repaired = ensureFeedbackFactoryGeneratedDefaults(options.config.stateDir!, options.config.developmentAgent === true);
-                return { changed: repaired.changed };
-              },
-              restart: () => {
-                writeLifelineRestartSignal({ stateDir: options.config.stateDir!, requestedBy: 'feedback-drain-default-migrator',
-                  reason: 'Feedback drain stalled after generated-default repair; perform one bounded restart and recheck.',
-                  previousVersion: options.config.version ?? '0.0.0', targetVersion: options.config.version ?? '0.0.0', ttlMs: 120_000 });
-              },
-              recheck: () => store.integrityCheck() && isCanonicalOwner(),
-              tick: async () => {
-                recoveryTickRunning = true;
-                try {
-                  const result = await service.tick();
-                  if (result.result === 'degraded') throw new Error(`recovery tick remained degraded: ${result.reason ?? 'unknown'}`);
-                } finally { recoveryTickRunning = false; }
-              },
-            }).catch((error) => console.warn('[feedback-factory] stalled-drain self-heal failed:', error));
-          },
         });
         const tickProxy = new FeedbackDrainTickProxy({
           selfMachineId,
@@ -2217,29 +2181,8 @@ export class AgentServer {
           return { ...finalized, reconciliation };
         };
         this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending };
-        if (generatedDefaultsNeedHeal && sourceCheckout && options.config.stateDir) {
-          if (!selfHeal) throw new Error('feedback drain self-heal controller unavailable');
-          setImmediate(() => {
-            void selfHeal.run({
-              episodeKey: `generated-defaults:${options.config.version ?? '0.0.0'}`,
-              classification: 'recoverable-dark-development',
-              repair: () => {
-                const repaired = ensureFeedbackFactoryGeneratedDefaults(options.config.stateDir!, true);
-                if (repaired.changed) console.warn('[feedback-factory] repaired bounded generated feature defaults');
-                return { changed: repaired.changed };
-              },
-              restart: () => {
-                const restart = writeLifelineRestartSignal({
-                  stateDir: options.config.stateDir!, requestedBy: 'feedback-drain-default-migrator',
-                  reason: 'Feedback Factory generated defaults schema changed; perform the one bounded authority restart and recheck.',
-                  previousVersion: options.config.version ?? '0.0.0', targetVersion: options.config.version ?? '0.0.0', ttlMs: 120_000,
-                });
-                console.warn(`[feedback-factory] bounded generated-default restart ${restart}`);
-              },
-              recheck: () => inspectFeedbackFactoryGeneratedDefaults(options.config.stateDir!, true) === 'healthy',
-              tick: () => service.acceptTick(),
-            }).catch((error) => console.warn('[feedback-factory] bounded self-heal controller failed:', error));
-          });
+        if (generatedDefaultsNeedHeal && sourceCheckout) {
+          console.warn('[feedback-factory] development defaults require repair; automated recovery is deferred to the shared SelfHealGate foundation lane');
         }
         if (options.config.developmentAgent === true && sourceCheckout) {
           const backupTick = () => {
@@ -2262,20 +2205,15 @@ export class AgentServer {
       this.feedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
       const errorText = err instanceof Error ? err.message : String(err);
       if (options.config.stateDir && /(corrupt|malformed|integrity|database disk image|wal)/i.test(errorText)) {
-        const critical = new FeedbackDrainSelfHeal({
-          stateDir: options.config.stateDir,
-          raiseAttention: this.telegramAdapter?.createAttentionItem
-            ? (item) => this.telegramAdapter!.createAttentionItem({ ...item, description: item.summary, category: 'monitoring' })
-            : undefined,
+        void this.telegramAdapter?.createAttentionItem?.({
+          id: `feedback-drain-critical:${createHash('sha256').update(errorText).digest('hex').slice(0, 16)}`,
+          title: 'Feedback drain integrity failure',
+          description: 'The operated feedback drain stopped before making further changes because its durable state failed an integrity check. Operator repair or restore is required.',
+          summary: 'Feedback drain stopped on a critical integrity failure; no automatic repair was attempted.',
+          priority: 'URGENT',
+          category: 'monitoring',
+          sourceContext: 'feedback-drain:integrity',
         });
-        void critical.run({
-          episodeKey: `critical-corruption:${createHash('sha256').update(errorText).digest('hex').slice(0, 16)}`,
-          classification: 'critical-corruption',
-          repair: () => { throw new Error('critical corruption repair must never execute'); },
-          restart: () => { throw new Error('critical corruption restart must never execute'); },
-          recheck: () => false,
-          tick: () => { throw new Error('critical corruption tick must never execute'); },
-        }).catch(() => undefined);
       }
     }
 

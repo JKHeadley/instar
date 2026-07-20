@@ -257,9 +257,9 @@ The feedback source store is unified on the configured operated host from `feedb
 
 Per-machine boot diagnostics and caches are machine-local operational observations only; they contain no canonical decisions and may be discarded. No machine-local justification marker is required because these are ephemeral process observations rather than durable feature state.
 
-## Self-heal and bounded operation
+## Recovery boundary
 
-Dark-on-development and stalled-drain degradation are `recoverable`. Remediation actions are: refresh generated config/defaults idempotently, restart once through existing authority when a named migration changed state, and re-run one tick. Brakes: `max-attempts: 2`, `max-wall-clock: 120s`, exponential backoff, dedupe `feedback-drain:<failure-kind>:<episode>`, P19 breaker, notification latency 120s, metadata audit `logs/feedback-factory-drain.jsonl`; three heals/30m escalate once. Corruption, destructive data loss, or authority bypass is critical: concurrently perform read-only diagnosis, byte/checksum preservation, and immediate notification only. Automatic config refresh, restart, restore, or drain rerun is prohibited until integrity/authority is operator-restored.
+Automated recovery for dark-on-development and stalled-drain degradation is deferred to the separately converged reusable `SelfHealGate`/P19 foundation lane. <!-- tracked: slack-topic--1734007126 --> This landing exposes generated-default repair need, unavailable posture, stalled state, and progress age without mutating config, restarting, or re-running a tick. It deliberately contains no feature-local retry workflow. Once the shared primitive lands, feedback-drain may adopt it in a follow-up <!-- tracked: slack-topic--1734007126 --> that declares and verifies the complete Standard-B contract. Corruption, destructive data loss, or authority bypass is critical: perform read-only diagnosis, preserve bytes/checksums, and notify immediately. Automatic config refresh, restart, restore, or drain rerun is prohibited until integrity/authority is operator-restored.
 
 ## Security and privacy
 
@@ -304,10 +304,10 @@ BackupManager writes one versioned backup manifest at least hourly and after eve
 4. Repeating or concurrently triggering the lifecycle creates exactly one work row and one linked artifact.
 5. Crash/timeout after artifact creation recovers by external key without duplication.
 6. Stale lease acknowledgement is rejected and current-epoch acknowledgement succeeds.
-7. Development defaults construct the service; fleet defaults return expected dark posture; misclassified dev dark is visible and self-heal bounded.
+7. Development defaults construct the service; fleet defaults return expected dark posture; misclassified dev dark is visible through posture/diagnostics and performs no automatic mutation pending the shared `SelfHealGate` foundation lane.
 8. Backlog metrics distinguish healthy empty, collecting, ready, queued, and held readiness plus work claimed/retrying/dead-lettered/stalled state.
 9. No raw feedback body, credential, transcript, prompt, or raw backend enum appears on logs/dashboard/queue surfaces.
-10. Unit, integration, e2e, docs coverage, class closure, and self-action convergence suites pass.
+10. Unit, integration, e2e, docs coverage, and class closure suites pass; this landing registers no feedback-drain self-action controller because automated recovery is explicitly deferred. <!-- tracked: slack-topic--1734007126 -->
 11. Two real OS processes and a two-machine split-brain fixture still create one work/link pair; stale owner epochs cannot mutate.
 12. Crash injection after every DB and downstream-artifact boundary recovers without duplicate Initiative/Action.
 13. A realistic 150k-row source load with concurrent ingest respects per-stage/tick budgets and exposes cursor lag without starving oldest work.

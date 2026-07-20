@@ -803,37 +803,6 @@ const correctionClassReviewOutcomes: SelfActionController = {
   },
 };
 
-/** Feedback-drain recovery persists each episode's attempt count and breaker.
- * Unchanged recoverable pressure can therefore produce at most two repair /
- * restart attempts across process reconstruction; critical corruption emits no
- * mutation, and the breaker terminates the episode with one deduped attention. */
-const feedbackDrainSelfHeal: SelfActionController = {
-  id: 'feedback-drain-self-heal',
-  actionVerb: 'recovery-restart',
-  models: 'src/feedback-factory/drain/FeedbackDrainSelfHeal.ts (durable per-episode max-attempt breaker)',
-  modelsPath: 'src/feedback-factory/drain/FeedbackDrainSelfHeal.ts',
-  boundK: 2,
-  perTargetBoundK: 2,
-  ticks: 20,
-  tickMs: 30_000,
-  restartPosture: {
-    pressureSurvives: true,
-    restartUnderPressure(f, sink) {
-      return feedbackDrainSelfHeal.makeUnderPressure(f, sink);
-    },
-  },
-  makeUnderPressure(f, sink) {
-    const key = 'feedback-drain-self-heal-attempts';
-    return { tick() {
-      sink.considered += 1;
-      const attempts = Number(f.durableState.get(key) ?? 0);
-      if (attempts >= 2) return;
-      f.durableState.set(key, attempts + 1);
-      sink.emit({ verb: 'recovery-restart', target: 'feedback-drain-episode' });
-    } };
-  },
-};
-
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -852,5 +821,4 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   burnAlertTerminalDelivery,
   stopGateAuthorityProbe,
   correctionClassReviewOutcomes,
-  feedbackDrainSelfHeal,
 ];
