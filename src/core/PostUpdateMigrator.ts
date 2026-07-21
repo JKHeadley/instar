@@ -1169,8 +1169,107 @@ export class PostUpdateMigrator {
     this.migrateAutonomousHeartbeatDefaults(result);
     this.migrateFixtureIdentityQuarantine(result);
     this.migrateStallGateInstallProvenance(result);
+    this.migrateFeatureMaturationGate(result);
 
     return result;
+  }
+
+  /** Deliver the v1 maturation WARN detector without overwriting customized files. */
+  private migrateFeatureMaturationGate(result: MigrationResult, testPriorHashes: Record<string, string[]> = {}): void {
+    const priorWriterHashes = new Set([
+      'c10cc7ec6c0ec0bea4169a0f7e8cf99a497134ff20ff6d2c5b5f2c27c965bb3d',
+    ]);
+    const root = path.resolve(this.config.projectDir);
+    const bundledRoot = path.resolve(__dirname, '..', '..');
+    const files = [
+      {
+        label: 'feature maturation plan detector',
+        bundled: path.join(bundledRoot, 'scripts', 'feature-maturation-plan-gate.mjs'),
+        target: path.join(root, 'scripts', 'feature-maturation-plan-gate.mjs'),
+        prior: new Set<string>(),
+      },
+      {
+        label: 'installed feature maturation plan detector',
+        bundled: path.join(bundledRoot, 'scripts', 'feature-maturation-plan-gate.mjs'),
+        // Installed write-convergence-tag.mjs resolves ../../../scripts from
+        // .claude/skills/spec-converge/scripts to .claude/scripts.
+        target: path.join(root, '.claude', 'scripts', 'feature-maturation-plan-gate.mjs'),
+        prior: new Set<string>(),
+      },
+      {
+        label: 'installed FeatureMaturationPlanGate source',
+        bundled: path.join(bundledRoot, 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
+        target: path.join(root, '.claude', 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
+        prior: new Set<string>(),
+      },
+      {
+        label: 'spec-converge maturation WARN wiring',
+        bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
+        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
+        prior: priorWriterHashes,
+      },
+      {
+        label: 'Feature Maturation Path standard',
+        bundled: path.join(bundledRoot, 'docs', 'STANDARDS-REGISTRY.md'),
+        target: path.join(root, 'docs', 'STANDARDS-REGISTRY.md'),
+        prior: new Set(['9b3f2775937598a8c812da3c44042c79bc62202bfc82025821cee96d7c4ee391']),
+      },
+    ];
+    const digest = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
+    const durableWrite = (target: string, bytes: Buffer, mode: number): void => {
+      const dir = path.dirname(target);
+      fs.mkdirSync(dir, { recursive: true });
+      const tmp = path.join(dir, `.${path.basename(target)}.maturation-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(tmp, 'wx', mode);
+        fs.writeFileSync(fd, bytes);
+        fs.fsyncSync(fd);
+        fs.closeSync(fd);
+        fd = undefined;
+        fs.renameSync(tmp, target);
+        const dirFd = fs.openSync(dir, 'r');
+        try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+      } catch (err) {
+        if (fd !== undefined) fs.closeSync(fd);
+        try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'PostUpdateMigrator.migrateFeatureMaturationGate.temp-cleanup' }); } catch { /* absent after rename */ }
+        throw err;
+      }
+    };
+
+    for (const file of files) {
+      try {
+        const target = path.resolve(file.target);
+        if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new Error('target escapes project root');
+        const bundled = fs.readFileSync(file.bundled);
+        const bundledHash = digest(bundled);
+        if (!fs.existsSync(target)) {
+          durableWrite(target, bundled, 0o644);
+          result.upgraded.push(`${file.label}: installed`);
+          continue;
+        }
+        const stat = fs.lstatSync(target);
+        if (stat.isSymbolicLink()) throw new Error('refusing symlink target');
+        if (!stat.isFile()) throw new Error('target is not a regular file');
+        const current = fs.readFileSync(target);
+        const currentHash = digest(current);
+        if (currentHash === bundledHash) {
+          result.skipped.push(`${file.label}: already current`);
+          continue;
+        }
+        const acceptedPrior = new Set([...file.prior, ...(testPriorHashes[file.label] ?? [])]);
+        if (!acceptedPrior.has(currentHash)) {
+          result.skipped.push(`${file.label}: customized (${currentHash.slice(0, 12)}) — left untouched`);
+          continue;
+        }
+        const backup = `${target}.pre-feature-maturation-v1.bak`;
+        if (!fs.existsSync(backup)) durableWrite(backup, current, stat.mode & 0o777);
+        durableWrite(target, bundled, stat.mode & 0o777);
+        result.upgraded.push(`${file.label}: stock file updated (backup retained)`);
+      } catch (err) {
+        result.errors.push(`${file.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**

@@ -1,0 +1,21 @@
+# Feature maturation plan visibility
+
+## What Changed
+
+- Strengthened the existing Maturation Path standard around the fixed test-agent → development-agent → fleet ladder.
+- Added a WARN-only structural check for `## Maturation plan`; convergence still succeeds while missing or partial plans emit `MATURATION_PLAN_WARN`.
+- Added durable, customization-safe update delivery for existing agent installations.
+
+## Evidence
+
+- 44 targeted tests pass across the new parser, convergence wiring, migration failures, existing decision-point parsing, and standards enforcement audit.
+- Full TypeScript and repository lint pass.
+
+## What to Tell Your User
+
+New staged-feature specs now make their graduation plan visible during review. This first increment warns without blocking so the format can mature safely before enforcement becomes hard.
+
+## Summary of New Capabilities
+
+- Detect missing or incomplete three-rung maturation plans during spec convergence.
+- Preserve customized installed tooling while safely updating recognized stock files.

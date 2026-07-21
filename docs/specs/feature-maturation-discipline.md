@@ -1,8 +1,19 @@
 ---
-title: "Feature Maturation Discipline — enforced dark → mentee-live → fleet graduation"
+title: "Feature Maturation Discipline — v1 maturation-plan visibility toward enforced graduation"
 slug: "feature-maturation-discipline"
 author: "echo"
-status: "operator-approved + refined 2026-07-21 (Justin, topic 29723: 3-rung test-agent→dev-agent→fleet ladder; extend-not-duplicate hard gate; measurable per-feature metrics + recurring evaluation) — re-dispatched to Codey for converge + build v1"
+approved: true
+parent-principle: "Maturation Path — Test Agent → Development Agent → Fleet"
+status: "operator-approved + refined 2026-07-21 — v1 WARN visibility only; three-rung enforcement completes through named v2/v3 arms"
+review-convergence: "2026-07-21T18:13:37.083Z"
+review-iterations: 6
+review-completed-at: "2026-07-21T18:13:37.083Z"
+review-report: "docs/specs/reports/feature-maturation-discipline-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 1
+contested-then-cleared: 1
 ---
 
 # Feature Maturation Discipline
@@ -37,6 +48,19 @@ dark = live for TEST agents only (Codey, under an overseer; overseer-as-user sce
    →  live for DEV agents (Echo — more responsibility + direct user/operator interaction)
    →  live for ALL agents (fleet)
 ```
+
+### Agent-class glossary
+
+- **test agent:** persisted agent-role metadata says `test`; it has a named overseer and receives
+  the feature first under that supervision.
+- **development agent:** persisted `developmentAgent` role metadata; it interacts directly with
+  the operator during the second soak.
+- **fleet:** every agent class. This is the only final rollout target.
+- **overseer:** the manager recorded by the existing apprenticeship relationship; it supplies
+  scenario judgment but is not another rollout class.
+
+The resolver consumes role metadata, never agent names or ids. Codey and Echo are examples, not
+entries in an allowlist.
 
 ## Verified foundation (capability-grep evidence — finding #1)
 
@@ -79,30 +103,45 @@ Grounded against the freshest tree (`.worktrees/drive8-throughput-metrics`, v1.3
 
 ## Proposed design
 
-A new constitutional standard — **Feature Maturation Discipline** — landed as a REAL enforced
-`gate` (a spec-converge refusal + a runtime registry), not more prose. Five deltas:
+A strengthening of the existing constitutional **Maturation Path** standard, backed in v1 by a
+visible spec-converge WARN check, not a parallel standard or maturation engine. V1 prevents new
+plans from being invisible; it does not yet prevent a feature from remaining dark. Seven deltas
+are mapped below; only D1, D2, and migration parity are in v1:
 
-- **D1 — the standard.** Every feature MUST declare a graduation plan with the explicit
-  three-rung agent-class ladder (dark = test-agent-live → dev-agent-live → fleet) and a gate at
-  each rung. Lands in `docs/STANDARDS-REGISTRY.md` with an `**Applied through.**` line naming a
-  resolving guard so the auditor classifies it `gate` (not documented-only). The **rung is
+- **D1 — strengthen the existing Maturation Path article in place.** Every feature MUST declare a
+  graduation plan with the explicit three-rung agent-class ladder (dark = test-agent-live →
+  dev-agent-live → fleet) and a gate at each rung. The existing article at
+  `docs/STANDARDS-REGISTRY.md` is updated, not duplicated. Its `**Applied through.**` line cites
+  the live `src/core/FeatureMaturationPlanGate.mjs` guard under an accepted extractor prefix; test
+  evidence is kept outside that citation so strongest-guard precedence classifies the article
+  `gate`, not `ratchet` or `documented-only`. The rung is
   keyed on agent class** (test / dev / all), derived from an agent-role field — NOT a per-agent
   allowlist — so "dark" is a precise, checkable state (which agent classes have the flag on),
   not a vibe.
-- **D2 — mandatory `## Maturation plan` spec section.** Add `findMaturationPlanGaps(specBody,
-  slug)` next to `findDecisionPointGaps` in `write-convergence-tag.mjs` + an exit-1 gate block
-  in `main()` — `write-convergence-tag.mjs` REFUSES to stamp the convergence tag when the
-  section (rung ladder + the mandated live-testing phase + a graduation criterion + a declared
-  dark-window) is missing. Symmetric to the decision-points / posture gates. Section presence =
-  the cheap deterministic signal; the lessons-aware reviewer holds semantic authority over
-  whether the plan is REAL. `GRANDFATHERED_SLUGS` exempts pre-existing specs.
-- **D3 — mandatory live-testing phase (the graduation rung).** Broaden `LiveTestGate.evaluate`
+- **D2 — mandatory `## Maturation plan` spec section, WARN in v1.** A pure exported
+  `findMaturationPlanGaps(specBody, slug)` lives in `scripts/feature-maturation-plan-gate.mjs` and
+  is imported beside `findDecisionPointGaps` in `write-convergence-tag.mjs`. In v1, a missing or
+  incomplete plan emits a stable `MATURATION_PLAN_WARN` diagnostic to stderr and convergence is
+  still stamped; it does not refuse. The validator requires exactly the three agent-class rung
+  labels (`test-agent-live`, `dev-agent-live`, `fleet`), plus non-empty `graduation criterion` and
+  `dark-window` rows. It strips YAML frontmatter and fenced code blocks before selecting the first
+  real level-2 section, stops at the next level-2 heading, rejects duplicate maturation headings,
+  and ignores heading/row tokens hidden inside comments or blockquotes. These adversarial parsing
+  rules prevent examples, quoted text, or a later shadow section from satisfying the signal.
+  `GRANDFATHERED_SLUGS` is not used for WARN mode. Structure is only the cheap deterministic
+  signal; the lessons-aware reviewer remains semantic authority over whether the plan is real.
+  The exact accepted syntax is one Markdown bullet per field:
+  `- **test-agent-live:** ...`, `- **dev-agent-live:** ...`, `- **fleet:** ...`,
+  `- **graduation criterion:** ...`, and `- **dark-window:** ...`. Each label appears exactly once
+  with non-empty text after the colon; labels in prose, tables, code, comments, or quotes do not
+  count.
+- **D3 — v3 design, mandatory live-testing phase (the graduation rung).** Broaden `LiveTestGate.evaluate`
   from `userFacing`-only to EVERY feature's declared graduation, and wire `ApprenticeshipProgram`
   (Codey as the mentee target) into `LiveTestHarness` as a run target so the harness drives a
   REAL mentee agent while the overseer (me) acts as the user across the required-risk-category
   scenario matrix, producing a signed PASS/FAIL artifact. This is the biggest net-new piece (two
   currently-unconnected modules) and generalizes the Live-User-Channel Proof harness.
-- **D4 — per-feature graduation-status registry + stuck-dark surfacing.** Add a `'dark-too-long'`
+- **D4 — v2 design, per-feature graduation-status registry + stuck-dark surfacing arm.** Add a `'dark-too-long'`
   attention reason to `InitiativeTracker` keyed off the spec's DECLARED dark-window, surfaced via
   `GET /initiatives/digest` — upgrading the maturation heads-up system
   ([[maturation-headsup-system-built]]) from aggregate-informational to per-feature-bound. Builds
@@ -110,7 +149,15 @@ A new constitutional standard — **Feature Maturation Discipline** — landed a
 - **D5 — enforcement-debt backlog.** Treat the conformance audit's documented-only set as the
   backlog of standards to turn from wish into structure; THIS standard ships enforced as the
   exemplar (first repayment).
-- **D6 — EXTEND, do not duplicate (operator-flagged, HARD convergence gate).** Instar already
+- **D6 — EXTEND, do not duplicate (operator-flagged, HARD convergence gate).** The completed
+  pre-build audit maps every delta to the named existing owner:
+  - D1 strengthens the existing **Maturation Path** registry article in place.
+  - D2 extends the existing spec-converge chokepoint beside `findDecisionPointGaps`.
+  - D3 v3 composes `LiveTestGate` + `LiveTestHarness` with the existing apprenticeship relation.
+  - D4 v2 extends `FeatureRolloutReconciler` + `InitiativeTracker` with one attention reason.
+  - D7 v3 reuses the throughput-metrics ledger (#1535) plus benchmark/decision-quality machinery.
+
+  Instar already
   carries substantial maturation machinery — `FeatureRolloutReconciler` + `InitiativeTracker`
   (graduated rollout + the stale/needs-user digest), `LiveTestGate` + `LiveTestHarness`
   (Live-User-Channel Proof), and a "Maturation Path" standard. This spec EXTENDS those; it
@@ -123,7 +170,7 @@ A new constitutional standard — **Feature Maturation Discipline** — landed a
   signal to strengthen **convergent-auditing enforcement in the spec-dev process** (ties to the
   *Iterative Audit to Convergence* standard) — a second-order deliverable surfaced to the
   operator, never a silent patch.
-- **D7 — measurable per-feature metrics + regular evaluation (operator directive 3 — the
+- **D7 — v3 design, measurable per-feature metrics + recurring evaluation driving arm (operator directive 3 — the
   anti-stale mechanism).** The ladder only holds if each rung's health is TRACKABLE and
   MEASURABLE and the measurement runs on a REGULAR cadence, so nothing rots at a rung. Every
   feature exposes per-rung metrics on the SAME measurement substrate as the throughput-metrics
@@ -138,69 +185,142 @@ gate + the standard on update, not just fresh installs.
 
 ## Phasing (dark-first, each rung gated)
 
-- **v1 (cheapest, highest leverage — pure structure):** D2 spec-converge required-section gate
-  (ships in `warn` mode first — logs would-refuse without blocking) + D1 standard landed as an
-  enforced `gate` + the migration. Makes EVERY future spec declare a maturation plan. No runtime
-  behavior change; no new judgment point.
+- **v1 (this build; pure structure):** D2 WARN diagnostic + D1 in-place Maturation Path
+  strengthening + migration parity. It exposes what a hard gate would reject without refusing a
+  convergence stamp. No runtime feature behavior changes and no agent allowlist is introduced.
 - **v2:** D4 stuck-dark registry (`'dark-too-long'` reason + digest surface).
 - **v3:** D3 live-testing-every-feature-on-mentee (the LiveTestGate ⟷ ApprenticeshipProgram
   wiring) — the largest, genuinely-new build. Named follow-on because it needs real mentee-side
-  substrate, NOT deferral-by-avoidance.
+  substrate; its named boundary is not scope evasion.
+
+### V1 acceptance boundary
+
+V1 is complete when plans that previously passed invisibly now produce deterministic, tested WARN
+evidence; it is accurately a **maturation-plan visibility** increment. It does not close the
+stuck-dark problem. That problem is closed only when D4's v2 surfacing arm and D7's v3 recurring
+driving arm operate against the same existing rollout records. The release note and ELI16 must use
+this narrower claim.
+
+Before WARN can become veto, the owner reviews the accumulated WARN corpus for false positives and
+false negatives. Parser changes may add backward-compatible accepted forms or fix misclassification;
+they may not introduce semantic judgment into the deterministic gate. Role precedence, temporary
+role lifecycle, mixed-role handling, multiple-overseer conflict resolution, and mutation authority
+are explicit v3 foundation-audit questions; until answered, unknown or conflicting roles remain
+fleet-disabled. V3 scenario derivation must cite the feature's actual interfaces, risk class, and
+expected user workflow rather than relying only on overseer intuition.
+
+The v1 release artifact names the owning InitiativeTracker record, the test-rung start date, and
+the 14-day WARN→veto disposition deadline. Existing reconciliation owns that record; v1 does not
+create a second cadence engine. Before veto, the corpus review must either demonstrate that the
+canonical Markdown form is stable or replace it with a schema-backed form through a separately
+reviewed compatibility migration. Published positive and adversarial examples accompany either
+form. For D3, automated contract/replay assertions are primary evidence; overseer judgment is
+limited to explicitly subjective rows.
+
+### Alternatives considered
+
+External feature-flag lifecycle products and generic workflow schedulers can record rollout stages,
+but adopting one would duplicate Instar's existing `FeatureRolloutReconciler`, `InitiativeTracker`,
+spec-converge review authority, and agent-role relationships. This design therefore extends those
+native owners. External systems may later supply detector signals or dashboards, but they do not
+become a parallel source of rollout truth.
 
 ## Multi-machine posture
 
-The spec-converge gate + Standards Registry are git-tracked repo artifacts — **unified** (every
-machine derives the same refusal from the same source). The graduation-status registry
+The v1 spec-converge check + Standards Registry are git-tracked repo artifacts — **unified** (every
+machine derives the same diagnostic from the same source). The graduation-status registry
 (`FeatureRolloutReconciler`/`InitiativeTracker`) derives each feature's stage from git-tracked
 spec artifacts, so it is **unified-by-derivation** — any machine reaches the same stage from the
-same specs. No machine-local surface.
+same specs. V1 creates no signed live-test artifact, role state, or digest state. V2/v3 must name
+the existing replication or proxied read for each runtime artifact before implementation; they
+may not inherit this v1 unified claim by assumption.
 
 ## Decision points touched
 
-- **`findMaturationPlanGaps` section + per-row check** — `invariant`. Deterministic parse
-  (section present + rung/window/criterion rows present), mirroring `findDecisionPointGaps`.
-  Justified: a structural gate, not a competing-signals point; the semantic "is the plan real"
-  judgment is delegated to the lessons-aware reviewer (Signal-vs-Authority), not decided here.
-- **`'dark-too-long'` classification** — `invariant`. Deterministic: a feature past its OWN
-  declared dark-window. The window is author-declared in the spec, not guessed.
-- **Live-testing scenario matrix verdict** — the GATE is `invariant` (artifact present + all
-  required risk categories marked PASS is a deterministic check); the per-scenario PASS/FAIL is
-  the **human overseer's** judgment recorded in a signed artifact, NOT an automated/LLM decision
-  point. No new machine judgment gate is introduced.
+- **`findMaturationPlanGaps` section + per-row check** — `invariant`. Deterministic structural parse mirroring `findDecisionPointGaps`; semantic adequacy remains with the lessons-aware reviewer authority.
+- **`'dark-too-long'` classification** — `invariant`. Deterministic comparison against the feature's reviewed declared window; no guessed deadline.
+- **Live-testing scenario matrix gate** — `invariant` for artifact/category/assertion presence; subjective per-scenario PASS/FAIL remains recorded human judgment and is not converted into an automated gate.
 
 ## Maturation plan
 
 *(dogfoods the very ladder this spec mandates — the three agent-class rungs)*
 
-- **dark = test-agent-live (Codey, under overseer):** D2's gate ships in `warn` mode — spec-
+- **test-agent-live:** D2's gate ships in `warn` mode on Codey under its overseer — spec-
   converge still stamps but emits a would-refuse warning on a missing `## Maturation plan`
   section. It runs LIVE on the test agent (Codey) immediately: Codey's next spec must carry a
   real `## Maturation plan` section, and I (overseer) drive specs through the gate across
-  scenarios on Codey's install — missing section → refused, partial → refused, complete →
-  stamped — recording a signed PASS/FAIL matrix (D3 proving itself on its own gate).
-- **dev-agent-live (Echo):** after a clean test-agent soak, the gate goes live on dev agents — I
+  scenarios on Codey's install — missing/partial section → stamped with
+  `MATURATION_PLAN_WARN`, complete → stamped without that diagnostic — recording the result.
+- **dev-agent-live:** after a clean test-agent soak, the gate goes live on dev agents such as Echo — I
   run real spec-dev through it with direct operator interaction, still `warn` mode.
 - **fleet:** flip the gate to hard `veto` (blocking) for ALL agents once the dev-agent soak is
-  clean.
-- **graduation criterion (per rung):** a clean live-test matrix at the current rung + zero
-  false-refusals during that rung's warn soak, re-scored by D7's recurring evaluation.
+  clean. The ratchet is explicit: within 14 days of the test-agent rung start, record the
+  three-case dogfood evidence; within 14 days of the dev-agent rung start, record the same evidence
+  from direct-user spec work; then the owner must either land WARN→veto or record a failing-rung
+  disposition. Hardening cannot broaden parser semantics.
+- **graduation criterion:** per rung, a clean live-test matrix at the current rung + zero false
+  WARN diagnostics on specs that satisfy the declared structure during that rung's soak; D7's v3
+  recurring evaluator will re-score the same criterion on its named future driving arm.
 - **dark-window:** if the gate sits at a rung past 14 days without advancing, D4's
   `'dark-too-long'` surfaces it (the standard nagging itself — the strongest dogfood).
 
+## Frontloaded Decisions
+
+- **v1 mode — invariant.** WARN only: diagnostics never change the convergence exit status.
+- **Agent targeting — invariant.** Rungs are derived only from agent class: test, development,
+  fleet. Per-agent allowlists are forbidden.
+- **Role authority boundary — invariant.** V1 documents and parses the ladder but does not resolve
+  runtime roles. V3 must reuse the authoritative agent identity/config path for `developmentAgent`
+  and the existing apprenticeship relationship for overseer-managed test status; it may not add a
+  second role store. Missing or unknown role metadata resolves fleet-disabled. Exact store and
+  audited mutation citations are a required v3 foundation audit before runtime wiring.
+- **Applicability — invariant.** The plan applies to shipped features with a dark/staged rollout;
+  pure internal refactors with no rollout stage have no rung to graduate.
+- **Soak duration — cheap-to-change-after.** The spec declares its own duration; this v1 parser
+  validates non-empty structure and does not create a config knob or interpret duration semantics.
+- **Future hardening boundary — invariant.** A later WARN→veto promotion may veto only missing or
+  malformed structure using this same pure parser. Semantic adequacy can never be added to the
+  deterministic veto; it stays with the lessons-aware reviewer authority.
+- **Dogfood evidence shape — invariant.** Each rung record names start/end timestamps, evaluated
+  spec path, expected and actual diagnostic, reviewer identity, evidence artifact path and digest
+  or signature, and a pass/fail reason. At least one missing, one adversarial partial, and one
+  complete plan are required before the WARN signal advances to the next agent class.
+- **Future scenario classes — invariant.** D3's v3 matrix covers interactive user simulation and,
+  where applicable, API contract, migration recovery, telemetry, performance, and rollback. A
+  staged non-interactive feature cannot pass merely because it has no conversational UI.
+- **Future evidence authority — invariant.** V3 stores replayable scenario inputs and
+  machine-checkable assertions wherever possible; signed human judgments carry only remaining
+  subjective rows. High-risk classes require an independent reviewer disposition before
+  promotion, rather than treating one overseer's signature as sufficient.
+- **Future dark-window policy — invariant.** D4/D7's v2/v3 design will supply risk-class defaults
+  and maxima; a longer feature-declared window requires an explicit lessons-aware reviewer
+  disposition. A `dark-too-long` item remains active until it records advance, retirement, or an
+  owned re-plan; acknowledgement alone is not terminal. V1 checks only that a window is declared
+  and makes no timing decision.
+
 ## Open questions
 
-- Should v1's warn-soak window (14d) be a config knob or fixed? (lean: config,
-  `standards.maturationDiscipline.warnSoakDays`.)
-- D3 scope: does "every feature" include pure-internal refactors with no observable surface, or
-  only features with a config flag / rollout stage? (lean: only flag-carrying features — a
-  refactor with no dark stage has nothing to graduate.)
+*(none)*
 
 ## Migration parity
 
-`migrateFeatureMaturationGate(result)` in `PostUpdateMigrator.ts` (marker-guarded, template-
-overwrite of the updated `write-convergence-tag.mjs` gate + config-default add for the warn-soak
-knob), registered in `migrate()`. Idempotent (marker early-return). Reaches deployed agents on
-update, not just `init`.
+`migrateFeatureMaturationGate(result)` in `PostUpdateMigrator.ts`, registered once in `migrate()`,
+delivers the bundled validator and tag-writer to deployed agent homes. It distinguishes stock from
+customized targets by exact SHA-256 membership in a versioned `PRIOR_STOCK_SHA256` set; a header
+substring is never customization evidence. Missing targets are created from bundled bytes. A hash
+outside the stock set is reported as customized and left byte-identical.
+
+For an accepted stock target, replacement uses a sibling uniquely-named temp file opened with
+exclusive create, writes all bundled bytes, `fsync`s and closes the file, renames it over the
+target on the same filesystem, then `fsync`s the parent directory. Before replacement it writes an
+equally durable `.pre-feature-maturation-v1.bak` snapshot. If any pre-rename step fails, the target
+is untouched and the temp is removed; if rename succeeds but directory sync fails, the migration
+reports an error and retains the backup for deterministic recovery on the next run. A subsequent
+run recognizes either the new bundled hash (done) or the prior-stock/backup pair (retry), so a
+crash cannot turn a partial write into an accepted migration. Tests inject failure at write,
+file-sync, rename, and directory-sync boundaries and assert target/backup/retry behavior.
+Targets and parent directories are resolved under the configured project root; `lstat` rejects a
+symlink target, the temp inherits the target's mode, and no path component may escape the root.
 
 ## Division
 
@@ -208,4 +328,3 @@ Echo authored this design (grounded on the real gate / rollout / live-test / aud
 Justin approved moving it forward (2026-07-21, topic 29723). Codey converges + builds v1. Same
 division as throughput-floor / claim-verification. Related: [[observe-mode-must-graduate]],
 [[maturation-headsup-system-built]], [[live-verify-multimachine]].
-

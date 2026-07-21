@@ -93,6 +93,7 @@
     "src/templates",
     "src/data",
     "src/threadline/data",
+    "src/core/FeatureMaturationPlanGate.mjs",
     "skills",
     "playbook-scripts",
     "scripts",
