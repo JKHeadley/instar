@@ -1347,6 +1347,9 @@ export class PostUpdateMigrator {
     setIfAbsent(hb, 'tickIntervalMs', 60_000, 'monitoring.autonomousHeartbeat.tickIntervalMs');
     setIfAbsent(hb, 'maxHeartbeatsPerRun', 6, 'monitoring.autonomousHeartbeat.maxHeartbeatsPerRun');
     setIfAbsent(hb, 'recentOutputChangeWindowMs', 300_000, 'monitoring.autonomousHeartbeat.recentOutputChangeWindowMs');
+    const throughputFloor = ensureObj(monitoring, 'throughputFloor');
+    setIfAbsent(throughputFloor, 'flatlineMs', 4_500_000, 'monitoring.throughputFloor.flatlineMs');
+    setIfAbsent(throughputFloor, 'tickMs', 900_000, 'monitoring.throughputFloor.tickMs');
     // Defensive: an operator who hand-disabled by writing `enabled:false` keeps
     // it; we never ADD enabled, but we must not strip an explicit operator value.
 
@@ -5359,6 +5362,11 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n## Autonomous-run silence backstop (AutonomousProgressHeartbeat)\n\nA proactive backstop that posts ONE purely-observational liveness line when an autonomous run has gone silent on you for a long stretch while its terminal output is still changing. **This is NOT the commitment-cadence "still on it" heartbeat that the honest-progress work removed** — it fires only on a LONG user-silence gate (≥25m) WITH corroborated recent output change (a liveness signal, NOT a progress claim), and the wording is observational ("I haven't posted here in a while — last observed activity was «…». Message me if you need me."), never an assertive "still working" / "still going" claim. It closes the *busy-but-silent-to-user* gap the other watchers miss: the silent-freeze watchdog stays quiet while output is moving, PresenceProxy needs an inbound message, and PromiseBeacon needs an open commitment — a long heads-down autonomous run with no commitment and no inbound message falls through all three. The real fix is still you sending your own milestones; this only catches a lapse.\n- **It can't spam you (three LOCAL brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a per-topic emit-cooldown; and a widening per-run backoff (25→40→60→90m) with a hard cap (~6 lines per run). Output advancing proves only LIVENESS, never progress — which is exactly why the wording is liveness-only.\n- **Signal-only:** it only ever ADDS a line — never blocks, delays, or rewrites your real messages. Every predicate fails CLOSED (no emit) on uncertainty (can't read history, the shared snapshot is unavailable, the run is mid-move to another machine). The interpolated \`focus\` is scrubbed for credentials/secrets/paths (drop-to-generic on any match), length-clamped, and HTML-escaped.\n- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent. Tune/disable: \`monitoring.autonomousHeartbeat\`. Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Autonomous-run silence backstop section');
+    }
+    if (!content.includes('Autonomous Throughput Floor')) {
+      content += `\n## Autonomous Throughput Floor\n\nA pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. It never notifies, dispatches, remediates, or creates attention. Read \`GET /autonomous/throughput-floor\` when investigating a quiet run; the response shows the durable baseline, dual-flatline observation, and bounded-read breaker. HOLD still requires both an actual approval gate and authoritative saturation of every non-gated lane; this v1 has no lane authority and cannot grant HOLD. A future proactive surface requires a separately converged SelfHealGate.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Autonomous Throughput Floor section');
     }
 
     // Parallel-Hand PR Lease (parallel-hand-pr-lease.md) — Agent Awareness + Migration

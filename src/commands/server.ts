@@ -71,7 +71,7 @@ import {
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
-import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs, stopAutonomousTopic } from '../core/AutonomousSessions.js';
+import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs, readAutonomousRunMarkers, stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
 import { gapBEligibleForTopic, recentUserMessageFromHistory, recentUserMessageAtFromHistory, resolveGapBInjectionGate, decideGapBInjection } from '../core/gapBCommitmentEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
@@ -9077,6 +9077,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let autonomousLivenessReconciler:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null = null;
+    let autonomousThroughputFloor: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null = null;
     let enforcedTerminationWatchdog:
       | import('../monitoring/EnforcedTerminationWatchdog.js').EnforcedTerminationWatchdog
       | null = null;
@@ -23423,6 +23424,77 @@ export async function startServer(options: StartOptions): Promise<void> {
     } else {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
+
+    // PULL/AUDIT-ONLY: deliberately no notification, governor, A2A, or remediation seam.
+    try {
+      const tfCfg = (config.monitoring as { throughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloorConfig } | undefined)?.throughputFloor ?? {};
+      if (resolveDevAgentGate(tfCfg.enabled, config)) {
+        const { AutonomousThroughputFloor, hasMeaningfulDeliverableDelta } = await import('../monitoring/AutonomousThroughputFloor.js');
+        type TfState = import('../monitoring/AutonomousThroughputFloor.js').ThroughputFloorRunState;
+        type TfSnapshot = import('../monitoring/AutonomousThroughputFloor.js').DeliverableSnapshot;
+        const statePath = (id: string) => path.join(config.stateDir, 'autonomous', `${createHash('sha256').update(id).digest('hex').slice(0, 20)}.throughput-floor.local.json`);
+        const loadTf = (id: string): TfState | { corrupt: true } | null => {
+          try {
+            const file = statePath(id);
+            const stat = fs.lstatSync(file);
+            if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 128 * 1024) return { corrupt: true };
+            const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as TfState;
+            return validTfState(parsed) ? parsed : { corrupt: true };
+          } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : { corrupt: true }; }
+        };
+        const validTfState = (row: TfState): boolean => row?.version === 1 && typeof row.signalRunId === 'string' && row.signalRunId.length <= 512
+          && Number.isFinite(row.lastDeliverableDeltaAt) && Number.isFinite(row.lastManagerOutboundAt)
+          && Number.isSafeInteger(row.consecutiveSweepFailures) && row.consecutiveSweepFailures >= 0 && row.consecutiveSweepFailures <= 1_000
+          && Number.isFinite(row.nextSweepAt)
+          && (!row.lastSnapshot || (Array.isArray(row.lastSnapshot.merged) && row.lastSnapshot.merged.length <= 64 && Array.isArray(row.lastSnapshot.open) && row.lastSnapshot.open.length <= 64 && typeof row.lastSnapshot.digest === 'string' && row.lastSnapshot.digest.length <= 128));
+        const saveTf = (id: string, value: TfState) => { const file = statePath(id); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error('throughput-floor-state-symlink-refused'); const tmp = `${file}.${process.pid}.tmp`; fs.writeFileSync(tmp, `${JSON.stringify(value)}\n`, { mode: 0o600 }); const fd = fs.openSync(tmp, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } fs.renameSync(tmp, file); };
+        const snapshot = async (previous?: TfSnapshot): Promise<TfSnapshot> => {
+          const started = Date.now();
+          const run = async (file: string, args: string[]): Promise<string> => {
+            const remaining = 10_000 - (Date.now() - started);
+            if (remaining <= 0) throw new Error('throughput-sweep-timed-out');
+            const result = await execFileAsync(file, args, { encoding: 'utf8', timeout: remaining, maxBuffer: 512 * 1024 });
+            return String(result.stdout).trim();
+          };
+          const origin = await run('git', ['-C', config.projectDir, 'remote', 'get-url', 'origin']);
+          const match = origin.match(/github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?$/i);
+          if (!match) throw new Error('invalid-scope');
+          const repo = `${match[1]}/${match[2]}`;
+          const [openJson, mergedJson] = await Promise.all([
+            run('gh', ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '32', '--json', 'number,headRefOid']),
+            run('gh', ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '32', '--json', 'number,mergeCommit']),
+          ]);
+          const openRows = JSON.parse(openJson) as Array<{ number: number; headRefOid: string }>;
+          const mergedRows = JSON.parse(mergedJson) as Array<{ number: number; mergeCommit?: { oid?: string } | null }>;
+          const merged = mergedRows.filter(r => r.mergeCommit?.oid).map(r => ({ number: r.number, mergeCommitSha: r.mergeCommit!.oid! })).sort((a, b) => a.number - b.number);
+          const prior = new Map((previous?.open ?? []).map(row => [row.number, row]));
+          const open: TfSnapshot['open'] = [];
+          for (let offset = 0; offset < openRows.length; offset += 4) {
+            const batch = openRows.slice(offset, offset + 4);
+            open.push(...await Promise.all(batch.map(async r => {
+              const old = prior.get(r.number);
+              const requests: Array<Promise<string>> = [run('gh', ['api', `repos/${repo}/git/commits/${r.headRefOid}`, '--jq', '.tree.sha'])];
+              if (old && old.headSha !== r.headRefOid) requests.push(run('gh', ['api', `repos/${repo}/compare/${old.headSha}...${r.headRefOid}`, '--jq', '.status']));
+              const [treeSha, compare] = await Promise.all(requests);
+              return { number: r.number, headSha: r.headRefOid, treeSha, descendsPrevious: compare === 'ahead' || compare === 'identical' };
+            })));
+          }
+          open.sort((a, b) => a.number - b.number);
+          return { merged, open, digest: createHash('sha256').update(JSON.stringify({ merged, open })).digest('hex') };
+        };
+        autonomousThroughputFloor = new AutonomousThroughputFloor({
+          listRuns: () => activeAutonomousJobs(config.stateDir).flatMap(job => { const topicId = Number(job.topic); const startedAt = Date.parse(job.startedAt ?? ''); if (!Number.isSafeInteger(topicId) || topicId <= 0 || !Number.isFinite(startedAt)) return []; const markers = readAutonomousRunMarkers(config.stateDir, topicId); return [{ signalRunId: `topic:${topicId}:${job.startedAt}`, topicId, startedAt, telegramBacked: Boolean(telegram), registeredMachineCount: _listPoolMachines?.().length || 1, midMove: !markers || Boolean(markers.movedTo || markers.moveSuspended) }]; }),
+          sweep: async (_run, previous) => { try { const next = await snapshot(previous); return { status: 'ok' as const, snapshot: next, meaningfulDelta: previous ? hasMeaningfulDeliverableDelta(previous, next) : false }; } catch (error) { const msg = error instanceof Error ? error.message : ''; return { status: 'unknown' as const, failure: /invalid-scope/.test(msg) ? 'invalid-scope' as const : /timed out|ETIMEDOUT/.test(msg) ? 'timeout' as const : 'github-read' as const }; } },
+          observeOutbound: (run, cursor) => { const rows = telegram?.getTopicHistory(run.topicId, 100) ?? []; const newest = [...rows].reverse().find(row => !row.fromUser); const covered = rows.length < 100 || rows.some(row => Date.parse(row.timestamp) <= run.startedAt || row.timestamp === cursor); return { coverage: covered ? 'proven' as const : 'unknown' as const, newestOutboundAt: newest ? Date.parse(newest.timestamp) : undefined, cursor: rows.at(-1)?.timestamp }; },
+          loadState: loadTf,
+          saveState: saveTf,
+          audit: (row) => { try { const p = path.join(config.stateDir, 'logs', 'autonomous-throughput-floor.jsonl'); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.appendFileSync(p, `${JSON.stringify(row)}\n`); } catch { /* @silent-fallback-ok: in-memory ring remains */ } },
+        }, { ...tfCfg, enabled: true });
+        autonomousThroughputFloor.start();
+        (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor = autonomousThroughputFloor;
+        guardRegistry.register('monitoring.throughputFloor.enabled', () => autonomousThroughputFloor!.guardStatus());
+      }
+    } catch (err) { console.warn('[AutonomousThroughputFloor] init failed:', (err as Error).message); }
 
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {

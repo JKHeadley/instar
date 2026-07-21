@@ -199,6 +199,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     autonomousHeartbeat: {
       dryRun: true,
     },
+    // Autonomous Throughput Floor (ACT-847): bounded PULL/AUDIT-only reads.
+    throughputFloor: {
+      flatlineMs: 75 * 60_000,
+      tickMs: 15 * 60_000,
+    },
     // U4.5 — Rope-Health Alerts (docs/specs/u4-5-rope-health-alerts.md §5).
     // DEV-GATED: `enabled` is DELIBERATELY OMITTED (not hardcoded false) so
     // resolveDevAgentGate decides at runtime — LIVE on a development agent day

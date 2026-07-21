@@ -3779,6 +3779,11 @@
            headline + tiles + drill-down here. Rebuilt from the old insider "guards" line.
            Nickname editing (issue #1429) lives one drill down, commits on Enter/blur. -->
       <div id="machinesGlance" class="glance-root"></div>
+      <section aria-labelledby="throughputFloorTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="throughputFloorTitle" style="margin:0 0 8px">Autonomous throughput observations</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Pull-only evidence of project PR movement and manager communication. This view never notifies or changes a run.</p>
+        <div id="throughputFloorStatus" class="glance-empty" aria-live="polite">Loading observations…</div>
+      </section>
     </div>
 
     <div id="evidenceTab" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
@@ -5536,6 +5541,7 @@
         return;
       }
       if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+      await loadThroughputFloor();
 
       if (!pool.enabled) {
         glanceRoot.textContent = '';
@@ -5556,6 +5562,33 @@
         onRename: (id, nickname, input, prev) => saveMachineNickname(id, nickname, input, prev),
       });
       glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    async function loadThroughputFloor() {
+      const root = document.getElementById('throughputFloorStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/autonomous/throughput-floor'); }
+      catch {
+        root.textContent = 'Observation is not enabled on this agent.';
+        return;
+      }
+      const rows = Array.isArray(status.runs) ? status.runs : [];
+      if (rows.length === 0) { root.textContent = 'No eligible autonomous runs are currently observed.'; return; }
+      const list = document.createElement('div');
+      list.style.display = 'grid';
+      list.style.gap = '8px';
+      for (const row of rows) {
+        const item = document.createElement('div');
+        item.style.padding = '8px 10px';
+        item.style.border = '1px solid var(--border)';
+        item.style.borderRadius = '8px';
+        const minutes = Math.floor(Math.min(Number(row.outputFlatForMs || 0), Number(row.managerSilentForMs || 0)) / 60000);
+        item.textContent = 'Topic ' + String(row.topicId) + ': ' + String(row.decision || 'unknown') + (row.decision === 'flatline-observed' ? ' — both signals unchanged for at least ' + minutes + 'm' : '');
+        list.appendChild(item);
+      }
+      root.appendChild(list);
     }
 
     // ── Tokens Tab ──────────────────────────────────────────────────

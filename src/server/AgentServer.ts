@@ -294,6 +294,7 @@ export class AgentServer {
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
+    autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
@@ -869,6 +870,7 @@ export class AgentServer {
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
+    autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -3382,6 +3384,7 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
@@ -5127,6 +5130,7 @@ export class AgentServer {
     }
     // Stop the AutonomousLivenessReconciler tick loop (clears its unref'd timer).
     try { this.routeContext?.autonomousLivenessReconciler?.stop(); } catch { /* best-effort */ }
+    try { this.routeContext?.autonomousThroughputFloor?.stop(); } catch { /* best-effort */ }
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;

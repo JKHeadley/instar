@@ -5582,6 +5582,11 @@ export interface MonitoringConfig {
     /** How recently the shared snapshot's lastOutputAt must have advanced (default 300_000). */
     recentOutputChangeWindowMs?: number;
   };
+  throughputFloor?: {
+    enabled?: boolean;
+    flatlineMs?: number;
+    tickMs?: number;
+  };
   /**
    * Blocker Ledger — the durable resolution-workflow + memory layer that
    * COMPLETES Principle 1 ("almost every blocker is a false blocker — work it").
