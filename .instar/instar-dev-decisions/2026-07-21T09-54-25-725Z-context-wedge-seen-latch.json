@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-21T09:54:25.725Z",
+  "slug": "context-wedge-seen-latch",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 66,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
