@@ -1277,6 +1277,23 @@
       }
     },
     {
+      "category": "self-heal-gate-episodes",
+      "description": "SelfHealGate durable per-episode attempts, bounds, reason-specific attention handoff markers, restart handshake, and scrubbed audit for hardware-local heal consumers. Explicitly machine-local: v1 rejects pool-shared declarations; the first consumer repairs this host's development checkout. SQLite revision predicates preserve attempt/exhaustion monotonicity across same-host instances.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/self-heal-gate.db"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "bounded-set",
+        "maxOpenItems": 256,
+        "note": "Hard 256-episode-row admission cap; active/exhausted/pending-notice rows are never evicted or reset. Metadata-only audit shares the database and is a fixed 1024-slot overwrite ring."
+      }
+    },
+    {
       "category": "self-action-governor-snapshot",
       "description": "SelfActionGovernor durable admission-state snapshot (unified-self-action-backpressure FD14): window buckets, per-target counts, demote latches, breaker state \u2014 flushed on cadence + event-aware eager flush, rehydrated at boot so a crash/bounce never refills a runaway loop's count budget. Machine-local BY DESIGN (hardware-bound classes: this host's admission history; pool-shared classes' buckets are the LOCAL half of the FD15-replicated surface, replication owned by the deferred FD15 deliverable). BackupManager-excluded via BLOCKED_PATH_PREFIXES (a foreign restore carries the wrong machine's counts).",
       "scope": "machine-local",

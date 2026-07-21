@@ -47,7 +47,7 @@ import { FeedbackInitiativeConsumer } from '../feedback-factory/drain/FeedbackIn
 import { FeedbackReadinessArbiter } from '../feedback-factory/drain/FeedbackReadinessArbiter.js';
 import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainService.js';
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
-import { inspectFeedbackFactoryGeneratedDefaults } from '../feedback-factory/drain/FeedbackFactoryGeneratedDefaults.js';
+import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
@@ -2113,9 +2113,6 @@ export class AgentServer {
     // and exact-key Initiative handoff. Dev-live/fleet-dark, consumer dry-run
     // until a durable PIN-approved promotion record exists.
     try {
-      const generatedDefaultsNeedHeal = options.config.stateDir
-        ? inspectFeedbackFactoryGeneratedDefaults(options.config.stateDir, options.config.developmentAgent === true) === 'repair-needed'
-        : false;
       const drainEnabled = resolveDevAgentGate(options.config.feedbackFactory?.drain?.enabled, options.config);
       const consumerEnabled = resolveDevAgentGate(options.config.feedbackFactory?.consumer?.enabled, options.config);
       const dataDir = resolveCanonicalStoreDir(options.config);
@@ -2217,8 +2214,28 @@ export class AgentServer {
           return { ...finalized, reconciliation };
         };
         this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending };
-        if (generatedDefaultsNeedHeal && sourceCheckout) {
-          console.warn('[feedback-factory] development defaults require repair; automated recovery is deferred to the shared SelfHealGate foundation lane');
+        if (options.config.stateDir && sourceCheckout) {
+          const selfHealBootId = randomUUID();
+          void runFeedbackFactoryDefaultsSelfHeal({
+            stateDir: options.config.stateDir,
+            developmentAgent: options.config.developmentAgent === true,
+            bootId: selfHealBootId,
+            currentFence: () => isCanonicalOwner() ? `${selfMachineId}:${options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch}` : null,
+            notify: async (notice) => {
+              const enqueue = this.telegramAdapter?.createAttentionItem;
+              if (!enqueue) throw new Error('durable attention enqueue unavailable');
+              await enqueue.call(this.telegramAdapter, {
+                id: notice.id,
+                title: 'Feedback defaults self-heal needs attention',
+                description: `The bounded feedback-defaults repair reported ${notice.reason}.`,
+                summary: `Feedback-defaults self-heal: ${notice.reason}`,
+                priority: notice.priority,
+                category: 'monitoring',
+                sourceContext: 'self-heal-gate:feedback-defaults',
+              });
+            },
+            audit: (event) => console.log(`[self-heal-gate] feedback-defaults ${event.event}${event.reason ? ` (${event.reason})` : ''}`),
+          }).catch((error) => console.warn('[self-heal-gate] feedback-defaults attempt failed safely:', error instanceof Error ? error.message : 'unknown'));
         }
         if (options.config.developmentAgent === true && sourceCheckout) {
           const backupTick = () => {

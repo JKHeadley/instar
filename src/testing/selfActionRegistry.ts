@@ -803,6 +803,30 @@ const correctionClassReviewOutcomes: SelfActionController = {
   },
 };
 
+const feedbackGeneratedDefaultsHeal: SelfActionController = {
+  id: 'feedback-factory-generated-defaults-heal',
+  actionVerb: 'retry-generated-defaults-repair',
+  models: 'src/feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.ts (SelfHealGate durable episode attempt cap)',
+  modelsPath: 'src/feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 20,
+  tickMs: 30_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackGeneratedDefaultsHeal.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const attempts = Number(f.durableState.get('feedback-defaults-heal-attempts') ?? 0);
+      if (attempts >= 3) return;
+      f.durableState.set('feedback-defaults-heal-attempts', attempts + 1);
+      sink.emit({ verb: 'retry-generated-defaults-repair', target: 'generated-defaults' });
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -821,4 +845,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   burnAlertTerminalDelivery,
   stopGateAuthorityProbe,
   correctionClassReviewOutcomes,
+  feedbackGeneratedDefaultsHeal,
 ];

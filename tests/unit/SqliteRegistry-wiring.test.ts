@@ -65,6 +65,8 @@ const LONG_LIVED_STORES = [
   // Feedback Factory's operated drain is process-lifetime durable state and
   // participates in the same close-on-exit registry as the other stores.
   'src/feedback-factory/drain/FeedbackDrainStore.ts',
+  // Self-heal episode state may remain open for governor queue continuation.
+  'src/core/SelfHealGate.ts',
 ];
 
 /**
