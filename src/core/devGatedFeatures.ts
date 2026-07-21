@@ -474,6 +474,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Dev-gated under the Maturation Path standard. CAN send a user-facing Telegram line, so it does not ship LIVE on dev: its persisted ConfigDefaults default is `dryRun: true` (the route + tick run, but the final send is swapped for a "would emit" log, gated on the SAME cooldown/budget as live — no per-tick flood). So enabling on dev makes only the READ surface + dry-run observation live; an actual send requires a deliberate `dryRun: false` after the dev soak. Signal-only (never gates/blocks/rewrites); every predicate fails CLOSED on uncertainty; bounded by a long user-silence gate + a corroborated recent-output-change + per-topic cooldown + widening per-run backoff + a hard per-run cap + the shared one-voice ProxyCoordinator lease. No spend (no LLM), no destructive action.',
   },
   {
+    name: 'autonomousThroughputFloor',
+    configPath: 'monitoring.throughputFloor.enabled',
+    description: 'Bounded pull/audit view of project-PR movement and manager outbound silence for autonomous runs.',
+    justification: 'Fleet-dark and structurally read-only. It performs bounded Git/GitHub/history reads, persists only a machine-local observation baseline and read breaker, appends scrubbed audit rows, and exposes authenticated status. It has no attention, notification, dispatch, remediation, or autonomous-action seam.',
+  },
+  {
     name: 'dashboardLiveInsights',
     configPath: 'dashboard.liveInsights.enabled',
     description:

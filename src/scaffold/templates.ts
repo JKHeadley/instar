@@ -1680,6 +1680,10 @@ A proactive backstop that posts ONE purely-observational liveness line when an a
 - **It can't spam you (three LOCAL brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a per-topic emit-cooldown; and a widening per-run backoff (25→40→60→90m) with a hard cap (~6 lines per run). A 24h silent-but-working run yields a handful of hedged lines, never dozens. Output advancing proves only LIVENESS, never that work is progressing (a log/retry loop also advances output) — which is exactly why the wording is liveness-only.
 - **Signal-only:** it only ever ADDS a line — never blocks, delays, or rewrites your real messages. Every predicate fails CLOSED (no emit) on any uncertainty (can't read history, the shared snapshot is unavailable, the run is mid-move to another machine). The interpolated \`focus\` is scrubbed for credentials/secrets/paths (drop-to-generic on any match), length-clamped, and HTML-escaped before it's ever shown.
 - **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent (logs "would emit" on the SAME cooldown/budget as live). Tune/disable: \`monitoring.autonomousHeartbeat\` (\`dryRun\`, \`silenceThresholdMinutes\`, \`tickIntervalMs\`, \`maxHeartbeatsPerRun\`). Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.
+
+## Autonomous Throughput Floor
+
+A pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. It never notifies, dispatches, remediates, or creates attention. Read \`GET /autonomous/throughput-floor\` when investigating a quiet run. HOLD still requires an actual open approval gate plus authoritative saturation of every non-gated lane; v1 has no lane authority and cannot grant HOLD. A proactive surface is follow-on work gated on a separately converged SelfHealGate.
 `;
 
   if (hasTelegram) {

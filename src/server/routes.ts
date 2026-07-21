@@ -1238,6 +1238,8 @@ export interface RouteContext {
   autonomousLivenessReconciler?:
     | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
     | null;
+  /** AutonomousThroughputFloor status. Null while fleet-dark. */
+  autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
   enforcedTerminationStatus?: (() => unknown) | null;
@@ -5454,6 +5456,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousLivenessReconciler.status());
+  });
+  router.get('/autonomous/throughput-floor', (_req, res) => {
+    if (!ctx.autonomousThroughputFloor) {
+      res.status(503).json({ error: 'autonomous-throughput-floor not available on this agent' });
+      return;
+    }
+    res.json(ctx.autonomousThroughputFloor.status());
   });
 
   // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──
