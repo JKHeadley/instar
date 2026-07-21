@@ -9,7 +9,7 @@ import { ClaimClauseArbiter, type ClaimClauseArbitration } from './ClaimClauseAr
 import { ClaimObservationAdmissionQueue } from './ClaimObservationAdmissionQueue.js';
 import {
   applyClaimCriticalityFloor, assessClaim, prepareClaimObservation, protectedCueGaps,
-  ClaimObservationRecorder, newMessageAttemptId,
+  ClaimObservationRecorder, newMessageAttemptId, type ClaimAssessment, type ClaimCriticality,
 } from './ClaimObservation.js';
 
 export interface CompletionClaim {
@@ -65,8 +65,14 @@ export interface CompletionClaimStats {
   corpusDrops: number;
   retentionFailures: number;
   verdicts: Record<CompletionObservationVerdict, number>;
+  generalVerdicts: Record<ClaimAssessment['verdict'], number>;
+  refutedByCriticality: Record<ClaimCriticality, number>;
+  unverifiableByCriticality: Record<ClaimCriticality, number>;
   updatedAt?: string;
 }
+
+const GENERAL_VERDICTS: ClaimAssessment['verdict'][] = ['supported', 'refuted', 'unverifiable'];
+const CLAIM_CRITICALITIES: ClaimCriticality[] = ['low', 'medium', 'high', 'irreversible-precondition'];
 
 export class CompletionClaimVerifier {
   private readonly arbiter: ClaimClauseArbiter;
@@ -175,6 +181,7 @@ export class CompletionClaimVerifier {
           const assessment = assessClaim(claim, { evidence: prepared.evidence, sessionSnapshot: context.sessionSnapshot,
             commitmentSnapshots: context.commitmentSnapshots, guardSnapshots: context.guardSnapshots });
           const finalCriticality = applyClaimCriticalityFloor(claim);
+          this.bumpGeneralVerdict(assessment.verdict, finalCriticality);
           if (this.opts.recorder && !this.opts.recorder.record({ messageAttemptId, topicId: context.topicId,
             claim, assessment, finalCriticality, dryRun: this.opts.dryRun,
             bootId: this.opts.bootId ?? 'unknown-boot', modelDoor: arbitration.generalModel?.framework,
@@ -263,27 +270,38 @@ export class CompletionClaimVerifier {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.statsFile(), 'utf8')) as Partial<CompletionClaimStats>;
       for (const key of Object.keys(empty) as Array<keyof CompletionClaimStats>) {
-        if (key === 'verdicts' || key === 'updatedAt') continue;
-        if (typeof parsed[key] === 'number' && Number.isFinite(parsed[key]) && (parsed[key] as number) >= 0) {
-          (empty[key] as number) = Math.floor(parsed[key] as number);
-        }
+        if (key === 'verdicts' || key === 'generalVerdicts' || key === 'refutedByCriticality'
+          || key === 'unverifiableByCriticality' || key === 'updatedAt') continue;
+        if (typeof parsed[key] === 'number') (empty[key] as number) = clampCounter(parsed[key] as number);
       }
       if (parsed.verdicts && typeof parsed.verdicts === 'object') for (const verdict of Object.keys(empty.verdicts) as CompletionObservationVerdict[]) {
-        const count = parsed.verdicts[verdict];
-        if (typeof count === 'number' && Number.isFinite(count) && count >= 0) empty.verdicts[verdict] = Math.floor(count);
+        empty.verdicts[verdict] = clampCounter(parsed.verdicts[verdict]);
       }
+      mergeCounterRecord(empty.generalVerdicts, parsed.generalVerdicts, GENERAL_VERDICTS);
+      mergeCounterRecord(empty.refutedByCriticality, parsed.refutedByCriticality, CLAIM_CRITICALITIES);
+      mergeCounterRecord(empty.unverifiableByCriticality, parsed.unverifiableByCriticality, CLAIM_CRITICALITIES);
       if (typeof parsed.updatedAt === 'string') empty.updatedAt = parsed.updatedAt;
     } catch { /* @silent-fallback-ok — counters are signal-only; corrupt/absent state restarts at zero */ }
     return empty;
   }
 
-  private bump(key: Exclude<keyof CompletionClaimStats, 'verdicts' | 'updatedAt'>): void {
-    this.counters[key]++;
+  private bump(key: Exclude<keyof CompletionClaimStats, 'verdicts' | 'generalVerdicts' | 'refutedByCriticality' | 'unverifiableByCriticality' | 'updatedAt'>): void {
+    this.counters[key] = incrementCounter(this.counters[key]);
     this.persistStats();
   }
 
   private bumpVerdict(verdict: CompletionObservationVerdict): void {
-    this.counters.verdicts[verdict]++;
+    this.counters.verdicts[verdict] = incrementCounter(this.counters.verdicts[verdict]);
+    this.persistStats();
+  }
+
+  private bumpGeneralVerdict(verdict: ClaimAssessment['verdict'], criticality: ClaimCriticality): void {
+    this.counters.generalVerdicts[verdict] = incrementCounter(this.counters.generalVerdicts[verdict]);
+    if (verdict === 'refuted') {
+      this.counters.refutedByCriticality[criticality] = incrementCounter(this.counters.refutedByCriticality[criticality]);
+    } else if (verdict === 'unverifiable') {
+      this.counters.unverifiableByCriticality[criticality] = incrementCounter(this.counters.unverifiableByCriticality[criticality]);
+    }
     this.persistStats();
   }
 
@@ -306,7 +324,25 @@ function emptyStats(): CompletionClaimStats {
     falsePositiveDispositions: 0, falseNegativeDispositions: 0, canaryDriftSignals: 0,
     generalAdmittedTurns: 0, generalClaims: 0, protectedCueGaps: 0, coverageIncompleteTurns: 0, corpusDrops: 0, retentionFailures: 0,
     verdicts: { corroborated: 0, 'uncorroborated-contradicted': 0, 'uncorroborated-unknown': 0, 'not-eligible': 0 },
+    generalVerdicts: { supported: 0, refuted: 0, unverifiable: 0 },
+    refutedByCriticality: { low: 0, medium: 0, high: 0, 'irreversible-precondition': 0 },
+    unverifiableByCriticality: { low: 0, medium: 0, high: 0, 'irreversible-precondition': 0 },
   };
+}
+
+function clampCounter(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value)) : 0;
+}
+
+function incrementCounter(value: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, value + 1);
+}
+
+function mergeCounterRecord<K extends string>(target: Record<K, number>, source: unknown, keys: readonly K[]): void {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return;
+  const record = source as Partial<Record<K, unknown>>;
+  for (const key of keys) target[key] = clampCounter(record[key]);
 }
 
 function completionFingerprint(message: string, evidence: TurnEvidence): string {

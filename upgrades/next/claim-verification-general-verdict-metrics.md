@@ -1,0 +1,23 @@
+# Claim-verification general verdict metrics
+
+## What Changed
+
+Claim verification now records content-free counts for general claim outcomes: supported, refuted, and unverifiable. Refuted and unverifiable totals are also grouped by the final criticality level, including irreversible preconditions. These additive counters live in the existing completion-claim stats file and appear automatically in the existing `/metrics/features` response under `claimVerificationServerAdmittedOnly`.
+
+Persisted counters load safely across upgrades. Missing fields default to zero, while malformed, negative, fractional, non-finite, or oversized values are restored as bounded non-negative safe integers. Claim assessment, criticality floors, delivery, future-claim handling, and action authority are unchanged.
+
+## What to Tell Your User
+
+Instar can now measure how often server-admitted factual claims are supported, refuted, or cannot be verified, including how serious the refuted or unverifiable claims were. This is observation only: it does not block, rewrite, or automatically settle any claim.
+
+## Summary of New Capabilities
+
+- Content-free totals for supported, refuted, and unverifiable general claims.
+- Criticality breakdowns for refuted and unverifiable claims.
+- Backward-compatible, bounded persistence through the existing metrics surface.
+
+## Evidence
+
+- Unit coverage verifies supported, refuted, and unverifiable outcomes across low, high, and irreversible-precondition criticality.
+- Integration coverage admits claims through the existing queue and verifies non-zero refuted and unverifiable-high values at `/metrics/features`.
+- Adjacent claim, route, metrics lifecycle, type, lint, and zero-failure checks pass.
