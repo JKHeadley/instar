@@ -146,12 +146,12 @@ export class AutonomousThroughputFloor {
 
     let outbound: OutboundObservation;
     try { outbound = await this.deps.observeOutbound(run, state?.lastHistoryCursor); }
-    catch { outbound = { coverage: 'unknown' }; }
+    catch { /* @silent-fallback-ok: incomplete history fails closed to unknown */ outbound = { coverage: 'unknown' }; }
     if (outbound.coverage !== 'proven') return this.record(run, now, 'unknown', 'history-coverage-unknown');
 
     let sweep: DeliverableSweepResult;
     try { sweep = await this.deps.sweep(run, state?.lastSnapshot); }
-    catch { sweep = { status: 'unknown', failure: 'github-read' }; }
+    catch { /* @silent-fallback-ok: bounded read failure is surfaced as unknown and feeds the persisted breaker */ sweep = { status: 'unknown', failure: 'github-read' }; }
     if (sweep.status === 'unknown') {
       state ??= baseline(run, now, outbound);
       state.consecutiveSweepFailures += 1;

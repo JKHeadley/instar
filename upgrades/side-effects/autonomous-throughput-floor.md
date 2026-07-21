@@ -23,6 +23,8 @@
   repository paths, URLs, refs, or PR prose.
 - The append-only observation audit is explicitly registered as machine-local state with bounded streamed
   retention; the source annotation binds the write site to that declaration without changing runtime behavior.
+- Expected bounded-read and fleet-dark initialization failures carry explicit fallback annotations: reads fail
+  closed to `unknown`, breaker accounting remains durable, and initialization failure is logged.
 
 ## Follow-on gate
 
