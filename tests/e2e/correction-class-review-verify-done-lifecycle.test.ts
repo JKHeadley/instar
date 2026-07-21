@@ -8,6 +8,7 @@ import { JSDOM } from 'jsdom';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { LlmQueue } from '../../src/monitoring/LlmQueue.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { renderClassReviews, renderCompletionAudit } from '../../dashboard/preferences-learning.js';
@@ -47,7 +48,7 @@ describe('Correction class review + Verify Before Done production lifecycle', ()
         completionScope: 'this-turn', actionKind: 'pushed', target: 'ws1',
         corroborated: false, rationale: 'no matching push' }] })) } as any;
     const sessionManager = Object.assign(createMockSessionManager() as any, { on: vi.fn() });
-    server = new AgentServer({ config, intelligence, sessionManager,
+    server = new AgentServer({ config, intelligence, llmQueue: new LlmQueue({ maxDailyCents: 100 }), sessionManager,
       state: new StateManager(path.join(dir, '.instar')),
       initiativeTracker: { create: vi.fn(async (input: Record<string, unknown>) => {
         events.push('initiative'); initiatives.push(input); return { id: `INIT-${initiatives.length}` };

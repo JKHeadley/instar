@@ -974,6 +974,8 @@ export interface IntelligenceProvider {
 }
 
 export interface IntelligenceOptions {
+  /** Optional shared-queue cancellation signal for preemptible background work. */
+  signal?: AbortSignal;
   /** Model tier preference (implementations may override based on availability) */
   model?: 'fast' | 'balanced' | 'capable';
   /**
@@ -6419,8 +6421,14 @@ export interface MonitoringConfig {
   completionClaimVerification?: {
     enabled?: boolean;
     dryRun?: boolean;
+    generalObservation?: boolean;
     maxAuditBytes?: number;
+    maxCorpusBytes?: number;
     maxQueued?: number;
+    maxQueuedPerTopic?: number;
+    maxConcurrent?: number;
+    maxConcurrentPerTopic?: number;
+    queueTtlMs?: number;
     redactIdentifiers?: boolean;
   };
   /**

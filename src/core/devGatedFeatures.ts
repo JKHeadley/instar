@@ -631,8 +631,8 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'completionClaimVerification',
     configPath: 'monitoring.completionClaimVerification.enabled',
-    description: 'Verify-Before-Done completion-claim corroboration against structural TurnEvidence.',
-    justification: 'Observe-only v1: never blocks, rewrites, or delays an outbound response. A broad deterministic prefilter only drops calls; unavailable evidence/provider fails toward not-flagging; transcript extraction is tail-bounded and structural-only; dryRun:true records scrubbed would-flags locally.',
+    description: 'Dark general factual-claim observation, deterministic cheap verification, and scrubbed local benchmark corpus.',
+    justification: 'Observe-only v1: never blocks, rewrites, delays, sends, corrects, or authorizes. Every bounded Claude-authored response is eligible; unsupported capacity/PR facts stay unverifiable, uncertainty floors only round upward, provider-bound data is scrubbed under a same-origin door policy, and all corpus rows are automation-ineligible.',
   },
   {
     name: 'classReviewStateSync',

@@ -28,7 +28,8 @@ describe('PostUpdateMigrator — Verify Before Done hook parity', () => {
     expect(fs.statSync(file).mode & 0o111).not.toBe(0);
     expect(source).toContain('512 * 1024');
     expect(source).toContain('toolResultOnly');
-    expect(source).toContain("body: JSON.stringify({ message, evidence, topicId })");
+    expect(source).toContain("hookSchemaVersion: 1, messageAttemptId: uuidv7(), message, turnEvidence: evidence, topicHint: topicId");
+    expect(source).not.toContain('High-recall, drop-only prefilter');
     expect(source).toContain("setTimeout(() => { controller.abort(); process.exit(0); }, 25)");
     expect(source).toContain("void fetch('http://127.0.0.1:'");
     expect(source).not.toContain("await fetch('http://127.0.0.1:'");
@@ -53,5 +54,18 @@ describe('PostUpdateMigrator — Verify Before Done hook parity', () => {
     const commands = settings.hooks.Stop.flatMap((entry: any) => entry.hooks).map((hook: any) => hook.command);
     expect(commands).toContain('node existing-stop.js');
     expect(commands.filter((command: string) => command.includes('completion-claim-observe.js'))).toHaveLength(1);
+  });
+
+  it('upgrades the shipped awareness paragraph in place and remains idempotent', () => {
+    const old = '- **Verify Before Done (observe-only v1).** Before claiming a same-turn action is complete, rely on real structural evidence from the tool that performed it. A Claude Stop hook reads only a bounded local transcript tail, emits scrubbed structural `TurnEvidence` (tool/action/safe target/success — never commands, results, secrets, or the transcript path), and records advisory completion-claim observations. It never blocks or rewrites a response. Prior-turn and background outcomes are explicitly not accused. The feature is dev-gated, dry-run first, and dark on the fleet; non-Claude frameworks no-op until they have an equivalent verified trace.';
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# Existing\n\n${old}\n`);
+    const first: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+    (migrator as any).migrateClaudeMd(first);
+    const once = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(once).not.toContain('Verify Before Done (observe-only v1)');
+    expect(once.match(/Claim Verification awareness v2/g)).toHaveLength(1);
+    const second: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+    (migrator as any).migrateClaudeMd(second);
+    expect(fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8').match(/Claim Verification awareness v2/g)).toHaveLength(1);
   });
 });

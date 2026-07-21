@@ -93,6 +93,7 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
  */
 export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   'judgment-provenance',
+  'claim-verification',
   // External-hog decision store (llm-decision-quality-meter spec §5.3): same
   // machine-local posture as the provenance rows; the filename segment closes
   // alternate relative spellings the stateDir-relative prefix cannot.
@@ -141,11 +142,6 @@ const DEFAULT_CONFIG: BackupConfig = {
     // SQLite main file plus active WAL/SHM companions as one glob so restore
     // cannot strand a filled review behind a missing journal.
     'class-reviews.db*',
-    // Verify-Before-Done soak evidence is intentionally machine-local but must
-    // survive backup/restore on that machine. Bounded rotation is included.
-    'logs/completion-claim-audit.jsonl',
-    'logs/completion-claim-audit.jsonl.1',
-    'logs/completion-claim-stats.json',
     // Feedback Factory operated state: canonical source generations, durable
     // drain DB/WAL, authority-registry sidecar/audit, and consumer promotion.
     'state/feedback-factory/store/',
