@@ -640,6 +640,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Unified correction ClassReview lifecycle reach across the agent machine pool.',
     justification: 'Ships dryRun:true: dev agents exercise record serialization and merge decisions without applying peer state. Replicates only scrubbed closed-enum lifecycle fields and observations, never raw correction learning; no external egress beyond the operator-owned encrypted mesh.',
   },
+  {
+    name: 'blockerLifecycleLedger',
+    configPath: 'monitoring.blockerLifecycleLedger.enabled',
+    description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
+    justification: 'Observe-only and machine-local: records already-persisted commitment lifecycle events into a bounded SQLite ledger; no LLM spend, outbound messages, autonomous action, scalar score, or gating authority. Routes are reads and pool scope only proxies bounded per-origin results.',
+  },
 ];
 
 /**

@@ -703,7 +703,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   },
   {
     key: 'commitments',
-    prefixes: ['/commitments'],
+    prefixes: ['/commitments', '/blocker-lifecycle'],
     description: 'CommitmentTracker — lifecycle for agent promises',
     build: () => ({
       enabled: true,
@@ -716,6 +716,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /commitments/:id/withdraw — withdraw the commitment',
         'POST /commitments/:id/resume — resume a paused commitment',
         'GET /commitments/active-context — assemble active-commitment context',
+        'GET /blocker-lifecycle/summary — raw per-origin blocker timing summary',
+        'GET /blocker-lifecycle/trend — raw per-origin blocker timing trend',
       ],
     }),
   },

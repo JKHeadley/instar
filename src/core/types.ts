@@ -5303,6 +5303,14 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * Raw blocker lifecycle timing ledger. Observe-only and dev-gated: omission
+   * enables it on a development agent while keeping fleet agents dark.
+   */
+  blockerLifecycleLedger?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
+  /**
    * DARK-FLAGGED (DEV_GATED_FEATURES idleThrottleSettleGate; CMT-1785 follow-up):
    * settle-gate the SessionManager idle-monitor's `rateLimitedAtIdle` hand-off so it
    * requires the throttle to be present AND the pane byte-identical across polls

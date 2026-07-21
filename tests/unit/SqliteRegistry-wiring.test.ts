@@ -61,6 +61,7 @@ const LONG_LIVED_STORES = [
   // Correction-class review is durable process-lifetime state and registers
   // its handle in the constructor like the other monitoring stores above.
   'src/monitoring/ClassReviewStore.ts',
+  'src/monitoring/BlockerLifecycleLedger.ts',
   // Feedback Factory's operated drain is process-lifetime durable state and
   // participates in the same close-on-exit registry as the other stores.
   'src/feedback-factory/drain/FeedbackDrainStore.ts',

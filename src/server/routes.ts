@@ -302,7 +302,7 @@ import {
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
-import { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { CommitmentPersistenceError, CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
@@ -1043,6 +1043,7 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  blockerLifecycleService?: import('../monitoring/BlockerLifecycleService.js').BlockerLifecycleService | null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8/FD10)
    *  — backs GET /benchmark-divergence (+pool), POST /benchmark-divergence/analyze,
    *  GET /benchmark-divergence/rollup-aggregates. Null when the ledger failed;
@@ -2507,7 +2508,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       await ctx.telegram.sendToTopic(updatesTopicId, text);
       return { ok: true };
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — structured failure is returned to the caller
       return { ok: false, reason: err instanceof Error ? err.message : 'send-error' };
     }
   }
@@ -24886,6 +24887,146 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   /**
    * Get all commitments with optional status filter.
    */
+  const blockerPoolCache = new Map<string, { at: number; value: { origins: unknown[]; failures: Array<{ machineId: string; reason: string }>; poolComplete: boolean } }>();
+  const sanitizeBlockerCounters = (raw: unknown): Record<string, number | boolean> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const source = raw as Record<string, unknown>;
+    const integerKeys = ['attempted', 'inserted', 'deduped', 'failed', 'queueOverflow', 'reconciled',
+      'requestSamplesMissing', 'requestDroppedCapacity', 'clearDroppedCapacity'];
+    if (!integerKeys.every(k => Number.isSafeInteger(source[k]) && (source[k] as number) >= 0) ||
+        typeof source.breakerOpen !== 'boolean') return null;
+    return { ...Object.fromEntries(integerKeys.map(k => [k, source[k] as number])), breakerOpen: source.breakerOpen };
+  };
+  const sanitizeBlockerFactors = (kind: 'summary' | 'trend', raw: unknown): unknown[] | null => {
+    if (!Array.isArray(raw) || raw.length !== 2) return null;
+    const finiteOrNull = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v));
+    const out: unknown[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') return null;
+      const f = item as Record<string, unknown>;
+      if (!['request-to-persist', 'clear-latency'].includes(String(f.factor))) return null;
+      if (seen.has(String(f.factor))) return null;
+      seen.add(String(f.factor));
+      if (kind === 'summary') {
+        const expectedRecoverability = f.factor === 'request-to-persist' ? 'best-effort' : 'reconcilable';
+        if (f.recoverability !== expectedRecoverability ||
+            !['completed', 'missing', 'excluded'].every(k => Number.isSafeInteger(f[k]) && (f[k] as number) >= 0) ||
+            !finiteOrNull(f.coverage) || (typeof f.coverage === 'number' && (f.coverage < 0 || f.coverage > 1)) ||
+            !finiteOrNull(f.medianMs) || (typeof f.medianMs === 'number' && f.medianMs < 0) ||
+            !finiteOrNull(f.p95Ms) || (typeof f.p95Ms === 'number' && f.p95Ms < 0) ||
+            !f.outcomes || typeof f.outcomes !== 'object') return null;
+        const outcomes = f.outcomes as Record<string, unknown>;
+        const outcomeKeys = ['observed', 'legacy-missing-start', 'clock-regression-or-implausible', 'request-row-missing', 'episode-dropped-capacity'];
+        if (!outcomeKeys.every(k => Number.isSafeInteger(outcomes[k]) && (outcomes[k] as number) >= 0)) return null;
+        out.push({ factor: f.factor, recoverability: f.recoverability, completed: f.completed, missing: f.missing,
+          excluded: f.excluded, coverage: f.coverage, medianMs: f.medianMs, p95Ms: f.p95Ms,
+          outcomes: Object.fromEntries(outcomeKeys.map(k => [k, outcomes[k]])) });
+      } else {
+        if (!Array.isArray(f.days) || f.days.length > 90 || !finiteOrNull(f.ratio) ||
+            (typeof f.ratio === 'number' && f.ratio < 0) ||
+            !(f.reason === null || ['insufficient-days', 'insufficient-samples', 'zero-denominator'].includes(String(f.reason)))) return null;
+        const days = f.days.map(d => {
+          if (!d || typeof d !== 'object') return null;
+          const row = d as Record<string, unknown>;
+          return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && finiteOrNull(row.medianMs) &&
+            (row.medianMs === null || (row.medianMs as number) >= 0) && Number.isSafeInteger(row.samples) && (row.samples as number) >= 0
+            ? { day: row.day, medianMs: row.medianMs, samples: row.samples } : null;
+        });
+        if (days.some(d => d === null)) return null;
+        const half = (v: unknown) => {
+          if (!v || typeof v !== 'object') return null;
+          const h = v as Record<string, unknown>;
+          return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.samples) &&
+            (h.samples as number) >= 0 && finiteOrNull(h.meanMs) && (h.meanMs === null || (h.meanMs as number) >= 0)
+            ? { days: h.days, samples: h.samples, meanMs: h.meanMs } : null;
+        };
+        const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+        if (!firstHalf || !secondHalf) return null;
+        out.push({ factor: f.factor, days, firstHalf, secondHalf, ratio: f.ratio, reason: f.reason });
+      }
+    }
+    return out;
+  };
+  const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
+    const cacheKey = `${kind}?${query}`;
+    const cached = blockerPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+    const origins: unknown[] = [local];
+    const failures: Array<{ machineId: string; reason: string }> = [];
+    const started = Date.now();
+    let responseBytes = Buffer.byteLength(JSON.stringify(local));
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    for (let i = 0; i < peers.length; i += 4) {
+      await Promise.all(peers.slice(i, i + 4).map(async p => {
+        if (Date.now() - started > 2_500) { failures.push({ machineId: p.machineId, reason: 'deadline' }); return; }
+        if (!isPeerUrlAllowedForCredentials(p.url, extraAllowlist).ok) {
+          failures.push({ machineId: p.machineId, reason: 'omitted-cap' }); return;
+        }
+        try {
+          const response = await fetch(`${p.url}/blocker-lifecycle/${kind}?${query}&scope=local`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(750),
+          });
+          if (response.status === 404) { failures.push({ machineId: p.machineId, reason: 'unsupported' }); return; }
+          if (!response.ok) { failures.push({ machineId: p.machineId, reason: 'http-error' }); return; }
+          const text = await response.text();
+          if (Buffer.byteLength(text) > 512 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          const body = JSON.parse(text) as { schemaVersion?: unknown; origins?: unknown[] };
+          if (body.schemaVersion !== 1 || !Array.isArray(body.origins) || body.origins.length !== 1) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const origin = body.origins[0];
+          if (!origin || typeof origin !== 'object') { failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return; }
+          const candidate = origin as Record<string, unknown>;
+          const factors = sanitizeBlockerFactors(kind, candidate.factors);
+          const counters = kind === 'summary' ? sanitizeBlockerCounters(candidate.counters) : null;
+          if (!factors || (kind === 'summary' && !counters)) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const sanitized = kind === 'summary'
+            ? { machineId: p.machineId, factors, counters }
+            : { machineId: p.machineId, factors };
+          const bytes = Buffer.byteLength(JSON.stringify(sanitized));
+          if (responseBytes + bytes > 4 * 1024 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          responseBytes += bytes;
+          origins.push(sanitized);
+        } catch (err) {
+          failures.push({ machineId: p.machineId, reason: err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable' });
+        }
+      }));
+    }
+    const value = { origins, failures, poolComplete: failures.length === 0 };
+    blockerPoolCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+  };
+
+  router.get('/blocker-lifecycle/summary', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const sinceHours = Number(req.query.sinceHours ?? 24);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localSummary(sinceHours);
+    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 1, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
+  router.get('/blocker-lifecycle/trend', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const windowDays = Number(req.query.windowDays ?? 7);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isInteger(windowDays) || windowDays < 7 || windowDays > 90 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localTrend(windowDays);
+    const pool = scope === 'pool' ? await blockerPoolRead('trend', `windowDays=${windowDays}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 1, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
   router.get('/commitments', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false, commitments: [] });
@@ -25759,6 +25900,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const updated = ctx.commitmentTracker.transitionState(req.params.id, { owner, blockedOn, actionClass, supersededBy });
       res.json({ transitioned: true, id: updated.id, owner: updated.owner, blockedOn: updated.blockedOn });
     } catch (err) {
+      if (err instanceof CommitmentPersistenceError) {
+        res.status(503).json({ error: 'commitment-persistence-unavailable' });
+        return;
+      }
       const msg = (err as Error).message;
       const code = /not found/.test(msg) ? 404 : /terminal/.test(msg) ? 409 : 400;
       res.status(code).json({ error: msg });

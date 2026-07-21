@@ -642,6 +642,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Boot-time health beacon endpoint (dev-gated, CMT-1438).',
   },
   {
+    key: 'monitoring.blockerLifecycleLedger.enabled',
+    kind: 'config',
+    configPath: 'monitoring.blockerLifecycleLedger.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: true,
+    component: 'BlockerLifecycleService',
+    description: 'Observe-only blocker lifecycle timing ledger (dev-gated).',
+  },
+  {
     key: 'monitoring.enforcedTermination.enabled',
     kind: 'config',
     configPath: 'monitoring.enforcedTermination.enabled',

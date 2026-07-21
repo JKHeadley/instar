@@ -136,6 +136,8 @@ import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
+import { BlockerLifecycleService } from '../monitoring/BlockerLifecycleService.js';
 import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
@@ -304,6 +306,7 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  private blockerLifecycleService: BlockerLifecycleService | null = null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8) — null when the ledger failed. */
   private benchmarkDivergenceAnalyzer: BenchmarkDivergenceAnalyzer | null = null;
   private routingPriceAuthority: RoutingPriceAuthority | null = null;
@@ -1157,7 +1160,7 @@ export class AgentServer {
           dbPath: path.join(serverDataDir, 'framework-issue-ledger.db'),
         });
         this.mentorRunner = this.buildMentorRunner(this.frameworkIssueLedger, options, serverDataDir);
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok — warning plus explicit unavailable subsystem state
         console.warn('[instar] framework-issue-ledger init failed (non-fatal):', err);
         this.frameworkIssueLedger = null;
         this.mentorRunner = null;
@@ -1648,6 +1651,29 @@ export class AgentServer {
       } catch (err) {
         console.warn('[instar] feature-metrics-ledger init failed (non-fatal):', err);
         this.featureMetricsLedger = null;
+      }
+    }
+
+    // Dark, measure-only blocker lifecycle telemetry. The tracker owns state;
+    // this service only observes acknowledged post-commit events.
+    const blockerCfg = (options.config.monitoring as {
+      blockerLifecycleLedger?: { enabled?: boolean };
+    } | undefined)?.blockerLifecycleLedger;
+    if (options.commitmentTracker && options.config.stateDir && resolveDevAgentGate(blockerCfg?.enabled, options.config)) {
+      try {
+        const ledger = new BlockerLifecycleLedger({
+          dbPath: path.join(options.config.stateDir, 'server-data', 'blocker-lifecycle.db'),
+        });
+        this.blockerLifecycleService = new BlockerLifecycleService(
+          options.commitmentTracker,
+          ledger,
+          options.meshSelfId ?? options.config.projectName,
+        );
+        options.guardRegistry?.register('monitoring.blockerLifecycleLedger.enabled', () =>
+          this.blockerLifecycleService?.guardStatus() as { enabled: boolean });
+      } catch (err) {
+        console.warn('[instar] blocker-lifecycle-ledger init failed (non-fatal):', err);
+        this.blockerLifecycleService = null;
       }
     }
 
@@ -3362,6 +3388,7 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
+      blockerLifecycleService: this.blockerLifecycleService,
       benchmarkDivergenceAnalyzer: this.benchmarkDivergenceAnalyzer,
       routingPriceAuthority: this.routingPriceAuthority,
       meteredSpendLedger: this.meteredSpendLedger,
@@ -5105,6 +5132,8 @@ export class AgentServer {
       clearInterval(this.claimObservationHousekeeperTimer);
       this.claimObservationHousekeeperTimer = null;
     }
+    this.blockerLifecycleService?.close();
+    this.blockerLifecycleService = null;
     // Stop the feedback-inbox drainer's poll loop (pure timer; store appends are
     // synchronous so there is no in-flight write to wait on).
     if (this.inboxDrainer) {

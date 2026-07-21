@@ -116,6 +116,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // so resolveDevAgentGate decides — LIVE on a developmentAgent, DARK on the
     // fleet. NEVER hardcode `enabled: false` here (it would dark dev agents too).
     bootHealthBeacon: {},
+    // Raw, floor-independent blocker lifecycle timing. DEV-GATED: enabled is
+    // deliberately omitted (live on developmentAgent, dark on fleet).
+    blockerLifecycleLedger: {
+      dryRun: true,
+    },
     // Default-on so SessionWatchdog runs everywhere — required for the
     // compaction-idle polling fallback to actually fire.
     watchdog: {
