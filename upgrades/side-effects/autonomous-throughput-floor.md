@@ -25,6 +25,8 @@
   retention; the source annotation binds the write site to that declaration without changing runtime behavior.
 - Expected bounded-read and fleet-dark initialization failures carry explicit fallback annotations: reads fail
   closed to `unknown`, breaker accounting remains durable, and initialization failure is logged.
+- The hand-authored dark-gate attribution map is advanced by the five ConfigDefaults lines introduced by this
+  feature; its 25-path set is unchanged, and the real-default resolver test verifies every attribution.
 
 ## Follow-on gate
 
