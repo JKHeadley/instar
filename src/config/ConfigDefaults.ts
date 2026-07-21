@@ -604,8 +604,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     },
     completionClaimVerification: {
       dryRun: true,
-      maxAuditBytes: 2_000_000,
+      generalObservation: true,
+      maxAuditBytes: 50 * 1024 * 1024,
+      maxCorpusBytes: 500 * 1024 * 1024,
       maxQueued: 128,
+      maxQueuedPerTopic: 8,
+      maxConcurrent: 4,
+      maxConcurrentPerTopic: 1,
+      queueTtlMs: 120_000,
       redactIdentifiers: false,
     },
     // Bias-to-Action standing-authorization signal (BIAS-TO-ACTION-SPEC, D8).

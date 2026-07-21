@@ -91,12 +91,19 @@ export function extractTurnEvidenceFromRows(lines: string[], truncated = false, 
 /** Treat request bodies as hostile: closed enums, bounded strings, bounded list. */
 export function validateTurnEvidence(value: unknown, privacy?: TurnEvidencePrivacyOptions): TurnEvidence | null {
   const obj = asObject(value);
+  if (!obj || Buffer.byteLength(JSON.stringify(value), 'utf8') > 48 * 1024
+    || Object.keys(obj).some((key) => !['hadToolCalls', 'toolCalls', 'truncated', 'unavailable', 'canaryOk', 'reason'].includes(key))) return null;
   if (!obj || typeof obj.hadToolCalls !== 'boolean' || typeof obj.truncated !== 'boolean'
-    || typeof obj.unavailable !== 'boolean' || !Array.isArray(obj.toolCalls) || obj.toolCalls.length > 200) return null;
+    || typeof obj.unavailable !== 'boolean' || typeof obj.canaryOk !== 'boolean'
+    || !Array.isArray(obj.toolCalls) || obj.toolCalls.length > 200
+    || (obj.reason !== undefined && (typeof obj.reason !== 'string' || Buffer.byteLength(obj.reason, 'utf8') > 256))) return null;
   const toolCalls: TurnEvidenceItem[] = [];
   for (const raw of obj.toolCalls) {
     const item = asObject(raw);
-    if (!item || typeof item.tool !== 'string' || item.tool.length > 100 || typeof item.ok !== 'boolean'
+    if (!item || Object.keys(item).some((key) => !['tool', 'actionKind', 'targetSummary', 'ok', 'errorClass'].includes(key))
+      || typeof item.tool !== 'string' || Buffer.byteLength(item.tool, 'utf8') > 100 || typeof item.ok !== 'boolean'
+      || (item.targetSummary !== undefined && (typeof item.targetSummary !== 'string' || Buffer.byteLength(item.targetSummary, 'utf8') > 256))
+      || (item.errorClass !== undefined && (typeof item.errorClass !== 'string' || Buffer.byteLength(item.errorClass, 'utf8') > 100))
       || !ACTION_KINDS.has(item.actionKind as EvidenceActionKind)) return null;
     toolCalls.push(scrubItem({
       tool: item.tool,
@@ -111,8 +118,8 @@ export function validateTurnEvidence(value: unknown, privacy?: TurnEvidencePriva
     toolCalls,
     truncated: obj.truncated,
     unavailable: obj.unavailable,
-    canaryOk: obj.canaryOk !== false,
-    ...(typeof obj.reason === 'string' ? { reason: bounded(obj.reason) } : {}),
+    canaryOk: obj.canaryOk,
+    ...(typeof obj.reason === 'string' ? { reason: obj.reason } : {}),
   };
 }
 

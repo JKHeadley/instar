@@ -42,6 +42,7 @@ describe('isNeverServed (unit)', () => {
     expect(NEVER_SERVED_PREFIXES).toContain('state/judgment-provenance/');
     expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/judgment-provenance/');
     expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/external-hog-decisions.json');
+    expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/claim-verification/');
   });
 
   it('matches PRODUCTION-layout paths under the prefix and the bare dir itself', () => {
@@ -50,6 +51,7 @@ describe('isNeverServed (unit)', () => {
     expect(isNeverServed('.instar/state/judgment-provenance')).toBe(true); // bare dir (list target)
     expect(isNeverServed('.instar/state/judgment-provenance/')).toBe(true);
     expect(isNeverServed('.instar/state/external-hog-decisions.json')).toBe(true);
+    expect(isNeverServed('.instar/state/claim-verification/claim-benchmark-v1.jsonl')).toBe(true);
   });
 
   it('matches legacy-layout paths (regression pin for the legacy literal)', () => {

@@ -108,6 +108,8 @@ export const NEVER_SERVED_PREFIXES = [
   // meter spec §5.3) — the dashboard file editor must not read or rewrite it
   // (serve-deny implies edit-deny via isNeverEditable).
   '.instar/state/external-hog-decisions.json',
+  'state/claim-verification/',
+  '.instar/state/claim-verification/',
 ];
 
 export function isNeverServed(relativePath: string): boolean {

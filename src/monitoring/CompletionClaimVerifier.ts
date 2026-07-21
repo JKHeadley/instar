@@ -6,6 +6,11 @@ import type { IntelligenceProvider } from '../core/types.js';
 import { scrubSecrets } from './scrubSecrets.js';
 import type { EvidenceActionKind, TurnEvidence } from './TurnEvidence.js';
 import { ClaimClauseArbiter, type ClaimClauseArbitration } from './ClaimClauseArbiter.js';
+import { ClaimObservationAdmissionQueue } from './ClaimObservationAdmissionQueue.js';
+import {
+  applyClaimCriticalityFloor, assessClaim, prepareClaimObservation, protectedCueGaps,
+  ClaimObservationRecorder, newMessageAttemptId,
+} from './ClaimObservation.js';
 
 export interface CompletionClaim {
   isCompletionClaim: boolean;
@@ -25,8 +30,20 @@ export interface CompletionClaimVerifierOptions {
   dryRun: boolean;
   maxAuditBytes?: number;
   maxQueued?: number;
+  maxQueuedPerTopic?: number;
+  maxConcurrent?: number;
+  queueTtlMs?: number;
   arbiter?: ClaimClauseArbiter;
+  generalObservation?: boolean;
+  recorder?: ClaimObservationRecorder;
+  bootId?: string;
+  admissionQueue?: ClaimObservationAdmissionQueue;
 }
+
+export interface ClaimObservationContext { messageAttemptId?: string; topicId?: number; originFramework?: 'claude-code';
+  sessionSnapshot?: { state: string; elapsedMs: number; revision: string; observedAt: string };
+  commitmentSnapshots?: Record<string, { state: string; revision: string; observedAt: string }>;
+  guardSnapshots?: Record<string, { state: string; revision: string; observedAt: string }> }
 
 export interface CompletionEnqueueResult { accepted: boolean; reason?: string }
 export interface CompletionObserveResult { flagged: boolean; verdict?: CompletionObservationVerdict; claim?: CompletionClaim; reason?: string; arbitration?: ClaimClauseArbitration }
@@ -41,19 +58,27 @@ export interface CompletionClaimStats {
   falsePositiveDispositions: number;
   falseNegativeDispositions: number;
   canaryDriftSignals: number;
+  generalAdmittedTurns: number;
+  generalClaims: number;
+  protectedCueGaps: number;
+  coverageIncompleteTurns: number;
+  corpusDrops: number;
+  retentionFailures: number;
   verdicts: Record<CompletionObservationVerdict, number>;
   updatedAt?: string;
 }
 
 export class CompletionClaimVerifier {
   private readonly arbiter: ClaimClauseArbiter;
-  private queued = 0;
-  private readonly recent = new Map<string, number>();
+  private readonly admissionQueue: ClaimObservationAdmissionQueue;
   private readonly authoritativeMessages = new Map<string, { at: number; arbitration: ClaimClauseArbitration }>();
   private counters: CompletionClaimStats;
 
   constructor(private readonly opts: CompletionClaimVerifierOptions) {
     this.arbiter = opts.arbiter ?? new ClaimClauseArbiter({ intelligence: opts.intelligence });
+    this.admissionQueue = opts.admissionQueue ?? new ClaimObservationAdmissionQueue({ maxQueued: opts.maxQueued,
+      maxQueuedPerTopic: opts.maxQueuedPerTopic, maxConcurrent: opts.maxConcurrent, queueTtlMs: opts.queueTtlMs });
+    this.admissionQueue.setWorker((item) => this.processQueuedObservation(item.message, item.evidence, item.onArbitrated, item.context));
     this.counters = this.readStats();
   }
 
@@ -70,34 +95,27 @@ export class CompletionClaimVerifier {
     message: string,
     evidence: TurnEvidence,
     onArbitrated?: (arbitration: ClaimClauseArbitration) => void | Promise<void>,
+    context: ClaimObservationContext = {},
   ): CompletionEnqueueResult {
     if (!this.opts.enabled) return { accepted: false, reason: 'disabled' };
-    if (!CompletionClaimVerifier.mightContainCompletionClaim(message)) return { accepted: false, reason: 'prefilter-skip' };
+    if (!this.opts.generalObservation && !CompletionClaimVerifier.mightContainCompletionClaim(message)) return { accepted: false, reason: 'prefilter-skip' };
+    if (Buffer.byteLength(message, 'utf8') > 32_768) { this.bump('coverageIncompleteTurns'); return { accepted: false, reason: 'input-bound' }; }
     const fingerprint = completionFingerprint(message, evidence);
-    const now = Date.now();
-    for (const [key, seenAt] of this.recent) if (now - seenAt > 60_000) this.recent.delete(key);
-    if (this.recent.has(fingerprint)) {
-      this.bump('duplicateTurns');
-      return { accepted: false, reason: 'duplicate' };
-    }
-    if (this.queued >= (this.opts.maxQueued ?? 128)) return { accepted: false, reason: 'queue-full' };
-    this.recent.set(fingerprint, now);
-    this.queued++;
-    setImmediate(() => {
-      void this.processQueuedObservation(message, evidence, onArbitrated);
-    });
-    return { accepted: true };
+    const result = this.admissionQueue.enqueue({ message, evidence, onArbitrated, context }, fingerprint);
+    if (!result.accepted && result.reason === 'duplicate') this.bump('duplicateTurns');
+    return result;
   }
 
   private async processQueuedObservation(
     message: string,
     evidence: TurnEvidence,
     onArbitrated?: (arbitration: ClaimClauseArbitration) => void | Promise<void>,
+    context: ClaimObservationContext = {},
   ): Promise<void> {
     try {
       let arbitration: ClaimClauseArbitration;
       try {
-        const result = await this.observe(message, evidence);
+        const result = await this.observe(message, evidence, context);
         arbitration = result.arbitration ?? { clauses: [], authoritative: false };
       } catch { /* @silent-fallback-ok — unexpected observation failure routes one conservative result */
         arbitration = { clauses: [], authoritative: false };
@@ -114,9 +132,7 @@ export class CompletionClaimVerifier {
       if (arbitration.authoritative) {
         this.authoritativeMessages.set(messageFingerprint(message), { at: Date.now(), arbitration });
       }
-    } finally {
-      this.queued--;
-    }
+    } finally { /* queue accounting is owned by drainQueue.finally */ }
   }
 
   getRecentAuthoritativeArbitration(message: string, now = Date.now()): ClaimClauseArbitration | null {
@@ -126,21 +142,52 @@ export class CompletionClaimVerifier {
     return result.arbitration;
   }
 
-  async observe(message: string, evidence: TurnEvidence): Promise<CompletionObserveResult> {
+  async observe(message: string, evidence: TurnEvidence, context: ClaimObservationContext = {}): Promise<CompletionObserveResult> {
     if (!this.opts.enabled) return { flagged: false, reason: 'disabled' };
-    if (!CompletionClaimVerifier.mightContainCompletionClaim(message)) return { flagged: false, reason: 'prefilter-skip' };
+    if (!this.opts.generalObservation && !CompletionClaimVerifier.mightContainCompletionClaim(message)) return { flagged: false, reason: 'prefilter-skip' };
     this.bump('candidateTurns');
     if (evidence.unavailable || !evidence.canaryOk || (!this.opts.intelligence && !this.opts.arbiter)) {
       this.bump('providerUnavailableTurns');
       return { flagged: false, reason: 'evidence-or-provider-unavailable' };
     }
     try {
-      const arbitration = await this.arbiter.arbitrate(message, evidence);
-      if (!arbitration.authoritative) {
+      const prepared = prepareClaimObservation(message, evidence);
+      if (prepared.policy !== 'standard-scrubbed') {
+        this.bump('coverageIncompleteTurns');
+        this.appendAudit({ ts: new Date().toISOString(), evaluated: false, event: 'coverage-incomplete', reason: 'privacy-boundary' });
+        return { flagged: false, reason: 'privacy-boundary' };
+      }
+      if (this.opts.generalObservation) this.bump('generalAdmittedTurns');
+      const arbitration = await this.arbiter.arbitrate(prepared.message, prepared.evidence);
+      if (!arbitration.authoritative && !arbitration.general) {
         this.bump('invalidOutputTurns');
         return { flagged: false, reason: 'invalid-output', arbitration };
       }
-      this.bump('classifiedTurns');
+      if (arbitration.authoritative) this.bump('classifiedTurns');
+      if (this.opts.generalObservation) {
+        const claims = arbitration.general?.claims ?? [];
+        const gaps = protectedCueGaps(prepared.message, claims);
+        for (const _claim of claims) this.bump('generalClaims');
+        for (const _gap of gaps) this.bump('protectedCueGaps');
+        if (arbitration.general?.saturated || gaps.length > 0) this.bump('coverageIncompleteTurns');
+        const messageAttemptId = context.messageAttemptId ?? newMessageAttemptId();
+        for (const claim of claims) {
+          const assessment = assessClaim(claim, { evidence: prepared.evidence, sessionSnapshot: context.sessionSnapshot,
+            commitmentSnapshots: context.commitmentSnapshots, guardSnapshots: context.guardSnapshots });
+          const finalCriticality = applyClaimCriticalityFloor(claim);
+          if (this.opts.recorder && !this.opts.recorder.record({ messageAttemptId, topicId: context.topicId,
+            claim, assessment, finalCriticality, dryRun: this.opts.dryRun,
+            bootId: this.opts.bootId ?? 'unknown-boot', modelDoor: arbitration.generalModel?.framework,
+            modelId: arbitration.generalModel?.model, inputTokens: arbitration.generalModel?.inputTokens,
+            outputTokens: arbitration.generalModel?.outputTokens })) this.bump('corpusDrops');
+        }
+        if (gaps.length > 0) this.appendAudit({ ts: new Date().toISOString(), evaluated: true,
+          event: 'protected-cue-unextracted', gapKinds: gaps, dryRun: this.opts.dryRun });
+      }
+      if (!arbitration.authoritative) {
+        this.bump('invalidOutputTurns');
+        return { flagged: false, reason: 'invalid-legacy-output', arbitration };
+      }
       const completionClauses = arbitration.clauses.filter((clause) => clause.label === 'completed-or-in-progress-assertion');
       if (completionClauses.length === 0) {
         this.bump('noClaimTurns');
@@ -181,8 +228,10 @@ export class CompletionClaimVerifier {
     this.bump(kind === 'false-positive' ? 'falsePositiveDispositions' : 'falseNegativeDispositions');
   }
   recordCanaryDrift(): void { this.bump('canaryDriftSignals'); }
+  recordRetentionFailures(count: number): void { for (let i = 0; i < count; i++) this.bump('retentionFailures'); }
 
   readAudit(limit = 100): Array<Record<string, unknown>> {
+    if (this.opts.recorder) return this.opts.recorder.readAudit(limit);
     try {
       const file = path.join(this.opts.stateDir, 'logs', 'completion-claim-audit.jsonl');
       if (!fs.existsSync(file)) return [];
@@ -190,8 +239,13 @@ export class CompletionClaimVerifier {
         .flatMap((line) => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { /* @silent-fallback-ok — malformed untrusted audit row is excluded */ return []; } });
     } catch { /* @silent-fallback-ok — read surface is advisory and cannot gain authority */ return []; }
   }
+  readPoolAggregates(limit = 100): Array<Record<string, unknown>> { return this.opts.recorder?.readPoolAggregates(limit) ?? []; }
+  readPoolPage(limit = 100, cursor?: string): { records: Array<Record<string, unknown>>; nextCursor?: string } {
+    return this.opts.recorder?.readPoolPage(limit, cursor) ?? { records: [] };
+  }
 
   private appendAudit(row: Record<string, unknown>): void {
+    if (this.opts.recorder) { this.opts.recorder.recordEvent(row); return; }
     try {
       const file = path.join(this.opts.stateDir, 'logs', 'completion-claim-audit.jsonl');
       fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -250,6 +304,7 @@ function emptyStats(): CompletionClaimStats {
     candidateTurns: 0, classifiedTurns: 0, noClaimTurns: 0, invalidOutputTurns: 0,
     providerUnavailableTurns: 0, flaggedTurns: 0, duplicateTurns: 0,
     falsePositiveDispositions: 0, falseNegativeDispositions: 0, canaryDriftSignals: 0,
+    generalAdmittedTurns: 0, generalClaims: 0, protectedCueGaps: 0, coverageIncompleteTurns: 0, corpusDrops: 0, retentionFailures: 0,
     verdicts: { corroborated: 0, 'uncorroborated-contradicted': 0, 'uncorroborated-unknown': 0, 'not-eligible': 0 },
   };
 }

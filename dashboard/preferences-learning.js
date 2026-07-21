@@ -255,9 +255,9 @@ export function renderClassReviews(doc, target, body) {
 export function renderCompletionAudit(doc, target, body) {
   if (!target) return;
   target.replaceChildren();
-  if (body && body.disabled) { target.appendChild(el(doc, 'p', 'ph-empty', 'Verify-before-done is still dark on this agent.')); return; }
+  if (body && body.disabled) { target.appendChild(el(doc, 'p', 'ph-empty', 'Claim Verification is still dark on this agent.')); return; }
   const records = body && Array.isArray(body.records) ? body.records.slice(-20).reverse() : [];
-  if (!records.length) { target.appendChild(el(doc, 'p', 'ph-empty', 'No completion observations yet.')); return; }
+  if (!records.length) { target.appendChild(el(doc, 'p', 'ph-empty', 'No server-admitted claim observations yet.')); return; }
   for (const record of records) {
     const item = doc.createElement('details');
     item.setAttribute('class', 'ph-item');

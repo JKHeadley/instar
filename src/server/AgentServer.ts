@@ -12,7 +12,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, createHmac, timingSafeEqual, createPrivateKey } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual, createPrivateKey, randomBytes, randomUUID } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
@@ -98,6 +98,9 @@ import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ClassReviewStore } from '../monitoring/ClassReviewStore.js';
 import { CorrectionClassReview } from '../monitoring/CorrectionClassReview.js';
 import { CompletionClaimVerifier } from '../monitoring/CompletionClaimVerifier.js';
+import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
+import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
@@ -322,6 +325,7 @@ export class AgentServer {
   private providerCostReportStore: ProviderCostReportStore | null = null;
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
+  private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
@@ -815,6 +819,7 @@ export class AgentServer {
     topicIntentArcCheck?: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
     /** Shared intelligence provider (subscription/REPL-pool) for the standards-conformance gate. */
     intelligence?: import('../core/types.js').IntelligenceProvider | null;
+    llmQueue?: import('../monitoring/LlmQueue.js').LlmQueue;
     /** Usher signal store (rung 4) — the read-only pull surface for re-surface signals. */
     usherSignalStore?: import('../core/UsherSignalStore.js').UsherSignalStore | null;
     /** OIDC verification function for the GH-check endpoint (injected for testability). */
@@ -910,6 +915,9 @@ export class AgentServer {
     this.app = express();
 
     // Middleware
+    // Claim observation has a much smaller privacy/cost boundary than the
+    // general API. Parse it under 96 KiB before the broad server parser.
+    this.app.use('/completion-claim/observe', express.json({ limit: '96kb' }));
     this.app.use(express.json({ limit: '12mb' }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -2432,14 +2440,71 @@ export class AgentServer {
       );
       if (completionEnabled && options.config.stateDir) {
         const cfg = options.config.monitoring?.completionClaimVerification ?? {};
+        const sharedClaimQueue = options.llmQueue;
+        const claimIntelligence = options.intelligence && sharedClaimQueue ? {
+          evaluate: (prompt: string, intelligenceOptions: import('../core/types.js').IntelligenceOptions = {}) => sharedClaimQueue.enqueueMetered({
+            component: 'claim-verification', estimatedInputTokens: Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4),
+            maxOutputTokens: intelligenceOptions.maxTokens ?? 1_800, estimatedCostCents: 0.25,
+            hourly: { requests: 300 }, daily: { requests: 2_000, inputTokens: 10_000_000, outputTokens: 4_000_000, costCents: 500 },
+            run: async (signal, reportUsage) => options.intelligence!.evaluate(prompt, { ...intelligenceOptions, signal,
+              attribution: intelligenceOptions.attribution ?? { component: 'completion-claim-verify' },
+              onUsage: (usage) => { reportUsage({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
+                intelligenceOptions.onUsage?.(usage); } }),
+          }),
+        } : null;
+        const secretStore = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
+        const keyName = 'claimVerification.pseudonymKeyV1';
+        let encodedKey = secretStore.get(keyName);
+        if (typeof encodedKey !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(encodedKey)) {
+          const lockPath = path.join(options.config.stateDir, 'machine', 'claim-pseudonym-key.lock');
+          fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+          let lockFd: number | undefined;
+          try {
+            lockFd = fs.openSync(lockPath, 'wx', 0o600);
+            encodedKey = secretStore.get(keyName);
+            if (typeof encodedKey !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(encodedKey)) {
+              encodedKey = randomBytes(32).toString('base64');
+              secretStore.set(keyName, encodedKey);
+              encodedKey = secretStore.get(keyName);
+            }
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            encodedKey = secretStore.get(keyName);
+          } finally {
+            if (lockFd !== undefined) {
+              fs.closeSync(lockFd);
+              try { SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'claim-identity-lock-release' }); }
+              catch { /* @silent-fallback-ok — stale lock disables only a future initialization attempt */ }
+            }
+          }
+        }
+        if (typeof encodedKey !== 'string' || Buffer.from(encodedKey, 'base64').length !== 32) throw new Error('claim observation identity key unavailable');
+        const recorder = new ClaimObservationRecorder({ stateDir: options.config.stateDir,
+          pseudonymKey: Buffer.from(encodedKey, 'base64'), maxAuditBytes: cfg.maxAuditBytes,
+          maxCorpusBytes: cfg.maxCorpusBytes });
+        const housekeeper = new ClaimObservationHousekeeper({ stateDir: options.config.stateDir });
+        const admissionQueue = new ClaimObservationAdmissionQueue({ maxQueued: cfg.maxQueued,
+          maxQueuedPerTopic: cfg.maxQueuedPerTopic, maxConcurrent: cfg.maxConcurrent, queueTtlMs: cfg.queueTtlMs });
         this.completionClaimVerifier = new CompletionClaimVerifier({
-          intelligence: options.intelligence,
+          intelligence: claimIntelligence,
           stateDir: options.config.stateDir,
           enabled: true,
           dryRun: cfg.dryRun !== false,
           maxAuditBytes: cfg.maxAuditBytes,
           maxQueued: cfg.maxQueued,
+          maxQueuedPerTopic: cfg.maxQueuedPerTopic,
+          maxConcurrent: cfg.maxConcurrent,
+          queueTtlMs: cfg.queueTtlMs,
+          generalObservation: cfg.generalObservation !== false,
+          recorder,
+          admissionQueue,
+          bootId: randomUUID(),
         });
+        this.completionClaimVerifier.recordRetentionFailures(housekeeper.sweep().failures);
+        this.claimObservationHousekeeperTimer = setInterval(() => {
+          this.completionClaimVerifier?.recordRetentionFailures(housekeeper.sweep().failures);
+        }, 6 * 60 * 60 * 1000);
+        this.claimObservationHousekeeperTimer.unref?.();
         const completionVerifier = this.completionClaimVerifier;
         runTurnEvidenceBootCanary((reason) => {
           completionVerifier.recordCanaryDrift();
@@ -5036,6 +5101,10 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    if (this.claimObservationHousekeeperTimer) {
+      clearInterval(this.claimObservationHousekeeperTimer);
+      this.claimObservationHousekeeperTimer = null;
+    }
     // Stop the feedback-inbox drainer's poll loop (pure timer; store appends are
     // synchronous so there is no in-flight write to wait on).
     if (this.inboxDrainer) {

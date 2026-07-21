@@ -5336,10 +5336,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
 
-    if (!content.includes('Verify Before Done (observe-only v1)')) {
-      content += `\n- **Verify Before Done (observe-only v1).** Before claiming a same-turn action is complete, rely on real structural evidence from the tool that performed it. A Claude Stop hook reads only a bounded local transcript tail, emits scrubbed structural \`TurnEvidence\` (tool/action/safe target/success — never commands, results, secrets, or the transcript path), and records advisory completion-claim observations. It never blocks or rewrites a response. Prior-turn and background outcomes are explicitly not accused. The feature is dev-gated, dry-run first, and dark on the fleet; non-Claude frameworks no-op until they have an equivalent verified trace.\n`;
+    const oldClaimAwareness = '- **Verify Before Done (observe-only v1).** Before claiming a same-turn action is complete, rely on real structural evidence from the tool that performed it. A Claude Stop hook reads only a bounded local transcript tail, emits scrubbed structural `TurnEvidence` (tool/action/safe target/success — never commands, results, secrets, or the transcript path), and records advisory completion-claim observations. It never blocks or rewrites a response. Prior-turn and background outcomes are explicitly not accused. The feature is dev-gated, dry-run first, and dark on the fleet; non-Claude frameworks no-op until they have an equivalent verified trace.';
+    const claimAwarenessV2 = '- **Claim Verification awareness v2 (observe-only v1 runtime).** A Claude Stop hook submits every bounded authored response plus scrubbed structural `TurnEvidence` to one dark claim observer. It extracts factual claims, applies deterministic criticality floors, and checks only finite canonical sources; unsupported capacity, pull-request, attribution, and external facts stay `unverifiable`. It never blocks, rewrites, delays, sends, corrects, or authorizes an action. Audit and benchmark rows are metadata-only, local-origin, pool-visible only as privacy-thresholded observations, and automation-ineligible. Metrics are server-admitted only; non-Claude frameworks remain unsupported until they provide an equivalent authenticated scrubbed hook.';
+    if (content.includes(oldClaimAwareness)) {
+      content = content.replace(oldClaimAwareness, claimAwarenessV2);
       patched = true;
-      result.upgraded.push('CLAUDE.md: added Verify Before Done awareness');
+      result.upgraded.push('CLAUDE.md: upgraded Claim Verification awareness v2');
+    } else if (!content.includes('Claim Verification awareness v2')) {
+      content += `\n${claimAwarenessV2}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Claim Verification awareness v2');
     }
 
     // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
@@ -13218,9 +13224,10 @@ process.stdin.on('end', async () => {
     const enabled = feature.enabled !== undefined ? feature.enabled === true : cfg.developmentAgent === true;
     if (!enabled) process.exit(0);
     const input = JSON.parse(data || '{}');
-    const message = String(input.last_assistant_message || '').slice(0, 16384);
-    // High-recall, drop-only prefilter BEFORE any transcript I/O.
-    if (!message || !/\\b(done|sent|ship|shipped|deploy|deployed|handed|commit|committed|push|pushed|merge|merged|restart|restarted|fixed|live|getting\\s+.+\\s+done)\\b/i.test(message)) process.exit(0);
+    const message = String(input.last_assistant_message || '');
+    // Every non-empty authored response is eligible for the single bounded
+    // server-side claim pass. No hook regex is allowed to define coverage.
+    if (!message) process.exit(0);
     const transcript = typeof input.transcript_path === 'string' ? path.resolve(input.transcript_path) : '';
     const claudeRoot = path.resolve(os.homedir(), '.claude', 'projects');
     if (!transcript || (transcript !== claudeRoot && !transcript.startsWith(claudeRoot + path.sep))) process.exit(0);
@@ -13311,13 +13318,23 @@ process.stdin.on('end', async () => {
           { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + auth, 'X-Instar-Request': '1' },
           bindToken ? { 'X-Instar-Bind-Token': bindToken } : {},
         ),
-        body: JSON.stringify({ message, evidence, topicId }), signal: controller.signal,
+        body: JSON.stringify({ hookSchemaVersion: 1, messageAttemptId: uuidv7(), message, turnEvidence: evidence, topicHint: topicId }), signal: controller.signal,
       }).catch(() => {});
     setTimeout(() => { controller.abort(); process.exit(0); }, 25);
     return;
   } catch {}
   process.exit(0); // signal-only; never blocks or rewrites a turn
 });
+
+function uuidv7() {
+  const bytes = crypto.randomBytes(16);
+  const now = BigInt(Date.now());
+  for (let i = 5; i >= 0; i--) bytes[5 - i] = Number((now >> BigInt(i * 8)) & 255n);
+  bytes[6] = (bytes[6] & 15) | 112;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const h = bytes.toString('hex');
+  return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
+}
 `;
   }
 

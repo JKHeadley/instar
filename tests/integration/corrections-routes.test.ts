@@ -183,8 +183,13 @@ describe('/corrections routes (integration)', () => {
       .send({ arm: 'standard', outcome: 'ratified', pin: '000000' })).status).toBe(403);
     expect((await request(app).patch(`/class-reviews/${rec.dedupeKey}/outcome`).set(auth())
       .send({ arm: 'standard', outcome: 'ratified', pin: '123456' })).status).toBe(200);
+    expect((await request(app).post('/completion-claim/observe').set(auth()).set('X-Instar-Request', '1')
+      .send({ hookSchemaVersion: 1, messageAttemptId: 'not-v7', message: 'I pushed feature', turnEvidence: {
+        hadToolCalls: false, toolCalls: [], truncated: false, unavailable: false, canaryOk: true,
+      } })).status).toBe(400);
     const observed = await request(app).post('/completion-claim/observe').set(auth()).set('X-Instar-Request', '1')
-      .send({ message: 'I pushed feature', evidence: { hadToolCalls: false, toolCalls: [], truncated: false, unavailable: false, canaryOk: true } });
+      .send({ hookSchemaVersion: 1, messageAttemptId: '018f47a0-1234-7abc-8def-123456789abc', message: 'I pushed feature',
+        turnEvidence: { hadToolCalls: false, toolCalls: [], truncated: false, unavailable: false, canaryOk: true } });
     expect(observed.status).toBe(202);
     expect(observed.body).toMatchObject({ observed: true, queued: true, blocked: false });
     await vi.waitFor(() => expect(verifier.readAudit()).toEqual([expect.objectContaining({ flagged: true })]));
@@ -195,10 +200,10 @@ describe('/corrections routes (integration)', () => {
     const ctx = ctxFor(stateDir, ledger);
     ctx.completionClaimVerifier = new CompletionClaimVerifier({ enabled: true, dryRun: true, stateDir });
     ctx.resolvePeerUrls = () => [{ machineId: 'peer-b', url: 'http://127.0.0.1:4044' }];
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ records: [{
-      ts: '2026-07-19T00:00:00.000Z', evaluated: true, flagged: true, dryRun: true,
-      verdict: 'uncorroborated', actionKind: 'pushed', hadToolCalls: false,
-      message: 'SECRET COMPLETION PROSE', target: 'private-repository', injected: 'must-not-cross',
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ records: [{
+      day: '2026-07-19', claimShapeId: 'shape-opaque', modelDoor: 'claude-code', verifierVersion: 'claim-verifier-v1',
+      count: 20, verdicts: { unverifiable: 20 }, message: 'SECRET COMPLETION PROSE',
+      target: 'private-repository', injected: 'must-not-cross',
     }] }) }));
     vi.stubGlobal('fetch', fetchMock);
     try {
@@ -206,7 +211,8 @@ describe('/corrections routes (integration)', () => {
       expect(response.status).toBe(200);
       expect(response.body).toMatchObject({ scope: 'pool', pool: { peersQueried: 1, failed: [] } });
       expect(response.body.records).toContainEqual(expect.objectContaining({
-        machineId: 'peer-b', remote: true, evaluated: true, flagged: true, actionKind: 'pushed',
+        machineId: 'peer-b', remote: true, day: '2026-07-19', claimShapeId: 'shape-opaque', count: 20,
+        automationEligible: false,
       }));
       expect(JSON.stringify(response.body)).not.toContain('SECRET COMPLETION PROSE');
       expect(JSON.stringify(response.body)).not.toContain('private-repository');

@@ -1350,7 +1350,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'usher', reason: 'operator-only observability — the mid-task re-surface signal pull surface + its precision metrics; signal-only, the agent-facing payoff is the future gated injection (rung 5), not a discoverable endpoint' },
   { prefix: 'rate-limit', reason: 'operator-only rate-limit-sentinel observability — agent-facing surface is the sentinel’s own notices' },
   { prefix: 'action-claim', reason: 'internal Stop-hook ingest for the action-claim follow-through sentinel (dark by default, messaging.actionClaim.enabled) — the hook posts here; the agent-facing payoff is the silent follow-through commitment, not a discoverable endpoint' },
-  { prefix: 'completion-claim', reason: 'internal observe-only Stop-hook ingest and operator audit for Verify Before Done; the agent-facing behavior is the structural evidence discipline, not direct HTTP use' },
+  { prefix: 'completion-claim', reason: 'internal dark Claim Verification Stop-hook ingest and privacy-thresholded observational audit; it has no outbound authority' },
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
   { prefix: 'flows', reason: 'surfaced inside `evolution` subsystems' },

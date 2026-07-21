@@ -8894,8 +8894,8 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       : summary.totals;
     const classReview = ctx.classReviewStore?.health() ?? null;
-    const completionClaim = ctx.completionClaimVerifier?.stats?.() ?? null;
-    res.json({ ...summary, totals, features, classReview, completionClaim });
+    const claimVerificationServerAdmittedOnly = ctx.completionClaimVerifier?.stats?.() ?? null;
+    res.json({ ...summary, totals, features, classReview, claimVerificationServerAdmittedOnly });
   });
 
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
@@ -22275,20 +22275,60 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const message = typeof req.body?.message === 'string' ? req.body.message : '';
     if (!message) { res.status(400).json({ error: 'message is required' }); return; }
+    if (Buffer.byteLength(message, 'utf8') > 32_768) { res.status(413).json({ error: 'claim observation input bound exceeded' }); return; }
+    const forbiddenAuthorityFields = ['agentId', 'sessionId', 'projectDir', 'repository', 'machineId', 'ownershipEpoch'];
+    if (forbiddenAuthorityFields.some((field) => field in (req.body ?? {}))) {
+      res.status(400).json({ error: 'authority context is derived server-side' }); return;
+    }
     if ('transcriptPath' in (req.body ?? {}) || 'transcript_path' in (req.body ?? {})) {
       res.status(400).json({ error: 'transcript paths are not accepted; send structural TurnEvidence' }); return;
     }
-    const evidence = validateTurnEvidence(req.body?.evidence);
+    const hasV1Envelope = 'hookSchemaVersion' in (req.body ?? {}) || 'messageAttemptId' in (req.body ?? {}) || 'turnEvidence' in (req.body ?? {});
+    const messageAttemptId = typeof req.body?.messageAttemptId === 'string' ? req.body.messageAttemptId : undefined;
+    if (hasV1Envelope && (req.body?.hookSchemaVersion !== 1 || !messageAttemptId
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(messageAttemptId))) {
+      res.status(400).json({ error: 'valid hookSchemaVersion and UUIDv7 messageAttemptId are required' }); return;
+    }
+    const evidence = validateTurnEvidence(hasV1Envelope ? req.body?.turnEvidence : req.body?.evidence);
     if (!evidence) { res.status(400).json({ error: 'valid structural evidence is required' }); return; }
-    const topicId = typeof req.body?.topicId === 'number' && Number.isSafeInteger(req.body.topicId) ? req.body.topicId : undefined;
+    const topicId = typeof (hasV1Envelope ? req.body?.topicHint : req.body?.topicId) === 'number'
+      && Number.isSafeInteger(hasV1Envelope ? req.body.topicHint : req.body.topicId)
+      ? Number(hasV1Envelope ? req.body.topicHint : req.body.topicId) : undefined;
     const rawBindHeader = req.headers['x-instar-bind-token'];
     const rawBindToken = (Array.isArray(rawBindHeader) ? rawBindHeader[0] : rawBindHeader)
       ?? (typeof req.body?.bindToken === 'string' ? req.body.bindToken : undefined);
+    const observationBind = topicId === undefined ? null : verifyConversationBind({ bindAuth: ctx.conversationBindAuth,
+      numericTopicId: topicId, rawToken: rawBindToken, attention: ctx.telegram });
+    const boundObservationTopicId = observationBind?.ok ? topicId : undefined;
+    const boundSessionName = observationBind?.ok && observationBind.boundBy?.startsWith('session:')
+      ? observationBind.boundBy.slice('session:'.length) : undefined;
+    const boundSession = boundSessionName ? ctx.state.listSessions().find((session) => session.tmuxSession === boundSessionName) : undefined;
+    const observationNow = new Date();
+    const sessionSnapshot = boundSession ? {
+      state: String(boundSession.status),
+      elapsedMs: Math.max(0, observationNow.getTime() - Date.parse(boundSession.startedAt)),
+      revision: `${boundSession.id}:${boundSession.status}:${boundSession.startedAt}`,
+      observedAt: observationNow.toISOString(),
+    } : undefined;
+    const commitmentSnapshots = Object.fromEntries((boundObservationTopicId === undefined ? [] : (ctx.commitmentTracker?.getActive() ?? [])
+      .filter((commitment) => commitment.topicId === boundObservationTopicId))
+      .slice(0, 100)
+      .map((commitment) => [commitment.id, { state: commitment.status,
+        revision: `${commitment.id}:${commitment.status}:${commitment.lastVerifiedAt ?? commitment.createdAt}`,
+        observedAt: observationNow.toISOString() }]));
+    const guardSnapshots = Object.fromEntries((ctx.guardRegistry?.registeredKeys() ?? []).slice(0, 100).flatMap((key) => {
+      const read = ctx.guardRegistry?.read(key);
+      if (!read || read.kind !== 'ok') return [];
+      const state = !read.status.enabled ? 'off' : read.status.dryRun ? 'dry-run' : 'on';
+      return [[key, { state, revision: `${key}:${state}:${read.status.lastTickAt ?? 0}`,
+        observedAt: observationNow.toISOString() }]];
+    }));
     const admission = ctx.completionClaimVerifier.enqueue(message, evidence, (arbitration) => {
       if (ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
         registerUnifiedFutureClaims({ message, topicId, rawBindToken, arbitration });
       }
-    });
+    }, { ...(messageAttemptId ? { messageAttemptId } : {}), ...(boundObservationTopicId !== undefined ? { topicId: boundObservationTopicId } : {}),
+      ...(sessionSnapshot ? { sessionSnapshot } : {}), commitmentSnapshots, guardSnapshots, originFramework: 'claude-code' });
     if (!admission.accepted && ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
       // Queue pressure/duplicate/provider uncertainty must never suppress the
       // already-shipped Action-Claim behavior.
@@ -22302,38 +22342,56 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/completion-claim/audit', async (req, res) => {
     if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
-    const records = ctx.completionClaimVerifier.readAudit(limit);
-    if (req.query.scope !== 'pool') { res.json({ records, count: records.length, scope: 'local' }); return; }
-    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const poolProjection = req.query.projection === 'pool' || req.query.scope === 'pool';
+    const localPage = poolProjection ? ctx.completionClaimVerifier.readPoolPage(limit,
+      typeof req.query.cursor === 'string' ? req.query.cursor : undefined) : undefined;
+    const records = localPage?.records ?? ctx.completionClaimVerifier.readAudit(limit);
+    if (req.query.scope !== 'pool') { res.json({ records, count: records.length,
+      ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}), scope: 'local', denominator: 'server-admitted-only' }); return; }
+    const allPeers = ctx.resolvePeerUrls?.() ?? [];
+    const peers = allPeers.slice(0, 16);
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
     const remote: Array<Record<string, unknown>> = [];
     const failed: Array<{ machineId: string; error: string }> = [];
+    let remainingBytes = 256 * 1024;
     await Promise.all(peers.map(async (peer) => {
       if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) {
         failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
       }
       try {
-        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}`, {
-          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000),
+        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}&projection=pool`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(250),
         });
         if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}` }); return; }
-        const body = await response.json() as { records?: Array<Record<string, unknown>> };
+        const raw = await response.text();
+        const size = Buffer.byteLength(raw);
+        if (size > remainingBytes) { failed.push({ machineId: peer.machineId, error: 'response-bound' }); return; }
+        remainingBytes -= size;
+        const body = JSON.parse(raw) as { records?: Array<Record<string, unknown>> };
         for (const row of (body.records ?? []).slice(0, limit)) {
           // Explicit allowlist: peer audit prose and unknown fields never cross.
-          remote.push({ machineId: peer.machineId, remote: true,
-            ...(typeof row.ts === 'string' ? { ts: row.ts.slice(0, 64) } : {}),
-            ...(typeof row.evaluated === 'boolean' ? { evaluated: row.evaluated } : {}),
-            ...(typeof row.flagged === 'boolean' ? { flagged: row.flagged } : {}),
-            ...(typeof row.dryRun === 'boolean' ? { dryRun: row.dryRun } : {}),
-            ...(typeof row.verdict === 'string' ? { verdict: row.verdict.slice(0, 64) } : {}),
-            ...(typeof row.actionKind === 'string' ? { actionKind: row.actionKind.slice(0, 64) } : {}),
-            ...(typeof row.hadToolCalls === 'boolean' ? { hadToolCalls: row.hadToolCalls } : {}),
+          remote.push({ machineId: peer.machineId, remote: true, automationEligible: false,
+            ...(typeof row.day === 'string' ? { day: row.day.slice(0, 10) } : {}),
+            ...(typeof row.claimShapeId === 'string' ? { claimShapeId: row.claimShapeId.slice(0, 128) } : {}),
+            ...(typeof row.modelDoor === 'string' ? { modelDoor: row.modelDoor.slice(0, 64) } : {}),
+            ...(typeof row.verifierVersion === 'string' ? { verifierVersion: row.verifierVersion.slice(0, 64) } : {}),
+            ...(typeof row.count === 'number' ? { count: Math.max(0, Math.floor(row.count)) } : {}),
+            ...(row.verdicts && typeof row.verdicts === 'object' ? { verdicts: Object.fromEntries(
+              ['supported', 'refuted', 'unverifiable', 'unknown'].flatMap((key) => {
+                const value = (row.verdicts as Record<string, unknown>)[key];
+                return typeof value === 'number' && Number.isFinite(value) ? [[key, Math.max(0, Math.floor(value))]] : [];
+              })) } : {}),
           });
         }
       } catch (error) { failed.push({ machineId: peer.machineId, error: error instanceof Error ? error.name : 'unreachable' }); }
     }));
-    const merged = [...records.map((row) => ({ ...row, remote: false })), ...remote].slice(0, limit * (peers.length + 1));
-    res.json({ records: merged, count: merged.length, scope: 'pool', pool: { peersQueried: peers.length, failed } });
+    const merged = ([...records.map((row) => ({ ...row, remote: false })), ...remote] as Array<Record<string, unknown>>)
+      .sort((a, b) => `${a.remote ? String(a.machineId) : 'local'}|${String(a.day ?? '')}|${String(a.claimShapeId ?? '')}`
+        .localeCompare(`${b.remote ? String(b.machineId) : 'local'}|${String(b.day ?? '')}|${String(b.claimShapeId ?? '')}`))
+      .slice(0, Math.min(limit, 200));
+    res.json({ records: merged, count: merged.length, ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}),
+      scope: 'pool', denominator: 'server-admitted-only', partial: failed.length > 0 || allPeers.length > peers.length,
+      pool: { peersQueried: peers.length, peersOmitted: Math.max(0, allPeers.length - peers.length), failed } });
   });
 
   // The recurrence analyzer + closed-loop tick (Correction & Preference Learning
