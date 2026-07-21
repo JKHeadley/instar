@@ -23488,7 +23488,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           observeOutbound: (run, cursor) => { const rows = telegram?.getTopicHistory(run.topicId, 100) ?? []; const newest = [...rows].reverse().find(row => !row.fromUser); const covered = rows.length < 100 || rows.some(row => Date.parse(row.timestamp) <= run.startedAt || row.timestamp === cursor); return { coverage: covered ? 'proven' as const : 'unknown' as const, newestOutboundAt: newest ? Date.parse(newest.timestamp) : undefined, cursor: rows.at(-1)?.timestamp }; },
           loadState: loadTf,
           saveState: saveTf,
-          audit: (row) => { try { const p = path.join(config.stateDir, 'logs', 'autonomous-throughput-floor.jsonl'); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.appendFileSync(p, `${JSON.stringify(row)}\n`); } catch { /* @silent-fallback-ok: in-memory ring remains */ } },
+          audit: (row) => { try { const p = path.join(config.stateDir, 'logs', 'autonomous-throughput-floor.jsonl'); fs.mkdirSync(path.dirname(p), { recursive: true }); /* state-registry: audit-autonomous-throughput-floor */ fs.appendFileSync(p, `${JSON.stringify(row)}\n`); } catch { /* @silent-fallback-ok: in-memory ring remains */ } },
         }, { ...tfCfg, enabled: true });
         autonomousThroughputFloor.start();
         (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor = autonomousThroughputFloor;

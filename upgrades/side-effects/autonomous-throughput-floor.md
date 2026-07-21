@@ -21,6 +21,8 @@
   `unknown`/`ineligible`, never to a flatline claim.
 - Audit/status expose only ids, durations, decision/failure enums, and timestamps—no raw messages, stderr,
   repository paths, URLs, refs, or PR prose.
+- The append-only observation audit is explicitly registered as machine-local state with bounded streamed
+  retention; the source annotation binds the write site to that declaration without changing runtime behavior.
 
 ## Follow-on gate
 

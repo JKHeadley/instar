@@ -652,6 +652,24 @@
       "grandfathered": true
     },
     {
+      "category": "audit-autonomous-throughput-floor",
+      "description": "Pull-only autonomous throughput observation audit stream. Append-only per-machine; records measurement and breaker outcomes but carries no actuation authority.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/autonomous-throughput-floor.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 33554432,
+        "keepSegments": 4
+      }
+    },
+    {
       "category": "audit-destructive-ops",
       "description": "Destructive-ops audit stream (411M live -- needs rotation, census \u00a77). Append-only per-machine.",
       "scope": "machine-local",
