@@ -117,7 +117,8 @@ import { classifyMachineEmptyState } from './poolEmptyState.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
 import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
-import { PROVENANCE_COVERAGE } from '../data/provenanceCoverage.js';
+import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
+import { DP_COMPLETION_EVALUATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -5267,6 +5268,96 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(409).json({ ok: false, error: 'runId mismatch', currentRunId: rec.runId });
       return;
     }
+    const rawRealcheck = body.realcheck;
+    const rawRealcheckRow = rawRealcheck && typeof rawRealcheck === 'object'
+      ? rawRealcheck as Record<string, unknown>
+      : null;
+    const realcheckPayloadValid = rawRealcheckRow?.configured === false || (
+      rawRealcheckRow?.configured === true && (rawRealcheckRow.outcome === 'pass' || rawRealcheckRow.outcome === 'fail')
+    );
+    const realcheck = rawRealcheckRow?.configured === true && realcheckPayloadValid
+      ? {
+          configured: true as const,
+          outcome: rawRealcheckRow.outcome as 'pass' | 'fail',
+          ...(typeof rawRealcheckRow.exitCode === 'number' && Number.isFinite(rawRealcheckRow.exitCode)
+            ? { exitCode: Math.max(-1, Math.min(255, Math.trunc(rawRealcheckRow.exitCode))) }
+            : {}),
+        }
+      : { configured: false as const };
+    const terminal = body.terminal !== false;
+    const correlationId = rec.lastCompletionCorrelationId;
+    const priorObservation = correlationId ? rec.realcheckOutcomeByCorrelation?.[correlationId] : undefined;
+    let realcheckAnnotation = 'skipped-unconfigured';
+    if (body.met !== true) {
+      realcheckAnnotation = 'skipped-not-met';
+    } else if (realcheck.configured && priorObservation && priorObservation.outcome !== realcheck.outcome) {
+      realcheckAnnotation = 'conflicting-observation';
+    } else if (realcheck.configured && priorObservation?.applied) {
+      realcheckAnnotation = 'duplicate-observation';
+    } else if (rec.status !== 'active' && !(realcheck.configured && priorObservation && !priorObservation.applied)) {
+      realcheckAnnotation = 'skipped-terminal-record';
+    } else {
+      const observedAtMs = Date.parse(rec.lastCompletionCorrelationAt ?? '');
+      const stableObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.parse(rec.registeredAt);
+      let reservationReady = !realcheck.configured || !correlationId || priorObservation !== undefined;
+      if (!reservationReady && realcheck.configured && correlationId) {
+        try {
+          const reserved = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+            current.realcheckOutcomeByCorrelation ??= {};
+            current.realcheckOutcomeByCorrelation[correlationId] ??= {
+              outcome: realcheck.outcome,
+              observedAtMs: stableObservedAtMs,
+              applied: false,
+            };
+          });
+          if (!reserved) throw new Error('run-record-missing');
+          reservationReady = true;
+        } catch {
+          realcheckAnnotation = 'observation-persist-error';
+        }
+      }
+      if (reservationReady) {
+        realcheckAnnotation = annotateCompletionRealcheck(
+          rec,
+          { met: body.met === true, realcheck },
+          (annotation) => {
+            const applied = annotateDecisionOutcome({
+              correlationId: annotation.correlationId,
+              ruleId: annotation.ruleId,
+              gradedBy: { component: annotation.gradedBy.component },
+              grade: annotation.grade,
+              decisionPoint: DP_COMPLETION_EVALUATE,
+              evidence: annotation.evidence,
+            });
+            if (!applied.applied) throw new Error(applied.rejected ?? (applied.disabled ? 'disabled' : 'not-applied'));
+          },
+          stableObservedAtMs,
+        );
+        if ((realcheckAnnotation === 'annotated-right' || realcheckAnnotation === 'annotated-wrong') && correlationId && realcheck.configured) {
+          try {
+            const marked = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+              const receipt = current.realcheckOutcomeByCorrelation?.[correlationId];
+              if (receipt?.outcome === realcheck.outcome) receipt.applied = true;
+            });
+            if (!marked) throw new Error('run-record-missing');
+          } catch {
+            // The pre-annotation reservation still blocks opposite replay. A
+            // same-outcome replay safely retries the idempotent annotation.
+            realcheckAnnotation = 'annotation-applied-receipt-pending';
+          }
+        }
+      }
+    }
+    if (!terminal) {
+      res.json({
+        ok: true,
+        runId: rec.runId,
+        terminal: false,
+        realcheckAnnotation,
+        ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+      });
+      return;
+    }
     let unbuiltEnumerated = 0;
     if (scopeAccretionEffective(rec)) {
       try {
@@ -5282,7 +5373,14 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
     autonomousRunStore.markTerminal(rec.topicId, rec.runId, 'ended', reason);
-    res.json({ ok: true, runId: rec.runId, unbuiltEnumerated });
+    res.json({
+      ok: true,
+      runId: rec.runId,
+      terminal: true,
+      unbuiltEnumerated,
+      realcheckAnnotation,
+      ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+    });
   });
 
   // ── POST /autonomous/:topic/ratify-deferral (R23 path 1 — PIN, phone-first) ──
@@ -15886,11 +15984,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       totalCounters.droppedByBudget += c.droppedByBudget;
     }
 
+    const wiredButNoGrader = findWiredWithoutGraders();
     return {
       sinceHours,
       gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
       points,
-      censusDebt: { wired, pending, exempt, pendingRefDead },
+      censusDebt: { wired, pending, exempt, pendingRefDead, wiredButNoGrader },
       counters: totalCounters,
       // The four §5.5 annotation-rejection counters, by class.
       rejections: getDecisionAnnotationRejectionCounters(),
