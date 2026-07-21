@@ -376,6 +376,47 @@ describe('SessionRecovery — context exhaustion', () => {
     expect(stats.successes.contextExhaustion).toBe(1);
   });
 
+  it('persists a true-only per-topic wedge latch and reuses it after the banner scrolls away', async () => {
+    let output = 'Conversation too long. Press esc twice to go up a few messages and try again.';
+    let active = true;
+    deps = createMockDeps({
+      isSessionAlive: vi.fn(() => true),
+      captureSessionOutput: vi.fn(() => output),
+      hasActiveProcesses: vi.fn(() => active),
+    });
+    recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir, cooldownMs: 0 }, deps);
+
+    const deferred = await recovery.checkAndRecover(42, 'stuck-session');
+    expect(deferred.deferred).toBe(true);
+    expect(recovery.hasContextWedgedSeen(42)).toBe(true);
+    const latchedState = JSON.parse(fs.readFileSync(path.join(tmpDir, '.instar', 'recovery-state.json'), 'utf-8'));
+    expect(latchedState.wedgedSeen).toEqual({ '42': true });
+    expect(latchedState.attempts['context:stuck-session']).toMatchObject({ count: 1 });
+
+    output = 'ordinary prompt output; original banner has scrolled away';
+    active = false;
+    recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir, cooldownMs: 0 }, deps);
+    expect(recovery.hasContextWedgedSeen(42)).toBe(true);
+
+    const recovered = await runWithTimers(() => recovery.checkAndRecover(42, 'stuck-session'));
+    expect(recovered.recovered).toBe(true);
+    expect(recovered.failureType).toBe('context_exhaustion');
+    expect(recovery.hasContextWedgedSeen(42)).toBe(false);
+    const clearedState = JSON.parse(fs.readFileSync(path.join(tmpDir, '.instar', 'recovery-state.json'), 'utf-8'));
+    expect(clearedState.wedgedSeen).toEqual({});
+    expect(clearedState.attempts['context:stuck-session']).toMatchObject({ count: 2 });
+  });
+
+  it('supports explicit manual clearing without a clock or inferred pane validation', () => {
+    deps = createMockDeps();
+    recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir }, deps);
+
+    recovery.markContextWedgedSeen(7);
+    expect(recovery.hasContextWedgedSeen(7)).toBe(true);
+    recovery.clearContextWedgedSeen(7);
+    expect(recovery.hasContextWedgedSeen(7)).toBe(false);
+  });
+
   // ==========================================================================
   // In-flight reply capture — prevents the fresh session from duplicating
   // a reply that the dying session had already sent but hadn't yet committed

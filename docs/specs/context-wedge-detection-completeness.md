@@ -1,93 +1,122 @@
 ---
-title: "Context-wedge detection completeness — make the LIVE recovery engine fire for the scrolled-out-banner wedge"
+title: "Context-wedge seen latch"
 slug: "context-wedge-detection-completeness"
-author: "echo"
-status: draft
-approved: false
-supersedes: "context-limit-wedge-recovery.md (WITHDRAWN — it proposed a NEW ContextWedgeSentinel family that DUPLICATED the live SessionRecovery engine; caught in spec-converge round 1, reviewer adbfa439 + author re-grounding)"
-parent-principle: "The Agent Is Always Reachable — a session that fast-fails every turn at the context wall until a human manually /compacts is not reachable; the recovery engine EXISTS and runs live, but its DETECTION misses the persistent post-wedge state"
+author: "instar-codey"
+status: approved
+approved: true
+parent-principle: "The Agent Is Always Reachable"
 lessons-engaged:
-  - "Verify the State, Not Its Symbol (the fix is to persist the WEDGED STATE once observed, so a transient banner that scrolls out of the capture window does not drop the detection — the state is the wedge, the banner is only its momentary symbol)"
-  - "Foundation grep evidence (this spec's §1 lists the capability-level grep that the WITHDRAWN spec skipped — grounding against ALL implementations of context-exhaustion recovery, not the one component the author anchored on)"
-  - "Reuse Before Rebuild (the /compact→respawn ladder, attempt cap, cooldown, in-flight-reply capture, and the 2026-06-06 false-positive framing guard ALL already exist in the live engine; this spec adds ONLY detection persistence — no second engine, no double-compact race)"
-  - "No Unbounded Loops (P19: the fix rides the EXISTING SessionRecovery attempt cap + cooldown; the persisted wedged-state has a bounded TTL and is cleared on genuine progress)"
-  - "Distrust Temporary Success (the persisted wedged-state clears ONLY on a genuine output delta BELOW the banner, never on a transient repaint)"
+  - "Verify the State, Not Its Symbol: preserve an existing positive detector result after its banner scrolls away."
+  - "Reuse Before Rebuild: SessionRecovery remains the only recovery authority."
+  - "Signal vs Authority: the latch remembers one boolean and makes no recovery decision."
+review-convergence: "2026-07-21T09:41:31.992Z"
+review-iterations: 2
+review-completed-at: "2026-07-21T09:41:31.992Z"
+review-report: "docs/specs/reports/context-wedge-detection-completeness-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
 single-run-completable: true
+frontloaded-decisions: 4
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
-# Context-wedge detection completeness
+# Context-wedge seen latch
 
-## 0. Why this spec exists (and what it replaces)
+## Problem
 
-The context-wall wedge hit the interactive session TWICE in apprenticeship Drive 7: the session fast-failed every turn at "Context limit reached · /compact or /clear to continue" until the operator MANUALLY sent /compact (~55 min unanswered the first time). A first spec (`context-limit-wedge-recovery.md`) proposed adding a THIRD `context-limit` family to `ContextWedgeSentinel` with its own /compact→respawn recovery ladder. **That spec was WITHDRAWN in spec-converge round 1** — the reviewer AND the author's own re-grounding found it duplicated a **live-by-default recovery engine that already implements the exact ladder**. This spec is the correctly-grounded redirect: the recovery already works; the DETECTION misses the persistent post-wedge state. Fix the detection, reuse the engine.
+The live context-exhaustion detector recognizes the existing `CONTEXT_PATTERNS`, and the live `SessionRecovery` engine owns all validation, cooldown, attempt, `/compact`, and respawn behavior. The monitor reads a bounded tmux tail. When a detector-positive banner scrolls out of that tail before the existing recovery path reaches genuine progress, later polls forget the observation.
 
-## 1. Verified foundation (capability-grep evidence — the step the withdrawn spec skipped)
+Here, a **topic** is the existing numeric conversation key passed to `SessionMonitor` and `SessionRecovery`; an **ordinary poll** is the monitor's already-scheduled scan, not a new timer; and **genuine progress** is the existing `RecoveryResult.recovered === true` outcome. Topic identifiers are stable external conversation identities in the current foundation. If an operator deliberately reuses one for a different conversation, the existing manual-clear seam must be invoked first; this increment deliberately adds no mapping heuristic.
 
-**Grep run (the foundation audit at capability level, not one component):**
-```
-grep -rl "detectContextExhaustion\|context.*limit\|conversation too long" src/
-→ QuotaExhaustionDetector.ts, SessionMonitor.ts, SessionRecovery.ts, server.ts, StuckSignatureClassifier.ts, guardManifest.ts …
-grep -rn "detectContextExhaustion" src/
-→ defined QuotaExhaustionDetector.ts:161; called SessionMonitor.ts:287, SessionRecovery.ts:270, server.ts:11085
-```
+## Binding scope
 
-What that grep establishes (all verified against origin/main v1.3.889):
+Add exactly one persisted boolean per numeric topic: `wedgedSeen: true`.
 
-- **`QuotaExhaustionDetector.detectContextExhaustion(tmuxOutput)`** (`QuotaExhaustionDetector.ts:161`) — detects the wall via `CONTEXT_PATTERNS` (banner strings: `context.*limit`, `conversation too long`, `press esc twice…`) with a **hard-won 2026-06-06 false-positive framing guard** (the bare phrase "conversation too long" without CLI recovery framing does NOT fire — born from the topic-13435 flood where a session working ON the feature self-amplified one false positive). Returns `{matched, pattern, confidence}`.
-- **`SessionRecovery.recoverFromContextExhaustion`** (`SessionRecovery.ts:533`) — the LIVE recovery ladder: **Rung 1 `/compact`** (`attemptCompaction`, `server.ts:11070` — presses /compact, polls ≤30s, verifies `!detectContextExhaustion(out).matched`, detects "error during compaction") gated on `!hasActiveProcesses`; **Rung 2** kill + fresh respawn with in-flight-reply capture; plus an **attempt cap** (`shouldAttempt`/`maxAttempts:3`/`cooldownMs:15min`).
-- **Trigger:** `SessionMonitor.checkSession` (`SessionMonitor.ts:287`) calls `detectContextExhaustion(currentOutput)` on every poll, where `currentOutput = captureSessionOutput(sessionName, 30)` (**30-line window**, `:257`). `SessionRecovery.enabled` defaults **true** → this engine is LIVE now, not dark.
-- **`ContextWedgeSentinel`** (`ContextWedgeSentinel.ts`) — a SEPARATE engine for two OTHER fast-fail families (`thinking-block-400`, `aup-rejection`), both recovering via DESTRUCTIVE respawn. It owns the "Cooked for 0s" / "API Error … latest assistant message" fast-fail signatures — which `QuotaExhaustionDetector` does NOT have.
+- Set it only when the unchanged `detectContextExhaustion()` function returns `matched: true` from the unchanged `CONTEXT_PATTERNS` table.
+- Let an ordinary monitor poll continue presenting that remembered boolean to the same `SessionRecovery.checkAndRecover()` instance. The boolean is evidence that the existing detector already matched; it is not a new detector or recovery decision.
+- Clear it only when the existing recovery result reports `recovered: true`, or through an explicit manual-clear method. It never expires by wall clock.
+- Persist it in the existing recovery-state file beside existing attempt state, using the existing recovery-state write owner.
 
-## 2. Root cause (code-grounded, symptom-consistent)
+The stored value contains no timestamp, session name, pattern identifier, retry count, mapping, confidence, expiry, validation result, or pane content. Absence and `false` are equivalent; only `true` rows are serialized.
 
-The live engine keys on the wall **BANNER** inside a **30-line capture window**. After the wedge, each fast-failed turn ("Cooked for 0s") emits NEW lines, scrolling the original banner **up and out of the 30-line window**. `CONTEXT_PATTERNS` has **no fast-fail signature**, so `detectContextExhaustion(last-30-lines)` returns `matched:false` on the persistent post-wedge tail → the live /compact engine **never fires** → the wedge persists until a manual /compact.
+## Frozen foundation
 
-**Why this is the cause, not a guess:** Rung 1 fires on `!hasActiveProcesses`, and a fast-fail wedge runs no child process. Had the engine DETECTED the wedge it would have auto-/compacted (no manual /compact needed). The operator needed to /compact manually → detection missed it → the banner was not in the scanned window. The withdrawn spec's "idle-gate skips the mid-turn wedge" premise was FALSE (the gate is `!hasActiveProcesses`, which a fast-fail wedge PASSES). **Empirical validation step (Verify the State, Not Its Symbol):** confirm against the actual Drive-7 pane capture if still on disk (≈2 days old; may be rotated) before the live flip; the code-level argument is strong but the capture is the ground truth.
+This change does not add or alter:
 
-## 3. Proposed design — persist the wedged STATE (add detection persistence, reuse the engine)
+- a `CONTEXT_PATTERNS` entry or false-positive guard;
+- pane-shape, prompt, silence, provider-wait, or network-wait classification;
+- topic/session mapping validation;
+- a timer, TTL, cooldown, retry, scheduler, or attempt budget;
+- active-work validation, ownership validation, compaction, respawn, notification, or recovery-result semantics;
+- a second sentinel or recovery engine.
 
-### 3.1 The change (small, one detection layer)
-Add a per-topic **wedged-state latch** in the `SessionMonitor` context-exhaustion path (feeding the SAME `detectContextExhaustion` → `SessionRecovery` trigger, unchanged):
-- **Set:** when `detectContextExhaustion(currentOutput).matched` is true for a topic, record `contextWedgedSince[topicId] = now` (alongside the existing `contextExhaustionCooldowns`).
-- **Hold:** on a subsequent poll where the 30-line window NO LONGER contains the banner (it scrolled out) BUT the session is still fast-failing, the latch keeps the topic classified as wedged, so `SessionRecovery.checkAndRecover` is still invoked — the recovery the banner-detection would have triggered is not dropped just because the banner scrolled out.
-- **Clear:** the latch clears ONLY on a **genuine output delta below the banner** — the pane tail advanced with NEW non-fast-fail content (real work resumed / the /compact landed / a fresh prompt is accepting input). A transient repaint never clears it (Distrust Temporary Success).
+`SessionRecovery` remains the sole authority. A remembered boolean reaches the same context-recovery branch, which still applies every existing guard and bound. Any non-success recovery result leaves the boolean set and schedules nothing; later presentation happens only through the monitor's already-existing poll and cooldown.
 
-### 3.2 The load-bearing safety precondition (reviewer M-D)
-The latch MUST be gated by an **active-work-indicator negative check** — `looksActivelyWorking`/`looksGeneratingNow` (`sentinelWiring.ts:171`: spinner / "esc to interrupt" / a live subagent). A session genuinely mid-long-tool-call at high context (a build, a big grep, a subagent) can show the banner as a status hint while STILL working; it must NEVER be /compacted out from under live work. The latch sets/holds ONLY when the active-work indicators are absent (a true fast-fail wedge shows no spinner). This is the protection the withdrawn spec wrongly discarded as "coarse."
+## State transitions
 
-### 3.3 What is REUSED unchanged (no second engine)
-The `/compact`→respawn ladder, the `!hasActiveProcesses` Rung-1 gate, the attempt cap (`maxAttempts:3`/`cooldownMs:15min`), the in-flight-reply capture, and the 2026-06-06 false-positive framing guard — ALL unchanged. This spec adds ONLY detection persistence. **Explicitly REJECTED:** a new `ContextWedgeSentinel` `context-limit` family with its own ladder (the withdrawn design) — it would create two engines watching the same pane, two attempt caps, and a double-compact/double-respawn race.
+| Current | Existing event | Next |
+|---|---|---|
+| absent | existing detector matches | `wedgedSeen=true`, persisted |
+| true | detector no longer matches | true |
+| true | existing recovery returns any non-success result | true |
+| true | existing recovery returns `recovered:true` | absent, persisted |
+| true | explicit manual clear | absent, persisted |
+| absent | process/server restart | absent |
+| true | process/server restart | true, loaded from existing state file |
 
-## Multi-machine posture
+No transition depends on elapsed time.
 
-The context-exhaustion detection + recovery act on **THIS machine's own tmux sessions** — a pane wedge is a local phenomenon; only the machine holding the pane can capture its output or send-keys /compact. Same posture as the existing detector/recovery. No cross-machine surface is introduced (the latch is per-topic in-memory monitor state on the owning machine, rebuilt from the live pane on restart — it is a cache of an observable, not durable authority).
+## API seam
 
-machine-local-justification: hardware-bound-resource
+`SessionRecovery` exposes three deliberately mechanical methods:
 
-## 4. Testing (Testing Integrity — all three tiers)
+- `markContextWedgedSeen(topicId)` — stores `true` and persists; called only after the existing detector matches.
+- `hasContextWedgedSeen(topicId)` — reads the boolean so the monitor can continue calling the existing engine after the banner scrolls away.
+- `clearContextWedgedSeen(topicId)` — explicit manual-intervention seam; successful existing recovery calls the same clear internally.
 
-- **Unit:** (a) banner in window → latch SET; (b) banner scrolls out of the 30-line window while fast-fail tail persists + no active-work indicator → latch HELD → recovery still invoked (the core fix); (c) genuine output delta below the banner → latch CLEARED; (d) active-work indicator present (spinner/subagent) → latch NOT set even with banner visible (no compact out from under work); (e) the existing attempt cap still bounds repeated recovery (re-wedge after /compact → cap → escalate, not loop).
-- **Integration:** a simulated wedged session whose banner scrolls out drives ONE /compact via the EXISTING `SessionRecovery` path (metadata-only audit row); the recovery engine is invoked exactly once per the cap.
-- **E2E:** the detection-persistence is alive on a dev agent in the existing monitor path (logs the held-wedge classification) — "feature is alive."
+Inside `checkAndRecover`, current detector output remains preferred for the existing matched-pattern message. When no current pattern is visible but the boolean is true, the same context-recovery method runs without inventing a replacement pattern identity.
 
-## 5. Deployment, migration, rollback (Maturation + Migration Parity)
+The exact latched-only call is `recoverFromContextExhaustion(topicId, sessionName, null)`. `null` affects message rendering only: the existing method omits its optional current-pattern clause. Cooldown keys remain the existing `context:${sessionName}` key and branch selection remains the existing context-recovery branch. No log or user message claims that the pattern is currently visible.
 
-- The DETECTION persistence is default-on housekeeping (it only changes WHEN the existing engine is invoked, gated by the active-work precondition — it never adds a new destructive action). The RECOVERY it triggers is the existing staged `SessionRecovery` path (already live-by-default with its own cap), so no new rollout stage is introduced; the active-work precondition is the safety.
-- Migration Parity: the change is in built-in monitor code (always-overwritten on update); no per-agent config migration. Agent Awareness: update the CLAUDE.md "Stuck-Context Recovery" section — RECONCILE, do not append: the existing note says the context-wall recovery presses /compact first; add that detection now PERSISTS across a scrolled-out banner so the mid-turn wedge is covered.
-- Rollback: a config flag (`monitoring.contextWedgeLatch.enabled`, default on) disables the latch → detection reverts to banner-in-window-only (today's behavior); no regression, a wedge then needs a manual /compact exactly as before.
+All mutations occur through the single live `SessionRecovery` instance. Its synchronous set mutation and existing whole-record state write serialize the attempt map and boolean map together before control returns to the monitor. Tests assert setting and clearing the boolean preserve existing attempt rows.
 
-## Frontloaded Decisions
+A stale true value cannot bypass a disruptive-action brake. Each presentation still enters `recoverFromContextExhaustion`, where the existing per-session cooldown and maximum-attempt check runs before `/compact`, kill, or respawn. Once exhausted, later polls return `recovered:false` without acting. The boolean's persistence changes memory of the prior signal, not those bounds.
 
-- **FD-A (persist detection, do NOT build a new recovery engine):** the /compact ladder exists and runs live; the gap is detection dropping when the banner scrolls out. Reversible (config flag).
-- **FD-B (clear the latch ONLY on genuine progress, not a repaint):** Distrust Temporary Success — a transient frame change is not recovery.
-- **FD-C (active-work-indicator precondition is mandatory):** the latch never fires while spinner/subagent indicators are present — the protection against compacting live work (reviewer M-D).
-- **FD-D (empirical validation before live flip):** confirm the scroll-out mechanism against the real Drive-7 pane capture if available; the code argument is strong but the capture is ground truth.
+## Acceptance criteria
+
+1. Existing detector fixtures and `CONTEXT_PATTERNS` remain unchanged.
+2. A current positive detector result persists only `{topicId: true}` state.
+3. After current output becomes detector-negative, a true latch still reaches the same context recovery branch.
+4. Every pre-existing ownership, active-process, attempt, cooldown, compact, and respawn guard still applies.
+5. `recovered:true` clears and persists; every existing non-success result does not clear.
+6. Explicit manual clear removes and persists the row.
+7. Restart reloads true rows. Malformed/non-true rows are ignored by the existing tolerant state loader.
+8. No clock, timer, expiry, session mapping, validation layer, retry owner, new pattern, or second engine is introduced.
+9. Focused unit/integration tests, lint, build, and repository push tests pass.
+10. Setting or clearing a boolean preserves every existing recovery-attempt row in the same file.
 
 ## Decision points touched
 
-- **The wedged-state latch (§3.1) — `invariant` (deterministic state machine).** Set on banner-match, hold while fast-failing + no active-work indicator, clear on a genuine output delta. No LLM authorizes it; it is a regex + a bounded-TTL latch feeding the EXISTING recovery trigger. Justification: this is exactly the "static rule at a deterministic detection point" the Judgment-Within-Floors standard permits — the input (banner present / fast-fail tail / active-work indicator / output delta) is structurally observable, not a competing-signals judgment.
-- **The recovery action itself — unchanged, owned by `SessionRecovery`.** Its existing classification (compact-vs-respawn on `!hasActiveProcesses`, capped) is not modified by this spec.
+| Point | Classification (`invariant` / `judgment-candidate`) | Owner |
+|---|---|---|
+| Set boolean | invariant | unchanged detector result only |
+| Read/persist boolean | invariant | recovery-state owner |
+| Clear boolean | invariant | existing `recovered:true` signal or explicit manual intervention |
+| Validate/attempt/recover | `invariant` pass-through — this change does not alter the existing deterministic authority | existing `SessionRecovery` |
+
+## Multi-machine posture
+
+The boolean is stored in the same machine-local recovery-state record as the existing SessionRecovery attempt state. It is a memory of a local detector observation, not a cross-machine authority or ownership record.
+
+machine-local-justification: hardware-bound-resource — the observed tmux pane and recovery engine are local to the machine that owns the session.
+
+## Frontloaded decisions
+
+- Boolean-only means exactly true-or-absent; no metadata may be added in this increment.
+- No time-based clear is permitted.
+- Manual clear is explicit; the latch does not infer manual intervention from pane text or session mapping.
+- Broader detector completeness, silent-wait proof, mapping semantics, and retry policy remain separate work.
 
 ## Open questions
 
-*(none)*
+None.

@@ -191,6 +191,9 @@ export class SessionRecovery extends EventEmitter {
   private config: SessionRecoveryConfig;
   private deps: SessionRecoveryDeps;
   private recoveryAttempts: Map<string, RecoveryAttempt> = new Map();
+  /** Durable memory that the existing context detector matched for a topic.
+   *  True-or-absent only: all recovery judgment remains in this class. */
+  private contextWedgedSeen = new Set<number>();
   private stateFilePath: string;
 
   constructor(config: Partial<SessionRecoveryConfig>, deps: SessionRecoveryDeps) {
@@ -266,13 +269,19 @@ export class SessionRecovery extends EventEmitter {
     // it just can't accept any more input without hitting the same error.
     if (processAlive && this.deps.captureSessionOutput) {
       const tmuxOutput = this.deps.captureSessionOutput(sessionName, 50);
+      let matchedPattern: string | null = null;
       if (tmuxOutput) {
         const contextCheck = detectContextExhaustion(tmuxOutput);
         if (contextCheck.matched) {
-          const result = await this.recoverFromContextExhaustion(topicId, sessionName, contextCheck.pattern || 'unknown');
-          this.logEvent(result, topicId, sessionName);
-          return result;
+          this.markContextWedgedSeen(topicId);
+          matchedPattern = contextCheck.pattern;
         }
+      }
+      if (matchedPattern || this.hasContextWedgedSeen(topicId)) {
+        const result = await this.recoverFromContextExhaustion(topicId, sessionName, matchedPattern);
+        if (result.recovered) this.clearContextWedgedSeen(topicId);
+        this.logEvent(result, topicId, sessionName);
+        return result;
       }
     }
 
@@ -311,6 +320,24 @@ export class SessionRecovery extends EventEmitter {
     }
 
     return { recovered: false, failureType: null, message: 'No mechanical failure detected' };
+  }
+
+  /** Remember only that the unchanged detector has already matched this topic. */
+  markContextWedgedSeen(topicId: number): void {
+    if (this.contextWedgedSeen.has(topicId)) return;
+    this.contextWedgedSeen.add(topicId);
+    this.saveState();
+  }
+
+  /** Mechanical read seam for SessionMonitor; this makes no recovery decision. */
+  hasContextWedgedSeen(topicId: number): boolean {
+    return this.contextWedgedSeen.has(topicId);
+  }
+
+  /** Explicit manual-intervention seam; successful recovery uses this same clear. */
+  clearContextWedgedSeen(topicId: number): void {
+    if (!this.contextWedgedSeen.delete(topicId)) return;
+    this.saveState();
   }
 
   /**
@@ -533,7 +560,7 @@ export class SessionRecovery extends EventEmitter {
   private async recoverFromContextExhaustion(
     topicId: number,
     sessionName: string,
-    matchedPattern: string,
+    matchedPattern: string | null,
   ): Promise<RecoveryResult> {
     const key = `context:${sessionName}`;
 
@@ -567,7 +594,7 @@ export class SessionRecovery extends EventEmitter {
             recovered: true,
             failureType: 'context_exhaustion',
             attemptNumber,
-            message: `Recovered via /compact — conversation preserved (pattern: "${matchedPattern}", attempt ${attemptNumber})`,
+            message: `Recovered via /compact — conversation preserved${matchedPattern ? ` (pattern: "${matchedPattern}", attempt ${attemptNumber})` : ` (attempt ${attemptNumber})`}`,
           };
         }
         // compaction.cleared === false → fall through to the destructive respawn.
@@ -888,6 +915,12 @@ export class SessionRecovery extends EventEmitter {
             }
           }
         }
+        if (data.wedgedSeen && typeof data.wedgedSeen === 'object') {
+          for (const [topic, seen] of Object.entries(data.wedgedSeen)) {
+            const topicId = Number(topic);
+            if (seen === true && Number.isInteger(topicId)) this.contextWedgedSeen.add(topicId);
+          }
+        }
       }
     } catch { // @silent-fallback-ok — corrupt state file means fresh start, which is safe
       // Can't load — start fresh (safe default)
@@ -913,7 +946,9 @@ export class SessionRecovery extends EventEmitter {
         }
       }
 
-      fs.writeFileSync(this.stateFilePath, JSON.stringify({ attempts: data }, null, 2));
+      const wedgedSeen: Record<string, true> = {};
+      for (const topicId of this.contextWedgedSeen) wedgedSeen[String(topicId)] = true;
+      fs.writeFileSync(this.stateFilePath, JSON.stringify({ attempts: data, wedgedSeen }, null, 2));
     } catch { // @silent-fallback-ok — state persistence is best-effort; in-memory state still works
       // Can't save — in-memory state still works for this process lifetime
     }
