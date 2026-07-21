@@ -1125,24 +1125,24 @@ export class SlackAdapter implements MessagingAdapter {
 
     if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
       // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) ──────────
-      // This is the ONLY change to undirected handling. The gate can ONLY make the
-      // agent quieter: it runs solely when (1) a gate is attached AND (2) this exact
-      // channel is explicitly opted into proactive contribution. For every other
-      // channel — and whenever no gate is attached at all — behavior is byte-for-byte
-      // the mention-only drop below. FAIL-TO-SILENCE: any failure inside the gate
-      // returns speak=false, so we fall through to the same drop. A speak=true here
-      // means the undirected message is processed exactly like a directed one
-      // (the code below this block is unchanged); directed messages never reach here.
+      // This opt-in gate returns exactly one closed action: speak processes the
+      // message downstream, react makes one fixed eyes-reaction attempt and returns,
+      // and silent only retains bounded history. Every failure/unknown result fails
+      // to silent. With no gate or no channel opt-in, behavior remains the ordinary
+      // mention-only drop; directed messages never reach this branch.
       let ambientSpeak = false;
       if (this.ambientGate && this.ambientGate.isChannelEnabled(channelId)) {
         try {
-          const decision = await this.ambientGate.shouldSpeak({ channelId, text, channelName: undefined });
-          ambientSpeak = decision.speak === true;
-          if (ambientSpeak) {
-            // Consume one unit of the per-channel rolling-window budget only now that
-            // we've committed to processing this proactive turn.
-            this.ambientGate.recordSpoke(channelId);
+          const decision = await this.ambientGate.decideAction({ channelId, text, channelName: undefined });
+          ambientSpeak = decision.action === 'speak';
+          if (decision.action === 'speak') {
+            this.ambientGate.recordAction(channelId);
             console.log(`[slack] ambient gate cleared for ${channelId}: ${decision.reason}${decision.detail ? ` — ${decision.detail}` : ''}`);
+          } else if (decision.action === 'react') {
+            // Consume budget before the one fire-and-forget attempt. The existing
+            // primitive contains failures; there is no retry, refund, or fallback.
+            this.ambientGate.recordAction(channelId);
+            this.addReaction(channelId, ts, 'eyes');
           }
         } catch {
           // Fail-to-silence: any unexpected throw at the call site stays silent too.
