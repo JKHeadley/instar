@@ -6,11 +6,13 @@ Workers already update a durable commitment when work becomes blocked. They call
 
 The current tracker hides file-write failures, so v1 first repairs that foundation: the store replacement reports whether its authoritative rename completed. A failure before rename rolls memory back and returns a typed failure instead of reporting success. When the named commitment moves from unblocked to blocked, its acknowledged record starts one blocker episode. When it moves back to unblocked—or reaches any terminal state—the same authoritative record closes that episode once. Closed episodes remain in a bounded history until their clear row is confirmed, so reopening cannot erase telemetry awaiting reconciliation.
 
-## Exactly two measurements
+## Three measurements
 
 The first measurement is `request-to-persist`: monotonic server time from accepting the worker's transition request to the acknowledged authoritative rename. It is honestly best-effort: a crash in the tiny gap after rename but before SQLite can lose that sample, and coverage shows the loss rather than reconstructing a fake duration. The second is `clear-latency`: how long the acknowledged blocker episode remained open. Callers cannot provide either timestamp.
 
-The API returns only raw per-factor medians, p95s, sample coverage, missing/excluded counts, and per-factor trends. It does not create a combined score, productivity rank, worker comparison, or throughput index. Parallelism utilization, deliverable rate, rework rate, and any combined index need real producers from the separate throughput-floor runtime, so they remain one tracked post-floor increment.
+The third measurement is `deliverable-completion`: one tally for each commitment whose durable state is delivered. It reuses the same ledger and reconciles missed delivered events after restart without double-counting. Its trend includes complete zero-count UTC days, excludes today's unfinished day, and compares the older half with the newer half to say climbing, flat, declining, or insufficient data.
+
+The API returns raw per-factor timing or count data, sample coverage, missing/excluded counts, and per-factor trends. Its response schema is version 2; old schema-v1 peers are shown as unsupported rather than zero. It does not create a combined score, productivity rank, worker comparison, or throughput index. Parallelism utilization, rework rate, and any combined index remain tracked follow-ons.
 
 ## Failure behavior
 
@@ -24,6 +26,6 @@ Episodes replicate through the existing commitment path. Metric rows, reconcilia
 
 The feature is measure-only, live through the development-agent gate and dark on the fleet. It sends no notice, takes no autonomous action, changes no governor or latch, and adds no dashboard control. Existing guard health shows telemetry degradation. Disabling the feature leaves additive episode fields and metric rows inert.
 
-## What is explicitly deferred
+## What remains outside this increment
 
-A focus-binding convenience is only a named follow-on if real wrong-id or ambiguous-id incidents justify it. The three floor-dependent factors and any combined throughput index wait for their named follow-ons. This v1 is intentionally only the existing explicit commitment-transition beacon plus two honest, floor-independent blocker-lifecycle measurements and their bounded per-origin read surface.
+A focus-binding convenience is only a named follow-on if real wrong-id or ambiguous-id incidents justify it. Parallelism utilization, rework rate, and any combined throughput index wait for their named follow-ons. This schema-v2 surface intentionally exposes two blocker-latency measurements plus one honest delivered-completion count. All three remain descriptive signals with no authority to choose work, pressure a worker, notify, block, grade, or act.

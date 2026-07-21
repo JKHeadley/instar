@@ -5407,6 +5407,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added The Agent Carries the Loop section');
     }
+    if (content.includes('The Agent Carries the Loop') && !content.includes('deliverable-completion')) {
+      content += `\n### Deliverable completion throughput (measure only)\n\nDelivered commitments feed the existing blocker-lifecycle ledger's \`deliverable-completion\` count. \`GET /blocker-lifecycle/summary\` and \`/trend\` show the live count and rolling direction. This measurement never authorizes task selection, pressure, notification, grading, blocking, or action.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added deliverable completion throughput awareness');
+    }
 
     // Self-Unblock Before Escalating (docs/specs/self-unblock-before-escalating.md,
     // CMT-1519) — Agent Awareness Standard + Migration Parity item 3. The reflex

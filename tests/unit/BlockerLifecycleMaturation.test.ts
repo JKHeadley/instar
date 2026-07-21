@@ -24,6 +24,8 @@ describe('BlockerLifecycleService maturation evaluation', () => {
     events.update = async () => true;
     events.getBlockerEpisodeDropBuckets = () => ({});
     const service = new BlockerLifecycleService(events as unknown as CommitmentTracker, ledger, 'm1', () => now);
+    ledger.record({ origin: 'm1', factor: 'deliverable-completion', sourceEventId: 'completion-1',
+      observedAtMs: now - 1_000, latencyMs: null, outcome: 'observed' }, true);
     const base = { title: 'x', description: 'x', status: 'active', phases: [], currentPhaseIndex: 0,
       lastTouchedAt: new Date(now).toISOString(), needsUser: false, blockers: [], links: [],
       createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), kind: 'task' } as const;
@@ -33,14 +35,18 @@ describe('BlockerLifecycleService maturation evaluation', () => {
           sourceRef: 'clear-latency.coverage', direction: 'at-least', threshold: 0.95, minSamples: 1 }],
       } } },
       { ...base, id: 'without-contract', rollout: { flagPath: 'y', stage: 'live' } },
+      { ...base, id: 'completion-contract', rollout: { flagPath: 'c', stage: 'dark', maturationEvaluation: {
+        cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [{ id: 'completion-rate', source: 'blocker-summary',
+          sourceRef: 'deliverable-completion.averagePerDay', direction: 'at-least', threshold: 0, minSamples: 1 }],
+      } } },
       { ...base, id: 'terminal', rollout: { flagPath: 'z', stage: 'default-on' } },
     ] as Initiative[];
-    expect(service.evaluateMaturation(initiatives)).toMatchObject({ eligible: 2 });
+    expect(service.evaluateMaturation(initiatives)).toMatchObject({ eligible: 3 });
     expect(ledger.maturationEvaluations('m1', now - 24 * 3_600_000).map(r => [r.featureId, r.status])).toEqual([
-      ['with-contract', 'insufficient-evidence'], ['without-contract', 'missing-contract'],
+      ['completion-contract', 'ready'], ['with-contract', 'insufficient-evidence'], ['without-contract', 'missing-contract'],
     ]);
     const summary = service.localSummary(24) as { maturation: { eligible: number; evaluated: number } };
-    expect(summary.maturation).toMatchObject({ eligible: 2, evaluated: 2 });
+    expect(summary.maturation).toMatchObject({ eligible: 3, evaluated: 3 });
     service.close();
   });
 });

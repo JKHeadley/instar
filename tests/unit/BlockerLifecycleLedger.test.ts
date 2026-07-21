@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BlockerLifecycleLedger, percentile } from '../../src/monitoring/BlockerLifecycleLedger.js';
+import Database from 'better-sqlite3';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { sqliteRegistrySize } from '../../src/core/SqliteRegistry.js';
 
 describe('BlockerLifecycleLedger', () => {
   const dirs: string[] = [];
@@ -54,6 +56,72 @@ describe('BlockerLifecycleLedger', () => {
       source: 'blocker-summary', sourceRef: 'x', observedAtMs: now, value: 1, samples: 1 })).toBe(false);
     expect(ledger.recordMaturationObservation({ origin: 'm1', featureId: 'ok', metricId: 'm',
       source: 'blocker-summary', sourceRef: 'x', observedAtMs: now + 300_001, value: 1, samples: 1 })).toBe(false);
+    ledger.close();
+  });
+
+  it('records the deliverable-completion count factor with idempotent source identity', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blocker-ledger-count-')); dirs.push(dir);
+    const ledger = new BlockerLifecycleLedger({ dbPath: path.join(dir, 'ledger.db') });
+    const row = { origin: 'machine-a', factor: 'deliverable-completion' as const,
+      sourceEventId: 'throughput-v1:completion:opaque', observedAtMs: 20_000,
+      latencyMs: null, outcome: 'observed' as const };
+    expect(ledger.record(row, true)).toBe(true);
+    expect(ledger.record(row, true)).toBe(true);
+    expect(ledger.values('deliverable-completion', 0)).toEqual([
+      { observedAtMs: 20_000, latencyMs: null, outcome: 'observed' },
+    ]);
+    expect(ledger.counters()).toMatchObject({ inserted: 1, deduped: 1 });
+    ledger.close();
+  });
+
+  it('migrates the existing two-factor table in place without losing rows', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blocker-ledger-migrate-')); dirs.push(dir);
+    const dbPath = path.join(dir, 'ledger.db');
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE blocker_lifecycle_metrics (
+      origin TEXT NOT NULL,
+      factor TEXT NOT NULL CHECK (factor IN ('request-to-persist','clear-latency')),
+      source_event_id TEXT NOT NULL,
+      observed_at_ms INTEGER NOT NULL,
+      latency_ms REAL,
+      outcome TEXT NOT NULL,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(origin, factor, source_event_id)
+    ); CREATE INDEX idx_blocker_lifecycle_window ON blocker_lifecycle_metrics(factor, observed_at_ms);`);
+    db.prepare(`INSERT INTO blocker_lifecycle_metrics
+      (origin,factor,source_event_id,observed_at_ms,latency_ms,outcome)
+      VALUES (?,?,?,?,?,?)`).run('machine-a', 'clear-latency', 'legacy', 10_000, 12, 'observed');
+    db.close();
+    const ledger = new BlockerLifecycleLedger({ dbPath });
+    expect(ledger.values('clear-latency', 0)).toEqual([
+      { observedAtMs: 10_000, latencyMs: 12, outcome: 'observed' },
+    ]);
+    expect(ledger.record({ origin: 'machine-a', factor: 'deliverable-completion', sourceEventId: 'new',
+      observedAtMs: 20_000, latencyMs: null, outcome: 'observed' }, true)).toBe(true);
+    expect(ledger.values('deliverable-completion', 0)).toHaveLength(1);
+    ledger.close();
+    const inspect = new Database(dbPath, { readonly: true });
+    expect(inspect.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_blocker_lifecycle_window'").get())
+      .toEqual({ name: 'idx_blocker_lifecycle_window' });
+    expect(inspect.prepare('SELECT origin,factor,source_event_id,observed_at_ms,latency_ms,outcome,schema_version FROM blocker_lifecycle_metrics WHERE source_event_id=?').get('legacy'))
+      .toEqual({ origin: 'machine-a', factor: 'clear-latency', source_event_id: 'legacy',
+        observed_at_ms: 10_000, latency_ms: 12, outcome: 'observed', schema_version: 1 });
+    inspect.close();
+  });
+
+  it('closes and unregisters the SQLite handle when schema migration fails', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blocker-ledger-bad-migrate-')); dirs.push(dir);
+    const dbPath = path.join(dir, 'ledger.db');
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE blocker_lifecycle_metrics (
+      origin TEXT NOT NULL, factor TEXT NOT NULL CHECK (factor IN ('request-to-persist','clear-latency')),
+      source_event_id TEXT NOT NULL, observed_at_ms INTEGER NOT NULL, latency_ms REAL, outcome TEXT NOT NULL
+    )`);
+    db.close();
+    const before = sqliteRegistrySize();
+    const ledger = new BlockerLifecycleLedger({ dbPath });
+    expect(ledger.available()).toBe(false);
+    expect(sqliteRegistrySize()).toBe(before);
     ledger.close();
   });
 });
