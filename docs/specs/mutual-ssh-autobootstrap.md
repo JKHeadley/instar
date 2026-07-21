@@ -4,11 +4,13 @@ slug: "mutual-ssh-autobootstrap"
 author: "Instar-codey"
 eli16-overview: "mutual-ssh-autobootstrap.eli16.md"
 status: draft
+approved: true
 review-convergence: "2026-07-19T21:27:13.671Z"
 review-iterations: 4
 review-completed-at: "2026-07-19T21:27:13.671Z"
 review-report: "docs/specs/reports/mutual-ssh-autobootstrap-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
+parent-principle: "Runtime End-to-End Proof — the canary standard"
 single-run-completable: true
 frontloaded-decisions: 5
 cheap-to-change-tags: 0

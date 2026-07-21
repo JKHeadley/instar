@@ -1034,6 +1034,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Mutual SSH-subsystem bootstrap + continuous directional proof.
+    // `enabled` is deliberately OMITTED: DEV_GATED_FEATURES makes this live on
+    // the development agent and dark on fleet. dryRun FIRST creates keys and
+    // computes admissions/probes but does not accept peer sessions.
+    mutualSsh: {
+      dryRun: true,
+      requiredForEmployeeRole: false,
+      freshnessMs: 300_000,
+      cadenceMs: 60_000,
+      probeDeadlineMs: 8_000,
+      concurrency: 4,
+    },
     // Seamless LLM Orchestrator (docs/specs/llm-seamlessness-orchestrator.md).
     // A lease-gated tier-1 LLM loop for ANTICIPATORY working-set preload — PROPOSE-
     // ONLY / SIGNAL-ONLY (it never moves a conversation; placement stays with the

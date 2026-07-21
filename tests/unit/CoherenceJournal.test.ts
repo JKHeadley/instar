@@ -243,6 +243,24 @@ describe('CoherenceJournal — unflushed entries lost on crash (§3.1, §6)', ()
 });
 
 describe('CoherenceJournal — typed-schema rejection (§3.2, §6)', () => {
+  it('replicates only the typed, signed mutual-SSH proof projection', () => {
+    const j = makeJournal();
+    const proof = {
+      sourceMachineId: 'm-a', targetMachineId: 'm-b', pairingEpoch: 7,
+      observerBootId: 'boot-a-12345678', endpointId: 'private:abc',
+      sourceClientKeyGeneration: 2, targetHostKeyGeneration: 3,
+      targetHostKeyFingerprint: 'SHA256:host', verifiedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), challengeDigest: 'digest',
+      machineSignature: 'signature'.repeat(8),
+    };
+    j.emitSshDirectionProof({ ...proof, secret: 'must-drop' } as typeof proof);
+    j.flush();
+    const rows = readLines(streamFile('ssh-direction-proof'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toEqual(proof);
+    expect(j.getDegradation().droppedFields).toBeGreaterThan(0);
+    j.close();
+  });
   it('rejects free-text / extra free-form fields by dropping unknown fields (counted)', () => {
     const j = makeJournal();
     j.emitPlacement(1, {
@@ -643,7 +661,7 @@ describe('CoherenceJournal — getOwnAdvert (§3.4 rule 5)', () => {
     const j = makeJournal();
     // Nothing written yet → every kind advertises lastSeq 0.
     const empty = j.getOwnAdvert();
-    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'class-review-record', 'evolution-action-record', 'guard-latch', 'knowledge-record', 'learning-record', 'pref-record', 'relationship-record', 'session-lifecycle', 'subscription-account-meta', 'threadline-conversation', 'threadline-pairing-record', 'topic-claim-annotation', 'topic-operator-record', 'topic-pin-record', 'topic-placement', 'user-record', 'working-set-artifact']);
+    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'class-review-record', 'evolution-action-record', 'guard-latch', 'knowledge-record', 'learning-record', 'pref-record', 'relationship-record', 'session-lifecycle', 'ssh-direction-proof', 'subscription-account-meta', 'threadline-conversation', 'threadline-pairing-record', 'topic-claim-annotation', 'topic-operator-record', 'topic-pin-record', 'topic-placement', 'user-record', 'working-set-artifact']);
     for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'class-review-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta'] as JournalKind[]) {
       expect(empty[kind].lastSeq).toBe(0);
     }

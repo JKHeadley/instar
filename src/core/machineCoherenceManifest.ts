@@ -93,6 +93,14 @@ function stateSyncEntries(): CoherenceCriticalFlag[] {
  */
 export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
   {
+    key: 'mutualSsh.enabled',
+    configPath: 'multiMachine.mutualSsh.enabled',
+    resolution: 'dev-gate+dryRun',
+    dryRunConfigPath: 'multiMachine.mutualSsh.dryRun',
+    readSource: 'boot',
+    guarantee: 'mutual directional SSH proof readiness — a half-enabled pool cannot establish both directions',
+  },
+  {
     key: 'seamlessness.ws13PinReplicate',
     configPath: 'multiMachine.seamlessness.ws13PinReplicate',
     resolution: 'dev-gate+dryRun',

@@ -431,6 +431,24 @@
       "grandfathered": false
     },
     {
+      "category": "machine-ssh-local",
+      "description": "Dedicated restricted-SSH client/host credentials, boot-fenced admission leases, host pins, and directional proof cache. Physical credentials and live admission authority are machine-local by design; signed public observations cross only through MeshRpc.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "machine-ssh/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "direct",
+        "maxBytes": 4194304,
+        "keepSegments": 0
+      }
+    },
+    {
       "category": "per-session-state",
       "description": "Per-session state files. Sessions live and die on one machine; pool transfers create NEW sessions (CONTINUATION), not file copies.",
       "scope": "machine-local",
@@ -650,6 +668,24 @@
         "state/trust-*.json"
       ],
       "grandfathered": true
+    },
+    {
+      "category": "audit-mutual-ssh",
+      "description": "Scrubbed mutual SSH bootstrap, proof, repair, rotation, and rollback audit stream; never contains key bodies, raw addresses, challenges, or home paths.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/mutual-ssh.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 33554432,
+        "keepSegments": 4
+      }
     },
     {
       "category": "audit-autonomous-throughput-floor",

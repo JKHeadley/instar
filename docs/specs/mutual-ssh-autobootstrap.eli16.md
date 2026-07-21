@@ -58,3 +58,12 @@ Instar pairing; the endpoint is RPC-only rather than a new interactive shell;
 changed host keys fail closed; and rollout begins dark, advances
 through observation and real Mini-plus-laptop proof, then becomes an employee-role
 readiness requirement. There are no remaining design questions in the spec.
+
+## Phase-1 implementation outcome
+
+The hardened first phase now implements the dedicated identities, restricted endpoint,
+authenticated public-key exchange, two-direction proof model, bounded repair,
+restart/epoch replay fences, readiness states, rollback ordering, and Machines status
+card behind the dark rollout gates. Its transport fixture runs each direction from a
+separate operating-system process. The rollout's phase-3 Mini-plus-laptop step remains
+the source of the physical two-host evidence required before broader enablement.

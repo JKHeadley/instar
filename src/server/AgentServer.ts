@@ -17,6 +17,7 @@ import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { DynamicMcpService } from '../core/DynamicMcpService.js';
+import { MachineSshIdentity } from '../core/MachineSshIdentity.js';
 import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
 import { captureHeavyMcpPidsForSession, MCP_SERVER_NAME_TO_SIGNATURE } from '../core/mcpPidCapture.js';
 import { makeMcpProcessReaperDeps } from '../monitoring/mcpProcessReaperDeps.js';
@@ -570,6 +571,7 @@ export class AgentServer {
     meshBindActive?: boolean;
     /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
+    mutualSshHealth?: (() => unknown) | null;
     /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
     getInboundQueue?: () => import('../core/QueueDrainLoop.js').QueueDrainLoop | null;
     getMachineCoherence?: () => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null;
@@ -3505,6 +3507,25 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      mutualSshHealth: options.mutualSshHealth ?? (() => {
+        if (!resolveDevAgentGate(options.config.multiMachine?.mutualSsh?.enabled, options.config)) return null;
+        const live = (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
+        if (live) return () => live.status();
+        const machineId = options.coordinator?.managers?.identityManager?.hasIdentity()
+          ? options.coordinator.managers.identityManager.loadIdentity().machineId
+          : `${options.config.projectName}-local`;
+        const identity = new MachineSshIdentity(options.config.stateDir, options.config.projectName, machineId).ensure();
+        return () => ({
+          enabled: true,
+          dryRun: options.config.multiMachine?.mutualSsh?.dryRun !== false,
+          readinessRequired: options.config.multiMachine?.mutualSsh?.requiredForEmployeeRole === true,
+          ready: true,
+          enrollmentState: 'ready',
+          blockedReasons: [],
+          local: { machineId, state: 'identity-ready', clientGeneration: identity.clientGeneration, hostGeneration: identity.hostGeneration },
+          pairs: [],
+        });
+      })(),
       getInboundQueue: options.getInboundQueue ?? null,
       getMachineCoherence: options.getMachineCoherence ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
