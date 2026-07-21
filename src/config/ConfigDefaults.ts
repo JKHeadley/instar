@@ -2024,6 +2024,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // dark-gate lint forbids for a dev-gated block).
   feedbackFactory: {
     processing: {},
+    drain: {
+      maxReadyScansPerTick: 250,
+      maxClaimsPerTick: 10,
+      maxWallClockMs: 90000,
+    },
+    consumer: {
+      dryRun: true,
+      maxClaimsPerTick: 10,
+    },
   },
 };
 

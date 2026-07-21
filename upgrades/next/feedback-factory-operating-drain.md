@@ -1,0 +1,19 @@
+---
+type: minor
+slug: feedback-factory-operating-drain
+---
+
+## What Changed
+
+Feedback Factory now has an operated, development-gated end-to-end drain: bounded incremental source projection and clustering, registered frontier-model agent readiness, a durable fenced queue, simulation-first consumer promotion, and exact-key Initiative handoff with crash recovery. Canonical accepted-intake pipelines also gain a registered completeness standard plus structural and runtime evidence guards, so future pipelines cannot silently stop after persistence.
+
+## What to Tell Your User
+
+Feedback Factory can now carry accepted feedback all the way into durable, agent-approved work while staying simulated until its consumer is deliberately promoted.
+
+## Summary of New Capabilities
+
+- Operated feedback intake, clustering, readiness approval, queueing, and Initiative handoff.
+- Agent-first frontier-model readiness decisions with a human escalation path.
+- Fenced ownership, cancellation, backup and restore, failover recovery, and bounded self-healing.
+- A dashboard view for backlog, readiness, consumer posture, and recovery health.

@@ -211,6 +211,9 @@ export interface Initiative {
   /** Post-ship rollout track (ships-staged features). Present only when the
    *  feature matures behind a flag. Stage is derived from observing flagPath. */
   rollout?: RolloutInfo;
+  /** Immutable exact-key link from the feedback-drain outbox. One work key may
+   *  identify at most one Initiative task; semantic matching never substitutes. */
+  feedbackWorkKey?: string;
 
   // Project-only fields (only meaningful when `kind === 'project'`):
   rounds?: InitiativeRound[];
@@ -258,6 +261,8 @@ export interface InitiativeCreateInput {
   ciCheckedAt?: string;
   driftCheck?: boolean;
   rollout?: RolloutInfo;
+  /** Immutable exact-key link from the feedback-drain outbox. */
+  feedbackWorkKey?: string;
   rounds?: InitiativeRound[];
   sourceDocs?: string[];
   autoAdvance?: boolean;
@@ -405,6 +410,7 @@ function rejectNullCreateInput(input: InitiativeCreateInput): void {
     'mergeCommitOid',
     'ciCheckedAt',
     'driftCheck',
+    'feedbackWorkKey',
     'rounds',
     'sourceDocs',
     'autoAdvance',
@@ -918,6 +924,12 @@ export class InitiativeTracker {
     return this.list().find((i) => i.prNumber === prNumber);
   }
 
+  /** Exact feedback-outbox lookup. Uses list() so TaskFlow remains authoritative. */
+  findByFeedbackWorkKey(feedbackWorkKey: string): Initiative | undefined {
+    if (!feedbackWorkKey) return undefined;
+    return this.list({ kind: 'task' }).find((i) => i.feedbackWorkKey === feedbackWorkKey);
+  }
+
   get(id: string): Initiative | undefined {
     if (this.isTaskFlowEnabled()) {
       const fid = this.findFlowIdForInitiative(id);
@@ -943,6 +955,14 @@ export class InitiativeTracker {
       throw new Error('Initiative must have at least one phase');
     }
     rejectNullCreateInput(input);
+    if (input.feedbackWorkKey !== undefined) {
+      if (!/^feedback-work:[a-zA-Z0-9._:-]{1,180}$/.test(input.feedbackWorkKey)) {
+        throw new Error('feedbackWorkKey must be a bounded feedback-work key');
+      }
+      if (this.findByFeedbackWorkKey(input.feedbackWorkKey)) {
+        throw new Error(`Initiative feedbackWorkKey "${input.feedbackWorkKey}" already exists`);
+      }
+    }
     if (this.isTaskFlowEnabled()) {
       if (this.findFlowIdForInitiative(input.id)) {
         throw new Error(`Initiative "${input.id}" already exists`);
@@ -993,6 +1013,7 @@ export class InitiativeTracker {
     if (input.ciCheckedAt !== undefined) initiative.ciCheckedAt = input.ciCheckedAt;
     if (input.driftCheck !== undefined) initiative.driftCheck = input.driftCheck;
     if (input.rollout !== undefined) initiative.rollout = input.rollout;
+    if (input.feedbackWorkKey !== undefined) initiative.feedbackWorkKey = input.feedbackWorkKey;
     if (input.rounds !== undefined) initiative.rounds = input.rounds;
     if (input.sourceDocs !== undefined) initiative.sourceDocs = input.sourceDocs;
     if (input.autoAdvance !== undefined) initiative.autoAdvance = input.autoAdvance;

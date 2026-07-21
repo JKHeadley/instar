@@ -163,6 +163,39 @@ describe('FeedbackProcessingService.processNow()', () => {
     expect(fresh.stats().total).toBe(1);
     expect(fresh.stats().clusterCount).toBe(1);
   });
+
+  it('tails post-boot source append incrementally and caps clustering at 500 reports per pass', () => {
+    const svc = new FeedbackProcessingService({ dataDir: storeDir });
+    fs.mkdirSync(storeDir, { recursive: true });
+    const rows = Array.from({ length: 501 }, (_, i) => JSON.stringify(item(
+      `fb-${String(i).padStart(4, '0')}`, `unique report ${i}`, `bounded source evidence ${i}`,
+      `2026-05-01T00:${String(i % 60).padStart(2, '0')}:00Z`,
+    ))).join('\n') + '\n';
+    fs.appendFileSync(path.join(storeDir, 'feedback.jsonl'), rows);
+
+    const first = svc.processNow('2026-06-01T00:00:00.000Z');
+    expect(first.result.results).toHaveLength(500);
+    expect(first.stats.sourceLagBytes).toBeGreaterThan(0);
+    const second = svc.processNow('2026-06-01T00:01:00.000Z');
+    expect(second.result.results).toHaveLength(1);
+  });
+
+  it('clusters the exact SQLite-projected record even when an unprojected later LWW row reuses its feedback id', () => {
+    fs.mkdirSync(storeDir, { recursive: true });
+    const projected = item('same-id', 'projected scheduler fault', 'authorized projected evidence', '2026-05-01T00:00:00Z');
+    fs.writeFileSync(path.join(storeDir, 'feedback.jsonl'), `${JSON.stringify(projected)}\n`);
+    const svc = new FeedbackProcessingService({ dataDir: storeDir });
+    fs.appendFileSync(path.join(storeDir, 'feedback.jsonl'), `${JSON.stringify(item(
+      'same-id', 'UNPROJECTED OVERRIDE', 'must never drive clustering', '2026-05-02T00:00:00Z',
+    ))}\n`);
+
+    const result = svc.processProjected([projected], '2026-06-01T00:00:00.000Z');
+    expect(result.result.results).toHaveLength(1);
+    expect(svc.activeClusters()).toContainEqual(expect.objectContaining({
+      clusterId: 'cluster-projected-scheduler-fault', title: 'projected scheduler fault',
+    }));
+    expect(JSON.stringify(svc.activeClusters())).not.toContain('UNPROJECTED OVERRIDE');
+  });
 });
 
 describe('resolveCanonicalStoreDir()', () => {

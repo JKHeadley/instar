@@ -146,6 +146,9 @@ const DEFAULT_CONFIG: BackupConfig = {
     'logs/completion-claim-audit.jsonl',
     'logs/completion-claim-audit.jsonl.1',
     'logs/completion-claim-stats.json',
+    // Feedback Factory operated state: canonical source generations, durable
+    // drain DB/WAL, authority-registry sidecar/audit, and consumer promotion.
+    'state/feedback-factory/store/',
   ],
 };
 
@@ -350,27 +353,27 @@ export class BackupManager {
       if (entry.endsWith('/')) {
         // Directory — copy all files in it
         if (fs.existsSync(sourcePath) && fs.statSync(sourcePath).isDirectory()) {
-          const dirEntries = fs.readdirSync(sourcePath);
           const targetDir = path.join(snapshotDir, entry);
           fs.mkdirSync(targetDir, { recursive: true });
-
-          for (const file of dirEntries) {
-            // Re-apply all three deny layers per copied file — the entry-level
-            // checks above see only the ENTRY string, so a 'state/' (or './')
-            // glob would otherwise ship excluded state via its direct children.
-            const relPath = path.join(entry, file);
-            if (isDeniedForBackup(relPath)) {
-              console.warn(`[BackupManager] Skipping blocked file in directory copy: ${relPath}`);
+          const pending = fs.readdirSync(sourcePath).map((file) => ({ absolute: path.join(sourcePath, file), relative: path.join(entry, file) }));
+          while (pending.length > 0) {
+            const next = pending.pop()!;
+            if (isDeniedForBackup(next.relative)) {
+              console.warn(`[BackupManager] Skipping blocked file in directory copy: ${next.relative}`);
               continue;
             }
-            const src = path.join(sourcePath, file);
-            if (fs.statSync(src).isFile()) {
-              const dest = path.join(targetDir, file);
-              fs.copyFileSync(src, dest);
-              const stat = fs.statSync(src);
-              totalBytes += stat.size;
-              files.push(relPath);
+            const stat = fs.lstatSync(next.absolute);
+            if (stat.isSymbolicLink()) continue;
+            if (stat.isDirectory()) {
+              for (const child of fs.readdirSync(next.absolute)) pending.push({ absolute: path.join(next.absolute, child), relative: path.join(next.relative, child) });
+              continue;
             }
+            if (!stat.isFile()) continue;
+            const dest = path.join(snapshotDir, next.relative);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.copyFileSync(next.absolute, dest);
+            totalBytes += stat.size;
+            files.push(next.relative);
           }
         }
       } else {

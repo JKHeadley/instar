@@ -2942,6 +2942,7 @@
             <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
             <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
             <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
+            <button class="tab" data-tab="feedback-drain" onclick="switchTab('feedback-drain')">Feedback Drain</button>
             <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
           </div>
           <div class="tab-group" role="group" aria-label="Content & Access">
@@ -3573,6 +3574,18 @@
         <summary class="ph-detail-summary">More detail</summary>
         <div id="phDetail" class="ph-detail-body"></div>
       </details>
+    </div>
+
+    <div id="feedbackDrainPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:20px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Feedback Drain</h2>
+        <div id="fdStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">The operated path from accepted feedback through agent readiness and durable Initiative handoff.</p>
+      <div id="fdPosture" class="ph-headline-wrap" aria-live="polite"></div>
+      <section class="ph-section"><h3 class="ph-h">Backlog</h3><div id="fdBacklog" class="ph-detail-body"></div></section>
+      <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
+      <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
     </div>
 
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
@@ -5279,6 +5292,13 @@
         display: ['flex'],
         onActivate: () => { if (typeof startProcessHealth === 'function') startProcessHealth(); },
         onDeactivate: () => { if (typeof stopProcessHealth === 'function') stopProcessHealth(); },
+      },
+      {
+        id: 'feedback-drain',
+        panels: ['feedbackDrainPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startFeedbackDrain === 'function') startFeedbackDrain(); },
+        onDeactivate: () => { if (typeof stopFeedbackDrain === 'function') stopFeedbackDrain(); },
       },
       {
         id: 'subscriptions',
@@ -8839,17 +8859,57 @@
       if (__plController) __plController.stop();
     }
 
+    // Feedback Factory operated-drain read surface. Closed status DTO only;
+    // dynamic values are assigned with textContent and never interpreted as HTML.
+    let __fdTimer = null;
+    const fdText = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = String(value ?? '—'); };
+    async function loadFeedbackDrain() {
+      try {
+        const response = await fetch('/feedback-factory/drain/status', { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await response.json();
+        const posture = data.posture || { state: 'unavailable', reason: 'initialization-failure' };
+        fdText('fdPosture', `${posture.state}: ${posture.reason}`);
+        if (!response.ok) {
+          fdText('fdBacklog', 'The drain is not accepting work in this posture.');
+          fdText('fdProgress', 'No operated run is active.');
+          fdText('fdSource', 'Source integrity is unavailable until initialization succeeds.');
+        } else {
+          const drain = data.drain || {}; const readiness = drain.readiness || {}; const work = drain.work || {};
+          fdText('fdBacklog', `collecting ${readiness.collecting || 0}; ready ${readiness.ready || 0}; queued ${work.queued || 0}; retryable ${work.retryable || 0}; held ${(readiness.held || 0) + (work.held || 0)}; dead-lettered ${work['dead-lettered'] || 0}`);
+          const run = data.lastRun;
+          fdText('fdProgress', run ? `last run ${run.state}; completed ${work.completed || 0}; oldest queued ${drain.oldestQueuedAgeMs == null ? 'none' : Math.round(drain.oldestQueuedAgeMs / 1000) + 's'}` : 'No drain run has been admitted yet.');
+          fdText('fdSource', `byte lag ${drain.sourceProjectionLagBytes || 0}; generation lag ${drain.sourceGenerationLag || 0}; checksum conflicts ${drain.sourceChecksumConflicts || 0}`);
+        }
+        fdText('fdStamp', `updated ${new Date().toLocaleTimeString()}`);
+      } catch {
+        fdText('fdPosture', 'unavailable: status request failed');
+        fdText('fdStamp', '');
+      }
+    }
+    function startFeedbackDrain() {
+      stopFeedbackDrain();
+      void loadFeedbackDrain();
+      __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
+    }
+    function stopFeedbackDrain() {
+      if (__fdTimer) clearInterval(__fdTimer);
+      __fdTimer = null;
+    }
+
     // Handle tab visibility — close SSE when tab is backgrounded
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         disconnectJobsSSE();
         if (currentTab === 'process-health') stopProcessHealth();
+        if (currentTab === 'feedback-drain') stopFeedbackDrain();
         if (currentTab === 'preferences-learning') stopPreferencesLearning();
       } else if (currentTab === 'jobs') {
         connectJobsSSE();
         loadJobs(); // Resync on return
       } else if (currentTab === 'process-health') {
         startProcessHealth(); // resume on return: one immediate refresh + re-arm
+      } else if (currentTab === 'feedback-drain') {
+        startFeedbackDrain();
       } else if (currentTab === 'preferences-learning') {
         startPreferencesLearning(); // resume on return
       }

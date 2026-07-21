@@ -89,6 +89,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // uxConfirm pre-routing judgment calls (same pass).
   OverrideDetector: 'gate',
   TaskClassifier: 'gate',
+  FeedbackReadinessArbiter: 'gate',
 
   // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
   JobReflector: 'reflector',
