@@ -165,7 +165,7 @@ export function parseGeneralClaimEnvelope(raw: string, message: string): General
       exact.add(tuple); spanPredicate.set(conflictKey, tuple); unique.push(claim);
     }
     return { schemaVersion: 1, claims: unique, saturated: general.claims.length === 4 };
-  } catch { return null; }
+  } catch { /* @silent-fallback-ok: malformed model output is non-authoritative */ return null; }
 }
 
 function validateClaim(value: unknown, message: string): ExtractedClaim | null {
@@ -421,7 +421,7 @@ export class ClaimObservationRecorder {
       return this.appendBounded(this.auditPath, { schemaVersion: 1, eventUuid: randomUUID(), event: 't0-settlement',
         claimId: receipt.claimId, eventualGroundTruthLabelId: labelId, sourceRevision: receipt.sourceRevision,
         observedAt: receipt.observedAt, disposition: 'unchanged' }, this.opts.maxAuditBytes ?? 50 * 1024 * 1024, true);
-    } catch { return false; }
+    } catch { /* @silent-fallback-ok: failed settlement remains pending and reports false */ return false; }
   }
   recordEvent(input: Record<string, unknown>): boolean {
     const allowed: Record<string, unknown> = { schemaVersion: 1, eventUuid: randomUUID() };
@@ -465,7 +465,7 @@ export class ClaimObservationRecorder {
         const rawKey = decoded.slice(0, separator); const signature = decoded.slice(separator + 1);
         if (!rawKey || signature !== this.hmac(`instar.claim-pool-cursor.v1|${this.keyId}|${rawKey}`)) return { records: [] };
         afterKey = rawKey;
-      } catch { return { records: [] }; }
+      } catch { /* @silent-fallback-ok: invalid signed cursor yields no pool records */ return { records: [] }; }
     }
     const size = Math.max(1, Math.min(limit, 200));
     const eligible = afterKey ? all.filter((row) => `${row.day}|${row.claimShapeId}|${row.modelDoor}|${row.verifierVersion}` > afterKey) : all;
@@ -487,12 +487,12 @@ export class ClaimObservationRecorder {
           const row = JSON.parse(line) as Record<string, unknown>;
           const cutoff = row.labelTrustClass === 'T0' ? settledCutoff : pendingCutoff;
           return typeof row.observedAt === 'string' && Date.parse(row.observedAt) >= cutoff ? [row] : [];
-        } catch { return []; }
+        } catch { /* @silent-fallback-ok: malformed bounded corpus rows are discarded */ return []; }
       });
       fs.writeFileSync(this.corpusPath, rows.map((row) => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), { mode: 0o600 });
       fs.chmodSync(this.corpusPath, 0o600);
       return rows.length;
-    } catch { return 500_000; }
+    } catch { /* @silent-fallback-ok: compaction failure fails closed at the row cap */ return 500_000; }
   }
   private appendBounded(file: string, row: Record<string, unknown>, maxBytes: number, rotate: boolean): boolean {
     try {
@@ -508,7 +508,7 @@ export class ClaimObservationRecorder {
       fs.appendFileSync(file, line, { mode: 0o600 });
       fs.chmodSync(file, 0o600);
       return true;
-    } catch { return false; }
+    } catch { /* @silent-fallback-ok: audit persistence failure is surfaced as false */ return false; }
   }
 }
 
@@ -532,7 +532,7 @@ export class ClaimObservationHousekeeper {
         deleted++;
         this.appendReceipt(root, { schemaVersion: 1, pathClass: 'legacy-completion-claim-audit',
           deletedAt: new Date(now).toISOString(), outcome: 'deleted' }, now);
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { skipped++; failures++; } }
+      } catch (error) { /* @silent-fallback-ok: absence is normal; other failures increment the receipt */ if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { skipped++; failures++; } }
     }
     return { deleted, skipped, failures };
   }
@@ -551,7 +551,7 @@ export class ClaimObservationHousekeeper {
       if (!fs.existsSync(candidate)) continue;
       const rows = fs.readFileSync(candidate, 'utf8').split('\n').filter(Boolean).filter((entry) => {
         try { const parsed = JSON.parse(entry) as { deletedAt?: string }; return typeof parsed.deletedAt === 'string'
-          && Date.parse(parsed.deletedAt) >= now - 30 * 86_400_000; } catch { return false; }
+          && Date.parse(parsed.deletedAt) >= now - 30 * 86_400_000; } catch { /* @silent-fallback-ok: malformed retention receipts are dropped */ return false; }
       });
       fs.writeFileSync(candidate, rows.join('\n') + (rows.length ? '\n' : ''), { mode: 0o600 });
     }
@@ -562,6 +562,6 @@ function bucket(value: number): string { return value >= .9 ? '0.9-1.0' : value 
 function latencyBucket(value: number): string { return value <= 10 ? 'le10ms' : value <= 100 ? 'le100ms' : value <= 500 ? 'le500ms' : 'gt500ms'; }
 function readJsonl(file: string, limit: number): Array<Record<string, unknown>> {
   try { return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-Math.max(1, Math.min(limit, 500_000))).flatMap((line) => {
-    try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
-  }); } catch { return []; }
+    try { return [JSON.parse(line) as Record<string, unknown>]; } catch { /* @silent-fallback-ok: malformed bounded rows are ignored */ return []; }
+  }); } catch { /* @silent-fallback-ok: absent or unreadable optional audit returns empty */ return []; }
 }

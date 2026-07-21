@@ -78,6 +78,8 @@ The review keeps v1 deliberately narrow: dark observation, a dedicated fair ingr
 
 The original review iterated through every blocking contract. The final reviewer independently confirmed that ordinary observations cannot settle each other, only an explicit later authoritative receipt matching the original claim ID, predicate, and exact source revision can create T0, wrong revisions refuse, and settlement remains automation-ineligible with unchanged disposition.
 
+Post-review CI hardening classified every intentional fail-safe in the new parsers and bounded stores, refreshed the hand-audited dark-gate line map after the six-line config insertion, removed a malformed pre-release guide in favor of the canonical `upgrades/next` fragment, and fixed the test cleanup import. These changes alter no runtime authority or reviewed settlement contract.
+
 ## Evidence pointers
 
 - `tests/unit/claim-observation-v1.test.ts`

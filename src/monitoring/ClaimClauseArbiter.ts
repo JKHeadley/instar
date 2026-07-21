@@ -183,7 +183,7 @@ function parseModelRoot(raw: string): { clauses?: unknown; legacy?: { clauses?: 
     if (Object.keys(root).some((key) => !allowed.includes(key))) return null;
     if (Object.hasOwn(root, 'legacy') && (!root.legacy || typeof root.legacy !== 'object' || Array.isArray(root.legacy))) return null;
     return root as { clauses?: unknown; legacy?: { clauses?: unknown }; general?: unknown };
-  } catch { return null; }
+  } catch { /* @silent-fallback-ok: malformed provider output is non-authoritative */ return null; }
 }
 
 export function buildCompletionClaimDecisionContext(input: {
