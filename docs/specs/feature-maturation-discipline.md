@@ -2,7 +2,7 @@
 title: "Feature Maturation Discipline — enforced dark → mentee-live → fleet graduation"
 slug: "feature-maturation-discipline"
 author: "echo"
-status: "operator-approved 2026-07-21 (Justin, topic 29723 'yes, lets move forward') — routed to Codey for spec-converge + build v1"
+status: "operator-approved + refined 2026-07-21 (Justin, topic 29723: 3-rung test-agent→dev-agent→fleet ladder; extend-not-duplicate hard gate; measurable per-feature metrics + recurring evaluation) — re-dispatched to Codey for converge + build v1"
 ---
 
 # Feature Maturation Discipline
@@ -15,18 +15,27 @@ feature can ship dark and sit there indefinitely: the "observe-mode rots without
 evidence" failure ([[observe-mode-must-graduate]]) at fleet scale. That is the exact thing
 Justin flagged: *"'off by default' always scares me."*
 
-Two coupled operator directives (2026-07-21, topic 29723) define the fix:
+Three operator directives (2026-07-21, topic 29723) define the fix:
 1. Make a robust maturation plan a **requirement enforced via infra for ALL features** — if a
    feature ships dark, its path to live must be declared and gated, not a wish.
-3. Make a robust **live-testing phase MANDATORY**: the feature goes fully live for a *test
-   agent* (Codey), and is tested with the *overseer agent* (me) **acting as the user** across
-   scenarios — before the operator ever touches it.
+2. Make a robust **live-testing phase MANDATORY**: the feature goes fully live for a *test
+   agent* (Codey) under its overseer, and is tested with the *overseer agent* (me) **acting as
+   the user** across scenarios — before the operator ever touches it.
+3. **Precise rung semantics (operator clarification).** "Dark" no longer means "off for all
+   except *dev* agents" (the old, inconsistently-enforced norm where Echo was the sole dev
+   agent). It now means **off for all EXCEPT *test* agents** — an agent with a dedicated
+   manager/overseer (the Echo→Codey relationship). A test agent runs the feature live
+   immediately, but at a safe distance: the overseer observes and steps in if it misbehaves,
+   so a broken new feature never reaches a user unmanaged. The graduation ladder therefore
+   gains an explicit **dev-agent middle rung** between test-agent-live and fleet.
 
-These are the same machine: **the live-testing phase IS the middle rung of the graduation
-ladder**, not a separate idea.
+The live-testing phase IS the first (test-agent) rung; the dev-agent rung is the soak with
+real user interaction before fleet. Each rung is a **gate**, not a wish:
 
 ```
-dark / observe-only  →  live-on-mentee (Codey) WITH overseer-as-user scenario testing  →  fleet
+dark = live for TEST agents only (Codey, under an overseer; overseer-as-user scenario testing)
+   →  live for DEV agents (Echo — more responsibility + direct user/operator interaction)
+   →  live for ALL agents (fleet)
 ```
 
 ## Verified foundation (capability-grep evidence — finding #1)
@@ -73,10 +82,13 @@ Grounded against the freshest tree (`.worktrees/drive8-throughput-metrics`, v1.3
 A new constitutional standard — **Feature Maturation Discipline** — landed as a REAL enforced
 `gate` (a spec-converge refusal + a runtime registry), not more prose. Five deltas:
 
-- **D1 — the standard.** Every feature MUST declare a graduation plan with an explicit rung
-  ladder (dark → mentee-live+overseer-as-user → fleet) and a gate at each rung. Lands in
-  `docs/STANDARDS-REGISTRY.md` with an `**Applied through.**` line naming a resolving guard so
-  the auditor classifies it `gate` (not documented-only).
+- **D1 — the standard.** Every feature MUST declare a graduation plan with the explicit
+  three-rung agent-class ladder (dark = test-agent-live → dev-agent-live → fleet) and a gate at
+  each rung. Lands in `docs/STANDARDS-REGISTRY.md` with an `**Applied through.**` line naming a
+  resolving guard so the auditor classifies it `gate` (not documented-only). The **rung is
+  keyed on agent class** (test / dev / all), derived from an agent-role field — NOT a per-agent
+  allowlist — so "dark" is a precise, checkable state (which agent classes have the flag on),
+  not a vibe.
 - **D2 — mandatory `## Maturation plan` spec section.** Add `findMaturationPlanGaps(specBody,
   slug)` next to `findDecisionPointGaps` in `write-convergence-tag.mjs` + an exit-1 gate block
   in `main()` — `write-convergence-tag.mjs` REFUSES to stamp the convergence tag when the
@@ -98,6 +110,28 @@ A new constitutional standard — **Feature Maturation Discipline** — landed a
 - **D5 — enforcement-debt backlog.** Treat the conformance audit's documented-only set as the
   backlog of standards to turn from wish into structure; THIS standard ships enforced as the
   exemplar (first repayment).
+- **D6 — EXTEND, do not duplicate (operator-flagged, HARD convergence gate).** Instar already
+  carries substantial maturation machinery — `FeatureRolloutReconciler` + `InitiativeTracker`
+  (graduated rollout + the stale/needs-user digest), `LiveTestGate` + `LiveTestHarness`
+  (Live-User-Channel Proof), and a "Maturation Path" standard. This spec EXTENDS those; it
+  introduces NO parallel maturation engine (D2 adds a spec-section gate; D3 wires two already-
+  existing modules; D4 adds one attention reason to the existing reconciler). The operator
+  explicitly flagged the duplication risk ("we have previous work, many times, with maturation
+  plans"). Anti-duplication is therefore a HARD gate: the lessons-aware / foundation-audit
+  reviewer MUST confirm — before build — that each delta composes with a NAMED existing surface
+  rather than re-implementing it. If a genuine duplicate is found, that is itself the operator's
+  signal to strengthen **convergent-auditing enforcement in the spec-dev process** (ties to the
+  *Iterative Audit to Convergence* standard) — a second-order deliverable surfaced to the
+  operator, never a silent patch.
+- **D7 — measurable per-feature metrics + regular evaluation (operator directive 3 — the
+  anti-stale mechanism).** The ladder only holds if each rung's health is TRACKABLE and
+  MEASURABLE and the measurement runs on a REGULAR cadence, so nothing rots at a rung. Every
+  feature exposes per-rung metrics on the SAME measurement substrate as the throughput-metrics
+  ledger (#1535) and the benchmark / decision-quality machinery (this is the direct tie to the
+  benchmark goals the operator named), and a recurring evaluation job re-scores each
+  dark/soaking feature against its declared graduation criterion + declared dark-window. D4's
+  stuck-dark registry is the SURFACING arm; this recurring re-scoring is the DRIVING arm — the
+  pair is what "the measuring and evaluating needs to be done on a regular basis" requires.
 
 Plus a migration-parity `migrateFeatureMaturationGate()` so deployed agents get the spec-converge
 gate + the standard on update, not just fresh installs.
@@ -136,18 +170,21 @@ same specs. No machine-local surface.
 
 ## Maturation plan
 
-*(dogfoods the very section this spec mandates)*
+*(dogfoods the very ladder this spec mandates — the three agent-class rungs)*
 
-- **dark:** D2's gate ships in `warn` mode — spec-converge still stamps but emits a would-refuse
-  warning on a missing `## Maturation plan` section. Soaks on the development agent.
-- **live-on-mentee (overseer-as-user):** Codey's next spec must carry a real `## Maturation plan`
-  section; I (overseer) drive specs through the gate across scenarios on Codey's install —
-  missing section → refused, partial → refused, complete → stamped — recording a signed
-  PASS/FAIL matrix. This IS D3 proving itself on its own gate.
-- **fleet:** flip the gate to hard `veto` (blocking) fleet-wide once the mentee soak is clean.
-- **graduation criterion:** a clean mentee live-test matrix + zero false-refusals during the warn
-  soak.
-- **dark-window:** if the gate sits in `warn` mode past 14 days without a mentee live-test, D4's
+- **dark = test-agent-live (Codey, under overseer):** D2's gate ships in `warn` mode — spec-
+  converge still stamps but emits a would-refuse warning on a missing `## Maturation plan`
+  section. It runs LIVE on the test agent (Codey) immediately: Codey's next spec must carry a
+  real `## Maturation plan` section, and I (overseer) drive specs through the gate across
+  scenarios on Codey's install — missing section → refused, partial → refused, complete →
+  stamped — recording a signed PASS/FAIL matrix (D3 proving itself on its own gate).
+- **dev-agent-live (Echo):** after a clean test-agent soak, the gate goes live on dev agents — I
+  run real spec-dev through it with direct operator interaction, still `warn` mode.
+- **fleet:** flip the gate to hard `veto` (blocking) for ALL agents once the dev-agent soak is
+  clean.
+- **graduation criterion (per rung):** a clean live-test matrix at the current rung + zero
+  false-refusals during that rung's warn soak, re-scored by D7's recurring evaluation.
+- **dark-window:** if the gate sits at a rung past 14 days without advancing, D4's
   `'dark-too-long'` surfaces it (the standard nagging itself — the strongest dogfood).
 
 ## Open questions
