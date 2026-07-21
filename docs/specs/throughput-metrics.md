@@ -29,12 +29,13 @@ contested-then-cleared: 0
 
 The existing worker-declared `POST /commitments/:id/transition` request is the beacon. The worker already names the exact commitment and desired structural state; v1 does not infer, select, or bind a commitment from a hook session, topic, prose, or stop-gate verdict.
 
-When a guarded transition persists `blockedOn:'none' → <blocked>`, `CommitmentTracker` opens a blocker episode and emits a post-persist change event. When a later guarded transition returns it to `none`, or a true terminal path (`delivered|withdrawn|expired`) closes the commitment, the same tracker closes the authoritative episode once. A separate measure-only SQLite ledger materializes at-least-once events with idempotent dedupe into exactly two raw, current-main-supported factors:
+When a guarded transition persists `blockedOn:'none' → <blocked>`, `CommitmentTracker` opens a blocker episode and emits a post-persist change event. When a later guarded transition returns it to `none`, or a true terminal path (`delivered|withdrawn|expired`) closes the commitment, the same tracker closes the authoritative episode once. A separate measure-only SQLite ledger materializes at-least-once events with idempotent dedupe into three raw factors:
 
 1. `request-to-persist` — server time from accepting the worker's transition request to the persisted `none→blocked` state;
 2. `clear-latency` — server time from the persisted episode start to its persisted close.
+3. `deliverable-completion` — a count of persisted delivered commitment transitions, activated by the post-floor operator increment in §3.1.
 
-No scalar/index, ranking, autonomous action, stop hook, focus registry, rich mentee probe, notice, or dashboard action ships. Parallelism utilization, deliverable rate, and rework/bounce rate remain `ACT-THROUGHPUT-POST-FLOOR`, owner `throughput-program`, trigger `throughput-floor runtime merged and producer contract stable`. <!-- tracked: topic-29723 --> A possible focus-binding convenience is separately named `ACT-COMMITMENT-FOCUS-BINDING`, owner `commitment-program`, trigger `verified repeated wrong-id/ambiguous-id transition incidents`; it is not needed by or included in v1. <!-- tracked: topic-29723 -->
+No scalar/index, ranking, autonomous action, stop hook, focus registry, rich mentee probe, notice, or dashboard action ships. Parallelism utilization and rework/bounce rate remain `ACT-THROUGHPUT-POST-FLOOR`, owner `throughput-program`, trigger `their producer contracts stabilize`. Deliverable completion count is now the implemented §3.1 increment. <!-- tracked: topic-29723 --> A possible focus-binding convenience is separately named `ACT-COMMITMENT-FOCUS-BINDING`, owner `commitment-program`, trigger `verified repeated wrong-id/ambiguous-id transition incidents`; it is not needed by or included in v1. <!-- tracked: topic-29723 -->
 
 Concrete example: the worker posts a guarded transition for `CMT-42` from `none` to `external`. The server timestamps request acceptance, validates and persists the exact named record, starts an episode, and records the request-to-persist duration. Ten minutes later the worker posts the exact record's transition to `none`; the episode closes and records ten-minute clear latency. No message or action is generated.
 
@@ -106,9 +107,15 @@ Only the commitment's origin store mutates it: the existing `resolveCommitmentRo
 
 Clear latency uses stored wall times because an episode may span restart. Negative duration or duration above 30 days becomes `clock-regression-or-implausible`, null, and excluded; it never enters percentiles/trends.
 
-## 3. Exactly two raw factors
+## 3. Closed raw factor set
 
-`BlockerLifecycleLedger` accepts only `request-to-persist|clear-latency`. Rows contain origin machine id, opaque versioned source id, observed server time, latency milliseconds or null, outcome, and schema version. They contain no prose, commitment/user text, topic id, repository, branch, raw fingerprint, or action class.
+### 3.1 Post-floor operator increment: deliverable completion count (2026-07-21)
+
+The operator's Drive 8 directive activates the previously tracked post-floor deliverable-rate increment after observe-only throughput floor #1533. It extends this same ledger and these same read routes; it does not create a parallel metrics store. A third closed factor, `deliverable-completion`, is derived from the existing persisted `CommitmentTracker` `delivered` transition. Its source identity is an opaque SHA-256-derived `throughput-v1:completion:<id>` value, its value is a count (never latency), and reconciliation backfills already-delivered commitments idempotently after restart.
+
+The summary adds `{factor:'deliverable-completion',unit:'count',completed,total,averagePerDay,...}`. The trend includes every complete UTC day (including zero-count days), excludes the current partial day, compares the first and second rolling halves, and reports `direction:'climbing'|'flat'|'declining'|'insufficient-data'` plus a ratio when defined. The route response schema advances to version 2 because the factor set was closed in version 1; mixed-version peers are honestly `unsupported`, never silently read as zero. This count composes with #1533 only as another observation. It grants no work-selection, pressure, notification, grading, blocking, or action authority.
+
+`BlockerLifecycleLedger` accepts only `request-to-persist|clear-latency|deliverable-completion`. The first two are latency factors; `deliverable-completion` is the count factor defined in §3.1. Rows contain origin machine id, opaque versioned source id, observed server time, latency milliseconds or null, outcome, and schema version. They contain no prose, commitment/user text, topic id, repository, branch, raw fingerprint, or action class.
 
 Stable summaries return one closed object per factor:
 
@@ -153,10 +160,10 @@ The ledger/guard exposes metadata-only counters: `attempted`, `inserted`, `dedup
 
 Routes:
 
-- `GET /blocker-lifecycle/summary?sinceHours=1..168&scope=local|pool` → `{schemaVersion:1,scope:'local'|'pool',origins:[{machineId,factors,counters}],poolComplete,failures,generatedAt}`;
-- `GET /blocker-lifecycle/trend?windowDays=7..90&scope=local|pool` → `{schemaVersion:1,scope:'local'|'pool',origins:[{machineId,factors:[{factor,days,firstHalf,secondHalf,ratio,reason}]}],poolComplete,failures,generatedAt}`.
+- `GET /blocker-lifecycle/summary?sinceHours=1..168&scope=local|pool` → `{schemaVersion:2,scope:'local'|'pool',origins:[{machineId,factors,counters}],poolComplete,failures,generatedAt}`;
+- `GET /blocker-lifecycle/trend?windowDays=7..90&scope=local|pool` → `{schemaVersion:2,scope:'local'|'pool',origins:[{machineId,factors:[{factor,days,firstHalf,secondHalf,ratio,reason}]}],poolComplete,failures,generatedAt}`.
 
-Both use the standard AgentServer bearer middleware and its scrubbed `{error:<bounded-enum>}` envelope; bad windows/scope are 400, auth failure 401, disabled/unavailable local ledger is 503, success is 200. Unknown response fields are additive; clients must key on `schemaVersion:1`. `scope=pool` reuses the existing `/judgment-provenance?scope=pool` transport exactly: `resolvePeerUrls`, `isPeerUrlAllowedForCredentials` before attaching the configured agent bearer, local-only recursive fetch, 5s timeout, and peer identity rebound to configured `machineId` rather than trusted from payload. It fetches aggregation-only local summaries/trends—never rows—with ≤16 peers, concurrency 4, 512KiB/peer and 4MiB total response caps, 750ms peer/2.5s total deadline, and 60s coalescing cache. Every field is type/range allowlisted. Any peer failure yields `{machineId,reason:'unreachable'|'unsupported'|'http-error'|'invalid-body'|'truncated'|'deadline'|'omitted-cap'}` and `poolComplete:false`; no cross-origin aggregate is computed. Old servers are `unsupported`, never zero. Generated CLI/awareness consumers must render `poolComplete` and failures before origin values and must show each origin's coverage/sample counts. Thus the unified surface lists every origin's component truth without laundering partial data into a fleet statistic.
+Both use the standard AgentServer bearer middleware and its scrubbed `{error:<bounded-enum>}` envelope; bad windows/scope are 400, auth failure 401, disabled/unavailable local ledger is 503, success is 200. Unknown response fields are additive; clients must key on `schemaVersion:2`. Schema-v1 peers are unsupported, never zero. `scope=pool` reuses the existing `/judgment-provenance?scope=pool` transport exactly: `resolvePeerUrls`, `isPeerUrlAllowedForCredentials` before attaching the configured agent bearer, local-only recursive fetch, 5s timeout, and peer identity rebound to configured `machineId` rather than trusted from payload. It fetches aggregation-only local summaries/trends—never rows—with ≤16 peers, concurrency 4, 512KiB/peer and 4MiB total response caps, 750ms peer/2.5s total deadline, and 60s coalescing cache. Every field is type/range allowlisted, including consecutive UTC day labels and recomputed count arithmetic. Any peer failure yields `{machineId,reason:'unreachable'|'unsupported'|'http-error'|'invalid-body'|'truncated'|'deadline'|'omitted-cap'}` and `poolComplete:false`; no cross-origin aggregate is computed. Old servers are `unsupported`, never zero. Generated CLI/awareness consumers must render `poolComplete` and failures before origin values and must show each origin's coverage/sample counts. Thus the unified surface lists every origin's component truth without laundering partial data into a fleet statistic.
 
 ### 4.1 Assumed existing mechanisms
 
@@ -164,7 +171,7 @@ Both use the standard AgentServer bearer middleware and its scrubbed `{error:<bo
 - **guard health:** existing metadata-only `GET /guards` operational status, not a user notice or action authority.
 - **topic transfer/origin routing:** conversations may move machines, while commitment mutations still forward to the record's origin owner.
 - **incarnation fencing:** restored commitment origins mint/change a store incarnation so replicas discard stale snapshots and pull again from zero.
-- **throughput floor:** the separately merged producer system required by the three post-floor delivery/utilization factors.
+- **throughput floor:** the separately merged observe-only system (#1533) that this completion-count signal composes with without gaining authority.
 
 ## 5. Rollout, migration, awareness, rollback
 
@@ -194,7 +201,7 @@ Both use the standard AgentServer bearer middleware and its scrubbed `{error:<bo
 12. Dark gate, migration, guard/counter status, awareness generation/migration, prune/close/SQLite failure, route schema/status, and old-server/new-client compatibility pass.
 13. Existing CommitmentTracker, PromiseBeacon, decision-quality, benchmark-divergence, build, unit, integration, and e2e suites pass.
 14. No focus binding, stop hook, inferred commitment, new autonomous action, floor producer, rich probe, notice, dashboard action, governor admission, or latch transition exists in the diff.
-15. Three floor-dependent factors, focus binding, and any later combined index remain tracked follow-ons outside v1.
+15. Parallelism utilization, rework/bounce rate, focus binding, and any later combined index remain tracked follow-ons; deliverable completion count is implemented by §3.1.
 16. Persistence tests inject mkdir/temp-write/rename/meta failure; replication tests cover origin routing, incarnation rewind, stale replica, mixed-version peer, and non-resurrection.
 17. Pool tests cover credential allowlisting/non-forwarding, configured-origin rebinding, response field clamps, concurrency/byte/deadline/cache caps, old peers, and null-on-incomplete behavior.
 
@@ -226,15 +233,15 @@ Authoritative episode state is unified through existing origin-owned commitment 
 - Persistence acknowledgement — `invariant`: authoritative rename success or typed rollback/failure.
 - Reconciliation retry/breaker — `invariant`: closed cadence/backoff/breaker table with no notice.
 - Replication resolution — `invariant`: one origin writer; authenticated replica replacement/read only.
-- Route authorization/version/status — `invariant`: standard bearer middleware plus pinned v1 schemas/statuses.
+- Route authorization/version/status — `invariant`: standard bearer middleware plus pinned v2 schemas/statuses.
 - Pool completeness/peer classification — `invariant`: closed allowlists, caps, failure enums, and no cross-origin statistic.
 - Rollout promotion — `invariant`: all numeric seven-day evidence gates must hold; otherwise remain dark.
 
 ## Frontloaded Decisions
 
-- v1 is the existing explicit transition beacon plus exactly two current-main raw factors.
+- v2 is the existing explicit transition beacon plus two latency factors and one delivered-completion count factor.
 - No focus binding, inference, scalar/index, or autonomous behavior ships.
-- Three floor-dependent factors and any combined index are the tracked post-floor increment; bounded per-origin pool reads ship only to make the raw surface unified.
+- Parallelism utilization, rework/bounce rate, and any combined index remain tracked post-floor increments; bounded per-origin pool reads ship only to make the raw surface unified.
 - Persistence acknowledgement, best-effort request coverage, bounded history, clocks, auth/schema/status, retry brakes, replication, numeric rollout, and rollback are pinned above.
 
 ## Open questions

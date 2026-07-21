@@ -25009,14 +25009,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return { ...Object.fromEntries(integerKeys.map(k => [k, source[k] as number])), breakerOpen: source.breakerOpen };
   };
   const sanitizeBlockerFactors = (kind: 'summary' | 'trend', raw: unknown): unknown[] | null => {
-    if (!Array.isArray(raw) || raw.length !== 2) return null;
+    if (!Array.isArray(raw) || raw.length !== 3) return null;
     const finiteOrNull = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v));
     const out: unknown[] = [];
     const seen = new Set<string>();
     for (const item of raw) {
       if (!item || typeof item !== 'object') return null;
       const f = item as Record<string, unknown>;
-      if (!['request-to-persist', 'clear-latency'].includes(String(f.factor))) return null;
+      if (!['request-to-persist', 'clear-latency', 'deliverable-completion'].includes(String(f.factor))) return null;
       if (seen.has(String(f.factor))) return null;
       seen.add(String(f.factor));
       if (kind === 'summary') {
@@ -25030,10 +25030,69 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const outcomes = f.outcomes as Record<string, unknown>;
         const outcomeKeys = ['observed', 'legacy-missing-start', 'clock-regression-or-implausible', 'request-row-missing', 'episode-dropped-capacity'];
         if (!outcomeKeys.every(k => Number.isSafeInteger(outcomes[k]) && (outcomes[k] as number) >= 0)) return null;
-        out.push({ factor: f.factor, recoverability: f.recoverability, completed: f.completed, missing: f.missing,
+        const countFields = f.factor === 'deliverable-completion'
+          ? (f.unit === 'count' && f.total === f.completed && typeof f.averagePerDay === 'number' &&
+              Number.isFinite(f.averagePerDay) && f.averagePerDay >= 0 && f.missing === 0 && f.excluded === 0 &&
+              f.medianMs === null && f.p95Ms === null && outcomes.observed === f.completed &&
+              f.coverage === ((f.completed as number) === 0 ? null : 1)
+            ? { unit: 'count', total: f.total, averagePerDay: f.averagePerDay } : null)
+          : {};
+        if (countFields === null) return null;
+        out.push({ factor: f.factor, ...countFields, recoverability: f.recoverability, completed: f.completed, missing: f.missing,
           excluded: f.excluded, coverage: f.coverage, medianMs: f.medianMs, p95Ms: f.p95Ms,
           outcomes: Object.fromEntries(outcomeKeys.map(k => [k, outcomes[k]])) });
       } else {
+        if (f.factor === 'deliverable-completion') {
+          if (f.unit !== 'count' || !Array.isArray(f.days) || f.days.length < 6 || f.days.length > 89 || !finiteOrNull(f.ratio) ||
+              (typeof f.ratio === 'number' && f.ratio < 0) ||
+              !['climbing', 'flat', 'declining', 'insufficient-data'].includes(String(f.direction)) ||
+              !(f.reason === null || ['insufficient-days', 'zero-denominator'].includes(String(f.reason)))) return null;
+          const days = f.days.map(d => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && Number.isSafeInteger(row.count) && (row.count as number) >= 0
+              ? { day: row.day, count: row.count } : null;
+          });
+          if (days.some(d => d === null)) return null;
+          for (let i = 1; i < days.length; i++) {
+            const previous = Date.parse(`${days[i - 1]!.day as string}T00:00:00.000Z`);
+            const current = Date.parse(`${days[i]!.day as string}T00:00:00.000Z`);
+            if (current - previous !== 86_400_000) return null;
+          }
+          const half = (v: unknown) => {
+            if (!v || typeof v !== 'object') return null;
+            const h = v as Record<string, unknown>;
+            return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.total) &&
+              (h.total as number) >= 0 && finiteOrNull(h.meanPerDay) && (h.meanPerDay === null || (h.meanPerDay as number) >= 0)
+              ? { days: h.days, total: h.total, meanPerDay: h.meanPerDay } : null;
+          };
+          const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+          if (!firstHalf || !secondHalf) return null;
+          const split = days.length >> 1;
+          const derivedHalf = (part: Array<{ day: unknown; count: unknown }>) => {
+            const total = part.reduce((sum, row) => sum + Number(row.count), 0);
+            return { days: part.length, total, meanPerDay: total / part.length };
+          };
+          const expectedFirst = derivedHalf(days.slice(0, split) as Array<{ day: unknown; count: unknown }>);
+          const expectedSecond = derivedHalf(days.slice(split) as Array<{ day: unknown; count: unknown }>);
+          const sameNumber = (a: unknown, b: number) => typeof a === 'number' && Number.isFinite(a) &&
+            Math.abs(a - b) <= Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b)) * 8;
+          if (firstHalf.days !== expectedFirst.days || firstHalf.total !== expectedFirst.total ||
+              !sameNumber(firstHalf.meanPerDay, expectedFirst.meanPerDay) ||
+              secondHalf.days !== expectedSecond.days || secondHalf.total !== expectedSecond.total ||
+              !sameNumber(secondHalf.meanPerDay, expectedSecond.meanPerDay)) return null;
+          if (expectedFirst.meanPerDay === 0) {
+            const expectedDirection = expectedSecond.total > 0 ? 'climbing' : 'flat';
+            if (f.ratio !== null || f.reason !== 'zero-denominator' || f.direction !== expectedDirection) return null;
+          } else {
+            const expectedRatio = expectedSecond.meanPerDay / expectedFirst.meanPerDay;
+            const expectedDirection = expectedRatio > 1 ? 'climbing' : expectedRatio < 1 ? 'declining' : 'flat';
+            if (!sameNumber(f.ratio, expectedRatio) || f.reason !== null || f.direction !== expectedDirection) return null;
+          }
+          out.push({ factor: f.factor, unit: 'count', days, firstHalf, secondHalf,
+            ratio: f.ratio, direction: f.direction, reason: f.reason });
+          continue;
+        }
         if (!Array.isArray(f.days) || f.days.length > 90 || !finiteOrNull(f.ratio) ||
             (typeof f.ratio === 'number' && f.ratio < 0) ||
             !(f.reason === null || ['insufficient-days', 'insufficient-samples', 'zero-denominator'].includes(String(f.reason)))) return null;
@@ -25057,6 +25116,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         out.push({ factor: f.factor, days, firstHalf, secondHalf, ratio: f.ratio, reason: f.reason });
       }
     }
+    if (seen.size !== 3) return null;
     return out;
   };
   const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown): Record<string, unknown> | null => {
@@ -25110,7 +25170,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const text = await response.text();
           if (Buffer.byteLength(text) > 512 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
           const body = JSON.parse(text) as { schemaVersion?: unknown; origins?: unknown[] };
-          if (body.schemaVersion !== 1 || !Array.isArray(body.origins) || body.origins.length !== 1) {
+          if (body.schemaVersion !== 2) {
+            failures.push({ machineId: p.machineId, reason: body.schemaVersion === 1 ? 'unsupported' : 'invalid-body' }); return;
+          }
+          if (!Array.isArray(body.origins) || body.origins.length !== 1) {
             failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
           }
           const origin = body.origins[0];
@@ -25152,7 +25215,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const local = ctx.blockerLifecycleService.localSummary(sinceHours);
     const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}`, local)
       : { origins: [local], failures: [], poolComplete: true };
-    res.json({ schemaVersion: 1, scope, ...pool, generatedAt: new Date().toISOString() });
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
   });
 
   router.get('/blocker-lifecycle/trend', async (req, res) => {
@@ -25165,7 +25228,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const local = ctx.blockerLifecycleService.localTrend(windowDays);
     const pool = scope === 'pool' ? await blockerPoolRead('trend', `windowDays=${windowDays}`, local)
       : { origins: [local], failures: [], poolComplete: true };
-    res.json({ schemaVersion: 1, scope, ...pool, generatedAt: new Date().toISOString() });
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
   });
 
   router.get('/commitments', async (req, res) => {

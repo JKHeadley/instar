@@ -1,4 +1,4 @@
-import type { CommitmentTracker, BlockerEpisode } from './CommitmentTracker.js';
+import type { CommitmentTracker, BlockerEpisode, Commitment } from './CommitmentTracker.js';
 import crypto from 'node:crypto';
 import type { Initiative, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import type { InitiativeTracker } from '../core/InitiativeTracker.js';
@@ -30,6 +30,10 @@ export class BlockerLifecycleService {
     // The async queue owns first delivery. Reconciliation will mark completion
     // after observing the row, so a process crash cannot create a false receipt.
   };
+  private readonly onDelivered = (commitment: Commitment): void => {
+    const record = this.completionRecord(commitment);
+    if (record) this.ledger.enqueue(record);
+  };
 
   constructor(
     private readonly tracker: CommitmentTracker,
@@ -40,6 +44,7 @@ export class BlockerLifecycleService {
   ) {
     tracker.on('blocker-request-persisted', this.onRequest);
     tracker.on('blocker-episode-closed', this.onClose);
+    tracker.on('delivered', this.onDelivered);
     this.schedule(5_000);
     if (initiativeTracker) {
       const evaluate = () => { try { this.evaluateMaturation(initiativeTracker.list()); } catch { /* @silent-fallback-ok — the absent durable slot is surfaced as missed cadence on the next successful pass */ } };
@@ -55,7 +60,8 @@ export class BlockerLifecycleService {
     const sinceMs = this.now() - sinceHours * 3_600_000;
     return {
       machineId: this.origin,
-      factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorSummary(f, sinceMs)),
+      factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorSummary(f, sinceMs))
+        .concat(this.completionSummary(sinceMs)),
       maturation: this.maturationSummary(sinceMs),
       counters: { ...this.ledger.counters(), ...this.derivedCounters(sinceMs), breakerOpen: this.now() < this.breakerUntil },
     };
@@ -65,7 +71,8 @@ export class BlockerLifecycleService {
     const sinceMs = this.now() - windowDays * 86_400_000;
     return {
       machineId: this.origin,
-      factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorTrend(f, sinceMs)),
+      factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorTrend(f, sinceMs))
+        .concat(this.completionTrend(sinceMs, windowDays)),
       maturation: this.maturationTrend(sinceMs),
     };
   }
@@ -134,14 +141,21 @@ export class BlockerLifecycleService {
   }
 
   private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number): void {
-    const summaries = new Map((['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorSummary(f, now - 168 * 3_600_000)]));
-    const trends = new Map((['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorTrend(f, now - 90 * 86_400_000)]));
+    const summaries = new Map<BlockerFactor, Record<string, unknown>>([
+      ...(['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorSummary(f, now - 168 * 3_600_000)] as const),
+      ['deliverable-completion', this.completionSummary(now - 168 * 3_600_000)],
+    ]);
+    const trends = new Map<BlockerFactor, Record<string, unknown>>([
+      ...(['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorTrend(f, now - 90 * 86_400_000)] as const),
+      ['deliverable-completion', this.completionTrend(now - 90 * 86_400_000, 90)],
+    ]);
     for (const metric of contract.metrics) {
       const [factor, field] = metric.sourceRef.split('.') as [BlockerFactor, string];
       const source = metric.source === 'blocker-summary' ? summaries.get(factor) : trends.get(factor);
       const value = source?.[field === 'p95Ms' ? 'p95Ms' : field] as number | null | undefined;
       const samples = metric.source === 'blocker-summary' ? Number(source?.completed ?? 0)
-        : Number((source?.secondHalf as { samples?: number } | undefined)?.samples ?? 0);
+        : Number((source?.secondHalf as { samples?: number; total?: number } | undefined)?.samples ??
+          (source?.secondHalf as { total?: number } | undefined)?.total ?? 0);
       if (typeof value === 'number' && Number.isFinite(value)) this.ledger.recordMaturationObservation({
         origin: this.origin, featureId, metricId: metric.id, source: metric.source,
         sourceRef: metric.sourceRef, observedAtMs: now, value, samples,
@@ -193,6 +207,7 @@ export class BlockerLifecycleService {
     if (this.maturationTimer) clearInterval(this.maturationTimer);
     this.tracker.off('blocker-request-persisted', this.onRequest);
     this.tracker.off('blocker-episode-closed', this.onClose);
+    this.tracker.off('delivered', this.onDelivered);
     this.ledger.close();
   }
 
@@ -209,6 +224,71 @@ export class BlockerLifecycleService {
     };
     return { origin: this.origin, factor: 'clear-latency', sourceEventId: episode.clearSourceId!,
       observedAtMs, latencyMs: duration, outcome: 'observed' };
+  }
+
+  private completionRecord(commitment: Commitment): BlockerMetricRecord | null {
+    if (commitment.status !== 'delivered' || !commitment.resolvedAt) return null;
+    const observedAtMs = Date.parse(commitment.resolvedAt);
+    if (!Number.isFinite(observedAtMs)) return null;
+    const opaqueId = crypto.createHash('sha256').update(`${this.origin}\0${commitment.id}`).digest('hex').slice(0, 32);
+    return {
+      origin: this.origin,
+      factor: 'deliverable-completion',
+      sourceEventId: `throughput-v1:completion:${opaqueId}`,
+      observedAtMs,
+      latencyMs: null,
+      outcome: 'observed',
+    };
+  }
+
+  private completionSummary(sinceMs: number): Record<string, unknown> {
+    const completed = this.ledger.values('deliverable-completion', sinceMs)
+      .filter(row => row.outcome === 'observed').length;
+    const windowDays = Math.max(1 / 24, (this.now() - sinceMs) / 86_400_000);
+    return {
+      factor: 'deliverable-completion', unit: 'count', recoverability: 'reconcilable',
+      completed, total: completed, missing: 0, excluded: 0,
+      coverage: completed === 0 ? null : 1,
+      averagePerDay: completed / windowDays,
+      medianMs: null, p95Ms: null,
+      outcomes: { observed: completed, 'legacy-missing-start': 0,
+        'clock-regression-or-implausible': 0, 'request-row-missing': 0,
+        'episode-dropped-capacity': 0 },
+    };
+  }
+
+  private completionTrend(sinceMs: number, windowDays: number): Record<string, unknown> {
+    const todayStart = Date.parse(`${new Date(this.now()).toISOString().slice(0, 10)}T00:00:00.000Z`);
+    const counts = new Map<string, number>();
+    for (const row of this.ledger.values('deliverable-completion', sinceMs)) {
+      if (row.outcome !== 'observed' || row.observedAtMs >= todayStart) continue;
+      const day = new Date(row.observedAtMs).toISOString().slice(0, 10);
+      counts.set(day, (counts.get(day) ?? 0) + 1);
+    }
+    const completeDays = Math.max(0, Math.min(89, windowDays - 1));
+    const days = Array.from({ length: completeDays }, (_, index) => {
+      const at = todayStart - (completeDays - index) * 86_400_000;
+      const day = new Date(at).toISOString().slice(0, 10);
+      return { day, count: counts.get(day) ?? 0 };
+    });
+    const split = Math.floor(days.length / 2);
+    const describe = (part: typeof days) => {
+      const total = part.reduce((sum, day) => sum + day.count, 0);
+      return { days: part.length, total, meanPerDay: part.length === 0 ? null : total / part.length };
+    };
+    const firstHalf = describe(days.slice(0, split));
+    const secondHalf = describe(days.slice(split));
+    if (days.length < 4 || firstHalf.days < 2 || secondHalf.days < 2) {
+      return { factor: 'deliverable-completion', unit: 'count', days, firstHalf, secondHalf,
+        ratio: null, direction: 'insufficient-data', reason: 'insufficient-days' };
+    }
+    if (firstHalf.meanPerDay === null || firstHalf.meanPerDay === 0) {
+      return { factor: 'deliverable-completion', unit: 'count', days, firstHalf, secondHalf,
+        ratio: null, direction: secondHalf.total > 0 ? 'climbing' : 'flat', reason: 'zero-denominator' };
+    }
+    const ratio = (secondHalf.meanPerDay ?? 0) / firstHalf.meanPerDay;
+    return { factor: 'deliverable-completion', unit: 'count', days, firstHalf, secondHalf, ratio,
+      direction: ratio > 1 ? 'climbing' : ratio < 1 ? 'declining' : 'flat', reason: null };
   }
 
   private factorSummary(factor: BlockerFactor, sinceMs: number): Record<string, unknown> {
@@ -293,6 +373,10 @@ export class BlockerLifecycleService {
       if (!ok) { failed = true; break; }
       try { this.tracker.markBlockerClearTelemetryComplete(c.id, episode.episodeId, this.now()); }
       catch { /* @silent-fallback-ok — failed drives bounded backoff/breaker */ failed = true; }
+    }
+    for (const commitment of slice) {
+      const completion = this.completionRecord(commitment);
+      if (completion && !this.ledger.record(completion, true)) failed = true;
     }
     if (failed) {
       this.failures++;

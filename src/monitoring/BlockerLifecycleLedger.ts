@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 
-export type BlockerFactor = 'request-to-persist' | 'clear-latency';
+export type BlockerFactor = 'request-to-persist' | 'clear-latency' | 'deliverable-completion';
 export type BlockerOutcome = 'observed' | 'legacy-missing-start' | 'clock-regression-or-implausible';
 
 export interface BlockerMetricRecord {
@@ -56,17 +56,55 @@ export class BlockerLifecycleLedger {
   };
 
   constructor(private readonly opts: { dbPath: string; now?: () => number }) {
+    let opened: BetterSqliteDatabase | null = null;
     try {
       fs.mkdirSync(path.dirname(opts.dbPath), { recursive: true });
-      this.db = new Database(opts.dbPath);
-      this.unregisterSqlite = registerSqliteHandle(() => this.db?.close());
+      opened = new Database(opts.dbPath);
+      this.db = opened;
+      this.unregisterSqlite = registerSqliteHandle(() => opened?.close());
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('synchronous = NORMAL');
       this.db.pragma('busy_timeout = 25');
-      this.db.exec(`
+      this.ensureSchema();
+    } catch { // @silent-fallback-ok — availability is exposed as 503/guard degradation
+      this.unregisterSqlite?.();
+      this.unregisterSqlite = null;
+      try { opened?.close(); } catch { /* @silent-fallback-ok — constructor already degrades unavailable */ }
+      this.db = null;
+    }
+  }
+
+  private ensureSchema(): void {
+    if (!this.db) return;
+    const existing = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='blocker_lifecycle_metrics'")
+      .get() as { sql?: string } | undefined;
+    if (existing?.sql && !existing.sql.includes('deliverable-completion')) {
+      this.db.transaction(() => {
+        this.db!.exec(`
+          DROP INDEX IF EXISTS idx_blocker_lifecycle_window;
+          ALTER TABLE blocker_lifecycle_metrics RENAME TO blocker_lifecycle_metrics_v1;
+          CREATE TABLE blocker_lifecycle_metrics (
+            origin TEXT NOT NULL,
+            factor TEXT NOT NULL CHECK (factor IN ('request-to-persist','clear-latency','deliverable-completion')),
+            source_event_id TEXT NOT NULL,
+            observed_at_ms INTEGER NOT NULL,
+            latency_ms REAL,
+            outcome TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(origin, factor, source_event_id)
+          );
+          INSERT INTO blocker_lifecycle_metrics
+            (origin,factor,source_event_id,observed_at_ms,latency_ms,outcome,schema_version)
+            SELECT origin,factor,source_event_id,observed_at_ms,latency_ms,outcome,schema_version
+            FROM blocker_lifecycle_metrics_v1;
+          DROP TABLE blocker_lifecycle_metrics_v1;
+        `);
+      })();
+    }
+    this.db.exec(`
         CREATE TABLE IF NOT EXISTS blocker_lifecycle_metrics (
           origin TEXT NOT NULL,
-          factor TEXT NOT NULL CHECK (factor IN ('request-to-persist','clear-latency')),
+          factor TEXT NOT NULL CHECK (factor IN ('request-to-persist','clear-latency','deliverable-completion')),
           source_event_id TEXT NOT NULL,
           observed_at_ms INTEGER NOT NULL,
           latency_ms REAL,
@@ -97,9 +135,6 @@ export class BlockerLifecycleLedger {
         CREATE INDEX IF NOT EXISTS idx_maturation_evaluation_trend ON maturation_evaluations
           (origin,feature_id,due_slot_ms DESC);
       `);
-    } catch { // @silent-fallback-ok — availability is exposed as 503/guard degradation
-      this.db = null;
-    }
   }
 
   available(): boolean { return this.db !== null; }
@@ -238,6 +273,12 @@ export class BlockerLifecycleLedger {
 
   private insert(record: BlockerMetricRecord, reconciled: boolean): boolean {
     if (!this.db) { this.countersState.failed++; return false; }
+    if (!['request-to-persist', 'clear-latency', 'deliverable-completion'].includes(record.factor) ||
+        !['observed', 'legacy-missing-start', 'clock-regression-or-implausible'].includes(record.outcome) ||
+        (record.factor === 'deliverable-completion' && (record.outcome !== 'observed' || record.latencyMs !== null))) {
+      this.countersState.failed++;
+      return false;
+    }
     try {
       const info = this.db.prepare(`INSERT OR IGNORE INTO blocker_lifecycle_metrics
         (origin,factor,source_event_id,observed_at_ms,latency_ms,outcome,schema_version)
