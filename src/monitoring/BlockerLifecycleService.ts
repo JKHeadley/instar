@@ -42,7 +42,7 @@ export class BlockerLifecycleService {
     tracker.on('blocker-episode-closed', this.onClose);
     this.schedule(5_000);
     if (initiativeTracker) {
-      const evaluate = () => { try { this.evaluateMaturation(initiativeTracker.list()); } catch { /* measure-only */ } };
+      const evaluate = () => { try { this.evaluateMaturation(initiativeTracker.list()); } catch { /* @silent-fallback-ok — the absent durable slot is surfaced as missed cadence on the next successful pass */ } };
       setTimeout(evaluate, 10_000).unref?.();
       this.maturationTimer = setInterval(evaluate, 6 * 60 * 60 * 1000);
       this.maturationTimer.unref?.();

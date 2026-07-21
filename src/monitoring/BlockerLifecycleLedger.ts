@@ -156,7 +156,7 @@ export class BlockerLifecycleLedger {
           record.sourceRef, Math.round(record.observedAtMs), record.value, record.samples,
           record.descriptorVersion ?? 1, record.benchmarkRef ?? null);
       return true;
-    } catch { return false; }
+    } catch { /* @silent-fallback-ok — false makes the failed observation write explicit to the caller */ return false; }
   }
 
   maturationObservations(origin: string, sinceMs: number): MaturationMetricObservation[] {
@@ -167,7 +167,7 @@ export class BlockerLifecycleLedger {
         descriptor_version AS descriptorVersion,benchmark_ref AS benchmarkRef
         FROM maturation_metric_observations WHERE origin=? AND observed_at_ms>=?
         ORDER BY observed_at_ms DESC LIMIT 8192`).all(origin, Math.round(sinceMs)) as MaturationMetricObservation[];
-    } catch { return []; }
+    } catch { /* @silent-fallback-ok — empty evidence fails maturation closed as insufficient evidence */ return []; }
   }
 
   recordMaturationEvaluation(record: MaturationEvaluationRecord): boolean {
@@ -181,7 +181,7 @@ export class BlockerLifecycleLedger {
           record.passingMetrics, record.totalMetrics, record.minNormalizedMargin, record.contractHash,
           record.newestEvidenceAtMs, record.additionalMissedSlots ?? 0);
       return true;
-    } catch { return false; }
+    } catch { /* @silent-fallback-ok — false makes the failed evaluation write explicit to the caller */ return false; }
   }
 
   maturationEvaluations(origin: string, sinceMs: number): MaturationEvaluationRecord[] {
@@ -193,7 +193,7 @@ export class BlockerLifecycleLedger {
         newest_evidence_at_ms AS newestEvidenceAtMs,additional_missed_slots AS additionalMissedSlots
         FROM maturation_evaluations WHERE origin=? AND due_slot_ms>=?
         ORDER BY feature_id,due_slot_ms`).all(origin, Math.round(sinceMs)) as MaturationEvaluationRecord[];
-    } catch { return []; }
+    } catch { /* @silent-fallback-ok — empty history is surfaced as unevaluated/missed cadence */ return []; }
   }
 
   prune(): number {

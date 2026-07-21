@@ -22,7 +22,7 @@ Compliant. Metric comparisons are deterministic signals. They cannot write Initi
 
 ## 5. Failure and rollback
 
-Malformed contracts become missing-contract signals; invalid/future observations are rejected; unavailable SQLite degrades reads and guard health. Disable the existing blocker-lifecycle gate or revert the change. Additive rows become inert and require no destructive rollback.
+Malformed contracts become missing-contract signals; invalid/future observations are rejected; unavailable SQLite degrades reads and guard health. Observation/evaluation write failures return false, and read failures return empty evidence that deterministically becomes insufficient evidence or missed cadence; these fail-soft boundaries are explicitly marked for the repository fallback audit. Disable the existing blocker-lifecycle gate or revert the change. Additive rows become inert and require no destructive rollback.
 
 ## 6. Security and privacy
 
