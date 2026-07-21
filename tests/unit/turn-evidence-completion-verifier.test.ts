@@ -7,7 +7,7 @@ import { CompletionClaimVerifier, decideVerdict } from '../../src/monitoring/Com
 import { CLAIM_ARBITER_PROMPT_ID, buildClaimArbiterPrompt, buildCompletionClaimDecisionContext, ClaimClauseArbiter, parseClauseArbitration, routeActionClaim, splitClaimClauses } from '../../src/monitoring/ClaimClauseArbiter.js';
 import { classifyActionClaim } from '../../src/core/action-claim.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { ClaimObservationRecorder } from '../../src/monitoring/ClaimObservation.js';
+import { ClaimObservationRecorder, type ExtractedClaim } from '../../src/monitoring/ClaimObservation.js';
 
 const user = JSON.stringify({ type: 'user', message: { role: 'user', content: 'do it' } });
 const tool = (id: string, name: string, input: unknown) => JSON.stringify({ message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } });
@@ -236,6 +236,45 @@ describe('CompletionClaimVerifier', () => {
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'claim-general-test' }); }
   });
 
+  it('counts known general verdicts and refuted/unverifiable criticality cross-tabs', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claim-general-stats-'));
+    try {
+      const claim = (overrides: Partial<ExtractedClaim>): ExtractedClaim => ({
+        clauseId: 0, kind: 'state-fact', subjectKind: 'session', predicate: 'session.state',
+        operand: { type: 'state-enum', value: 'running', enumVersion: 'v1' }, comparator: 'eq',
+        subjectSelector: { type: 'current-session' }, consequence: { relation: 'none', actionClass: 'none' },
+        sourceStartByte: 0, sourceEndByte: 18, referencedEntityHints: [], endorsed: true, negated: false,
+        hedged: false, quoted: false, suggestedCriticality: 'low', confidence: 0.99, tenseScope: 'current',
+        ...overrides,
+      });
+      const claims: ExtractedClaim[] = [
+        claim({ clauseId: 0 }),
+        claim({ clauseId: 1, kind: 'completion', subjectKind: 'tool-action', predicate: 'tool-action.completed',
+          operand: { type: 'boolean', value: true }, subjectSelector: { type: 'same-turn-action', actionIndex: 0 },
+          tenseScope: 'past' }),
+        claim({ clauseId: 2, kind: 'external-fact', subjectKind: 'external-entity', predicate: 'external.fact',
+          operand: { type: 'none' }, subjectSelector: { type: 'unresolved' }, tenseScope: 'timeless' }),
+        claim({ clauseId: 3, operand: { type: 'state-enum', value: 'stopped', enumVersion: 'v1' },
+          consequence: { relation: 'premise-for', actionClass: 'delete', actionStartByte: 19, actionEndByte: 29 } }),
+      ];
+      const arbiter = { arbitrate: vi.fn().mockResolvedValue({
+        authoritative: true, clauses: [], general: { schemaVersion: 1, claims, saturated: true },
+      }) } as any;
+      const verifier = new CompletionClaimVerifier({ intelligence: {} as any, arbiter, stateDir: dir,
+        enabled: true, dryRun: true, generalObservation: true });
+      await verifier.observe('Session is running. Delete it.', {
+        hadToolCalls: true, toolCalls: [{ tool: 'Bash', actionKind: 'other', ok: false }],
+        truncated: false, unavailable: false, canaryOk: true,
+      }, { sessionSnapshot: { state: 'running', elapsedMs: 1_000, revision: 'r1', observedAt: new Date().toISOString() } });
+
+      expect(verifier.stats()).toMatchObject({
+        generalVerdicts: { supported: 1, refuted: 2, unverifiable: 1 },
+        refutedByCriticality: { low: 0, medium: 0, high: 1, 'irreversible-precondition': 1 },
+        unverifiableByCriticality: { low: 1, medium: 0, high: 0, 'irreversible-precondition': 0 },
+      });
+    } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'claim-general-stats-test' }); }
+  });
+
   it('enqueue returns before the intelligence promise settles', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'completion-detach-'));
     try {
@@ -304,5 +343,25 @@ describe('CompletionClaimVerifier', () => {
       expect(persisted).not.toContain('nothing');
       expect(persisted).not.toContain('zebra-sensitive-target');
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'completion-stats-test' }); }
+  });
+
+  it('merges persisted general counters with backward-compatible numeric clamping', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'completion-stats-merge-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'logs', 'completion-claim-stats.json'), JSON.stringify({
+        candidateTurns: 4.9,
+        generalVerdicts: { supported: 2.9, refuted: -4, unverifiable: Number.MAX_VALUE },
+        refutedByCriticality: { high: 3.8, 'irreversible-precondition': '9' },
+        unverifiableByCriticality: { low: 1.2, high: null },
+      }));
+      const verifier = new CompletionClaimVerifier({ stateDir: dir, enabled: false, dryRun: true });
+      expect(verifier.stats()).toMatchObject({
+        candidateTurns: 4,
+        generalVerdicts: { supported: 2, refuted: 0, unverifiable: Number.MAX_SAFE_INTEGER },
+        refutedByCriticality: { low: 0, medium: 0, high: 3, 'irreversible-precondition': 0 },
+        unverifiableByCriticality: { low: 1, medium: 0, high: 0, 'irreversible-precondition': 0 },
+      });
+    } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'completion-stats-merge-test' }); }
   });
 });

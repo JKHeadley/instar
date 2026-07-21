@@ -6,15 +6,21 @@
  * 200 + rollup when the ledger is present, 503 when it is null, and the
  * ?feature= filter.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
+import { CompletionClaimVerifier } from '../../src/monitoring/CompletionClaimVerifier.js';
+import type { ExtractedClaim } from '../../src/monitoring/ClaimObservation.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let ledger: FeatureMetricsLedger | null = null;
 
-function ctxWith(metricsLedger: FeatureMetricsLedger | null): RouteContext {
+function ctxWith(metricsLedger: FeatureMetricsLedger | null, verifier?: CompletionClaimVerifier): RouteContext {
   return {
     config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
@@ -25,14 +31,15 @@ function ctxWith(metricsLedger: FeatureMetricsLedger | null): RouteContext {
     triageNurse: null, topicMemory: null, discoveryEvaluator: null,
     tokenLedger: null,
     featureMetricsLedger: metricsLedger,
+    completionClaimVerifier: verifier ?? null,
     startTime: new Date(),
   } as unknown as RouteContext;
 }
 
-function appWith(metricsLedger: FeatureMetricsLedger | null): express.Express {
+function appWith(metricsLedger: FeatureMetricsLedger | null, verifier?: CompletionClaimVerifier): express.Express {
   const app = express();
   app.use(express.json());
-  app.use('/', createRoutes(ctxWith(metricsLedger)));
+  app.use('/', createRoutes(ctxWith(metricsLedger, verifier)));
   return app;
 }
 
@@ -94,6 +101,37 @@ describe('GET /metrics/features (integration)', () => {
     expect(res.body.features[0].feature).toBe('A');
     // totals still reflect the whole ledger; only the features[] list is filtered.
     expect(res.body.totals.calls).toBe(2);
+  });
+
+  it('surfaces server-admitted-only general refuted and unverifiable-high verdict metrics', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claim-metrics-route-'));
+    try {
+      const message = 'The action completed and capacity is four.';
+      const base: ExtractedClaim = {
+        clauseId: 0, kind: 'completion', subjectKind: 'tool-action', predicate: 'tool-action.completed',
+        operand: { type: 'boolean', value: true }, comparator: 'eq',
+        subjectSelector: { type: 'same-turn-action', actionIndex: 0 }, consequence: { relation: 'none', actionClass: 'none' },
+        sourceStartByte: 0, sourceEndByte: Buffer.byteLength(message), referencedEntityHints: [], endorsed: true,
+        negated: false, hedged: false, quoted: false, suggestedCriticality: 'low', confidence: 0.99, tenseScope: 'past',
+      };
+      const claims: ExtractedClaim[] = [base, { ...base, clauseId: 1, kind: 'capacity-limit',
+        subjectKind: 'capacity-model', predicate: 'capacity.limit', operand: { type: 'integer', value: 4, unit: 'lanes' },
+        subjectSelector: { type: 'unresolved' }, tenseScope: 'current' }];
+      const verifier = new CompletionClaimVerifier({ intelligence: {} as any, stateDir, enabled: true,
+        dryRun: true, generalObservation: true, arbiter: { arbitrate: async () => ({
+          authoritative: true, clauses: [], general: { schemaVersion: 1, claims, saturated: false },
+        }) } as any });
+      expect(verifier.enqueue(message, { hadToolCalls: true,
+        toolCalls: [{ tool: 'Bash', actionKind: 'other', ok: false }], truncated: false, unavailable: false, canaryOk: true }))
+        .toEqual({ accepted: true });
+      await vi.waitFor(() => expect(verifier.stats().generalVerdicts.refuted).toBe(1));
+
+      const res = await request(appWith(ledger, verifier)).get('/metrics/features');
+      expect(res.status).toBe(200);
+      expect(res.body.claimVerificationServerAdmittedOnly.generalVerdicts).toMatchObject({ refuted: 1, unverifiable: 1 });
+      expect(res.body.claimVerificationServerAdmittedOnly.unverifiableByCriticality.high).toBe(1);
+    } finally { SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'claim-metrics-route-test' }); }
   });
 });
 
