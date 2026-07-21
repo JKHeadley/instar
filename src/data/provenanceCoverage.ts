@@ -115,6 +115,12 @@ export interface ProvenanceCoverageEntry {
   /** REQUIRED (≥40 chars, ratchet-enforced) for pending/exempt entries — a real
    * argument, never a lazy "n/a". Optional color for wired entries. */
   readonly reason?: string;
+  /** A wired point normally has at least one RULE_REGISTRY row. This explicit
+   * posture is the only honest exception: measurement-only means provenance is
+   * intentionally collected before an outcome rule exists; exempt means an
+   * outcome is structurally unavailable. Both require gradingReason. */
+  readonly gradingPosture?: 'measurement-only' | 'exempt';
+  readonly gradingReason?: string;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -215,6 +221,9 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'The outbound tone/leak authority (spec §5.6 named high-volume point). Enrolled at budget:500/day, identity-only content — never the message body.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
   {
     decisionPoint: DP_CORRECTION_CLASS_REVIEW,
@@ -224,6 +233,9 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Each durable correction receives one bounded standards/process proposal; identity-only context supports outcome grading without archiving correction text.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
   {
     decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
@@ -233,6 +245,9 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Completion-language turns receive clause arbitration before optional suppression authority; identity-only context preserves auditability without transcript content.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
   {
     decisionPoint: DP_FEEDBACK_READINESS,
@@ -242,6 +257,9 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'A bounded frontier-model judgment authorizes cluster-to-work readiness; provenance stores packet identity and enumerated outcomes, never feedback text or model output.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not
@@ -764,6 +782,8 @@ export type EvidenceStrength = (typeof EVIDENCE_STRENGTHS)[number];
 
 export interface EvidenceRule {
   readonly ruleId: string;
+  /** Census decision point whose outcomes this rule grades. */
+  readonly decisionPoint: string;
   readonly rung: EvidenceRung;
   readonly evidenceStrength: EvidenceStrength;
   /** The ONLY component whose gradedBy.component the annotate chokepoint
@@ -785,6 +805,7 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // Positive-evidence grading runs in the sentinel's scan ticks + grade-on-supersede.
   'hog-respawn-wrong-v1': {
     ruleId: 'hog-respawn-wrong-v1',
+    decisionPoint: DP_EXTERNAL_HOG_KILL_LEAVE,
     rung: 'deterministic-ground-truth',
     evidenceStrength: 'deterministic-proof',
     owningComponent: 'ExternalHogSentinel',
@@ -796,6 +817,7 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // close grading runs in the grading job reading the durable hog store.
   'hog-sustained-right-v1': {
     ruleId: 'hog-sustained-right-v1',
+    decisionPoint: DP_EXTERNAL_HOG_KILL_LEAVE,
     rung: 'deterministic-ground-truth',
     evidenceStrength: 'negative-evidence',
     owningComponent: 'DecisionGrading',
@@ -808,6 +830,7 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // sentinel's scan ticks + grade-on-supersede.
   'hog-leave-recurrence-v1': {
     ruleId: 'hog-leave-recurrence-v1',
+    decisionPoint: DP_EXTERNAL_HOG_KILL_LEAVE,
     rung: 'recurrence',
     evidenceStrength: 'recurrence-proxy',
     owningComponent: 'ExternalHogSentinel',
@@ -819,6 +842,7 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // wiring binds gradedBy.component to this owner).
   'completion-realcheck-v1': {
     ruleId: 'completion-realcheck-v1',
+    decisionPoint: DP_COMPLETION_EVALUATE,
     rung: 'deterministic-ground-truth',
     evidenceStrength: 'deterministic-proof',
     owningComponent: 'AutonomousRealCheck',
@@ -828,17 +852,67 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // as a self-report-rung annotation (never overrides an independent grader).
   'hog-enacted-disposition-v1': {
     ruleId: 'hog-enacted-disposition-v1',
+    decisionPoint: DP_EXTERNAL_HOG_KILL_LEAVE,
     rung: 'self-report',
     evidenceStrength: 'self-report',
     owningComponent: 'ExternalHogSentinel',
   },
   'completion-enacted-disposition-v1': {
     ruleId: 'completion-enacted-disposition-v1',
+    decisionPoint: DP_COMPLETION_STOP_RATIONALE,
     rung: 'self-report',
     evidenceStrength: 'self-report',
     owningComponent: 'CompletionChokepoint',
   },
 };
+
+/** Loud class contradiction: a wired provenance point that cannot produce an
+ * outcome grade and has not explicitly declared measurement-only/exempt. */
+export function findWiredWithoutGraders(
+  coverage: ReadonlyArray<ProvenanceCoverageEntry> = PROVENANCE_COVERAGE,
+  registry: Readonly<Record<string, EvidenceRule>> = RULE_REGISTRY,
+): string[] {
+  const graded = new Set(Object.values(registry).map((rule) => rule.decisionPoint));
+  return coverage
+    .filter((entry) => {
+      if (entry.status !== 'wired' || graded.has(entry.decisionPoint)) return false;
+      const explicit = entry.gradingPosture === 'measurement-only' || entry.gradingPosture === 'exempt';
+      return !explicit || (entry.gradingReason ?? '').trim().length < 40;
+    })
+    .map((entry) => entry.decisionPoint)
+    .sort();
+}
+
+/** Full declaration-consistency audit used by the developer-process ratchet.
+ * Runtime reads surface the primary wired-but-no-grader subset; CI refuses all
+ * mutually contradictory source shapes. */
+export function findGradingContradictions(
+  coverage: ReadonlyArray<ProvenanceCoverageEntry> = PROVENANCE_COVERAGE,
+  registry: Readonly<Record<string, EvidenceRule>> = RULE_REGISTRY,
+): string[] {
+  const findings: string[] = [];
+  const counts = new Map<string, number>();
+  for (const entry of coverage) counts.set(entry.decisionPoint, (counts.get(entry.decisionPoint) ?? 0) + 1);
+  for (const [decisionPoint, count] of counts) {
+    if (count > 1) findings.push(`duplicate-census:${decisionPoint}`);
+  }
+  const byPoint = new Map(coverage.map((entry) => [entry.decisionPoint, entry]));
+  const graded = new Set<string>();
+  for (const rule of Object.values(registry)) {
+    graded.add(rule.decisionPoint);
+    const entry = byPoint.get(rule.decisionPoint);
+    if (!entry || entry.status !== 'wired') findings.push(`rule-target-not-wired:${rule.ruleId}:${rule.decisionPoint}`);
+  }
+  for (const entry of coverage) {
+    if (entry.status !== 'wired') continue;
+    const hasRule = graded.has(entry.decisionPoint);
+    const explicit = entry.gradingPosture === 'measurement-only' || entry.gradingPosture === 'exempt';
+    const validReason = (entry.gradingReason ?? '').trim().length >= 40;
+    if (hasRule && explicit) findings.push(`grader-and-${entry.gradingPosture}:${entry.decisionPoint}`);
+    if (!hasRule && (!explicit || !validReason)) findings.push(`wired-but-no-grader:${entry.decisionPoint}`);
+  }
+  return [...new Set(findings)].sort();
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Lookup helpers (imported by the settlement seam, the annotate chokepoint,

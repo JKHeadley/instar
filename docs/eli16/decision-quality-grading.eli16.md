@@ -1,0 +1,11 @@
+# Decision Quality Grading — ELI16
+
+Instar already records which model made several important judgments and already has a deterministic grading engine that can connect later evidence to those judgments. The missing link was operational: a decision point could be declared “wired” even when no grading rule existed, the autonomous completion real check produced useful pass/fail evidence without sending it to the grader, and the hourly grading job shipped switched off. The dashboard-shaped read API therefore looked complete while real grade counts could remain at zero.
+
+This change closes those gaps using the existing system. First, the provenance census now treats “wired but no grader” as a contradiction. Every wired point must either have an evidence rule in the existing rule registry or explicitly say that it is measurement-only or exempt, with a real explanation. CI tests the rule and `/decision-quality` reports any contradiction loudly. It does not create another census or grading engine.
+
+Second, the existing stop hook carries the real-check observation as one of three honest shapes: pass, fail, or not configured. A failed met attempt uses a non-terminal mode on the authenticated run-end surface, records `wrong`, and leaves the run working; a passing terminal attempt records `right`. The existing `annotateCompletionRealcheck` adapter calls the existing `annotateDecisionOutcome` chokepoint. A missing real check produces no guessed grade. Receipt or annotation failure cannot block run shutdown; each is returned as a named disposition and the decision remains unknown.
+
+Third, the existing hourly grading job is enabled in the shipped scaffold. It still invokes only the bounded, idempotent deterministic endpoint, never interprets results, never messages the user, and never puts an LLM in the grading path. Each machine grades its own local evidence and the existing pool read combines the bounded public view.
+
+Phase B is named but not implemented here: reviewed rules and owners for `messaging-tone-gate`, `correction-class-review`, `completion-claim-verify`, and `feedback-readiness`. Those four points are explicitly measurement-only today, so the system is honest about their status instead of pretending they can already be graded. <!-- tracked: goal-4-phase-b -->

@@ -1,12 +1,12 @@
 ---
 name: LLM-Decision Grading Pass
-description: "Hourly deterministic grading pass over the LLM-decision quality substrate. Runs POST /decision-quality/grade-pass: the endpoint walks NEW outcome evidence since the durable per-decision-point cursor (keyset (ts, correlation_id) — same-ms bursts cannot skip rows), applies the registered deterministic evidence rules, and upserts right/wrong/unknown grades idempotently (re-runs converge, never multiply; bounded per pass by provenance.quality.maxDecisionsPerPass). ZERO LLM spend in the pass itself — the grading ladder in this build is deterministic-only (FD11; the LLM evidence-interpreter rung ships NO code, ACT-1198). Ships enabled:false (cost-bearing job class); the operator read surface is GET /decision-quality. NEVER messages the user (FD5 — the meter is observe-only; grading produces rows, not messages). Runs per machine over that machine's local rows (the ratified machine-local data posture). Tier-1 supervised (this haiku job wraps the deterministic endpoint and sanity-checks the response shape). Spec docs/specs/llm-decision-quality-meter.md §5.5."
+description: "Hourly deterministic grading pass over the LLM-decision quality substrate. Runs POST /decision-quality/grade-pass: the endpoint walks NEW outcome evidence since the durable per-decision-point cursor (keyset (ts, correlation_id) — same-ms bursts cannot skip rows), applies the registered deterministic evidence rules, and upserts right/wrong/unknown grades idempotently (re-runs converge, never multiply; bounded per pass by provenance.quality.maxDecisionsPerPass). ZERO LLM spend in the pass itself — the grading ladder in this build is deterministic-only. Ships enabled:true under the newer operator-directed goal-4 Tier-1 activation, superseding the original scaffold-dark default; the operator read surface is GET /decision-quality. NEVER messages the user (the meter is observe-only; grading produces rows, not messages). Runs per machine over that machine's local rows. Tier-1 supervised (this haiku job wraps the deterministic endpoint and sanity-checks the response shape). Substrate: docs/specs/llm-decision-quality-meter.md §5.5."
 schedule: "0 * * * *"
 priority: low
 expectedDurationMinutes: 2
 model: haiku
 supervision: tier1
-enabled: false
+enabled: true
 tags:
   - cat:observability
   - decision-quality

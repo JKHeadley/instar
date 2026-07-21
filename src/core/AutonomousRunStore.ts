@@ -135,6 +135,9 @@ export interface AutonomousRunRecord {
   lastStopRationaleCorrelationId?: string;
   /** ISO timestamp of the `lastStopRationaleCorrelationId` write. */
   lastStopRationaleCorrelationAt?: string;
+  /** First accepted real-check observation per completion correlation. The
+   * first outcome is immutable so replay cannot flip deterministic evidence. */
+  realcheckOutcomeByCorrelation?: Record<string, { outcome: 'pass' | 'fail'; observedAtMs: number; applied: boolean }>;
   /** Optional StandingDrive composition extension. Absent preserves plain-run behavior. */
   standingDrive?: StandingDriveExtensionV1;
 }

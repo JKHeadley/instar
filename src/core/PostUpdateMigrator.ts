@@ -251,7 +251,7 @@ export function DECISION_QUALITY_CLAUDEMD_SECTION(port: number): string {
 
 An observe-only quality substrate over my internal LLM decisions (docs/specs/llm-decision-quality-meter.md): every ENROLLED decision point (a gate, a judge, a classifier) gets per-decision right/wrong/unknown outcome grades joined back to WHAT decided (model/framework/prompt), aggregated evidence-strength-FIRST — proof-like grades are never blended with heuristic ones, and any aggregate under the minimum sample (\`provenance.quality.minSampleForRates\`, default 20) carries an explicit \`insufficient-evidence: true\` marker beside the raw counts. It MEASURES decisions; it never gates, blocks, or delays them.
 - Read the meter: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/decision-quality?sinceHours=24"\` → per decision-point: decisions, outcomes-known ratio, grade distribution (right/wrong/unknown/expired), grade-by-rule/rung/evidence-strength breakdowns, attribution columns (model/framework/prompt_id), and the honest counters (orphanOutcomes/joinMiss/droppedByBudget + the annotation-rejection classes). 503 when the seam is dark on this agent (\`provenance.uniformSeam\` resolves off — dev-gated, dark on the fleet) — say so honestly rather than guessing. \`?scope=pool\` merges MACHINE-TAGGED rows (per-machine framework routing makes per-machine quality genuinely distinct data).
-- Grading is a deterministic pass, never an LLM: \`POST /decision-quality/grade-pass\` (Bearer; body \`{}\` — knobs come from config) walks new evidence since a durable per-decision-point cursor and upserts grades — idempotent, bounded per pass, zero LLM spend. The hourly \`llm-decision-grading\` built-in job drives the cadence and ships \`enabled:false\`; it never messages you.
+- Grading is a deterministic pass, never an LLM: \`POST /decision-quality/grade-pass\` (Bearer; body \`{}\` — knobs come from config) walks new evidence since a durable per-decision-point cursor and upserts grades — idempotent, bounded per pass, zero LLM spend. The hourly \`llm-decision-grading\` built-in job drives the cadence and ships \`enabled:true\`; it never messages you.
 - **When to use** (PROACTIVE — this is the trigger): the user asks "how often is this gate/judge right — does it need a bigger model or a prompt change?" → read the meter, don't guess. Quote the evidence-strength-segmented numbers, never a blended headline rate.
 - **Census debt is re-surfaced on every read**: the response carries the wired/pending/exempt decision-point counts, \`pending-ref-dead\` flags (a pending entry whose ACT ref died), and the wired-but-silent / exempt-but-active contradictions — the enrollment backlog can never rot silently.
 `;
@@ -3705,11 +3705,14 @@ export class PostUpdateMigrator {
     // Marker bumped `SCOPE_ACCRETION` → `TASK_CONTINUATION`: the same trusted
     // Codex Stop hook can now consult the server-owned ordinary-work ledger
     // when no autonomous job owns the turn. Dark unless explicitly enabled.
+    // Marker bumped `TASK_CONTINUATION` → `DECISION_QUALITY_REALCHECK`: the
+    // terminal run-end payload now carries the already-observed real-check
+    // disposition into the existing decision-quality annotation chokepoint.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'TASK_CONTINUATION',
+      'DECISION_QUALITY_REALCHECK',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (Codex task-ledger continuation at the existing trusted Stop boundary)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (decision-quality real-check outcome transport at run-end)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
