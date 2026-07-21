@@ -14,7 +14,7 @@
  * or ships-staged specs become `active` tracks (anti-flood).
  */
 
-import type { InitiativeTracker, PipelineStage, Initiative } from './InitiativeTracker.js';
+import type { InitiativeTracker, PipelineStage, Initiative, MaturationEvaluationContract } from './InitiativeTracker.js';
 import {
   deriveRolloutStage,
   rolloutPhaseStatuses,
@@ -39,6 +39,7 @@ export interface SpecArtifact {
   flagPath?: string;
   evidenceSource?: { type: 'log-filter' | 'endpoint'; ref: string; filter?: string };
   promotionCriteria?: string;
+  maturationEvaluation?: MaturationEvaluationContract;
   /** An instar-dev trace exists referencing this spec (⇒ at least building). */
   traceExists: boolean;
   prNumber?: number;
@@ -131,7 +132,7 @@ export class FeatureRolloutReconciler {
         phases, kind: 'task', pipelineStage: stage, specPath: art.specPath,
         prNumber: art.prNumber,
         rollout: rolloutEligible
-          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria }
+          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria, maturationEvaluation: art.maturationEvaluation }
           : undefined,
       });
       // default-on parks the track as 'paused' (NON-terminal → reopenable on a
@@ -171,6 +172,14 @@ export class FeatureRolloutReconciler {
         else summary.advanced.push(id);
         return;
       }
+      if (JSON.stringify(existing.rollout?.maturationEvaluation) !== JSON.stringify(art.maturationEvaluation)) {
+        await this.deps.tracker.update(id, {
+          rollout: { ...existing.rollout!, maturationEvaluation: art.maturationEvaluation },
+          ifMatch: this.deps.tracker.get(id)?.version,
+        });
+        summary.advanced.push(id);
+        return;
+      }
     }
 
     if (touched) summary.advanced.push(id);
@@ -191,7 +200,7 @@ export class FeatureRolloutReconciler {
     }
     const fresh = this.deps.tracker.get(id);
     await this.deps.tracker.update(id, {
-      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
+      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, maturationEvaluation: fresh?.rollout?.maturationEvaluation, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
       // 'paused' (non-terminal, reopenable) at default-on — NOT 'archived'
       // (which maps to TaskFlow's terminal `cancelled` and would seal the
       // record against a later regression). 'active' for live/dry-run.

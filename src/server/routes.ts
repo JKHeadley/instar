@@ -24960,6 +24960,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     return out;
   };
+  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown): Record<string, unknown> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const m = raw as Record<string, unknown>;
+    if (kind === 'summary') {
+      if (!['eligible', 'evaluated', 'missedDue'].every(k => Number.isSafeInteger(m[k]) && (m[k] as number) >= 0) ||
+          !m.byStatus || typeof m.byStatus !== 'object' || !Array.isArray(m.features) || m.features.length > 512) return null;
+      const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'missed-cadence'];
+      const byStatus = m.byStatus as Record<string, unknown>;
+      if (!statuses.every(k => Number.isSafeInteger(byStatus[k]) && (byStatus[k] as number) >= 0)) return null;
+      const features = m.features.map(v => {
+        if (!v || typeof v !== 'object') return null;
+        const f = v as Record<string, unknown>;
+        if (typeof f.featureId !== 'string' || f.featureId.length > 63 || typeof f.rung !== 'string' ||
+            !statuses.includes(String(f.status)) || !Number.isSafeInteger(f.passingMetrics) || !Number.isSafeInteger(f.totalMetrics) ||
+            !(f.minNormalizedMargin === null || (typeof f.minNormalizedMargin === 'number' && Number.isFinite(f.minNormalizedMargin)))) return null;
+        return { featureId: f.featureId, rung: f.rung, status: f.status, evaluatedAt: f.evaluatedAt,
+          passingMetrics: f.passingMetrics, totalMetrics: f.totalMetrics,
+          minNormalizedMargin: f.minNormalizedMargin, newestEvidenceAt: f.newestEvidenceAt ?? null };
+      });
+      if (features.some(v => v === null)) return null;
+      return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
+        byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k]])), features };
+    }
+    if (!Array.isArray(m.features) || m.features.length > 512) return null;
+    return { features: m.features.slice(0, 512) };
+  };
   const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
     const cacheKey = `${kind}?${query}`;
     const cached = blockerPoolCache.get(cacheKey);
@@ -24992,13 +25018,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (!origin || typeof origin !== 'object') { failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return; }
           const candidate = origin as Record<string, unknown>;
           const factors = sanitizeBlockerFactors(kind, candidate.factors);
+          const maturation = sanitizeMaturation(kind, candidate.maturation);
           const counters = kind === 'summary' ? sanitizeBlockerCounters(candidate.counters) : null;
+          if (!maturation) {
+            failures.push({ machineId: p.machineId, reason: 'unsupported-maturation' }); return;
+          }
           if (!factors || (kind === 'summary' && !counters)) {
             failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
           }
           const sanitized = kind === 'summary'
-            ? { machineId: p.machineId, factors, counters }
-            : { machineId: p.machineId, factors };
+            ? { machineId: p.machineId, factors, maturation, counters }
+            : { machineId: p.machineId, factors, maturation };
           const bytes = Buffer.byteLength(JSON.stringify(sanitized));
           if (responseBytes + bytes > 4 * 1024 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
           responseBytes += bytes;

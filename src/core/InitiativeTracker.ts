@@ -77,6 +77,24 @@ export type InitiativeKind = 'task' | 'project';
  *  GRADUATED-FEATURE-ROLLOUT-SPEC §4.2-4.3. */
 export type RolloutStage = 'dark' | 'dry-run' | 'live' | 'default-on';
 
+export type MaturationMetricSource = 'blocker-summary' | 'blocker-trend';
+export type MaturationMetricDirection = 'at-least' | 'at-most';
+
+export interface MaturationMetricContract {
+  id: string;
+  source: MaturationMetricSource;
+  sourceRef: string;
+  direction: MaturationMetricDirection;
+  threshold: number;
+  minSamples: number;
+}
+
+export interface MaturationEvaluationContract {
+  cadenceHours: number;
+  evidenceMaxAgeHours: number;
+  metrics: MaturationMetricContract[];
+}
+
 /** Typed rollout metadata for a ships-staged feature task. Operational criteria
  *  live here (typed), NOT in free-form phase summaries. */
 export interface RolloutInfo {
@@ -89,6 +107,9 @@ export interface RolloutInfo {
   evidenceSource?: { type: 'log-filter' | 'endpoint'; ref: string; filter?: string };
   /** Human-readable promotion gate (e.g. "≥2wk + ≥3 genuinely-idle would-reaps"). */
   promotionCriteria?: string;
+  /** D7: bounded numeric contract evaluated on the shared blocker-lifecycle
+   * metrics substrate. Evaluation is advisory and never advances this track. */
+  maturationEvaluation?: MaturationEvaluationContract;
   /** Near-silent edge dedupe: last time a needs-user line was surfaced for this track. */
   lastDigestNotifiedAt?: string;
 }

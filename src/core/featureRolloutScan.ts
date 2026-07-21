@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import type { SpecArtifact } from './FeatureRolloutReconciler.js';
 import type { RolloutFlagObservation } from './featureRollout.js';
+import type { MaturationEvaluationContract, MaturationMetricSource } from './InitiativeTracker.js';
 
 const RECENT_MERGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14d ⇒ active vs terminal backfill
 
@@ -40,6 +41,56 @@ export function parseSpecFrontmatter(content: string): Record<string, string> {
     if (kv) out[kv[1]] = kv[2].trim().replace(/^["']|["']$/g, '');
   }
   return out;
+}
+
+export type MaturationContractError = 'invalid-json' | 'oversized' | 'invalid-shape' | 'unknown-source-ref';
+export type MaturationContractParseResult =
+  | { ok: true; contract: MaturationEvaluationContract }
+  | { ok: false; error: MaturationContractError };
+
+const MATURATION_SOURCE_REFS: Readonly<Record<MaturationMetricSource, ReadonlySet<string>>> = {
+  'blocker-summary': new Set([
+    'request-to-persist.coverage', 'request-to-persist.p95Ms',
+    'clear-latency.coverage', 'clear-latency.p95Ms',
+  ]),
+  'blocker-trend': new Set(['request-to-persist.ratio', 'clear-latency.ratio']),
+};
+
+export function parseMaturationContract(raw: string | undefined): MaturationContractParseResult | undefined {
+  if (!raw) return undefined;
+  if (Buffer.byteLength(raw) > 16_384) return { ok: false, error: 'oversized' };
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return { ok: false, error: 'invalid-json' }; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, error: 'invalid-shape' };
+  const v = value as Record<string, unknown>;
+  if (!Number.isInteger(v.cadenceHours) || (v.cadenceHours as number) < 6 || (v.cadenceHours as number) > 168 || (v.cadenceHours as number) % 6 !== 0 ||
+      !Number.isInteger(v.evidenceMaxAgeHours) || (v.evidenceMaxAgeHours as number) < (v.cadenceHours as number) ||
+      (v.evidenceMaxAgeHours as number) > Math.min(168, (v.cadenceHours as number) * 2) ||
+      !Array.isArray(v.metrics) || v.metrics.length < 1 || v.metrics.length > 16) {
+    return { ok: false, error: 'invalid-shape' };
+  }
+  const ids = new Set<string>();
+  const metrics = [] as MaturationEvaluationContract['metrics'];
+  for (const rawMetric of v.metrics) {
+    if (!rawMetric || typeof rawMetric !== 'object' || Array.isArray(rawMetric)) return { ok: false, error: 'invalid-shape' };
+    const m = rawMetric as Record<string, unknown>;
+    if (typeof m.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(m.id) || ids.has(m.id) ||
+        !['blocker-summary', 'blocker-trend'].includes(String(m.source)) || typeof m.sourceRef !== 'string' ||
+        !['at-least', 'at-most'].includes(String(m.direction)) || typeof m.threshold !== 'number' || !Number.isFinite(m.threshold) ||
+        !Number.isInteger(m.minSamples) || (m.minSamples as number) < 1 || (m.minSamples as number) > 100_000) {
+      return { ok: false, error: 'invalid-shape' };
+    }
+    const source = m.source as MaturationMetricSource;
+    if (!MATURATION_SOURCE_REFS[source].has(m.sourceRef)) return { ok: false, error: 'unknown-source-ref' };
+    ids.add(m.id);
+    metrics.push({ id: m.id, source, sourceRef: m.sourceRef, direction: m.direction as 'at-least' | 'at-most', threshold: m.threshold, minSamples: m.minSamples as number });
+  }
+  return { ok: true, contract: { cadenceHours: v.cadenceHours as number, evidenceMaxAgeHours: v.evidenceMaxAgeHours as number, metrics } };
+}
+
+function maturationContractFrom(fm: Record<string, string>): MaturationEvaluationContract | undefined {
+  const parsed = parseMaturationContract(fm['rollout-metrics-json']);
+  return parsed?.ok ? parsed.contract : undefined;
 }
 
 interface TraceInfo { prNumber?: number; createdAtMs?: number; }
@@ -92,6 +143,7 @@ export function scanSpecArtifacts(repoRoot: string, now: () => number = () => Da
       evidenceSource: fm['rollout-evidence-ref']
         ? { type: (fm['rollout-evidence-type'] as 'log-filter' | 'endpoint') || 'log-filter', ref: fm['rollout-evidence-ref'], filter: fm['rollout-evidence-filter'] || undefined }
         : undefined,
+      maturationEvaluation: maturationContractFrom(fm),
       traceExists,
       prNumber: trace?.prNumber,
       merged,
@@ -218,6 +270,7 @@ export function scanSpecArtifactsCanonical(opts: CanonicalScanOpts): CanonicalSc
       evidenceSource: fm['rollout-evidence-ref']
         ? { type: (fm['rollout-evidence-type'] as 'log-filter' | 'endpoint') || 'log-filter', ref: fm['rollout-evidence-ref'], filter: fm['rollout-evidence-filter'] || undefined }
         : undefined,
+      maturationEvaluation: maturationContractFrom(fm),
       traceExists,
       prNumber: trace?.prNumber,
       merged,

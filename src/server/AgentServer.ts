@@ -1670,6 +1670,8 @@ export class AgentServer {
           options.commitmentTracker,
           ledger,
           options.meshSelfId ?? options.config.projectName,
+          undefined,
+          options.initiativeTracker,
         );
         options.guardRegistry?.register('monitoring.blockerLifecycleLedger.enabled', () =>
           this.blockerLifecycleService?.guardStatus() as { enabled: boolean });

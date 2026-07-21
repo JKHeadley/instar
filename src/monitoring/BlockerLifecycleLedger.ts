@@ -30,6 +30,22 @@ export interface BlockerLedgerCounters {
   reconciled: number;
 }
 
+export type MaturationMetricSource = 'blocker-summary' | 'blocker-trend';
+export type MaturationEvaluationStatus = 'ready' | 'hold' | 'stale-evidence' | 'insufficient-evidence' | 'missing-contract' | 'missed-cadence';
+
+export interface MaturationMetricObservation {
+  origin: string; featureId: string; metricId: string; source: MaturationMetricSource;
+  sourceRef: string; observedAtMs: number; value: number; samples: number;
+  descriptorVersion?: number; benchmarkRef?: string;
+}
+
+export interface MaturationEvaluationRecord {
+  origin: string; featureId: string; rung: string; dueSlotMs: number; evaluatedAtMs: number;
+  status: MaturationEvaluationStatus; passingMetrics: number; totalMetrics: number;
+  minNormalizedMargin: number | null; contractHash: string; newestEvidenceAtMs: number | null;
+  additionalMissedSlots?: number;
+}
+
 export class BlockerLifecycleLedger {
   private db: BetterSqliteDatabase | null = null;
   private unregisterSqlite: (() => void) | null = null;
@@ -60,6 +76,26 @@ export class BlockerLifecycleLedger {
         );
         CREATE INDEX IF NOT EXISTS idx_blocker_lifecycle_window
           ON blocker_lifecycle_metrics(factor, observed_at_ms);
+        CREATE TABLE IF NOT EXISTS maturation_metric_observations (
+          origin TEXT NOT NULL, feature_id TEXT NOT NULL, metric_id TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('blocker-summary','blocker-trend')),
+          source_ref TEXT NOT NULL, observed_at_ms INTEGER NOT NULL, value REAL NOT NULL,
+          samples INTEGER NOT NULL, descriptor_version INTEGER NOT NULL DEFAULT 1,
+          benchmark_ref TEXT, schema_version INTEGER NOT NULL DEFAULT 1,
+          UNIQUE(origin,feature_id,metric_id,source,source_ref,observed_at_ms)
+        );
+        CREATE INDEX IF NOT EXISTS idx_maturation_observation_latest ON maturation_metric_observations
+          (origin,feature_id,metric_id,source,source_ref,observed_at_ms DESC);
+        CREATE TABLE IF NOT EXISTS maturation_evaluations (
+          origin TEXT NOT NULL, feature_id TEXT NOT NULL, rung TEXT NOT NULL,
+          due_slot_ms INTEGER NOT NULL, evaluated_at_ms INTEGER NOT NULL, status TEXT NOT NULL,
+          passing_metrics INTEGER NOT NULL, total_metrics INTEGER NOT NULL,
+          min_normalized_margin REAL, contract_hash TEXT NOT NULL, newest_evidence_at_ms INTEGER,
+          additional_missed_slots INTEGER NOT NULL DEFAULT 0, schema_version INTEGER NOT NULL DEFAULT 1,
+          UNIQUE(origin,feature_id,due_slot_ms)
+        );
+        CREATE INDEX IF NOT EXISTS idx_maturation_evaluation_trend ON maturation_evaluations
+          (origin,feature_id,due_slot_ms DESC);
       `);
     } catch { // @silent-fallback-ok — availability is exposed as 503/guard degradation
       this.db = null;
@@ -106,6 +142,60 @@ export class BlockerLifecycleLedger {
     } catch { /* @silent-fallback-ok — empty read pairs with degraded guard counters */ return []; }
   }
 
+  recordMaturationObservation(record: MaturationMetricObservation): boolean {
+    if (!this.db || !Number.isFinite(record.value) || !Number.isFinite(record.observedAtMs) ||
+        !Number.isInteger(record.samples) || record.samples < 0 || record.samples > 100_000 ||
+        !/^[a-z0-9][a-z0-9-]{0,62}$/.test(record.featureId) || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(record.metricId) ||
+        record.sourceRef.length > 128 || (record.benchmarkRef?.length ?? 0) > 128) return false;
+    const now = this.opts.now?.() ?? Date.now();
+    if (record.observedAtMs < now - 90 * 86_400_000 || record.observedAtMs > now + 300_000) return false;
+    try {
+      this.db.prepare(`INSERT OR IGNORE INTO maturation_metric_observations
+        (origin,feature_id,metric_id,source,source_ref,observed_at_ms,value,samples,descriptor_version,benchmark_ref)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(record.origin, record.featureId, record.metricId, record.source,
+          record.sourceRef, Math.round(record.observedAtMs), record.value, record.samples,
+          record.descriptorVersion ?? 1, record.benchmarkRef ?? null);
+      return true;
+    } catch { return false; }
+  }
+
+  maturationObservations(origin: string, sinceMs: number): MaturationMetricObservation[] {
+    if (!this.db) return [];
+    try {
+      return this.db.prepare(`SELECT origin,feature_id AS featureId,metric_id AS metricId,source,
+        source_ref AS sourceRef,observed_at_ms AS observedAtMs,value,samples,
+        descriptor_version AS descriptorVersion,benchmark_ref AS benchmarkRef
+        FROM maturation_metric_observations WHERE origin=? AND observed_at_ms>=?
+        ORDER BY observed_at_ms DESC LIMIT 8192`).all(origin, Math.round(sinceMs)) as MaturationMetricObservation[];
+    } catch { return []; }
+  }
+
+  recordMaturationEvaluation(record: MaturationEvaluationRecord): boolean {
+    if (!this.db) return false;
+    try {
+      this.db.prepare(`INSERT OR IGNORE INTO maturation_evaluations
+        (origin,feature_id,rung,due_slot_ms,evaluated_at_ms,status,passing_metrics,total_metrics,
+         min_normalized_margin,contract_hash,newest_evidence_at_ms,additional_missed_slots)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(record.origin, record.featureId, record.rung,
+          Math.round(record.dueSlotMs), Math.round(record.evaluatedAtMs), record.status,
+          record.passingMetrics, record.totalMetrics, record.minNormalizedMargin, record.contractHash,
+          record.newestEvidenceAtMs, record.additionalMissedSlots ?? 0);
+      return true;
+    } catch { return false; }
+  }
+
+  maturationEvaluations(origin: string, sinceMs: number): MaturationEvaluationRecord[] {
+    if (!this.db) return [];
+    try {
+      return this.db.prepare(`SELECT origin,feature_id AS featureId,rung,due_slot_ms AS dueSlotMs,
+        evaluated_at_ms AS evaluatedAtMs,status,passing_metrics AS passingMetrics,total_metrics AS totalMetrics,
+        min_normalized_margin AS minNormalizedMargin,contract_hash AS contractHash,
+        newest_evidence_at_ms AS newestEvidenceAtMs,additional_missed_slots AS additionalMissedSlots
+        FROM maturation_evaluations WHERE origin=? AND due_slot_ms>=?
+        ORDER BY feature_id,due_slot_ms`).all(origin, Math.round(sinceMs)) as MaturationEvaluationRecord[];
+    } catch { return []; }
+  }
+
   prune(): number {
     if (!this.db) return 0;
     try {
@@ -116,7 +206,12 @@ export class BlockerLifecycleLedger {
       const excess = Math.max(0, count - 250_000);
       const cap = excess > 0 ? this.db.prepare(`DELETE FROM blocker_lifecycle_metrics WHERE rowid IN
         (SELECT rowid FROM blocker_lifecycle_metrics ORDER BY observed_at_ms LIMIT ?)`).run(Math.min(1000, excess)).changes : 0;
-      return old + cap;
+      const maturationCutoff = (this.opts.now?.() ?? Date.now()) - 90 * 86_400_000;
+      const observations = this.db.prepare(`DELETE FROM maturation_metric_observations WHERE rowid IN
+        (SELECT rowid FROM maturation_metric_observations WHERE observed_at_ms<? LIMIT 1000)`).run(maturationCutoff).changes;
+      const evaluations = this.db.prepare(`DELETE FROM maturation_evaluations WHERE rowid IN
+        (SELECT rowid FROM maturation_evaluations WHERE due_slot_ms<? LIMIT 1000)`).run(maturationCutoff).changes;
+      return old + cap + observations + evaluations;
     } catch { /* @silent-fallback-ok — pruning retries on the next bounded pass */ return 0; }
   }
 

@@ -1,14 +1,19 @@
 import type { CommitmentTracker, BlockerEpisode } from './CommitmentTracker.js';
-import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMetricRecord } from './BlockerLifecycleLedger.js';
+import crypto from 'node:crypto';
+import type { Initiative, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
+import type { InitiativeTracker } from '../core/InitiativeTracker.js';
+import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMetricRecord, type MaturationEvaluationRecord, type MaturationEvaluationStatus } from './BlockerLifecycleLedger.js';
 
 type FailureReason = 'insufficient-days' | 'insufficient-samples' | 'zero-denominator';
 
 export class BlockerLifecycleService {
   private cursor = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private maturationTimer: ReturnType<typeof setInterval> | null = null;
   private failures = 0;
   private breakerUntil = 0;
   private closed = false;
+  private maturationInitiatives: Initiative[] = [];
   private readonly onRequest = (event: Record<string, unknown>): void => {
     this.ledger.enqueue({
       origin: this.origin,
@@ -31,10 +36,17 @@ export class BlockerLifecycleService {
     readonly ledger: BlockerLifecycleLedger,
     private readonly origin: string,
     private readonly now: () => number = () => Date.now(),
+    initiativeTracker?: Pick<InitiativeTracker, 'list'>,
   ) {
     tracker.on('blocker-request-persisted', this.onRequest);
     tracker.on('blocker-episode-closed', this.onClose);
     this.schedule(5_000);
+    if (initiativeTracker) {
+      const evaluate = () => { try { this.evaluateMaturation(initiativeTracker.list()); } catch { /* measure-only */ } };
+      setTimeout(evaluate, 10_000).unref?.();
+      this.maturationTimer = setInterval(evaluate, 6 * 60 * 60 * 1000);
+      this.maturationTimer.unref?.();
+    }
   }
 
   available(): boolean { return this.ledger.available(); }
@@ -44,6 +56,7 @@ export class BlockerLifecycleService {
     return {
       machineId: this.origin,
       factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorSummary(f, sinceMs)),
+      maturation: this.maturationSummary(sinceMs),
       counters: { ...this.ledger.counters(), ...this.derivedCounters(sinceMs), breakerOpen: this.now() < this.breakerUntil },
     };
   }
@@ -53,7 +66,112 @@ export class BlockerLifecycleService {
     return {
       machineId: this.origin,
       factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorTrend(f, sinceMs)),
+      maturation: this.maturationTrend(sinceMs),
     };
+  }
+
+  /** D7 recurring scorer. Called only by the existing rollout reconciler cadence. */
+  evaluateMaturation(initiatives: Initiative[]): { eligible: number; inserted: number } {
+    const now = this.now();
+    const eligible = initiatives.filter(i => i.rollout && i.rollout.stage !== 'default-on')
+      .sort((a, b) => a.id.localeCompare(b.id)).slice(0, 512);
+    this.maturationInitiatives = eligible.map(i => ({ ...i, rollout: i.rollout ? { ...i.rollout } : undefined }));
+    let inserted = 0;
+    for (const initiative of eligible) {
+      const contract = initiative.rollout?.maturationEvaluation;
+      const cadenceHours = contract?.cadenceHours ?? 6;
+      const cadenceMs = cadenceHours * 3_600_000;
+      const dueSlotMs = Math.floor(now / cadenceMs) * cadenceMs;
+      const previous = this.ledger.maturationEvaluations(this.origin, now - 90 * 86_400_000)
+        .filter(r => r.featureId === initiative.id).sort((a, b) => b.dueSlotMs - a.dueSlotMs)[0];
+      if (previous && previous.dueSlotMs < dueSlotMs - cadenceMs) {
+        const missed = Math.floor((dueSlotMs - previous.dueSlotMs) / cadenceMs) - 1;
+        const explicit = Math.min(4, missed);
+        for (let n = explicit; n >= 1; n--) {
+          const slot = dueSlotMs - n * cadenceMs;
+          if (this.ledger.recordMaturationEvaluation({ origin: this.origin, featureId: initiative.id,
+            rung: initiative.rollout!.stage, dueSlotMs: slot, evaluatedAtMs: now, status: 'missed-cadence',
+            passingMetrics: 0, totalMetrics: contract?.metrics.length ?? 0, minNormalizedMargin: null,
+            contractHash: this.contractHash(contract), newestEvidenceAtMs: null,
+            additionalMissedSlots: n === explicit ? Math.max(0, missed - explicit) : 0 })) inserted++;
+        }
+      }
+      if (!contract) {
+        if (this.ledger.recordMaturationEvaluation({ origin: this.origin, featureId: initiative.id,
+          rung: initiative.rollout!.stage, dueSlotMs, evaluatedAtMs: now, status: 'missing-contract',
+          passingMetrics: 0, totalMetrics: 0, minNormalizedMargin: null, contractHash: 'missing', newestEvidenceAtMs: null })) inserted++;
+        continue;
+      }
+      this.captureBlockerObservations(initiative.id, contract, now);
+      const observations = this.ledger.maturationObservations(this.origin, now - contract.evidenceMaxAgeHours * 3_600_000);
+      const latest = new Map<string, (typeof observations)[number]>();
+      for (const row of observations) if (row.featureId === initiative.id && !latest.has(row.metricId)) latest.set(row.metricId, row);
+      let status: MaturationEvaluationStatus = 'ready';
+      let passing = 0; let newest: number | null = null; const margins: number[] = [];
+      for (const metric of contract.metrics) {
+        const row = latest.get(metric.id);
+        if (!row || row.samples < metric.minSamples) { status = 'insufficient-evidence'; continue; }
+        newest = Math.max(newest ?? 0, row.observedAtMs);
+        if (now - row.observedAtMs > contract.evidenceMaxAgeHours * 3_600_000) { if (status === 'ready') status = 'stale-evidence'; continue; }
+        const margin = metric.direction === 'at-least'
+          ? (row.value - metric.threshold) / Math.max(Math.abs(metric.threshold), 1)
+          : (metric.threshold - row.value) / Math.max(Math.abs(metric.threshold), 1);
+        margins.push(Math.max(-1, Math.min(1, margin)));
+        if (margin >= 0) passing++; else if (status === 'ready') status = 'hold';
+      }
+      if (status === 'ready' && passing < contract.metrics.length) status = 'insufficient-evidence';
+      if (this.ledger.recordMaturationEvaluation({ origin: this.origin, featureId: initiative.id,
+        rung: initiative.rollout!.stage, dueSlotMs, evaluatedAtMs: now, status, passingMetrics: passing,
+        totalMetrics: contract.metrics.length, minNormalizedMargin: margins.length ? Math.min(...margins) : null,
+        contractHash: this.contractHash(contract), newestEvidenceAtMs: newest })) inserted++;
+    }
+    return { eligible: eligible.length, inserted };
+  }
+
+  private contractHash(contract: MaturationEvaluationContract | undefined): string {
+    if (!contract) return 'missing';
+    return crypto.createHash('sha256').update(JSON.stringify(contract)).digest('hex');
+  }
+
+  private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number): void {
+    const summaries = new Map((['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorSummary(f, now - 168 * 3_600_000)]));
+    const trends = new Map((['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorTrend(f, now - 90 * 86_400_000)]));
+    for (const metric of contract.metrics) {
+      const [factor, field] = metric.sourceRef.split('.') as [BlockerFactor, string];
+      const source = metric.source === 'blocker-summary' ? summaries.get(factor) : trends.get(factor);
+      const value = source?.[field === 'p95Ms' ? 'p95Ms' : field] as number | null | undefined;
+      const samples = metric.source === 'blocker-summary' ? Number(source?.completed ?? 0)
+        : Number((source?.secondHalf as { samples?: number } | undefined)?.samples ?? 0);
+      if (typeof value === 'number' && Number.isFinite(value)) this.ledger.recordMaturationObservation({
+        origin: this.origin, featureId, metricId: metric.id, source: metric.source,
+        sourceRef: metric.sourceRef, observedAtMs: now, value, samples,
+      });
+    }
+  }
+
+  private maturationSummary(sinceMs: number): Record<string, unknown> {
+    const rows = this.ledger.maturationEvaluations(this.origin, sinceMs);
+    const latest = new Map<string, MaturationEvaluationRecord>();
+    for (const row of rows) latest.set(row.featureId, row);
+    const byStatus: Record<MaturationEvaluationStatus, number> = { ready: 0, hold: 0, 'stale-evidence': 0,
+      'insufficient-evidence': 0, 'missing-contract': 0, 'missed-cadence': 0 };
+    for (const row of rows) byStatus[row.status]++;
+    const features = [...latest.values()].sort((a, b) => a.featureId.localeCompare(b.featureId)).map(r => ({
+      featureId: r.featureId, rung: r.rung, status: r.status, evaluatedAt: new Date(r.evaluatedAtMs).toISOString(),
+      passingMetrics: r.passingMetrics, totalMetrics: r.totalMetrics,
+      minNormalizedMargin: r.minNormalizedMargin, newestEvidenceAt: r.newestEvidenceAtMs ? new Date(r.newestEvidenceAtMs).toISOString() : null,
+    }));
+    return { eligible: this.maturationInitiatives.length, evaluated: latest.size,
+      missedDue: Math.max(0, this.maturationInitiatives.length - latest.size), byStatus, features };
+  }
+
+  private maturationTrend(sinceMs: number): Record<string, unknown> {
+    const rows = this.ledger.maturationEvaluations(this.origin, sinceMs);
+    const grouped = new Map<string, MaturationEvaluationRecord[]>();
+    for (const row of rows) { const values = grouped.get(row.featureId) ?? []; values.push(row); grouped.set(row.featureId, values); }
+    return { features: [...grouped.entries()].slice(0, 512).map(([featureId, values]) => ({ featureId,
+      evaluations: values.slice(-90).map(v => ({ day: new Date(v.dueSlotMs).toISOString().slice(0, 10), rung: v.rung,
+        status: v.status, minNormalizedMargin: v.minNormalizedMargin, contractHash: v.contractHash })) })) };
   }
 
   guardStatus(): Record<string, unknown> {
@@ -72,6 +190,7 @@ export class BlockerLifecycleService {
   close(): void {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
+    if (this.maturationTimer) clearInterval(this.maturationTimer);
     this.tracker.off('blocker-request-persisted', this.onRequest);
     this.tracker.off('blocker-episode-closed', this.onClose);
     this.ledger.close();
