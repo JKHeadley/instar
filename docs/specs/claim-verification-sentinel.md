@@ -94,3 +94,29 @@ Not a monitor/watcher that raises operator notices on first detection, so the es
 - Boot-injection hook change ships to existing agents via the **always-overwrite** `migrateHooks()` (edit `getSessionStartHook()` + `getCompactionRecovery()` string builders — no `migrateSettings` needed since the settings.json registration is unchanged). **Reconcile** the stale standalone `src/templates/hooks/session-start.sh` (which lacks the session-context fetch blocks) so a NEW agent gets the same block as an updated one.
 - The dev-gated `enabled` keys are OMITTED from `ConfigDefaults.ts` (→ `resolveDevAgentGate` decides); add an idempotent existence-checked stripper only if a stale default-shaped `enabled:false` could exist. Any non-gated tunable (byte caps, verifier team size, thresholds) gets a `migrateConfig` add-missing backfill.
 - CLAUDE.md awareness (`generateClaudeMd()` + a content-sniff `migrateClaudeMd`) + a `CapabilityIndex` entry, per the Agent Awareness Standard.
+
+---
+
+## Operator directives (2026-07-20) — three first-class dimensions
+
+The operator expanded the feature with three coupled directives. All three are first-class, not follow-ons — they are what turns this from a checker into a self-improving, self-cheapening system.
+
+### A. Evolve/mature with usage + feedback (self-improvement loop)
+The sentinel is NOT a static ruleset. Every verdict it produces is enrolled as a graded decision through Instar's existing LLM-Decision Quality machinery (annotate → deterministic grade-pass → per-model essence). Claims whose ground truth later becomes known feed back as settled grades. The criticality classifier's tier boundaries and each verifier's prompt are calibrated FROM these accumulated grades over time — not hand-tuned once. Foundation exists: the decision-quality meter (/decision-quality), correction-learning, and the benchmark-divergence detector are live; this rides them (no new engine).
+- Decision-point: the calibration is ADVISORY input to the (still deterministic-floored) classifier — it never removes the round-up-on-uncertainty floor. A drifting calibration can only make the sentinel more conservative, never license a skipped check.
+
+### B. Auto-detected special-case promotion (the cost/scale unlock — the sharp idea)
+The general checker (expensive, large-model oversight) is the DEFAULT path. A SPECIAL-CASE MINER observes the stream of checked claims and detects claim SHAPES that (i) recur frequently AND (ii) are verifiable by a stable cheap oracle (the time/clock class → the live clock is the prototype). When a shape clears a promotion bar it is GRADUATED into a cheap dedicated checker — a deterministic rule or a small-model check — that thereafter handles that claim class inline, exactly the way the hand-built time-vs-clock check works today, only DISCOVERED automatically. The general model then only spends effort on novel/uncertain claims.
+- **Promotion gate (the honest guard):** a shape graduates ONLY after (a) it clears a recurrence + confidence bar AND (b) the candidate cheap checker is VALIDATED against known-correct answers over a holdout — it must agree with the expensive path / ground truth above a threshold before it is trusted. A promoted checker whose live agreement rate later FALLS is auto-DEMOTED back to the general path. This structurally prevents baking in a fast-wrong shortcut.
+- **Fleet-general:** the miner + the promoted cheap-checker library ship to EVERY Instar agent, so each grows its own special-case library from what it sees in the wild — not a central hand-authored set. The time-check becomes the SEED prototype, not the only case.
+- Decision-point: promotion/demotion is a judgment-candidate with a deterministic floor (recurrence count + holdout-agreement thresholds are the invariant gate; the miner proposes, the thresholds dispose).
+
+### C. Benchmark-corpus integration (the data flywheel — operator-named #1 benchmark scenario)
+Every claim checked, paired with the answer eventually known to be correct (regardless of whether the first guess was right), is emitted as a LABELED benchmark data point: { claim-shape, claim-type, verifier door+model, verdict, eventual-ground-truth, cost, latency }. This is a real benchmark corpus generated as a BYPRODUCT of the feature doing its job. It feeds the existing benchmark work (the doorway/model registry + benchmark-divergence detector) to answer "which door+model is best per claim-type on cost/speed/accuracy" — the operator-named #1 benchmark-tuning scenario. The corpus is the SHARED substrate for both B (special-case validation holdout) and A (grade feedback).
+- **Privacy:** the emitted record is scrubbed through the existing credential/PII scrub chokepoint — it stores claim SHAPE + verdict metadata + ground-truth + cost/latency (the tuning signal), never raw sensitive claim content.
+
+## Revised phasing (folding A / B / C)
+- **v1 (core, dark):** the 3-stage checker + the cheap deterministic lane + the boot-loaded operating-model source + EMIT the labeled corpus (C is cheap — logging with ground-truth backfill). The flywheel starts collecting data from day one, before B/A act on it.
+- **v2:** the special-case MINER + promotion/demotion gate (B) + the subagent due-diligence lane.
+- **v3:** closed-loop calibration (A) driving classifier/verifier tuning from the accumulated corpus + benchmark integration surfacing the per-claim-type door+model winners.
+- Each phase ships dark → dry-run → live on the graduated-rollout track. The value compounds: A needs C's labels; B needs C's holdout; C is valuable on its own from v1.
