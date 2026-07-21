@@ -2477,6 +2477,16 @@ export interface MultiMachineConfig {
   failoverTimeoutMinutes: number;
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
+  /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
+  mutualSsh?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    requiredForEmployeeRole?: boolean;
+    freshnessMs?: number;
+    cadenceMs?: number;
+    probeDeadlineMs?: number;
+    concurrency?: number;
+  };
   /**
    * Coordination mode (Gap 1 — Active/Active support).
    * - 'primary-standby': One awake, others standby with failover (default)

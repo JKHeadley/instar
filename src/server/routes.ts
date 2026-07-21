@@ -1284,6 +1284,8 @@ export interface RouteContext {
   /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
    *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
   machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
+  /** Mutual SSH-subsystem pool health (scrubbed; no key bodies or raw addresses). */
+  mutualSshHealth?: (() => unknown) | null;
   /** Durable Inbound Message Queue engine getter — late-bound (the engine is
    *  constructed in the mesh block after the server). Null/absent or a null
    *  return = the queue is dark/gated; GET /pool/queue answers 503. */
@@ -15589,6 +15591,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/pool', (_req, res) => {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
       router: sync
@@ -15602,7 +15605,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         : null,
       machines,
+      sshEnrollment,
     });
+  });
+
+  router.get('/machines/ssh-health', (_req, res) => {
+    if (!ctx.mutualSshHealth) {
+      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent' });
+      return;
+    }
+    res.json(ctx.mutualSshHealth());
   });
 
   // GET /pool/reconciler — Fix #3 observability (Observable Intelligence). The WS1.3

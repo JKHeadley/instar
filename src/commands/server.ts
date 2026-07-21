@@ -4658,9 +4658,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
         coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
+          if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, entry.machine);
         });
-        journalSyncApplier?.setReplicatedRecordCommitObserver((_senderMachineId, kind, entries) => {
+        journalSyncApplier?.setReplicatedRecordCommitObserver((senderMachineId, kind, entries) => {
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
+          if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, senderMachineId);
         });
 
         // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
@@ -19411,6 +19413,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // are live too. Single-machine uses the in-memory store; the cross-machine
     // git-backed store swaps in for the Track-H proof (the registry is store-agnostic).
     let meshRpcDispatcher: import('../core/MeshRpc.js').MeshRpcDispatcher | undefined;
+    let mutualSshRuntime: import('../core/MutualSshRuntime.js').MutualSshRuntime | null = null;
     let sessionOwnershipRegistry: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | undefined;
     /**
      * Ownership Follows Live Work — Part B (claim-on-spawn). Assigned inside the
@@ -20692,6 +20695,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           },
           handlers: {
+            'ssh-bootstrap-advert': (cmd, sender) => {
+              if (!mutualSshRuntime) return { ok: false, reason: 'mutual-ssh-disabled' };
+              const c = cmd as Extract<import('../core/MeshRpc.js').MeshCommand, { type: 'ssh-bootstrap-advert' }>;
+              return mutualSshRuntime.handleAdvert(c.advert, sender);
+            },
+            'ssh-proof-publish': (cmd, sender) => {
+              if (!mutualSshRuntime) return { ok: false, reason: 'mutual-ssh-disabled' };
+              const c = cmd as Extract<import('../core/MeshRpc.js').MeshCommand, { type: 'ssh-proof-publish' }>;
+              return mutualSshRuntime.handleProof(c.proof, sender);
+            },
             'capacity-report': () => machinePoolRegistry?.getCapacities() ?? [],
             'session-status': () => {
               const base = machinePoolRegistry?.getCapacity(meshSelfId) ?? { machineId: meshSelfId };
@@ -21234,6 +21247,87 @@ export async function startServer(options: StartOptions): Promise<void> {
               nickname: m.entry.nickname,
               lastKnownUrl: m.entry.lastKnownUrl ?? null,
             }));
+          // Mutual SSH phase 1: the signed HTTP mesh is the bootstrap carrier;
+          // the resulting proof itself traverses the restricted SSH subsystem.
+          // Hard-dark on fleet, dry-run first on the development agent.
+          if (resolveDevAgentGate(config.multiMachine?.mutualSsh?.enabled, config)) {
+            try {
+              const sshMod = await import('../core/MutualSshRuntime.js');
+              const portMod = await import('../core/PortRegistry.js');
+              const cryptoMod = await import('node:crypto');
+              const selfPem = meshIdMgr.getSigningPublicKeyPem(meshSelfId) ?? '';
+              const machineFingerprint = (pem: string) => cryptoMod.createHash('sha256').update(pem).digest('hex');
+              const privateHosts = (getSelfMeshEndpoints?.() ?? []).flatMap((endpoint) => {
+                try {
+                  const host = new URL(endpoint.url).hostname;
+                  return host ? [host] : [];
+                } catch {
+                  // @silent-fallback-ok — malformed advertised URLs are omitted;
+                  // readiness names the peer and reports the missing endpoint.
+                  return [];
+                }
+              });
+              const bindHost = privateHosts.find(host => host.startsWith('100.'))
+                ?? privateHosts.find(host => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host))
+                ?? '127.0.0.1';
+              const bindPort = portMod.allocatePort(`${config.projectName}-mutual-ssh`, 42000, 49000);
+              const peers = () => meshIdMgr.getActiveMachines()
+                .filter(row => row.machineId !== meshSelfId)
+                .map(row => ({
+                  machineId: row.machineId,
+                  // Millisecond precision is part of the revoke→re-pair replay fence;
+                  // second truncation could accidentally reuse an epoch during a fast re-pair.
+                  pairingEpoch: Math.max(1, Date.parse(row.entry.pairedAt)),
+                  machineFingerprint: machineFingerprint(meshIdMgr.getSigningPublicKeyPem(row.machineId) ?? ''),
+                  endpoints: (row.entry.endpoints ?? []).map(endpoint => endpoint.url),
+                }));
+              mutualSshRuntime = new sshMod.MutualSshRuntime({
+                stateDir: config.stateDir, agentId: config.projectName, selfMachineId: meshSelfId,
+                selfMachineFingerprint: machineFingerprint(selfPem),
+                observerBootId: `${meshSelfId}:${process.pid}:${Date.now()}`,
+                bindHost, bindPort, dryRun: config.multiMachine?.mutualSsh?.dryRun !== false,
+                requiredForReadiness: config.multiMachine?.mutualSsh?.requiredForEmployeeRole === true,
+                freshnessMs: config.multiMachine?.mutualSsh?.freshnessMs,
+                cadenceMs: config.multiMachine?.mutualSsh?.cadenceMs,
+                concurrency: config.multiMachine?.mutualSsh?.concurrency,
+                listPeers: peers,
+                send: async (machineId, command) => {
+                  const url = peerUrl(machineId);
+                  if (!url) throw new Error('mutual-ssh-control-plane-unavailable');
+                  const result = await meshClient.send({ machineId, url }, command as import('../core/MeshRpc.js').MeshCommand, 0, { timeoutMs: 15_000 });
+                  if (!result.ok) throw new Error(result.reason ?? `mutual-ssh-mesh-${result.status}`);
+                  return result.result;
+                },
+                sign: payload => idMod.sign(payload, localSigningKeyPem),
+                verify: (machineId, payload, signature) => {
+                  const pem = meshIdMgr.getSigningPublicKeyPem(machineId);
+                  return pem ? idMod.verify(payload, signature, pem) : false;
+                },
+                emitJournalProof: proof => {
+                  if (!proof.machineSignature) return;
+                  const { monotonicDeadlineMs: _, ...durable } = proof;
+                  coherenceJournal?.emitSshDirectionProof(durable as import('../core/CoherenceJournal.js').SshDirectionProofData);
+                },
+                audit: event => {
+                  const file = path.join(config.stateDir, 'logs', 'mutual-ssh.jsonl');
+                  fs.mkdirSync(path.dirname(file), { recursive: true });
+                  /* state-registry: audit-mutual-ssh */ fs.appendFileSync(file, `${JSON.stringify(event)}\n`);
+                },
+                notifySecurity: event => notify('IMMEDIATE', 'mutual-ssh-host-key-change', JSON.stringify(event)),
+              });
+              await mutualSshRuntime.start();
+              (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime = mutualSshRuntime;
+              guardRegistry.register('multiMachine.mutualSsh.enabled', () => ({
+                enabled: true, dryRun: config.multiMachine?.mutualSsh?.dryRun !== false,
+                status: mutualSshRuntime?.status() ?? null,
+              }));
+            } catch (err) {
+              // @silent-fallback-ok — the feature fails closed and surfaces its
+              // stable bootstrap reason while the rest of the server remains live.
+              mutualSshRuntime = null;
+              console.warn(`[mutual-ssh] initialization blocked: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
           // Pool Dashboard Streaming requesting side (§2.2): build the connector
           // the WebSocketManager uses to open an upstream /pool-stream to a peer.
           // connect() is synchronous (PeerStreamProxy contract) but the mint +
@@ -24342,6 +24436,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       wakeSocketServer?.stop();
       pipeSpawner?.killAll();
       try { stopHeartbeat?.(); } catch { /* non-critical during shutdown */ }
+      try { await (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime?.rollback(); } catch { /* @silent-fallback-ok: shutdown continues; endpoint sockets also die with the process */ }
+      delete (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
       // pid-guarded: only remove OUR OWN registration. An unguarded
       // unregister-by-path here deletes the successor generation's fresh
       // entry during back-to-back update restarts (registry lost-update

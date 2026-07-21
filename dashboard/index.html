@@ -3779,6 +3779,11 @@
            headline + tiles + drill-down here. Rebuilt from the old insider "guards" line.
            Nickname editing (issue #1429) lives one drill down, commits on Enter/blur. -->
       <div id="machinesGlance" class="glance-root"></div>
+      <section aria-labelledby="mutualSshTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="mutualSshTitle" style="margin:0 0 8px">Machine-to-machine SSH</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Restricted Instar subsystem connectivity. This does not enable Remote Login or change personal SSH files.</p>
+        <div id="mutualSshStatus" class="glance-empty" aria-live="polite">Loading connectivity…</div>
+      </section>
       <section aria-labelledby="throughputFloorTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 id="throughputFloorTitle" style="margin:0 0 8px">Autonomous throughput observations</h3>
         <p style="margin:0 0 10px;color:var(--text-dim)">Pull-only evidence of project PR movement and manager communication. This view never notifies or changes a run.</p>
@@ -5541,6 +5546,7 @@
         return;
       }
       if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+      await loadMutualSshStatus();
       await loadThroughputFloor();
 
       if (!pool.enabled) {
@@ -5562,6 +5568,30 @@
         onRename: (id, nickname, input, prev) => saveMachineNickname(id, nickname, input, prev),
       });
       glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    async function loadMutualSshStatus() {
+      const root = document.getElementById('mutualSshStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/machines/ssh-health?scope=pool'); }
+      catch { root.textContent = 'Not enabled on this agent.'; return; }
+      if (status.dryRun) { root.textContent = 'Observation only — no peer SSH sessions are accepted.'; return; }
+      const pairs = Array.isArray(status.pairs) ? status.pairs : [];
+      if (pairs.length === 0) { root.textContent = status.listener ? 'Ready; no paired machines to verify.' : 'Waiting for the restricted listener.'; return; }
+      const healthy = pairs.filter(pair => pair && pair.mutual === true).length;
+      const summary = document.createElement('div');
+      summary.textContent = healthy === pairs.length
+        ? 'Mutual proof is current for all ' + String(pairs.length) + ' machine pair' + (pairs.length === 1 ? '.' : 's.')
+        : String(healthy) + ' of ' + String(pairs.length) + ' machine pairs have current proof in both directions.';
+      root.appendChild(summary);
+      for (const pair of pairs) {
+        const row = document.createElement('div');
+        row.style.marginTop = '8px';
+        row.textContent = (pair.mutual ? 'Verified: ' : 'Blocked: ') + (Array.isArray(pair.machines) ? pair.machines.join(' ↔ ') : 'machine pair');
+        root.appendChild(row);
+      }
     }
 
     async function loadThroughputFloor() {

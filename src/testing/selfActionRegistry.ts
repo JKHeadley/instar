@@ -827,6 +827,44 @@ const feedbackGeneratedDefaultsHeal: SelfActionController = {
   },
 };
 
+/**
+ * Mutual SSH repair is a declared eternal health controller: a persistent path
+ * outage must continue to be rechecked, but each repair episode is bounded to
+ * four probes / two minutes and three failed episodes open a fifteen-minute
+ * per-pair breaker. This model covers the post-breaker steady state: sustained
+ * rejection cannot accelerate beyond one constant-cost repair episode per
+ * breaker window. Process reconstruction re-enters through the same runtime
+ * scheduler and capacity/concurrency brakes; it cannot create an unbounded
+ * in-process burst.
+ */
+const mutualSshRepairSweep: SelfActionController = {
+  id: 'mutual-ssh-repair-sweep',
+  actionVerb: 'repair-retry',
+  models: 'src/core/MutualSshHealthController.ts (four-attempt episode + three-episode, fifteen-minute pair breaker)',
+  modelsPath: 'src/core/MutualSshHealthController.ts',
+  delegatedGiveUp: 'the per-pair three-episode breaker and fifteen-minute breaker window',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 24,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'bounded transport-health repair with a hard post-breaker rate floor', rateFloorMs: 15 * 60_000 },
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason: 'A process restart starts one new bounded repair episode; the runtime sweep lock, concurrency four ceiling, four-attempt cap, and two-minute deadline still bound that episode.',
+  },
+  makeUnderPressure(f, sink) {
+    const RATE_FLOOR_MS = 15 * 60_000;
+    let nextAllowedAtMs = 0;
+    return { tick() {
+      sink.considered += 1;
+      if (f.clock.nowMs() < nextAllowedAtMs) return;
+      sink.emit({ verb: 'repair-retry', target: 'unreachable-peer-direction' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+      nextAllowedAtMs = f.clock.nowMs() + RATE_FLOOR_MS;
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -846,4 +884,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   stopGateAuthorityProbe,
   correctionClassReviewOutcomes,
   feedbackGeneratedDefaultsHeal,
+  mutualSshRepairSweep,
 ];

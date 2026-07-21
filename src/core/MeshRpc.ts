@@ -81,6 +81,8 @@ export type MeshCommand =
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
+  | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
   | {
       // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
       // OPERATOR-MANDATE-GATED with its OWN `checkCommandRBAC` case — deliberately
@@ -442,6 +444,8 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'state-snapshot':
     case 'pool-view-fetch':
     case 'secret-share':
+    case 'ssh-bootstrap-advert':
+    case 'ssh-proof-publish':
     case 'a2a-inbox-deliver':
       // Registered-peer class — any caller here has already passed signed,
       // recipient-bound, replay-safe machine authentication. a2a-inbox-deliver
