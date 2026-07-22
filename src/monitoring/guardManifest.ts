@@ -521,6 +521,26 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
     // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
     // it through the developmentAgent dark-feature gate (dark on the fleet, live on
+    // a dev agent). defaultEnabled:false reflects the fleet default. Constructed
+    // ONLY when the gate resolves enabled (a dark fleet agent never constructs,
+    // never registers — never falsely graded `missing`), registering a synchronous
+    // runtime getter (enabled/dryRun + real lastTickAt liveness) — expectRuntime:true.
+    // NOT loadBearing: signal-only, no critical path consumes it, and loadBearing:true
+    // would raise G3 gap alarms on every fleet agent where the guard is deliberately dark.
+    key: 'monitoring.singleMachineFailoverGap.enabled',
+    kind: 'config',
+    configPath: 'monitoring.singleMachineFailoverGap.enabled',
+    dryRunConfigPath: 'monitoring.singleMachineFailoverGap.dryRun',
+    defaultEnabled: false,
+    expectedTickMs: 30_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'SingleMachineFailoverGapDetector',
+    description: 'Single-machine failover-gap detector: raises ONE deduped HIGH attention item when this agent is single-machine (no online mesh peer) WHILE it has active autonomous runs — the "no failover target for active autonomous work" gap. Rides the 30s peerPresenceTick; signal-only, MUTATES NOTHING.',
+  },
+  {
+    // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
+    // it through the developmentAgent dark-feature gate (dark on the fleet, live on
     // a dev agent). defaultEnabled:false reflects the fleet default.
     key: 'monitoring.orphanedWorkSentinel.enabled',
     kind: 'config',
@@ -1042,7 +1062,6 @@ export interface NotAGuardEntry {
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'rawTextRequestDetector', reason: 'Pure stateless predicate (high-precision pattern match) feeding the observe-only ask-for-access signal in checkOutboundMessage; no enabled flag, no runtime getter, takes no protective action — a detector that produces a signal, never a guard with posture.' },
-  { component: 'SingleMachineFailoverGapDetector', reason: 'Increment-1 core only: pure signal-only failover-gap detector that is NOT yet boot-constructed and registers no GuardRegistry runtime getter, so it is not in the live /guards inventory. It moves to GUARD_MANIFEST when increment 2 wires it at boot (construction + guardStatus registration).' },
   { component: 'GuardPostureTripwire', reason: 'The boot-transition detector OVER the guard inventory — meta-layer, not a guard itself; always-on, no enabled flag.' },
   { component: 'GuardRegistry', reason: 'Infrastructure of this feature: the runtime-getter registry the inventory reads; not a guard.' },
   { component: 'GuardPostureProbe', reason: 'Consumer of the inventory (probe family); its cadence rides SystemReviewer, not an own enabled switch.' },

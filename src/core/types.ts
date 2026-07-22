@@ -6146,6 +6146,21 @@ export interface MonitoringConfig {
    * Registered in DEV_GATED_FEATURES; GET /external-hog. Machine-local by design
    * (hardware-bound-resource — a host OS process is bound to one kernel).
    */
+  /**
+   * SingleMachineFailoverGapDetector (increment 2) — a pure SIGNAL-only guard that
+   * surfaces the "no failover target for active autonomous work" gap BEFORE it bites
+   * (the 2026-07-22 Codey overnight loss): single-machine (no online mesh peer) WHILE
+   * active autonomous runs → ONE deduped HIGH attention item. Never blocks, provisions,
+   * or kills. `enabled` is OMITTED so the runtime resolves it through the
+   * developmentAgent dark-feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK
+   * on the fleet. `dryRun: true` is the graduated-rollout first rung — it computes +
+   * counts would-raise but raises NOTHING until a deliberate dryRun:false flip.
+   * Registered in DEV_GATED_FEATURES; GET /pool/failover-gap.
+   */
+  singleMachineFailoverGap?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
   externalHogSentinel?: {
     enabled?: boolean;
     dryRun?: boolean;

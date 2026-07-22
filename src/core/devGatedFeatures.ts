@@ -474,6 +474,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun-first (the component code-defaults dryRun:true): on the dev agent the gate makes the reconcile loop + GET /autonomous/liveness LIVE but it only LOGS "would respawn" until a deliberate dryRun:false flip — zero spawns, zero spend while dark/dryRun. Live, its only action is a bounded (P19 cap), lease-gated, operator-stop-respecting, quota-gated respawn of a run the run-state file already says should be alive — the strictly-safe direction. Never blocks/rewrites a message. Routes 503 when off.',
   },
   {
+    name: 'singleMachineFailoverGap',
+    configPath: 'monitoring.singleMachineFailoverGap.enabled',
+    description: 'Single-machine failover-gap detector (increment 2) — raises ONE deduped HIGH attention item when this agent is single-machine (no online mesh peer) WHILE it has active autonomous runs (the "no failover target for active autonomous work" gap; the 2026-07-22 Codey overnight loss).',
+    justification: 'SIGNAL-ONLY — it never blocks, provisions a peer, or touches a session; its sole output is ONE deduped attention item. Fully deterministic (Tier 0, no LLM call, no spend), no egress beyond the existing machine-pool + autonomous-run-state reads it already has, fails toward silence on any tick error. Ships dryRun:true even on dev (dry-run FIRST: counters record would-raise, NO item raised) until a deliberate dryRun:false flip; single-machine-with-no-active-work is a strict no-op inside tick(). Routes 503 when off.',
+  },
+  {
     name: 'autonomousHeartbeat',
     configPath: 'monitoring.autonomousHeartbeat.enabled',
     description: 'AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop for an autonomous run gone silent-to-user while output is still moving (autonomous-progress-heartbeat spec).',

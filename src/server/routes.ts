@@ -1292,6 +1292,7 @@ export interface RouteContext {
    *  return = the queue is dark/gated; GET /pool/queue answers 503. */
   getInboundQueue?: (() => import('../core/QueueDrainLoop.js').QueueDrainLoop | null) | null;
   getMachineCoherence?: (() => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null) | null;
+  getSingleMachineFailoverGap?: (() => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null) | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -16442,6 +16443,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json(sentinel.status());
+  });
+
+  // GET /pool/failover-gap — the single-machine failover-gap detector's status
+  // snapshot (increment 2). 503 when the guard is dark on this agent (dev-gated:
+  // `enabled` OMITTED → resolveDevAgentGate; never constructed on the fleet).
+  // Read-only observability — the guard is pure signal.
+  router.get('/pool/failover-gap', (_req, res) => {
+    const s = ctx.getSingleMachineFailoverGap?.() ?? null;
+    if (!s) {
+      res.status(503).json({ error: 'single-machine failover-gap guard not enabled on this agent (dev-gated dark; monitoring.singleMachineFailoverGap.enabled)' });
+      return;
+    }
+    res.json(s.status());
   });
 
   // ── Replicated-store conflict + rollback surfaces (multi-machine-replicated-

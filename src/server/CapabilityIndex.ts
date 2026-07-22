@@ -216,6 +216,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'singleMachineFailoverGap',
+    prefixes: ['/pool/failover-gap'],
+    description: 'Single-machine failover-gap detector — status snapshot for the "no failover target for active autonomous work" guard (single-machine WHILE active autonomous runs → ONE deduped HIGH attention item). Dev-gated dark on the fleet (503 when off); signal-only.',
+    build: ({ ctx }) => ({
+      configured: !!(ctx.getSingleMachineFailoverGap?.() ?? null),
+      endpoints: ['GET /pool/failover-gap'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',
