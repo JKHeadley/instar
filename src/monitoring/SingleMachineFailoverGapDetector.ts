@@ -80,45 +80,140 @@ export interface FailoverGapTickResult {
 
 const DEDUP_KEY = 'single-machine-failover-gap';
 
+// ── Config resolution (dev-gated dark; dry-run first) ───────────────────────
+
+/** The resolved, typed config the detector runs with. */
+export interface SingleMachineFailoverGapResolvedConfig {
+  /** Dev-agent gate: live on a development agent, dark on the fleet (unless set). */
+  enabled: boolean;
+  /** Dry-run first even on a dev agent: compute + audit, but do NOT raise. */
+  dryRun: boolean;
+}
+
+/** The raw config block shape (all optional — everything defaults). */
+export interface SingleMachineFailoverGapConfigBlock {
+  enabled?: boolean;
+  dryRun?: boolean;
+}
+
+/**
+ * Resolve `monitoring.singleMachineFailoverGap` against the dev-agent gate.
+ * `resolveEnabled` is the injected `resolveDevAgentGate(explicit, config)` result
+ * (kept as a param so this module stays free of a hard import — the server wiring
+ * passes the real gate). `dryRun` defaults TRUE (the graduated-rollout first rung).
+ */
+export function resolveSingleMachineFailoverGapConfig(
+  block: SingleMachineFailoverGapConfigBlock | undefined,
+  resolveEnabled: (explicit: boolean | undefined) => boolean,
+): SingleMachineFailoverGapResolvedConfig {
+  const b = block ?? {};
+  return {
+    enabled: resolveEnabled(typeof b.enabled === 'boolean' ? b.enabled : undefined),
+    dryRun: typeof b.dryRun === 'boolean' ? b.dryRun : true,
+  };
+}
+
+/** The guard-posture grade for `GET /guards`: dark ▸ dry-run ▸ live. */
+export function guardStatusFor(cfg: SingleMachineFailoverGapResolvedConfig): 'dark' | 'dry-run' | 'live' {
+  return cfg.enabled ? (cfg.dryRun ? 'dry-run' : 'live') : 'dark';
+}
+
+/** The `status()` snapshot (the future `GET /pool/failover-gap` body core). */
+export interface SingleMachineFailoverGapStatus {
+  enabled: boolean;
+  dryRun: boolean;
+  lastTickAt: string | null;
+  /** True when the LAST tick saw this agent single-machine (no online peer). */
+  singleMachine: boolean;
+  /** Active autonomous runs seen on the LAST tick. */
+  activeAutonomousRunCount: number;
+  /** The current gap mode, or null when no gap is open. */
+  openGapMode: FailoverGapMode | null;
+  counters: { ticks: number; raises: number; wouldRaise: number; errors: number };
+}
+
 /**
  * The pure detector. One `tick()` = one evaluation. It raises at most one
  * (deduped) attention item per gap episode; the attention layer's own dedup
  * collapses repeated ticks so a persistent gap never floods.
  */
 export class SingleMachineFailoverGapDetector {
-  constructor(private readonly deps: SingleMachineFailoverGapDetectorDeps) {}
+  private ticks = 0;
+  private raises = 0;
+  private wouldRaise = 0;
+  private errors = 0;
+  private lastTickAtMs = 0;
+  private lastSingleMachine = false;
+  private lastActiveRunCount = 0;
+  private openGapMode: FailoverGapMode | null = null;
 
+  constructor(
+    private readonly deps: SingleMachineFailoverGapDetectorDeps,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /**
+   * One evaluation. Rides an existing shared timer (no timer of its own). Fails
+   * toward silence: any internal error increments the error counter and emits
+   * nothing — the shared tick must never crash. A dark guard is a strict no-op.
+   */
   tick(): FailoverGapTickResult {
     if (!this.deps.enabled()) {
       return { ran: false, gapDetected: false, mode: null, atRiskRunCount: 0, raised: false };
     }
+    this.ticks += 1;
+    this.lastTickAtMs = this.now();
 
-    const membership = this.deps.getMeshMembership();
-    const atRiskRunCount = this.deps.getActiveAutonomousRunCount();
+    try {
+      const membership = this.deps.getMeshMembership();
+      const atRiskRunCount = this.deps.getActiveAutonomousRunCount();
+      this.lastSingleMachine = membership.onlinePeerCount <= 0;
+      this.lastActiveRunCount = atRiskRunCount;
 
-    const singleMachine = membership.onlinePeerCount <= 0;
-    const hasWorkNeedingFailover = atRiskRunCount > 0;
-    const gapDetected = singleMachine && hasWorkNeedingFailover;
+      const hasWorkNeedingFailover = atRiskRunCount > 0;
+      const gapDetected = this.lastSingleMachine && hasWorkNeedingFailover;
 
-    if (!gapDetected) {
-      this.audit('no-gap', {
-        onlinePeerCount: membership.onlinePeerCount,
-        multiMachineEnabled: membership.multiMachineEnabled,
-        atRiskRunCount,
-      });
-      return { ran: true, gapDetected: false, mode: null, atRiskRunCount, raised: false };
+      if (!gapDetected) {
+        this.openGapMode = null;
+        this.audit('no-gap', {
+          onlinePeerCount: membership.onlinePeerCount,
+          multiMachineEnabled: membership.multiMachineEnabled,
+          atRiskRunCount,
+        });
+        return { ran: true, gapDetected: false, mode: null, atRiskRunCount, raised: false };
+      }
+
+      const mode: FailoverGapMode = membership.multiMachineEnabled ? 'peer-offline' : 'not-configured';
+      this.openGapMode = mode;
+
+      if (this.deps.dryRun()) {
+        this.wouldRaise += 1;
+        this.audit('would-raise', { mode, atRiskRunCount });
+        return { ran: true, gapDetected: true, mode, atRiskRunCount, raised: false };
+      }
+
+      this.deps.raiseAttention(buildAttention(mode, atRiskRunCount));
+      this.raises += 1;
+      this.audit('raised', { mode, atRiskRunCount });
+      return { ran: true, gapDetected: true, mode, atRiskRunCount, raised: true };
+    } catch (err) {
+      this.errors += 1;
+      this.audit('tick-error', { error: err instanceof Error ? err.message : String(err) });
+      return { ran: true, gapDetected: false, mode: null, atRiskRunCount: 0, raised: false };
     }
+  }
 
-    const mode: FailoverGapMode = membership.multiMachineEnabled ? 'peer-offline' : 'not-configured';
-
-    if (this.deps.dryRun()) {
-      this.audit('would-raise', { mode, atRiskRunCount });
-      return { ran: true, gapDetected: true, mode, atRiskRunCount, raised: false };
-    }
-
-    this.deps.raiseAttention(buildAttention(mode, atRiskRunCount));
-    this.audit('raised', { mode, atRiskRunCount });
-    return { ran: true, gapDetected: true, mode, atRiskRunCount, raised: true };
+  /** The read-surface snapshot (feeds the future GET route). */
+  status(): SingleMachineFailoverGapStatus {
+    return {
+      enabled: this.deps.enabled(),
+      dryRun: this.deps.dryRun(),
+      lastTickAt: this.lastTickAtMs ? new Date(this.lastTickAtMs).toISOString() : null,
+      singleMachine: this.lastSingleMachine,
+      activeAutonomousRunCount: this.lastActiveRunCount,
+      openGapMode: this.openGapMode,
+      counters: { ticks: this.ticks, raises: this.raises, wouldRaise: this.wouldRaise, errors: this.errors },
+    };
   }
 
   private audit(event: string, detail: Record<string, unknown>): void {

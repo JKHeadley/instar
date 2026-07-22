@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   SingleMachineFailoverGapDetector,
   buildAttention,
+  resolveSingleMachineFailoverGapConfig,
+  guardStatusFor,
   SINGLE_MACHINE_FAILOVER_GAP_DEDUP_KEY,
   type SingleMachineFailoverGapDetectorDeps,
   type MeshMembership,
@@ -116,5 +118,77 @@ describe('SingleMachineFailoverGapDetector', () => {
   it('buildAttention pluralizes correctly (1 run vs many)', () => {
     expect(buildAttention('not-configured', 1).body).toMatch(/1 autonomous run /);
     expect(buildAttention('not-configured', 3).body).toMatch(/3 autonomous runs /);
+  });
+
+  it('status() reflects the last tick (single-machine gap, dry-run)', () => {
+    const { detector } = makeDetector({
+      dryRun: true,
+      membership: { multiMachineEnabled: true, onlinePeerCount: 0 },
+      activeRuns: 2,
+    });
+    detector.tick();
+    const s = detector.status();
+    expect(s.enabled).toBe(true);
+    expect(s.dryRun).toBe(true);
+    expect(s.singleMachine).toBe(true);
+    expect(s.activeAutonomousRunCount).toBe(2);
+    expect(s.openGapMode).toBe('peer-offline');
+    expect(s.counters).toEqual({ ticks: 1, raises: 0, wouldRaise: 1, errors: 0 });
+    expect(s.lastTickAt).toBeTypeOf('string');
+  });
+
+  it('status() clears the open gap once a peer comes back online', () => {
+    const raised: FailoverGapAttention[] = [];
+    let peers = 0;
+    const detector = new SingleMachineFailoverGapDetector({
+      enabled: () => true,
+      dryRun: () => false,
+      getMeshMembership: () => ({ multiMachineEnabled: true, onlinePeerCount: peers }),
+      getActiveAutonomousRunCount: () => 1,
+      raiseAttention: (i) => raised.push(i),
+    });
+    detector.tick();
+    expect(detector.status().openGapMode).toBe('peer-offline');
+    peers = 1; // failover target returns
+    detector.tick();
+    expect(detector.status().openGapMode).toBeNull();
+    expect(detector.status().counters.raises).toBe(1); // only the first tick raised
+  });
+
+  it('a throwing dependency is caught (fail toward silence) and counted', () => {
+    const detector = new SingleMachineFailoverGapDetector({
+      enabled: () => true,
+      dryRun: () => false,
+      getMeshMembership: () => { throw new Error('registry read failed'); },
+      getActiveAutonomousRunCount: () => 1,
+      raiseAttention: () => { throw new Error('must not reach raise'); },
+    });
+    const res = detector.tick();
+    expect(res).toEqual({ ran: true, gapDetected: false, mode: null, atRiskRunCount: 0, raised: false });
+    expect(detector.status().counters.errors).toBe(1);
+  });
+});
+
+describe('resolveSingleMachineFailoverGapConfig + guardStatusFor', () => {
+  it('defers the enabled decision to the injected dev-agent gate, dryRun defaults TRUE', () => {
+    const cfg = resolveSingleMachineFailoverGapConfig(undefined, (explicit) => explicit ?? true);
+    expect(cfg).toEqual({ enabled: true, dryRun: true });
+  });
+
+  it('an explicit enabled:false wins over the gate (deny is honored)', () => {
+    // Mirror resolveDevAgentGate semantics: explicit ?? gate.
+    const cfg = resolveSingleMachineFailoverGapConfig({ enabled: false }, (explicit) => explicit ?? true);
+    expect(cfg.enabled).toBe(false);
+  });
+
+  it('an explicit dryRun:false is honored (graduation off dry-run)', () => {
+    const cfg = resolveSingleMachineFailoverGapConfig({ enabled: true, dryRun: false }, (e) => e ?? false);
+    expect(cfg).toEqual({ enabled: true, dryRun: false });
+  });
+
+  it('guardStatusFor grades dark ▸ dry-run ▸ live', () => {
+    expect(guardStatusFor({ enabled: false, dryRun: true })).toBe('dark');
+    expect(guardStatusFor({ enabled: true, dryRun: true })).toBe('dry-run');
+    expect(guardStatusFor({ enabled: true, dryRun: false })).toBe('live');
   });
 });
