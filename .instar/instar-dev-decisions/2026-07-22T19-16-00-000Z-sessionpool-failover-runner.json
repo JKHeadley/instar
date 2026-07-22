@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T19:16:00.000Z",
+  "slug": "sessionpool-failover-runner",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 210,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "SessionPoolFailoverRunner: dark-by-default in-agent producer of the failover E2E result the rollout gate needs. Runs an INJECTED failover check; records green only on a genuine pass, red on a genuine regression, NOTHING on a throw (an infra error is not a verdict — no fabricated green/red). Pure injected deps, not wired to boot = zero runtime effect. Additive. Built directly by Echo; mentee offline. tsc clean, 5/5 green."
+}
