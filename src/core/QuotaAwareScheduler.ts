@@ -210,7 +210,7 @@ export interface QuotaSwapAntiThrashHooks {
   /** Live knobs for the revalidation arithmetic. */
   getKnobs: () => { thresholdPct: number; targetHeadroomPct: number; minImprovementPct: number };
   /** The session's CURRENT account id (source-identity check, R3-m3). */
-  resolveCurrentAccountId: (sessionName: string) => string | null;
+  resolveEffectiveAccountId: (sessionName: string, sourceWasUntagged: boolean) => Promise<string | null>;
   /** Observe an executed REACTIVE swap (dwell clock-start, hop alerts). */
   onReactiveExecuted?: (args: { session: string; from: string; to: string; nowMs: number }) => void;
   /** Observe a reactive execution failure (§3.6 `failed` rows, kind 'reactive'). */
@@ -270,6 +270,8 @@ export class QuotaAwareScheduler {
     callerClass?: 'proactive-swap' | 'reactive-swap';
     /** Framework of the session being moved. Falls back to the exhausted account. */
     framework?: SubscriptionFramework;
+    /** True when the evaluated source came from the default-login resolver. */
+    sourceWasUntagged?: boolean;
   }): Promise<SwapResult> {
     const { sessionName, exhaustedAccountId, nowMs, targetAccountId } = args;
     const isProactive = targetAccountId !== undefined;
@@ -304,13 +306,14 @@ export class QuotaAwareScheduler {
         }
         // 2. Source identity (R3-m3): a reactive swap that completed in the
         // sub-tick window invalidates the intent — never a second kill.
-        const current = at.resolveCurrentAccountId(sessionName);
-        if (current !== null && current !== exhaustedAccountId) {
+        const current = await at.resolveEffectiveAccountId(sessionName, args.sourceWasUntagged === true);
+        if ((args.sourceWasUntagged === true && current !== exhaustedAccountId) ||
+            (args.sourceWasUntagged !== true && current !== null && current !== exhaustedAccountId)) {
           return { swapped: false, toAccountId: next.id, reason: 'intent-stale' };
         }
         // 3. Source pressure, fresh: the wave may have subsided sub-tick.
         const source = accounts.find((a) => a.id === exhaustedAccountId);
-        if (!source || !at.readingValid(source, nowMs) || bindingUtilization(source.lastQuota) < k.thresholdPct) {
+        if (!source || !isLocallyExecutable(source) || !at.readingValid(source, nowMs) || bindingUtilization(source.lastQuota) < k.thresholdPct) {
           return { swapped: false, toAccountId: next.id, reason: 'intent-stale' };
         }
         // 4. Improvement delta, fresh (bound 2 at the actual kill point).
@@ -378,7 +381,7 @@ export class QuotaAwareScheduler {
           nowMs,
         });
       }
-      return { swapped: false, toAccountId: next.id, reason: code === 'session-busy' ? 'session-busy' : 'refresh-failed' };
+      return { swapped: false, toAccountId: next.id, reason: code ?? 'refresh-failed' };
     }
     this.cfg.logger?.log(
       `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,

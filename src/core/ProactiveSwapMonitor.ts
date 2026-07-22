@@ -85,6 +85,9 @@ export interface ProactiveSwapSession {
   /** The pool account this session is tagged with, or null if untagged
    *  (untagged ⇒ running on the default config ⇒ resolved via the default login). */
   accountId: string | null;
+  /** False when the existing SessionRefresh funnel cannot route this session
+   *  back to a Telegram or Slack conversation. Omitted preserves legacy callers. */
+  refreshable?: boolean;
   /** ISO start time — newest-first ordering proxy for "most recently active". */
   startedAt?: string;
 }
@@ -123,6 +126,7 @@ export interface ProactiveSwapMonitorConfig {
     nowMs: number;
     targetAccountId?: string;
     callerClass?: 'proactive-swap';
+    sourceWasUntagged?: boolean;
   }) => Promise<ProactiveSwapOutcome>;
   /** Optional fresh-poll trigger, awaited when an account is in the watch zone. */
   triggerPoll?: () => Promise<unknown>;
@@ -324,23 +328,29 @@ export class ProactiveSwapMonitor {
     nowMs: number,
   ): Promise<{ swapped: string[]; considered: number }> {
     const byId = new Map(accounts.map((a) => [a.id, a]));
-    // Candidate set: TAGGED sessions only (Q3 — untagged sessions are outside
-    // the proactive candidate set by construction, I10), whose source account
-    // carries a VALID fresh reading at/over the threshold (§3.3 source leg).
+    // Candidate set: refreshable sessions whose effective source (explicit tag
+    // or the current default login) carries a valid fresh pressure reading.
     const candidates: Candidate[] = [];
     const currentAccountBySession = new Map<string, string | null>();
+    let defaultAccountId: string | null = null;
+    try {
+      defaultAccountId = await this.cfg.resolveDefaultAccountId();
+    } catch {
+      defaultAccountId = null; // unknown default source holds safely
+    }
     for (const s of this.cfg.listRunningSessions()) {
-      currentAccountBySession.set(s.sessionName, s.accountId);
-      if (!s.accountId) continue;
-      const acct = byId.get(s.accountId);
+      const effectiveAccountId = s.accountId ?? defaultAccountId;
+      currentAccountBySession.set(s.sessionName, effectiveAccountId);
+      if (s.refreshable === false || !effectiveAccountId) continue;
+      const acct = byId.get(effectiveAccountId);
       if (!acct) continue;
       if (!engine.sourceEligible(acct, nowMs)) continue;
       const startedMs = s.startedAt ? Date.parse(s.startedAt) : NaN;
       candidates.push({
         sessionName: s.sessionName,
-        accountId: s.accountId,
+        accountId: effectiveAccountId,
         startedMs: Number.isFinite(startedMs) ? startedMs : 0,
-        untagged: false,
+        untagged: s.accountId === null,
       });
     }
     candidates.sort((a, b) => b.startedMs - a.startedMs);
@@ -484,6 +494,7 @@ export class ProactiveSwapMonitor {
           nowMs,
           targetAccountId: verdict.targetAccountId,
           callerClass: 'proactive-swap',
+          ...(c.untagged ? { sourceWasUntagged: true } : {}),
         });
         if (outcome.swapped) {
           engine.recordProactiveExecuted({
@@ -493,6 +504,7 @@ export class ProactiveSwapMonitor {
             nowMs,
             fromUtilPct: verdict.fromUtilPct,
             toUtilPct: verdict.toUtilPct,
+            ...(c.untagged ? { sourceWasUntagged: true } : {}),
             ...(deferral ? { deferralAgeMs: nowMs - deferral.firstAtMs, deferCount: deferral.count } : {}),
           });
           this.lastSwapAt.set(c.sessionName, nowMs);

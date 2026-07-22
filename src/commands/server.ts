@@ -17816,8 +17816,8 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // ── QuotaAwareScheduler (Subscription & Auth Standard P1.3) ──
     // Telegram-specific (createAttentionItem + subscription-pool wiring).
-    if (telegram) {
-      const telegramRef = telegram; // narrow for closure
+    if (telegram || _slackAdapter) {
+      const telegramRef = telegram; // optional notification surface only
       // Selects the optimal account + enforces the continuity guarantee: on
       // quota pressure it resumes the session under another account (via the
       // SessionRefresh account-swap path), never letting it die. Auto-trigger
@@ -17838,8 +17838,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const k = antiThrashKnobsGetter();
                 return { thresholdPct: k.thresholdPct, targetHeadroomPct: k.targetHeadroomPct, minImprovementPct: k.minImprovementPct };
               },
-              resolveCurrentAccountId: (sessionName) =>
-                state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === sessionName)?.subscriptionAccountId ?? null,
+              resolveEffectiveAccountId: async (sessionName, sourceWasUntagged) => {
+                const tagged = state.listSessions({ status: 'running' })
+                  .find((s) => s.tmuxSession === sessionName)?.subscriptionAccountId ?? null;
+                if (!sourceWasUntagged || tagged) return tagged;
+                return (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId;
+              },
               onReactiveExecuted: (a) => _swapAntiThrashEngine?.recordReactiveExecuted(a),
               onReactiveFailed: (a) =>
                 _swapAntiThrashEngine?.recordExecFailure({
@@ -17868,7 +17872,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // anti-thrash observation layer can classify failures (§3.1/§3.6).
           return r.ok ? { ok: true } : { ok: false, code: r.code };
         },
-        onNoAlternate: (sessionName, exhaustedAccountId) => {
+        onNoAlternate: telegramRef ? (sessionName, exhaustedAccountId) => {
           void telegramRef.createAttentionItem({
             id: `subpool-no-alternate-${exhaustedAccountId}`,
             title: 'Subscription pool — no alternate account to swap to',
@@ -17877,7 +17881,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             priority: 'HIGH',
             sourceContext: 'subscription-pool:no-alternate',
           }).catch(() => { /* @silent-fallback-ok: attention is best-effort */ });
-        },
+        } : undefined,
         logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       });
 
@@ -17941,6 +17945,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sessionName: s.tmuxSession,
                 accountId: s.subscriptionAccountId ?? null,
                 startedAt: s.startedAt,
+                refreshable: _sessionRefresh?.canRefreshSession(s.tmuxSession) ?? false,
               })),
           resolveDefaultAccountId: async () =>
             (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId,

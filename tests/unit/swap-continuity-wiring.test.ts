@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ProactiveSwapMonitor } from '../../src/core/ProactiveSwapMonitor.js';
-import { QuotaAwareScheduler } from '../../src/core/QuotaAwareScheduler.js';
+import { QuotaAwareScheduler, scoreAccount } from '../../src/core/QuotaAwareScheduler.js';
 import {
   SwapAntiThrashEngine,
   resolveAntiThrashKnobs,
@@ -96,7 +96,8 @@ describe('swap-continuity wiring integrity', () => {
   function makeMonitor(over: {
     engine: SwapAntiThrashEngine | null;
     accounts: SubscriptionAccount[];
-    sessions: Array<{ sessionName: string; accountId: string | null; startedAt?: string }>;
+    sessions: Array<{ sessionName: string; accountId: string | null; startedAt?: string; refreshable?: boolean }>;
+    defaultAccountId?: string | null;
     probe?: (s: string) => Promise<WorkProbeResult>;
     continuity?: Partial<{ enabled: boolean; dryRun: boolean; deferralCeilingMs: number }>;
     swapImpl?: (a: { sessionName: string; exhaustedAccountId: string; targetAccountId?: string }) => Promise<{ swapped: boolean; toAccountId: string | null; reason?: string }>;
@@ -108,8 +109,13 @@ describe('swap-continuity wiring integrity', () => {
     const monitor = new ProactiveSwapMonitor({
       listAccounts: () => over.accounts,
       listRunningSessions: () =>
-        over.sessions.map((s) => ({ sessionName: s.sessionName, accountId: s.accountId, startedAt: s.startedAt ?? '2026-07-02T14:00:00Z' })),
-      resolveDefaultAccountId: async () => null,
+        over.sessions.map((s) => ({
+          sessionName: s.sessionName,
+          accountId: s.accountId,
+          startedAt: s.startedAt ?? '2026-07-02T14:00:00Z',
+          ...(s.refreshable !== undefined ? { refreshable: s.refreshable } : {}),
+        })),
+      resolveDefaultAccountId: async () => over.defaultAccountId ?? null,
       swap,
       now: () => now,
       ...(over.engine ? { antiThrash: { engine: over.engine, getKnobs: knobs } } : {}),
@@ -200,16 +206,54 @@ describe('swap-continuity wiring integrity', () => {
       expect(second.swap).not.toHaveBeenCalled();
     });
 
-    it('untagged sessions are OUTSIDE the live candidate set (Q3/I10)', async () => {
+    it('bound untagged session swaps from the resolved default onto the freshest eligible account', async () => {
       const engine = makeEngine();
+      const soonReset = acct('soon-reset', 35);
+      const freshest = acct('freshest', 7);
+      if (soonReset.lastQuota?.sevenDay) soonReset.lastQuota.sevenDay.resetsAt = new Date(now + 60_000).toISOString();
+      if (freshest.lastQuota?.sevenDay) freshest.lastQuota.sevenDay.resetsAt = new Date(now + 7 * 24 * 60 * 60_000).toISOString();
+      expect(scoreAccount(soonReset, now)).toBeGreaterThan(scoreAccount(freshest, now));
       const { monitor, swap } = makeMonitor({
         engine,
-        accounts: [acct('hot', 85), acct('cool', 20)],
-        sessions: [{ sessionName: 'untagged', accountId: null }],
+        accounts: [acct('hot', 88), soonReset, freshest],
+        sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
+        defaultAccountId: 'hot',
         probe: async () => idle,
       });
       const r = await monitor.evaluate();
-      expect(r.considered).toBe(0);
+      expect(r.swapped).toEqual(['untagged']);
+      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
+        exhaustedAccountId: 'hot',
+        targetAccountId: 'freshest',
+        sourceWasUntagged: true,
+      }));
+    });
+
+    it('untagged session holds when no fresher eligible target survives the existing floors', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 88), acct('also-hot', 70)],
+        sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
+        defaultAccountId: 'hot',
+        probe: async () => idle,
+      });
+      const r = await monitor.evaluate();
+      expect(r.swapped).toEqual([]);
+      expect(r.considered).toBe(1);
+      expect(swap).not.toHaveBeenCalled();
+    });
+
+    it('known-unrefreshable background session is excluded before execution', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 88), acct('fresh', 7)],
+        sessions: [{ sessionName: 'headless', accountId: 'hot', refreshable: false }],
+        probe: async () => idle,
+      });
+      const r = await monitor.evaluate();
+      expect(r).toEqual({ swapped: [], considered: 0 });
       expect(swap).not.toHaveBeenCalled();
     });
 
@@ -288,7 +332,7 @@ describe('swap-continuity wiring integrity', () => {
         antiThrash: {
           readingValid: (a, nowMs) => readingValidity(a, nowMs, knobs().quotaFreshnessMs).valid,
           getKnobs: () => ({ thresholdPct: 80, targetHeadroomPct: 15, minImprovementPct: 15 }),
-          resolveCurrentAccountId: () => (over.currentAccountId === undefined ? 'hot' : over.currentAccountId),
+          resolveEffectiveAccountId: async () => (over.currentAccountId === undefined ? 'hot' : over.currentAccountId),
           onReactiveExecuted: reactiveExecuted,
           onReactiveFailed: reactiveFailed,
           onReactiveRateCapRefusal: rateCap,
@@ -340,6 +384,58 @@ describe('swap-continuity wiring integrity', () => {
       });
       expect(r).toMatchObject({ swapped: false, reason: 'intent-stale' });
       expect(refreshFn).not.toHaveBeenCalled();
+    });
+
+    it('re-resolves an untagged default source at execution and refuses A→B drift before refresh', async () => {
+      const resolveEffectiveAccountId = vi.fn(async (_session: string, sourceWasUntagged: boolean) =>
+        sourceWasUntagged ? 'new-default' : 'hot');
+      const { scheduler, refreshFn } = makeScheduler({
+        accounts: [acct('hot', 88), acct('cool', 7)],
+        hooks: { resolveEffectiveAccountId },
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 'untagged',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+        sourceWasUntagged: true,
+      });
+      expect(r).toMatchObject({ swapped: false, reason: 'intent-stale' });
+      expect(resolveEffectiveAccountId).toHaveBeenCalledWith('untagged', true);
+      expect(refreshFn).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when an untagged default source becomes unresolved before execution', async () => {
+      const { scheduler, refreshFn } = makeScheduler({
+        accounts: [acct('hot', 88), acct('cool', 7)],
+        hooks: { resolveEffectiveAccountId: async () => null },
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 'untagged',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+        sourceWasUntagged: true,
+      });
+      expect(r).toMatchObject({ swapped: false, reason: 'intent-stale' });
+      expect(refreshFn).not.toHaveBeenCalled();
+    });
+
+    it('preserves a concrete proactive refresh refusal code for ledger classification', async () => {
+      const { scheduler } = makeScheduler({
+        accounts: [acct('hot', 88), acct('cool', 7)],
+        refreshImpl: async () => ({ ok: false, code: 'not_telegram_bound' }),
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 'binding-raced-away',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+      });
+      expect(r).toEqual({ swapped: false, toAccountId: 'cool', reason: 'not_telegram_bound' });
     });
 
     it('invalidates when the source pressure subsided sub-tick (fresh source check, R4-m4)', async () => {

@@ -220,6 +220,25 @@ describe('SessionRefresh — Slack arm (§10.5)', () => {
   });
 
   describe('Slack disk-backed fallback', () => {
+    it('admission signal uses Slack disk fallback without mutating the session', () => {
+      const { refresh, sessionManager } = makeDeps({
+        slackRoutingKey: null,
+        slackDiskRoutingKey: 'C0FROMDISK',
+      });
+      expect(refresh.canRefreshSession('echo-slack-session')).toBe(true);
+      expect(sessionManager.killSession).not.toHaveBeenCalled();
+    });
+
+    it('admission signal excludes a genuinely unbound session', () => {
+      const { refresh } = makeDeps({
+        telegramTopicId: null,
+        telegramDiskTopicId: null,
+        slackRoutingKey: null,
+        slackDiskRoutingKey: null,
+      });
+      expect(refresh.canRefreshSession('orphan-session')).toBe(false);
+    });
+
     it('resolves the routing key from disk when the in-memory registry misses', async () => {
       const { refresh, slack, slackRespawner } = makeDeps({
         slackRoutingKey: null,
