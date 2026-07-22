@@ -238,6 +238,19 @@ fm_get_raw() {
   printf '%s' "$val"
 }
 
+# Convert the ISO-8601 timestamps written by the autonomous setup path on both
+# macOS/BSD and GNU date. BSD date's strict format rejects fractional seconds,
+# so normalize only a terminal fractional component before parsing. Invalid
+# input remains fail-safe and returns 0.
+iso8601_epoch() {
+  local raw="${1:-}"
+  local normalized
+  normalized=$(printf '%s' "$raw" | sed 's/\.[0-9][0-9]*Z$/Z/')
+  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$normalized" +%s 2>/dev/null \
+    || date -d "$normalized" +%s 2>/dev/null \
+    || echo "0"
+}
+
 ACTIVE=$(fm_get active)
 if [[ "$ACTIVE" != "true" ]]; then
   exit 0
@@ -530,7 +543,7 @@ if [[ "$GOAL_MODE" == "native" ]]; then
     echo "[autonomous] emergency stop — native /goal cleared" >&2; exit 0
   fi
   if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
-    NG_START=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo 0)
+    NG_START=$(iso8601_epoch "$STARTED_AT")
     if [[ "$NG_START" =~ ^[0-9]+$ ]] && [[ $NG_START -gt 0 ]] && [[ $(( $(date +%s) - NG_START )) -ge $DURATION_SECONDS ]]; then
       notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" hit its time limit and stopped. Ask me and I'll pick up where I left off."
       run_end_call "duration-expiry (native-goal)"
@@ -557,7 +570,7 @@ fi
 # premature exit (that is the very failure class this hook exists to prevent).
 REMAINING_MIN=""
 if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
-  START_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo "0")
+  START_EPOCH=$(iso8601_epoch "$STARTED_AT")
   if [[ "$START_EPOCH" =~ ^[0-9]+$ ]] && [[ $START_EPOCH -gt 0 ]]; then
     NOW_EPOCH=$(date +%s)
     ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
@@ -1701,14 +1714,14 @@ REPORT_DUE="false"
 NOW_EPOCH=$(date +%s)
 if [[ -z "$LAST_REPORT_AT" ]] || [[ "$LAST_REPORT_AT" == "null" ]]; then
   if [[ -n "$STARTED_AT" ]]; then
-    START_EPOCH_R=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo "0")
+    START_EPOCH_R=$(iso8601_epoch "$STARTED_AT")
     ELAPSED_SINCE_START=$(( NOW_EPOCH - START_EPOCH_R ))
     if [[ $ELAPSED_SINCE_START -ge $REPORT_INTERVAL_SECS ]]; then
       REPORT_DUE="true"
     fi
   fi
 else
-  LAST_REPORT_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_REPORT_AT" +%s 2>/dev/null || date -d "$LAST_REPORT_AT" +%s 2>/dev/null || echo "0")
+  LAST_REPORT_EPOCH=$(iso8601_epoch "$LAST_REPORT_AT")
   ELAPSED_SINCE_REPORT=$(( NOW_EPOCH - LAST_REPORT_EPOCH ))
   if [[ $ELAPSED_SINCE_REPORT -ge $REPORT_INTERVAL_SECS ]]; then
     REPORT_DUE="true"
