@@ -25034,8 +25034,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           ? (f.unit === 'count' && f.total === f.completed && typeof f.averagePerDay === 'number' &&
               Number.isFinite(f.averagePerDay) && f.averagePerDay >= 0 && f.missing === 0 && f.excluded === 0 &&
               f.medianMs === null && f.p95Ms === null && outcomes.observed === f.completed &&
-              f.coverage === ((f.completed as number) === 0 ? null : 1)
-            ? { unit: 'count', total: f.total, averagePerDay: f.averagePerDay } : null)
+              f.coverage === ((f.completed as number) === 0 ? null : 1) && f.window && typeof f.window === 'object' &&
+              (f.window as Record<string, unknown>).kind === 'rolling-hours' &&
+              typeof (f.window as Record<string, unknown>).hours === 'number' &&
+              Number.isFinite((f.window as Record<string, unknown>).hours) &&
+              ((f.window as Record<string, unknown>).hours as number) >= 1 &&
+              ((f.window as Record<string, unknown>).hours as number) <= 168
+            ? { unit: 'count', window: { kind: 'rolling-hours', hours: (f.window as Record<string, unknown>).hours },
+              total: f.total, averagePerDay: f.averagePerDay } : null)
           : {};
         if (countFields === null) return null;
         out.push({ factor: f.factor, ...countFields, recoverability: f.recoverability, completed: f.completed, missing: f.missing,
@@ -25044,6 +25050,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } else {
         if (f.factor === 'deliverable-completion') {
           if (f.unit !== 'count' || !Array.isArray(f.days) || f.days.length > 89 || !finiteOrNull(f.ratio) ||
+              !f.window || typeof f.window !== 'object' ||
+              (f.window as Record<string, unknown>).kind !== 'rolling-days' ||
+              !Number.isSafeInteger((f.window as Record<string, unknown>).days) ||
+              ((f.window as Record<string, unknown>).days as number) < 7 ||
+              ((f.window as Record<string, unknown>).days as number) > 90 ||
+              (f.window as Record<string, unknown>).dailyBuckets !== 'utc' ||
+              (f.window as Record<string, unknown>).currentDay !== 'partial' ||
               !Number.isSafeInteger(f.windowTotal) || (f.windowTotal as number) < 0 ||
               !Number.isSafeInteger(f.currentDayCount) || (f.currentDayCount as number) < 0 ||
               !Array.isArray(f.cumulativeDays) || f.cumulativeDays.length !== f.days.length + 1 ||
@@ -25112,7 +25125,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             const expectedDirection = expectedRatio > 1 ? 'climbing' : expectedRatio < 1 ? 'declining' : 'flat';
             if (!sameNumber(f.ratio, expectedRatio) || f.reason !== null || f.direction !== expectedDirection) return null;
           }
-          out.push({ factor: f.factor, unit: 'count', windowTotal: f.windowTotal,
+          out.push({ factor: f.factor, unit: 'count', window: { kind: 'rolling-days',
+            days: (f.window as Record<string, unknown>).days, dailyBuckets: 'utc', currentDay: 'partial' }, windowTotal: f.windowTotal,
             currentDayCount: f.currentDayCount, cumulativeDays, days, firstHalf, secondHalf,
             ratio: f.ratio, direction: f.direction, reason: f.reason });
           continue;

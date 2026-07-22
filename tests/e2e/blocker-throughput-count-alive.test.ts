@@ -64,13 +64,15 @@ describe('Blocker lifecycle throughput count E2E (feature is alive)', () => {
     expect(summary.body.schemaVersion).toBe(2);
     const count = summary.body.origins[0].factors.find((row: { factor: string }) => row.factor === 'deliverable-completion');
     expect(count).toMatchObject({ factor: 'deliverable-completion', unit: 'count', total: 16,
-      completed: 16, missing: 0, excluded: 0, coverage: 1 });
+      completed: 16, missing: 0, excluded: 0, coverage: 1,
+      window: { kind: 'rolling-hours', hours: 168 } });
 
     const trend = await request(server.getApp()).get('/blocker-lifecycle/trend?windowDays=7&scope=local')
       .set({ Authorization: `Bearer ${AUTH}` });
     expect(trend.status).toBe(200);
     const climbing = trend.body.origins[0].factors.find((row: { factor: string }) => row.factor === 'deliverable-completion');
     expect(climbing).toMatchObject({ factor: 'deliverable-completion', unit: 'count', direction: 'climbing',
+      window: { kind: 'rolling-days', days: 7, dailyBuckets: 'utc', currentDay: 'partial' },
       windowTotal: 16, currentDayCount: 1,
       firstHalf: { total: 3, meanPerDay: 1 }, secondHalf: { total: 12, meanPerDay: 4 }, ratio: 4 });
   });

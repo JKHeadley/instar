@@ -45,8 +45,9 @@ describe('BlockerLifecycleService deliverable throughput', () => {
     const factor = (service.localSummary(24).factors as Array<Record<string, unknown>>)
       .find(row => row.factor === 'deliverable-completion');
     expect(factor).toMatchObject({ unit: 'count', completed: 1, total: 1, averagePerDay: 1,
-      recoverability: 'reconcilable' });
+      recoverability: 'reconcilable', window: { kind: 'rolling-hours', hours: 24 } });
     expect(completionTrend()).toMatchObject({ windowTotal: 1, currentDayCount: 1,
+      window: { kind: 'rolling-days', days: 7, dailyBuckets: 'utc', currentDay: 'partial' },
       cumulativeDays: expect.arrayContaining([{ day: '2026-07-21', count: 1, cumulative: 1, complete: false }]) });
 
     const second = tracker.record({ userRequest: 'ship another deliverable', agentResponse: 'will ship',

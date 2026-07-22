@@ -10,6 +10,7 @@ const outcomes = { observed: 0, 'legacy-missing-start': 0, 'clock-regression-or-
 const latencySummary = (factor: string, recoverability: string) => ({ factor, recoverability,
   completed: 0, missing: 0, excluded: 0, coverage: null, medianMs: null, p95Ms: null, outcomes });
 const countSummary = { factor: 'deliverable-completion', unit: 'count', recoverability: 'reconcilable',
+  window: { kind: 'rolling-hours', hours: 24 },
   completed: 2, total: 2, missing: 0, excluded: 0, coverage: 1, averagePerDay: 2,
   medianMs: null, p95Ms: null, outcomes: { ...outcomes, observed: 2 } };
 const counters = { attempted: 0, inserted: 0, deduped: 0, failed: 0, queueOverflow: 0, reconciled: 0,
@@ -21,7 +22,9 @@ const days = ['2026-07-15', '2026-07-16', '2026-07-17', '2026-07-18', '2026-07-1
 const cumulativeDays = [...days, { day: '2026-07-21', count: 1 }]
   .map(((total) => (row: { day: string; count: number }, index: number) =>
     ({ ...row, cumulative: (total += row.count), complete: index < days.length }))(0));
-const countTrend = { factor: 'deliverable-completion', unit: 'count', windowTotal: 10, currentDayCount: 1,
+const countTrend = { factor: 'deliverable-completion', unit: 'count',
+  window: { kind: 'rolling-days', days: 7, dailyBuckets: 'utc', currentDay: 'partial' },
+  windowTotal: 10, currentDayCount: 1,
   cumulativeDays, days,
   firstHalf: { days: 3, total: 3, meanPerDay: 1 }, secondHalf: { days: 3, total: 6, meanPerDay: 2 },
   ratio: 2, direction: 'climbing', reason: null };
@@ -71,7 +74,9 @@ describe('blocker throughput pool schema honesty', () => {
       .get('/blocker-lifecycle/summary?scope=pool').set('Authorization', `Bearer ${AUTH}`);
     expect(response.body.poolComplete).toBe(true);
     expect(response.body.origins).toHaveLength(2);
-    expect(response.body.origins[1]).toMatchObject({ machineId: 'peer-a', factors: [{}, {}, { total: 2 }] });
+    expect(response.body.origins[1]).toMatchObject({ machineId: 'peer-a', factors: [{}, {}, {
+      total: 2, window: { kind: 'rolling-hours', hours: 24 },
+    }] });
   });
 
   it('rejects a hostile peer whose claimed climbing direction contradicts flat daily counts', async () => {

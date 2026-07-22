@@ -77,7 +77,7 @@ export class BlockerLifecycleService {
     return {
       machineId: this.origin,
       factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorSummary(f, sinceMs))
-        .concat(this.completionSummary(sinceMs)),
+        .concat(this.completionSummary(sinceMs, sinceHours)),
       maturation: this.maturationSummary(sinceMs),
       counters: { ...this.ledger.counters(), ...this.derivedCounters(sinceMs), breakerOpen: this.now() < this.breakerUntil },
     };
@@ -168,7 +168,7 @@ export class BlockerLifecycleService {
   private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number): void {
     const summaries = new Map<BlockerFactor, Record<string, unknown>>([
       ...(['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorSummary(f, now - 168 * 3_600_000)] as const),
-      ['deliverable-completion', this.completionSummary(now - 168 * 3_600_000)],
+      ['deliverable-completion', this.completionSummary(now - 168 * 3_600_000, 168)],
     ]);
     const trends = new Map<BlockerFactor, Record<string, unknown>>([
       ...(['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorTrend(f, now - 90 * 86_400_000)] as const),
@@ -306,12 +306,13 @@ export class BlockerLifecycleService {
     };
   }
 
-  private completionSummary(sinceMs: number): Record<string, unknown> {
+  private completionSummary(sinceMs: number, windowHours: number): Record<string, unknown> {
     const completed = this.ledger.values('deliverable-completion', sinceMs)
       .filter(row => row.outcome === 'observed').length;
-    const windowDays = Math.max(1 / 24, (this.now() - sinceMs) / 86_400_000);
+    const windowDays = windowHours / 24;
     return {
       factor: 'deliverable-completion', unit: 'count', recoverability: 'reconcilable',
+      window: { kind: 'rolling-hours', hours: windowHours },
       completed, total: completed, missing: 0, excluded: 0,
       coverage: completed === 0 ? null : 1,
       averagePerDay: completed / windowDays,
@@ -341,7 +342,12 @@ export class BlockerLifecycleService {
     let cumulative = 0;
     const cumulativeDays = [...days, { day: currentDay, count: counts.get(currentDay) ?? 0 }]
       .map(day => ({ ...day, cumulative: (cumulative += day.count), complete: day.day !== currentDay }));
-    const live = { windowTotal: observed.length, currentDayCount: counts.get(currentDay) ?? 0, cumulativeDays };
+    const live = {
+      window: { kind: 'rolling-days', days: windowDays, dailyBuckets: 'utc', currentDay: 'partial' },
+      windowTotal: observed.length,
+      currentDayCount: counts.get(currentDay) ?? 0,
+      cumulativeDays,
+    };
     const split = Math.floor(days.length / 2);
     const describe = (part: typeof days) => {
       const total = part.reduce((sum, day) => sum + day.count, 0);

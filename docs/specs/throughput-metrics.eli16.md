@@ -12,6 +12,8 @@ The first measurement is `request-to-persist`: monotonic server time from accept
 
 The third measurement is `deliverable-completion`: one tally for each commitment whose durable state is delivered. It reuses the same ledger and reconciles missed delivered events after restart without double-counting. Its trend compares only complete zero-count UTC days in the older and newer halves to say climbing, flat, declining, or insufficient data. Additive live fields also show today's unfinished tally and the cumulative total, so a delivery is visible immediately without letting a partial day distort the direction.
 
+The summary and trend deliberately answer different time questions. Summary defaults to a rolling 24 hours; trend defaults to a rolling seven days and renders complete UTC-day buckets plus the partial current day. Each deliverable-completion result labels that window beside its count, so independently selected scopes cannot masquerade as contradictory measurements.
+
 The API returns raw per-factor timing or count data, sample coverage, missing/excluded counts, and per-factor trends. Its response schema is version 2; old schema-v1 peers are shown as unsupported rather than zero. It does not create a combined score, productivity rank, worker comparison, or throughput index. Parallelism utilization, rework rate, and any combined index remain tracked follow-ons.
 
 ## Failure behavior
