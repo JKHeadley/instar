@@ -14,7 +14,7 @@ import {
   type HogEvidenceScanView,
 } from '../../src/monitoring/ExternalHogDecisionStore.js';
 import type { HogDecisionSeed } from '../../src/monitoring/ExternalHogScanTick.js';
-import { DP_EXTERNAL_HOG_KILL_LEAVE } from '../../src/data/provenanceCoverage.js';
+import { DP_EXTERNAL_HOG_KILL_LEAVE, DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
 import {
   DecisionQualityRecorderImpl,
   installDecisionQualityRecorder,
@@ -178,6 +178,28 @@ describe('GET /decision-quality (integration)', () => {
 });
 
 describe('POST /decision-quality/grade-pass (integration)', () => {
+  it('turns a matured Phase B backlog row into one visible known outcome through the real routes', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installDecisionQualityRecorder(new DecisionQualityRecorderImpl({
+      ledger, config: { developmentAgent: true, provenance: { uniformSeam: { enabled: true, dryRun: false } } },
+    }));
+    ledger.recordDecision({ correlationId: 'd-tone-backlog', decisionPoint: DP_MESSAGING_TONE_GATE,
+      feature: 'MessagingToneGate', ts: Date.now() - 8 * HOUR });
+    const app = appWith(ctxWith({ ledger, developmentAgent: true, hogStore: null }));
+
+    const before = await request(app).get('/decision-quality?sinceHours=24').set('Authorization', `Bearer ${AUTH}`);
+    const beforePoint = before.body.points.find((point: { decisionPoint: string }) => point.decisionPoint === DP_MESSAGING_TONE_GATE);
+    expect(beforePoint).toMatchObject({ outcomesKnown: 0, gradeDistribution: { unknown: 0, expired: 1 } });
+
+    const graded = await request(app).post('/decision-quality/grade-pass').set('Authorization', `Bearer ${AUTH}`).send({});
+    expect(graded.status).toBe(200);
+    expect(graded.body).toMatchObject({ graded: 1, byRule: { 'tone-window-unknown-v1': 1 } });
+
+    const after = await request(app).get('/decision-quality?sinceHours=24').set('Authorization', `Bearer ${AUTH}`);
+    const afterPoint = after.body.points.find((point: { decisionPoint: string }) => point.decisionPoint === DP_MESSAGING_TONE_GATE);
+    expect(afterPoint).toMatchObject({ outcomesKnown: 1, gradeDistribution: { unknown: 1, expired: 0 } });
+  });
+
   it('returns 503 when the seam is dark', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     const res = await request(appWith(ctxWith({ ledger, developmentAgent: false })))

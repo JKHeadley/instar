@@ -221,9 +221,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'The outbound tone/leak authority (spec §5.6 named high-volume point). Enrolled at budget:500/day, identity-only content — never the message body.',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
   {
     decisionPoint: DP_CORRECTION_CLASS_REVIEW,
@@ -233,9 +230,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Each durable correction receives one bounded standards/process proposal; identity-only context supports outcome grading without archiving correction text.',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
   {
     decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
@@ -245,9 +239,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Completion-language turns receive clause arbitration before optional suppression authority; identity-only context preserves auditability without transcript content.',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
   {
     decisionPoint: DP_FEEDBACK_READINESS,
@@ -257,9 +248,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'A bounded frontier-model judgment authorizes cluster-to-work readiness; provenance stores packet identity and enumerated outcomes, never feedback text or model output.',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'Phase B will define a reviewed evidence rule and owner; Tier 1 records measurements without pretending they are outcome grades.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not
@@ -798,6 +786,7 @@ export interface EvidenceRule {
 
 /** Default hog evidence window (§5.4.5 "bounded window (default 6h)"). */
 const HOG_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
+export const DECISION_POINT_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // A kill graded `wrong` ONLY IF a same-commandHash candidate respawns in-window
@@ -863,6 +852,31 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
     rung: 'self-report',
     evidenceStrength: 'self-report',
     owningComponent: 'CompletionChokepoint',
+  },
+  // Phase B terminalizers. These rules do not manufacture a right/wrong
+  // verdict from silence: once the bounded evidence window closes without an
+  // independent outcome, they record the honest `unknown` grade so old rows
+  // stop masquerading as an unprocessed grading backlog. The existing grade
+  // pass owns all four rules and advances independent per-point cursors.
+  'tone-window-unknown-v1': {
+    ruleId: 'tone-window-unknown-v1', decisionPoint: DP_MESSAGING_TONE_GATE,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
+  },
+  'correction-review-window-unknown-v1': {
+    ruleId: 'correction-review-window-unknown-v1', decisionPoint: DP_CORRECTION_CLASS_REVIEW,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
+  },
+  'completion-claim-window-unknown-v1': {
+    ruleId: 'completion-claim-window-unknown-v1', decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
+  },
+  'feedback-readiness-window-unknown-v1': {
+    ruleId: 'feedback-readiness-window-unknown-v1', decisionPoint: DP_FEEDBACK_READINESS,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
   },
 };
 

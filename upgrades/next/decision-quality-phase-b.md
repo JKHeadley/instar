@@ -1,0 +1,20 @@
+# Decision-quality Phase B backlog grading
+
+## What Changed
+
+The existing deterministic decision-quality grading pass now owns registered window-close rules for messaging tone, correction class review, completion-claim verification, and feedback readiness. Each point receives an independent cursor and fair share of the existing global pass budget. Mature rows with no independent evidence are recorded as `unknown`, not guessed right or wrong, so expired rows become honestly processed outcomes.
+
+## What to Tell Your User
+
+The decision-quality reading can now make steady progress through old ungraded decisions from four additional decision points. A missing real-world verdict is shown honestly as unknown; it is never counted as success just to improve the number.
+
+## Summary of New Capabilities
+
+- Bounded, idempotent Phase B grading for four previously measurement-only decision points.
+- Fair per-point progress using the existing cursor and grade-pass machinery.
+- Honest conversion of expired backlog rows into explicit unknown outcomes.
+- Observe-only accounting with no effect on messaging, reviews, claims, feedback work, or model routing.
+
+## Evidence
+
+Unit coverage proves all four points remain pending while their window is open, grade unknown after it closes, and do not multiply on replay. Integration coverage proves the authenticated grade-pass route changes a live point from zero known / one expired to one known / zero expired.
