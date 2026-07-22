@@ -71,6 +71,7 @@ describe('Blocker lifecycle throughput count E2E (feature is alive)', () => {
     expect(trend.status).toBe(200);
     const climbing = trend.body.origins[0].factors.find((row: { factor: string }) => row.factor === 'deliverable-completion');
     expect(climbing).toMatchObject({ factor: 'deliverable-completion', unit: 'count', direction: 'climbing',
+      windowTotal: 16, currentDayCount: 1,
       firstHalf: { total: 3, meanPerDay: 1 }, secondHalf: { total: 12, meanPerDay: 4 }, ratio: 4 });
   });
 

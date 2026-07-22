@@ -18,7 +18,11 @@ const descriptor = { id: 'proof', source: 'feature-summary', sourceRef: 'feedbac
   descriptorVersion: 1, direction: 'at-least', threshold: 1, minSamples: 1 };
 const days = ['2026-07-15', '2026-07-16', '2026-07-17', '2026-07-18', '2026-07-19', '2026-07-20']
   .map((day, index) => ({ day, count: index < 3 ? 1 : 2 }));
-const countTrend = { factor: 'deliverable-completion', unit: 'count', days,
+const cumulativeDays = [...days, { day: '2026-07-21', count: 1 }]
+  .map(((total) => (row: { day: string; count: number }, index: number) =>
+    ({ ...row, cumulative: (total += row.count), complete: index < days.length }))(0));
+const countTrend = { factor: 'deliverable-completion', unit: 'count', windowTotal: 10, currentDayCount: 1,
+  cumulativeDays, days,
   firstHalf: { days: 3, total: 3, meanPerDay: 1 }, secondHalf: { days: 3, total: 6, meanPerDay: 2 },
   ratio: 2, direction: 'climbing', reason: null };
 const emptyTrend = (factor: string) => ({ factor, days: [], firstHalf: { days: 0, samples: 0, meanMs: null },
@@ -78,6 +82,15 @@ describe('blocker throughput pool schema honesty', () => {
     expect(response.body).toMatchObject({ poolComplete: false,
       failures: [{ machineId: 'peer-a', reason: 'invalid-body' }] });
     expect(response.body.origins).toHaveLength(1);
+  });
+
+  it('rejects a hostile peer whose live total does not match its cumulative climb', async () => {
+    const hostile = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'),
+      emptyTrend('clear-latency'), { ...countTrend, windowTotal: 999 }] };
+    const response = await request(app({ schemaVersion: 2, origins: [hostile] }))
+      .get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false,
+      failures: [{ machineId: 'peer-a', reason: 'invalid-body' }] });
   });
 
   it('rejects a hostile peer that fabricates temporal order with duplicate day labels', async () => {

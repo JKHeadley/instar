@@ -27,6 +27,13 @@ describe('deliverable throughput reconciliation integration', () => {
     fs.writeFileSync(path.join(dir, 'config.json'), '{}');
     const tracker = new CommitmentTracker({ stateDir: dir, liveConfig: new LiveConfig(dir),
       blockerLifecycleEnabled: true, originMachineId: 'machine-a' });
+    // Put the real completion beyond the reconciler's 64-row slice boundary.
+    // A startup pass must drain the bounded backlog without waiting five
+    // minutes per slice before the live count can move.
+    for (let index = 0; index < 70; index++) tracker.record({
+      userRequest: `historical commitment ${String(index).padStart(2, '0')}`,
+      agentResponse: 'recorded', type: 'behavioral', behavioralRule: `rule-${index}`,
+    });
     const commitment = tracker.record({ userRequest: 'complete before metrics startup', agentResponse: 'done',
       type: 'one-time-action', verificationMethod: 'manual' });
     expect(tracker.deliver(commitment.id)).not.toBeNull();
@@ -34,7 +41,7 @@ describe('deliverable throughput reconciliation integration', () => {
     const dbPath = path.join(dir, 'blocker-lifecycle.db');
     const first = new BlockerLifecycleService(tracker, new BlockerLifecycleLedger({ dbPath }), 'machine-a');
     services.push(first);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(5_001);
     expect((first.localSummary(24).factors as Array<Record<string, unknown>>)
       .find(row => row.factor === 'deliverable-completion')).toMatchObject({ total: 1, completed: 1 });
     first.close();
@@ -42,7 +49,7 @@ describe('deliverable throughput reconciliation integration', () => {
 
     const second = new BlockerLifecycleService(tracker, new BlockerLifecycleLedger({ dbPath }), 'machine-a');
     services.push(second);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(5_001);
     expect((second.localSummary(24).factors as Array<Record<string, unknown>>)
       .find(row => row.factor === 'deliverable-completion')).toMatchObject({ total: 1, completed: 1 });
   });

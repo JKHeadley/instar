@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ describe('BlockerLifecycleService deliverable throughput', () => {
   const dirs: string[] = [];
   const services: BlockerLifecycleService[] = [];
   afterEach(() => {
+    vi.useRealTimers();
     services.splice(0).forEach(service => service.close());
     dirs.splice(0).forEach(dir => SafeFsExecutor.safeRmSync(dir, {
       recursive: true, force: true, operation: 'BlockerLifecycleService-throughput.test.ts',
@@ -31,15 +32,28 @@ describe('BlockerLifecycleService deliverable throughput', () => {
 
   it('counts the existing delivered event once and exposes a live non-zero summary', async () => {
     const now = Date.UTC(2026, 6, 21, 12);
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
     const { tracker, service } = fixture(now);
+    const completionTrend = () => (service.localTrend(7).factors as Array<Record<string, unknown>>)
+      .find(row => row.factor === 'deliverable-completion');
+    expect(completionTrend()).toMatchObject({ windowTotal: 0, currentDayCount: 0 });
     const c = tracker.record({ userRequest: 'ship one deliverable', agentResponse: 'will ship',
       type: 'one-time-action', verificationMethod: 'manual' });
     expect(tracker.deliver(c.id)).not.toBeNull();
-    await new Promise(resolve => setImmediate(resolve));
+    await vi.advanceTimersByTimeAsync(0);
     const factor = (service.localSummary(24).factors as Array<Record<string, unknown>>)
       .find(row => row.factor === 'deliverable-completion');
     expect(factor).toMatchObject({ unit: 'count', completed: 1, total: 1, averagePerDay: 1,
       recoverability: 'reconcilable' });
+    expect(completionTrend()).toMatchObject({ windowTotal: 1, currentDayCount: 1,
+      cumulativeDays: expect.arrayContaining([{ day: '2026-07-21', count: 1, cumulative: 1, complete: false }]) });
+
+    const second = tracker.record({ userRequest: 'ship another deliverable', agentResponse: 'will ship',
+      type: 'one-time-action', verificationMethod: 'manual' });
+    expect(tracker.deliver(second.id)).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(completionTrend()).toMatchObject({ windowTotal: 2, currentDayCount: 2 });
   });
 
   it('reports a climbing count trend when the second half of a drive completes more deliverables', () => {
@@ -56,6 +70,7 @@ describe('BlockerLifecycleService deliverable throughput', () => {
     const factor = (service.localTrend(7).factors as Array<Record<string, unknown>>)
       .find(row => row.factor === 'deliverable-completion');
     expect(factor).toMatchObject({ unit: 'count', direction: 'climbing', reason: null,
+      windowTotal: 15, currentDayCount: 0,
       firstHalf: { days: 3, total: 3, meanPerDay: 1 },
       secondHalf: { days: 3, total: 12, meanPerDay: 4 }, ratio: 4 });
   });
