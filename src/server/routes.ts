@@ -25043,7 +25043,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           outcomes: Object.fromEntries(outcomeKeys.map(k => [k, outcomes[k]])) });
       } else {
         if (f.factor === 'deliverable-completion') {
-          if (f.unit !== 'count' || !Array.isArray(f.days) || f.days.length < 6 || f.days.length > 89 || !finiteOrNull(f.ratio) ||
+          if (f.unit !== 'count' || !Array.isArray(f.days) || f.days.length > 89 || !finiteOrNull(f.ratio) ||
+              !Number.isSafeInteger(f.windowTotal) || (f.windowTotal as number) < 0 ||
+              !Number.isSafeInteger(f.currentDayCount) || (f.currentDayCount as number) < 0 ||
+              !Array.isArray(f.cumulativeDays) || f.cumulativeDays.length !== f.days.length + 1 ||
               (typeof f.ratio === 'number' && f.ratio < 0) ||
               !['climbing', 'flat', 'declining', 'insufficient-data'].includes(String(f.direction)) ||
               !(f.reason === null || ['insufficient-days', 'zero-denominator'].includes(String(f.reason)))) return null;
@@ -25059,6 +25062,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             const current = Date.parse(`${days[i]!.day as string}T00:00:00.000Z`);
             if (current - previous !== 86_400_000) return null;
           }
+          let runningTotal = 0;
+          const cumulativeDays = f.cumulativeDays.map((d, index) => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            const expectedDay = index < days.length ? days[index]!.day : undefined;
+            const validDay = /^\d{4}-\d{2}-\d{2}$/.test(String(row.day));
+            const validCount = Number.isSafeInteger(row.count) && (row.count as number) >= 0;
+            if (!validDay || !validCount || !Number.isSafeInteger(row.cumulative) || typeof row.complete !== 'boolean') return null;
+            runningTotal += row.count as number;
+            if (row.cumulative !== runningTotal || row.complete !== (index < days.length) ||
+                (index < days.length && row.day !== expectedDay)) return null;
+            return { day: row.day, count: row.count, cumulative: row.cumulative, complete: row.complete };
+          });
+          if (cumulativeDays.some(d => d === null) || runningTotal !== f.windowTotal ||
+              cumulativeDays[cumulativeDays.length - 1]?.count !== f.currentDayCount) return null;
+          const liveDay = cumulativeDays[cumulativeDays.length - 1]?.day;
+          const expectedLiveDay = days.length > 0
+            ? new Date(Date.parse(`${days[days.length - 1]!.day as string}T00:00:00.000Z`) + 86_400_000).toISOString().slice(0, 10)
+            : undefined;
+          if (expectedLiveDay !== undefined && liveDay !== expectedLiveDay) return null;
           const half = (v: unknown) => {
             if (!v || typeof v !== 'object') return null;
             const h = v as Record<string, unknown>;
@@ -25089,7 +25112,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             const expectedDirection = expectedRatio > 1 ? 'climbing' : expectedRatio < 1 ? 'declining' : 'flat';
             if (!sameNumber(f.ratio, expectedRatio) || f.reason !== null || f.direction !== expectedDirection) return null;
           }
-          out.push({ factor: f.factor, unit: 'count', days, firstHalf, secondHalf,
+          out.push({ factor: f.factor, unit: 'count', windowTotal: f.windowTotal,
+            currentDayCount: f.currentDayCount, cumulativeDays, days, firstHalf, secondHalf,
             ratio: f.ratio, direction: f.direction, reason: f.reason });
           continue;
         }

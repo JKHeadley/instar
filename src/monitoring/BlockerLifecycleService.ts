@@ -325,8 +325,9 @@ export class BlockerLifecycleService {
   private completionTrend(sinceMs: number, windowDays: number): Record<string, unknown> {
     const todayStart = Date.parse(`${new Date(this.now()).toISOString().slice(0, 10)}T00:00:00.000Z`);
     const counts = new Map<string, number>();
-    for (const row of this.ledger.values('deliverable-completion', sinceMs)) {
-      if (row.outcome !== 'observed' || row.observedAtMs >= todayStart) continue;
+    const observed = this.ledger.values('deliverable-completion', sinceMs)
+      .filter(row => row.outcome === 'observed');
+    for (const row of observed) {
       const day = new Date(row.observedAtMs).toISOString().slice(0, 10);
       counts.set(day, (counts.get(day) ?? 0) + 1);
     }
@@ -336,6 +337,11 @@ export class BlockerLifecycleService {
       const day = new Date(at).toISOString().slice(0, 10);
       return { day, count: counts.get(day) ?? 0 };
     });
+    const currentDay = new Date(todayStart).toISOString().slice(0, 10);
+    let cumulative = 0;
+    const cumulativeDays = [...days, { day: currentDay, count: counts.get(currentDay) ?? 0 }]
+      .map(day => ({ ...day, cumulative: (cumulative += day.count), complete: day.day !== currentDay }));
+    const live = { windowTotal: observed.length, currentDayCount: counts.get(currentDay) ?? 0, cumulativeDays };
     const split = Math.floor(days.length / 2);
     const describe = (part: typeof days) => {
       const total = part.reduce((sum, day) => sum + day.count, 0);
@@ -344,15 +350,15 @@ export class BlockerLifecycleService {
     const firstHalf = describe(days.slice(0, split));
     const secondHalf = describe(days.slice(split));
     if (days.length < 4 || firstHalf.days < 2 || secondHalf.days < 2) {
-      return { factor: 'deliverable-completion', unit: 'count', days, firstHalf, secondHalf,
+      return { factor: 'deliverable-completion', unit: 'count', ...live, days, firstHalf, secondHalf,
         ratio: null, direction: 'insufficient-data', reason: 'insufficient-days' };
     }
     if (firstHalf.meanPerDay === null || firstHalf.meanPerDay === 0) {
-      return { factor: 'deliverable-completion', unit: 'count', days, firstHalf, secondHalf,
+      return { factor: 'deliverable-completion', unit: 'count', ...live, days, firstHalf, secondHalf,
         ratio: null, direction: secondHalf.total > 0 ? 'climbing' : 'flat', reason: 'zero-denominator' };
     }
     const ratio = (secondHalf.meanPerDay ?? 0) / firstHalf.meanPerDay;
-    return { factor: 'deliverable-completion', unit: 'count', days, firstHalf, secondHalf, ratio,
+    return { factor: 'deliverable-completion', unit: 'count', ...live, days, firstHalf, secondHalf, ratio,
       direction: ratio > 1 ? 'climbing' : ratio < 1 ? 'declining' : 'flat', reason: null };
   }
 
@@ -430,7 +436,8 @@ export class BlockerLifecycleService {
     if (this.now() < this.breakerUntil) { this.schedule(Math.min(300_000, this.breakerUntil - this.now())); return; }
     const commitments = this.tracker.getAll().sort((a, b) => a.id.localeCompare(b.id));
     const slice = commitments.slice(this.cursor, this.cursor + 64);
-    this.cursor = commitments.length === 0 || this.cursor + slice.length >= commitments.length ? 0 : this.cursor + slice.length;
+    const sweepComplete = commitments.length === 0 || this.cursor + slice.length >= commitments.length;
+    this.cursor = sweepComplete ? 0 : this.cursor + slice.length;
     let failed = false;
     for (const c of slice) for (const episode of c.blockerEpisodes ?? []) {
       if (episode.closedAtMs === undefined || !episode.clearSourceId) continue;
@@ -447,6 +454,14 @@ export class BlockerLifecycleService {
       this.failures++;
       if (this.failures >= 6) { this.breakerUntil = this.now() + 15 * 60_000; this.schedule(15 * 60_000); }
       else this.schedule(Math.min(300_000, 5_000 * 2 ** (this.failures - 1)));
-    } else { this.failures = 0; this.ledger.prune(); this.schedule(5 * 60_000); }
+    } else {
+      this.failures = 0;
+      if (sweepComplete) this.ledger.prune();
+      // A mature store can contain hundreds of commitments. Drain the bounded
+      // 64-row slices back-to-back on startup/recovery so recent completions at
+      // the tail do not sit at zero for five minutes per slice. The five-minute
+      // cadence begins only after a complete sweep.
+      this.schedule(sweepComplete ? 5 * 60_000 : 0);
+    }
   }
 }

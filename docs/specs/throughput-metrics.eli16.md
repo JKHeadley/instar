@@ -10,13 +10,15 @@ The current tracker hides file-write failures, so v1 first repairs that foundati
 
 The first measurement is `request-to-persist`: monotonic server time from accepting the worker's transition request to the acknowledged authoritative rename. It is honestly best-effort: a crash in the tiny gap after rename but before SQLite can lose that sample, and coverage shows the loss rather than reconstructing a fake duration. The second is `clear-latency`: how long the acknowledged blocker episode remained open. Callers cannot provide either timestamp.
 
-The third measurement is `deliverable-completion`: one tally for each commitment whose durable state is delivered. It reuses the same ledger and reconciles missed delivered events after restart without double-counting. Its trend includes complete zero-count UTC days, excludes today's unfinished day, and compares the older half with the newer half to say climbing, flat, declining, or insufficient data.
+The third measurement is `deliverable-completion`: one tally for each commitment whose durable state is delivered. It reuses the same ledger and reconciles missed delivered events after restart without double-counting. Its trend compares only complete zero-count UTC days in the older and newer halves to say climbing, flat, declining, or insufficient data. Additive live fields also show today's unfinished tally and the cumulative total, so a delivery is visible immediately without letting a partial day distort the direction.
 
 The API returns raw per-factor timing or count data, sample coverage, missing/excluded counts, and per-factor trends. Its response schema is version 2; old schema-v1 peers are shown as unsupported rather than zero. It does not create a combined score, productivity rank, worker comparison, or throughput index. Parallelism utilization, rework rate, and any combined index remain tracked follow-ons.
 
 ## Failure behavior
 
 The commitment transition remains authoritative. SQLite metrics are written only after persistence, and a database failure never blocks or rolls back the worker's state change. A bounded reconciliation pass repairs clear rows; request latency remains best-effort because its exact monotonic completion duration cannot be written inside the file replacement it measures. Reconciliation has exponential backoff, a breaker, and deduplicated logs, so permanent database failure cannot create an unbounded retry storm.
+
+Large commitment stores are scanned in groups of 64. During startup or recovery, the service now yields to the event loop and promptly continues with the next group until the whole store has been checked; it waits five minutes only after a complete sweep. This keeps each turn bounded while preventing a recent delivery near the end of a mature store from remaining invisible for five minutes per group.
 
 Legacy blocked records without a trustworthy start time remain missing instead of receiving an invented good value. Negative or implausibly long wall-clock spans are excluded. Commitment mutations always route back to the record's origin machine; peer copies are read-only, so replicas cannot reopen or conflict with the authoritative episode.
 
