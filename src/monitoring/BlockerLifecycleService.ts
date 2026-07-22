@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { Initiative, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import type { InitiativeTracker } from '../core/InitiativeTracker.js';
 import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMetricRecord, type MaturationEvaluationRecord, type MaturationEvaluationStatus } from './BlockerLifecycleLedger.js';
+import { DegradationReporter } from './DegradationReporter.js';
 
 type FailureReason = 'insufficient-days' | 'insufficient-samples' | 'zero-denominator';
 
@@ -176,7 +177,18 @@ export class BlockerLifecycleService {
     for (const metric of contract.metrics) {
       if (metric.source === 'feature-summary') {
         let projected: { value: number; samples: number } | null = null;
-        try { projected = this.maturationProjections.get(metric.sourceRef)?.() ?? null; } catch { projected = null; }
+        try {
+          projected = this.maturationProjections.get(metric.sourceRef)?.() ?? null;
+        } catch (error) {
+          DegradationReporter.getInstance().report({
+            feature: 'blocker-lifecycle.maturation-projection',
+            primary: `capture ${metric.sourceRef} owner evidence`,
+            fallback: 'leave the observation absent so maturation remains HOLD',
+            reason: error instanceof Error ? error.message : 'projection callback threw',
+            impact: `${featureId} cannot mature until a later projection succeeds`,
+          });
+          projected = null;
+        }
         if (projected && Number.isFinite(projected.value) && Number.isInteger(projected.samples) && projected.samples >= 0) {
           this.ledger.recordMaturationObservation({ origin: this.origin, featureId, metricId: metric.id,
             source: metric.source, sourceRef: metric.sourceRef, observedAtMs: now,

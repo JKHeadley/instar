@@ -3649,8 +3649,18 @@ export class AgentServer {
             if (row.recovered === true) successful++;
           }
           return { value: successful, samples };
-        } catch { return null; }
-        finally { if (fd !== null) try { fs.closeSync(fd); } catch { /* read-only projection cleanup */ } }
+        } catch (error) {
+          DegradationReporter.getInstance().report({
+            feature: 'blocker-lifecycle.context-recovery-projection',
+            primary: 'read the bounded local recovery event tail',
+            fallback: 'return no observation so maturation remains HOLD',
+            reason: error instanceof Error ? error.message : 'recovery event-log read failed',
+            impact: 'context-recovery evidence remains unavailable until a later successful read',
+          });
+          return null;
+        } finally {
+          if (fd !== null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — read-only descriptor cleanup */ }
+        }
       });
       this.blockerLifecycleService.registerMaturationProjection('self-heal-gate.successful-repairs', () => ({
         value: this.feedbackDefaultsSelfHealEvidence.successful, samples: this.feedbackDefaultsSelfHealEvidence.samples,

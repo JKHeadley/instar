@@ -71,6 +71,8 @@ schema checks are enumerable invariants. Promotion remains outside this change.
   point-in-time value and D7 applies its existing evaluation transaction.
 - **Feedback loops:** maturation output does not write into source metrics or promote a
   rollout, so no control loop is introduced.
+- **Degradation visibility:** a throwing owner projection or failed bounded recovery-log
+  read reports through `DegradationReporter`; the observation remains absent/HOLD.
 
 ## 6. External surfaces
 
