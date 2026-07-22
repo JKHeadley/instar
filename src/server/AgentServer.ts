@@ -576,6 +576,7 @@ export class AgentServer {
     /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
     getInboundQueue?: () => import('../core/QueueDrainLoop.js').QueueDrainLoop | null;
     getMachineCoherence?: () => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null;
+    getSingleMachineFailoverGap?: () => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Signed cross-machine carrier into the recipient's existing A2A inbox. */
@@ -3537,6 +3538,7 @@ export class AgentServer {
       })(),
       getInboundQueue: options.getInboundQueue ?? null,
       getMachineCoherence: options.getMachineCoherence ?? null,
+      getSingleMachineFailoverGap: options.getSingleMachineFailoverGap ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       workingSetArtifactManager: options.workingSetArtifactManager ?? null,

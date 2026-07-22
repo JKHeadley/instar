@@ -216,6 +216,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'singleMachineFailoverGap',
+    // The route lives under the already-claimed '/pool' top-level prefix (owned
+    // by the multiMachinePool entry), so this dedicated awareness entry claims
+    // NO new top-level prefix — it surfaces GET /pool/failover-gap via endpoints
+    // instead (mirrors the other /pool/* sub-feature entries + the empty-prefix
+    // precedent). Claiming '/pool/failover-gap' trips capabilities-discoverability:
+    // that test extracts TOP-LEVEL prefixes, so 'pool/failover-gap' is a dead entry.
+    prefixes: [],
+    description: 'Single-machine failover-gap detector — status snapshot for the "no failover target for active autonomous work" guard (single-machine WHILE active autonomous runs → ONE deduped HIGH attention item). Dev-gated dark on the fleet (503 when off); signal-only.',
+    build: ({ ctx }) => ({
+      configured: !!(ctx.getSingleMachineFailoverGap?.() ?? null),
+      endpoints: ['GET /pool/failover-gap'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',

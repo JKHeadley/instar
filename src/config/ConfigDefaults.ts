@@ -191,6 +191,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       allowFreshFallback: false,
       notifyUser: true,
     },
+    // SingleMachineFailoverGapDetector (increment 2) — pure SIGNAL-only guard that
+    // surfaces the "no failover target for active autonomous work" gap. DEV-GATED:
+    // `enabled` is deliberately OMITTED so resolveDevAgentGate decides — LIVE on a
+    // developmentAgent, DARK on the fleet. NEVER hardcode `enabled: false` here (it
+    // would dark dev agents too — the #1001 mechanism). Ships dryRun-FIRST even on
+    // dev (computes + counts would-raise, raises NOTHING until a deliberate
+    // dryRun:false flip). docs — GET /pool/failover-gap.
+    singleMachineFailoverGap: {
+      dryRun: true,
+    },
     // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
     // for an autonomous run gone silent-to-user while its output is still moving.
     // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
