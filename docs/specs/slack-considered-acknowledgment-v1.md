@@ -5,6 +5,13 @@ author: "instar-codey"
 parent-principle: "Signal vs. Authority"
 status: converging
 approved: true
+rollout-disposition: composed
+rollout-source-pr: 1537
+rollout-owner-feature: slack-organization-integration
+rollout-criteria: "The existing AmbientContributionGate emits a bounded considered acknowledgment for at least one eligible message without adding a second decision authority."
+rollout-evidence-type: endpoint
+rollout-evidence-ref: /permissions/ambient-stats
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"considered-slack-acknowledgments","source":"feature-summary","sourceRef":"slack-decision-gate.considered-acknowledgments","direction":"at-least","threshold":1,"minSamples":1}]}'
 approved-by: "operator blanket pre-approval relayed 2026-07-21"
 supervision: pre-approved-build-and-merge
 lessons-engaged: [P1, P2, P3, P4, P5, P19, P20]

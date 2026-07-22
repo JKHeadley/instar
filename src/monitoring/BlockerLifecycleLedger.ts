@@ -30,8 +30,8 @@ export interface BlockerLedgerCounters {
   reconciled: number;
 }
 
-export type MaturationMetricSource = 'blocker-summary' | 'blocker-trend';
-export type MaturationEvaluationStatus = 'ready' | 'hold' | 'stale-evidence' | 'insufficient-evidence' | 'missing-contract' | 'missed-cadence';
+export type MaturationMetricSource = 'blocker-summary' | 'blocker-trend' | 'feature-summary';
+export type MaturationEvaluationStatus = 'ready' | 'hold' | 'stale-evidence' | 'insufficient-evidence' | 'missing-contract' | 'invalid-contract' | 'missed-cadence';
 
 export interface MaturationMetricObservation {
   origin: string; featureId: string; metricId: string; source: MaturationMetricSource;
@@ -40,7 +40,7 @@ export interface MaturationMetricObservation {
 }
 
 export interface MaturationEvaluationRecord {
-  origin: string; featureId: string; rung: string; dueSlotMs: number; evaluatedAtMs: number;
+  origin: string; featureId: string; rung: string | null; dueSlotMs: number; evaluatedAtMs: number;
   status: MaturationEvaluationStatus; passingMetrics: number; totalMetrics: number;
   minNormalizedMargin: number | null; contractHash: string; newestEvidenceAtMs: number | null;
   additionalMissedSlots?: number;
@@ -101,6 +101,47 @@ export class BlockerLifecycleLedger {
         `);
       })();
     }
+    const maturation = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='maturation_evaluations'")
+      .get() as { sql?: string } | undefined;
+    if (maturation?.sql && /rung\s+TEXT\s+NOT\s+NULL/i.test(maturation.sql)) {
+      this.db.transaction(() => this.db!.exec(`
+        DROP INDEX IF EXISTS idx_maturation_evaluation_trend;
+        ALTER TABLE maturation_evaluations RENAME TO maturation_evaluations_v1;
+        CREATE TABLE maturation_evaluations (
+          origin TEXT NOT NULL, feature_id TEXT NOT NULL, rung TEXT,
+          due_slot_ms INTEGER NOT NULL, evaluated_at_ms INTEGER NOT NULL, status TEXT NOT NULL,
+          passing_metrics INTEGER NOT NULL, total_metrics INTEGER NOT NULL,
+          min_normalized_margin REAL, contract_hash TEXT NOT NULL, newest_evidence_at_ms INTEGER,
+          additional_missed_slots INTEGER NOT NULL DEFAULT 0, schema_version INTEGER NOT NULL DEFAULT 2,
+          UNIQUE(origin,feature_id,due_slot_ms)
+        );
+        INSERT INTO maturation_evaluations
+          SELECT origin,feature_id,rung,due_slot_ms,evaluated_at_ms,status,passing_metrics,total_metrics,
+            min_normalized_margin,contract_hash,newest_evidence_at_ms,additional_missed_slots,2
+          FROM maturation_evaluations_v1;
+        DROP TABLE maturation_evaluations_v1;
+      `))();
+    }
+    const observations = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='maturation_metric_observations'")
+      .get() as { sql?: string } | undefined;
+    if (observations?.sql && !observations.sql.includes('feature-summary')) {
+      this.db.transaction(() => this.db!.exec(`
+        DROP INDEX IF EXISTS idx_maturation_observation_latest;
+        ALTER TABLE maturation_metric_observations RENAME TO maturation_metric_observations_v1;
+        CREATE TABLE maturation_metric_observations (
+          origin TEXT NOT NULL, feature_id TEXT NOT NULL, metric_id TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('blocker-summary','blocker-trend','feature-summary')),
+          source_ref TEXT NOT NULL, observed_at_ms INTEGER NOT NULL, value REAL NOT NULL,
+          samples INTEGER NOT NULL, descriptor_version INTEGER NOT NULL DEFAULT 1,
+          benchmark_ref TEXT, schema_version INTEGER NOT NULL DEFAULT 2,
+          UNIQUE(origin,feature_id,metric_id,source,source_ref,observed_at_ms)
+        );
+        INSERT INTO maturation_metric_observations
+          SELECT origin,feature_id,metric_id,source,source_ref,observed_at_ms,value,samples,
+            descriptor_version,benchmark_ref,2 FROM maturation_metric_observations_v1;
+        DROP TABLE maturation_metric_observations_v1;
+      `))();
+    }
     this.db.exec(`
         CREATE TABLE IF NOT EXISTS blocker_lifecycle_metrics (
           origin TEXT NOT NULL,
@@ -116,7 +157,7 @@ export class BlockerLifecycleLedger {
           ON blocker_lifecycle_metrics(factor, observed_at_ms);
         CREATE TABLE IF NOT EXISTS maturation_metric_observations (
           origin TEXT NOT NULL, feature_id TEXT NOT NULL, metric_id TEXT NOT NULL,
-          source TEXT NOT NULL CHECK (source IN ('blocker-summary','blocker-trend')),
+          source TEXT NOT NULL CHECK (source IN ('blocker-summary','blocker-trend','feature-summary')),
           source_ref TEXT NOT NULL, observed_at_ms INTEGER NOT NULL, value REAL NOT NULL,
           samples INTEGER NOT NULL, descriptor_version INTEGER NOT NULL DEFAULT 1,
           benchmark_ref TEXT, schema_version INTEGER NOT NULL DEFAULT 1,
@@ -125,7 +166,7 @@ export class BlockerLifecycleLedger {
         CREATE INDEX IF NOT EXISTS idx_maturation_observation_latest ON maturation_metric_observations
           (origin,feature_id,metric_id,source,source_ref,observed_at_ms DESC);
         CREATE TABLE IF NOT EXISTS maturation_evaluations (
-          origin TEXT NOT NULL, feature_id TEXT NOT NULL, rung TEXT NOT NULL,
+          origin TEXT NOT NULL, feature_id TEXT NOT NULL, rung TEXT,
           due_slot_ms INTEGER NOT NULL, evaluated_at_ms INTEGER NOT NULL, status TEXT NOT NULL,
           passing_metrics INTEGER NOT NULL, total_metrics INTEGER NOT NULL,
           min_normalized_margin REAL, contract_hash TEXT NOT NULL, newest_evidence_at_ms INTEGER,

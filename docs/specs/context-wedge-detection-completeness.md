@@ -4,6 +4,13 @@ slug: "context-wedge-detection-completeness"
 author: "instar-codey"
 status: approved
 approved: true
+rollout-disposition: composed
+rollout-source-pr: 1536
+rollout-owner-feature: context-wedge-sentinel
+rollout-criteria: "A detector-positive context wedge remains latched until the existing SessionRecovery owner records genuine recovery progress."
+rollout-evidence-type: endpoint
+rollout-evidence-ref: /health
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"successful-context-recoveries","source":"feature-summary","sourceRef":"context-recovery.successful-recoveries","direction":"at-least","threshold":1,"minSamples":1}]}'
 parent-principle: "The Agent Is Always Reachable"
 lessons-engaged:
   - "Verify the State, Not Its Symbol: preserve an existing positive detector result after its banner scrolls away."

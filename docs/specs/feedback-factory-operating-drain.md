@@ -9,6 +9,14 @@ review-completed-at: "2026-07-20T17:03:15.423Z"
 review-report: "docs/specs/reports/feedback-factory-operating-drain-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5 + gemini-cli:gemini-3.1-pro-preview"
 approved: true
+ships-staged: true
+rollout-disposition: active
+rollout-source-pr: 1531
+rollout-flag-path: feedbackFactory.drain.enabled
+rollout-criteria: "At least one operated drain run completes without an authority, integrity, or consumer-liveness failure in each evidence window."
+rollout-evidence-type: endpoint
+rollout-evidence-ref: /feedback-factory/drain/status
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"completed-drain-runs","source":"feature-summary","sourceRef":"feedback-factory.completed-runs","direction":"at-least","threshold":1,"minSamples":1}]}'
 approved-at: "2026-07-20T16:53:14.000Z"
 approval-note: "Operator approved with frontier-model Instar agent as default readiness authority and human approval as escalation-only."
 parent-principle: "Canonical Pipeline Operational Completeness — Accepted Intake Must Drain"

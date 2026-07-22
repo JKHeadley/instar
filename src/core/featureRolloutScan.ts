@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import type { SpecArtifact } from './FeatureRolloutReconciler.js';
 import type { RolloutFlagObservation } from './featureRollout.js';
-import type { MaturationEvaluationContract, MaturationMetricSource } from './InitiativeTracker.js';
+import type { MaturationEvaluationContract, MaturationMetricSource, RolloutAccountingDisposition } from './InitiativeTracker.js';
 
 const RECENT_MERGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14d ⇒ active vs terminal backfill
 
@@ -54,6 +54,12 @@ const MATURATION_SOURCE_REFS: Readonly<Record<MaturationMetricSource, ReadonlySe
     'clear-latency.coverage', 'clear-latency.p95Ms',
   ]),
   'blocker-trend': new Set(['request-to-persist.ratio', 'clear-latency.ratio']),
+  'feature-summary': new Set([
+    'feedback-factory.completed-runs', 'autonomous-throughput.observed-runs',
+    'claim-verification.classified-claims', 'blocker-lifecycle.completed-transitions',
+    'mutual-ssh.ready-peers', 'context-recovery.successful-recoveries',
+    'slack-decision-gate.considered-acknowledgments', 'self-heal-gate.successful-repairs',
+  ]),
 };
 
 export function parseMaturationContract(raw: string | undefined): MaturationContractParseResult | undefined {
@@ -75,7 +81,7 @@ export function parseMaturationContract(raw: string | undefined): MaturationCont
     if (!rawMetric || typeof rawMetric !== 'object' || Array.isArray(rawMetric)) return { ok: false, error: 'invalid-shape' };
     const m = rawMetric as Record<string, unknown>;
     if (typeof m.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(m.id) || ids.has(m.id) ||
-        !['blocker-summary', 'blocker-trend'].includes(String(m.source)) || typeof m.sourceRef !== 'string' ||
+        !['blocker-summary', 'blocker-trend', 'feature-summary'].includes(String(m.source)) || typeof m.sourceRef !== 'string' ||
         !['at-least', 'at-most'].includes(String(m.direction)) || typeof m.threshold !== 'number' || !Number.isFinite(m.threshold) ||
         !Number.isInteger(m.minSamples) || (m.minSamples as number) < 1 || (m.minSamples as number) > 100_000) {
       return { ok: false, error: 'invalid-shape' };
@@ -91,6 +97,11 @@ export function parseMaturationContract(raw: string | undefined): MaturationCont
 function maturationContractFrom(fm: Record<string, string>): MaturationEvaluationContract | undefined {
   const parsed = parseMaturationContract(fm['rollout-metrics-json']);
   return parsed?.ok ? parsed.contract : undefined;
+}
+
+function maturationContractErrorFrom(fm: Record<string, string>): MaturationContractError | undefined {
+  const parsed = parseMaturationContract(fm['rollout-metrics-json']);
+  return parsed && !parsed.ok ? parsed.error : undefined;
 }
 
 interface TraceInfo { prNumber?: number; createdAtMs?: number; }
@@ -144,6 +155,12 @@ export function scanSpecArtifacts(repoRoot: string, now: () => number = () => Da
         ? { type: (fm['rollout-evidence-type'] as 'log-filter' | 'endpoint') || 'log-filter', ref: fm['rollout-evidence-ref'], filter: fm['rollout-evidence-filter'] || undefined }
         : undefined,
       maturationEvaluation: maturationContractFrom(fm),
+      maturationContractError: maturationContractErrorFrom(fm),
+      rolloutDisposition: ['active', 'composed', 'excluded'].includes(fm['rollout-disposition'])
+        ? fm['rollout-disposition'] as RolloutAccountingDisposition : undefined,
+      sourcePrNumber: /^\d+$/.test(fm['rollout-source-pr'] ?? '') ? Number(fm['rollout-source-pr']) : undefined,
+      ownerFeatureId: fm['rollout-owner-feature'] || undefined,
+      exclusionReason: fm['rollout-exclusion-reason'] || undefined,
       traceExists,
       prNumber: trace?.prNumber,
       merged,
@@ -271,6 +288,12 @@ export function scanSpecArtifactsCanonical(opts: CanonicalScanOpts): CanonicalSc
         ? { type: (fm['rollout-evidence-type'] as 'log-filter' | 'endpoint') || 'log-filter', ref: fm['rollout-evidence-ref'], filter: fm['rollout-evidence-filter'] || undefined }
         : undefined,
       maturationEvaluation: maturationContractFrom(fm),
+      maturationContractError: maturationContractErrorFrom(fm),
+      rolloutDisposition: ['active', 'composed', 'excluded'].includes(fm['rollout-disposition'])
+        ? fm['rollout-disposition'] as RolloutAccountingDisposition : undefined,
+      sourcePrNumber: /^\d+$/.test(fm['rollout-source-pr'] ?? '') ? Number(fm['rollout-source-pr']) : undefined,
+      ownerFeatureId: fm['rollout-owner-feature'] || undefined,
+      exclusionReason: fm['rollout-exclusion-reason'] || undefined,
       traceExists,
       prNumber: trace?.prNumber,
       merged,

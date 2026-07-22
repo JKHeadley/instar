@@ -4,6 +4,14 @@ slug: "autonomous-throughput-floor"
 author: "echo + codey"
 status: converged
 approved: true
+ships-staged: true
+rollout-disposition: active
+rollout-source-pr: 1533
+rollout-flag-path: monitoring.throughputFloor.enabled
+rollout-criteria: "At least one eligible pull/audit observation completes in the evidence window with its bounded audit record preserved."
+rollout-evidence-type: endpoint
+rollout-evidence-ref: /autonomous/throughput-floor
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"observed-throughput-runs","source":"feature-summary","sourceRef":"autonomous-throughput.observed-runs","direction":"at-least","threshold":1,"minSamples":1}]}'
 review-convergence: "2026-07-21 — re-converged at PULL/AUDIT-ONLY v1; action-bearing WIP removed; see reports/autonomous-throughput-floor-convergence.md"
 scope: "PULL/AUDIT-ONLY v1"
 parent-principle: "Observation Needs Structure"

@@ -4,6 +4,13 @@ slug: "self-heal-gate"
 author: "echo"
 status: draft
 approved: true
+rollout-disposition: composed
+rollout-source-pr: 1538
+rollout-owner-feature: feedback-factory-operating-drain
+rollout-criteria: "The feedback-factory defaults consumer records at least one verified repair or already-healthy result within its existing bounded governor and episode controls."
+rollout-evidence-type: endpoint
+rollout-evidence-ref: /feedback-factory/drain/status
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"successful-bounded-repairs","source":"feature-summary","sourceRef":"self-heal-gate.successful-repairs","direction":"at-least","threshold":1,"minSamples":1}]}'
 parent-principle: "Capacity Safety — No Unbounded Self-Action"
 review-convergence: "2026-07-21T12:04:51.495Z"
 review-iterations: 6

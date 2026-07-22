@@ -385,6 +385,7 @@ export class AgentServer {
   } | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
   private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
+  private feedbackDefaultsSelfHealEvidence = { successful: 0, samples: 0 };
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -2239,7 +2240,13 @@ export class AgentServer {
               });
             },
             audit: (event) => console.log(`[self-heal-gate] feedback-defaults ${event.event}${event.reason ? ` (${event.reason})` : ''}`),
-          }).catch((error) => console.warn('[self-heal-gate] feedback-defaults attempt failed safely:', error instanceof Error ? error.message : 'unknown'));
+          }).then(result => {
+            this.feedbackDefaultsSelfHealEvidence.samples++;
+            if (result.outcome === 'healed' || result.outcome === 'healthy') this.feedbackDefaultsSelfHealEvidence.successful++;
+          }).catch((error) => {
+            this.feedbackDefaultsSelfHealEvidence.samples++;
+            console.warn('[self-heal-gate] feedback-defaults attempt failed safely:', error instanceof Error ? error.message : 'unknown');
+          });
         }
         if (options.config.developmentAgent === true && sourceCheckout) {
           const backupTick = () => {
@@ -3596,6 +3603,59 @@ export class AgentServer {
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
+    if (this.blockerLifecycleService) {
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.completed-runs', () => {
+        const run = this.feedbackDrain?.service.stats().lastRun;
+        if (!run) return null;
+        return { value: run.state === 'succeeded' || run.state === 'no-op' ? 1 : 0, samples: 1 };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('autonomous-throughput.observed-runs', () => {
+        const runs = routeCtx.autonomousThroughputFloor?.status().runs.length ?? 0;
+        return { value: runs, samples: runs };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('claim-verification.classified-claims', () => {
+        const stats = this.completionClaimVerifier?.stats();
+        if (!stats) return null;
+        return { value: stats.classifiedTurns, samples: stats.candidateTurns };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('mutual-ssh.ready-peers', () => {
+        const status = routeCtx.mutualSshHealth?.() as { pairs?: Array<{ mutual?: boolean }> } | null;
+        if (!status?.pairs) return null;
+        return { value: status.pairs.filter(pair => pair.mutual === true).length, samples: status.pairs.length };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('slack-decision-gate.considered-acknowledgments', () => {
+        const stats = options.slack?.getAmbientStats();
+        if (!stats) return null;
+        const channels = stats.channels;
+        const reacted = channels.reduce((sum, channel) => sum + (channel.silentByReason.react ?? 0), 0);
+        const evaluated = channels.reduce((sum, channel) => sum + channel.evaluated, 0);
+        return { value: reacted, samples: evaluated };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('context-recovery.successful-recoveries', () => {
+        const eventPath = path.join(options.config.projectDir, '.instar', 'recovery-events.jsonl');
+        let fd: number | null = null;
+        try {
+          const size = fs.statSync(eventPath).size;
+          const length = Math.min(size, 64 * 1024);
+          const buffer = Buffer.alloc(length);
+          fd = fs.openSync(eventPath, 'r');
+          fs.readSync(fd, buffer, 0, length, size - length);
+          const rows = buffer.toString('utf8').split('\n').slice(length === size ? 0 : 1).filter(Boolean);
+          let samples = 0; let successful = 0;
+          for (const line of rows) {
+            const row = JSON.parse(line) as { failureType?: string; recovered?: boolean };
+            if (row.failureType !== 'context_exhaustion') continue;
+            samples++;
+            if (row.recovered === true) successful++;
+          }
+          return { value: successful, samples };
+        } catch { return null; }
+        finally { if (fd !== null) try { fs.closeSync(fd); } catch { /* read-only projection cleanup */ } }
+      });
+      this.blockerLifecycleService.registerMaturationProjection('self-heal-gate.successful-repairs', () => ({
+        value: this.feedbackDefaultsSelfHealEvidence.successful, samples: this.feedbackDefaultsSelfHealEvidence.samples,
+      }));
+    }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
 

@@ -5,6 +5,14 @@ author: "Instar-codey"
 eli16-overview: "mutual-ssh-autobootstrap.eli16.md"
 status: draft
 approved: true
+ships-staged: true
+rollout-disposition: active
+rollout-source-pr: 1539
+rollout-flag-path: multiMachine.mutualSsh.enabled
+rollout-criteria: "At least one registered peer pair has current bidirectional SSH readiness proof with no blocking reason."
+rollout-evidence-type: endpoint
+rollout-evidence-ref: /multi-machine/mutual-ssh
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"ready-mutual-ssh-peers","source":"feature-summary","sourceRef":"mutual-ssh.ready-peers","direction":"at-least","threshold":1,"minSamples":1}]}'
 review-convergence: "2026-07-19T21:27:13.671Z"
 review-iterations: 4
 review-completed-at: "2026-07-19T21:27:13.671Z"

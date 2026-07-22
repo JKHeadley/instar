@@ -6,6 +6,14 @@ status: draft
 parent-principle: "Signal vs. Authority — raw blocker lifecycle measurements inform diagnosis but never select work, rank workers, notify, block, or act."
 parent-principle-fit: "The existing explicit commitment transition remains the sole mutation authority. The new ledger is derived, raw, nullable, measure-only state; SQLite loss cannot alter commitment success, and no scalar or action consumer exists. The persistence prerequisite additionally enforces Verify State, Not Symbol by acknowledging the authoritative rename rather than treating an exception-swallowing call as proof."
 approved: true # blanket pre-approval from operator directive for post-convergence build/merge
+ships-staged: true
+rollout-disposition: active
+rollout-source-pr: 1535
+rollout-flag-path: monitoring.blockerLifecycleLedger.enabled
+rollout-criteria: "At least one acknowledged blocker lifecycle transition is durably represented while the ledger remains measure-only and non-authoritative."
+rollout-evidence-type: endpoint
+rollout-evidence-ref: /blocker-lifecycle/summary
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"completed-lifecycle-transitions","source":"feature-summary","sourceRef":"blocker-lifecycle.completed-transitions","direction":"at-least","threshold":1,"minSamples":1}]}'
 build-root: "fresh worktree from JKHeadley/main v1.3.890 (6f8bcc6a9); never .dev/instar"
 lessons-engaged:
   - "Structure > Willpower; Signal vs Authority; Judgment Within Floors"

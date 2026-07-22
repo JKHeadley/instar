@@ -25125,13 +25125,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (kind === 'summary') {
       if (!['eligible', 'evaluated', 'missedDue'].every(k => Number.isSafeInteger(m[k]) && (m[k] as number) >= 0) ||
           !m.byStatus || typeof m.byStatus !== 'object' || !Array.isArray(m.features) || m.features.length > 512) return null;
-      const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'missed-cadence'];
+      const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'invalid-contract', 'missed-cadence'];
       const byStatus = m.byStatus as Record<string, unknown>;
-      if (!statuses.every(k => Number.isSafeInteger(byStatus[k]) && (byStatus[k] as number) >= 0)) return null;
+      if (!statuses.filter(k => k !== 'invalid-contract').every(k => Number.isSafeInteger(byStatus[k]) && (byStatus[k] as number) >= 0) ||
+          !(byStatus['invalid-contract'] === undefined || (Number.isSafeInteger(byStatus['invalid-contract']) && (byStatus['invalid-contract'] as number) >= 0))) return null;
       const features = m.features.map(v => {
         if (!v || typeof v !== 'object') return null;
         const f = v as Record<string, unknown>;
-        if (typeof f.featureId !== 'string' || f.featureId.length > 63 || typeof f.rung !== 'string' ||
+        if (typeof f.featureId !== 'string' || f.featureId.length > 63 || !(f.rung === null || typeof f.rung === 'string') ||
             !statuses.includes(String(f.status)) || !Number.isSafeInteger(f.passingMetrics) || !Number.isSafeInteger(f.totalMetrics) ||
             !(f.minNormalizedMargin === null || (typeof f.minNormalizedMargin === 'number' && Number.isFinite(f.minNormalizedMargin)))) return null;
         return { featureId: f.featureId, rung: f.rung, status: f.status, evaluatedAt: f.evaluatedAt,
@@ -25139,8 +25140,57 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           minNormalizedMargin: f.minNormalizedMargin, newestEvidenceAt: f.newestEvidenceAt ?? null };
       });
       if (features.some(v => v === null)) return null;
+      const dispositions = ['active', 'composed', 'excluded'];
+      let accounting: unknown[] = []; let accountingCounts: Record<string, unknown> | undefined;
+      if (m.accounting !== undefined || m.accountingCounts !== undefined) {
+        if (!Array.isArray(m.accounting) || m.accounting.length > 512 || !m.accountingCounts || typeof m.accountingCounts !== 'object') return null;
+        if (!Number.isSafeInteger(m.legacyEligible) || (m.legacyEligible as number) < 0) return null;
+        accountingCounts = m.accountingCounts as Record<string, unknown>;
+        if (!dispositions.every(k => Number.isSafeInteger(accountingCounts![k]) && (accountingCounts![k] as number) >= 0)) return null;
+        accounting = m.accounting.map(v => {
+          if (!v || typeof v !== 'object') return null;
+          const a = v as Record<string, unknown>;
+          if (typeof a.featureId !== 'string' || a.featureId.length > 63 || !dispositions.includes(String(a.disposition)) ||
+              typeof a.status !== 'string' || a.status.length > 32 || !(a.flagPath === null || typeof a.flagPath === 'string') ||
+              !['self-owner', 'parent-owner-evidence-only', 'none'].includes(String(a.promotionAuthority)) ||
+              !Number.isSafeInteger(a.sourcePrNumber) || (a.sourcePrNumber as number) < 1 ||
+              !(a.rung === null || ['test-agent-live', 'dev-agent-live', 'fleet'].includes(String(a.rung))) ||
+              !(a.ownerFeatureId === null || typeof a.ownerFeatureId === 'string') ||
+              !(a.graduationCriterion === null || typeof a.graduationCriterion === 'string') ||
+              !(a.evidenceSource === null || (typeof a.evidenceSource === 'object' &&
+                ['endpoint', 'log-filter'].includes(String((a.evidenceSource as Record<string, unknown>).type)) &&
+                typeof (a.evidenceSource as Record<string, unknown>).ref === 'string')) ||
+              !(a.contractError == null || ['invalid-json', 'oversized', 'invalid-shape', 'unknown-source-ref'].includes(String(a.contractError))) ||
+              !Number.isSafeInteger(a.metricCount) || (a.metricCount as number) < 0 || !Array.isArray(a.metricDescriptors) ||
+              a.metricDescriptors.length !== a.metricCount) return null;
+          const metricDescriptors = a.metricDescriptors.map(value => {
+            if (!value || typeof value !== 'object') return null;
+            const d = value as Record<string, unknown>;
+            return typeof d.id === 'string' && ['blocker-summary', 'blocker-trend', 'feature-summary'].includes(String(d.source)) &&
+              typeof d.sourceRef === 'string' && d.descriptorVersion === 1 && ['at-least', 'at-most'].includes(String(d.direction)) &&
+              typeof d.threshold === 'number' && Number.isFinite(d.threshold) && Number.isSafeInteger(d.minSamples) && (d.minSamples as number) > 0
+              ? d : null;
+          });
+          if (metricDescriptors.some(value => value === null)) return null;
+          return { ...a, metricDescriptors };
+        });
+        if (accounting.some(v => v === null)) return null;
+        const actualCounts = { active: 0, composed: 0, excluded: 0 };
+        for (const raw of accounting) {
+          const row = raw as Record<string, unknown>;
+          actualCounts[row.disposition as keyof typeof actualCounts]++;
+          if ((row.disposition === 'active') !== (row.rung !== null)) return null;
+          const expectedAuthority = row.disposition === 'active' ? 'self-owner'
+            : row.disposition === 'composed' ? 'parent-owner-evidence-only' : 'none';
+          if (row.promotionAuthority !== expectedAuthority) return null;
+        }
+        if (dispositions.some(k => actualCounts[k as keyof typeof actualCounts] !== accountingCounts![k]) ||
+            m.eligible !== actualCounts.active + actualCounts.composed + (m.legacyEligible as number)) return null;
+      }
       return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
-        byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k]])), features };
+        byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k] ?? 0])), features,
+        ...(accountingCounts ? { accountingCounts: Object.fromEntries(dispositions.map(k => [k, accountingCounts![k]])),
+          legacyEligible: m.legacyEligible, accounting } : {}) };
     }
     if (!Array.isArray(m.features) || m.features.length > 512) return null;
     return { features: m.features.slice(0, 512) };
