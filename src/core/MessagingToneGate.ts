@@ -28,6 +28,7 @@ import {
 } from './GateSignalDetectors.js';
 import { detectInternalIdLeak } from './internal-id-leak.js';
 import { detectSelfStopShape } from './self-stop-floor.js';
+import { detectDeferralShape } from './deferral-floor.js';
 import { DP_MESSAGING_TONE_GATE } from '../data/provenanceCoverage.js';
 
 /**
@@ -147,8 +148,28 @@ export function buildToneDecisionContext(
     gateSignalKinds: detectGateSignals(text)
       .filter((s) => s.detected)
       .map((s) => s.kind),
+    // Premature-deferral shape (deferral-floor, OBSERVE-ONLY): a content-free
+    // boolean recording whether this outbound message defers an operational action
+    // to the user that the agent could take itself (the 2026-07-22 self-unblock
+    // correction). It is a SIGNAL for the decision-quality meter + the
+    // pushback->improvement pipeline — the observe phase measures its false-positive
+    // rate before any reminder is ever wired. It NEVER alters the gate's block/allow
+    // verdict, and fails open (a throwing detector records `false`, never breaks the
+    // provenance seam).
+    deferralShapeDetected: safeDeferralShapeDetected(text),
   };
   return ctx;
+}
+
+/** Fail-open wrapper: the observe-only deferral signal must never break the
+ *  provenance context if the detector throws on pathological input. */
+function safeDeferralShapeDetected(text: string): boolean {
+  try {
+    return detectDeferralShape(text).detected;
+  } catch {
+    // @silent-fallback-ok — an observe-only signal; a detector throw records false.
+    return false;
+  }
 }
 
 /**
