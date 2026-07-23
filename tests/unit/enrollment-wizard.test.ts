@@ -118,6 +118,49 @@ describe('EnrollmentWizard', () => {
     expect(store.get('claude-1')?.verificationUrl).toBe('https://claude.com/oauth/2');
   });
 
+  it('restores a durable pending flow after restart with a fresh artifact and no browser pop', async () => {
+    const requests: Parameters<LoginDriver>[0][] = [];
+    const first = new EnrollmentWizard({
+      store, now: () => clock,
+      driveLogin: async () => ({
+        verificationUrl: 'https://claude.com/oauth/old',
+        ttlMs: 15 * 60_000,
+      }),
+    });
+    await first.start({
+      id: 'claude-1', label: 'Claude', provider: 'anthropic',
+      framework: 'claude-code', configHome: '/tmp/claude-1',
+    });
+
+    // A new process loads the same durable store, but its old pane no longer
+    // exists. Boot recovery must re-drive it before traffic is served.
+    const restartedStore = new PendingLoginStore({ stateDir: dir, now: () => clock });
+    const restarted = new EnrollmentWizard({
+      store: restartedStore, now: () => clock,
+      driveLogin: async (req) => {
+        requests.push(req);
+        return { verificationUrl: 'https://claude.com/oauth/fresh', ttlMs: 15 * 60_000 };
+      },
+    });
+    const recovered = await restarted.recoverAfterRestart();
+
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].verificationUrl).toBe('https://claude.com/oauth/fresh');
+    expect(recovered[0].reissueCount).toBe(1);
+    expect(requests[0].openBrowser).toBe(false);
+  });
+
+  it('refreshes a live-but-dead-pane flow and leaves terminal flows untouched', async () => {
+    const w = wizard([
+      { verificationUrl: 'https://claude.com/oauth/old', ttlMs: 15 * 60_000 },
+      { verificationUrl: 'https://claude.com/oauth/fresh', ttlMs: 15 * 60_000 },
+    ]);
+    await w.start({ id: 'claude-1', label: 'Claude', provider: 'anthropic', framework: 'claude-code' });
+    expect((await w.refresh('claude-1'))?.verificationUrl).toBe('https://claude.com/oauth/fresh');
+    w.complete('claude-1');
+    expect(await w.refresh('claude-1')).toBeNull();
+  });
+
   it('a driver failure during reissue is skipped (sweep continues, login stays expired)', async () => {
     let n = 0;
     const w = wizard(async () => {

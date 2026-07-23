@@ -13516,6 +13516,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       }).asLoginDriver(),
     });
+    // Pending-login metadata is durable, but its framework pane is a process and
+    // therefore never survives this server's restart. Restore every incomplete
+    // flow before serving dashboard traffic so a persisted code is never backed
+    // by a dead pane. Renewal suppresses browser launch and stores only the fresh
+    // public URL/code, preserving the existing credential boundary.
+    const recoveredLogins = await enrollmentWizard.recoverAfterRestart();
+    if (recoveredLogins.length > 0) {
+      console.log(pc.green(`  Restored ${recoveredLogins.length} pending login flow(s) after restart`));
+    }
     // Background auto-reissue sweep — refreshes an expired login code without the
     // operator asking (the pi-live-test gap). Inert with no pending logins; the
     // timer is unref'd so it never holds the process open.

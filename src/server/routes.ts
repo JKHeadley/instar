@@ -27146,9 +27146,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Resolve the pending login → its configHome + framework → the enroll pane session
     // name (derived through the shared helper so it can NEVER drift from enroll-start's spawn).
-    const login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
+    let login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
     if (!login) {
-      res.status(404).json({ error: `no pending login "${id}" is waiting for a code — start the sign-in again from the dashboard grid` });
+      // The operator submitted against a flow that disappeared across a restart
+      // or exhausted cleanup. Never collapse that honest lifecycle state into a
+      // raw 404/502. If the account still provably needs a login, mint its fresh
+      // replacement now and return the public flow so the cell can redraw.
+      const account = ctx.subscriptionPool.get(id);
+      const stillNeedsSignIn = account?.status === 'needs-reauth' || (
+        account?.identityDrifted === true &&
+        (account.identityDrift?.repairState === 'owner-relogin-required' ||
+          account.identityDrift?.actualAccountId === 'missing-local-login')
+      );
+      if (account && stillNeedsSignIn) {
+        try {
+          const freshLogin = await ctx.enrollmentWizard.start({
+            id: account.id,
+            label: account.nickname,
+            provider: account.provider,
+            framework: account.framework,
+            configHome: account.configHome,
+            expectedEmail: account.email,
+            remote: true,
+          });
+          res.status(409).json({
+            code: 'login-expired-fresh-ready',
+            error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+            freshLogin,
+          });
+          return;
+        } catch (err) {
+          console.warn(`[follow-me] expired login refresh failed id=${id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     // Narrow the authority (codex finding #4): this paste-back path is ONLY for the
@@ -27194,7 +27228,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // affordance — never a "may have closed" guess. Wording floor: the message only references
     // affordances that exist on the surface it lands on (the grid's Retry — never "Approve").
     if (rawFrame == null || !frame.trim()) {
-      res.status(409).json({ code: 'pane-dead', error: `this sign-in's window is no longer running on its machine, so it can't take a code — start the sign-in again from the dashboard grid` });
+      const freshLogin = await ctx.enrollmentWizard.refresh(id);
+      if (freshLogin) {
+        res.status(409).json({
+          code: 'login-expired-fresh-ready',
+          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+          freshLogin,
+        });
+        return;
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     if (!looksReady || looksLikeShell) {

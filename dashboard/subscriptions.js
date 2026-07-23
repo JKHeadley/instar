@@ -1121,6 +1121,14 @@ export function createController(opts) {
             setRowStatus(row, `✗ ${heldExplanation(r.json.expected, r.json.got, r.json.reason)}`);
             rerenderMatrixFromCache();
             btn.removeAttribute('disabled');
+          } else if (r.json && r.json.code === 'login-expired-fresh-ready') {
+            row.removeAttribute('data-interaction-open');
+            setRowStatus(row, 'That code belonged to an expired sign-in. A fresh sign-in is ready now.');
+            await tick();
+          } else if (r.json && r.json.code === 'login-expired') {
+            row.removeAttribute('data-interaction-open');
+            row.setAttribute('class', 'sub-pending sub-pending-failed');
+            setRowStatus(row, `✗ ${r.json.error || 'That sign-in expired — start a fresh one from its grid cell.'}`);
           } else if (r.json && r.json.code === 'pane-dead') {
             // D5: the attempt's window is gone — flip to the explicit needs-restart state.
             row.removeAttribute('data-interaction-open');
@@ -1308,6 +1316,14 @@ export function createController(opts) {
           cell.removeAttribute('data-interaction-open');
           recordSubmitOutcome('held', { accountId, machineId }, r.json);
           renderCellHeld(cell, accountId, machineId, r.json);
+        } else if (r.json && r.json.code === 'login-expired-fresh-ready') {
+          cell.removeAttribute('data-interaction-open');
+          setCellStatus(cell, 'That code belonged to an expired sign-in. A fresh sign-in is ready now.');
+          await tick();
+        } else if (r.json && r.json.code === 'login-expired') {
+          cell.removeAttribute('data-interaction-open');
+          recordSubmitOutcome('broken', { accountId, machineId }, r.json);
+          rerenderMatrixFromCache();
         } else if (r.json && r.json.code === 'pane-dead') {
           // TERMINAL (D5): the sign-in window is gone — explicit needs-restart state.
           cell.removeAttribute('data-interaction-open');

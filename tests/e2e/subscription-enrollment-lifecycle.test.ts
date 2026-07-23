@@ -75,14 +75,21 @@ describe('/subscription-pool enrollment — E2E feature-alive', () => {
     // Second boot: a FRESH store + wizard over the SAME state dir — the pending
     // login must still be there (it persisted to disk).
     const store2 = new PendingLoginStore({ stateDir: dir });
-    const wizard2 = new EnrollmentWizard({ store: store2, driveLogin: async () => ART });
+    const wizard2 = new EnrollmentWizard({
+      store: store2,
+      driveLogin: async () => ({ ...ART, userCode: 'FRESH-CODE' }),
+    });
+    // Mirrors production boot: persisted metadata alone is insufficient because
+    // the prior process's login pane died with the server.
+    await wizard2.recoverAfterRestart();
     server = await bootApp({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), enrollmentWizard: wizard2 });
     const res = await fetch(server.url + '/subscription-pool/pending-logins');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.enabled).toBe(true);
     expect(body.logins.map((l: any) => l.id)).toEqual(['codex-1']);
-    expect(body.logins[0].userCode).toBe('AAAA-BBBB');
+    expect(body.logins[0].userCode).toBe('FRESH-CODE');
+    expect(body.logins[0].reissueCount).toBe(1);
   });
 
   it('FEATURE ALIVE: completing a claude-code enrollment leaves its config home interactive-ready (2026-06-09 incident)', async () => {

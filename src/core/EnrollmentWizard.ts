@@ -256,8 +256,35 @@ export class EnrollmentWizard {
    * abort the sweep.
    */
   async reissueExpired(): Promise<PendingLogin[]> {
+    return this.reissueLogins(this.store.expired(), 'expired');
+  }
+
+  /**
+   * A server restart kills every framework login pane even though the durable
+   * pending-login record survives. Re-drive every non-terminal record once at
+   * boot so the durable flow regains a live backing process and fresh public
+   * URL/code before the dashboard can submit to it.
+   */
+  async recoverAfterRestart(): Promise<PendingLogin[]> {
+    const incomplete = this.store.list().filter((login) =>
+      login.status === 'pending' || login.status === 'expired');
+    return this.reissueLogins(incomplete, 'restart');
+  }
+
+  /** Refresh one known incomplete flow after its backing pane is found dead. */
+  async refresh(id: string): Promise<PendingLogin | null> {
+    const login = this.store.get(id);
+    if (!login || (login.status !== 'pending' && login.status !== 'expired')) return null;
+    const refreshed = await this.reissueLogins([login], 'dead-pane');
+    return refreshed[0] ?? null;
+  }
+
+  private async reissueLogins(
+    logins: PendingLogin[],
+    reason: 'expired' | 'restart' | 'dead-pane',
+  ): Promise<PendingLogin[]> {
     const reissued: PendingLogin[] = [];
-    for (const login of this.store.expired()) {
+    for (const login of logins) {
       try {
         const fresh = await this.driveLogin({
           provider: login.provider,
@@ -275,12 +302,12 @@ export class EnrollmentWizard {
         });
         if (updated) {
           reissued.push(updated);
-          this.logger.log(`[EnrollmentWizard] auto-reissued expired login ${login.id} (reissue #${updated.reissueCount})`);
+          this.logger.log(`[EnrollmentWizard] refreshed ${reason} login ${login.id} (reissue #${updated.reissueCount})`);
         }
       } catch (err) {
         // @silent-fallback-ok: one re-drive failing must not abort the sweep;
         // the login stays expired and is retried next sweep.
-        this.logger.warn(`[EnrollmentWizard] reissue of ${login.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.warn(`[EnrollmentWizard] ${reason} refresh of ${login.id} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return reissued;
