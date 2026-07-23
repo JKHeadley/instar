@@ -68,9 +68,9 @@ export interface SessionPoolFailoverRunnerDeps {
   /** The commit the running build is on — the recorded verdict is bound to it. */
   currentCommitSha: () => string;
   /**
-   * The stage index this failover proves — the PRIOR stage whose green gates the
-   * next advance (e.g. the shadow→live-transfer failover is recorded at the
-   * `shadow` index, which `StageAdvancer.advanceTo('live-transfer')` reads).
+   * The CURRENT configured stage index this failover proves. The next advance
+   * reads that same index as its prior-stage gate. This must be read live at tick
+   * time; a fixed stage silently strands later promotion rungs.
    */
   provenStage: () => number;
   /** Dark-by-default master switch: the whole tick is a no-op unless this is true. */
@@ -111,6 +111,20 @@ export class SessionPoolFailoverRunner {
         provenStage: stage,
         commitSha: sha,
         error: err instanceof Error ? err.message : String(err),
+      });
+      return { ran: true, outcome: 'error', recorded: false };
+    }
+    const stageAfterCheck = this.d.provenStage();
+    if (stageAfterCheck !== stage) {
+      // A verdict proves the configuration that was exercised for the whole
+      // check. If rollout moved while the subprocess was running, attaching the
+      // result to either endpoint could later authorize the wrong transition.
+      this.d.audit?.('failover-check-stage-changed', {
+        stageAtStart: stage,
+        stageAfterCheck,
+        commitSha: sha,
+        outcome: result.outcome,
+        evidenceRef: result.evidenceRef,
       });
       return { ran: true, outcome: 'error', recorded: false };
     }

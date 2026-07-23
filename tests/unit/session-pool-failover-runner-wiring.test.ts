@@ -27,6 +27,7 @@ import {
 } from '../../src/core/sessionPoolFailoverRunnerConfig.js';
 import type { SubprocessRunResult } from '../../src/core/sessionPoolFailoverCheck.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { StageAdvancer, stageIndex, type SessionPoolStage } from '../../src/core/StageAdvancer.js';
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -124,6 +125,66 @@ describe('buildSessionPoolFailoverRunnerDriver — construct-or-null', () => {
 });
 
 describe('SessionPoolFailoverRunnerDriver — honest recording to the right store', () => {
+  it('credits a green to the live current stage, allowing exactly the next climb', async () => {
+    const dir = tmp();
+    const realStore = makeStore(dir, 'real.json');
+    let stage: SessionPoolStage = 'live-transfer';
+    const buildIdentity = () => 'package:1.3.912';
+    const readStage = () => stage;
+    const driver = buildSessionPoolFailoverRunnerDriver({
+      config: { enabled: true, dryRun: false, tickIntervalMs: 60_000, checkTimeoutMs: 1000 },
+      resultStore: realStore,
+      dryRunResultStore: makeStore(dir, 'dry.json'),
+      runProcess: async () => ({ ranToCompletion: true, exitCode: 0, evidenceRef: 'current-stage-green' }),
+      currentCommitSha: buildIdentity,
+      provenStage: () => stageIndex(readStage()),
+    })!;
+    const advancer = new StageAdvancer({
+      resultStore: realStore,
+      currentCommitSha: buildIdentity,
+      readStage,
+      writeStageConfig: (next) => { stage = next; },
+    });
+
+    await driver.maybeTick();
+
+    expect(realStore.all()[0]).toMatchObject({
+      stage: stageIndex('live-transfer'),
+      commitSha: 'package:1.3.912',
+      result: 'green',
+    });
+    expect(advancer.advanceTo('rebalance')).toEqual({ ok: true, stage: 'rebalance' });
+  });
+
+  it('does not credit a green recorded at the wrong stage to the current-stage climb', async () => {
+    const dir = tmp();
+    const realStore = makeStore(dir, 'real.json');
+    let stage: SessionPoolStage = 'live-transfer';
+    const driver = buildSessionPoolFailoverRunnerDriver({
+      config: { enabled: true, dryRun: false, tickIntervalMs: 60_000, checkTimeoutMs: 1000 },
+      resultStore: realStore,
+      dryRunResultStore: makeStore(dir, 'dry.json'),
+      runProcess: async () => ({ ranToCompletion: true, exitCode: 0, evidenceRef: 'wrong-stage-green' }),
+      currentCommitSha: () => 'unknown',
+      provenStage: () => stageIndex('dark'),
+    })!;
+    const advancer = new StageAdvancer({
+      resultStore: realStore,
+      currentCommitSha: () => 'unknown',
+      readStage: () => stage,
+      writeStageConfig: (next) => { stage = next; },
+    });
+
+    await driver.maybeTick();
+
+    expect(advancer.advanceTo('rebalance')).toMatchObject({
+      ok: false,
+      reason: 'e2e-gate-not-passed',
+      detail: 'no-result',
+    });
+    expect(stage).toBe('live-transfer');
+  });
+
   it('dryRun: a green lands in the SIDE store, NEVER the promotion store', async () => {
     const dir = tmp();
     const realStore = makeStore(dir, 'real.json');

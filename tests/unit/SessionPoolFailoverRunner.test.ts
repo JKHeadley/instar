@@ -95,4 +95,30 @@ describe('SessionPoolFailoverRunner', () => {
     await runner.tick();
     expect(calls.map((c) => c.commitSha)).toEqual(['sha-old', 'sha-new']);
   });
+
+  it('records nothing when the configured stage changes while the check is in flight', async () => {
+    const { store, calls } = fakeStore();
+    const audits: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    let stage = 1;
+    let finish!: (result: FailoverCheckResult) => void;
+    const runner = new SessionPoolFailoverRunner({
+      resultStore: store,
+      runFailoverCheck: () => new Promise((resolve) => { finish = resolve; }),
+      currentCommitSha: () => SHA,
+      provenStage: () => stage,
+      enabled: () => true,
+      audit: (event, detail) => audits.push({ event, detail }),
+    });
+
+    const tick = runner.tick();
+    stage = 2;
+    finish({ outcome: 'green', evidenceRef: 'stage-moved-mid-check' });
+
+    expect(await tick).toEqual({ ran: true, outcome: 'error', recorded: false });
+    expect(calls).toHaveLength(0);
+    expect(audits).toContainEqual({
+      event: 'failover-check-stage-changed',
+      detail: expect.objectContaining({ stageAtStart: 1, stageAfterCheck: 2 }),
+    });
+  });
 });

@@ -135,7 +135,7 @@ export interface SessionPoolFailoverRunnerDriverDeps {
   runProcess: (args: { testPath: string; timeoutMs: number }) => Promise<SubprocessRunResult>;
   /** The commit the recorded verdict is bound to. */
   currentCommitSha: () => string;
-  /** The stage index this failover proves (the PRIOR stage StageAdvancer reads). */
+  /** The current configured stage index this failover proves. Read live at tick time. */
   provenStage: () => number;
   /** Which E2E to run (defaults to the merged two-node failover E2E). */
   testPath?: string;
