@@ -24,6 +24,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { EXTERNAL_HOG_CLASSIFIER_PROMPT_TEMPLATE } from '../monitoring/ExternalHogClassifierPrompt.js';
 import { TONE_GATE_PROMPT_TEMPLATE } from '../core/MessagingToneGate.js';
 import { DP_EXTERNAL_HOG_KILL_LEAVE, DP_MESSAGING_TONE_GATE } from './provenanceCoverage.js';
@@ -230,9 +231,69 @@ export function loadBenchmarkMirror(absolutePath: string, readFile: (p: string) 
   return { present: true, capturedAt: newestCapture, tasks };
 }
 
-/** Resolve the mirror path against the package root (in-repo, git-tracked —
- *  meaningful on a source checkout; a dist-only install reports present:false). */
+/** Resolve the mirror path against a root (PURE join — no filesystem access).
+ *  An absolute `mirrorPath` passes through verbatim. */
 export function resolveMirrorPath(packageRoot: string, mirrorPath?: string): string {
   const rel = mirrorPath && typeof mirrorPath === 'string' ? mirrorPath : DEFAULT_MIRROR_PATH;
   return path.isAbsolute(rel) ? rel : path.join(packageRoot, rel);
+}
+
+/**
+ * Pick the mirror path that actually EXISTS, preferring the agent's own tree and
+ * falling back to the INSTALLED PACKAGE.
+ *
+ * WHY THE FALLBACK (2026-07-23). Resolution was agent-tree-only. That was honest
+ * while no mirror shipped ("a dist-only install reports present:false"), but the
+ * first baseline now ships INSIDE the package at `src/data/benchmarkPredictions.json`.
+ * Without a fallback the file is present on every install and readable on none:
+ * verified on the serving machine, whose agent home is not a source checkout (no
+ * `.git`; its `src/data/` holds three unrelated files). The shipped baseline would
+ * have been permanently inert there while the route reported the same benign
+ * `present:false` it showed before any baseline existed — indistinguishable from
+ * "never captured".
+ *
+ * ORDER IS DELIBERATE: the agent's own tree wins. A developer working in a source
+ * checkout may have a fresher locally-regenerated mirror, and their local capture
+ * must not be shadowed by the shipped one. The package is the floor, not the
+ * authority.
+ *
+ * Kept SEPARATE from the pure `resolveMirrorPath` so path-joining stays testable
+ * without a filesystem, and only this probing variant touches disk.
+ */
+export function resolveExistingMirrorPath(
+  agentRoot: string,
+  mirrorPath?: string,
+  opts?: { readonly installedPackageRoot?: string | null; readonly exists?: (p: string) => boolean },
+): string {
+  const primary = resolveMirrorPath(agentRoot, mirrorPath);
+  // An explicit absolute path is an instruction — honored verbatim, never probed.
+  if (mirrorPath && path.isAbsolute(mirrorPath)) return primary;
+
+  const installed = opts && 'installedPackageRoot' in opts ? opts.installedPackageRoot : resolveInstalledPackageRoot();
+  if (!installed) return primary;
+
+  const exists = opts?.exists ?? ((p: string) => fs.existsSync(p));
+  if (exists(primary)) return primary;
+  const fallback = resolveMirrorPath(installed, mirrorPath);
+  return exists(fallback) ? fallback : primary;
+}
+
+/**
+ * The installed instar package root (the directory holding `src/data/…` inside
+ * `node_modules/instar`), derived from THIS module's own location — never from
+ * config, and never from a mirror field. Returns null when it cannot be derived,
+ * in which case the caller keeps today's projectDir-only behaviour.
+ */
+function resolveInstalledPackageRoot(): string | null {
+  try {
+    // …/<pkg>/dist/data/benchmarkDivergenceRegistry.js → …/<pkg>
+    // …/<pkg>/src/data/benchmarkDivergenceRegistry.ts  → …/<pkg>
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const root = path.resolve(here, '..', '..');
+    return root.length > 1 ? root : null;
+  } catch {
+    // @silent-fallback-ok: an environment without import.meta.url support keeps
+    // the previous projectDir-only resolution — never a throw on a read path.
+    return null;
+  }
 }

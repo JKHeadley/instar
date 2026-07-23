@@ -23,6 +23,7 @@ import {
   liveTemplateHash,
   loadBenchmarkMirror,
   resolveMirrorPath,
+  resolveExistingMirrorPath,
   DEFAULT_MIRROR_PATH,
 } from '../../src/data/benchmarkDivergenceRegistry.js';
 import { DP_EXTERNAL_HOG_KILL_LEAVE, DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
@@ -170,6 +171,48 @@ describe('loadBenchmarkMirror (FD1/FD9 — untrusted mirror clamps)', () => {
     expect(resolveMirrorPath('/repo')).toBe(path.join('/repo', DEFAULT_MIRROR_PATH));
     expect(resolveMirrorPath('/repo', 'custom/m.json')).toBe('/repo/custom/m.json');
     expect(resolveMirrorPath('/repo', '/abs/m.json')).toBe('/abs/m.json');
+  });
+
+  it('resolveExistingMirrorPath prefers the agent tree, falls back to the INSTALLED PACKAGE, honors an absolute path', () => {
+    // 2026-07-23: the first baseline ships inside the package, but resolution was
+    // projectDir-only — so on a non-source install (the serving machine: no .git,
+    // src/data/ holding three unrelated files) the shipped mirror was permanently
+    // unreadable while the route reported the same benign present:false it showed
+    // before any baseline existed. Indistinguishable from "never captured".
+    const exists = (set: string[]) => (p: string) => set.includes(p);
+
+    // Agent tree WINS when it has the file — a dev's locally-regenerated mirror
+    // must never be shadowed by the shipped one.
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: '/pkg',
+      exists: exists(['/agent/' + DEFAULT_MIRROR_PATH, '/pkg/' + DEFAULT_MIRROR_PATH]),
+    })).toBe('/agent/' + DEFAULT_MIRROR_PATH);
+
+    // Falls back to the package when the agent tree lacks it (the shipped case).
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: '/pkg',
+      exists: exists(['/pkg/' + DEFAULT_MIRROR_PATH]),
+    })).toBe('/pkg/' + DEFAULT_MIRROR_PATH);
+
+    // Neither has it ⇒ report the primary path, so the loader's present:false
+    // names the place a reader would look first.
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: '/pkg',
+      exists: exists([]),
+    })).toBe('/agent/' + DEFAULT_MIRROR_PATH);
+
+    // An ABSOLUTE mirrorPath is an explicit instruction — honored verbatim, never
+    // falls back, and `exists` is not consulted.
+    expect(resolveExistingMirrorPath('/agent', '/abs/m.json', {
+      installedPackageRoot: '/pkg',
+      exists: () => { throw new Error('must not probe for an absolute path'); },
+    })).toBe('/abs/m.json');
+
+    // No derivable package root ⇒ previous projectDir-only behaviour, unchanged.
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: null,
+      exists: exists(['/pkg/' + DEFAULT_MIRROR_PATH]),
+    })).toBe('/agent/' + DEFAULT_MIRROR_PATH);
   });
 
   it('the shipped mirror is PRESENT and parses through the real loader (first baseline captured 2026-07-23)', () => {
