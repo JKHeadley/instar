@@ -112,6 +112,51 @@ describe('redaction (write-time scrub; machine-local full context)', () => {
   });
 });
 
+describe('ACT-896 deferral-pattern internal projection', () => {
+  it('reads content-free observations from canonical tone provenance only', async () => {
+    const log = makeLog();
+    log.recordDecision(decisionInput({
+      decisionPoint: 'messaging-tone-gate',
+      context: {
+        candidate: { sha256: 'a'.repeat(64), bytes: 20, chars: 20 },
+        deferralShapeDetected: true,
+      },
+    }));
+    log.recordDecision(decisionInput({
+      decisionPoint: 'some-other-gate',
+      context: {
+        candidate: { sha256: 'b'.repeat(64) },
+        deferralShapeDetected: true,
+      },
+    }));
+
+    expect(await log.readDeferralPatternObservations()).toEqual([{
+      observedAt: T0,
+      deferralShapeDetected: true,
+      candidateSha256: 'a'.repeat(64),
+    }]);
+  });
+
+  it('skips malformed/truncated contexts and honors the exact since boundary', async () => {
+    const log = makeLog();
+    log.recordDecision(decisionInput({
+      decisionPoint: 'messaging-tone-gate',
+      context: { candidate: { sha256: 'c'.repeat(64) }, deferralShapeDetected: false },
+    }));
+    log.recordDecision(decisionInput({
+      decisionPoint: 'messaging-tone-gate',
+      context: { candidate: { sha256: 'not-a-hash' }, deferralShapeDetected: true },
+    }));
+
+    expect(await log.readDeferralPatternObservations({ sinceMs: T0 })).toEqual([{
+      observedAt: T0,
+      deferralShapeDetected: false,
+      candidateSha256: 'c'.repeat(64),
+    }]);
+    expect(await log.readDeferralPatternObservations({ sinceMs: T0 + 1 })).toEqual([]);
+  });
+});
+
 describe('64KB per-row clamp', () => {
   it('a ~100KB context is truncated + flagged, and the row on disk stays under the clamp', async () => {
     const log = makeLog();
