@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "proactive-autonomous-compaction",
+  "sessionId": "slack-C0BA4F4E0FP-context-wall-fix3",
+  "timestamp": "2026-07-23T18:39:00.000Z",
+  "artifactPath": "upgrades/side-effects/proactive-autonomous-compaction.md",
+  "artifactSha256": "9c76d13f45e16591c5e10eb31768555ce3707feafc2a58cd935d70ad3f470223",
+  "specPath": "docs/specs/proactive-autonomous-compaction.md",
+  "eli16Path": "docs/specs/proactive-autonomous-compaction.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/proactive-autonomous-compaction.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/types.ts",
+    "src/monitoring/guardManifest.ts",
+    "src/monitoring/ProactiveCompactionSentinel.ts",
+    "tests/unit/ProactiveCompactionSentinel.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This is bounded autonomous actuation against a live session. The converged design ships dark and dry-run first, uses Claude's own grounded context signal, and requires the canonical work-state probe to affirm an idle boundary before /compact can be injected.",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Recovery began only after a context-wall failure or provider compaction event. Long unattended autonomous runs therefore had no early, idle-safe intervention even though Claude exposed grounded remaining-context telemetry in the pane."
+  },
+  "classClosure": {
+    "failureClass": "Autonomous sessions can reach the context wall despite exposing a safe pre-wall signal.",
+    "closure": "The sentinel is structurally dark, dry-run first, autonomous-and-Claude-only, thresholded at 85% used, fail-closed on indeterminate work state, and cooldown bounded. Unit tests pin every gate and the server wiring."
+  },
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": "instar-dev",
+    "verified": true
+  }
+}

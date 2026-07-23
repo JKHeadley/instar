@@ -393,7 +393,7 @@ credential data, and obsolete route state is pruned after 30 days.
 
 ### `src/monitoring/` — sentinels, watchdogs, observability
 
-`AccountSwitcher`, `AttributionResolver`, `BurnAlertButtons`, `BurnAlertDelivery`, `BurnDetectionSubscriber`, `BurnDetector`, `BurnThrottleRunbook`, `BurnVerifier`, `CoherenceMonitor`, `CommitmentSentinel`, `CommitmentTracker`, `CompactionSentinel`, `CrashLoopPauser`, `CredentialProvider`, `DegradationReporter`, `ErrorCodeExtractor`, `FeedbackAnomalyDetector`, `FrameworkParitySentinel`, `HealthChecker`, `HelperWatchdog`, `HomeostasisMonitor`, `HookEventReceiver`, `InputClassifier`, `InstructionsVerifier`, `LlmQueue`, `LlmRateGate`, `MemoryPressureMonitor`, `NativeHealDegradationBridge`, `OrphanProcessReaper`, `PresenceProxy`, `PromiseBeacon`, `ProviderCostReportStore`, `ProviderReconciliationSweep`, `PromptGate`, `ProxyCoordinator`, `QuotaCollector`, `QuotaExhaustionDetector`, `QuotaManager`, `QuotaNotifier`, `QuotaTracker`, `Redactor`, `ReflectionMetrics`, `ReviewCanaryBattery`, `SessionActivitySentinel`, `SessionCredentialManager`, `SessionMigrator`, `SessionMonitor`, `SessionRecovery`, `SessionWatchdog`, `StallTriageNurse`, `SubagentTracker`, `SystemReviewer`, `TelemetryAuth`, `TelemetryCollector`, `TelemetryHeartbeat`, `TokenLedger`, `TokenLedgerPoller`, `TriageOrchestrator`, `WorktreeMonitor`, `WorktreeReaper`.
+`AccountSwitcher`, `AttributionResolver`, `BurnAlertButtons`, `BurnAlertDelivery`, `BurnDetectionSubscriber`, `BurnDetector`, `BurnThrottleRunbook`, `BurnVerifier`, `CoherenceMonitor`, `CommitmentSentinel`, `CommitmentTracker`, `CompactionSentinel`, `CrashLoopPauser`, `CredentialProvider`, `DegradationReporter`, `ErrorCodeExtractor`, `FeedbackAnomalyDetector`, `FrameworkParitySentinel`, `HealthChecker`, `HelperWatchdog`, `HomeostasisMonitor`, `HookEventReceiver`, `InputClassifier`, `InstructionsVerifier`, `LlmQueue`, `LlmRateGate`, `MemoryPressureMonitor`, `NativeHealDegradationBridge`, `MissingLoginSessionDetector`, `OrphanProcessReaper`, `PresenceProxy`, `ProactiveCompactionSentinel`, `PromiseBeacon`, `ProviderCostReportStore`, `ProviderReconciliationSweep`, `PromptGate`, `ProxyCoordinator`, `QuotaCollector`, `QuotaExhaustionDetector`, `QuotaManager`, `QuotaNotifier`, `QuotaTracker`, `Redactor`, `ReflectionMetrics`, `ReviewCanaryBattery`, `SessionActivitySentinel`, `SessionCredentialManager`, `SessionMigrator`, `SessionMonitor`, `SessionRecovery`, `SessionWatchdog`, `StallTriageNurse`, `SubagentTracker`, `SystemReviewer`, `TelemetryAuth`, `TelemetryCollector`, `TelemetryHeartbeat`, `TokenLedger`, `TokenLedgerPoller`, `TriageOrchestrator`, `WorktreeMonitor`, `WorktreeReaper`.
 
 ### `src/threadline/` — agent-to-agent protocol stack
 
@@ -521,6 +521,14 @@ Enrollment (P2.1) — adding a new account from a phone, expiry-proof:
   logic is pure and unit-tested against real captured-output fixtures.
 
 Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
+
+## Proactive compaction (ProactiveCompactionSentinel)
+
+`ProactiveCompactionSentinel` condenses a long-running autonomous session's conversation *before* it hits the context wall, instead of relying on recovery after the wall is reached. It reads Claude's own grounded remaining-context display and, when an autonomous Claude session crosses 85% used, waits for the canonical work-state probe to affirm a genuinely idle turn boundary, then asks the session to compact in place. A cooldown prevents repeated compaction on successive ticks; interactive sessions, non-Claude frameworks, working sessions, and uncertain readings are never touched. Ships dark by default; when enabled it starts in dry-run (recording what it would do) until live mode is explicitly configured.
+
+## Missing-login detection (MissingLoginSessionDetector)
+
+`MissingLoginSessionDetector` correlates two independent facts — a subscription-pool account whose local login has gone missing, and a live session whose real config home belongs to that account — and raises one deduplicated HIGH attention item ("re-login needed") when both hold. It matches sessions by their live config home rather than the recorded account id, because the recorded id is exactly the field that becomes unreliable under identity drift. Signal-only: it never swaps credentials, re-logs anything in, or touches the session.
 
 ## Inter-agent comms (agent-to-agent Telegram primitive)
 

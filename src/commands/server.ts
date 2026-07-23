@@ -12391,6 +12391,73 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     console.log(pc.green('  CompactionSentinel enabled (verified recovery lifecycle)'));
 
+    // ── Proactive autonomous compaction ───────────────────────────────
+    // Explicit opt-in, dry-run first. Claude already exposes a grounded
+    // percentage in its live pane ("Context left until auto-compact: N%").
+    // At >=85% used, ask for /compact only when the canonical async work-state
+    // probe says IDLE. Working and indeterminate sessions are never touched.
+    const proactiveCompactionCfg = config.monitoring?.proactiveAutonomousCompaction;
+    if (proactiveCompactionCfg?.enabled === true) {
+      const { ProactiveCompactionSentinel } = await import(
+        '../monitoring/ProactiveCompactionSentinel.js'
+      );
+      const parseContextRemaining = (pane: string | null): number | null => {
+        const match = pane?.match(/Context left until auto-compact:\s*([0-9]+)%/i);
+        if (!match) return null;
+        const value = Number(match[1]);
+        return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
+      };
+      const proactiveCompaction = new ProactiveCompactionSentinel(
+        {
+          listCandidates: async () => Promise.all(sessionManager.listRunningSessions().map(async (session) => {
+            const topic = telegram?.getTopicForSession(session.tmuxSession);
+            let autonomous = false;
+            if (topic != null) {
+              try {
+                autonomous = fs.existsSync(
+                  path.join(config.stateDir, 'autonomous', `${topic}.local.md`),
+                );
+              } catch {
+                // Fail closed: an unreadable registration never grants actuation.
+                autonomous = false;
+              }
+            }
+            return {
+              sessionName: session.tmuxSession,
+              autonomous,
+              framework: session.framework,
+              contextRemainingPercent: parseContextRemaining(
+                sessionManager.captureOutput(session.tmuxSession, 30),
+              ),
+              workState: await sessionManager.checkSessionWorkState(session.tmuxSession),
+            };
+          })),
+          triggerCompact: (sessionName) =>
+            sessionManager.injectInternalMessage(
+              sessionName,
+              '/compact',
+              'proactive-autonomous-compaction',
+            ),
+          audit: (event) => {
+            console.log(
+              `[ProactiveCompaction] ${event.kind} "${event.sessionName}" ` +
+              `at ${event.usedPercent}% used (threshold ${event.thresholdUsedPercent}%)`,
+            );
+          },
+        },
+        proactiveCompactionCfg,
+      );
+      const proactiveCompactionTimer = setInterval(
+        () => { void proactiveCompaction.tick(); },
+        Math.max(10_000, proactiveCompactionCfg.tickIntervalMs ?? 60_000),
+      );
+      proactiveCompactionTimer.unref?.();
+      void proactiveCompaction.tick();
+      console.log(pc.green(
+        `  Proactive autonomous compaction enabled (${proactiveCompactionCfg.dryRun === false ? 'live' : 'dry-run'})`,
+      ));
+    }
+
     // ── Silently-stopped trio: SocketDisconnectSentinel + ActiveWorkSilenceSentinel ──
     // Wire-up post-2026-05-22 incident. Every transition (detect/nudge/recover)
     // lands in the audit log (server logs + JSONL) — the user never sees it.
