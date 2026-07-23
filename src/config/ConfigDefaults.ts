@@ -2037,6 +2037,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
   // forbids for a dev-gated block).
   subscriptionPool: {
+    proactiveSwap: {
+      // Login-loss swap trigger — DEV-GATED: enabled deliberately omitted.
+      // A dev agent evaluates the exact intent but performs no session kill
+      // until a deliberate dryRun:false promotion. Fleet remains dark.
+      loginLoss: {
+        dryRun: true,
+      },
+    },
     credentialRepointing: {
       dryRun: true,
       manualLeversEnabled: true,

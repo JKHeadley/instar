@@ -52,6 +52,7 @@ import {
   accountAtPressure,
 } from './QuotaAwareScheduler.js';
 import type { SubscriptionAccount } from './SubscriptionPool.js';
+import { requiresOwnerRelogin } from './SubscriptionPool.js';
 import type { SwapAntiThrashEngine, AntiThrashKnobs } from './SwapAntiThrash.js';
 import type { WorkProbeResult } from './SwapWorkGate.js';
 import { governor, consumeAdmissionToken } from '../monitoring/selfaction/governor.js';
@@ -85,6 +86,9 @@ export interface ProactiveSwapSession {
   /** The pool account this session is tagged with, or null if untagged
    *  (untagged ⇒ running on the default config ⇒ resolved via the default login). */
   accountId: string | null;
+  /** Exact account correlated from the session's real config home when that
+   * slot is in an owner-relogin-required episode. */
+  loginLossAccountId?: string | null;
   /** False when the existing SessionRefresh funnel cannot route this session
    *  back to a Telegram or Slack conversation. Omitted preserves legacy callers. */
   refreshable?: boolean;
@@ -127,6 +131,7 @@ export interface ProactiveSwapMonitorConfig {
     targetAccountId?: string;
     callerClass?: 'proactive-swap';
     sourceWasUntagged?: boolean;
+    sourceTrigger?: 'quota-pressure' | 'login-loss';
   }) => Promise<ProactiveSwapOutcome>;
   /** Optional fresh-poll trigger, awaited when an account is in the watch zone. */
   triggerPoll?: () => Promise<unknown>;
@@ -148,6 +153,12 @@ export interface ProactiveSwapMonitorConfig {
   antiThrash?: {
     engine: SwapAntiThrashEngine;
     getKnobs: () => AntiThrashKnobs;
+  };
+  /** Login-loss trigger extension. The master switch is dev-gated in wiring;
+   * dryRun defaults true and records the exact would-swap without a kill. */
+  loginLoss?: {
+    enabled: boolean;
+    dryRun: boolean;
   };
   /** In-flight work deferral (Piece 2). Knobs read live per evaluation. */
   workGate?: {
@@ -176,6 +187,7 @@ interface Candidate {
   startedMs: number;
   /** True when the session carries no tag (resolved via the default slot). */
   untagged: boolean;
+  sourceTrigger: 'quota-pressure' | 'login-loss';
 }
 
 interface DeferralEntry {
@@ -339,18 +351,20 @@ export class ProactiveSwapMonitor {
       defaultAccountId = null; // unknown default source holds safely
     }
     for (const s of this.cfg.listRunningSessions()) {
-      const effectiveAccountId = s.accountId ?? defaultAccountId;
+      const effectiveAccountId = s.accountId ?? s.loginLossAccountId ?? defaultAccountId;
       currentAccountBySession.set(s.sessionName, effectiveAccountId);
       if (s.refreshable === false || !effectiveAccountId) continue;
       const acct = byId.get(effectiveAccountId);
       if (!acct) continue;
-      if (!engine.sourceEligible(acct, nowMs)) continue;
+      const loginLoss = this.cfg.loginLoss?.enabled === true && requiresOwnerRelogin(acct);
+      if (!loginLoss && !engine.sourceEligible(acct, nowMs)) continue;
       const startedMs = s.startedAt ? Date.parse(s.startedAt) : NaN;
       candidates.push({
         sessionName: s.sessionName,
         accountId: effectiveAccountId,
         startedMs: Number.isFinite(startedMs) ? startedMs : 0,
         untagged: s.accountId === null,
+        sourceTrigger: loginLoss ? 'login-loss' : 'quota-pressure',
       });
     }
     candidates.sort((a, b) => b.startedMs - a.startedMs);
@@ -396,6 +410,7 @@ export class ProactiveSwapMonitor {
         targetsUsedThisTick,
         ...(deferralAgeMs !== undefined ? { deferralAgeMs } : {}),
         ...(deferral ? { deferCount: deferral.count } : {}),
+        sourceTrigger: c.sourceTrigger,
       });
       if (verdict.action !== 'execute') continue; // refusal rows already written by the engine
 
@@ -479,7 +494,27 @@ export class ProactiveSwapMonitor {
 
       // Execute — the checked target IS the executed target (I1); the
       // scheduler revalidates the WHOLE decision at execute time (§3.3).
+      // The trigger stays explicit so login loss bypasses only source pressure,
+      // never target freshness, target ceilings, or execution-time safeguards.
       try {
+        if (c.sourceTrigger === 'login-loss' && this.cfg.loginLoss?.dryRun !== false) {
+          engine.recordProactiveExecuted({
+            session: c.sessionName,
+            from: c.accountId,
+            to: verdict.targetAccountId,
+            nowMs,
+            fromUtilPct: verdict.fromUtilPct,
+            toUtilPct: verdict.toUtilPct,
+            sourceTrigger: 'login-loss',
+            dryRun: true,
+            ...(c.untagged ? { sourceWasUntagged: true } : {}),
+          });
+          targetsUsedThisTick.add(verdict.targetAccountId);
+          this.logger.log(
+            `[ProactiveSwap] ${c.sessionName}: would swap off missing login ${c.accountId} → ${verdict.targetAccountId} (dry-run; conversation untouched)`,
+          );
+          continue;
+        }
         // Self-action backpressure admission (observe-only: always allows).
         // An enforce-mode non-allow stands down this candidate — the pressure
         // condition re-fires on the next tick (level-triggered).
@@ -495,6 +530,7 @@ export class ProactiveSwapMonitor {
           targetAccountId: verdict.targetAccountId,
           callerClass: 'proactive-swap',
           ...(c.untagged ? { sourceWasUntagged: true } : {}),
+          sourceTrigger: c.sourceTrigger,
         });
         if (outcome.swapped) {
           engine.recordProactiveExecuted({
@@ -505,6 +541,7 @@ export class ProactiveSwapMonitor {
             fromUtilPct: verdict.fromUtilPct,
             toUtilPct: verdict.toUtilPct,
             ...(c.untagged ? { sourceWasUntagged: true } : {}),
+            sourceTrigger: c.sourceTrigger,
             ...(deferral ? { deferralAgeMs: nowMs - deferral.firstAtMs, deferCount: deferral.count } : {}),
           });
           this.lastSwapAt.set(c.sessionName, nowMs);
@@ -512,8 +549,8 @@ export class ProactiveSwapMonitor {
           targetsUsedThisTick.add(verdict.targetAccountId);
           swapped.push(c.sessionName);
           this.logger.log(
-            `[ProactiveSwap] ${c.sessionName}: pre-emptively swapped off ${c.accountId} → ${outcome.toAccountId ?? verdict.targetAccountId} ` +
-              `(account ≥${this.thresholdPct}% measured — moved before the wall, conversation preserved)`,
+            `[ProactiveSwap] ${c.sessionName}: proactively swapped off ${c.accountId} → ${outcome.toAccountId ?? verdict.targetAccountId} ` +
+              `(${c.sourceTrigger === 'login-loss' ? 'local login missing' : `account ≥${this.thresholdPct}% measured`} — conversation preserved)`,
           );
         } else if (outcome.reason === 'target-revalidation-failed') {
           engine.recordRevalidationRefusal({
@@ -711,6 +748,7 @@ export class ProactiveSwapMonitor {
         accountId: eff,
         startedMs: Number.isFinite(startedMs) ? startedMs : 0,
         untagged: s.accountId === null,
+        sourceTrigger: 'quota-pressure',
       });
     }
     return out;

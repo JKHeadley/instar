@@ -184,6 +184,9 @@ export interface ProactiveIntentInput {
   /** Deferral bookkeeping stamped onto refusal rows when this intent is a deferred retry. */
   deferralAgeMs?: number;
   deferCount?: number;
+  /** Login loss bypasses only the source-pressure arithmetic. Every target,
+   * work, dwell, breaker, freshness, and execution-boundary guard still binds. */
+  sourceTrigger?: 'quota-pressure' | 'login-loss';
 }
 
 export type BrakeVerdict =
@@ -634,7 +637,7 @@ export class SwapAntiThrashEngine {
 
     // 6. VERIFY the survivor against bound 2 (relative improvement).
     const fromUtil = sourceValidity.utilPct;
-    if (fromUtil - target.utilPct < k.minImprovementPct) {
+    if (input.sourceTrigger !== 'login-loss' && fromUtil - target.utilPct < k.minImprovementPct) {
       this.recordSimpleRefusal(input, 'no-material-target', nowMs, {
         to: target.acct.id,
         fromUtilPct: fromUtil,
@@ -689,6 +692,7 @@ export class SwapAntiThrashEngine {
     defaultAccountChanged?: boolean;
     sourceWasUntagged?: boolean;
     dryRun?: boolean;
+    sourceTrigger?: 'quota-pressure' | 'login-loss';
   }): void {
     const k = this.getKnobs();
     const row: SwapLedgerRow = {
@@ -706,6 +710,7 @@ export class SwapAntiThrashEngine {
       ...(args.deferCount !== undefined ? { deferCount: args.deferCount } : {}),
       ...(args.defaultAccountChanged ? { defaultAccountChanged: true } : {}),
       ...(args.sourceWasUntagged ? { sourceWasUntagged: true } : {}),
+      ...(args.sourceTrigger ? { sourceTrigger: args.sourceTrigger } : {}),
       ...(args.dryRun ? { dryRun: true } : {}),
     };
 

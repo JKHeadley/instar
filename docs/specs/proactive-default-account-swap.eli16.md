@@ -58,3 +58,23 @@ than succeeding only through a generic mock.
 
 Rollback is simple: revert the code and publish the next patch. There is no
 data migration, no new configuration, and no new persistent state.
+
+## Login loss: move before the broken key strands the conversation
+
+Quota is not the only reason an account can become unusable. A local login can
+disappear while a conversation is still alive. Instar already detects that
+specific condition and marks it as “the owner must log in again,” but previously
+it only raised an alert. The live conversation could keep running until its next
+authentication boundary and then stop.
+
+The same safe move can now be proposed for that condition. Instar identifies
+the account from the session’s real login folder, chooses a healthy
+same-framework account, waits if the conversation or its helpers are busy, and
+checks again immediately before restart that the original login is still
+missing. If the user repaired it or the session moved meanwhile, nothing is
+killed. The new trigger is off on ordinary machines and dry-runs first on a
+development machine, so it records “this is what I would move” before anyone
+allows it to restart a real conversation.
+
+That missing-login signal waives only the need for quota pressure; every check
+on the destination account and every last-moment safety check still applies.

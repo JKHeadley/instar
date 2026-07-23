@@ -28,7 +28,7 @@ import type {
   AccountQuotaSnapshot,
   SubscriptionFramework,
 } from './SubscriptionPool.js';
-import { isLocallyExecutable } from './SubscriptionPool.js';
+import { isLocallyExecutable, requiresOwnerRelogin } from './SubscriptionPool.js';
 
 /** The binding window for swap decisions: the 7-day window is the scarce one. */
 export interface SelectionOptions {
@@ -210,7 +210,11 @@ export interface QuotaSwapAntiThrashHooks {
   /** Live knobs for the revalidation arithmetic. */
   getKnobs: () => { thresholdPct: number; targetHeadroomPct: number; minImprovementPct: number };
   /** The session's CURRENT account id (source-identity check, R3-m3). */
-  resolveEffectiveAccountId: (sessionName: string, sourceWasUntagged: boolean) => Promise<string | null>;
+  resolveEffectiveAccountId: (
+    sessionName: string,
+    sourceWasUntagged: boolean,
+    sourceTrigger?: 'quota-pressure' | 'login-loss',
+  ) => Promise<string | null>;
   /** Observe an executed REACTIVE swap (dwell clock-start, hop alerts). */
   onReactiveExecuted?: (args: { session: string; from: string; to: string; nowMs: number }) => void;
   /** Observe a reactive execution failure (§3.6 `failed` rows, kind 'reactive'). */
@@ -272,6 +276,9 @@ export class QuotaAwareScheduler {
     framework?: SubscriptionFramework;
     /** True when the evaluated source came from the default-login resolver. */
     sourceWasUntagged?: boolean;
+    /** Level-triggered source condition. Login loss is revalidated at the same
+     * kill boundary as the untagged default-account identity. */
+    sourceTrigger?: 'quota-pressure' | 'login-loss';
   }): Promise<SwapResult> {
     const { sessionName, exhaustedAccountId, nowMs, targetAccountId } = args;
     const isProactive = targetAccountId !== undefined;
@@ -306,19 +313,31 @@ export class QuotaAwareScheduler {
         }
         // 2. Source identity (R3-m3): a reactive swap that completed in the
         // sub-tick window invalidates the intent — never a second kill.
-        const current = await at.resolveEffectiveAccountId(sessionName, args.sourceWasUntagged === true);
+        const current = await at.resolveEffectiveAccountId(
+          sessionName,
+          args.sourceWasUntagged === true,
+          args.sourceTrigger,
+        );
         if ((args.sourceWasUntagged === true && current !== exhaustedAccountId) ||
             (args.sourceWasUntagged !== true && current !== null && current !== exhaustedAccountId)) {
           return { swapped: false, toAccountId: next.id, reason: 'intent-stale' };
         }
-        // 3. Source pressure, fresh: the wave may have subsided sub-tick.
+        // 3. Source condition, fresh: either quota pressure still exists, or
+        // the exact owner-relogin-required episode still exists. A repaired
+        // login makes the intent stale before the session is killed.
         const source = accounts.find((a) => a.id === exhaustedAccountId);
-        if (!source || !isLocallyExecutable(source) || !at.readingValid(source, nowMs) || bindingUtilization(source.lastQuota) < k.thresholdPct) {
-          return { swapped: false, toAccountId: next.id, reason: 'intent-stale' };
-        }
-        // 4. Improvement delta, fresh (bound 2 at the actual kill point).
-        if (bindingUtilization(source.lastQuota) - bindingUtilization(next.lastQuota) < k.minImprovementPct) {
-          return { swapped: false, toAccountId: next.id, reason: 'target-revalidation-failed' };
+        if (args.sourceTrigger === 'login-loss') {
+          if (!source || !requiresOwnerRelogin(source)) {
+            return { swapped: false, toAccountId: next.id, reason: 'intent-stale' };
+          }
+        } else {
+          if (!source || !isLocallyExecutable(source) || !at.readingValid(source, nowMs) || bindingUtilization(source.lastQuota) < k.thresholdPct) {
+            return { swapped: false, toAccountId: next.id, reason: 'intent-stale' };
+          }
+          // 4. Improvement delta, fresh (bound 2 at the actual kill point).
+          if (bindingUtilization(source.lastQuota) - bindingUtilization(next.lastQuota) < k.minImprovementPct) {
+            return { swapped: false, toAccountId: next.id, reason: 'target-revalidation-failed' };
+          }
         }
       }
     } else {
@@ -341,7 +360,7 @@ export class QuotaAwareScheduler {
     try {
       refreshOutcome = await this.cfg.refreshFn({
         sessionName,
-        reason: `quota-swap: ${exhaustedAccountId} → ${next.id}`,
+        reason: `${args.sourceTrigger === 'login-loss' ? 'login-loss-swap' : 'quota-swap'}: ${exhaustedAccountId} → ${next.id}`,
         configHome: next.configHome,
         accountId: next.id,
         callerClass,

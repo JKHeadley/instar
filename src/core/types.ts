@@ -4139,6 +4139,17 @@ export interface InstarConfig {
          *  (default 1800000 = 30m — 2× the quota poller's 15-min cadence). */
         quotaFreshnessMs?: number;
       };
+      /**
+       * Login-loss extension: a live, refreshable session whose source account
+       * is explicitly `owner-relogin-required` may use the same anti-thrash and
+       * SessionRefresh funnel even when quota is not high. `enabled` is omitted
+       * from defaults so the development-agent gate decides; dryRun defaults
+       * true and records only a would-swap.
+       */
+      loginLoss?: {
+        enabled?: boolean;
+        dryRun?: boolean;
+      };
     };
     /**
      * swap-continuity-antithrash §4/§7 — Piece 2 (the in-flight work gate for
