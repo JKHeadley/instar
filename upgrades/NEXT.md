@@ -1,0 +1,28 @@
+# Instar Upgrade Guide
+
+## What Changed
+
+Agents now learn about the two existing dark monitoring status routes for a
+missing single-machine failover target and a live session whose local account
+login disappeared. Fresh installs and existing-agent upgrades share the exact
+same guidance.
+
+## What to Tell Your User
+
+Agents now know where to check two operational questions when the corresponding
+route is available: whether active autonomous work currently lacks an online
+failover target, and whether a live session is attached to a local login that
+has disappeared. These guards are dev-gated, dark on ordinary fleet agents by
+default, and simulation-first. A dark status response is reported honestly as
+unavailable, never mistaken for a healthy result.
+
+## Summary of New Capabilities
+
+- Agent awareness for `GET /pool/failover-gap`.
+- Agent awareness for `GET /pool/missing-login`.
+- Idempotent update migration with no duplicate capability-registry entries.
+
+## Evidence
+
+- `tests/unit/PostUpdateMigrator-darkMonitoringRoutes.test.ts`
+- `tests/unit/feature-delivery-completeness.test.ts`
