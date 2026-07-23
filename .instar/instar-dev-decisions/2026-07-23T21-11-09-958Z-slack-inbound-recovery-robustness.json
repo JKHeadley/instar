@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-23T21:11:09.958Z",
+  "slug": "slack-inbound-recovery-robustness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 59,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Thread-scoped Slack sessions introduced composite routing keys, but both recovery loops continued to assume resume-map keys were raw channel IDs. Separately, the existing dead-silence probe relied on successful local send() of undocumented JSON, which cannot establish inbound event delivery. The live incident exposed both latent assumptions together: startup logged channel_not_found for a composite key while the socket stayed OPEN and emitted no events."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

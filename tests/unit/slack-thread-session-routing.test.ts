@@ -290,3 +290,57 @@ describe('inbound _handleMessage carries thread_ts metadata used by routing', ()
     expect(key).toBe(`${CH}:${THREAD_A}`);
   });
 });
+
+describe('missed-message recovery canonicalizes thread routing keys', () => {
+  it('startup recovery queries each raw channel once and keeps its oldest checkpoint', async () => {
+    const { adapter } = makeAdapter({ allChannels: true });
+    const now = Date.now();
+    const oldestMs = now - 120_000;
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    (adapter as any).channelResumeMap = new Map([
+      [`${CH}:${THREAD_A}`, { uuid: 'a', sessionName: 'a', savedAt: new Date(now - 60_000).toISOString() }],
+      [`${CH}:${THREAD_B}`, { uuid: 'b', sessionName: 'b', savedAt: new Date(oldestMs).toISOString() }],
+    ]);
+    (adapter as any).apiClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params });
+        return { messages: [] };
+      },
+    };
+
+    await (adapter as any)._recoverOnStartup();
+
+    expect(calls).toEqual([{
+      method: 'conversations.history',
+      params: {
+        channel: CH,
+        oldest: (oldestMs / 1000).toFixed(6),
+        limit: 20,
+      },
+    }]);
+  });
+
+  it('reconnect recovery never passes a composite routing key to Slack history', async () => {
+    const { adapter } = makeAdapter({ allChannels: true });
+    const calls: Array<Record<string, unknown>> = [];
+    (adapter as any)._lastDisconnectedAt = Date.now() - 1_000;
+    (adapter as any).channelToSession = new Map([
+      [`${CH}:${THREAD_A}`, { sessionName: 'a', registeredAt: new Date().toISOString() }],
+    ]);
+    (adapter as any).channelResumeMap = new Map([
+      [`${CH}:${THREAD_B}`, { uuid: 'b', sessionName: 'b', savedAt: new Date().toISOString() }],
+    ]);
+    (adapter as any).apiClient = {
+      call: async (_method: string, params: Record<string, unknown>) => {
+        calls.push(params);
+        return { messages: [] };
+      },
+    };
+
+    await (adapter as any)._recoverMissedMessages();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].channel).toBe(CH);
+    expect(String(calls[0].channel)).not.toContain(':');
+  });
+});

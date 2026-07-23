@@ -2045,11 +2045,11 @@ export class SlackAdapter implements MessagingAdapter {
 
     // Collect channels that had recent sessions (these are the ones users were talking to)
     const channelsToCheck = new Set<string>();
-    for (const [channelId] of this.channelToSession) {
-      channelsToCheck.add(channelId);
+    for (const [routingKey] of this.channelToSession) {
+      channelsToCheck.add(this.parseRoutingKey(routingKey).channelId);
     }
-    for (const [channelId] of this.channelResumeMap) {
-      channelsToCheck.add(channelId);
+    for (const [routingKey] of this.channelResumeMap) {
+      channelsToCheck.add(this.parseRoutingKey(routingKey).channelId);
     }
 
     if (channelsToCheck.size === 0) {
@@ -2120,12 +2120,21 @@ export class SlackAdapter implements MessagingAdapter {
     try {
       // Collect channels from the persisted resume map (loaded from disk in constructor)
       const channelsToCheck = new Map<string, string>(); // channelId → oldest ts to check from
-      for (const [channelId, info] of this.channelResumeMap) {
+      for (const [routingKey, info] of this.channelResumeMap) {
         // Don't skip system channels — _handleMessage filters appropriately
         // Use the savedAt timestamp as the "last known alive" point
         const savedAtMs = new Date(info.savedAt).getTime();
         if (isNaN(savedAtMs)) continue;
-        channelsToCheck.set(channelId, (savedAtMs / 1000).toFixed(6));
+        // Resume maps are keyed by a session routing key. Thread sessions use
+        // `<channelId>:<thread_ts>`, but Slack history APIs accept only the raw
+        // channel id. Collapse every routing key to its API channel and retain
+        // the oldest checkpoint so one fetch covers every session in it.
+        const channelId = this.parseRoutingKey(routingKey).channelId;
+        const existingOldest = channelsToCheck.get(channelId);
+        const savedAtTs = (savedAtMs / 1000).toFixed(6);
+        if (!existingOldest || Number(savedAtTs) < Number(existingOldest)) {
+          channelsToCheck.set(channelId, savedAtTs);
+        }
       }
 
       if (channelsToCheck.size === 0) return;
