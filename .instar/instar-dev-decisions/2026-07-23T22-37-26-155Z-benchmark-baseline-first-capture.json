@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-23T22:37:26.155Z",
+  "slug": "benchmark-baseline-first-capture",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 41,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Benchmark-Divergence Detector shipped with mirror population declared an operational pull step whose ownership was an explicit tracked residual, so no baseline was ever captured and every finding degraded to precondition-failed. Compounding it, the production model serving the highest-volume enrolled pair (gpt-5.4-mini via codex-cli) was absent from the fail-closed normalization table, so that pair resolved no-benched-baseline (unmapped) indefinitely. Surfaced 2026-07-23 while investigating why the drift comparator had produced nothing since it shipped."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -58,6 +58,14 @@ export const MODEL_ID_NORMALIZATION: Readonly<Record<string, string>> = {
   'claude-haiku-4-5-20251001': 'claude-haiku-4-5-20251001',
   'gpt-5.5': 'gpt-5.5',
   'gpt-5.5-codex': 'gpt-5.5-codex',
+  // The model actually serving `messaging-tone-gate` in production (verified
+  // 2026-07-23 on the live meter: attribution.models = ['gpt-5.4-mini'] via
+  // codex-cli). Its absence made the highest-volume enrolled pair report
+  // `no-benched-baseline (unmapped)` — i.e. the one pair with real traffic was
+  // structurally unmeasurable. An identity mapping, like the rest: the battery
+  // reports runs under the same immutable public id production records.
+  'gpt-5.4-mini': 'gpt-5.4-mini',
+  'gemini-2.5-flash': 'gemini-2.5-flash',
   'gemini-2.5-pro': 'gemini-2.5-pro',
   'gemini-3.1-pro': 'gemini-3.1-pro',
 };
