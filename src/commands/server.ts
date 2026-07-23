@@ -23469,6 +23469,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const stageMod = await import('../core/StageAdvancer.js');
       const guardMod = await import('../config/stageWriteGuard.js');
       const crypto = await import('node:crypto');
+      const failoverCheckMod = await import('../core/sessionPoolFailoverCheck.js');
       // HMAC over the agent's authToken — tamper-evident without a separate keystore.
       const hmacKey = String(config.authToken ?? 'instar-session-pool-e2e');
       const hmac = (c: string) => crypto.createHmac('sha256', hmacKey).update(c).digest('hex');
@@ -23479,24 +23480,62 @@ export async function startServer(options: StartOptions): Promise<void> {
           try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; /* @silent-fallback-ok: HMAC verify fails closed — a malformed/short input is treated as an invalid signature, never accepted */ }
         },
       });
-      // Boot-cache the running commit SHA once (env first, else git HEAD, else
-      // 'unknown'). StageAdvancer scopes an E2E red/green to the CURRENT build via
-      // this, so a stale result from another commit can't trigger a revert/advance.
+      // Resolve the checkout the failover subprocess will actually exercise.
+      // Boot-pin it so the proof target and its build identity cannot drift
+      // independently during a run.
+      const failoverSourceCandidates = [
+        process.env.INSTAR_SOURCE_ROOT,
+        path.resolve(__dirname, '..', '..'),
+        process.cwd(),
+      ].filter((c): c is string => typeof c === 'string' && c.length > 0);
+      let sessionPoolFailoverSourceRoot: string | null = null;
+      for (const candidate of failoverSourceCandidates) {
+        try {
+          if (
+            fs.existsSync(path.join(candidate, 'node_modules', '.bin', 'vitest'))
+            && fs.existsSync(path.join(candidate, failoverCheckMod.DEFAULT_FAILOVER_E2E_PATH))
+          ) {
+            sessionPoolFailoverSourceRoot = candidate;
+            break;
+          }
+        } catch { /* @silent-fallback-ok — probe the next bounded candidate */ }
+      }
+      // Boot-cache one build identity (env SHA first, else the exact runner
+      // checkout's git HEAD, else cwd git HEAD, installed package version, then
+      // 'unknown'). Producer and StageAdvancer share this exact closure.
       const gitMod = await import('../core/SafeGitExecutor.js');
       let bootCommitSha = process.env.INSTAR_COMMIT_SHA ?? process.env.GITHUB_SHA ?? '';
-      if (!bootCommitSha) {
+      const gitIdentityCandidates = [
+        sessionPoolFailoverSourceRoot,
+        process.cwd(),
+      ].filter((c, index, all): c is string =>
+        typeof c === 'string' && c.length > 0 && all.indexOf(c) === index);
+      for (const candidate of gitIdentityCandidates) {
+        if (bootCommitSha) break;
         try {
           bootCommitSha = gitMod.SafeGitExecutor.readSync(['rev-parse', 'HEAD'], {
-            cwd: process.cwd(), encoding: 'utf-8', stdio: 'pipe', operation: 'server.ts:rollout-commit-sha',
+            cwd: candidate, encoding: 'utf-8', stdio: 'pipe', operation: 'server.ts:rollout-commit-sha',
           }).trim();
-        } catch { bootCommitSha = ''; /* @silent-fallback-ok — git unreadable → 'unknown' */ }
+        } catch { bootCommitSha = ''; /* @silent-fallback-ok — git unreadable → package identity below */ }
       }
+      if (!bootCommitSha && startupVersion && startupVersion !== '0.0.0') {
+        bootCommitSha = `package:${startupVersion}`;
+      }
+      const currentSessionPoolBuildIdentity = () => bootCommitSha || 'unknown';
+      // ONE authoritative stage read for the rollout gate and its proof producer.
+      // Splitting these previously let the runner stamp every green as stage 0
+      // while StageAdvancer was already waiting for a green at stage 2.
+      const readSessionPoolStage = () =>
+        liveConfig.get(
+          'multiMachine.sessionPool.stage',
+          'dark',
+        ) as import('../core/StageAdvancer.js').SessionPoolStage;
       // StageAdvancer: the sole stage writer. Held for the rollout job/route to drive;
       // constructed here so the write path (liveConfig + token) is wired in one place.
       const stageAdvancer = new stageMod.StageAdvancer({
         resultStore: sessionPoolE2EResultStore,
-        currentCommitSha: () => bootCommitSha || 'unknown',
-        readStage: () => (liveConfig.get('multiMachine.sessionPool.stage', 'dark') as import('../core/StageAdvancer.js').SessionPoolStage),
+        currentCommitSha: currentSessionPoolBuildIdentity,
+        readStage: readSessionPoolStage,
         writeStageConfig: (s) => liveConfig.set(guardMod.STAGE_CONFIG_PATH, s, { stageWriteToken: guardMod.STAGE_WRITE_TOKEN }),
         audit: (event, detail) => console.log(pc.dim(`  [stage-advancer] ${event} ${JSON.stringify(detail)}`)),
       });
@@ -23569,23 +23608,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const failoverLogPath = path.join(config.stateDir, 'logs', 'session-pool-failover-runner.log');
         const runProcess = (args: { testPath: string; timeoutMs: number }): Promise<import('../core/sessionPoolFailoverCheck.js').SubprocessRunResult> =>
           new Promise((resolve) => {
-            // Candidate source roots, most-specific first: an explicit env override,
-            // then this build's package root (dist/../..), then cwd. The first that
-            // carries BOTH node_modules/.bin/vitest AND the test file wins.
-            const candidates = [
-              process.env.INSTAR_SOURCE_ROOT,
-              path.resolve(__dirname, '..', '..'),
-              process.cwd(),
-            ].filter((c): c is string => typeof c === 'string' && c.length > 0);
-            let sourceRoot: string | null = null;
-            for (const c of candidates) {
-              try {
-                if (fs.existsSync(path.join(c, 'node_modules', '.bin', 'vitest')) && fs.existsSync(path.join(c, args.testPath))) {
-                  sourceRoot = c;
-                  break;
-                }
-              } catch { /* @silent-fallback-ok — probe next candidate */ }
-            }
+            const sourceRoot = sessionPoolFailoverSourceRoot;
             if (!sourceRoot) {
               // No source/vitest resolvable → NOT a failover verdict; the check
               // contract makes this THROW so the runner records nothing.
@@ -23626,10 +23649,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           resultStore: sessionPoolE2EResultStore,
           dryRunResultStore: failoverDryRunStore,
           runProcess,
-          currentCommitSha: () => bootCommitSha || 'unknown',
-          // The shadow→live-transfer failover is proven at the 'shadow' stage index
-          // (0), which StageAdvancer.advanceTo('live-transfer') reads.
-          provenStage: () => 0,
+          currentCommitSha: currentSessionPoolBuildIdentity,
+          // Credit the proof to the stage that is actually running. The next
+          // promotion reads this same current-stage index as its prior-stage gate.
+          provenStage: () => stageMod.stageIndex(readSessionPoolStage()),
           audit: (event, detail) => console.log(pc.dim(`  [failover-runner] ${event} ${JSON.stringify(detail)}`)),
         });
         if (_sessionPoolFailoverRunnerDriver) {
