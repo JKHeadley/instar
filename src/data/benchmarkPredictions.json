@@ -1,0 +1,33 @@
+{
+ "_doc": "Content-free INSTAR-Bench predictions mirror (benchmark-divergence-detector FD1). Counts, not just rates, so the prediction carries its own sampling uncertainty. Regenerate by re-running the battery against the CURRENT prompt templates and re-stamping benchedPromptHash.",
+ "capturedAt": "2026-07-23T22:30:00.000Z",
+ "tasks": {
+  "tone-gate": {
+   "perModel": {
+    "gpt-5.4-mini": {
+     "passRate": 1,
+     "passes": 14,
+     "deterministic": 14
+    },
+    "gpt-5.5": {
+     "passRate": 0.9643,
+     "passes": 27,
+     "deterministic": 28
+    },
+    "gemini-2.5-flash": {
+     "passRate": 1,
+     "passes": 14,
+     "deterministic": 14
+    },
+    "claude-haiku-4-5-20251001": {
+     "passRate": 0.9286,
+     "passes": 13,
+     "deterministic": 14
+    }
+   },
+   "benchedPromptSource": "src/core/MessagingToneGate.ts:TONE_GATE_PROMPT_TEMPLATE",
+   "benchedPromptHash": "4ae0cf6b02663c21a695393727bd05662334f0d8f1a9d3e45d8d9b2141208d54",
+   "capturedAt": "2026-07-23T22:30:00.000Z"
+  }
+ }
+}
