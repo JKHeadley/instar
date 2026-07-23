@@ -1066,6 +1066,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       probeDeadlineMs: 8_000,
       concurrency: 4,
     },
+    // Reliable peer-machine execution. `enabled` is deliberately OMITTED so
+    // resolveDevAgentGate keeps fleet dark; dry-run records the intended
+    // account-home authorized_keys change without granting SSH access.
+    peerExecution: {
+      dryRun: true,
+      requiredForReadiness: true,
+      port: 22,
+    },
     // Seamless LLM Orchestrator (docs/specs/llm-seamlessness-orchestrator.md).
     // A lease-gated tier-1 LLM loop for ANTICIPATORY working-set preload — PROPOSE-
     // ONLY / SIGNAL-ONLY (it never moves a conversation; placement stays with the

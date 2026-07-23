@@ -9,6 +9,8 @@ import { MutualSshProbeScheduler } from './MutualSshProbeScheduler.js';
 import { SshPeerAdmissionStore } from './SshPeerAdmissionStore.js';
 import { SshHostKeyLifecycle, canonicalHostKeyProposal } from './SshHostKeyLifecycle.js';
 import { canonicalSshBootstrapAdvert, validateSshBootstrapAdvert, type SshBootstrapAdvert } from './SshBootstrapAdvert.js';
+import { PeerAuthorizedKeys, type PeerAuthorizedKey } from './PeerAuthorizedKeys.js';
+import { StandingSshVerifier } from './StandingSshVerifier.js';
 
 export interface MutualSshPeer {
   machineId: string;
@@ -26,6 +28,8 @@ export interface MutualSshRuntimeDeps {
   bindHost: string;
   bindPort: number;
   dryRun: boolean;
+  peerExecution?: { agentHome: string; dryRun: boolean; requiredForReadiness: boolean };
+  localStandingSsh?: SshBootstrapAdvert['standingSsh'];
   requiredForReadiness?: boolean;
   freshnessMs?: number;
   cadenceMs?: number;
@@ -68,6 +72,9 @@ export class MutualSshRuntime {
   private stopped = false;
   private readonly startedAtWall = Date.now();
   private readonly proofFile: string;
+  private readonly peerAuthorizedKeys: PeerAuthorizedKeys | null;
+  private readonly standingVerifier = new StandingSshVerifier();
+  private readonly standingEvidence = new Map<string, { deadline: number; targetDigest: string }>();
 
   constructor(private readonly d: MutualSshRuntimeDeps) {
     const freshness = d.freshnessMs ?? 300_000;
@@ -90,11 +97,18 @@ export class MutualSshRuntime {
       notifyExhausted: async (target, failure) => this.audit({ type: 'repair-exhausted', target: target.targetMachineId, failure }),
     }, concurrency);
     this.proofFile = path.join(d.stateDir, 'machine-ssh', 'directional-proofs.json');
+    this.peerAuthorizedKeys = d.peerExecution ? new PeerAuthorizedKeys(d.peerExecution.agentHome, d.peerExecution.dryRun) : null;
     this.invalidatePersistedProofs();
   }
 
   async start(): Promise<void> {
     this.identity = this.identityManager.ensure();
+    if (this.peerAuthorizedKeys) {
+      // A process restart invalidates proof authority. Remove all grants first;
+      // current-boot mutual proof may reinstall them.
+      const result = new PeerAuthorizedKeys(this.d.peerExecution!.agentHome, false).revokeUnknown(this.d.agentId, new Set());
+      if (result.changed) this.audit({ type: 'peer-authorized-key-stale-reconciled', dryRun: result.dryRun });
+    }
     if (!this.d.dryRun) await this.ensureEndpoint();
     await this.tick();
     this.timer = setInterval(() => { void this.tick(); }, this.d.cadenceMs ?? 60_000);
@@ -144,6 +158,7 @@ export class MutualSshRuntime {
         this.d.emitJournalProof?.(proof);
         await this.d.send(target.targetMachineId, { type: 'ssh-proof-publish', proof });
       });
+      await Promise.all(peers.map(peer => this.probeStandingAccess(peer.machineId)));
     } finally { this.running = false; }
   }
 
@@ -189,29 +204,41 @@ export class MutualSshRuntime {
     }
   }
 
-  status(): { enabled: true; dryRun: boolean; listener: boolean; readinessRequired: boolean; ready: boolean; enrollmentState: 'paired' | 'ssh-bootstrap' | 'ssh-bootstrap-blocked' | 'ssh-proving' | 'ready'; blockedReasons: string[]; directions: MutualSshPairHealth[]; pairs: Array<{ machines: string[]; mutual: boolean }> } {
+  status(): { enabled: true; dryRun: boolean; listener: boolean; readinessRequired: boolean; ready: boolean; enrollmentState: 'paired' | 'ssh-bootstrap' | 'ssh-bootstrap-blocked' | 'ssh-proving' | 'ready'; blockedReasons: string[]; directions: MutualSshPairHealth[]; pairs: Array<{ machines: string[]; mutual: boolean; standingKeyInstalled: boolean; standingReachable: boolean }> } {
     const targets = this.d.listPeers().flatMap(peer => { const target = this.targetFor(peer); return target ? [target] : []; });
     const directions = this.controller.health(targets).map(row => ({ ...row, proof: this.proofs.get(this.key(row.sourceMachineId, row.targetMachineId)) ?? row.proof }));
     const pairs = this.d.listPeers().map(peer => {
       const local = this.proofs.get(this.key(this.d.selfMachineId, peer.machineId));
       const remote = this.proofs.get(this.key(peer.machineId, this.d.selfMachineId));
       const advert = this.adverts.get(peer.machineId);
+      const mutual = Boolean(advert && MutualSshVerifier.mutual(local, remote, Date.now(), {
+        monotonicNow: performance.now(),
+        liveBootIds: new Set([this.d.observerBootId, advert.observerBootId]),
+        sourceClientGenerations: new Map([[this.d.selfMachineId, this.identity.clientGeneration], [peer.machineId, advert.clientKeyGeneration]]),
+        targetHostGenerations: new Map([[this.d.selfMachineId, this.identity.hostGeneration], [peer.machineId, advert.hostKeyGeneration]]),
+      }));
+      let standingKeyInstalled = false;
+      try { standingKeyInstalled = Boolean(advert && this.peerAuthorizedKeys?.has(this.authorizedKey(advert))); }
+      catch (error) { this.bootstrapFailures.set(peer.machineId, `standing-key-store:${classifyMutualSshFailure(error)}`); }
       return {
         machines: [this.d.selfMachineId, peer.machineId],
-        mutual: Boolean(advert && MutualSshVerifier.mutual(local, remote, Date.now(), {
-          monotonicNow: performance.now(),
-          liveBootIds: new Set([this.d.observerBootId, advert.observerBootId]),
-          sourceClientGenerations: new Map([[this.d.selfMachineId, this.identity.clientGeneration], [peer.machineId, advert.clientKeyGeneration]]),
-          targetHostGenerations: new Map([[this.d.selfMachineId, this.identity.hostGeneration], [peer.machineId, advert.hostKeyGeneration]]),
-        })),
+        mutual,
+        standingKeyInstalled,
+        standingReachable: Boolean(advert && this.standingEvidence.get(peer.machineId)?.deadline! > performance.now()
+          && this.standingEvidence.get(peer.machineId)?.targetDigest === this.standingTargetDigest(advert)),
       };
     });
     const peerCount = this.d.listPeers().filter(peer => peer.machineId !== this.d.selfMachineId).length;
     const proofReady = peerCount === 0 || (pairs.length === peerCount && pairs.every(pair => pair.mutual));
     const readinessRequired = this.d.requiredForReadiness === true && !this.stopped;
-    const ready = !readinessRequired || proofReady;
-    const enrollmentState = this.stopped || peerCount === 0 ? 'ready' : this.bootstrapFailures.size > 0 ? 'ssh-bootstrap-blocked' : this.d.dryRun || this.adverts.size < peerCount || !this.endpoint ? 'ssh-bootstrap' : proofReady ? 'ready' : 'ssh-proving';
-    return { enabled: true, dryRun: this.d.dryRun, listener: this.endpoint !== null, readinessRequired, ready, enrollmentState, blockedReasons: [...new Set(this.bootstrapFailures.values())].sort(), directions, pairs };
+    const standingRequired = this.d.peerExecution?.requiredForReadiness === true && !this.d.peerExecution.dryRun;
+    const standingReady = !standingRequired || pairs.every(pair => pair.mutual && pair.standingKeyInstalled && pair.standingReachable);
+    const combinedReadinessRequired = readinessRequired || standingRequired;
+    const ready = !combinedReadinessRequired || (proofReady && standingReady);
+    const blockedReasons = [...this.bootstrapFailures.values()];
+    if (standingRequired) for (const pair of pairs) if (!pair.mutual || !pair.standingKeyInstalled || !pair.standingReachable) blockedReasons.push(`standing-key-unreachable:${pair.machines[1]}`);
+    const enrollmentState = this.stopped || peerCount === 0 ? 'ready' : this.bootstrapFailures.size > 0 || (combinedReadinessRequired && !standingReady) ? 'ssh-bootstrap-blocked' : this.d.dryRun || this.adverts.size < peerCount || !this.endpoint ? 'ssh-bootstrap' : proofReady ? 'ready' : 'ssh-proving';
+    return { enabled: true, dryRun: this.d.dryRun, listener: this.endpoint !== null, readinessRequired: combinedReadinessRequired, ready, enrollmentState, blockedReasons: [...new Set(blockedReasons)].sort(), directions, pairs };
   }
 
   revoke(machineId: string): void {
@@ -228,7 +255,10 @@ export class MutualSshRuntime {
     await Promise.race([this.endpoint?.close() ?? Promise.resolve(), new Promise<void>(resolve => setTimeout(resolve, 10_000))]);
     this.endpoint = null;
     this.listen = null;
-    for (const peer of this.d.listPeers()) this.admissionStore.revoke(peer.machineId);
+    for (const peer of this.d.listPeers()) {
+      this.admissionStore.revoke(peer.machineId);
+      this.peerAuthorizedKeys?.revoke(this.d.agentId, peer.machineId);
+    }
   }
 
   private async startEndpoint(): Promise<void> {
@@ -281,6 +311,7 @@ export class MutualSshRuntime {
       sshHostPublicKeys: [this.identity.hostPublicKey], endpoints: this.listen && !isLoopback(this.listen.host) ? [{ ...this.listen, source: 'configured' }] : [],
       issuedAt, expiresAt: new Date(now + Math.min(300_000, this.d.freshnessMs ?? 300_000)).toISOString(),
       ...(transition ? { hostKeyTransitionSignature: this.d.sign(canonicalHostKeyProposal(transition)) } : {}),
+      ...(this.d.localStandingSsh ? { standingSsh: this.d.localStandingSsh } : {}),
     };
     return { ...unsigned, machineSignature: this.d.sign(canonicalSshBootstrapAdvert(unsigned)) };
   }
@@ -298,6 +329,11 @@ export class MutualSshRuntime {
     if (prior && advert.pairingEpoch > prior.pairingEpoch) {
       this.clearPeerEvidence(advert.machineId);
       prior = undefined;
+    }
+    if (prior && (advert.clientKeyGeneration !== prior.clientKeyGeneration || advert.clientPublicKey !== prior.clientPublicKey)) {
+      const revoked = this.peerAuthorizedKeys?.revoke(this.d.agentId, advert.machineId);
+      this.standingEvidence.delete(advert.machineId);
+      if (revoked?.changed) this.audit({ type: 'peer-authorized-key-rotation-revoked', machineId: advert.machineId, dryRun: revoked.dryRun });
     }
     if (prior && advert.hostKeyGeneration === prior.hostKeyGeneration && advert.sshHostPublicKeys[0] !== prior.sshHostPublicKeys[0]) { this.d.notifySecurity?.({ type: 'host-key-substitution', machineId: advert.machineId }); throw new Error('ssh-host-key-substitution'); }
     if (prior && advert.hostKeyGeneration > prior.hostKeyGeneration) {
@@ -343,6 +379,7 @@ export class MutualSshRuntime {
     if (proof.sourceMachineId !== origin) throw new Error('ssh-proof-origin-mismatch');
     this.proofs.set(this.key(proof.sourceMachineId, proof.targetMachineId), proof);
     this.persistProofs();
+    this.reconcilePeerExecution(proof.sourceMachineId === this.d.selfMachineId ? proof.targetMachineId : proof.sourceMachineId);
   }
 
   private promoteProvenHostKey(machineId: string, generation: number): void {
@@ -358,6 +395,9 @@ export class MutualSshRuntime {
   }
 
   private clearPeerEvidence(machineId: string): void {
+    const revoked = this.peerAuthorizedKeys?.revoke(this.d.agentId, machineId);
+    this.standingEvidence.delete(machineId);
+    if (revoked?.changed) this.audit({ type: 'peer-authorized-key-revoked', machineId, dryRun: revoked.dryRun });
     this.admissionStore.revoke(machineId);
     this.endpoint?.revoke(machineId);
     this.adverts.delete(machineId);
@@ -365,6 +405,69 @@ export class MutualSshRuntime {
     this.hostKeys.delete(machineId);
     for (const key of [...this.proofs.keys()]) if (key.startsWith(`${machineId}->`) || key.endsWith(`->${machineId}`)) this.proofs.delete(key);
     this.persistProofs();
+  }
+
+  private reconcilePeerExecution(machineId: string): void {
+    if (!this.peerAuthorizedKeys) return;
+    const peer = this.d.listPeers().find(row => row.machineId === machineId);
+    const advert = this.adverts.get(machineId);
+    if (!peer || !advert || peer.pairingEpoch !== advert.pairingEpoch) return;
+    const local = this.proofs.get(this.key(this.d.selfMachineId, machineId));
+    const remote = this.proofs.get(this.key(machineId, this.d.selfMachineId));
+    if (!MutualSshVerifier.mutual(local, remote, Date.now(), {
+      monotonicNow: performance.now(),
+      liveBootIds: new Set([this.d.observerBootId, advert.observerBootId]),
+      sourceClientGenerations: new Map([[this.d.selfMachineId, this.identity.clientGeneration], [machineId, advert.clientKeyGeneration]]),
+      targetHostGenerations: new Map([[this.d.selfMachineId, this.identity.hostGeneration], [machineId, advert.hostKeyGeneration]]),
+    })) return;
+    try {
+      const result = this.peerAuthorizedKeys.reconcile(this.authorizedKey(advert));
+      if (result.changed) this.audit({ type: 'peer-authorized-key-reconciled', machineId, pairingEpoch: advert.pairingEpoch, clientKeyGeneration: advert.clientKeyGeneration, dryRun: result.dryRun });
+      this.bootstrapFailures.delete(machineId);
+    } catch (error) {
+      this.bootstrapFailures.set(machineId, `standing-key-store:${classifyMutualSshFailure(error)}`);
+    }
+  }
+
+  private async probeStandingAccess(machineId: string): Promise<void> {
+    if (!this.peerAuthorizedKeys || this.d.peerExecution?.dryRun) return;
+    const advert = this.adverts.get(machineId);
+    if (!advert?.standingSsh) {
+      this.standingEvidence.delete(machineId);
+      this.bootstrapFailures.set(machineId, 'standing-ssh-endpoint-missing');
+      return;
+    }
+    try {
+      await this.standingVerifier.probe({ ...advert.standingSsh, clientPrivateKeyPath: this.identity.clientPrivateKeyPath });
+      this.standingEvidence.set(machineId, {
+        deadline: performance.now() + (this.d.freshnessMs ?? 300_000),
+        targetDigest: this.standingTargetDigest(advert),
+      });
+      this.bootstrapFailures.delete(machineId);
+    } catch (error) {
+      this.standingEvidence.delete(machineId);
+      this.bootstrapFailures.set(machineId, `standing-ssh:${classifyMutualSshFailure(error)}`);
+    }
+  }
+
+  private authorizedKey(advert: SshBootstrapAdvert): PeerAuthorizedKey {
+    return {
+      agentId: advert.agentId,
+      machineId: advert.machineId,
+      pairingEpoch: advert.pairingEpoch,
+      clientKeyGeneration: advert.clientKeyGeneration,
+      publicKey: advert.clientPublicKey,
+    };
+  }
+
+  private standingTargetDigest(advert: SshBootstrapAdvert): string {
+    return createHash('sha256').update(JSON.stringify({
+      machineId: advert.machineId,
+      pairingEpoch: advert.pairingEpoch,
+      observerBootId: advert.observerBootId,
+      clientKeyGeneration: advert.clientKeyGeneration,
+      standingSsh: advert.standingSsh ?? null,
+    })).digest('hex');
   }
 
   private maybeRetirePreviousHost(): void {

@@ -90,6 +90,39 @@ proves A→B, B→A, keyless-first-boot, key drift, endpoint drift, and recovery
 
 ## Security boundary and threat model
 
+### ACT-897 standing peer-execution amendment (2026-07-22)
+
+The restricted subsystem remains the bootstrap verifier, but it now has one
+explicitly separate downstream authority: `multiMachine.peerExecution`. Once
+and only once both current-boot directional proofs are fresh for the same
+MachineAuth principals, pairing epoch, client generations, and host generations,
+the target reconciles the peer advert's signed `clientPublicKey` into the current
+agent account's `~/.ssh/authorized_keys`.
+
+This amendment intentionally supersedes the phase-1 invariant that
+`authorized_keys` remains byte-identical. The broader grant is required for
+reliable peer-machine execution and is independently dark/dev-gated,
+`dryRun:true` by default, and readiness-bearing only after dry-run is disabled.
+The reconciler:
+
+- owns only lines marked `instar-peer-access`; operator lines are preserved;
+- replaces a prior managed key on generation/epoch rotation and removes it on
+  revoke or peer disappearance;
+- refuses symlinked `.ssh` directories and files, writes atomically, and enforces
+  directory `0700` plus file `0600`;
+- never writes sshd configuration, `/etc`, another account, or a global key file;
+- audits would-write/write/revoke outcomes without key bodies or home paths.
+
+The signed advert also carries the real sshd endpoint, account username, and
+host Ed25519 public key when the host exposes them. After installation, the
+source performs a pinned-host-key SSH login with its dedicated key and executes
+the fixed no-side-effect command `printf instar-standing-key-ok`. The standing
+health assertion is deliberately loud: when required, a paired machine without
+fresh mutual proof, the exact installed current-epoch key, and a fresh successful
+real-sshd execution probe is `standing-key-unreachable:<machineId>`, readiness is
+false, and enrollment is blocked. An advert alone, a one-way proof, an old boot,
+an old generation, or a different pairing epoch has no install authority.
+
 Only machines already mutually verified by Instar pairing may participate. The
 MachineAuth signature and pinned machine fingerprint authorize key exchange; an SSH
 host key independently binds the reached endpoint. An unpaired LAN host, a poisoned

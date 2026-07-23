@@ -2487,6 +2487,13 @@ export interface MultiMachineConfig {
     probeDeadlineMs?: number;
     concurrency?: number;
   };
+  /** Standing peer execution via this agent account's authorized_keys. Dev-gated and dry-run-first. */
+  peerExecution?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    requiredForReadiness?: boolean;
+    port?: number;
+  };
   /**
    * Coordination mode (Gap 1 — Active/Active support).
    * - 'primary-standby': One awake, others standby with failover (default)

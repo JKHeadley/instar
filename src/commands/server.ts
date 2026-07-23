@@ -21269,6 +21269,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Mutual SSH phase 1: the signed HTTP mesh is the bootstrap carrier;
           // the resulting proof itself traverses the restricted SSH subsystem.
           // Hard-dark on fleet, dry-run first on the development agent.
+          const peerExecutionEnabled = resolveDevAgentGate(config.multiMachine?.peerExecution?.enabled, config);
+          if (!peerExecutionEnabled) {
+            try {
+              const { PeerAuthorizedKeys } = await import('../core/PeerAuthorizedKeys.js');
+              new PeerAuthorizedKeys(os.homedir(), false).revokeUnknown(config.projectName, new Set());
+            } catch (error) {
+              // @silent-fallback-ok — disabled-feature cleanup failure is loud;
+              // no runtime starts and no readiness success can mask stale access.
+              console.warn(`[peer-execution] disabled-grant cleanup blocked: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
           if (resolveDevAgentGate(config.multiMachine?.mutualSsh?.enabled, config)) {
             try {
               const sshMod = await import('../core/MutualSshRuntime.js');
@@ -21290,6 +21301,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ?? privateHosts.find(host => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host))
                 ?? '127.0.0.1';
               const bindPort = portMod.allocatePort(`${config.projectName}-mutual-ssh`, 42000, 49000);
+              const standingHostKey = (() => {
+                if (!peerExecutionEnabled) return null;
+                try { return fs.readFileSync('/etc/ssh/ssh_host_ed25519_key.pub', 'utf8').trim(); }
+                catch {
+                  // @silent-fallback-ok — absence is a named standing endpoint
+                  // readiness blocker; never substitute an unpinned host key.
+                  return null;
+                }
+              })();
               const peers = () => meshIdMgr.getActiveMachines()
                 .filter(row => row.machineId !== meshSelfId)
                 .map(row => ({
@@ -21305,6 +21325,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                 selfMachineFingerprint: machineFingerprint(selfPem),
                 observerBootId: `${meshSelfId}:${process.pid}:${Date.now()}`,
                 bindHost, bindPort, dryRun: config.multiMachine?.mutualSsh?.dryRun !== false,
+                peerExecution: peerExecutionEnabled ? {
+                  // The SSH daemon resolves AuthorizedKeysFile beneath the
+                  // account home; never write a system/global sshd path.
+                  agentHome: os.homedir(),
+                  dryRun: config.multiMachine?.peerExecution?.dryRun !== false,
+                  requiredForReadiness: config.multiMachine?.peerExecution?.requiredForReadiness !== false,
+                } : undefined,
+                localStandingSsh: peerExecutionEnabled && standingHostKey && bindHost !== '127.0.0.1' ? {
+                  host: bindHost,
+                  port: config.multiMachine?.peerExecution?.port ?? 22,
+                  username: os.userInfo().username,
+                  hostPublicKey: standingHostKey,
+                } : undefined,
                 requiredForReadiness: config.multiMachine?.mutualSsh?.requiredForEmployeeRole === true,
                 freshnessMs: config.multiMachine?.mutualSsh?.freshnessMs,
                 cadenceMs: config.multiMachine?.mutualSsh?.cadenceMs,
@@ -21338,6 +21371,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime = mutualSshRuntime;
               guardRegistry.register('multiMachine.mutualSsh.enabled', () => ({
                 enabled: true, dryRun: config.multiMachine?.mutualSsh?.dryRun !== false,
+                status: mutualSshRuntime?.status() ?? null,
+              }));
+              guardRegistry.register('multiMachine.peerExecution.enabled', () => ({
+                enabled: resolveDevAgentGate(config.multiMachine?.peerExecution?.enabled, config),
+                dryRun: config.multiMachine?.peerExecution?.dryRun !== false,
                 status: mutualSshRuntime?.status() ?? null,
               }));
             } catch (err) {

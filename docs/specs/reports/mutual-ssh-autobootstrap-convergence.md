@@ -19,6 +19,13 @@ honest blocked reason when the network cannot carry the endpoint.
 
 ## Original vs Converged
 
+ACT-897 is an operator-authorized phase-2 amendment: the phase-1 choice to avoid
+OS `authorized_keys` proved transport identity but could not support autonomous
+execution on the peer machine. The new standing-access authority is separate,
+dark/dev-gated, dry-run-first, current-epoch mutual-proof-gated, agent-account
+scoped, revocable, and readiness-bearing. Phase-1 restricted-subsystem semantics
+remain the verifier and are not duplicated.
+
 The first draft relied on OS sshd and managed `authorized_keys`, which could not meet
 zero-operator setup on a host where Remote Login was disabled. Review replaced that
 with an unprivileged Instar-owned SSH subsystem that rejects shell, exec, SFTP, and

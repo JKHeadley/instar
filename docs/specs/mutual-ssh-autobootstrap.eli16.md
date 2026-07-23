@@ -1,5 +1,22 @@
 # ELI16 — Instar Mutual SSH-Subsystem Autobootstrap and Continuous Proof
 
+## ACT-897: the verified key now becomes usable
+
+The first version proved that the other machine really owned its advertised SSH
+key, but stopped before putting that key where normal SSH could use it. ACT-897
+adds that last step. After both machines have freshly proved each direction, each
+machine adds the other's dedicated Instar key to the SSH access file for the
+account running that agent.
+
+It ships in rehearsal mode: development agents log what they would change, fleet
+agents stay dark, and no access is granted until dry-run is explicitly removed.
+Instar changes only its own labeled line, preserves human-managed keys, replaces
+old rotated keys, removes revoked peers, and refuses suspicious linked files.
+Then it makes a real SSH login to the other machine, pins that machine's signed
+host key, and runs one fixed harmless print command. If Remote Login is off, the
+account/key is wrong, or the network blocks normal SSH, health says exactly which
+machine is unreachable instead of quietly pretending failover works.
+
 ## What is broken today?
 
 Instar can know that two computers belong to the same agent without knowing that

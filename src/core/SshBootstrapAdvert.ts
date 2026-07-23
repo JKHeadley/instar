@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { utils } from 'ssh2';
 
 export interface SshBootstrapAdvert {
   machineId: string;
@@ -10,6 +11,7 @@ export interface SshBootstrapAdvert {
   clientPublicKey: string;
   sshHostPublicKeys: string[];
   endpoints: Array<{ host: string; port: number; source: 'tailscale' | 'lan' | 'configured' }>;
+  standingSsh?: { host: string; port: number; username: string; hostPublicKey: string };
   issuedAt: string;
   expiresAt: string;
   hostKeyTransitionSignature?: string;
@@ -22,6 +24,7 @@ export function canonicalSshBootstrapAdvert(advert: Omit<SshBootstrapAdvert, 'ma
     observerBootId: advert.observerBootId, clientKeyGeneration: advert.clientKeyGeneration,
     hostKeyGeneration: advert.hostKeyGeneration, clientPublicKey: advert.clientPublicKey,
     sshHostPublicKeys: advert.sshHostPublicKeys, endpoints: advert.endpoints,
+    ...(advert.standingSsh ? { standingSsh: advert.standingSsh } : {}),
     issuedAt: advert.issuedAt, expiresAt: advert.expiresAt,
     ...(advert.hostKeyTransitionSignature ? { hostKeyTransitionSignature: advert.hostKeyTransitionSignature } : {}),
   });
@@ -36,11 +39,26 @@ export function validateSshBootstrapAdvert(input: unknown, principalMachineId: s
   const issuedAt = Date.parse(row.issuedAt);
   const expiresAt = Date.parse(row.expiresAt);
   if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || issuedAt > now + 30_000 || expiresAt <= now || expiresAt - now > 300_000) throw new Error('ssh-advert-expired');
-  if (!Array.isArray(row.sshHostPublicKeys) || !/^ssh-ed25519 [A-Za-z0-9+/=]+(?:\s|$)/.test(row.clientPublicKey) || row.sshHostPublicKeys.length < 1 || row.sshHostPublicKeys.length > 2 || row.sshHostPublicKeys.some(key => !/^ssh-ed25519 [A-Za-z0-9+/=]+(?:\s|$)/.test(key))) throw new Error('ssh-advert-key-invalid');
+  if (!Array.isArray(row.sshHostPublicKeys) || !validEd25519Key(row.clientPublicKey) || row.sshHostPublicKeys.length < 1 || row.sshHostPublicKeys.length > 2 || row.sshHostPublicKeys.some(key => !validEd25519Key(key))) throw new Error('ssh-advert-key-invalid');
   if (!Array.isArray(row.endpoints) || row.endpoints.length > 8 || row.endpoints.some(endpoint => !validEndpoint(endpoint))) throw new Error('ssh-advert-endpoint-invalid');
+  if (row.standingSsh !== undefined && (!validStandingEndpoint(row.standingSsh) || !validEd25519Key(row.standingSsh.hostPublicKey))) throw new Error('ssh-advert-standing-endpoint-invalid');
   if (typeof row.observerBootId !== 'string' || row.observerBootId.length < 8 || row.observerBootId.length > 128 || typeof row.machineSignature !== 'string' || row.machineSignature.length < 32 || row.machineSignature.length > 512) throw new Error('ssh-advert-signature-invalid');
   if (row.hostKeyTransitionSignature !== undefined && (typeof row.hostKeyTransitionSignature !== 'string' || row.hostKeyTransitionSignature.length < 32 || row.hostKeyTransitionSignature.length > 512)) throw new Error('ssh-advert-transition-signature-invalid');
   return row;
+}
+
+function validEd25519Key(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const parsed = utils.parseKey(value);
+  return !(parsed instanceof Error) && parsed.type === 'ssh-ed25519';
+}
+
+function validStandingEndpoint(endpoint: SshBootstrapAdvert['standingSsh']): boolean {
+  if (!endpoint || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535) return false;
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/i.test(endpoint.username)) return false;
+  if (net.isIP(endpoint.host) !== 4) return false;
+  const [a, b] = endpoint.host.split('.').map(Number);
+  return a === 10 || (a === 100 && b >= 64 && b <= 127) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
 function validEndpoint(endpoint: SshBootstrapAdvert['endpoints'][number]): boolean {
