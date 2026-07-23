@@ -1,0 +1,19 @@
+# Auto-updater deferral retries recover after interruption
+
+## What Changed
+
+Installed updates that are waiting for an idle restart now restore their retry
+timer after server startup, repair a missing timer during periodic update
+checks, and continue retrying after transient retry errors.
+
+## What to Tell Your User
+
+Updates waiting for active work to finish will no longer get stuck if their
+retry alarm is interrupted. Instar restores the alarm and switches versions
+once the protected work becomes idle.
+
+## Summary of New Capabilities
+
+- Durable restart deferrals re-arm after server startup.
+- Periodic update checks repair missing deferral timers.
+- Transient retry failures schedule another bounded attempt.

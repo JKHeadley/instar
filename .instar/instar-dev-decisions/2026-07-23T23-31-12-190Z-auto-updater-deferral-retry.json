@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-23T23:31:12.190Z",
+  "slug": "auto-updater-deferral-retry",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 21,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Restart deferral intent was persisted, but retry liveness depended on one in-memory timer. The already-installed loop breaker returned without re-arming that timer, leaving this machine's nextRetryAt frozen at 20:48 for more than two hours after an idle window."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

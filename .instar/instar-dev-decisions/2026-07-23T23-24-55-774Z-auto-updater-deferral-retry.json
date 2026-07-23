@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-23T23:24:55.774Z",
+  "slug": "auto-updater-deferral-retry",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 100,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
