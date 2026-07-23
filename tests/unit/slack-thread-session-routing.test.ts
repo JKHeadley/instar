@@ -154,6 +154,25 @@ describe('Slack registry + resume map are routing-key aware', () => {
     expect(adapter.getChannelForSession('sess-thread')).toBe(threadKey);
   });
 
+  it('disk fallback sees a binding written after adapter boot without mutating memory', () => {
+    const { adapter, stateDir } = makeAdapter({ enabledChannelIds: [CH] });
+    const routingKey = `${CH}:${THREAD_A}`;
+    fs.writeFileSync(path.join(stateDir, 'slack-channel-registry.json'), JSON.stringify({
+      channelToSession: {
+        [routingKey]: { sessionName: 'late-session', registeredAt: new Date().toISOString() },
+      },
+    }));
+    expect(adapter.getChannelForSession('late-session')).toBeNull();
+    expect(adapter.resolveChannelForSessionFromDisk('late-session')).toBe(routingKey);
+    expect(adapter.getChannelForSession('late-session')).toBeNull();
+  });
+
+  it('malformed disk registry fails closed to no binding', () => {
+    const { adapter, stateDir } = makeAdapter();
+    fs.writeFileSync(path.join(stateDir, 'slack-channel-registry.json'), '{not-json');
+    expect(adapter.resolveChannelForSessionFromDisk('orphan')).toBeNull();
+  });
+
   it('resume map keyed on the routing key: a thread resumes its OWN uuid, not the channel root', () => {
     const { adapter } = makeAdapter({ enabledChannelIds: [CH] });
     const channelKey = adapter.resolveRoutingKey(CH, undefined);

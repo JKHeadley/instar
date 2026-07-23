@@ -107,6 +107,8 @@ export interface SwapLedgerRow {
   force?: boolean;
   authLevel?: 'bearer';
   defaultAccountChanged?: boolean;
+  /** Source session resolved through the default login; the default itself did not change. */
+  sourceWasUntagged?: boolean;
   episodeId?: string;
   episodeKind?: EpisodeKind;
   breakerOpenedAt?: string;

@@ -514,7 +514,7 @@ export class SwapAntiThrashEngine {
   sourceEligible(acct: SubscriptionAccount, nowMs: number): boolean {
     const k = this.getKnobs();
     const v = readingValidity(acct, nowMs, k.quotaFreshnessMs);
-    return v.valid && v.utilPct >= k.thresholdPct;
+    return isLocallyExecutable(acct) && v.valid && v.utilPct >= k.thresholdPct;
   }
 
   /** Is the session inside re-intent backoff after a ceiling drop (§4.2)? */
@@ -616,13 +616,19 @@ export class SwapAntiThrashEngine {
     // A refusal state this session was in has ended (a target survived) —
     // endTick() will emit the leave row because we do not touch stateRows here.
 
-    // 5. SCORE with the existing use-before-reset scoring — over the FILTERED
-    // cool set ONLY (§3.3: the scoring was never the bug; applying it over
-    // the hot band was).
+    // 5. Prefer the freshest eligible target (lowest binding utilization).
+    // Existing use-before-reset score breaks exact utilization ties, followed
+    // by stable account id for deterministic selection.
     let best: { acct: SubscriptionAccount; utilPct: number; score: number } | null = null;
     for (const f of filtered) {
       const s = scoreAccount(f.acct, nowMs);
-      if (!best || s > best.score) best = { acct: f.acct, utilPct: f.utilPct, score: s };
+      if (
+        !best ||
+        f.utilPct < best.utilPct ||
+        (f.utilPct === best.utilPct && (s > best.score || (s === best.score && f.acct.id < best.acct.id)))
+      ) {
+        best = { acct: f.acct, utilPct: f.utilPct, score: s };
+      }
     }
     const target = best!;
 
@@ -681,6 +687,7 @@ export class SwapAntiThrashEngine {
     deferralAgeMs?: number;
     deferCount?: number;
     defaultAccountChanged?: boolean;
+    sourceWasUntagged?: boolean;
     dryRun?: boolean;
   }): void {
     const k = this.getKnobs();
@@ -698,6 +705,7 @@ export class SwapAntiThrashEngine {
       ...(args.deferralAgeMs !== undefined ? { deferralAgeMs: args.deferralAgeMs } : {}),
       ...(args.deferCount !== undefined ? { deferCount: args.deferCount } : {}),
       ...(args.defaultAccountChanged ? { defaultAccountChanged: true } : {}),
+      ...(args.sourceWasUntagged ? { sourceWasUntagged: true } : {}),
       ...(args.dryRun ? { dryRun: true } : {}),
     };
 

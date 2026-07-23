@@ -304,6 +304,24 @@ export class SessionRefresh {
     this.clock = deps.clock ?? Date.now;
   }
 
+  /** Non-mutating admission signal for proactive controllers. The refresh
+   *  operation repeats this lookup authoritatively before any kill. */
+  canRefreshSession(sessionName: string): boolean {
+    let topicId: number | null = null;
+    if (this.deps.telegram) {
+      topicId = this.deps.telegram.getTopicForSession(sessionName);
+      if (topicId === null) {
+        topicId = this.deps.telegram.resolveTopicForSessionFromDisk?.(sessionName) ?? null;
+      }
+    }
+    if (topicId !== null) return true;
+    if (!this.deps.slack || !this.deps.slackRespawner) return false;
+    const routingKey = this.deps.slack.getChannelForSession(sessionName)
+      ?? this.deps.slack.resolveChannelForSessionFromDisk?.(sessionName)
+      ?? null;
+    return routingKey !== null;
+  }
+
   /**
    * Refresh a session: kill its tmux session (which fires beforeSessionKill
    * so the existing listener persists the Claude UUID via TopicResumeMap),

@@ -80,7 +80,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'monitoring/PromptGate.ts': 'returns/skips on malformed output — advisory prompt observation, no gated action',
   'monitoring/InputClassifier.ts': 'conservative default is "relay" (route to human) with a deterministic destructive-op floor BEFORE the LLM — never auto-approves on failure',
   'monitoring/PresenceProxy.ts': 'returns early on cancelled/started — advisory presence heartbeat',
-  'messaging/slack/SlackAdapter.ts': 'fail-open returns true/[] on advisory Slack paths — no gated action',
 };
 
 function walk(dir: string): string[] {

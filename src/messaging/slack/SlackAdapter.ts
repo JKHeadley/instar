@@ -716,6 +716,24 @@ export class SlackAdapter implements MessagingAdapter {
     return null;
   }
 
+  /** Fresh disk-backed reverse lookup for bindings written after this adapter
+   *  loaded its in-memory registry (SessionRefresh/monitor parity). */
+  resolveChannelForSessionFromDisk(sessionName: string): string | null {
+    try {
+      if (!fs.existsSync(this.channelRegistryPath)) return null;
+      const data = JSON.parse(fs.readFileSync(this.channelRegistryPath, 'utf-8')) as {
+        channelToSession?: Record<string, { sessionName?: string }>;
+      };
+      for (const [routingKey, entry] of Object.entries(data.channelToSession ?? {})) {
+        if (entry?.sessionName === sessionName) return routingKey;
+      }
+    } catch {
+      // @silent-fallback-ok: unreadable registry means no proven binding; the
+      // caller safely refuses a destructive refresh.
+    }
+    return null;
+  }
+
   /** Remove a channel → session binding. */
   unregisterChannel(channelId: string): void {
     this.channelToSession.delete(channelId);
