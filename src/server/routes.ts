@@ -16091,6 +16091,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
         // status code with an empty object; the status is the signal, not the body.
         const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        // A proxied transfer returns before the holder-only implementation below,
+        // so the machine that received the operator request must also arm the
+        // acquire carrier after the holder proves the seat moved. This is
+        // deliberately redundant with the holder's remote kick: when this machine
+        // is the destination it has the shortest, most reliable path to its local
+        // coordinator, while duplicate kicks are collapsed by coordinator
+        // single-flight/rate limiting. Bind the kick to the holder-authored target
+        // rather than the caller's nickname so a forged/misresolved request cannot
+        // fetch a different topic onto this machine.
+        if (r.ok && j.seatMoved === true && typeof j.targetMachine === 'string') {
+          const topicNum = Number(topicId);
+          if (Number.isFinite(topicNum)) {
+            try { ctx.kickWorkingSetOnMachine?.(j.targetMachine, topicNum); }
+            catch { /* @silent-fallback-ok — transfer already completed; bounded carrier retries and the manual fetch reflex remain available */ }
+          }
+        }
         res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
       } catch (err) {
         // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the

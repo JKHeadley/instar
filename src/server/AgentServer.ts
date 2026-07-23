@@ -2820,7 +2820,13 @@ export class AgentServer {
         const coordinator = options.workingSetPullCoordinator;
         if (!coordinator) return;
         void (async () => {
-          for (const delayMs of [250, 750, 1_500, 3_000, 5_000]) {
+          // Ownership arrives through the replicated journal and can legitimately
+          // trail the fenced drain response by more than one heartbeat/cadence.
+          // Keep this fire-and-forget retry window long enough to cross that
+          // convergence boundary; `not-owner` does not consume the coordinator's
+          // reflex rate limit, and every attempt still rechecks ownership before
+          // applying bytes.
+          for (const delayMs of [250, 750, 1_500, 3_000, 5_000, 10_000, 15_000, 30_000]) {
             await new Promise((resolve) => setTimeout(resolve, delayMs));
             try {
               const result = await coordinator.fetchWorkingSet(topic);
@@ -2834,7 +2840,7 @@ export class AgentServer {
       if (!peer) return;
       const authToken = process.env.INSTAR_AUTH_TOKEN || options.config.authToken || '';
       void (async () => {
-        for (const delayMs of [250, 750, 1_500, 3_000, 5_000]) {
+        for (const delayMs of [250, 750, 1_500, 3_000, 5_000, 10_000, 15_000, 30_000]) {
           await new Promise((resolve) => setTimeout(resolve, delayMs));
           try {
             const response = await fetch(`${peer.url}/coherence/fetch-working-set`, {
