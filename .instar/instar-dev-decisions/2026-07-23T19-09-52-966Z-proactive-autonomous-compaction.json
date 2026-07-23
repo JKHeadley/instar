@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-23T19:09:52.966Z",
+  "slug": "proactive-autonomous-compaction",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 197,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Recovery began only after a context-wall failure or provider compaction event. Long unattended autonomous runs therefore had no early, idle-safe intervention even though Claude exposed grounded remaining-context telemetry in the pane."
+  },
+  "classClosure": {
+    "failureClass": "Autonomous sessions can reach the context wall despite exposing a safe pre-wall signal.",
+    "closure": "The sentinel is structurally dark, dry-run first, autonomous-and-Claude-only, thresholded at 85% used, fail-closed on indeterminate work state, and cooldown bounded. Unit tests pin every gate and the server wiring."
+  },
+  "verdict": "pass"
+}

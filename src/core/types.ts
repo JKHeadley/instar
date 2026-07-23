@@ -5753,6 +5753,21 @@ export interface MonitoringConfig {
     dedupeWindowMs?: number;
   };
   /**
+   * Proactive compaction for autonomous Claude sessions. Explicit opt-in only
+   * (dark when absent); dry-run defaults true. It reads Claude's own
+   * "Context left until auto-compact" status and acts only at an idle boundary.
+   */
+  proactiveAutonomousCompaction?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Used-context threshold percentage (default 85). */
+    thresholdUsedPercent?: number;
+    /** Poll cadence in milliseconds (default 60_000). */
+    tickIntervalMs?: number;
+    /** Per-session action cooldown in milliseconds (default 30 minutes). */
+    cooldownMs?: number;
+  };
+  /**
    * SocketDisconnectSentinel — detects Claude Code's "socket connection closed
    * unexpectedly" family in tracked sessions and runs a bounded recovery loop
    * (notice → Enter retry → verify → escalate via the tone-gated /attention

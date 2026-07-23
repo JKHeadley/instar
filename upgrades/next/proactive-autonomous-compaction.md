@@ -1,0 +1,15 @@
+# Proactive Autonomous Compaction
+
+## What Changed
+
+Autonomous Claude sessions can now compact before reaching the context wall. The feature is explicitly opt-in and starts in dry-run.
+
+## What to Tell Your User
+
+At 85% context used, Instar can wait for an idle turn boundary and prepare a safe context compaction before an unattended autonomous session reaches the wall. It does not interrupt active work, and nothing changes unless the feature is explicitly enabled.
+
+## Summary of New Capabilities
+
+- Dark, config-gated proactive compaction for autonomous Claude sessions.
+- Dry-run-first observation at a configurable used-context threshold.
+- Idle-only actuation with fail-closed handling of uncertain work state.

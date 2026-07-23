@@ -728,6 +728,18 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Detects provider rate-limit walls and schedules recovery.',
   },
   {
+    key: 'monitoring.proactiveAutonomousCompaction.enabled',
+    kind: 'config',
+    configPath: 'monitoring.proactiveAutonomousCompaction.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.proactiveAutonomousCompaction.dryRun',
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ProactiveCompactionSentinel',
+    description: 'At an idle boundary, proactively compacts explicitly opted-in autonomous Claude sessions before they reach the context wall; ships dark and dry-run first.',
+  },
+  {
     key: 'monitoring.parallelWorkSentinel.enabled',
     kind: 'config',
     configPath: 'monitoring.parallelWorkSentinel.enabled',
