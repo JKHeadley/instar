@@ -80,6 +80,11 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
     expect(res.body.censusDebt.wired).toBeGreaterThanOrEqual(3);
     expect(res.body.censusDebt.pending).toBeGreaterThan(0);
     expect(res.body.censusDebt.wiredButNoGrader).toEqual([]);
+    // Pending-tracker adjudication is alive on the production init path: BOTH
+    // buckets are always surfaced (a peer-minted tracker must be separable from a
+    // genuinely-deleted one, never collapsed into one false "dead" list).
+    expect(Array.isArray(res.body.censusDebt.pendingRefDead)).toBe(true);
+    expect(Array.isArray(res.body.censusDebt.pendingRefUnverifiable)).toBe(true);
     expect(res.body.rejections).toEqual({ enumInvalid: 0, rungMismatch: 0, ownerMismatch: 0, unknownDecisionPoint: 0 });
     // The three first-customer WIRED points are present in the census surface.
     const wiredPoints = (res.body.points as Array<any>).map((p) => p.decisionPoint);

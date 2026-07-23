@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-23T21:11:26.599Z",
+  "slug": "census-pending-tracker-adjudication",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 90,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

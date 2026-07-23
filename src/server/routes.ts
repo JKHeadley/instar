@@ -1800,21 +1800,85 @@ function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<st
 }
 
 /**
- * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue
- * — the agent-side half of the §5.6 pending-ref-dead check. null when the queue
- * file is absent/unreadable (⇒ the check is skipped honestly rather than
- * false-flagging every pending ref on an agent that has no queue yet).
+ * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue,
+ * plus the queue's id HIGH-WATER MARK — the agent-side half of the §5.6
+ * pending-ref-dead check. null when the queue file is absent/unreadable (⇒ the
+ * check is skipped honestly rather than false-flagging every pending ref on an
+ * agent that has no queue yet).
+ *
+ * WHY the high-water mark (2026-07-23 false-alarm fix): PROVENANCE_COVERAGE
+ * declares its `pending:ACT-NNNN` tracker ids as SHIPPED SOURCE CONSTANTS —
+ * identical on every install — while the evolution action queue is MACHINE-LOCAL
+ * and unreplicated (the evolutionActions stateSync send side is wired but the
+ * journal-apply side is an unbuilt later rollout stage, so two machines' queues
+ * genuinely diverge and never converge). Measured 2026-07-23: `ACT-1193` is
+ * `pending` on one machine (max id ACT-1211) and simply ABSENT on its peer (max
+ * id ACT-1119) — which made that peer report all 49 pending coverage entries as
+ * dangling trackers. Nothing had been deleted; the peer had never minted an id
+ * that high.
+ *
+ * An id ABOVE the local high-water mark is therefore proof the action was minted
+ * on another machine, NOT proof it was deleted here — a categorically different
+ * (and unactionable-locally) state that must not be reported as a dead tracker.
  */
-function readLiveEvolutionActs(stateDir: string): Set<string> | null {
+export interface LiveEvolutionActs {
+  /** Registered AND non-terminal ids on THIS machine. */
+  readonly alive: ReadonlySet<string>;
+  /** Largest numeric ACT id this machine's queue has ever minted (0 = empty queue). */
+  readonly highWater: number;
+}
+
+/** Numeric suffix of an `ACT-NNNN` id; null when it does not parse. */
+export function parseActOrdinal(id: string): number | null {
+  const m = /^ACT-(\d+)$/.exec(id.trim());
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Adjudicate ONE pending coverage tracker against this machine's action queue
+ * (§5.6). Pure + exported so the decision boundary is unit-testable without the
+ * Express surface.
+ *
+ * - `alive`        — registered and non-terminal here; nothing to report.
+ * - `unverifiable` — above this machine's id high-water mark ⇒ minted on a peer
+ *                    whose queue does not replicate here. NOT a deletion.
+ * - `dead`         — within the range this machine has minted, yet absent or
+ *                    terminal ⇒ the tracker genuinely went away. This is the
+ *                    signal the check exists to give, and it is preserved.
+ *
+ * An id that does not parse keeps the strict `dead` reading so a malformed
+ * tracker still surfaces rather than hiding in the unverifiable bucket.
+ */
+export type PendingTrackerVerdict = 'alive' | 'dead' | 'unverifiable';
+
+export function adjudicatePendingTracker(
+  act: string,
+  liveActs: LiveEvolutionActs,
+): PendingTrackerVerdict {
+  if (liveActs.alive.has(act)) return 'alive';
+  const ord = parseActOrdinal(act);
+  if (ord !== null && ord > liveActs.highWater) return 'unverifiable';
+  return 'dead';
+}
+
+function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
   try {
     const p = path.join(stateDir, 'state', 'evolution', 'action-queue.json');
     if (!fs.existsSync(p)) return null;
     const aq = JSON.parse(fs.readFileSync(p, 'utf-8')) as { actions?: Array<{ id?: string; status?: string }> };
     const alive = new Set<string>();
+    let highWater = 0;
     for (const a of aq.actions ?? []) {
-      if (a.id && (a.status === 'pending' || a.status === 'in_progress')) alive.add(a.id);
+      if (!a.id) continue;
+      // High-water spans EVERY id the queue holds, terminal ones included — a
+      // completed/cancelled action still proves this machine minted that far.
+      const ord = parseActOrdinal(a.id);
+      if (ord !== null && ord > highWater) highWater = ord;
+      if (a.status === 'pending' || a.status === 'in_progress') alive.add(a.id);
     }
-    return alive;
+    return { alive, highWater };
   } catch {
     // @silent-fallback-ok: an unreadable queue ⇒ skip pending-ref-dead (never a
     // false "dead" flag); observe-only surface, never a throw.
@@ -15972,6 +16036,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let pending = 0;
     let exempt = 0;
     const pendingRefDead: string[] = [];
+    // Trackers this machine cannot adjudicate: minted above its own id high-water
+    // mark, i.e. created on a peer whose action queue does not replicate here.
+    // NOT dead — unverifiable locally (see readLiveEvolutionActs).
+    const pendingRefUnverifiable: string[] = [];
     const liveActs = readLiveEvolutionActs(ctx.config.stateDir);
     for (const entry of PROVENANCE_COVERAGE) {
       if (entry.status === 'wired') wired++;
@@ -15979,7 +16047,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         pending++;
         if (liveActs !== null) {
           const act = entry.status.slice('pending:'.length);
-          if (!liveActs.has(act)) pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+          const verdict = adjudicatePendingTracker(act, liveActs);
+          if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+          else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
         }
       } else if (entry.status.startsWith('exempt:')) exempt++;
     }
@@ -15996,7 +16066,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       sinceHours,
       gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
       points,
-      censusDebt: { wired, pending, exempt, pendingRefDead, wiredButNoGrader },
+      censusDebt: { wired, pending, exempt, pendingRefDead, pendingRefUnverifiable, wiredButNoGrader },
       counters: totalCounters,
       // The four §5.5 annotation-rejection counters, by class.
       rejections: getDecisionAnnotationRejectionCounters(),
