@@ -20,14 +20,19 @@
  *     `identityDrift.actualAccountId === 'missing-local-login'` (a local login
  *     that has gone missing → a re-login is required). Mapped to
  *     { accountId: a.id, configHome: a.configHome }.
- *   - Live sessions: each running session's login SLOT (config home) is resolved
- *     from its `subscriptionAccountId` — the account the session launched/resumed
- *     under (authoritatively set at spawn + updated on a quota-aware swap) — via a
- *     lookup into the SAME pool. A session with no `subscriptionAccountId`, or one
- *     whose account is absent from the pool / carries no config home, canNOT be
- *     reliably placed on a slot and is SKIPPED (a fabricated configHome would be a
- *     false correlation). The detector's `computeStranded` then matches a session
- *     to a missing-login account by that config home.
+ *   - Live sessions: each running session carries its REAL login SLOT (its live
+ *     `CLAUDE_CONFIG_DIR`, resolved by the server wiring from tmux via
+ *     `SessionManager.configHomeForSession`). This is the config home the session
+ *     is ACTUALLY running on. It is deliberately NOT resolved from the session's
+ *     recorded `subscriptionAccountId`: under identity drift the recorded account
+ *     diverges from the config home the session really runs on (2026-07-22
+ *     justin-gmail incident — a session recorded `adriana` while its
+ *     `CLAUDE_CONFIG_DIR` was the login-missing justin-gmail slot), so resolving
+ *     via the account would land on the wrong slot and MISS the exact gap this
+ *     guard exists for. A session whose real config home is unresolvable (no
+ *     `configHome`) is SKIPPED (a fabricated configHome would be a false
+ *     correlation). The detector's `computeStranded` then matches a session to a
+ *     missing-login account by that real config home.
  */
 import {
   MissingLoginSessionDetector,
@@ -61,8 +66,15 @@ export interface PoolAccountView {
 export interface RunningSessionView {
   /** The tmux session name (the operator-facing handle). */
   sessionName: string;
-  /** The subscription-pool account this session launched/resumed under (its login slot). */
-  subscriptionAccountId?: string | null;
+  /**
+   * The session's REAL login slot — its live `CLAUDE_CONFIG_DIR`, resolved by the
+   * server wiring from tmux (`SessionManager.configHomeForSession`). This is the
+   * authoritative config home the session is running on, NOT its recorded
+   * `subscriptionAccountId` (which diverges from the real slot under identity
+   * drift — the exact case this guard exists for). Absent/empty ⇒ unresolvable
+   * ⇒ the session is skipped (no false correlation).
+   */
+  configHome?: string | null;
   /** Optional topic id, purely for the operator-facing message (never load-bearing). */
   topicId?: number | null;
 }
@@ -93,8 +105,10 @@ function isMissingLogin(a: PoolAccountView): boolean {
 /**
  * Build the injected deps from real managers and return the constructed detector.
  * The missing-login accounts are derived from the pool's identity-drift flags; a
- * session's login slot (config home) is resolved from its `subscriptionAccountId`
- * via a lookup into the SAME pool (an unresolvable session is skipped, never guessed).
+ * session's login slot is its REAL config home (live `CLAUDE_CONFIG_DIR`, resolved
+ * by the server wiring from tmux) — NOT its recorded `subscriptionAccountId` (which
+ * diverges from the real slot under identity drift). An unresolvable session (no
+ * real config home) is skipped, never guessed.
  */
 export function makeMissingLoginSessionDetector(
   deps: MissingLoginSessionWiringDeps,
@@ -112,20 +126,15 @@ export function makeMissingLoginSessionDetector(
       return out;
     },
     getLiveSessions: (): LiveSessionBinding[] => {
-      // Resolve a session's login slot (config home) from its subscriptionAccountId
-      // via the SAME pool. A session we can't reliably place on a slot is skipped —
-      // a wrong configHome would be a false correlation.
-      const homeByAccountId = new Map<string, string>();
-      for (const a of deps.getPoolAccounts()) {
-        const configHome = (a.configHome ?? '').trim();
-        if (configHome) homeByAccountId.set(a.id, configHome);
-      }
+      // Correlate on each session's REAL config home (its live CLAUDE_CONFIG_DIR,
+      // resolved upstream from tmux) — NOT its recorded subscriptionAccountId,
+      // which diverges from the real slot under identity drift (the exact gap this
+      // guard exists for). A session whose real config home is unresolvable is
+      // skipped — a guessed configHome would be a false correlation.
       const out: LiveSessionBinding[] = [];
       for (const s of deps.getRunningSessions()) {
-        const acctId = (s.subscriptionAccountId ?? '').trim();
-        if (!acctId) continue; // legacy / single-account session — no resolvable slot
-        const configHome = homeByAccountId.get(acctId);
-        if (!configHome) continue; // account not in the pool → can't place → skip
+        const configHome = (s.configHome ?? '').trim();
+        if (!configHome) continue; // unresolvable real slot → can't place → skip
         out.push({ sessionName: s.sessionName, configHome, topicId: s.topicId ?? null });
       }
       return out;

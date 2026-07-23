@@ -62,7 +62,7 @@ describe('GET /pool/missing-login (increment-2 status route)', () => {
       getPoolAccounts: () => [
         { id: 'acct-a', configHome: '/home/a', identityDrift: { repairState: 'owner-relogin-required' } },
       ],
-      getRunningSessions: () => [{ sessionName: 'sess-1', subscriptionAccountId: 'acct-a' }],
+      getRunningSessions: () => [{ sessionName: 'sess-1', configHome: '/home/a' }], // real slot = the missing-login slot
       createAttentionItem: () => {}, // swallow the raise (no Telegram in this test)
     });
     detector.tick(); // missing login under a live session → open gap

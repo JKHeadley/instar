@@ -22912,12 +22912,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // Raw subscription-pool accounts (identity-drift flags → missing-login);
                 // a pool of zero accounts (single-account agent) is a strict no-op.
                 getPoolAccounts: () => subscriptionPool.list(),
-                // Running sessions + the account each runs under; the factory resolves
-                // each session's login slot (config home) from its subscriptionAccountId.
+                // Running sessions + each one's REAL login slot (its live
+                // CLAUDE_CONFIG_DIR, resolved from tmux). This is the config home
+                // the session is ACTUALLY on — NOT its recorded subscriptionAccountId,
+                // which diverges from the real slot under identity drift (the gap this
+                // guard exists for). A session whose config home is unresolvable
+                // contributes configHome:undefined and is skipped by the factory (never
+                // a guessed slot). configHomeForSession fails toward silence internally.
                 getRunningSessions: () =>
                   sessionManager.listRunningSessions().map((s) => ({
                     sessionName: s.tmuxSession,
-                    subscriptionAccountId: s.subscriptionAccountId,
+                    configHome: sessionManager.configHomeForSession(s.tmuxSession),
                   })),
                 createAttentionItem: (item) => {
                   // fire-and-forget into the real attention queue; a Telegram fault
