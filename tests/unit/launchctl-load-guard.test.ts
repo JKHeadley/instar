@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { launchctlLoadAllowed } from '../../src/commands/setup.js';
+import { launchctlLoadAllowed, macOSAutoStartLoadCommands } from '../../src/commands/setup.js';
 
 /**
  * Track C follow-up (test-hygiene): the real `launchctl bootstrap` is gated so
@@ -31,5 +31,17 @@ describe('launchctlLoadAllowed (test-hygiene guard)', () => {
     delete process.env.VITEST;
     delete process.env.INSTAR_SKIP_LAUNCHCTL_LOAD;
     expect(launchctlLoadAllowed()).toBe(true);
+  });
+
+  it('re-enables an explicitly installed service before bootstrap', () => {
+    expect(macOSAutoStartLoadCommands(
+      'ai.instar.instar-codey',
+      '/Users/test/Library/LaunchAgents/ai.instar.instar-codey.plist',
+      501,
+    )).toEqual([
+      ['launchctl', ['bootout', 'gui/501', '/Users/test/Library/LaunchAgents/ai.instar.instar-codey.plist']],
+      ['launchctl', ['enable', 'gui/501/ai.instar.instar-codey']],
+      ['launchctl', ['bootstrap', 'gui/501', '/Users/test/Library/LaunchAgents/ai.instar.instar-codey.plist']],
+    ]);
   });
 });
