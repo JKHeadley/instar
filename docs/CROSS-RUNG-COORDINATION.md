@@ -100,9 +100,36 @@ isolate, what they share, how the pieces coordinate, and what it costs to add on
 
 Adding capacity at the **wrong** rung multiplies coordination cost with zero throughput gain.
 That is the "coherence, not compute, is the limiter" headline — and it is the single most
-important thing the apprenticeship program has confirmed empirically (Codey's throughput
-ceiling was ~4 concurrent worktrees, and what capped it was **review-slot contention** — a
-coordinator-attention limit at rung 3/4 — not CPU, disk, context, or quota).
+important thing the apprenticeship program has confirmed empirically (the ~4-concurrent-worktree
+ceiling below was a coordinator-attention limit, not CPU, disk, context, or quota).
+
+### Rung 3 (sessions) and rung 4 (worktrees) are DISTINCT ceilings — do not flatten them
+
+This distinction was blurred in v0.2 and corrected by Justin (2026-07-23); it is load-bearing:
+
+- **Rung 4 — worktrees inside ONE session.** A single session (one tmux/terminal instance,
+  one context window) can drive several worktrees at once, but only up to a point:
+  empirically **~4** before *that one session's* own turn-by-turn coordination saturates.
+  This ~4 is a **per-session** number. It is NOT the agent's total ceiling.
+- **Rung 3 — the NUMBER of sessions.** How many concurrent sessions an agent can run is a
+  **separate axis with an unknown, higher ceiling.** Each session is its own coordinator with
+  its own ~4-worktree budget, so an agent running *M* sessions has roughly *M × 4* worktrees
+  in flight. We have **not yet found** where *M* caps — that limit is cross-*session*
+  coordination (the agent tracking what all its sessions are doing), or the machine, or quota.
+
+> **The natural scale-up route:** when one session's worktrees max out (rung 4), the agent
+> spins up **another session** (rung 3), and another — each carrying its own ~4 — until the
+> binding constraint becomes cross-session coordination, the machine (rung 2), or a second
+> mind (rung 1). Instar agents should have a **natural, structural route to climb a rung as
+> load demands** rather than staying pinned to a single session. Building that self-scaling
+> path (an agent spawning and coordinating its own additional sessions) is an active growth
+> edge (see §7).
+
+Note the **overseer's own rung-1 ceiling**: an agent directing a mentee is itself a
+coordinator, and its review-slot attention caps how much of the mentee's multi-session output
+it can absorb coherently. Scaling the mentee past the overseer's review capacity just moves
+the incoherence up a rung — the fix is another reviewing mind (rung 1) or a review mechanism
+that does not funnel through one attention, not more mentee sessions.
 
 ---
 
@@ -188,8 +215,13 @@ The apprenticeship program is where we deliberately push each rung until it fail
 failure mode, and build the coordination fix. It is the empirical engine for this document.
 
 Confirmed so far (Drive 7, Echo↔Codey):
-- **Rung 3/4 ceiling:** ~4 concurrent implementation worktrees on a single mentee agent; the
-  wall is review-slot contention (coordinator attention), not compute/quota/disk/context.
+- **Rung 4 (per-session) ceiling:** ~4 concurrent implementation worktrees *within a single
+  session*; the wall is that session's own coordination (review-slot contention / coordinator
+  attention), not compute/quota/disk/context. This is a per-session number, NOT the agent's total.
+- **Rung 3 (session-count) ceiling: UNKNOWN — the active growth edge (Drive 10).** We have not
+  yet found how many concurrent *sessions* a mentee can run; each session carries its own
+  ~4-worktree budget, so the agent-level ceiling is *M sessions × ~4* and is bounded by
+  cross-session coordination, the machine, or quota — being stress-tested now.
 - **Rung-1 blind spot:** an overseer cannot read the mentee agent's real machine capacity
   (cross-agent capacity read is missing).
 - **Rung-1/2 dispatch fragility:** mentee-dispatch rides user channels; when a channel or the
@@ -216,9 +248,28 @@ This document grows. Append dated entries; never silently rewrite history.
   other axes (time / identity / intent-and-action / principal) so they aren't forgotten, and
   reframed §1 as "the parallelism-axis thesis." Developing Instar = uncovering what coherence
   entails; this doc maps one region.
+- **2026-07-23 (v0.3, Echo+Justin):** RUNG-3-vs-RUNG-4 SHARPENING. Justin corrected a flattening
+  in v0.2: the empirical "~4" ceiling is a **rung-4** limit (worktrees inside ONE session), NOT
+  the agent's total capacity, and it had been sloppily written as "rung 3/4." The **number of
+  sessions (rung 3)** is a *separate axis with an unknown, higher ceiling* that we have not found.
+  Added the "distinct ceilings" subsection to §2, the natural-scale-up route (an agent spinning
+  up additional sessions as its worktrees cap) and the overseer's-own-rung-1-review-ceiling note,
+  split the §5 finding into per-session (rung 4, ~4) vs session-count (rung 3, unknown — the
+  Drive-10 growth edge being stress-tested now), and added §7 open questions for the rung-3
+  session ceiling and the structural self-scaling route.
 
 ## 7. Open questions (the growth edges)
 
+- **Rung-3 session-count ceiling:** how many concurrent *sessions* can one agent run before
+  cross-session coordination (or the machine, or quota) binds? Unknown — being stress-tested in
+  Drive 10. The answer sharpens the whole rung model, since rung-3 is the axis most agents will
+  scale on before ever needing a second machine or agent.
+- **The structural self-scaling route:** what is the natural, built-in mechanism for an agent to
+  *climb a rung as load demands* — an agent spawning and coordinating its own additional sessions
+  when one session's worktrees cap, and knowing to reach for a machine/peer only when session
+  coordination itself saturates? Today this is orchestrated by hand; it should be a first-class
+  capability with the agent keeping a live read of all its sessions (extending Parallel-Work
+  Awareness into an active scale-up affordance).
 - **Rung-1 peer live-state:** what is the "Parallel-Work Awareness" equivalent for *peer
   agents*? An agent should know what its peer agents are actively doing, safely and trust-gated.
 - **Cross-agent capacity read:** how does an overseer safely observe a mentee agent's real
