@@ -45,6 +45,7 @@ import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
 import { planCredentialIdentityRepair } from '../core/CredentialIdentityRepairPlan.js';
 import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifier.js';
+import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.js';
@@ -553,6 +554,10 @@ let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+// Context-wall recovery latch. These late-bound seams let every Telegram/Slack
+// spawn chokepoint fail fresh while SessionRecovery owns a durable latch.
+let _contextExhaustionFreshRequired: ((topicId: number) => boolean) | null = null;
+let _clearContextExhaustionFreshRequired: ((topicId: number) => void) | null = null;
 
 // ── Multi-Machine Session Pool (§L4) activation refs ──────────────────────
 // The SessionRouter is constructed in startServer()'s mesh block, but the inbound
@@ -1216,6 +1221,14 @@ async function spawnSessionForTopic(
   // TopicResumeMap is authoritative — it saved the UUID for this specific topic at kill time
   // or via the refresh heartbeat. Skip LLM validation (which was failing due to JSONL sampling
   // issues and is redundant for an authoritative source).
+  const contextWallForcesFresh =
+    _contextExhaustionFreshRequired?.(topicId) === true;
+  if (contextWallForcesFresh) {
+    _topicResumeMap?.remove(topicId);
+    console.log(
+      `[spawnSessionForTopic] Context-exhaustion latch active for topic ${topicId} — forcing fresh spawn`,
+    );
+  }
   let resumeSessionId = _topicResumeMap?.get(topicId) ?? undefined;
   if (resumeSessionId) {
     console.log(`[spawnSessionForTopic] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
@@ -1342,6 +1355,9 @@ async function spawnSessionForTopic(
     }, 8000);
   }
 
+  if (contextWallForcesFresh) {
+    _clearContextExhaustionFreshRequired?.(topicId);
+  }
   return newSessionName;
 }
 
@@ -8396,7 +8412,18 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Check resume map for session continuity (keyed on routing key, so a
           // thread resumes its OWN session and not the channel-root one).
-          const resumeInfo = slackAdapter!.getChannelResume(routingKey);
+          const contextWallForcesFresh =
+            conversationId !== null
+            && _contextExhaustionFreshRequired?.(conversationId) === true;
+          if (contextWallForcesFresh) {
+            slackAdapter!.removeChannelResume(routingKey);
+            console.log(
+              `[slack→session] Context-exhaustion latch active for conversation ${conversationId} — forcing fresh spawn`,
+            );
+          }
+          const resumeInfo = contextWallForcesFresh
+            ? null
+            : slackAdapter!.getChannelResume(routingKey);
           const resumeSessionId = resumeInfo?.uuid ?? undefined;
           if (resumeInfo) {
             slackAdapter!.removeChannelResume(routingKey);
@@ -8490,6 +8517,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               );
               slackAdapter!.trackMessageInjection(channelId, newSessionName, message.content);
               console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for ${isThreadSession ? `thread ${routingKey}` : `channel ${channelId}`}`);
+              if (contextWallForcesFresh && conversationId !== null) {
+                _clearContextExhaustionFreshRequired?.(conversationId);
+              }
             }
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
@@ -10909,6 +10939,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           // P1/P2 cross-check dep — see SessionRecovery.killForRecovery().
           hasActiveProcesses: (name) => sessionManager.hasActiveProcesses(name),
+          probeTranscript: (name) => {
+            const session = sessionManager.listRunningSessions()
+              .find((candidate) => candidate.tmuxSession === name);
+            if (!session?.claudeSessionId) {
+              return { resolved: false, path: '', size: 0, mtime: 0 };
+            }
+            return probeTranscript({
+              framework: session.framework ?? 'claude-code',
+              sessionId: session.claudeSessionId,
+              projectDir: session.cwd ?? config.sessions.projectDir,
+            });
+          },
           respawnSession: async (topicId, _sessionName, recoveryPrompt) => {
             // Check Slack first (synthetic IDs are negative)
             const slackChId = slackProxyChannelMap.get(topicId);
@@ -11172,6 +11214,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Clean up after 60 seconds — by then the kill and respawn are done
         setTimeout(() => contextExhaustionKills.delete(sessionName), 60_000);
       });
+      _contextExhaustionFreshRequired = (topicId) =>
+        sessionRecovery?.hasContextWedgedSeen(topicId) === true;
+      _clearContextExhaustionFreshRequired = (topicId) => {
+        sessionRecovery?.clearContextWedgedSeen(topicId);
+      };
       console.log(pc.green('  Session Recovery enabled (mechanical fast-path)'));
     }
 
@@ -13827,6 +13874,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const result = await sessionRecovery!.checkAndRecover(topicId, sessionName);
                 return { recovered: result.recovered };
               }
+            : undefined,
+          hasContextExhaustionLatch: sessionRecovery
+            ? (topicId) => sessionRecovery!.hasContextWedgedSeen(topicId)
             : undefined,
           // Shared per-topic mutex — coordinates with PromiseBeacon.
           acquireProxyMutex: (topicId, holder) => proxyCoordinator.tryAcquire(topicId, holder),

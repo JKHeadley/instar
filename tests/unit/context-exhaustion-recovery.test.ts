@@ -376,7 +376,7 @@ describe('SessionRecovery — context exhaustion', () => {
     expect(stats.successes.contextExhaustion).toBe(1);
   });
 
-  it('persists a true-only per-topic wedge latch and reuses it after the banner scrolls away', async () => {
+  it('persists a timestamped per-topic wedge latch and reuses it after the banner scrolls away', async () => {
     let output = 'Conversation too long. Press esc twice to go up a few messages and try again.';
     let active = true;
     deps = createMockDeps({
@@ -390,8 +390,11 @@ describe('SessionRecovery — context exhaustion', () => {
     expect(deferred.deferred).toBe(true);
     expect(recovery.hasContextWedgedSeen(42)).toBe(true);
     const latchedState = JSON.parse(fs.readFileSync(path.join(tmpDir, '.instar', 'recovery-state.json'), 'utf-8'));
-    expect(latchedState.wedgedSeen).toEqual({ '42': true });
-    expect(latchedState.attempts['context:stuck-session']).toMatchObject({ count: 1 });
+    expect(latchedState.wedgedSeen['42']).toMatchObject({
+      firstSeenAt: expect.any(Number),
+    });
+    // Deferring is not a recovery attempt.
+    expect(latchedState.attempts['context:stuck-session']).toBeUndefined();
 
     output = 'ordinary prompt output; original banner has scrolled away';
     active = false;
@@ -404,7 +407,92 @@ describe('SessionRecovery — context exhaustion', () => {
     expect(recovery.hasContextWedgedSeen(42)).toBe(false);
     const clearedState = JSON.parse(fs.readFileSync(path.join(tmpDir, '.instar', 'recovery-state.json'), 'utf-8'));
     expect(clearedState.wedgedSeen).toEqual({});
-    expect(clearedState.attempts['context:stuck-session']).toMatchObject({ count: 2 });
+    expect(clearedState.attempts['context:stuck-session']).toMatchObject({ count: 1 });
+  });
+
+  it('uses transcript growth as context-wall work evidence without spending an attempt', async () => {
+    let probe = { resolved: true, path: '/tmp/session.jsonl', size: 100, mtime: 10 };
+    deps = createMockDeps({
+      isSessionAlive: vi.fn(() => true),
+      captureSessionOutput: vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.'),
+      hasActiveProcesses: vi.fn(() => true),
+      probeTranscript: vi.fn(() => probe),
+    });
+    recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir, cooldownMs: 0 }, deps);
+
+    const first = await recovery.checkAndRecover(42, 'stuck-session');
+    expect(first.deferred).toBe(true);
+
+    probe = { ...probe, size: 125, mtime: 20 };
+    const growing = await recovery.checkAndRecover(42, 'stuck-session');
+    expect(growing.deferred).toBe(true);
+    expect(growing.message).toMatch(/transcript is still growing/i);
+
+    const state = JSON.parse(fs.readFileSync(path.join(tmpDir, '.instar', 'recovery-state.json'), 'utf-8'));
+    expect(state.attempts['context:stuck-session']).toBeUndefined();
+    expect(deps.killSession).not.toHaveBeenCalled();
+  });
+
+  it('recovers a static transcript even when leftover helper processes exist', async () => {
+    const probe = { resolved: true, path: '/tmp/session.jsonl', size: 100, mtime: 10 };
+    const respawnSessionFresh = vi.fn(async () => {});
+    deps = createMockDeps({
+      isSessionAlive: vi.fn(() => true),
+      captureSessionOutput: vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.'),
+      hasActiveProcesses: vi.fn(() => true),
+      probeTranscript: vi.fn(() => probe),
+      respawnSessionFresh,
+    });
+    recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir, cooldownMs: 0 }, deps);
+
+    expect((await recovery.checkAndRecover(42, 'stuck-session')).deferred).toBe(true);
+    const recovered = await runWithTimers(() => recovery.checkAndRecover(42, 'stuck-session'));
+
+    expect(recovered.recovered).toBe(true);
+    expect(deps.killSession).toHaveBeenCalledWith('stuck-session');
+    expect(respawnSessionFresh).toHaveBeenCalled();
+  });
+
+  it('forces recovery after the 30-minute latch ceiling even when transcript evidence stays unknown', async () => {
+    let now = 1_000;
+    const unresolved = { resolved: false, path: '', size: 0, mtime: 0 };
+    const respawnSessionFresh = vi.fn(async () => {});
+    deps = createMockDeps({
+      isSessionAlive: vi.fn(() => true),
+      captureSessionOutput: vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.'),
+      hasActiveProcesses: vi.fn(() => true),
+      probeTranscript: vi.fn(() => unresolved),
+      respawnSessionFresh,
+      now: () => now,
+    });
+    recovery = new SessionRecovery({
+      enabled: true,
+      projectDir: tmpDir,
+      cooldownMs: 0,
+      contextExhaustionDeferralCeilingMs: 30 * 60_000,
+    }, deps);
+
+    expect((await recovery.checkAndRecover(42, 'stuck-session')).deferred).toBe(true);
+    now += 30 * 60_000 + 1;
+    const recovered = await runWithTimers(() => recovery.checkAndRecover(42, 'stuck-session'));
+
+    expect(recovered.recovered).toBe(true);
+    expect(deps.killSession).toHaveBeenCalledWith('stuck-session');
+    expect(respawnSessionFresh).toHaveBeenCalled();
+  });
+
+  it('loads the legacy true-only latch without clearing the episode', () => {
+    const stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'recovery-state.json'),
+      JSON.stringify({ attempts: {}, wedgedSeen: { '77': true } }),
+    );
+    deps = createMockDeps();
+    recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir }, deps);
+
+    expect(recovery.hasContextWedgedSeen(77)).toBe(true);
+    expect(recovery.getContextWedgedFirstSeenAt(77)).toEqual(expect.any(Number));
   });
 
   it('supports explicit manual clearing without a clock or inferred pane validation', () => {
