@@ -1386,6 +1386,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: false,
       stage: 'dark',
       dryRun: true,
+      // Promotion activation is independently reversible from the already-live
+      // demotion reconciler. `off` means no driver construction, no timer, and
+      // POST /session-pool/promote returns 503. The ceiling is a second,
+      // fail-closed authority bound: selecting a model alone cannot promote.
+      promotionModel: 'off',
+      promotionCeiling: 'dark',
+      promotionTickMs: 60000,
       clockSkewToleranceMs: 300000,
       maxExpectedNtpDriftMs: 250,
       machineRecordEvictionMs: 86400000,

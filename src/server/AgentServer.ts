@@ -581,6 +581,8 @@ export class AgentServer {
     /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — read behind
      *  GET /session-pool/failover-runner; null = dark (dev-gated, route 503s). */
     getSessionPoolFailoverRunner?: () => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null;
+    /** Session-pool promotion activation. Null while promotionModel is off. */
+    sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Signed cross-machine carrier into the recipient's existing A2A inbox. */
@@ -3545,6 +3547,7 @@ export class AgentServer {
       getSingleMachineFailoverGap: options.getSingleMachineFailoverGap ?? null,
       getMissingLoginSession: options.getMissingLoginSession ?? null,
       getSessionPoolFailoverRunner: options.getSessionPoolFailoverRunner ?? null,
+      sessionPoolPromotionActivation: options.sessionPoolPromotionActivation ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       workingSetArtifactManager: options.workingSetArtifactManager ?? null,

@@ -1097,6 +1097,7 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'SessionPoolPromotionActivation', reason: 'Evidence-gated rollout actuator selected by promotionModel; it delegates every mutation to StageAdvancer and is not itself a protective guard. Its off/operator/auto posture is surfaced by the promotion route and machine-coherence manifest.' },
   { component: 'DeferralPatternSentinel', reason: 'Increment-1 core only: pure injected-deps detector over the existing judgment-provenance store; NOT boot-constructed and registers no runtime getter yet, so it is absent from the live /guards inventory. It moves to GUARD_MANIFEST when a later increment wires it at boot.' },
   { component: 'rawTextRequestDetector', reason: 'Pure stateless predicate (high-precision pattern match) feeding the observe-only ask-for-access signal in checkOutboundMessage; no enabled flag, no runtime getter, takes no protective action — a detector that produces a signal, never a guard with posture.' },
   { component: 'GuardPostureTripwire', reason: 'The boot-transition detector OVER the guard inventory — meta-layer, not a guard itself; always-on, no enabled flag.' },
