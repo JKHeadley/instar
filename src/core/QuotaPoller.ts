@@ -40,7 +40,7 @@ import type {
   AccountQuotaSnapshot,
 } from './SubscriptionPool.js';
 import {
-  readClaudeOauthAsync,
+  readClaudeOauthAsyncDetailed,
   refreshClaudeToken,
   expandHome,
   type RefreshResult,
@@ -54,15 +54,21 @@ import {
 } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 
 /**
- * Injectable token resolver — returns an account's OAuth access token or null.
+ * Injectable token resolver — returns an account's OAuth access token, null,
+ * or a closed re-auth reason when the credential itself is malformed.
  * The default (`defaultTokenResolver`) is ASYNC so the per-account keychain read happens OFF the
  * event loop (a slow/contended `securityd` read used to freeze the loop every poll cycle — the
  * dashboard-flap / false-sleep residual). `pollAccount` `await`s the result, so a SYNC resolver
  * (e.g. a test stub returning a plain string) is equally valid — hence the union return type.
  */
+export type TokenResolution =
+  | string
+  | null
+  | { reauthNeeded: true; reason: 'unparseable-credential-blob' };
+
 export type TokenResolver = (
   account: SubscriptionAccount,
-) => string | null | Promise<string | null>;
+) => TokenResolution | Promise<TokenResolution>;
 
 /**
  * Injectable account refresher — exchanges a config home's stored refresh token
@@ -134,10 +140,12 @@ export interface BurnRate {
 }
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+export const QUOTA_SNAPSHOT_STALE_AFTER_MS = 30 * 60 * 1000;
 
 /**
  * Resolve a claude-code account's OAuth access token from its config home,
- * TRANSIENTLY. Never persisted, never logged. Reads via the shared OAuthRefresher
+ * TRANSIENTLY, or a closed re-auth result for malformed stored JSON. Never
+ * persisted, never logged. Reads via the shared OAuthRefresher
  * locator (macOS keychain `Claude Code-credentials-<sha256(configHome)[0:8]>`,
  * else `<configHome>/.credentials.json`) so the resolver and the refresher always
  * agree on WHERE a config home's credentials live. NOTE: an EXPIRED access token
@@ -146,7 +154,7 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
  */
 export async function defaultTokenResolver(
   account: SubscriptionAccount,
-): Promise<string | null> {
+): Promise<TokenResolution> {
   if (account.provider !== 'anthropic' || account.framework !== 'claude-code') {
     return null;
   }
@@ -154,8 +162,13 @@ export async function defaultTokenResolver(
   // OFF the event loop via `readClaudeOauthAsync` (promisified `security` spawn). The earlier sync
   // read blocked the loop for the full spawn duration each cycle — under multi-agent `securityd`
   // contention that was seconds, and across N accounts a burst (the residual freeze this fixes).
-  const oauth = await readClaudeOauthAsync(account.configHome);
-  const tok = oauth?.accessToken;
+  const read = await readClaudeOauthAsyncDetailed(account.configHome);
+  if (!read.ok) {
+    return read.reason === 'unparseable'
+      ? { reauthNeeded: true, reason: 'unparseable-credential-blob' }
+      : null;
+  }
+  const tok = read.oauth.accessToken;
   return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
 }
 
@@ -495,11 +508,16 @@ export class QuotaPoller {
       return snap;
     }
 
-    const token = await this.tokenResolver(slotAccount);
-    if (!token) {
+    const tokenResolution = await this.tokenResolver(slotAccount);
+    if (typeof tokenResolution !== 'string') {
+      if (tokenResolution?.reauthNeeded) {
+        this.markNeedsReauth(slotAccount, tokenResolution.reason);
+        return null;
+      }
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
       return null;
     }
+    const token = tokenResolution;
 
     const read = await this.readUsage(token);
     if (read === null) return null; // network failure

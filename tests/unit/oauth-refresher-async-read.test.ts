@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 import {
   readClaudeOauth,
   readClaudeOauthAsync,
+  readClaudeOauthAsyncDetailed,
   refreshClaudeToken,
   defaultCredentialStore,
   type CredentialStore,
@@ -87,6 +88,14 @@ describe('readClaudeOauthAsync', () => {
   it('returns null on an unparseable blob (same @silent-fallback as sync)', async () => {
     const store = dualStore('{ not json');
     expect(await readClaudeOauthAsync(HOME, store)).toBeNull();
+  });
+
+  it('reports an unparseable blob without returning its contents', async () => {
+    const store = dualStore('{ not json with secret-shaped material');
+    expect(await readClaudeOauthAsyncDetailed(HOME, store)).toEqual({
+      ok: false,
+      reason: 'unparseable',
+    });
   });
 
   it('prefers readAsync over read when BOTH are present (proves it uses the async path)', async () => {

@@ -225,6 +225,23 @@ describe('QuotaPoller', () => {
     expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
   });
 
+  it('pollAccount surfaces an unparseable credential blob as needs-reauth', async () => {
+    const warnings: string[] = [];
+    const p = new QuotaPoller({
+      pool,
+      fetchImpl: okFetch(LIVE_USAGE_BODY),
+      tokenResolver: () => ({ reauthNeeded: true, reason: 'unparseable-credential-blob' }),
+      logger: { log: () => {}, warn: (message) => warnings.push(message) },
+    });
+    pool.add({ ...ACCT });
+
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('needs-reauth');
+    expect(warnings).toContain(
+      '[QuotaPoller] account claude-1 → needs-reauth (unparseable-credential-blob)',
+    );
+  });
+
   it('pollAccount flags needs-reauth on a 401 when the refresh token is dead', async () => {
     // 401 AND the refresher reports no usable refresh token → genuine re-auth.
     const p = new QuotaPoller({
