@@ -578,6 +578,9 @@ export class AgentServer {
     getMachineCoherence?: () => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null;
     getSingleMachineFailoverGap?: () => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null;
     getMissingLoginSession?: () => import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null;
+    /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — read behind
+     *  GET /session-pool/failover-runner; null = dark (dev-gated, route 503s). */
+    getSessionPoolFailoverRunner?: () => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Signed cross-machine carrier into the recipient's existing A2A inbox. */
@@ -3541,6 +3544,7 @@ export class AgentServer {
       getMachineCoherence: options.getMachineCoherence ?? null,
       getSingleMachineFailoverGap: options.getSingleMachineFailoverGap ?? null,
       getMissingLoginSession: options.getMissingLoginSession ?? null,
+      getSessionPoolFailoverRunner: options.getSessionPoolFailoverRunner ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       workingSetArtifactManager: options.workingSetArtifactManager ?? null,

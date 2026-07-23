@@ -57,7 +57,7 @@ The pool doesn't reinvent the cross-machine primitives Instar already had. The r
 
 - **Exactly-once on channel messages and replies** — never dropped, never doubled — across placement, transfer, and failover. (External tool side effects are best-effort-once; carry your own idempotency key for those.)
 - **Backward compatible** — a one-machine agent is byte-identical to today, and the whole pool stays dark until you advance the rollout stage.
-- **Observable** — `GET /pool` shows the router, every machine's nickname/hardware/load/clock state; `GET /session-pool/e2e-results` shows the rollout gate's state.
+- **Observable** — `GET /pool` shows the router, every machine's nickname/hardware/load/clock state; `GET /session-pool/e2e-results` shows the rollout gate's state; `GET /session-pool/failover-runner` shows the in-agent failover-drill runner's status — the dark/dev-gated, dry-run-first background helper that runs the real two-node failover E2E on a live agent and records an honest green/red into the rollout gate's result store (503 when the runner is dark).
 
 ## Placement observability and reliable transfer
 

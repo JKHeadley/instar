@@ -394,9 +394,16 @@ describe('lint-dev-agent-dark-gate', () => {
       // MissingLoginSessionDetector wiring (increment 2, #1561) inserts a ~10-line
       // `monitoring.missingLoginSession: { dryRun: true }` default block above the
       // monitoring gates — `enabled` OMITTED (rides resolveDevAgentGate), so it adds
-      // NO attributed row and shifts EVERY row below it DOWN by +10. RE-VERIFIED via
-      // attributeRealConfigDefaults on the branch ConfigDefaults (uniform +10 shift,
-      // 25 entries, none added/removed).
+      // NO attributed row and shifts EVERY row below it DOWN by +10.
+      // SessionPoolFailoverRunner wiring (drive10, this PR) inserts a 15-line
+      // `multiMachine.sessionPool.failoverRunner: { dryRun, tickIntervalMs,
+      // checkTimeoutMs }` default block INSIDE the sessionPool block (below the
+      // holdForStability row) — `enabled` OMITTED (rides resolveDevAgentGate), so it
+      // adds NO attributed row and shifts ONLY the 4 rows BELOW that insertion
+      // (threadlinePairing + the three cartographer rows) DOWN by +15. So the rows
+      // above sessionPool carry only the +10 (missingLogin) shift; the 4 trailing
+      // rows carry BOTH (+10 and +15). RE-VERIFIED via attributeRealConfigDefaults on
+      // the rebased ConfigDefaults (25 entries, none added/removed).
       '324': 'monitoring.sessionReaper.enabled',
       '382': 'monitoring.agentWorktreeReaper.enabled',
       '501': 'monitoring.mcpProcessReaper.enabled',
@@ -455,15 +462,18 @@ describe('lint-dev-agent-dark-gate', () => {
       // enforceLiveOwner default/comment without adding an `enabled:` row.
       // The three top-level blocks (ownerDarkLadder / provenance / standards,
       // +32 lines, no `enabled:` literals) shift the cartographer rows below.
-      '1707': 'multiMachine.stateSync.threadlinePairing.enabled',
+      // +15 below the #1561 baseline: this row is BELOW the failoverRunner insert,
+      // so it carries both the +10 (missingLogin) and +15 (failoverRunner) shifts.
+      '1722': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
       // default, so it adds NO attributed dark-gate row; it shifts the cartographer
       // `enabled: false` rows below it DOWN by +6.
-      '1886': 'cartographer.freshnessSweep.enabled',
-      '1931': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1956': 'cartographer.subtreeNav.llmRerank.enabled',
+      // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
+      '1901': 'cartographer.freshnessSweep.enabled',
+      '1946': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1971': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
