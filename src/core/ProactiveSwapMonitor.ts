@@ -252,6 +252,7 @@ export class ProactiveSwapMonitor {
     running: boolean;
     lastResult: ProactiveSwapTickResult | null;
     antiThrash?: { enabled: boolean; dryRun: boolean };
+    loginLoss?: { enabled: boolean; dryRun: boolean };
     brakes?: Record<string, unknown>;
     deferrals?: { active: number; sessions: string[] };
   } {
@@ -269,6 +270,9 @@ export class ProactiveSwapMonitor {
     return {
       ...base,
       ...(knobs ? { antiThrash: { enabled: knobs.enabled, dryRun: knobs.dryRun } } : {}),
+      ...(this.cfg.loginLoss
+        ? { loginLoss: { enabled: this.cfg.loginLoss.enabled, dryRun: this.cfg.loginLoss.dryRun } }
+        : {}),
       brakes: this.cfg.antiThrash.engine.status(this.now()),
       deferrals: { active: this.deferrals.size, sessions: [...this.deferrals.keys()] },
     };
