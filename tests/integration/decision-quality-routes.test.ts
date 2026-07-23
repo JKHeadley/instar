@@ -177,6 +177,76 @@ describe('GET /decision-quality (integration)', () => {
   });
 });
 
+/**
+ * §5.6 census debt — the pending-tracker adjudication (2026-07-23 false-alarm fix).
+ *
+ * PROVENANCE_COVERAGE declares its `pending:ACT-NNNN` trackers as SHIPPED SOURCE
+ * CONSTANTS (identical on every install) but they are validated against the
+ * MACHINE-LOCAL, unreplicated evolution action queue. A machine that never minted
+ * an id that high has not DELETED the tracker — it has simply never seen it, and
+ * reporting that as a dead tracker is a false alarm by construction (measured:
+ * ACT-1193 pending on one machine at high-water 1211, absent on its peer at
+ * high-water 1119 ⇒ the peer flagged all 49 entries).
+ */
+describe('GET /decision-quality censusDebt — pending-tracker adjudication', () => {
+  const COVERAGE_TRACKER = 'ACT-1193'; // the id PROVENANCE_COVERAGE's pending entries cite
+
+  function writeQueue(actions: Array<{ id: string; status: string }>): void {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-census-'));
+    const dir = path.join(tmpDir, 'state', 'evolution');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'action-queue.json'), JSON.stringify({ actions }));
+  }
+
+  async function censusDebt(): Promise<Record<string, any>> {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const res = await request(appWith(ctxWith({ ledger, developmentAgent: true })))
+      .get('/decision-quality').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    return res.body.censusDebt;
+  }
+
+  it('a tracker ABOVE this machine\'s high-water reads unverifiable, never dead (the peer-minted case)', async () => {
+    // High-water 1119 < 1193 ⇒ this machine never minted that far: minted elsewhere.
+    writeQueue([{ id: 'ACT-1119', status: 'pending' }, { id: 'ACT-0004', status: 'completed' }]);
+    const debt = await censusDebt();
+    expect(debt.pendingRefDead).toEqual([]);
+    expect(debt.pendingRefUnverifiable.length).toBe(debt.pending);
+    expect(debt.pendingRefUnverifiable[0]).toContain(COVERAGE_TRACKER);
+  });
+
+  it('a tracker WITHIN high-water range but absent still reads dead (the genuine-deletion signal survives)', async () => {
+    // High-water 1211 > 1193 and 1193 is absent ⇒ genuinely deleted here.
+    writeQueue([{ id: 'ACT-1211', status: 'pending' }]);
+    const debt = await censusDebt();
+    expect(debt.pendingRefUnverifiable).toEqual([]);
+    expect(debt.pendingRefDead.length).toBe(debt.pending);
+    expect(debt.pendingRefDead[0]).toContain(COVERAGE_TRACKER);
+  });
+
+  it('a tracker that is alive locally is flagged by neither list', async () => {
+    writeQueue([{ id: COVERAGE_TRACKER, status: 'pending' }, { id: 'ACT-1211', status: 'completed' }]);
+    const debt = await censusDebt();
+    expect(debt.pendingRefDead).toEqual([]);
+    expect(debt.pendingRefUnverifiable).toEqual([]);
+  });
+
+  it('a TERMINAL tracker within range reads dead (completed ≠ alive), and high-water still counts it', async () => {
+    writeQueue([{ id: COVERAGE_TRACKER, status: 'completed' }]);
+    const debt = await censusDebt();
+    // high-water is 1193 (terminal rows count toward high-water), 1193 is NOT > 1193 ⇒ dead.
+    expect(debt.pendingRefUnverifiable).toEqual([]);
+    expect(debt.pendingRefDead.length).toBe(debt.pending);
+  });
+
+  it('an absent queue flags neither list (unchanged fail-safe — a fresh agent is never false-flagged)', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-census-noqueue-'));
+    const debt = await censusDebt();
+    expect(debt.pendingRefDead).toEqual([]);
+    expect(debt.pendingRefUnverifiable).toEqual([]);
+  });
+});
+
 describe('POST /decision-quality/grade-pass (integration)', () => {
   it('turns a matured Phase B backlog row into one visible known outcome through the real routes', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
