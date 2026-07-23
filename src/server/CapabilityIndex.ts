@@ -231,6 +231,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'missingLoginSession',
+    // The route lives under the already-claimed '/pool' top-level prefix (owned
+    // by the multiMachinePool entry), so this dedicated awareness entry claims
+    // NO new top-level prefix — it surfaces GET /pool/missing-login via endpoints
+    // instead (mirrors the other /pool/* sub-feature entries + the empty-prefix
+    // precedent). Claiming '/pool/missing-login' trips capabilities-discoverability:
+    // that test extracts TOP-LEVEL prefixes, so 'pool/missing-login' is a dead entry.
+    prefixes: [],
+    description: 'Missing-login-session detector — status snapshot for the "a live session is running on an account whose local login has gone missing" guard (drift under a live session → ONE deduped HIGH attention item). Dev-gated dark on the fleet (503 when off); signal-only.',
+    build: ({ ctx }) => ({
+      configured: !!(ctx.getMissingLoginSession?.() ?? null),
+      endpoints: ['GET /pool/missing-login'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',

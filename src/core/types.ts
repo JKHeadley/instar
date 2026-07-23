@@ -6161,6 +6161,24 @@ export interface MonitoringConfig {
     enabled?: boolean;
     dryRun?: boolean;
   };
+  /**
+   * MissingLoginSessionDetector (increment 2) — a pure SIGNAL-only guard that
+   * surfaces the "a live session is running on an account whose local login has
+   * gone missing" gap BEFORE the session walls silently (the 2026-07-22 justin-gmail
+   * silent auth-death): a running session bound to an account the subscription pool
+   * flagged `identityDrift.repairState === 'owner-relogin-required'` /
+   * `actualAccountId === 'missing-local-login'` → ONE deduped HIGH attention item.
+   * Never swaps, re-logins, or touches a session. `enabled` is OMITTED so the
+   * runtime resolves it through the developmentAgent dark-feature gate
+   * (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet. `dryRun: true`
+   * is the graduated-rollout first rung — it computes + counts would-raise but
+   * raises NOTHING until a deliberate dryRun:false flip. Registered in
+   * DEV_GATED_FEATURES; GET /pool/missing-login.
+   */
+  missingLoginSession?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
   externalHogSentinel?: {
     enabled?: boolean;
     dryRun?: boolean;

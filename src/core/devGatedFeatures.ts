@@ -480,6 +480,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'SIGNAL-ONLY — it never blocks, provisions a peer, or touches a session; its sole output is ONE deduped attention item. Fully deterministic (Tier 0, no LLM call, no spend), no egress beyond the existing machine-pool + autonomous-run-state reads it already has, fails toward silence on any tick error. Ships dryRun:true even on dev (dry-run FIRST: counters record would-raise, NO item raised) until a deliberate dryRun:false flip; single-machine-with-no-active-work is a strict no-op inside tick(). Routes 503 when off.',
   },
   {
+    name: 'missingLoginSession',
+    configPath: 'monitoring.missingLoginSession.enabled',
+    description: 'Missing-login-session detector (increment 2) — raises ONE deduped HIGH attention item when a live session is running on an account whose local login has gone missing (subscription-pool identity drift owner-relogin-required / missing-local-login; the 2026-07-22 justin-gmail silent auth-death).',
+    justification: 'SIGNAL-ONLY — it never swaps accounts, re-logins, or touches a session; its sole output is ONE deduped attention item. Fully deterministic (Tier 0, no LLM call, no spend), no egress beyond the existing subscription-pool + running-session reads it already has, fails toward silence on any tick error. Ships dryRun:true even on dev (dry-run FIRST: counters record would-raise, NO item raised) until a deliberate dryRun:false flip; no-drift-under-a-live-session is a strict no-op inside tick(). Routes 503 when off.',
+  },
+  {
     name: 'autonomousHeartbeat',
     configPath: 'monitoring.autonomousHeartbeat.enabled',
     description: 'AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop for an autonomous run gone silent-to-user while output is still moving (autonomous-progress-heartbeat spec).',

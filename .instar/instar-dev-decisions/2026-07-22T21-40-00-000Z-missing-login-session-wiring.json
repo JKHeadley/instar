@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T21:40:00.000Z",
+  "slug": "missing-login-session-wiring",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 360,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "MissingLoginSessionDetector increment 2 — boot-wiring. Wires the increment-1 pure core into the live server behind the developmentAgent dark-feature gate (enabled OMITTED -> resolveDevAgentGate; dark on the fleet, live on a dev agent) and dryRun-first (ConfigDefaults missingLoginSession: { dryRun: true }; raises nothing until a deliberate dryRun:false). A new factory module (missingLoginSessionWiring.ts) adapts the neutral MissingLoginAttention shape into the real TelegramAdapter attention-item input and builds the injected deps from the real subscriptionPool.list() (accounts flagged identityDrift.repairState==='owner-relogin-required' OR actualAccountId==='missing-local-login' -> missing-login accounts) and sessionManager.listRunningSessions() (each running session's login slot/configHome resolved from its subscriptionAccountId via a pool lookup; an unresolvable session is SKIPPED, never guessed, so no false correlation). The detector is constructed ONLY when the gate resolves enabled, registers a synchronous GuardRegistry runtime getter (enabled/dryRun + real lastTickAt liveness), and rides the existing 30s peerPresenceTick fail-toward-silence. New read route GET /pool/missing-login (503 when dark, 200 status() when live). Guard reclassified NOT_A_GUARD -> GUARD_MANIFEST (config, expectRuntime:true, not loadBearing). Migration parity: strip-migration for a default-shaped enabled:false + DEV_GATED_FEATURES entry + CapabilityIndex entry + type + ConfigDefaults default. All three test tiers added (unit factory dep-mapping, integration route dark/live, e2e feature-alive). Additive, signal-only, dark. tsc clean; unit+integration+e2e 12/12 green; npm run lint clean."
+}

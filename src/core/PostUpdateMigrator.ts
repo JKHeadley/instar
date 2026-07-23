@@ -533,6 +533,28 @@ export function migrateConfigSingleMachineFailoverGapDevGate(config: Record<stri
 }
 
 /**
+ * The Missing-Login-Session detector (increment 2) is a developmentAgent dark
+ * feature: `monitoring.missingLoginSession.enabled` is OMITTED from ConfigDefaults
+ * so resolveDevAgentGate resolves it (LIVE on a dev agent, DARK on the fleet). The
+ * `{ dryRun: true }` block arrives via applyDefaults add-missing. An existing agent
+ * that somehow carries a default-shaped literal `enabled: false` would force-dark
+ * even a dev agent (the #1001 mechanism) — strip it so the gate resolves. An
+ * explicit `true` (an operator fleet-flip) is PRESERVED. Idempotent +
+ * existence-checked; never writes `enabled`.
+ */
+export function migrateConfigMissingLoginSessionDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const ml = monitoring.missingLoginSession as Record<string, unknown> | undefined;
+  if (!ml || typeof ml !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(ml, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (ml.enabled !== false) return false;
+  delete ml.enabled;
+  return true;
+}
+
+/**
  * The Turn-End Self-Deferral Guard (Phase A; docs/specs/turn-end-self-deferral-guard.md
  * §3.4/FD8) is a developmentAgent dark feature: `monitoring.selfDeferralGuard.enabled`
  * is OMITTED from ConfigDefaults so resolveDevAgentGate resolves it (LIVE on a dev
@@ -9946,6 +9968,16 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: stripped default-shaped monitoring.singleMachineFailoverGap.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
     } else {
       result.skipped.push('config.json: monitoring.singleMachineFailoverGap.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // Missing-login-session detector (increment 2) dev-gate: strip a default-shaped
+    // enabled:false so it resolves live-on-dev (dry-run) / dark-fleet. The
+    // { dryRun: true } block arrives via applyDefaults add-missing.
+    if (migrateConfigMissingLoginSessionDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.missingLoginSession.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.missingLoginSession.enabled dev-gate already correct (omitted or operator-set)');
     }
 
     // Turn-End Self-Deferral Guard (Phase A) dev-gate: strip a default-shaped
