@@ -529,6 +529,7 @@ export class JudgmentProvenanceLog {
         .sort()
         .reverse();
     } catch {
+      /* @silent-fallback-ok — absent provenance storage means no observations. */
       return [];
     }
     for (const f of files) {
@@ -537,6 +538,7 @@ export class JudgmentProvenanceLog {
       try {
         content = await fsp.readFile(path.join(this.dir, f), 'utf-8');
       } catch {
+        /* @silent-fallback-ok — internal observability projection skips unreadable days. */
         continue;
       }
       for (const line of content.split('\n').filter(Boolean).reverse()) {

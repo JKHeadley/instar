@@ -145,6 +145,8 @@ are now explicit, and the latter was added to `JudgmentProvenanceLog`.
 - `tests/unit/deferral-floor.test.ts`
 - `tests/unit/tone-gate-deferral-provenance.test.ts`
 - `tests/unit/JudgmentProvenanceLog.test.ts` (canonical-store projection)
+- `tests/unit/no-silent-fallbacks.test.ts` (absent/unreadable observability files
+  are explicitly classified and do not raise the repository fallback baseline)
 
 ---
 
