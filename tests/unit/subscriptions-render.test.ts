@@ -539,6 +539,7 @@ describe('renderAccountMatrix', () => {
     renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, transient);
     const cell = t.querySelector('.sub-matrix-expired')!;
     expect(cell.textContent).toContain('Sign-in link expired');
+    expect(cell.querySelector('.sub-matrix-outcome-failed')!.textContent).toContain('Didn’t finish');
     expect(cell.querySelector('.sub-matrix-setup')!.textContent).toBe('Retry');
   });
 
@@ -558,6 +559,7 @@ describe('renderAccountMatrix', () => {
     const cell = t.querySelector('.sub-matrix-just-verified')!;
     expect(cell).toBeTruthy();
     expect(cell.textContent).toContain('Set up complete');
+    expect(cell.querySelector('.sub-matrix-outcome-done')!.textContent).toContain('Done');
     expect(cell.querySelector('.sub-matrix-setup')).toBeNull(); // never blinks back to "Set up"
   });
 
@@ -584,6 +586,7 @@ describe('renderAccountMatrix', () => {
     const cell = t.querySelector('.sub-matrix-active')!;
     expect(cell.getAttribute('class')).toContain('sub-matrix-just-verified');
     expect(cell.textContent).toContain('just set up');
+    expect(cell.querySelector('.sub-matrix-outcome-done')!.textContent).toContain('Done');
   });
 });
 
