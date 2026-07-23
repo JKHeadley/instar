@@ -203,8 +203,11 @@ export class SessionPoolFailoverRunnerDriver {
       else if (r.outcome === 'error') this._counters.errored += 1;
       return { ran: r.ran, outcome: r.outcome };
     } catch (err) {
-      // The runner already fails toward silence; this is a belt-and-suspenders
-      // guard so a driver-level surprise never escapes toward the caller's timer.
+      // @silent-fallback-ok — belt-and-suspenders driver guard: the error is
+      // surfaced via audit('failover-driver-errored') below and returned as an
+      // honest outcome:'error' (never a false green — a throwing check records
+      // nothing), so a driver-level surprise never escapes toward the caller's
+      // slow timer. The runner itself already fails toward silence.
       this._lastOutcome = 'error';
       this._lastRecorded = false;
       this._counters.errored += 1;

@@ -272,6 +272,7 @@ export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
   { configPath: 'multiMachine.sessionPool.inboundQueue.enabled', reason: 'per-machine durable inbound queue; its own /pool/queue loss-notices surface skew' },
   { configPath: 'multiMachine.sessionPool.holdForStability.enabled', reason: 'per-machine hold policy; trails inboundQueue by one rung, no cross-machine data guarantee' },
   { configPath: 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled', reason: 'per-machine spawn ownership check; no silent cross-machine guarantee' },
+  { configPath: 'multiMachine.sessionPool.failoverRunner.enabled', reason: 'per-machine failover-drill runner; produces this agent\'s own honest failover-E2E green into its local rollout gate, no cross-machine coherence guarantee it owns (dark, dry-run-first)' },
   { configPath: 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled', reason: 'lease self-heal reconciler; the lease/split-brain machinery owns its coherence' },
   { configPath: 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
   { configPath: 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },

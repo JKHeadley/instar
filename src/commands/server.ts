@@ -23363,7 +23363,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         filePath: path.join(config.stateDir, 'session-pool-e2e-results.json'),
         sign: hmac,
         verifySig: (c, s) => {
-          try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; }
+          try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; /* @silent-fallback-ok: HMAC verify fails closed — a malformed/short input is treated as an invalid signature, never accepted */ }
         },
       });
       // Boot-cache the running commit SHA once (env first, else git HEAD, else
@@ -23407,7 +23407,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           filePath: path.join(config.stateDir, 'session-pool-failover-runner-dryrun.json'),
           sign: hmac,
           verifySig: (c, s) => {
-            try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; }
+            try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; /* @silent-fallback-ok: HMAC verify fails closed — a malformed/short input is treated as an invalid signature, never accepted */ }
           },
         });
         // The REAL bounded subprocess runner. Resolves the instar SOURCE root (the
