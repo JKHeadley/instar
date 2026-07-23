@@ -101,6 +101,14 @@ export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
     guarantee: 'mutual directional SSH proof readiness — a half-enabled pool cannot establish both directions',
   },
   {
+    key: 'peerExecution.enabled',
+    configPath: 'multiMachine.peerExecution.enabled',
+    resolution: 'dev-gate+dryRun',
+    dryRunConfigPath: 'multiMachine.peerExecution.dryRun',
+    readSource: 'boot',
+    guarantee: 'standing peer key admission — every machine must agree whether mutually verified peers receive agent-home SSH access',
+  },
+  {
     key: 'seamlessness.ws13PinReplicate',
     configPath: 'multiMachine.seamlessness.ws13PinReplicate',
     resolution: 'dev-gate+dryRun',

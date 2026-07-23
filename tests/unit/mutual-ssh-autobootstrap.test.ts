@@ -53,7 +53,8 @@ describe('mutual SSH bootstrap security invariants', () => {
   });
 
   it('rejects public and stale adverts', () => {
-    const base = { machineId: 'a', agentId: 'agent', pairingEpoch: 1, observerBootId: 'boot', clientKeyGeneration: 1, hostKeyGeneration: 1, clientPublicKey: 'ssh-ed25519 AAAA', sshHostPublicKeys: ['ssh-ed25519 AAAA'], issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), endpoints: [{ host: '8.8.8.8', port: 4045, source: 'lan' }] };
+    const identity = new MachineSshIdentity(temp(), 'agent', 'key-source').ensure();
+    const base = { machineId: 'a', agentId: 'agent', pairingEpoch: 1, observerBootId: 'boot', clientKeyGeneration: 1, hostKeyGeneration: 1, clientPublicKey: identity.clientPublicKey, sshHostPublicKeys: [identity.hostPublicKey], issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), endpoints: [{ host: '8.8.8.8', port: 4045, source: 'lan' }] };
     expect(() => validateSshBootstrapAdvert(base, 'a', 'agent')).toThrow('endpoint-invalid');
     expect(() => validateSshBootstrapAdvert({ ...base, endpoints: [], expiresAt: new Date(0).toISOString() }, 'a', 'agent')).toThrow('expired');
   });

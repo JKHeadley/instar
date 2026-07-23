@@ -68,6 +68,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true and fleet-dark. The dev canary generates only dedicated keys beneath Instar state and computes would-admit/would-probe evidence; it never touches personal SSH state or accepts a peer session until an explicit dryRun:false flip. No shell, exec, forwarding, SFTP, passwords, or public wildcard bind exists.',
   },
   {
+    name: 'peerExecution',
+    configPath: 'multiMachine.peerExecution.enabled',
+    description: 'Install mutually verified peer client keys into this agent home for standing peer-machine execution.',
+    justification: 'Ships dryRun:true and fleet-dark. Authority requires fresh bidirectional MachineAuth proof at the current pairing epoch; writes are restricted to the agent-home authorized_keys.',
+  },
+  {
     name: 'ownershipGatedSpawn',
     configPath: 'multiMachine.sessionPool.ownershipGatedSpawn.enabled',
     description: 'SpawnAdmission — the binding-verdict seam at every conversation-bound session-creating callsite (ownership-gated-spawn-and-judgment-within-floors §3.1, Layer A; the Ownership-Gated Side Effects standard). Consults resolveOwnershipSafe (tri-state, non-throwing) and the router verdict (TOCTOU consumption) before Telegram cold-spawn/respawn + Slack inbound/recovery spawns; never a bootleg local copy of an owned-elsewhere conversation.',

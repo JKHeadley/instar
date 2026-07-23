@@ -65,6 +65,22 @@ export interface GuardManifestEntry {
 }
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
+  {
+    key: 'multiMachine.peerExecution.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.peerExecution.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.peerExecution.dryRun',
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'MutualSshRuntime',
+    description: 'Standing peer-machine execution: installs only mutually verified, current-epoch peer keys into this agent home and reports unreachable peers as named readiness blockers.',
+    loadBearing: true,
+    criticalPath: 'autonomous execution on a paired peer machine',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-22',
+  },
   // ── Durable Inbound Message Queue (spec §Observability; keys === configPath) ──
   {
     key: 'multiMachine.sessionPool.inboundQueue.enabled',

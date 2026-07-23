@@ -19,7 +19,15 @@ import { MachineSshEndpoint } from '../../src/core/MachineSshEndpoint.js';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'mutual-ssh-hardening.test.ts:cleanup' }); });
 
-const publicKey = (seed: string) => `ssh-ed25519 ${Buffer.from(seed.padEnd(32, seed)).toString('base64')} instar:test`;
+const publicKey = (seed: string) => {
+  const type = Buffer.from('ssh-ed25519');
+  const wire = Buffer.alloc(4 + type.length + 4 + 32);
+  wire.writeUInt32BE(type.length);
+  type.copy(wire, 4);
+  wire.writeUInt32BE(32, 4 + type.length);
+  wire.fill(seed.charCodeAt(0), 4 + type.length + 4);
+  return `ssh-ed25519 ${wire.toString('base64')} instar:test`;
+};
 
 describe('mutual SSH hardened lifecycle', () => {
   it('fences host generations and promotes only a proven quarantined successor', () => {
