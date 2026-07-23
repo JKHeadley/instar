@@ -93,6 +93,22 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
 }
 
+export function SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)
+
+This signal-only guard notices the narrow risk state where autonomous work is active but no online peer is available as a failover target. It never creates a peer, moves work, blocks work, or performs recovery. It is dev-gated and dark on ordinary fleet agents; even when constructed on a development agent it defaults to \`dryRun:true\`, so it observes and increments would-raise counters but sends no Attention item.
+- Status (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/failover-gap\`. A 503 means the guard is dark/not constructed on this agent — it says nothing about whether failover coverage is healthy. A 200 snapshot can still report \`dryRun:true\`, meaning observation only.
+- **When to use** (PROACTIVE): user asks "is active work protected if this machine disappears?" / "why did I get a no-failover-target notice?" → read \`/pool/failover-gap\` and report the observed state and posture honestly; never infer readiness from config or a 503.\n`;
+}
+
+export function MISSING_LOGIN_SESSION_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Missing-Login Session Guard (⚗️ dev-gated dark, dry-run first)
+
+This signal-only guard correlates a live session's actual config home with the subscription-pool account whose local login has gone missing. Identity drift by itself is not enough. It never logs in, swaps credentials, restarts a session, blocks work, or performs recovery. It is dev-gated and dark on ordinary fleet agents; even when constructed on a development agent it defaults to \`dryRun:true\`, so it observes and increments would-raise counters but sends no Attention item.
+- Status (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/missing-login\`. A 503 means the guard is dark/not constructed on this agent — it says nothing about login health. A 200 snapshot can still report \`dryRun:true\`, meaning observation only.
+- **When to use** (PROACTIVE): user asks "is a live session running from a login that disappeared?" / "why did I get a missing-login notice?" → read \`/pool/missing-login\` and report the observed state and posture honestly; never infer login health from identity drift, config, or a 503.\n`;
+}
+
 export function SENDER_REJECTION_CLAUDEMD_SECTION(): string {
   return `\n### Sender-Rejection Notices ("message not delivered — sender not recognized")
 
@@ -5412,6 +5428,21 @@ setTimeout(() => process.exit(0), 2000);
       content += MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Machine Load Assessment section');
+    }
+
+    // Dark monitoring-route awareness: these two signal-only guards already
+    // exist in the runtime and CapabilityIndex. Existing agents need the same
+    // honest 503/dry-run posture and proactive read triggers as fresh installs.
+    if (!content.includes('Single-Machine Failover-Gap Guard')) {
+      content += SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Single-Machine Failover-Gap Guard section');
+    }
+
+    if (!content.includes('Missing-Login Session Guard')) {
+      content += MISSING_LOGIN_SESSION_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Missing-Login Session Guard section');
     }
 
     // Doorway/Model Knowledge Registry (DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §Agent
