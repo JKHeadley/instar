@@ -541,6 +541,26 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
     // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
     // it through the developmentAgent dark-feature gate (dark on the fleet, live on
+    // a dev agent). defaultEnabled:false reflects the fleet default. Constructed
+    // ONLY when the gate resolves enabled (a dark fleet agent never constructs,
+    // never registers — never falsely graded `missing`), registering a synchronous
+    // runtime getter (enabled/dryRun + real lastTickAt liveness) — expectRuntime:true.
+    // NOT loadBearing: signal-only, no critical path consumes it, and loadBearing:true
+    // would raise G3 gap alarms on every fleet agent where the guard is deliberately dark.
+    key: 'monitoring.missingLoginSession.enabled',
+    kind: 'config',
+    configPath: 'monitoring.missingLoginSession.enabled',
+    dryRunConfigPath: 'monitoring.missingLoginSession.dryRun',
+    defaultEnabled: false,
+    expectedTickMs: 30_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'MissingLoginSessionDetector',
+    description: 'Missing-login-session detector: raises ONE deduped HIGH attention item when a live session is running on an account whose local login has gone missing (subscription-pool identity drift owner-relogin-required / missing-local-login) — the "live session about to wall on a missing login" gap. Rides the 30s peerPresenceTick; signal-only, MUTATES NOTHING.',
+  },
+  {
+    // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
+    // it through the developmentAgent dark-feature gate (dark on the fleet, live on
     // a dev agent). defaultEnabled:false reflects the fleet default.
     key: 'monitoring.orphanedWorkSentinel.enabled',
     kind: 'config',
@@ -1062,7 +1082,6 @@ export interface NotAGuardEntry {
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'rawTextRequestDetector', reason: 'Pure stateless predicate (high-precision pattern match) feeding the observe-only ask-for-access signal in checkOutboundMessage; no enabled flag, no runtime getter, takes no protective action — a detector that produces a signal, never a guard with posture.' },
-  { component: 'MissingLoginSessionDetector', reason: 'Increment-1 core only: pure injected-deps detector for the "live session on a missing-login account" alert; NOT boot-constructed and registers no runtime getter yet, so it is absent from the live /guards inventory. MOVES to GUARD_MANIFEST when a later increment wires it at boot (mirrors the SingleMachineFailoverGapDetector core→wiring path).' },
   { component: 'GuardPostureTripwire', reason: 'The boot-transition detector OVER the guard inventory — meta-layer, not a guard itself; always-on, no enabled flag.' },
   { component: 'GuardRegistry', reason: 'Infrastructure of this feature: the runtime-getter registry the inventory reads; not a guard.' },
   { component: 'GuardPostureProbe', reason: 'Consumer of the inventory (probe family); its cadence rides SystemReviewer, not an own enabled switch.' },

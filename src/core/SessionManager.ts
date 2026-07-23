@@ -3762,6 +3762,42 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Resolve a running session's REAL login slot (its live `CLAUDE_CONFIG_DIR`)
+   * by reading the tmux env we set in its session env block at spawn. This is
+   * the authoritative config home the session is ACTUALLY running on — which is
+   * exactly what the MissingLoginSessionDetector must correlate on. The recorded
+   * `subscriptionAccountId` is NOT a reliable proxy: under identity drift the
+   * recorded account diverges from the config home the session really runs on
+   * (2026-07-22 justin-gmail incident — a session recorded `adriana` while its
+   * `CLAUDE_CONFIG_DIR` was the login-missing justin-gmail slot), and resolving
+   * via the account would land on the wrong slot and miss the gap entirely.
+   *
+   * Mirrors getSessionFramework's tmux-env read: bounded (2s timeout), funneled
+   * through withSyncOp so the in-flight marker sees the block, and fail-toward-
+   * silence — any error / missing var returns undefined (the caller then skips
+   * the session; a guessed/empty config home would be a false correlation). NOT
+   * cached: a quota-aware swap or a respawn can re-point a live name at a new
+   * slot, so this reads fresh each tick (a handful of sessions, cheap + bounded).
+   */
+  configHomeForSession(tmuxSession: string): string | undefined {
+    try {
+      const out = withSyncOp(() => execFileSync(
+        this.config.tmuxPath,
+        ['show-environment', '-t', `=${tmuxSession}`, 'CLAUDE_CONFIG_DIR'],
+        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
+      )).trim();
+      const prefix = 'CLAUDE_CONFIG_DIR=';
+      if (!out.startsWith(prefix)) return undefined; // unset (tmux prints `-CLAUDE_CONFIG_DIR`) or absent
+      const value = out.slice(prefix.length).trim();
+      return value.length > 0 ? value : undefined;
+    } catch {
+      // @silent-fallback-ok — config-home lookup is fail-toward-silence: the
+      // detector skips a session it can't place rather than guess a slot.
+      return undefined;
+    }
+  }
+
+  /**
    * Send input to a running tmux session.
    */
   sendInput(tmuxSession: string, input: string): boolean {
