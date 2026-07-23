@@ -1,0 +1,30 @@
+# Instar Upgrade Guide
+
+## What Changed
+
+Live-session account swapping can now react when the source account's local
+login disappears and requires the owner to log in again. The trigger reuses the
+existing safe refresh path, remains fleet-dark, and begins in dry-run mode.
+
+## What to Tell Your User
+
+An active conversation no longer has to wait for its next authentication
+failure after a local subscription login disappears. Instar can identify the
+affected account from the conversation's real login folder, select a healthy
+same-framework account, and prepare the same conversation-preserving move used
+for quota pressure. It first records what it would do; live moves still require
+an explicit promotion.
+
+## Summary of New Capabilities
+
+- Owner-relogin-required and missing-local-login episodes can trigger the
+  existing proactive live-session account-swap funnel.
+- Untagged default-login sessions are correlated from their real config home.
+- Source repair is rechecked at the kill boundary, and every target, workload,
+  dwell, breaker, and cycle-cap safeguard remains binding.
+
+## Evidence
+
+- `tests/unit/swap-continuity-wiring.test.ts`
+- `tests/unit/proactive-swap-production-wiring.test.ts`
+- `tests/unit/devGatedFeatures-wiring.test.ts`
