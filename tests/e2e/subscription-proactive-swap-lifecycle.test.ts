@@ -16,6 +16,8 @@ import { createRoutes } from '../../src/server/routes.js';
 import { SubscriptionPool } from '../../src/core/SubscriptionPool.js';
 import { ProactiveSwapMonitor } from '../../src/core/ProactiveSwapMonitor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SwapAntiThrashEngine, resolveAntiThrashKnobs, retentionBoundMs } from '../../src/core/SwapAntiThrash.js';
+import { SwapLedger } from '../../src/core/SwapLedger.js';
 
 interface TestServer { url: string; close: () => Promise<void>; }
 function boot(ctx: any): Promise<TestServer> {
@@ -80,5 +82,86 @@ describe('/subscription-pool/proactive-swap — E2E feature-alive', () => {
     expect(body.enabled).toBe(true);
     expect(body.swapped).toEqual(['echo-subscription-auth-standard']);
     expect(swaps).toEqual([{ sessionName: 'echo-subscription-auth-standard', exhaustedAccountId: 'adriana' }]);
+  });
+
+  it('LOGIN LOSS: the HTTP check keeps dry-run inert, then the promoted trigger is alive end-to-end', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'login-loss-e2e-'));
+    const pool = new SubscriptionPool({ stateDir: dir });
+    let now = Date.parse('2026-07-23T06:00:00Z');
+    pool.add({ id: 'lost', nickname: 'Lost login', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'lost'), email: 'lost@example.com' });
+    pool.add({ id: 'fresh', nickname: 'Fresh login', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'fresh'), email: 'fresh@example.com' });
+    pool.update('lost', {
+      identityDrifted: true,
+      identityDrift: {
+        expectedAccountId: 'lost',
+        actualAccountId: 'missing-local-login',
+        slot: path.join(dir, 'lost'),
+        detectedAt: new Date(now - 60_000).toISOString(),
+        lastConfirmedAt: new Date(now - 60_000).toISOString(),
+        repairState: 'owner-relogin-required',
+      },
+      lastQuota: { sevenDay: { utilizationPct: 8, resetsAt: '2026-07-30T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now - 60_000).toISOString() },
+    });
+    pool.update('fresh', {
+      lastQuota: { sevenDay: { utilizationPct: 4, resetsAt: '2026-07-30T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now - 60_000).toISOString() },
+    });
+
+    const knobs = resolveAntiThrashKnobs(
+      { enabled: true, dryRun: false, quotaFreshnessMs: 7_200_000 },
+      { thresholdPct: 80, tickMs: 180_000 },
+    );
+    const ledger = new SwapLedger({
+      filePath: path.join(dir, 'swap-ledger.jsonl'),
+      windowMs: () => retentionBoundMs(knobs),
+      now: () => now,
+    });
+    const engine = new SwapAntiThrashEngine({ ledger, getKnobs: () => knobs, now: () => now });
+    engine.hydrate();
+    const swaps: string[] = [];
+    const loginLoss = { enabled: true, dryRun: true };
+    const monitor = new ProactiveSwapMonitor({
+      listAccounts: () => pool.list(),
+      listRunningSessions: () => [{
+        sessionName: 'interactive-login-loss',
+        accountId: null,
+        loginLossAccountId: 'lost',
+        refreshable: true,
+        startedAt: new Date(now - 60_000).toISOString(),
+      }],
+      resolveDefaultAccountId: async () => null,
+      swap: async ({ sessionName }) => {
+        swaps.push(sessionName);
+        return { swapped: true, toAccountId: 'fresh' };
+      },
+      antiThrash: { engine, getKnobs: () => knobs },
+      loginLoss,
+      now: () => now,
+    });
+    server = await boot({
+      config: { authToken: 't', stateDir: dir, port: 0 },
+      startTime: new Date(),
+      subscriptionPool: pool,
+      proactiveSwapMonitor: monitor,
+    });
+
+    const dryStatus = await fetch(server.url + '/subscription-pool/proactive-swap');
+    expect(await dryStatus.json()).toMatchObject({
+      enabled: true,
+      loginLoss: { enabled: true, dryRun: true },
+    });
+    const dryCheck = await fetch(server.url + '/subscription-pool/proactive-swap/check', { method: 'POST' });
+    expect(await dryCheck.json()).toMatchObject({ swapped: [], considered: 1 });
+    expect(swaps).toEqual([]);
+
+    loginLoss.dryRun = false;
+    // The dry-run row intentionally starts the normal dwell brake. Promotion
+    // does not bypass it; advance beyond dwell while keeping readings fresh.
+    now += knobs.dwellMs + 1;
+    const liveCheck = await fetch(server.url + '/subscription-pool/proactive-swap/check', { method: 'POST' });
+    expect(await liveCheck.json()).toMatchObject({
+      swapped: ['interactive-login-loss'],
+      considered: 1,
+    });
+    expect(swaps).toEqual(['interactive-login-loss']);
   });
 });
