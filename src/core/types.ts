@@ -2919,6 +2919,16 @@ export interface SessionPoolConfig {
   /** Master switch. Default false — the entire session-pool layer is inert when false. */
   enabled?: boolean;
   /**
+   * Promotion activation selector. `off` is the fleet default; `auto-climb`
+   * drives one green-gated step per cadence; `operator` exposes only the manual
+   * one-step route. The manual route also remains available in auto-climb mode.
+   */
+  promotionModel?: 'auto-climb' | 'operator' | 'off';
+  /** Highest stage either promotion model may reach. Default dark (fail-closed). */
+  promotionCeiling?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /** Auto-climb cadence in ms; runtime floor 60000. Default 60000. */
+  promotionTickMs?: number;
+  /**
    * Graduated rollout stage (spec §Rollout). 'dark' (code shipped, placement
    * dry-run, always local) → 'shadow' (real placement + ownership, no transfer)
    * → 'live-transfer' (failover + pin transfers) → 'rebalance' (load-driven).

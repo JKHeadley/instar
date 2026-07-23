@@ -287,6 +287,15 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'the breaker describes this host physical provider route and lives in the machine-local StopGateDb under the git-sync-excluded .instar state jail',
     },
   });
+  // Promotion writes the coherence-critical, git-synced session-pool stage.
+  // Keep it behind the cluster lease holder; a standby must never create a
+  // competing rollout history even when its local signed evidence is green.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/session-pool/promote',
+    domain: 'cluster-shared',
+  });
   reg.add({
     kind: 'route',
     method: 'POST',

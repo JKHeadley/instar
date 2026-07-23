@@ -162,6 +162,13 @@ export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
     readSource: 'live',
     guarantee: 'whether the pool routes real traffic at all (+ the exactlyOnceIngress default it drives)',
   },
+  {
+    key: 'sessionPool.promotionActivation',
+    configPath: 'multiMachine.sessionPool.promotionModel',
+    resolution: 'raw',
+    readSource: 'boot',
+    guarantee: 'all machines agree whether promotion is off, manual, or automatic and share the same operator ceiling',
+  },
   // ownership-gated-spawn-and-judgment-within-floors §3.2.0: all three
   // pool-behavior flags are coherence-critical — a pool split on any of them
   // halves the one-owner-per-conversation guarantee (one machine enforcing the
@@ -404,6 +411,14 @@ export function resolveFlagValue(entry: CoherenceCriticalFlag, view: CoherenceCo
         : (getByPath(cfg, 'multiMachine.sessionPool') as Record<string, unknown> | undefined);
       const stage = pool && typeof pool.stage === 'string' ? pool.stage : 'dark';
       return clampValue(stage);
+    }
+    case 'sessionPool.promotionActivation': {
+      const pool = getByPath(cfg, 'multiMachine.sessionPool') as Record<string, unknown> | undefined;
+      const model = pool?.promotionModel === 'auto-climb' || pool?.promotionModel === 'operator'
+        ? pool.promotionModel
+        : 'off';
+      const ceiling = typeof pool?.promotionCeiling === 'string' ? pool.promotionCeiling : 'dark';
+      return clampValue(`${model}:${ceiling}`);
     }
     case 'exactlyOnceIngress': {
       const mm = getByPath(cfg, 'multiMachine') as Record<string, unknown> | undefined;

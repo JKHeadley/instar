@@ -1297,6 +1297,8 @@ export interface RouteContext {
   /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — GET
    *  /session-pool/failover-runner. Null/absent (dev-gated dark) → the route 503s. */
   getSessionPoolFailoverRunner?: (() => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null) | null;
+  /** Promotion activation; absent/off makes POST /session-pool/promote return 503. */
+  sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -17342,6 +17344,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json(status);
+  });
+
+  // POST /session-pool/promote — operator-triggered ONE-STEP promotion.
+  // Available in both live promotion models; default-off is an honest 503.
+  // The controller delegates to SessionPoolRolloutDriver → StageAdvancer, so a
+  // missing/stale/red/tampered green or the operator ceiling still refuses.
+  router.post('/session-pool/promote', (_req, res) => {
+    const activation = ctx.sessionPoolPromotionActivation;
+    if (!activation) {
+      res.status(503).json({
+        error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+      });
+      return;
+    }
+    try {
+      const result = activation.promoteOne();
+      if (!result) {
+        res.status(503).json({
+          error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+        });
+        return;
+      }
+      res.json({ ok: true, ...activation.status(), result });
+    } catch (err) {
+      res.status(500).json({
+        error: `session-pool promotion failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   });
 
   // PATCH /pool/machines/:id — rename a machine (§L2 user-editable nickname).
