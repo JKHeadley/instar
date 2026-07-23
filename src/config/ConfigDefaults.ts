@@ -1523,6 +1523,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       commitmentCustodyTransfer: {
         dryRun: true,
       },
+      // SessionPoolFailoverRunner boot-wiring (§Rollout, Track H — the in-agent
+      // PRODUCER of a real failover-E2E green). `enabled` DELIBERATELY OMITTED
+      // (never hardcoded false) so resolveDevAgentGate decides — dev-live,
+      // DARK on the fleet; registered in DEV_GATED_FEATURES. dryRun:true is the
+      // canary: the runner runs the real two-node failover E2E subprocess and
+      // records its verdict, but a recorded green PROMOTES the stage (real
+      // authority), so while dryRun holds the verdict lands in a SIDE store the
+      // promotion path never reads — nothing promotes until a deliberate
+      // dryRun:false. tickIntervalMs paces the slow cadence (the E2E is a heavy
+      // two-server subprocess — floored at 60000 so it can never hot-loop).
+      failoverRunner: {
+        dryRun: true,
+        tickIntervalMs: 3600000,
+        checkTimeoutMs: 180000,
+      },
     },
     // Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7). DARK-SHIP: `enabled` is
     // deliberately OMITTED — the runtime resolves `enabled ?? !!developmentAgent`

@@ -3033,6 +3033,27 @@ export interface SessionPoolConfig {
     dryRun?: boolean;
   };
   /**
+   * SessionPoolFailoverRunner boot-wiring (§Rollout, Track H) — the in-agent
+   * PRODUCER of a real failover-E2E green so a DEPLOYED dev agent can promote its
+   * own sessionPool stage instead of sitting at `shadow` forever. `enabled` is
+   * DELIBERATELY OMITTED from ConfigDefaults (developmentAgent gate — dev-live,
+   * dark fleet; DEV_GATED_FEATURES). Ships dryRun:true FIRST: the runner runs the
+   * real two-node failover E2E subprocess and records its verdict, but a recorded
+   * green PROMOTES the stage (real authority), so while dryRun holds the verdict
+   * lands in a SIDE store the promotion path never reads — nothing promotes until
+   * a deliberate dryRun:false. Config resolver + defaults live in
+   * `src/core/sessionPoolFailoverRunnerConfig.ts`.
+   */
+  failoverRunner?: {
+    enabled?: boolean;
+    /** Default true — record to a SIDE store, never the promotion store. */
+    dryRun?: boolean;
+    /** Slow cadence the heavy E2E runs on (ms). Default 3600000 (1h), floored at 60000. */
+    tickIntervalMs?: number;
+    /** Bounded wall-clock budget for the failover E2E subprocess (ms). Default 180000. */
+    checkTimeoutMs?: number;
+  };
+  /**
    * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
    * timestamp is outside |now - ts| is rejected `stale-timestamp`. Default 30000.
    */

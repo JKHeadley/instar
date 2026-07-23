@@ -555,6 +555,32 @@ export function migrateConfigMissingLoginSessionDevGate(config: Record<string, u
 }
 
 /**
+ * SessionPoolFailoverRunner boot-wiring (Multi-Machine Session Pool §Rollout,
+ * Track H) is a developmentAgent dark feature: `multiMachine.sessionPool.
+ * failoverRunner.enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+ * resolves it (LIVE on a dev agent, DARK on the fleet). The `{ dryRun: true,
+ * tickIntervalMs, checkTimeoutMs }` block arrives via applyDefaults add-missing.
+ * An existing agent that somehow carries a default-shaped literal `enabled: false`
+ * would force-dark even a dev agent (the #1001 mechanism) — strip it so the gate
+ * resolves. An explicit `true` (an operator fleet-flip) is PRESERVED. Idempotent +
+ * existence-checked; never writes `enabled`. Array-shaped/absent multiMachine →
+ * safe no-op.
+ */
+export function migrateConfigSessionPoolFailoverRunnerDevGate(config: Record<string, unknown>): boolean {
+  const mm = config.multiMachine as Record<string, unknown> | undefined;
+  if (!mm || typeof mm !== 'object') return false;
+  const sp = mm.sessionPool as Record<string, unknown> | undefined;
+  if (!sp || typeof sp !== 'object') return false;
+  const fr = sp.failoverRunner as Record<string, unknown> | undefined;
+  if (!fr || typeof fr !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(fr, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (fr.enabled !== false) return false;
+  delete fr.enabled;
+  return true;
+}
+
+/**
  * The Turn-End Self-Deferral Guard (Phase A; docs/specs/turn-end-self-deferral-guard.md
  * §3.4/FD8) is a developmentAgent dark feature: `monitoring.selfDeferralGuard.enabled`
  * is OMITTED from ConfigDefaults so resolveDevAgentGate resolves it (LIVE on a dev
@@ -9978,6 +10004,17 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: stripped default-shaped monitoring.missingLoginSession.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
     } else {
       result.skipped.push('config.json: monitoring.missingLoginSession.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // SessionPoolFailoverRunner boot-wiring (§Rollout, Track H) dev-gate: strip a
+    // default-shaped enabled:false so it resolves live-on-dev (dry-run) / dark-fleet.
+    // The { dryRun: true, tickIntervalMs, checkTimeoutMs } block arrives via
+    // applyDefaults add-missing.
+    if (migrateConfigSessionPoolFailoverRunnerDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped multiMachine.sessionPool.failoverRunner.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
+    } else {
+      result.skipped.push('config.json: multiMachine.sessionPool.failoverRunner.enabled dev-gate already correct (omitted or operator-set)');
     }
 
     // Turn-End Self-Deferral Guard (Phase A) dev-gate: strip a default-shaped

@@ -1294,6 +1294,9 @@ export interface RouteContext {
   getMachineCoherence?: (() => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null) | null;
   getSingleMachineFailoverGap?: (() => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null) | null;
   getMissingLoginSession?: (() => import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null) | null;
+  /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — GET
+   *  /session-pool/failover-runner. Null/absent (dev-gated dark) → the route 503s. */
+  getSessionPoolFailoverRunner?: (() => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null) | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -17324,6 +17327,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { stage, result: row?.result ?? null, commitSha: row?.commitSha ?? null, ranAt: row?.ranAt ?? null, verified: row ? store.verify(row) : null };
     });
     res.json({ latestPerStage, total: store.all().length });
+  });
+
+  // GET /session-pool/failover-runner — the in-agent failover-runner's status
+  // (§Rollout, Track H). Read-only. 503 when the runner is dark (dev-gated:
+  // enabled OMITTED → resolveDevAgentGate; single-machine/fleet). When live it
+  // reports the resolved gate (enabled/dryRun), which store the recorded verdict
+  // lands in (real promotion store vs the dry-run SIDE store), the proven stage +
+  // commit, the cadence, in-flight state, and the last run's outcome + counters.
+  router.get('/session-pool/failover-runner', (_req, res) => {
+    const status = ctx.getSessionPoolFailoverRunner?.() ?? null;
+    if (!status) {
+      res.status(503).json({ error: 'session-pool failover-runner not enabled on this agent (dev-gated dark; multiMachine.sessionPool.failoverRunner.enabled)' });
+      return;
+    }
+    res.json(status);
   });
 
   // PATCH /pool/machines/:id — rename a machine (§L2 user-editable nickname).

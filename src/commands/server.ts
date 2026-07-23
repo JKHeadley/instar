@@ -587,6 +587,12 @@ let _singleMachineFailoverGap: import('../monitoring/SingleMachineFailoverGapDet
 // `GET /pool/missing-login` can read the detector constructed deep in the mesh
 // peer-presence wiring. Null when the guard is dark (route 503s).
 let _missingLoginSession: import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null = null;
+// Module-level handle for the SessionPoolFailoverRunner driver (§Rollout, Track H)
+// so `GET /session-pool/failover-runner` can read its status(). Null when the
+// runner is dark (dev-gated) — the route 503s. Constructed inside the rollout-gate
+// boot block next to the E2E result store + StageAdvancer.
+let _sessionPoolFailoverRunnerDriver:
+  import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerDriver | null = null;
 // The store the unconditional boot sweep opened when the queue will run this
 // boot — adopted by the engine construction (one open handle, single-writer).
 let _sweptInboundStore: import('../core/PendingInboundStore.js').PendingInboundStore | null = null;
@@ -23381,12 +23387,116 @@ export async function startServer(options: StartOptions): Promise<void> {
         writeStageConfig: (s) => liveConfig.set(guardMod.STAGE_CONFIG_PATH, s, { stageWriteToken: guardMod.STAGE_WRITE_TOKEN }),
         audit: (event, detail) => console.log(pc.dim(`  [stage-advancer] ${event} ${JSON.stringify(detail)}`)),
       });
+      // ── SessionPoolFailoverRunner (§Rollout, Track H) — the in-agent PRODUCER of
+      // a real failover-E2E green so a DEPLOYED dev agent can promote its own
+      // sessionPool stage instead of sitting at 'shadow' forever. Dev-gated dark
+      // (enabled OMITTED → resolveDevAgentGate) + dryRun-first: while dryRun holds
+      // the recorded verdict lands in a SIDE store the StageAdvancer never reads,
+      // so nothing promotes until a deliberate dryRun:false. Constructed here so it
+      // shares the E2E result store + boot commit SHA + the slow reconcile tick.
+      const fromMod = await import('../core/sessionPoolFailoverRunnerConfig.js');
+      const failoverRunnerCfg = fromMod.resolveSessionPoolFailoverRunnerConfig(
+        config.multiMachine?.sessionPool?.failoverRunner,
+        (explicit) => resolveDevAgentGate(explicit, config),
+      );
+      if (failoverRunnerCfg.enabled) {
+        // The dry-run SIDE store: a separate signed file the promotion path
+        // (StageAdvancer/driver) NEVER reads, so a would-record green captured
+        // during the soak can never wrongly promote the stage.
+        const failoverDryRunStore = new e2eMod.SessionPoolE2EResultStore({
+          filePath: path.join(config.stateDir, 'session-pool-failover-runner-dryrun.json'),
+          sign: hmac,
+          verifySig: (c, s) => {
+            try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; }
+          },
+        });
+        // The REAL bounded subprocess runner. Resolves the instar SOURCE root (the
+        // agent's own checkout) — a deployed agent with no source/vitest yields
+        // ranToCompletion:false → the check throws → the runner records NOTHING
+        // (honest degrade, never a fabricated verdict). The spawn is fully bounded
+        // (kill on timeout) and its output is streamed to a durable evidence log.
+        const cp = await import('node:child_process');
+        const failoverLogPath = path.join(config.stateDir, 'logs', 'session-pool-failover-runner.log');
+        const runProcess = (args: { testPath: string; timeoutMs: number }): Promise<import('../core/sessionPoolFailoverCheck.js').SubprocessRunResult> =>
+          new Promise((resolve) => {
+            // Candidate source roots, most-specific first: an explicit env override,
+            // then this build's package root (dist/../..), then cwd. The first that
+            // carries BOTH node_modules/.bin/vitest AND the test file wins.
+            const candidates = [
+              process.env.INSTAR_SOURCE_ROOT,
+              path.resolve(__dirname, '..', '..'),
+              process.cwd(),
+            ].filter((c): c is string => typeof c === 'string' && c.length > 0);
+            let sourceRoot: string | null = null;
+            for (const c of candidates) {
+              try {
+                if (fs.existsSync(path.join(c, 'node_modules', '.bin', 'vitest')) && fs.existsSync(path.join(c, args.testPath))) {
+                  sourceRoot = c;
+                  break;
+                }
+              } catch { /* @silent-fallback-ok — probe next candidate */ }
+            }
+            if (!sourceRoot) {
+              // No source/vitest resolvable → NOT a failover verdict; the check
+              // contract makes this THROW so the runner records nothing.
+              resolve({ ranToCompletion: false, exitCode: null, evidenceRef: `no-source: vitest+${args.testPath} not resolvable (checkout absent)` });
+              return;
+            }
+            const vitestBin = path.join(sourceRoot, 'node_modules', '.bin', 'vitest');
+            let logFd: number | null = null;
+            try { fs.mkdirSync(path.dirname(failoverLogPath), { recursive: true }); logFd = fs.openSync(failoverLogPath, 'a'); } catch { logFd = null; /* @silent-fallback-ok — evidence log optional */ }
+            const evidenceRef = `${failoverLogPath}@${new Date().toISOString()}`;
+            let settled = false;
+            const done = (r: import('../core/sessionPoolFailoverCheck.js').SubprocessRunResult) => {
+              if (settled) return; settled = true;
+              if (logFd !== null) { try { fs.closeSync(logFd); } catch { /* @silent-fallback-ok */ } }
+              resolve(r);
+            };
+            try {
+              const child = cp.spawn(vitestBin, ['run', args.testPath, '--reporter=dot'], {
+                cwd: sourceRoot,
+                stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
+                env: { ...process.env },
+              });
+              const killTimer = setTimeout(() => {
+                try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok */ }
+                done({ ranToCompletion: false, exitCode: null, evidenceRef: `${evidenceRef} (timeout ${args.timeoutMs}ms)` });
+              }, args.timeoutMs);
+              if (killTimer.unref) killTimer.unref();
+              child.on('error', () => { clearTimeout(killTimer); done({ ranToCompletion: false, exitCode: null, evidenceRef: `${evidenceRef} (spawn-error)` }); });
+              child.on('close', (code) => { clearTimeout(killTimer); done({ ranToCompletion: true, exitCode: code, evidenceRef }); });
+            } catch {
+              // @silent-fallback-ok — a spawn throw is an infra failure, NOT a
+              // failover verdict; ranToCompletion:false → the check throws → nothing recorded.
+              done({ ranToCompletion: false, exitCode: null, evidenceRef: `${evidenceRef} (spawn-threw)` });
+            }
+          });
+        _sessionPoolFailoverRunnerDriver = fromMod.buildSessionPoolFailoverRunnerDriver({
+          config: failoverRunnerCfg,
+          resultStore: sessionPoolE2EResultStore,
+          dryRunResultStore: failoverDryRunStore,
+          runProcess,
+          currentCommitSha: () => bootCommitSha || 'unknown',
+          // The shadow→live-transfer failover is proven at the 'shadow' stage index
+          // (0), which StageAdvancer.advanceTo('live-transfer') reads.
+          provenStage: () => 0,
+          audit: (event, detail) => console.log(pc.dim(`  [failover-runner] ${event} ${JSON.stringify(detail)}`)),
+        });
+        if (_sessionPoolFailoverRunnerDriver) {
+          console.log(pc.green(`  SessionPoolFailoverRunner enabled (${failoverRunnerCfg.dryRun ? 'dry-run — records to SIDE store' : 'LIVE — records to promotion store'}; cadence ${failoverRunnerCfg.tickIntervalMs}ms)`));
+        }
+      }
       // Revert-ONLY reconcile tick (§Rollout): reconcile() can solely DEMOTE a live
       // stage when the CURRENT commit's Tier-3 E2E goes red — it never advances.
       // Promotion (advanceTo) stays operator-triggered via the rollout route/job.
-      // Cheap + inert while stage is 'dark' (reconcile() no-ops at the floor).
+      // Cheap + inert while stage is 'dark' (reconcile() no-ops at the floor). The
+      // failover runner's maybeTick() rides the SAME slow tick — it self-throttles
+      // to its own (far slower) tickIntervalMs, so it is NOT a hot loop here.
       const stageReconcileTimer = setInterval(() => {
         try { stageAdvancer.reconcile(); } catch { /* @silent-fallback-ok — retried next tick */ }
+        // Fire-and-forget: the driver owns the in-flight guard + cadence gate; a
+        // heavy E2E subprocess must never block the timer. Fail toward silence.
+        try { void _sessionPoolFailoverRunnerDriver?.maybeTick(); } catch { /* @silent-fallback-ok — retried next tick */ }
       }, 60_000);
       if (stageReconcileTimer.unref) stageReconcileTimer.unref();
     } catch (err) {
@@ -23731,7 +23841,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     } catch (err) { /* @silent-fallback-ok: fleet-dark optional observer; failure is logged and adds no authority */ console.warn('[AutonomousThroughputFloor] init failed:', (err as Error).message); }
 
-    const server = new AgentServer({ config, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
       const reader = replicatedPeerStreamReader;
