@@ -37,6 +37,7 @@ import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
+import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26795,10 +26796,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const burnRate = ctx.quotaPoller ? ctx.quotaPoller.burnRate(req.params.id) : null;
+    const snapshot = account.lastQuota ?? null;
+    const measuredAtMs = snapshot?.measuredAt ? Date.parse(snapshot.measuredAt) : NaN;
+    const snapshotAgeMs = Number.isFinite(measuredAtMs)
+      ? Math.max(0, Date.now() - measuredAtMs)
+      : null;
+    const staleSnapshot = snapshot !== null && (
+      snapshotAgeMs === null ||
+      snapshotAgeMs > QUOTA_SNAPSHOT_STALE_AFTER_MS
+    );
     res.json({
       accountId: account.id,
-      snapshot: account.lastQuota ?? null,
+      snapshot,
       burnRate,
+      staleSnapshot,
+      snapshotAgeMs,
     });
   });
 

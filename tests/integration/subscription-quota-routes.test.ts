@@ -76,11 +76,39 @@ describe('/subscription-pool quota routes (integration)', () => {
     expect(q1.status).toBe(200);
     expect(q1.body.snapshot.sevenDay.utilizationPct).toBe(71);
     expect(q1.body.burnRate).toBeNull(); // only one sample
+    expect(q1.body.staleSnapshot).toBe(false);
+    expect(q1.body.snapshotAgeMs).toBeGreaterThanOrEqual(0);
 
     await new Promise((r) => setTimeout(r, 5));
     await api('/subscription-pool/poll', { method: 'POST' });
     const q2 = await api('/subscription-pool/claude-1/quota');
     expect(q2.body.burnRate).not.toBeNull();
+  });
+
+  it('GET /subscription-pool/:id/quota visibly flags an old measuredAt snapshot', async () => {
+    pool.update('claude-1', {
+      lastQuota: {
+        source: 'oauth-usage-endpoint-fallback',
+        measuredAt: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+        sevenDay: { utilizationPct: 71, resetsAt: '2026-06-12T18:59:59Z' },
+      },
+    });
+
+    const quota = await api('/subscription-pool/claude-1/quota');
+    expect(quota.body.staleSnapshot).toBe(true);
+    expect(quota.body.snapshotAgeMs).toBeGreaterThan(30 * 60 * 1000);
+  });
+
+  it('GET /subscription-pool/:id/quota flags an invalid measuredAt as stale', async () => {
+    pool.update('claude-1', {
+      lastQuota: {
+        source: 'oauth-usage-endpoint-fallback',
+        measuredAt: 'not-a-date',
+      },
+    });
+
+    const quota = await api('/subscription-pool/claude-1/quota');
+    expect(quota.body).toMatchObject({ staleSnapshot: true, snapshotAgeMs: null });
   });
 
   it('GET /subscription-pool/:id/quota 404s for an unknown account', async () => {
