@@ -226,3 +226,32 @@ field needs no migration or repair; older readers ignore it.
 ## Open questions
 
 *(none)*
+
+## 2026-07-22 amendment — login-loss trigger
+
+A live refreshable session may enter the same proactive swap pipeline when its
+effective source account carries the explicit, current login-loss evidence
+`identityDrifted:true` plus either `repairState:owner-relogin-required` or
+`actualAccountId:missing-local-login`. No other identity-drift state authorizes
+a session mutation.
+
+For untagged sessions, candidacy is correlated from the session's real
+`CLAUDE_CONFIG_DIR`/config home, not from `claude auth status` (which is expected
+to be unavailable after login loss) and not from a stale recorded account tag.
+The exact source account is re-resolved from that real config home immediately
+before refresh. The kill boundary then rechecks both source identity and the
+owner-relogin-required episode; repair or movement in the sub-tick window makes
+the intent stale.
+
+Login loss bypasses only quota-source pressure and relative-improvement
+arithmetic. The target must still be local, same-framework, non-drifted, freshly
+measured, and below the existing ceiling. Refreshability, in-flight-work
+hold, dwell, failure backoff, target-per-tick cap, overall cycle cap, ledger
+availability, reversal detection, breaker, and exact-target execute-time
+revalidation remain binding.
+
+The extension has its own development-agent dark gate at
+`subscriptionPool.proactiveSwap.loginLoss.enabled`. The key is omitted from
+defaults; `dryRun:true` is seeded. A dry-run evaluates the exact live decision
+and writes a `sourceTrigger:login-loss` would-swap row but never admits a
+session kill. Real refresh requires an explicit `dryRun:false` promotion.

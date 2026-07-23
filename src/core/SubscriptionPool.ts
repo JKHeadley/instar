@@ -151,6 +151,16 @@ export interface SubscriptionAccount {
   version: number;
 }
 
+/** True only for the explicit local-login-loss drift episode. Drift of a
+ * different kind remains quarantined but does not authorize a session kill. */
+export function requiresOwnerRelogin(account: SubscriptionAccount): boolean {
+  const drift = account.identityDrift;
+  return account.identityDrifted === true && !!drift && (
+    drift.repairState === 'owner-relogin-required' ||
+    drift.actualAccountId === 'missing-local-login'
+  );
+}
+
 /**
  * WS5.2 §6.2 — "locally executable" predicate. An account is executable on THIS
  * machine iff this machine holds it with a real local `configHome` AND a valid

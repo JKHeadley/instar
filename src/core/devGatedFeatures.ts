@@ -74,6 +74,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true and fleet-dark. Authority requires fresh bidirectional MachineAuth proof at the current pairing epoch; writes are restricted to the agent-home authorized_keys.',
   },
   {
+    name: 'proactiveSwapLoginLoss',
+    configPath: 'subscriptionPool.proactiveSwap.loginLoss.enabled',
+    description: 'Login-loss extension for the existing live-session proactive account-swap funnel.',
+    justification: 'Ships dryRun:true and fleet-dark. On a development agent it only records the exact would-swap while retaining target freshness, work-in-flight, dwell, breaker, cycle-cap, and kill-boundary source revalidation; a real session refresh requires an explicit dryRun:false promotion.',
+  },
+  {
     name: 'ownershipGatedSpawn',
     configPath: 'multiMachine.sessionPool.ownershipGatedSpawn.enabled',
     description: 'SpawnAdmission — the binding-verdict seam at every conversation-bound session-creating callsite (ownership-gated-spawn-and-judgment-within-floors §3.1, Layer A; the Ownership-Gated Side Effects standard). Consults resolveOwnershipSafe (tri-state, non-throwing) and the router verdict (TOCTOU consumption) before Telegram cold-spawn/respawn + Slack inbound/recovery spawns; never a bootleg local copy of an owned-elsewhere conversation.',

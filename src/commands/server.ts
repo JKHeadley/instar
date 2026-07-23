@@ -12831,7 +12831,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Subscription & Auth Standard). Always instantiated; ships DARK because an
     // empty pool is a pure no-op (no background loop, no cost) until an operator
     // enrolls an account. Stores each account's login LOCATION, never tokens.
-    const { SubscriptionPool } = await import('../core/SubscriptionPool.js');
+    const { SubscriptionPool, requiresOwnerRelogin } = await import('../core/SubscriptionPool.js');
     const subscriptionPool = new SubscriptionPool({ stateDir: config.stateDir });
     if (subscriptionPool.size() > 0) {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
@@ -17852,10 +17852,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const k = antiThrashKnobsGetter();
                 return { thresholdPct: k.thresholdPct, targetHeadroomPct: k.targetHeadroomPct, minImprovementPct: k.minImprovementPct };
               },
-              resolveEffectiveAccountId: async (sessionName, sourceWasUntagged) => {
+              resolveEffectiveAccountId: async (sessionName, sourceWasUntagged, sourceTrigger) => {
                 const tagged = state.listSessions({ status: 'running' })
                   .find((s) => s.tmuxSession === sessionName)?.subscriptionAccountId ?? null;
                 if (!sourceWasUntagged || tagged) return tagged;
+                if (sourceTrigger === 'login-loss') {
+                  const realHome = sessionManager.configHomeForSession(sessionName);
+                  if (!realHome) return null;
+                  return subscriptionPool.list().find((a) => a.configHome === realHome)?.id ?? null;
+                }
                 return (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId;
               },
               onReactiveExecuted: (a) => _swapAntiThrashEngine?.recordReactiveExecuted(a),
@@ -17955,12 +17960,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Only claude-code sessions ride the claude-account pool (legacy
               // records with no framework default to claude-code).
               .filter((s) => s.framework === undefined || s.framework === 'claude-code')
-              .map((s) => ({
-                sessionName: s.tmuxSession,
-                accountId: s.subscriptionAccountId ?? null,
-                startedAt: s.startedAt,
-                refreshable: _sessionRefresh?.canRefreshSession(s.tmuxSession) ?? false,
-              })),
+              .map((s) => {
+                const realHome = sessionManager.configHomeForSession(s.tmuxSession);
+                const loginLossAccountId = realHome
+                  ? subscriptionPool.list().find((a) => a.configHome === realHome && requiresOwnerRelogin(a))?.id ?? null
+                  : null;
+                return {
+                  sessionName: s.tmuxSession,
+                  accountId: s.subscriptionAccountId ?? null,
+                  loginLossAccountId,
+                  startedAt: s.startedAt,
+                  refreshable: _sessionRefresh?.canRefreshSession(s.tmuxSession) ?? false,
+                };
+              }),
           resolveDefaultAccountId: async () =>
             (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId,
           swap: (a) =>
@@ -17980,6 +17992,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           antiThrash: _swapAntiThrashEngine
             ? { engine: _swapAntiThrashEngine, getKnobs: antiThrashKnobsGetter }
             : undefined,
+          loginLoss: {
+            enabled: resolveDevAgentGate(proactiveCfg.loginLoss?.enabled, config),
+            dryRun: proactiveCfg.loginLoss?.dryRun !== false,
+          },
           // §4 — the in-flight work gate (proactive arm: defer, ceiling-drop).
           // The monitor owns the deferral lifecycle; the gate is stateless.
           workGate: _swapWorkGate

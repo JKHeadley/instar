@@ -13,7 +13,15 @@ describe('proactive swap production transport wiring', () => {
   });
 
   it('execute-time effective-source revalidation uses the existing default resolver', () => {
-    expect(server).toContain('resolveEffectiveAccountId: async (sessionName, sourceWasUntagged)');
+    expect(server).toContain('resolveEffectiveAccountId: async (sessionName, sourceWasUntagged, sourceTrigger)');
     expect(server).toContain('inUseAccountResolver.resolve(subscriptionPool.list())');
+  });
+
+  it('dev-gates the login-loss trigger and defaults it to dry-run at production wiring', () => {
+    expect(server).toContain('enabled: resolveDevAgentGate(proactiveCfg.loginLoss?.enabled, config)');
+    expect(server).toContain('dryRun: proactiveCfg.loginLoss?.dryRun !== false');
+    expect(server).toContain('sessionManager.configHomeForSession(s.tmuxSession)');
+    expect(server).toContain('requiresOwnerRelogin(a)');
+    expect(server).toContain("if (sourceTrigger === 'login-loss')");
   });
 });

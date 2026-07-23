@@ -109,6 +109,8 @@ export interface SwapLedgerRow {
   defaultAccountChanged?: boolean;
   /** Source session resolved through the default login; the default itself did not change. */
   sourceWasUntagged?: boolean;
+  /** The level-triggered condition that authorized this proactive intent. */
+  sourceTrigger?: 'quota-pressure' | 'login-loss';
   episodeId?: string;
   episodeKind?: EpisodeKind;
   breakerOpenedAt?: string;
