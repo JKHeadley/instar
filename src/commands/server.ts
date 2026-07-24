@@ -182,7 +182,7 @@ import { SenderRejectionNoticer, SENDER_DEAUTHORIZED_CAUSE } from '../core/sende
 import { appendMeshRejection } from '../core/meshRejectionLog.js';
 import { ReplyMarkerTransport } from '../core/ReplyMarkerTransport.js';
 import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
-import { createPrivateKey, createPublicKey, createHash } from 'node:crypto';
+import { createPrivateKey, createPublicKey, createHash, randomBytes, randomInt } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CartographerTree } from '../core/CartographerTree.js';
@@ -384,10 +384,8 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
       await send('Your API already has an authentication token configured. No changes needed.');
       return true;
     }
-    // Generate a random token
-    const token = Array.from({ length: 32 }, () =>
-      'abcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 36))
-    ).join('');
+    // Generate a cryptographically secure random token
+    const token = randomBytes(16).toString('hex');
     deps.liveConfig.set('authToken', token);
     await send(`Done! Generated and saved a new API authentication token. Your API is now protected.\n\nToken: ${token.slice(0, 8)}... (stored in config)`);
     return true;
@@ -399,7 +397,7 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
       await send(`Your dashboard already has a PIN: ${existing}`);
       return true;
     }
-    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    const pin = String(randomInt(100000, 1000000));
     deps.liveConfig.set('dashboardPin', pin);
     await send(`Done! Generated dashboard PIN: ${pin}`);
     return true;
@@ -11547,8 +11545,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // view URL and the dashboard session — the documented UX cost of
       // having briefly routed private traffic through a third-party relay.
       tunnel.setCredentialRotator(async () => {
-        const { randomUUID } = await import('node:crypto');
-        const newPin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit, matches startup gen
+        const { randomUUID, randomInt } = await import('node:crypto');
+        const newPin = String(randomInt(100000, 1000000)); // 6-digit, matches startup gen
         const newToken = randomUUID();
         // Persist to config.json (survives restart; boot reads the new token)…
         liveConfig.set('authToken', newToken);
@@ -24702,7 +24700,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Auto-generate dashboardPin if missing — do this on every startup,
           // not just during upgrades. The PIN should always exist.
           if (!config.dashboardPin) {
-            const pin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+            const { randomInt } = await import('node:crypto');
+            const pin = String(randomInt(100000, 1000000)); // 6-digit
             config.dashboardPin = pin;
             // Persist via LiveConfig so it survives restart
             liveConfig.set('dashboardPin', pin);
