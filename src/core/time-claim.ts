@@ -63,12 +63,9 @@ interface ExtractedClaim {
 // real fabricated elapsed-time claims through on a live autonomous run: the
 // claims extracted to NOTHING, so the comparison never ran at all.
 //
-// A residual ambiguity is accepted knowingly: "2h in (CI queue)" reads as a
-// PLACE rather than a duration and will now be treated as an elapsed claim. The
-// trade is deliberate — this signal is ADVISORY (it returns the message to the
-// author with a note, it never blocks), so a false positive costs one re-read
-// while a false negative costs the operator a fabricated time report. Tonight
-// supplied the evidence for which way that asymmetry points.
+// The lexical match is only a candidate. `isSessionClockSubject` below binds
+// that candidate to its subject so "30 min in (offline-test window)" and
+// "1 min elapsed detection latency" do not become claims about the session.
 const HOURS = String.raw`(\d{1,3}(?:\.\d+)?)\s*h(?:ours?|rs?)?`;
 const MINUTES = String.raw`(\d{1,2})\s*m(?:in(?:ute)?s?)?`;
 const HM = `${HOURS}(?:\\s*${MINUTES})?|${MINUTES}`;
@@ -124,6 +121,44 @@ function isQuoted(text: string, index: number): boolean {
   return false;
 }
 
+// TIME_CLAIM is a deliberately cheap deterministic verifier, so it may use
+// structural cues to DROP non-session measurements toward pass-through. These
+// cues never create a positive claim: the existing anchored duration/percent
+// grammar remains the positive floor. This is the "cheap pre-filter may only
+// DROP obvious noise" lane of Intelligence Infers, Keywords Only Guard.
+const SESSION_SUBJECT_RE = /\b(?:autonomous\s+)?(?:run|session|session\s+clock|time[- ]?box|runway)\b/i;
+const OTHER_DURATION_SUBJECT_RE =
+  /\b(?:offline[- ]?test|test(?:ing)?(?:\s+window)?|window|latency|eta|estimate|timeout|queue|build|benchmark|probe|check|outage|delay|recovery)\b/i;
+
+/**
+ * Bind an anchored measurement to the thing being measured.
+ *
+ * Active clocks make an otherwise-unqualified "~7h elapsed" a legitimate
+ * session-clock candidate for backwards compatibility. We drop only when the
+ * same local clause names a competing duration subject and does not name the
+ * session more closely. This makes the negative boundary semantic without
+ * weakening bare/explicit session-clock claims.
+ */
+function isSessionClockSubject(text: string, index: number, matchLength: number): boolean {
+  const start = Math.max(0, index - 96);
+  const end = Math.min(text.length, index + matchLength + 96);
+  const local = text.slice(start, end);
+  const matchCenter = index - start + matchLength / 2;
+  const distances = (re: RegExp): number[] => {
+    const flags = re.flags.includes('g') ? re.flags : `${re.flags}g`;
+    const scan = new RegExp(re.source, flags);
+    const out: number[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = scan.exec(local)) !== null) out.push(Math.abs(m.index + m[0].length / 2 - matchCenter));
+    return out;
+  };
+  const other = distances(OTHER_DURATION_SUBJECT_RE);
+  if (other.length === 0) return true;
+  const session = distances(SESSION_SUBJECT_RE);
+  if (session.length === 0) return false;
+  return Math.min(...session) < Math.min(...other);
+}
+
 /** Extract every anchored time claim from `text` (bounded input expected). */
 export function extractTimeClaims(text: string): ExtractedClaim[] {
   const claims: ExtractedClaim[] = [];
@@ -137,7 +172,11 @@ export function extractTimeClaims(text: string): ExtractedClaim[] {
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null && claims.length < 16) {
       const seconds = groupsToSeconds(m);
-      if (seconds !== null && !isQuoted(text, m.index)) {
+      if (
+        seconds !== null
+        && !isQuoted(text, m.index)
+        && isSessionClockSubject(text, m.index, m[0].length)
+      ) {
         claims.push({ kind, value: seconds, text: m[0].trim().slice(0, 40) });
       }
     }
@@ -147,7 +186,12 @@ export function extractTimeClaims(text: string): ExtractedClaim[] {
   let p: RegExpExecArray | null;
   while ((p = PERCENT_RE.exec(text)) !== null && claims.length < 16) {
     const pct = Number(p[1]);
-    if (Number.isFinite(pct) && pct <= 100 && !isQuoted(text, p.index)) {
+    if (
+      Number.isFinite(pct)
+      && pct <= 100
+      && !isQuoted(text, p.index)
+      && isSessionClockSubject(text, p.index, p[0].length)
+    ) {
       claims.push({ kind: 'percent', value: pct, text: p[0].trim().slice(0, 40) });
     }
   }
