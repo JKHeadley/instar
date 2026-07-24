@@ -95,18 +95,22 @@ export class SlackApiClient {
     maxRetries: number,
   ): Promise<SlackApiResponse> {
     let response: Response;
+    // Keep the recovery pool scoped to Slack requests. Rebuilding a
+    // process-global dispatcher could disrupt unrelated HTTP clients. Node's
+    // fetch honors the undici `dispatcher` init option, but the DOM-typed
+    // RequestInit doesn't declare it — declare the init with the extended type
+    // instead of casting the literal.
+    const init: RequestInit & { dispatcher?: Agent } = {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify(params),
+    };
+    init.dispatcher = this.dispatcher;
     try {
-      response = await fetch(`https://slack.com/api/${method}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json; charset=utf-8',
-        },
-        body: JSON.stringify(params),
-        // Keep the recovery pool scoped to Slack requests. Rebuilding a
-        // process-global dispatcher could disrupt unrelated HTTP clients.
-        dispatcher: this.dispatcher,
-      } as RequestInit & { dispatcher: Agent });
+      response = await fetch(`https://slack.com/api/${method}`, init);
       this.consecutiveFetchFailures = 0;
     } catch (error) {
       this.consecutiveFetchFailures++;
