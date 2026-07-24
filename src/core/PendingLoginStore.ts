@@ -94,7 +94,7 @@ export interface IssueLoginInput {
   configHome?: string;
   verificationUrl: string;
   userCode?: string;
-  /** Operator-facing flow heads-up (e.g. the Claude two-code sequence). */
+  /** Operator-facing flow heads-up (optional; no built-in flow populates it today). */
   notice?: string;
   /** WS5.2 §5.3/S7 — the operator-expected account email (a follow-me login carries it
    *  so completion can validate the minted account against operator expectation). */

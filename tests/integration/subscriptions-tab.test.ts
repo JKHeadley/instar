@@ -198,7 +198,7 @@ describe('Subscriptions tab controller (integration)', () => {
       loginId: 'a1', machineId: 'm2', kind: 'url-code-paste',
       expectedEmail: 'headley.justin@gmail.com',
       ttlExpiresAt: new Date(Date.parse('2026-06-07T00:00:00Z') + 12 * 60_000).toISOString(),
-      notice: 'Heads up: a brand-new Claude login often asks for TWO codes in order.',
+      notice: 'Heads up: this provider may show an extra verification step.',
     },
   };
 
@@ -280,7 +280,7 @@ describe('Subscriptions tab controller (integration)', () => {
     const cell = await openCellToSignIn(c);
     expect(cell.querySelector('.sub-matrix-expected').textContent).toContain('must show headley.justin@gmail.com');
     expect(cell.querySelector('a.sub-matrix-signin').getAttribute('href')).toContain('code=true');
-    expect(cell.querySelector('.sub-matrix-notice').textContent).toContain('TWO codes');
+    expect(cell.querySelector('.sub-matrix-notice').textContent).toContain('extra verification step');
     expect(cell.querySelector('[data-matrix-cancel]')).toBeTruthy();
     const code = cell.querySelector('.sub-matrix-code-input');
     code.value = 'ABC'; // mid-paste…
