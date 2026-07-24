@@ -18,3 +18,5 @@ Second-pass review: concur with the review. The pause gate is moved from classif
 - enforcement: ratchet
 - citation: `tests/unit/self-action-convergence.test.ts`
 - how caught: queue watchdog, stale-age withholding, liveness debounce, and attention idempotency provide bounded convergence.
+
+Breaker regression repair preserves the existing suspend-on-five-failures and auth-hash resume contract.

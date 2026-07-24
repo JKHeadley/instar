@@ -374,13 +374,6 @@ export class DeliveryFailureSentinel extends EventEmitter {
       // Reclaim only after the timestamped lease expires; the owner renews it
       // while awaiting I/O.
       return rows.filter((row) => {
-        // Never redeliver an old conversational message after a long outage;
-        // stale rows are withheld for an aggregate incident notice rather than
-        // being sent weeks late. Keep the row durable for the incident drain.
-        const attemptedAt = Date.parse(row.attempted_at);
-        if (Number.isFinite(attemptedAt) && this.deps.now() - attemptedAt > 24 * 60 * 60 * 1000) {
-          return false;
-        }
         if (row.state !== 'claimed') return true;
         return this.isLeaseStale(row);
       });
