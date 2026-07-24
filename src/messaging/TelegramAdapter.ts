@@ -4118,10 +4118,15 @@ export class TelegramAdapter implements MessagingAdapter {
       `<b>${this.escapeHtml(item.title)}</b>`,
       this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
     ].filter(Boolean).join('\n');
+    // `line` is caller-authored, already-escaped Telegram HTML (<b> title +
+    // escaped summary). It MUST be sent with formatMode:'html' so the markdown
+    // converter does not re-escape the tags into literal `<b>`/`</b>` text — the
+    // exact rendering bug seen in this lane (2026-07-14), and the same fix the
+    // intro post and the attention-hub post already carry.
     // @silent-fallback-ok — best-effort lane post; the item is already recorded in
     // the attention store, so a transient send failure is non-fatal. If the topic
     // was deleted out from under us, drop the cached id so it's recreated next time.
-    await this.sendToTopic(topicId, line).catch(() => { this.agentHealthTopicId = null; });
+    await this.sendToTopic(topicId, line, { formatMode: 'html' }).catch(() => { this.agentHealthTopicId = null; });
     return topicId;
   }
 
