@@ -14622,6 +14622,7 @@ const QUERY_PREFIXES = [
   'echo ', 'which ', 'head ', 'tail ', 'wc ', 'pwd', 'date'
 ];
 const GROUNDING_SKILLS = ['grounding', 'dawn', 'reflect', 'introspect', 'session-bootstrap'];
+const MAX_SESSION_ENTRIES = 10; // prune oldest sessions beyond this
 
 function isScopeDoc(filePath) {
   if (!filePath) return false;
@@ -14638,14 +14639,35 @@ function isScopeDoc(filePath) {
   return false;
 }
 
+function getSessionId() {
+  return process.env.INSTAR_SESSION_ID || ('manual-' + process.pid);
+}
+
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
   } catch {}
-  return {
-    implementationDepth: 0, lastScopeCheck: null, lastCheckpointPrompt: null,
-    sessionDocsRead: [], checkpointsDismissed: 0, lastImplementationTool: null, sessionStart: null
-  };
+  return { sessions: {}, lastCheckpointPrompt: null, checkpointsDismissed: 0 };
+}
+
+function getSessionState(state, sid) {
+  if (!state.sessions[sid]) {
+    state.sessions[sid] = {
+      implementationDepth: 0, sessionStart: new Date().toISOString(),
+      docsRead: [], lastScopeCheck: null, lastImplementationTool: null
+    };
+  }
+  return state.sessions[sid];
+}
+
+function pruneSessions(state) {
+  const keys = Object.keys(state.sessions);
+  if (keys.length <= MAX_SESSION_ENTRIES) return;
+  const sorted = keys.map(k => ({ key: k, start: state.sessions[k].sessionStart || '0' }));
+  sorted.sort((a, b) => b.start.localeCompare(a.start)); // newest first
+  for (const entry of sorted.slice(MAX_SESSION_ENTRIES)) {
+    delete state.sessions[entry.key];
+  }
 }
 
 function saveState(state) {
@@ -14668,8 +14690,10 @@ function saveState(state) {
     const agentId = input.agent_id || null;
     const agentType = input.agent_type || null;
     const state = loadState();
+    const sid = getSessionId();
+    const sess = getSessionState(state, sid);
     const now = new Date().toISOString();
-    if (!state.sessionStart) state.sessionStart = now;
+
     // Track agent context (M4: Claude Code now enriches all hook events)
     if (agentId) {
       if (!state.agentActivity) state.agentActivity = {};
@@ -14678,33 +14702,34 @@ function saveState(state) {
     }
 
     if (toolName === 'Edit' || toolName === 'Write') {
-      state.implementationDepth += 1;
-      state.lastImplementationTool = toolName + ':' + now;
+      sess.implementationDepth += 1;
+      sess.lastImplementationTool = toolName + ':' + now;
     } else if (toolName === 'Bash') {
       const cmd = (toolInput.command || '').trim();
       const isQuery = QUERY_PREFIXES.some(p => cmd.startsWith(p));
       if (!isQuery && cmd.length > 10) {
-        state.implementationDepth += 1;
-        state.lastImplementationTool = 'Bash:' + now;
+        sess.implementationDepth += 1;
+        sess.lastImplementationTool = 'Bash:' + now;
       }
     } else if (toolName === 'Read') {
       const fp = toolInput.file_path || '';
       if (isScopeDoc(fp)) {
-        state.implementationDepth = Math.max(0, state.implementationDepth - 10);
-        state.lastScopeCheck = now;
-        if (!state.sessionDocsRead.includes(fp)) {
-          state.sessionDocsRead.push(fp);
-          if (state.sessionDocsRead.length > 20) state.sessionDocsRead = state.sessionDocsRead.slice(-20);
+        sess.implementationDepth = Math.max(0, sess.implementationDepth - 10);
+        sess.lastScopeCheck = now;
+        if (!sess.docsRead.includes(fp)) {
+          sess.docsRead.push(fp);
+          if (sess.docsRead.length > 20) sess.docsRead = sess.docsRead.slice(-20);
         }
       }
     } else if (toolName === 'Skill') {
       const skill = toolInput.skill || '';
       if (GROUNDING_SKILLS.includes(skill)) {
-        state.implementationDepth = 0;
-        state.lastScopeCheck = now;
+        sess.implementationDepth = 0;
+        sess.lastScopeCheck = now;
       }
     }
 
+    pruneSessions(state);
     saveState(state);
   } catch {}
   process.stdout.write(JSON.stringify({ decision: 'approve' }));
@@ -14740,14 +14765,18 @@ function saveState(state) {
 
 const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
 const DEPTH_THRESHOLD = 20;
-const COOLDOWN_MS = 30 * 60 * 1000;  // 30 minutes
-const MIN_AGE_MS = 5 * 60 * 1000;    // 5 minutes
+const COOLDOWN_MS = 30 * 60 * 1000;  // 30 minutes — global, prevents nagging across sessions
+const MIN_AGE_MS = 5 * 60 * 1000;    // 5 minutes — per-session, lets fresh sessions settle
+
+function getSessionId() {
+  return process.env.INSTAR_SESSION_ID || ('manual-' + process.pid);
+}
 
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
   } catch {}
-  return { implementationDepth: 0 };
+  return { sessions: {} };
 }
 
 function saveState(state) {
@@ -14801,15 +14830,17 @@ function fetchActiveJob() {
     }
 
     const state = loadState();
+    const sid = getSessionId();
+    const sess = state.sessions[sid];
     const now = Date.now();
-    const depth = state.implementationDepth || 0;
+    const depth = (sess && sess.implementationDepth) || 0;
 
     if (depth < DEPTH_THRESHOLD) {
       process.exit(0);
       return;
     }
 
-    // Check cooldown
+    // Check cooldown (global — prevents nagging across sessions)
     if (state.lastCheckpointPrompt) {
       const elapsed = now - new Date(state.lastCheckpointPrompt).getTime();
       if (elapsed < COOLDOWN_MS) {
@@ -14818,9 +14849,9 @@ function fetchActiveJob() {
       }
     }
 
-    // Check minimum session age
-    if (state.sessionStart) {
-      const age = now - new Date(state.sessionStart).getTime();
+    // Check minimum session age (per-session)
+    if (sess && sess.sessionStart) {
+      const age = now - new Date(sess.sessionStart).getTime();
       if (age < MIN_AGE_MS) {
         process.exit(0);
         return;
@@ -14830,7 +14861,7 @@ function fetchActiveJob() {
     // Fetch active job context from server
     const jobData = await fetchActiveJob();
     const dismissed = state.checkpointsDismissed || 0;
-    const docsRead = state.sessionDocsRead || [];
+    const docsRead = (sess && sess.docsRead) || [];
 
     let jobContext = '';
     if (jobData && jobData.active && jobData.job) {
