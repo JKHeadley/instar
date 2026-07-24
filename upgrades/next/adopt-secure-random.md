@@ -1,0 +1,17 @@
+## What Changed
+
+Every place the system invents a credential — the dashboard PIN and internal auth tokens — now uses the operating system's cryptographically secure random source instead of the predictable general-purpose one. Externally contributed fix (Marceli Pawlinski, PR #1587), adopted with authorship preserved, plus one additional site the contribution missed (the PIN auto-generated during post-update migration).
+
+## Summary of New Capabilities
+
+None — same PINs, same token shapes, just unpredictable ones.
+
+## What to Tell Your User
+
+Nothing to do. Existing PINs and tokens are untouched; only newly generated ones use the stronger source.
+
+## Evidence
+
+- PIN range preserved exactly (6 digits, 100000–999999); token length preserved (32 hex chars).
+- Full-tree sweep for remaining credential-class `Math.random` uses: zero (non-credential uses — tmp suffixes, spawn ids, record ids — reviewed and left).
+- External PR #1587's unit shards ran fully green on CI before adoption (8/8 shards, node 20 + 22).

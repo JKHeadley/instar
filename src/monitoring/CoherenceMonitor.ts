@@ -18,6 +18,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomInt } from 'node:crypto';
 import type { LiveConfig } from '../config/LiveConfig.js';
 import type { ComponentHealth } from '../core/types.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
@@ -583,7 +584,7 @@ export class CoherenceMonitor extends EventEmitter {
           });
         } else {
           // Self-correct: generate a PIN
-          const newPin = String(Math.floor(100000 + Math.random() * 900000));
+          const newPin = String(randomInt(100000, 1000000));
           liveConfig.set('dashboardPin', newPin);
           results.push({
             name: 'readiness-dashboard-pin',
