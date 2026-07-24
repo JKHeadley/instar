@@ -5,6 +5,10 @@
  * exercised deterministically (no network, no real gh).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FailureLedger } from '../../src/monitoring/FailureLedger.js';
 import {
   CiFailurePoller, ciCategoryFromName, currentFailures, scrubSecrets,
@@ -127,5 +131,37 @@ describe('CiFailurePoller.tick (the §3.1 source behavior)', () => {
   it('only polls on the fenced-lease holder', () => {
     const p = poller({ isLeaseHolder: () => false, runGh: ghJson([{ headSha: 's', conclusion: 'failure', name: 'test', createdAt: 'z' }]) });
     expect(p.tick()).toBe(0);
+  });
+
+  it('uses the shared authenticated runtime on the default gh path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-gh-runtime-'));
+    try {
+      const marker = path.join(dir, 'ci-gh-env.txt');
+      const executable = path.join(dir, 'gh');
+      fs.writeFileSync(executable, `#!/bin/sh\nprintf '%s|%s' "$GH_TOKEN" "$GITHUB_TOKEN" > "${marker}"\nprintf '[]'\n`, { mode: 0o700 });
+      const p = new CiFailurePoller({
+        ledger,
+        resolveByMergeCommit: () => undefined,
+        resolveRepo: () => 'JKHeadley/instar',
+        githubRuntime: () => ({
+          executable,
+          env: {
+            ...process.env,
+            PATH: dir,
+            GH_TOKEN: 'agent-token',
+            GITHUB_TOKEN: 'agent-token',
+          },
+        }),
+        onError: () => {},
+      });
+      expect(p.tick()).toBe(0);
+      expect(fs.readFileSync(marker, 'utf8')).toBe('agent-token|agent-token');
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/unit/CiFailurePoller.test.ts',
+      });
+    }
   });
 });

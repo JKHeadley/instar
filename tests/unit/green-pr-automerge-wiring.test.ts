@@ -59,11 +59,40 @@ function baseOpts(over: Partial<GreenPrWiringOpts> = {}): GreenPrWiringOpts {
     leaseEpoch: () => 0,
     postAttentionAggregate: async () => {},
     auditPath: path.join(dir, 'audit.jsonl'),
+    githubRuntime: () => ({
+      executable: '/opt/homebrew/bin/gh',
+      env: {
+        PATH: '/opt/homebrew/bin:/usr/bin:/bin',
+        GH_TOKEN: 'agent-token',
+        GITHUB_TOKEN: 'agent-token',
+      },
+    }),
     ...over,
   };
 }
 
 describe('buildGreenPrDeps — config-threading (M2)', () => {
+  it('uses the shared authenticated runtime on the default gh read path', async () => {
+    const marker = path.join(dir, 'green-gh-env.txt');
+    const fakeExecutable = path.join(dir, 'gh');
+    fs.writeFileSync(fakeExecutable, `#!/bin/sh\nprintf '%s|%s' "$GH_TOKEN" "$GITHUB_TOKEN" > "${marker}"\nprintf '[]'\n`, { mode: 0o700 });
+    const opts = baseOpts({
+      ghExec: undefined,
+      githubRuntime: () => ({
+        executable: fakeExecutable,
+        env: {
+          ...process.env,
+          PATH: dir,
+          GH_TOKEN: 'agent-token',
+          GITHUB_TOKEN: 'agent-token',
+        },
+      }),
+    });
+    const deps = buildGreenPrDeps(opts, buildGuardLatchStore(opts));
+    await expect(deps.listOpenPrs()).resolves.toEqual([]);
+    expect(fs.readFileSync(marker, 'utf8')).toBe('agent-token|agent-token');
+  });
+
   it('threads mergeStrategy:auto + armTimeoutMs into the CONSTRUCTED MergeRunner', () => {
     const { ghExec } = fakeGh({});
     const latches = buildGuardLatchStore(baseOpts({ ghExec }));
