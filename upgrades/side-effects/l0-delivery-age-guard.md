@@ -67,3 +67,6 @@ the exact expression against both layouts, asserts AgentServer.ts uses it verbat
 schema; (2) digest counters now clear (and the coalesce window stamps) ONLY on a confirmed 2xx — a failed,
 timed-out, or non-2xx post keeps accumulating for a later pass, matching the stated semantics; (3) the
 lockfile/toolchain install churn (pnpm-lock.yaml, pnpm-workspace.yaml) is excluded from the commit.
+
+### Amend note
+The two deliberate fail-safe catches now carry `@silent-fallback-ok` annotations (no-silent-fallbacks ratchet compliance) — no behavior change.

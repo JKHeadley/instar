@@ -438,8 +438,10 @@ export class DeliveryFailureSentinel extends EventEmitter {
         });
         if (ok) retiredTopics.push(row.topic_id);
       } catch {
-        // A failed retire leaves the row for the next pass; it still never
-        // delivers THIS pass (it is not in `fresh`). Never block the drain.
+        // @silent-fallback-ok: a failed retire leaves the row for the next
+        // pass; it still never delivers THIS pass (it is not in `fresh`).
+        // Deliberate fail-safe direction — never block the drain on the
+        // guard's own bookkeeping.
       }
     }
 
@@ -509,8 +511,9 @@ export class DeliveryFailureSentinel extends EventEmitter {
         this.staleDigestTopics.clear();
       }
     } catch {
-      // Digest is observability, never a gate — accumulate and retry on a
-      // later pass.
+      // @silent-fallback-ok: the digest is observability, never a gate —
+      // counters are retained and retried on a later pass; the retired rows
+      // are already audited dead-letters regardless.
     }
   }
 

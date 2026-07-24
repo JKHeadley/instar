@@ -39,3 +39,5 @@ expired message. The startup cleanup stays; this is the belt to its suspenders.
 
 Nothing right now — it ships dark. When it arms on the test agent and soaks clean, the promotion to
 the dev agent and then the fleet follows the standard maturation ladder, each step reversible.
+
+(Amend note: the two deliberate fail-safe catches carry @silent-fallback-ok annotations for the no-silent-fallbacks ratchet — no behavior change.)
