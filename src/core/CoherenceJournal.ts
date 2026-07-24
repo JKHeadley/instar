@@ -42,9 +42,9 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -210,6 +210,22 @@ export interface GuardLatchData {
   reason?: string;
 }
 
+/** Ephemeral signed observation replicated for pool convergence, never restart authority. */
+export interface SshDirectionProofData {
+  sourceMachineId: string;
+  targetMachineId: string;
+  pairingEpoch: number;
+  observerBootId: string;
+  endpointId: string;
+  sourceClientKeyGeneration: number;
+  targetHostKeyGeneration: number;
+  targetHostKeyFingerprint: string;
+  verifiedAt: string;
+  expiresAt: string;
+  challengeDigest: string;
+  machineSignature: string;
+}
+
 /** One line in a stream file. */
 export interface JournalEntry {
   seq: number;
@@ -241,6 +257,7 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   'threadline-conversation': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
   // guard-latch: rare operator-initiated transitions; keep full history bounded.
   'guard-latch': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  'ssh-direction-proof': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 2 },
   // pref-record (WS2.1): preferences are FEW (a tight per-store cap — the
   // PreferencesSync precedent's DEFAULT_MAX_REPLICATED_PREFERENCES=500). A small
   // window with a few archives bounds a runaway edit-churn stream. The store's own
@@ -274,6 +291,9 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // working-set-artifact (intelligent-working-set-lazy-sync): FEW + bounded per-topic
   // interactive-write index rows; a small window mirrors the knowledge-record sibling.
   'working-set-artifact': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // Terminal-retained class-review lifecycle stream; journal archives are
+  // bounded while the folded store retains every resolvable row.
+  'class-review-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
   // evolution-action-record (WS2.5): a memory-family store — NEVER rotateKeep:0 (rotate-but-
   // never-delete would be a compliance defect). Actions are FEW + bounded (the
   // EvolutionManager prunes to maxActions=300), so a small window with a few archives mirrors
@@ -518,7 +538,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -526,6 +546,7 @@ export class CoherenceJournal {
     'autonomous-run': 0,
     'threadline-conversation': 0,
     'guard-latch': 0,
+    'ssh-direction-proof': 0,
     'pref-record': 0,
     'relationship-record': 0,
     'learning-record': 0,
@@ -538,6 +559,7 @@ export class CoherenceJournal {
     'topic-pin-record': 0,
     'topic-claim-annotation': 0,
     'working-set-artifact': 0,
+    'class-review-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -548,6 +570,7 @@ export class CoherenceJournal {
     'autonomous-run': new Set(),
     'threadline-conversation': new Set(),
     'guard-latch': new Set(),
+    'ssh-direction-proof': new Set(),
     'pref-record': new Set(),
     'relationship-record': new Set(),
     'learning-record': new Set(),
@@ -560,6 +583,7 @@ export class CoherenceJournal {
     'topic-pin-record': new Set(),
     'topic-claim-annotation': new Set(),
     'working-set-artifact': new Set(),
+    'class-review-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -600,6 +624,7 @@ export class CoherenceJournal {
       'autonomous-run': config.retention?.['autonomous-run'] ?? DEFAULT_RETENTION['autonomous-run'],
       'threadline-conversation': config.retention?.['threadline-conversation'] ?? DEFAULT_RETENTION['threadline-conversation'],
       'guard-latch': config.retention?.['guard-latch'] ?? DEFAULT_RETENTION['guard-latch'],
+      'ssh-direction-proof': config.retention?.['ssh-direction-proof'] ?? DEFAULT_RETENTION['ssh-direction-proof'],
       'pref-record': config.retention?.['pref-record'] ?? DEFAULT_RETENTION['pref-record'],
       'relationship-record': config.retention?.['relationship-record'] ?? DEFAULT_RETENTION['relationship-record'],
       'learning-record': config.retention?.['learning-record'] ?? DEFAULT_RETENTION['learning-record'],
@@ -612,6 +637,7 @@ export class CoherenceJournal {
       'topic-pin-record': config.retention?.['topic-pin-record'] ?? DEFAULT_RETENTION['topic-pin-record'],
       'topic-claim-annotation': config.retention?.['topic-claim-annotation'] ?? DEFAULT_RETENTION['topic-claim-annotation'],
       'working-set-artifact': config.retention?.['working-set-artifact'] ?? DEFAULT_RETENTION['working-set-artifact'],
+      'class-review-record': config.retention?.['class-review-record'] ?? DEFAULT_RETENTION['class-review-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -636,6 +662,7 @@ export class CoherenceJournal {
       'autonomous-run': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'threadline-conversation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'guard-latch': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'ssh-direction-proof': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'pref-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'relationship-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'learning-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
@@ -648,6 +675,7 @@ export class CoherenceJournal {
       'topic-pin-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'topic-claim-annotation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'working-set-artifact': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'class-review-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -813,6 +841,10 @@ export class CoherenceJournal {
       data as unknown as Record<string, unknown>,
       `${data?.latchKind}:${data?.latchId}:${data?.seq}`,
     );
+  }
+
+  emitSshDirectionProof(data: SshDirectionProofData): void {
+    this.emit('ssh-direction-proof', undefined, data as unknown as Record<string, unknown>, `${data.sourceMachineId}->${data.targetMachineId}:${data.pairingEpoch}:${data.observerBootId}:${data.challengeDigest}`);
   }
 
   /**
@@ -1067,6 +1099,14 @@ export class CoherenceJournal {
         if (typeof raw.reason !== 'string') return null;
         out.reason = raw.reason.slice(0, 80);
       }
+    } else if (kind === 'ssh-direction-proof') {
+      const stringFields = ['sourceMachineId', 'targetMachineId', 'observerBootId', 'endpointId', 'targetHostKeyFingerprint', 'verifiedAt', 'expiresAt', 'challengeDigest', 'machineSignature'] as const;
+      for (const field of stringFields) if (typeof raw[field] !== 'string' || raw[field].length < 1 || raw[field].length > 512) return null;
+      const numberFields = ['pairingEpoch', 'sourceClientKeyGeneration', 'targetHostKeyGeneration'] as const;
+      for (const field of numberFields) if (!Number.isSafeInteger(raw[field]) || Number(raw[field]) < 1) return null;
+      if (Number.isNaN(Date.parse(String(raw.verifiedAt))) || Number.isNaN(Date.parse(String(raw.expiresAt)))) return null;
+      known = [...stringFields, ...numberFields];
+      out = Object.fromEntries(known.map(field => [field, raw[field]]));
     } else {
       return null;
     }
@@ -1449,6 +1489,10 @@ export class CoherenceJournal {
     if (kind === 'guard-latch') {
       if (typeof d.latchKind !== 'string' || typeof d.latchId !== 'string' || typeof d.seq !== 'number') return null;
       return `${d.latchKind}:${d.latchId}:${d.seq}`;
+    }
+    if (kind === 'ssh-direction-proof') {
+      if (typeof d.sourceMachineId !== 'string' || typeof d.targetMachineId !== 'string' || typeof d.pairingEpoch !== 'number' || typeof d.observerBootId !== 'string' || typeof d.challengeDigest !== 'string') return null;
+      return `${d.sourceMachineId}->${d.targetMachineId}:${d.pairingEpoch}:${d.observerBootId}:${d.challengeDigest}`;
     }
     return null;
   }

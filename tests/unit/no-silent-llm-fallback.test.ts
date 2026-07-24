@@ -56,7 +56,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'threadline/WarrantsReplyGate.ts': 'fail-open returns REPLY — gates whether an A2A msg warrants a reply; benign direction (an extra reply, never a harmful action)',
   'threadline/A2ACheckInProxy.ts': 'no catch — advisory A2A check-in proxy; failure propagates to the router',
   'core/TopicIntentArcCheck.ts': 'returns {actsOn:[],contradicts:[]} — advisory intent-arc analysis, no gated action',
-  'core/UnjustifiedStopGate.ts': 'fail-open allows the stop AND emits a degradation report; gates an agent self-stop in the benign direction (let it stop)',
   'core/JobReflector.ts': 'returns null/defaults — advisory post-job reflection',
   'core/TopicIntentCapture.ts': 'returns {status:"degraded"} — explicitly marks degraded; advisory intent capture',
   'core/ProjectDriftChecker.ts': 'returns empty drift — advisory project-drift signal, no gated action',
@@ -81,7 +80,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'monitoring/PromptGate.ts': 'returns/skips on malformed output — advisory prompt observation, no gated action',
   'monitoring/InputClassifier.ts': 'conservative default is "relay" (route to human) with a deterministic destructive-op floor BEFORE the LLM — never auto-approves on failure',
   'monitoring/PresenceProxy.ts': 'returns early on cancelled/started — advisory presence heartbeat',
-  'messaging/slack/SlackAdapter.ts': 'fail-open returns true/[] on advisory Slack paths — no gated action',
 };
 
 function walk(dir: string): string[] {

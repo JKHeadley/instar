@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "contracts": [
+    {
+      "id": "job-run-history-row",
+      "revision": 1,
+      "sourcePath": "src/scheduler/JobRunHistory.ts",
+      "outcomeType": "CapacityEnforcementResult",
+      "requiredSymbols": [
+        "CapacityEnforcementResult<JobRun>",
+        "capacityOutcome({",
+        "outcome.kind === 'invariant-failure'",
+        "reportCapacityInvariantFailure"
+      ],
+      "durableOutcomeBinding": "truncated?: boolean;",
+      "aggregateOutcomeBinding": "const budgetCondensedRuns = completed.filter(r => r.truncated === true).length;"
+    }
+  ],
+  "retiredContracts": []
+}

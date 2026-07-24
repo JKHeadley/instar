@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-21T13:18:11.992Z",
+  "slug": "self-heal-gate",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The registry ratchet requires finite attempt/time/flap bounds and a restart-surviving settling brake."
+    }
+  },
+  "verdict": "pass"
+}

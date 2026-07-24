@@ -337,8 +337,11 @@ if (traceEntries.length === 0) {
 }
 
 // ─── Step 4.5: read the agent's DECLARED tier + branch ───────────────────
-// The agent records its tier in the trace JSON. We peek the freshest fresh
-// trace to read `trace.tier` (1|2|3). decideRequirementSet() factors the pure
+// The agent records its tier in the trace JSON. Select the freshest trace that
+// actually covers THIS staged change before reading its identity or tier. A
+// merely-newer trace from another worktree/task must never label this decision
+// audit (the feedback-class failure behind fb-2b24aa04-540).
+// decideRequirementSet() factors the pure
 // enforcement decision:
 //   - tier 1            → 'tier1-lite'  (ELI16 + side-effects staged; no spec)
 //   - tier 2 / 3        → 'tier2-full'  (the EXISTING full validation, unchanged)
@@ -347,8 +350,28 @@ if (traceEntries.length === 0) {
 let declaredTier = null;
 let tierReasoning = '';
 let freshestTrace = null;
+let freshestTraceEntry = null;
+for (const entry of traceEntries) {
+  try {
+    const candidate = JSON.parse(fs.readFileSync(entry.file, 'utf8'));
+    const covered = new Set(candidate?.coveredFiles || []);
+    if (candidate?.phase === 'complete' && inScopeFiles.every((f) => covered.has(f))) {
+      freshestTrace = candidate;
+      freshestTraceEntry = entry;
+      break;
+    }
+  } catch {
+    // The full validation path below reports malformed attempts. They are not
+    // eligible to provide identity/tier metadata for this staged change.
+  }
+}
+if (!freshestTrace || !freshestTraceEntry) {
+  blockCommit(
+    inScopeFiles,
+    'No fresh complete trace covers this staged change. Run the /instar-dev skill for the files being committed.',
+  );
+}
 try {
-  freshestTrace = JSON.parse(fs.readFileSync(traceEntries[0].file, 'utf8'));
   if (freshestTrace && (freshestTrace.tier === 1 || freshestTrace.tier === 2 || freshestTrace.tier === 3)) {
     declaredTier = freshestTrace.tier;
   }
@@ -360,7 +383,13 @@ try {
   // path (the existing Step 5 loop will surface the malformed-JSON attempt).
 }
 
-const slug = (freshestTrace && (freshestTrace.slug || freshestTrace.name)) || 'unknown';
+const slug = (freshestTrace && (
+  freshestTrace.slug ||
+  freshestTrace.name ||
+  (typeof freshestTrace.artifactPath === 'string'
+    ? path.basename(freshestTrace.artifactPath, path.extname(freshestTrace.artifactPath))
+    : null)
+)) || 'unknown';
 const decision = decideRequirementSet(declaredTier);
 
 // ─── Step 4.55: causal autopsy (directive 2026-06-05) ───────────────────
@@ -480,7 +509,7 @@ if (belowFloor) {
 // (The tests/lint requirement from the spec lives in the pre-PUSH gate, not
 // here: this pre-COMMIT hook checks ARTIFACTS only.)
 if (decision.requirementSet === 'tier1-lite') {
-  enforceTier1(freshestTrace, traceEntries[0].file);
+  enforceTier1(freshestTrace, freshestTraceEntry.file);
   // enforceTier1 either passes through (process.exit(0)) or blockCommit()s.
 }
 

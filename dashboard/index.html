@@ -1067,6 +1067,16 @@
       line-height: 1.55;
       color: var(--text-bright);
     }
+    /* Subscriptions is an operational matrix, not a prose reading column.
+       Keep Process Health's calm 760px measure scoped to .ph-root while this
+       tab uses the full app canvas with responsive gutters. */
+    .subscriptions-root {
+      grid-column: 1 / -1;
+      max-width: none;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
     .ph-title { font-size: 22px; font-weight: 600; color: var(--text-bright); line-height: 1.5; }
     .ph-stamp { font-size: 14px; color: var(--text-dim); }
     .ph-headline-wrap { margin: 4px 0 8px; }
@@ -2942,6 +2952,7 @@
             <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
             <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
             <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
+            <button class="tab" data-tab="feedback-drain" onclick="switchTab('feedback-drain')">Feedback Drain</button>
             <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
           </div>
           <div class="tab-group" role="group" aria-label="Content & Access">
@@ -3575,6 +3586,18 @@
       </details>
     </div>
 
+    <div id="feedbackDrainPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:20px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Feedback Drain</h2>
+        <div id="fdStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">The operated path from accepted feedback through agent readiness and durable Initiative handoff.</p>
+      <div id="fdPosture" class="ph-headline-wrap" aria-live="polite"></div>
+      <section class="ph-section"><h3 class="ph-h">Backlog</h3><div id="fdBacklog" class="ph-detail-body"></div></section>
+      <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
+      <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
+    </div>
+
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
     <style>
       .sub-account { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
@@ -3602,6 +3625,7 @@
       .sub-empty, .sub-disabled { font-size:13px; opacity:.7; padding:8px 0; }
       /* account-machine-matrix grid */
       .sub-matrix { border-collapse:collapse; width:100%; font-size:13px; }
+      #subMatrix { width:100%; min-width:0; overflow-x:auto; }
       .sub-matrix th, .sub-matrix td { border:1px solid var(--border,#2a2a2a); padding:8px 10px; text-align:center; vertical-align:top; }
       .sub-matrix-acct { text-align:left; font-weight:600; word-break:break-all; }
       .sub-matrix-mach { font-weight:600; }
@@ -3621,6 +3645,9 @@
       .sub-matrix-cancel, .sub-matrix-collapse { margin-top:4px; margin-left:4px; padding:2px 8px; cursor:pointer; font-size:11px; opacity:.85; }
       .sub-matrix-held-detail { font-size:11px; color:#f87171; margin-top:4px; }
       .sub-matrix-done-detail { font-size:11px; margin-top:4px; }
+      .sub-matrix-outcome { margin-top:6px; padding:7px 8px; border-radius:7px; text-align:left; font-size:12px; line-height:1.4; }
+      .sub-matrix-outcome-done { color:#22c55e; background:rgba(22,163,74,.10); border:1px solid rgba(22,163,74,.35); }
+      .sub-matrix-outcome-failed { color:#fca5a5; background:rgba(248,113,113,.08); border:1px solid rgba(248,113,113,.30); }
       .sub-matrix-cell.sub-matrix-held .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-expired .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-broken .sub-matrix-glyph { color:#f87171; }
       .sub-matrix-cell.sub-matrix-done .sub-matrix-glyph { color:#22c55e; font-weight:600; }
       .sub-matrix-cell.sub-matrix-just-verified { background:rgba(22,163,74,.14); outline:2px solid #16a34a; animation:subVerifiedPulse 1.2s ease-in-out 3; }
@@ -3631,10 +3658,16 @@
       .sub-pending-failed-head { color:#f87171; font-weight:600; }
       .sub-pending-outcome-body { font-size:12px; opacity:.85; margin-top:4px; }
       .sub-pending-status { font-size:12px; opacity:.85; margin-top:6px; }
+      @media (max-width: 600px) {
+        .subscriptions-root { padding:18px 14px !important; gap:18px !important; }
+        .subscriptions-root .ph-h-sub { font-size:14px; }
+        .sub-matrix { min-width:620px; }
+        .sub-account { padding:12px; }
+      }
     </style>
-    <div id="subscriptionsPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+    <div id="subscriptionsPanel" class="tab-panel subscriptions-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <h2 class="ph-title">Subscriptions</h2>
-      <p class="ph-intro">Your subscription accounts and how much of each is left before it resets — plus any logins waiting for you to approve on your phone.</p>
+      <p class="ph-intro">Your subscription accounts, where each one is set up, and how much usage remains before it resets.</p>
       <!-- One-tap follow-me Approve card(s) — rendered only when another machine could use one of
            your subscriptions (ws52-operator-tap-not-text Part A). Leads the panel as the primary
            action when present; silent otherwise. -->
@@ -3651,11 +3684,6 @@
         <h3 class="ph-h">Accounts</h3>
         <p class="ph-h-sub">Each account’s live usage (5-hour and weekly) and when it resets.</p>
         <div id="subAccounts"></div>
-      </section>
-      <section class="ph-section">
-        <h3 class="ph-h">Pending logins</h3>
-        <p class="ph-h-sub">A mirror of every sign-in still in flight (each grid cell above carries its own complete flow) — plus explicit “done” and “didn’t finish” cards. An expired code is re-issued automatically.</p>
-        <div id="subPending"></div>
       </section>
     </div>
 
@@ -3743,6 +3771,16 @@
         <p class="ph-h-sub">Patterns I've distilled from moments you corrected me. The exact words are never stored — just a short, scrubbed summary.</p>
         <div id="plCorrections"></div>
       </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Class reviews and outcomes</h3>
+        <p class="ph-h-sub">The standard and process question each correction opened, with their independent durable outcomes.</p>
+        <div id="plClassReviews"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Claim Verification observations</h3>
+        <p class="ph-h-sub">Server-admitted only, privacy-scrubbed factual claim checks. This dark observer never blocks or changes a response.</p>
+        <div id="plCompletionAudit"></div>
+      </section>
     </div>
 
     <!-- machines tab (Multi-Machine Session Pool §L2) -->
@@ -3756,6 +3794,16 @@
            headline + tiles + drill-down here. Rebuilt from the old insider "guards" line.
            Nickname editing (issue #1429) lives one drill down, commits on Enter/blur. -->
       <div id="machinesGlance" class="glance-root"></div>
+      <section aria-labelledby="mutualSshTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="mutualSshTitle" style="margin:0 0 8px">Machine-to-machine SSH</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Restricted Instar subsystem connectivity. This does not enable Remote Login or change personal SSH files.</p>
+        <div id="mutualSshStatus" class="glance-empty" aria-live="polite">Loading connectivity…</div>
+      </section>
+      <section aria-labelledby="throughputFloorTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="throughputFloorTitle" style="margin:0 0 8px">Autonomous throughput observations</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Pull-only evidence of project PR movement and manager communication. This view never notifies or changes a run.</p>
+        <div id="throughputFloorStatus" class="glance-empty" aria-live="polite">Loading observations…</div>
+      </section>
     </div>
 
     <div id="evidenceTab" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
@@ -5271,6 +5319,13 @@
         onDeactivate: () => { if (typeof stopProcessHealth === 'function') stopProcessHealth(); },
       },
       {
+        id: 'feedback-drain',
+        panels: ['feedbackDrainPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startFeedbackDrain === 'function') startFeedbackDrain(); },
+        onDeactivate: () => { if (typeof stopFeedbackDrain === 'function') stopFeedbackDrain(); },
+      },
+      {
         id: 'subscriptions',
         panels: ['subscriptionsPanel'],
         display: ['flex'],
@@ -5506,6 +5561,8 @@
         return;
       }
       if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+      await loadMutualSshStatus();
+      await loadThroughputFloor();
 
       if (!pool.enabled) {
         glanceRoot.textContent = '';
@@ -5526,6 +5583,57 @@
         onRename: (id, nickname, input, prev) => saveMachineNickname(id, nickname, input, prev),
       });
       glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    async function loadMutualSshStatus() {
+      const root = document.getElementById('mutualSshStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/machines/ssh-health?scope=pool'); }
+      catch { root.textContent = 'Not enabled on this agent.'; return; }
+      if (status.dryRun) { root.textContent = 'Observation only — no peer SSH sessions are accepted.'; return; }
+      const pairs = Array.isArray(status.pairs) ? status.pairs : [];
+      if (pairs.length === 0) { root.textContent = status.listener ? 'Ready; no paired machines to verify.' : 'Waiting for the restricted listener.'; return; }
+      const healthy = pairs.filter(pair => pair && pair.mutual === true).length;
+      const summary = document.createElement('div');
+      summary.textContent = healthy === pairs.length
+        ? 'Mutual proof is current for all ' + String(pairs.length) + ' machine pair' + (pairs.length === 1 ? '.' : 's.')
+        : String(healthy) + ' of ' + String(pairs.length) + ' machine pairs have current proof in both directions.';
+      root.appendChild(summary);
+      for (const pair of pairs) {
+        const row = document.createElement('div');
+        row.style.marginTop = '8px';
+        row.textContent = (pair.mutual ? 'Verified: ' : 'Blocked: ') + (Array.isArray(pair.machines) ? pair.machines.join(' ↔ ') : 'machine pair');
+        root.appendChild(row);
+      }
+    }
+
+    async function loadThroughputFloor() {
+      const root = document.getElementById('throughputFloorStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/autonomous/throughput-floor'); }
+      catch {
+        root.textContent = 'Observation is not enabled on this agent.';
+        return;
+      }
+      const rows = Array.isArray(status.runs) ? status.runs : [];
+      if (rows.length === 0) { root.textContent = 'No eligible autonomous runs are currently observed.'; return; }
+      const list = document.createElement('div');
+      list.style.display = 'grid';
+      list.style.gap = '8px';
+      for (const row of rows) {
+        const item = document.createElement('div');
+        item.style.padding = '8px 10px';
+        item.style.border = '1px solid var(--border)';
+        item.style.borderRadius = '8px';
+        const minutes = Math.floor(Math.min(Number(row.outputFlatForMs || 0), Number(row.managerSilentForMs || 0)) / 60000);
+        item.textContent = 'Topic ' + String(row.topicId) + ': ' + String(row.decision || 'unknown') + (row.decision === 'flatline-observed' ? ' — both signals unchanged for at least ' + minutes + 'm' : '');
+        list.appendChild(item);
+      }
+      root.appendChild(list);
     }
 
     // ── Tokens Tab ──────────────────────────────────────────────────
@@ -8738,7 +8846,6 @@
       if (!__subController) {
         const els = {
           accounts: document.getElementById('subAccounts'),
-          pending: document.getElementById('subPending'),
           followMe: document.getElementById('subFollowMe'),
           matrix: document.getElementById('subMatrix'),
         };
@@ -8812,6 +8919,8 @@
           headline: document.getElementById('plHeadline'),
           preferences: document.getElementById('plPreferences'),
           corrections: document.getElementById('plCorrections'),
+          classReviews: document.getElementById('plClassReviews'),
+          completionAudit: document.getElementById('plCompletionAudit'),
           stamp: document.getElementById('plStamp'),
         };
         // Raw fetch (NOT apiFetch) so the controller sees 503 itself.
@@ -8827,17 +8936,57 @@
       if (__plController) __plController.stop();
     }
 
+    // Feedback Factory operated-drain read surface. Closed status DTO only;
+    // dynamic values are assigned with textContent and never interpreted as HTML.
+    let __fdTimer = null;
+    const fdText = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = String(value ?? '—'); };
+    async function loadFeedbackDrain() {
+      try {
+        const response = await fetch('/feedback-factory/drain/status', { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await response.json();
+        const posture = data.posture || { state: 'unavailable', reason: 'initialization-failure' };
+        fdText('fdPosture', `${posture.state}: ${posture.reason}`);
+        if (!response.ok) {
+          fdText('fdBacklog', 'The drain is not accepting work in this posture.');
+          fdText('fdProgress', 'No operated run is active.');
+          fdText('fdSource', 'Source integrity is unavailable until initialization succeeds.');
+        } else {
+          const drain = data.drain || {}; const readiness = drain.readiness || {}; const work = drain.work || {};
+          fdText('fdBacklog', `collecting ${readiness.collecting || 0}; ready ${readiness.ready || 0}; queued ${work.queued || 0}; retryable ${work.retryable || 0}; held ${(readiness.held || 0) + (work.held || 0)}; dead-lettered ${work['dead-lettered'] || 0}`);
+          const run = data.lastRun;
+          fdText('fdProgress', run ? `last run ${run.state}; completed ${work.completed || 0}; oldest queued ${drain.oldestQueuedAgeMs == null ? 'none' : Math.round(drain.oldestQueuedAgeMs / 1000) + 's'}` : 'No drain run has been admitted yet.');
+          fdText('fdSource', `byte lag ${drain.sourceProjectionLagBytes || 0}; generation lag ${drain.sourceGenerationLag || 0}; checksum conflicts ${drain.sourceChecksumConflicts || 0}`);
+        }
+        fdText('fdStamp', `updated ${new Date().toLocaleTimeString()}`);
+      } catch {
+        fdText('fdPosture', 'unavailable: status request failed');
+        fdText('fdStamp', '');
+      }
+    }
+    function startFeedbackDrain() {
+      stopFeedbackDrain();
+      void loadFeedbackDrain();
+      __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
+    }
+    function stopFeedbackDrain() {
+      if (__fdTimer) clearInterval(__fdTimer);
+      __fdTimer = null;
+    }
+
     // Handle tab visibility — close SSE when tab is backgrounded
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         disconnectJobsSSE();
         if (currentTab === 'process-health') stopProcessHealth();
+        if (currentTab === 'feedback-drain') stopFeedbackDrain();
         if (currentTab === 'preferences-learning') stopPreferencesLearning();
       } else if (currentTab === 'jobs') {
         connectJobsSSE();
         loadJobs(); // Resync on return
       } else if (currentTab === 'process-health') {
         startProcessHealth(); // resume on return: one immediate refresh + re-arm
+      } else if (currentTab === 'feedback-drain') {
+        startFeedbackDrain();
       } else if (currentTab === 'preferences-learning') {
         startPreferencesLearning(); // resume on return
       }

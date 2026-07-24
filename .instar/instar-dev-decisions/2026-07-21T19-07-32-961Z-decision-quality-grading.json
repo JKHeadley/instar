@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-21T19:07:32.961Z",
+  "slug": "decision-quality-grading",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 225,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

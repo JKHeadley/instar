@@ -167,13 +167,36 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     expect(r.status).toBe(409);
   });
 
-  it('TARGET — enabled + no pending login for id → 404', async () => {
+  it('TARGET — enabled + no pending login for id → honest 410 expired, never bare 404/502', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
     const app = express(); app.use(express.json());
     app.use(createRoutes(buildCtx(dir, { dev: true, seedPending: false })));
     server = await listen(app);
     const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'ABC123' });
-    expect(r.status).toBe(404);
+    expect(r.status).toBe(410);
+    expect(r.body.code).toBe('login-expired');
+    expect(r.body.error).toMatch(/expired/i);
+  });
+
+  it('TARGET — vanished flow for an account that still needs sign-in → fresh flow minted and returned', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
+    const ctx = buildCtx(dir, { dev: true, seedPending: false });
+    const pool = (ctx as unknown as { subscriptionPool: SubscriptionPool }).subscriptionPool;
+    pool.add({
+      id: 'fm-1', nickname: 'main', provider: 'anthropic', framework: 'claude-code',
+      configHome: path.join(dir, '.claude-followme-fm-1'), status: 'needs-reauth',
+      email: 'approved@x.com',
+    });
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+
+    const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'OLD-CODE' });
+
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('login-expired-fresh-ready');
+    expect(r.body.error).toMatch(/fresh sign-in is ready/i);
+    expect(r.body.freshLogin).toMatchObject({ id: 'fm-1', status: 'pending' });
   });
 
   it('TARGET — enabled + pending login + credential present → code typed into pane → 201 validated + account added', async () => {
@@ -223,7 +246,7 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     expect(sendInput).not.toHaveBeenCalled();
   });
 
-  it('TARGET — an empty/blank captured frame (dead pane) → 409 with code:pane-dead, no code typed (fail closed)', async () => {
+  it('TARGET — an empty/blank captured frame refreshes the flow and never types the stale code', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
     const sendInput = vi.fn(() => true);
     const ctx = buildCtx(dir, { dev: true, seedPending: true, sendInputCapture: sendInput, paneFrame: '' });
@@ -232,13 +255,12 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     server = await listen(app);
     const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'ABC123' });
     expect(r.status).toBe(409);
-    // D5: a DEAD pane is a DISTINCT, machine-readable terminal state — the dashboard maps it
-    // to an explicit "needs a restart" presentation instead of a "may have closed" guess.
-    expect(r.body.code).toBe('pane-dead');
+    expect(r.body.code).toBe('login-expired-fresh-ready');
+    expect(r.body.freshLogin).toMatchObject({ id: 'fm-1', status: 'pending', reissueCount: 1 });
     expect(sendInput).not.toHaveBeenCalled();
   });
 
-  it('TARGET — captureOutput returns null (the pane session is GONE entirely) → 409 pane-dead; wording references the grid, never "Approve"', async () => {
+  it('TARGET — captureOutput null returns expired-with-fresh-ready; wording never references Approve', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
     const sendInput = vi.fn(() => true);
     const ctx = buildCtx(dir, { dev: true, seedPending: true, sendInputCapture: sendInput });
@@ -249,10 +271,9 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     server = await listen(app);
     const r = await post('/subscription-pool/follow-me/enroll/fm-1/submit-code', { code: 'ABC123' });
     expect(r.status).toBe(409);
-    expect(r.body.code).toBe('pane-dead');
-    // D5 wording floor: error copy only references affordances that exist on the surface.
+    expect(r.body.code).toBe('login-expired-fresh-ready');
     expect(r.body.error).not.toContain('Approve');
-    expect(r.body.error).toContain('start the sign-in again');
+    expect(r.body.error).toContain('fresh sign-in is ready');
     expect(sendInput).not.toHaveBeenCalled();
   });
 

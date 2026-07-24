@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ProactiveSwapMonitor } from '../../src/core/ProactiveSwapMonitor.js';
-import { QuotaAwareScheduler } from '../../src/core/QuotaAwareScheduler.js';
+import { QuotaAwareScheduler, scoreAccount } from '../../src/core/QuotaAwareScheduler.js';
 import {
   SwapAntiThrashEngine,
   resolveAntiThrashKnobs,
@@ -67,6 +67,21 @@ function acct(id: string, util: number | null): SubscriptionAccount {
   };
 }
 
+function missingLogin(id: string, util: number | null): SubscriptionAccount {
+  return {
+    ...acct(id, util),
+    identityDrifted: true,
+    identityDrift: {
+      expectedAccountId: id,
+      actualAccountId: 'missing-local-login',
+      slot: `/h/.claude-${id}`,
+      detectedAt: new Date(now - 60_000).toISOString(),
+      lastConfirmedAt: new Date(now - 60_000).toISOString(),
+      repairState: 'owner-relogin-required',
+    },
+  };
+}
+
 describe('swap-continuity wiring integrity', () => {
   let dir: string;
   let knobOver: Partial<import('../../src/core/SwapAntiThrash.js').AntiThrashConfigBlock>;
@@ -96,9 +111,11 @@ describe('swap-continuity wiring integrity', () => {
   function makeMonitor(over: {
     engine: SwapAntiThrashEngine | null;
     accounts: SubscriptionAccount[];
-    sessions: Array<{ sessionName: string; accountId: string | null; startedAt?: string }>;
+    sessions: Array<{ sessionName: string; accountId: string | null; loginLossAccountId?: string | null; startedAt?: string; refreshable?: boolean }>;
+    defaultAccountId?: string | null;
     probe?: (s: string) => Promise<WorkProbeResult>;
     continuity?: Partial<{ enabled: boolean; dryRun: boolean; deferralCeilingMs: number }>;
+    loginLoss?: { enabled: boolean; dryRun: boolean };
     swapImpl?: (a: { sessionName: string; exhaustedAccountId: string; targetAccountId?: string }) => Promise<{ swapped: boolean; toAccountId: string | null; reason?: string }>;
   }) {
     const swap = vi.fn(
@@ -108,11 +125,18 @@ describe('swap-continuity wiring integrity', () => {
     const monitor = new ProactiveSwapMonitor({
       listAccounts: () => over.accounts,
       listRunningSessions: () =>
-        over.sessions.map((s) => ({ sessionName: s.sessionName, accountId: s.accountId, startedAt: s.startedAt ?? '2026-07-02T14:00:00Z' })),
-      resolveDefaultAccountId: async () => null,
+        over.sessions.map((s) => ({
+          sessionName: s.sessionName,
+          accountId: s.accountId,
+          ...(s.loginLossAccountId !== undefined ? { loginLossAccountId: s.loginLossAccountId } : {}),
+          startedAt: s.startedAt ?? '2026-07-02T14:00:00Z',
+          ...(s.refreshable !== undefined ? { refreshable: s.refreshable } : {}),
+        })),
+      resolveDefaultAccountId: async () => over.defaultAccountId ?? null,
       swap,
       now: () => now,
       ...(over.engine ? { antiThrash: { engine: over.engine, getKnobs: knobs } } : {}),
+      ...(over.loginLoss ? { loginLoss: over.loginLoss } : {}),
       ...(over.probe
         ? {
             workGate: {
@@ -200,17 +224,118 @@ describe('swap-continuity wiring integrity', () => {
       expect(second.swap).not.toHaveBeenCalled();
     });
 
-    it('untagged sessions are OUTSIDE the live candidate set (Q3/I10)', async () => {
+    it('bound untagged session swaps from the resolved default onto the freshest eligible account', async () => {
       const engine = makeEngine();
+      const soonReset = acct('soon-reset', 35);
+      const freshest = acct('freshest', 7);
+      if (soonReset.lastQuota?.sevenDay) soonReset.lastQuota.sevenDay.resetsAt = new Date(now + 60_000).toISOString();
+      if (freshest.lastQuota?.sevenDay) freshest.lastQuota.sevenDay.resetsAt = new Date(now + 7 * 24 * 60 * 60_000).toISOString();
+      expect(scoreAccount(soonReset, now)).toBeGreaterThan(scoreAccount(freshest, now));
       const { monitor, swap } = makeMonitor({
         engine,
-        accounts: [acct('hot', 85), acct('cool', 20)],
-        sessions: [{ sessionName: 'untagged', accountId: null }],
+        accounts: [acct('hot', 88), soonReset, freshest],
+        sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
+        defaultAccountId: 'hot',
         probe: async () => idle,
       });
       const r = await monitor.evaluate();
-      expect(r.considered).toBe(0);
+      expect(r.swapped).toEqual(['untagged']);
+      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
+        exhaustedAccountId: 'hot',
+        targetAccountId: 'freshest',
+        sourceWasUntagged: true,
+      }));
+    });
+
+    it('untagged session holds when no fresher eligible target survives the existing floors', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 88), acct('also-hot', 70)],
+        sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
+        defaultAccountId: 'hot',
+        probe: async () => idle,
+      });
+      const r = await monitor.evaluate();
+      expect(r.swapped).toEqual([]);
+      expect(r.considered).toBe(1);
       expect(swap).not.toHaveBeenCalled();
+    });
+
+    it('known-unrefreshable background session is excluded before execution', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 88), acct('fresh', 7)],
+        sessions: [{ sessionName: 'headless', accountId: 'hot', refreshable: false }],
+        probe: async () => idle,
+      });
+      const r = await monitor.evaluate();
+      expect(r).toEqual({ swapped: [], considered: 0 });
+      expect(swap).not.toHaveBeenCalled();
+    });
+
+    it('login-loss trigger dry-runs a low-utilization missing source through the real brake pipeline', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [missingLogin('lost', 10), acct('fresh', 20)],
+        sessions: [{ sessionName: 'bound', accountId: 'lost', refreshable: true }],
+        probe: async () => idle,
+        loginLoss: { enabled: true, dryRun: true },
+      });
+      const r = await monitor.evaluate();
+      expect(r).toEqual({ swapped: [], considered: 1 });
+      expect(swap).not.toHaveBeenCalled();
+      const rows = fs.readFileSync(path.join(dir, 'state', 'swap-ledger.jsonl'), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+      expect(rows.at(-1)).toMatchObject({
+        decision: 'swapped',
+        sourceTrigger: 'login-loss',
+        dryRun: true,
+        from: 'lost',
+        to: 'fresh',
+      });
+    });
+
+    it('login-loss trigger executes only after explicit dry-run promotion', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [missingLogin('lost', 10), acct('fresh', 20)],
+        sessions: [{ sessionName: 'bound', accountId: 'lost', refreshable: true }],
+        probe: async () => idle,
+        loginLoss: { enabled: true, dryRun: false },
+      });
+      expect(await monitor.evaluate()).toEqual({ swapped: ['bound'], considered: 1 });
+      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
+        exhaustedAccountId: 'lost',
+        targetAccountId: 'fresh',
+        sourceTrigger: 'login-loss',
+      }));
+    });
+
+    it('correlates an untagged missing-login session from its real config-home account when auth status is gone', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [missingLogin('lost', 10), acct('fresh', 20)],
+        sessions: [{
+          sessionName: 'default-session',
+          accountId: null,
+          loginLossAccountId: 'lost',
+          refreshable: true,
+        }],
+        defaultAccountId: null,
+        probe: async () => idle,
+        loginLoss: { enabled: true, dryRun: false },
+      });
+      expect(await monitor.evaluate()).toEqual({ swapped: ['default-session'], considered: 1 });
+      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
+        exhaustedAccountId: 'lost',
+        sourceWasUntagged: true,
+        sourceTrigger: 'login-loss',
+      }));
     });
 
     it('dryRun keeps the LEGACY decision path (no targetAccountId funnel) while the engine shadows', async () => {
@@ -288,7 +413,7 @@ describe('swap-continuity wiring integrity', () => {
         antiThrash: {
           readingValid: (a, nowMs) => readingValidity(a, nowMs, knobs().quotaFreshnessMs).valid,
           getKnobs: () => ({ thresholdPct: 80, targetHeadroomPct: 15, minImprovementPct: 15 }),
-          resolveCurrentAccountId: () => (over.currentAccountId === undefined ? 'hot' : over.currentAccountId),
+          resolveEffectiveAccountId: async () => (over.currentAccountId === undefined ? 'hot' : over.currentAccountId),
           onReactiveExecuted: reactiveExecuted,
           onReactiveFailed: reactiveFailed,
           onReactiveRateCapRefusal: rateCap,
@@ -342,6 +467,58 @@ describe('swap-continuity wiring integrity', () => {
       expect(refreshFn).not.toHaveBeenCalled();
     });
 
+    it('re-resolves an untagged default source at execution and refuses A→B drift before refresh', async () => {
+      const resolveEffectiveAccountId = vi.fn(async (_session: string, sourceWasUntagged: boolean) =>
+        sourceWasUntagged ? 'new-default' : 'hot');
+      const { scheduler, refreshFn } = makeScheduler({
+        accounts: [acct('hot', 88), acct('cool', 7)],
+        hooks: { resolveEffectiveAccountId },
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 'untagged',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+        sourceWasUntagged: true,
+      });
+      expect(r).toMatchObject({ swapped: false, reason: 'intent-stale' });
+      expect(resolveEffectiveAccountId).toHaveBeenCalledWith('untagged', true, undefined);
+      expect(refreshFn).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when an untagged default source becomes unresolved before execution', async () => {
+      const { scheduler, refreshFn } = makeScheduler({
+        accounts: [acct('hot', 88), acct('cool', 7)],
+        hooks: { resolveEffectiveAccountId: async () => null },
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 'untagged',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+        sourceWasUntagged: true,
+      });
+      expect(r).toMatchObject({ swapped: false, reason: 'intent-stale' });
+      expect(refreshFn).not.toHaveBeenCalled();
+    });
+
+    it('preserves a concrete proactive refresh refusal code for ledger classification', async () => {
+      const { scheduler } = makeScheduler({
+        accounts: [acct('hot', 88), acct('cool', 7)],
+        refreshImpl: async () => ({ ok: false, code: 'not_telegram_bound' }),
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 'binding-raced-away',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+      });
+      expect(r).toEqual({ swapped: false, toAccountId: 'cool', reason: 'not_telegram_bound' });
+    });
+
     it('invalidates when the source pressure subsided sub-tick (fresh source check, R4-m4)', async () => {
       const { scheduler, refreshFn } = makeScheduler({ accounts: [acct('hot', 60), acct('cool', 20)] });
       const r = await scheduler.onQuotaPressure({
@@ -349,6 +526,40 @@ describe('swap-continuity wiring integrity', () => {
         exhaustedAccountId: 'hot',
         nowMs: now,
         targetAccountId: 'cool',
+      });
+      expect(r).toMatchObject({ swapped: false, reason: 'intent-stale' });
+      expect(refreshFn).not.toHaveBeenCalled();
+    });
+
+    it('revalidates owner-relogin-required at the kill boundary before a login-loss refresh', async () => {
+      const { scheduler, refreshFn } = makeScheduler({
+        accounts: [missingLogin('hot', 10), acct('cool', 20)],
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 's1',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+        sourceTrigger: 'login-loss',
+      });
+      expect(r.swapped).toBe(true);
+      expect(refreshFn).toHaveBeenCalledWith(expect.objectContaining({
+        reason: 'login-loss-swap: hot → cool',
+      }));
+    });
+
+    it('refuses a login-loss intent when the source login repaired before the kill boundary', async () => {
+      const { scheduler, refreshFn } = makeScheduler({
+        accounts: [acct('hot', 10), acct('cool', 20)],
+      });
+      const r = await scheduler.onQuotaPressure({
+        sessionName: 's1',
+        exhaustedAccountId: 'hot',
+        nowMs: now,
+        targetAccountId: 'cool',
+        callerClass: 'proactive-swap',
+        sourceTrigger: 'login-loss',
       });
       expect(r).toMatchObject({ swapped: false, reason: 'intent-stale' });
       expect(refreshFn).not.toHaveBeenCalled();

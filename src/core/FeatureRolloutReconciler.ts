@@ -14,7 +14,7 @@
  * or ships-staged specs become `active` tracks (anti-flood).
  */
 
-import type { InitiativeTracker, PipelineStage, Initiative } from './InitiativeTracker.js';
+import type { InitiativeTracker, PipelineStage, Initiative, MaturationEvaluationContract, RolloutAccountingDisposition, MaturationLadderRung } from './InitiativeTracker.js';
 import {
   deriveRolloutStage,
   rolloutPhaseStatuses,
@@ -39,6 +39,12 @@ export interface SpecArtifact {
   flagPath?: string;
   evidenceSource?: { type: 'log-filter' | 'endpoint'; ref: string; filter?: string };
   promotionCriteria?: string;
+  maturationEvaluation?: MaturationEvaluationContract;
+  maturationContractError?: 'invalid-json' | 'oversized' | 'invalid-shape' | 'unknown-source-ref';
+  rolloutDisposition?: RolloutAccountingDisposition;
+  sourcePrNumber?: number;
+  ownerFeatureId?: string;
+  exclusionReason?: string;
   /** An instar-dev trace exists referencing this spec (⇒ at least building). */
   traceExists: boolean;
   prNumber?: number;
@@ -76,6 +82,12 @@ export interface ReconcileSummary {
   regressed: string[];
   skipped: string[];
   unchanged: string[];
+}
+
+export function accountingRung(stage: ReturnType<typeof deriveRolloutStage>): MaturationLadderRung {
+  if (stage === 'live') return 'dev-agent-live';
+  if (stage === 'default-on') return 'fleet';
+  return 'test-agent-live';
 }
 
 export class FeatureRolloutReconciler {
@@ -116,6 +128,14 @@ export class FeatureRolloutReconciler {
     // Rollout observation (ships-staged + merged only).
     const rolloutEligible = Boolean(art.shipsStaged && art.merged && art.flagPath);
     const observedStage = rolloutEligible ? deriveRolloutStage(this.deps.observeFlag(art.flagPath!)) : undefined;
+    const disposition = art.rolloutDisposition ?? (rolloutEligible ? 'active' : undefined);
+    const rolloutAccounting = disposition && art.sourcePrNumber
+      ? { disposition, sourcePrNumber: art.sourcePrNumber,
+        rung: disposition === 'active' && observedStage ? accountingRung(observedStage) : null,
+        ownerFeatureId: art.ownerFeatureId ?? (disposition === 'active' ? art.id : undefined), exclusionReason: art.exclusionReason,
+        evidenceSource: art.evidenceSource, graduationCriterion: art.promotionCriteria,
+        maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError }
+      : undefined;
 
     if (!existing) {
       // ── CREATE ──
@@ -131,8 +151,9 @@ export class FeatureRolloutReconciler {
         phases, kind: 'task', pipelineStage: stage, specPath: art.specPath,
         prNumber: art.prNumber,
         rollout: rolloutEligible
-          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria }
+          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria, maturationEvaluation: art.maturationEvaluation }
           : undefined,
+        rolloutAccounting,
       });
       // default-on parks the track as 'paused' (NON-terminal → reopenable on a
       // later regression; 'archived' maps to TaskFlow's terminal `cancelled`
@@ -140,7 +161,9 @@ export class FeatureRolloutReconciler {
       // (genuinely terminal provenance, never reopened).
       if (observedStage && shouldArchiveAtStage(observedStage)) {
         await this.deps.tracker.update(art.id, { status: 'paused', ifMatch: this.deps.tracker.get(art.id)?.version });
-      } else if (!isActive) {
+      } else if (disposition === 'excluded') {
+        await this.deps.tracker.update(art.id, { status: 'paused', ifMatch: this.deps.tracker.get(art.id)?.version });
+      } else if (!isActive && !rolloutAccounting) {
         await this.deps.tracker.update(art.id, { status: 'archived', ifMatch: this.deps.tracker.get(art.id)?.version });
       }
       summary.created.push(art.id);
@@ -162,15 +185,37 @@ export class FeatureRolloutReconciler {
       if (prevStage && isRegression(prevStage, observedStage)) {
         await this.deps.tracker.update(id, { pipelineStage: 'regressed', status: 'active', ifMatch: this.deps.tracker.get(id)?.version });
         await this.applyRolloutStage(id, observedStage);
+        const latest = this.deps.tracker.get(id);
+        if (latest?.rolloutAccounting) await this.deps.tracker.update(id, {
+          rolloutAccounting: { ...latest.rolloutAccounting, rung: accountingRung(observedStage) }, ifMatch: latest.version,
+        });
         summary.regressed.push(id);
         return;
       }
       if (prevStage !== observedStage) {
         await this.applyRolloutStage(id, observedStage);
+        const latest = this.deps.tracker.get(id);
+        if (latest?.rolloutAccounting) await this.deps.tracker.update(id, {
+          rolloutAccounting: { ...latest.rolloutAccounting, rung: accountingRung(observedStage) }, ifMatch: latest.version,
+        });
         if (shouldArchiveAtStage(observedStage)) summary.archived.push(id);
         else summary.advanced.push(id);
         return;
       }
+      if (JSON.stringify(existing.rollout?.maturationEvaluation) !== JSON.stringify(art.maturationEvaluation)) {
+        await this.deps.tracker.update(id, {
+          rollout: { ...existing.rollout!, maturationEvaluation: art.maturationEvaluation },
+          ifMatch: this.deps.tracker.get(id)?.version,
+        });
+        summary.advanced.push(id);
+        return;
+      }
+    }
+
+    if (rolloutAccounting && JSON.stringify(existing.rolloutAccounting) !== JSON.stringify(rolloutAccounting)) {
+      await this.deps.tracker.update(id, { rolloutAccounting, ifMatch: this.deps.tracker.get(id)?.version });
+      summary.advanced.push(id);
+      return;
     }
 
     if (touched) summary.advanced.push(id);
@@ -191,7 +236,7 @@ export class FeatureRolloutReconciler {
     }
     const fresh = this.deps.tracker.get(id);
     await this.deps.tracker.update(id, {
-      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
+      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, maturationEvaluation: fresh?.rollout?.maturationEvaluation, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
       // 'paused' (non-terminal, reopenable) at default-on — NOT 'archived'
       // (which maps to TaskFlow's terminal `cancelled` and would seal the
       // record against a later regression). 'active' for live/dry-run.

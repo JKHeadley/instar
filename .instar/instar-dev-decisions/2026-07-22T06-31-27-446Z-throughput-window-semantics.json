@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-22T06:31:27.446Z",
+  "slug": "throughput-window-semantics",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 36,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

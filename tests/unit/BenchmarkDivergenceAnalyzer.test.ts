@@ -45,8 +45,16 @@ function config(overrides: Record<string, unknown> = {}): InstarConfig {
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 5, protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
     messaging: [], monitoring: {}, updates: {},
-    benchmarkDivergence: { dryRun: false, ...((overrides.benchmarkDivergence as Record<string, unknown>) ?? {}) },
     ...overrides,
+    // AFTER the spread, so an `overrides.benchmarkDivergence` cannot drop it.
+    // ABSOLUTE mirrorPath inside tmpDir: an explicit path is honored verbatim and
+    // never falls back to the installed package (2026-07-23). Without this, the
+    // real SHIPPED baseline leaks in and "missing mirror" becomes untestable.
+    benchmarkDivergence: {
+      dryRun: false,
+      mirrorPath: path.join(tmpDir, 'src', 'data', 'benchmarkPredictions.json'),
+      ...((overrides.benchmarkDivergence as Record<string, unknown>) ?? {}),
+    },
   } as unknown as InstarConfig;
 }
 

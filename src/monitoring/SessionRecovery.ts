@@ -29,6 +29,10 @@ import { detectCrashedSession, detectErrorLoop, type CrashInfo, type ErrorLoopIn
 import { truncateJsonlToSafePoint, type TruncationStrategy } from './jsonl-truncator.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import {
+  transcriptDelta,
+  type TranscriptProbe,
+} from './transcriptProber.js';
 
 // ============================================================================
 // Types
@@ -42,11 +46,25 @@ export interface SessionRecoveryConfig {
   cooldownMs: number;
   /** Project directory (used to find JSONL files) */
   projectDir: string;
+  /** A context-wall latch older than this forces recovery even when work
+   * evidence remains ambiguous. Default: 30 minutes. */
+  contextExhaustionDeferralCeilingMs: number;
 }
 
 export interface RecoveryAttempt {
   lastAttempt: number;
   count: number;
+}
+
+function isTranscriptProbe(value: unknown): value is TranscriptProbe {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Partial<TranscriptProbe>;
+  return typeof row.resolved === 'boolean'
+    && typeof row.path === 'string'
+    && typeof row.size === 'number'
+    && Number.isFinite(row.size)
+    && typeof row.mtime === 'number'
+    && Number.isFinite(row.mtime);
 }
 
 export interface RecoveryResult {
@@ -86,6 +104,14 @@ export interface SessionRecoveryDeps {
    * to the pre-Phase-2 behavior).
    */
   hasActiveProcesses?: (sessionName: string) => boolean;
+  /**
+   * Session-specific transcript receipt used by context-wall recovery. Growth
+   * is positive proof of work; a static transcript is proof that helper-process
+   * existence alone must not veto recovery.
+   */
+  probeTranscript?: (sessionName: string) => TranscriptProbe;
+  /** Deterministic clock seam for latch ceilings and tests. */
+  now?: () => number;
   /** Respawn a session for a topic, optionally with a recovery prompt */
   respawnSession: (topicId: number, sessionName?: string, recoveryPrompt?: string) => Promise<void>;
   /** Send a message to a topic */
@@ -191,6 +217,13 @@ export class SessionRecovery extends EventEmitter {
   private config: SessionRecoveryConfig;
   private deps: SessionRecoveryDeps;
   private recoveryAttempts: Map<string, RecoveryAttempt> = new Map();
+  /** Durable memory that the existing context detector matched for a topic.
+   * The timestamp supplies the bounded-deferral ceiling; the optional probe is
+   * the prior observation used to prove transcript growth. */
+  private contextWedgedSeen = new Map<number, {
+    firstSeenAt: number;
+    transcript?: TranscriptProbe;
+  }>();
   private stateFilePath: string;
 
   constructor(config: Partial<SessionRecoveryConfig>, deps: SessionRecoveryDeps) {
@@ -200,6 +233,8 @@ export class SessionRecovery extends EventEmitter {
       maxAttempts: config.maxAttempts ?? 3,
       cooldownMs: config.cooldownMs ?? 15 * 60 * 1000,
       projectDir: config.projectDir || process.cwd(),
+      contextExhaustionDeferralCeilingMs:
+        config.contextExhaustionDeferralCeilingMs ?? 30 * 60 * 1000,
     };
     this.deps = deps;
     this.stateFilePath = path.join(this.config.projectDir, '.instar', 'recovery-state.json');
@@ -266,13 +301,19 @@ export class SessionRecovery extends EventEmitter {
     // it just can't accept any more input without hitting the same error.
     if (processAlive && this.deps.captureSessionOutput) {
       const tmuxOutput = this.deps.captureSessionOutput(sessionName, 50);
+      let matchedPattern: string | null = null;
       if (tmuxOutput) {
         const contextCheck = detectContextExhaustion(tmuxOutput);
         if (contextCheck.matched) {
-          const result = await this.recoverFromContextExhaustion(topicId, sessionName, contextCheck.pattern || 'unknown');
-          this.logEvent(result, topicId, sessionName);
-          return result;
+          this.markContextWedgedSeen(topicId);
+          matchedPattern = contextCheck.pattern;
         }
+      }
+      if (matchedPattern || this.hasContextWedgedSeen(topicId)) {
+        const result = await this.recoverFromContextExhaustion(topicId, sessionName, matchedPattern);
+        if (result.recovered) this.clearContextWedgedSeen(topicId);
+        this.logEvent(result, topicId, sessionName);
+        return result;
       }
     }
 
@@ -311,6 +352,29 @@ export class SessionRecovery extends EventEmitter {
     }
 
     return { recovered: false, failureType: null, message: 'No mechanical failure detected' };
+  }
+
+  /** Remember only that the unchanged detector has already matched this topic. */
+  markContextWedgedSeen(topicId: number): void {
+    if (this.contextWedgedSeen.has(topicId)) return;
+    this.contextWedgedSeen.set(topicId, { firstSeenAt: this.now() });
+    this.saveState();
+  }
+
+  /** Mechanical read seam for SessionMonitor; this makes no recovery decision. */
+  hasContextWedgedSeen(topicId: number): boolean {
+    return this.contextWedgedSeen.has(topicId);
+  }
+
+  /** Explicit manual-intervention seam; successful recovery uses this same clear. */
+  clearContextWedgedSeen(topicId: number): void {
+    if (!this.contextWedgedSeen.delete(topicId)) return;
+    this.saveState();
+  }
+
+  /** First detector observation, exposed for honest status surfaces/tests. */
+  getContextWedgedFirstSeenAt(topicId: number): number | null {
+    return this.contextWedgedSeen.get(topicId)?.firstSeenAt ?? null;
   }
 
   /**
@@ -461,8 +525,15 @@ export class SessionRecovery extends EventEmitter {
    *  @returns `'killed'` on a kill we performed; `'deferred-still-working'`
    *           when the work-check vetoed the kill.
    */
-  private async killForRecovery(sessionName: string): Promise<'killed' | 'deferred-still-working'> {
-    if (this.deps.hasActiveProcesses && this.deps.hasActiveProcesses(sessionName)) {
+  private async killForRecovery(
+    sessionName: string,
+    options: { bypassChildProcessVeto?: boolean } = {},
+  ): Promise<'killed' | 'deferred-still-working'> {
+    if (
+      !options.bypassChildProcessVeto
+      && this.deps.hasActiveProcesses
+      && this.deps.hasActiveProcesses(sessionName)
+    ) {
       console.log(
         `[SessionRecovery] "${sessionName}": P1/P2 cross-check found active child processes — `
           + `deferring recovery (JSONL stall but the process is still producing work)`,
@@ -533,7 +604,7 @@ export class SessionRecovery extends EventEmitter {
   private async recoverFromContextExhaustion(
     topicId: number,
     sessionName: string,
-    matchedPattern: string,
+    matchedPattern: string | null,
   ): Promise<RecoveryResult> {
     const key = `context:${sessionName}`;
 
@@ -545,9 +616,60 @@ export class SessionRecovery extends EventEmitter {
       };
     }
 
+    // Context-wall work is measured from the session's transcript, not from
+    // helper-process existence. MCP/browser/SSH children can remain alive at a
+    // hard wall while the model produces nothing.
+    const latch = this.contextWedgedSeen.get(topicId)
+      ?? { firstSeenAt: this.now() };
+    this.contextWedgedSeen.set(topicId, latch);
+    const latchAgeMs = Math.max(0, this.now() - latch.firstSeenAt);
+    const ceilingReached =
+      latchAgeMs >= this.config.contextExhaustionDeferralCeilingMs;
+
+    const currentProbe = this.deps.probeTranscript?.(sessionName);
+    const priorProbe = latch.transcript;
+    if (currentProbe) {
+      latch.transcript = currentProbe;
+      this.saveState();
+    }
+    const growth = currentProbe && priorProbe
+      ? transcriptDelta(priorProbe, currentProbe)
+      : 'unknown';
+
+    // With the production transcript seam, only positive transcript growth
+    // proves work. The first/unresolved observation defers safely, but spends
+    // ZERO recovery attempts. The durable ceiling prevents ambiguity from
+    // becoming an infinite wait. Legacy callers without the seam retain their
+    // old child-process check until they are upgraded.
+    const legacyBusyWithoutProbe =
+      !this.deps.probeTranscript
+      && (this.deps.hasActiveProcesses?.(sessionName) ?? false);
+    if (!ceilingReached && (growth === 'grew' || growth === 'unknown' && (
+      this.deps.probeTranscript !== undefined || legacyBusyWithoutProbe
+    ))) {
+      return {
+        recovered: false,
+        failureType: 'context_exhaustion',
+        deferred: true,
+        message: growth === 'grew'
+          ? `Context-exhaustion recovery deferred for ${sessionName} — its transcript is still growing`
+          : `Context-exhaustion recovery deferred for ${sessionName} — waiting for a second transcript observation`,
+      };
+    }
+
+    // A deferral is not an attempt. Count only after the evidence gate has
+    // authorized an actual compaction/kill recovery action.
     const attemptNumber = this.recordAttempt(key);
 
-    this.emit('recovery:context_exhaustion', { topicId, sessionName, matchedPattern, attemptNumber });
+    this.emit('recovery:context_exhaustion', {
+      topicId,
+      sessionName,
+      matchedPattern,
+      attemptNumber,
+      latchAgeMs,
+      ceilingReached,
+      transcriptGrowth: growth,
+    });
 
     // ── Rung 1: non-destructive /compact (preserves the conversation) ──
     // Before killing the session and losing the conversation, try the escalation
@@ -557,8 +679,7 @@ export class SessionRecovery extends EventEmitter {
     // its work). If /compact clears the wall the conversation survives; if it
     // fails (too long to even compact) or times out, we fall through to the
     // destructive fresh respawn — never worse than the prior behavior.
-    const hasChildren = this.deps.hasActiveProcesses?.(sessionName) ?? false;
-    if (!hasChildren && this.deps.attemptCompaction) {
+    if (this.deps.attemptCompaction) {
       try {
         const compaction = await this.deps.attemptCompaction(sessionName);
         if (compaction.cleared) {
@@ -567,7 +688,7 @@ export class SessionRecovery extends EventEmitter {
             recovered: true,
             failureType: 'context_exhaustion',
             attemptNumber,
-            message: `Recovered via /compact — conversation preserved (pattern: "${matchedPattern}", attempt ${attemptNumber})`,
+            message: `Recovered via /compact — conversation preserved${matchedPattern ? ` (pattern: "${matchedPattern}", attempt ${attemptNumber})` : ` (attempt ${attemptNumber})`}`,
           };
         }
         // compaction.cleared === false → fall through to the destructive respawn.
@@ -585,7 +706,11 @@ export class SessionRecovery extends EventEmitter {
     // Reached only when /compact was unavailable, declined (active children), or
     // could not clear the wall. The session is stuck at the "conversation too
     // long" prompt and a fresh start is the only remaining recovery.
-    if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
+    if ((await this.killForRecovery(sessionName, {
+      // Transcript evidence already made the context-wall decision. A helper
+      // process must not re-veto it here.
+      bypassChildProcessVeto: this.deps.probeTranscript !== undefined || ceilingReached,
+    })) === 'deferred-still-working') {
       return {
         recovered: false, failureType: 'context_exhaustion', attemptNumber, deferred: true,
         message: `Context-exhaustion recovery deferred for ${sessionName} — work-check found active children`,
@@ -859,7 +984,7 @@ export class SessionRecovery extends EventEmitter {
   private shouldAttempt(key: string): boolean {
     const prior = this.recoveryAttempts.get(key);
     if (!prior) return true;
-    if (Date.now() - prior.lastAttempt < this.config.cooldownMs) return false;
+    if (this.now() - prior.lastAttempt < this.config.cooldownMs) return false;
     if (prior.count >= this.config.maxAttempts) return false;
     return true;
   }
@@ -867,7 +992,7 @@ export class SessionRecovery extends EventEmitter {
   private recordAttempt(key: string): number {
     const prior = this.recoveryAttempts.get(key);
     const count = (prior?.count || 0) + 1;
-    this.recoveryAttempts.set(key, { lastAttempt: Date.now(), count });
+    this.recoveryAttempts.set(key, { lastAttempt: this.now(), count });
     this.saveState();
     return count;
   }
@@ -885,6 +1010,27 @@ export class SessionRecovery extends EventEmitter {
             const attempt = value as RecoveryAttempt;
             if (attempt.lastAttempt && attempt.count) {
               this.recoveryAttempts.set(key, attempt);
+            }
+          }
+        }
+        if (data.wedgedSeen && typeof data.wedgedSeen === 'object') {
+          for (const [topic, seen] of Object.entries(data.wedgedSeen)) {
+            const topicId = Number(topic);
+            if (!Number.isInteger(topicId)) continue;
+            if (seen === true) {
+              // Legacy true-only state: keep the latch, start the ceiling clock
+              // now because its historical first-seen time was never recorded.
+              this.contextWedgedSeen.set(topicId, { firstSeenAt: this.now() });
+              continue;
+            }
+            if (seen && typeof seen === 'object') {
+              const row = seen as { firstSeenAt?: unknown; transcript?: unknown };
+              const firstSeenAt = Number(row.firstSeenAt);
+              if (!Number.isFinite(firstSeenAt) || firstSeenAt <= 0) continue;
+              const transcript = isTranscriptProbe(row.transcript)
+                ? row.transcript
+                : undefined;
+              this.contextWedgedSeen.set(topicId, { firstSeenAt, transcript });
             }
           }
         }
@@ -908,15 +1054,26 @@ export class SessionRecovery extends EventEmitter {
       // Only persist entries less than 1 hour old
       const ONE_HOUR = 60 * 60 * 1000;
       for (const [key, entry] of Array.from(this.recoveryAttempts.entries())) {
-        if (Date.now() - entry.lastAttempt < ONE_HOUR) {
+        if (this.now() - entry.lastAttempt < ONE_HOUR) {
           data[key] = entry;
         }
       }
 
-      fs.writeFileSync(this.stateFilePath, JSON.stringify({ attempts: data }, null, 2));
+      const wedgedSeen: Record<string, {
+        firstSeenAt: number;
+        transcript?: TranscriptProbe;
+      }> = {};
+      for (const [topicId, state] of this.contextWedgedSeen) {
+        wedgedSeen[String(topicId)] = state;
+      }
+      fs.writeFileSync(this.stateFilePath, JSON.stringify({ attempts: data, wedgedSeen }, null, 2));
     } catch { // @silent-fallback-ok — state persistence is best-effort; in-memory state still works
       // Can't save — in-memory state still works for this process lifetime
     }
+  }
+
+  private now(): number {
+    return this.deps.now?.() ?? Date.now();
   }
 
   /**

@@ -8,7 +8,7 @@
  * - Runtime role transitions: promote/demote affect server behavior
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -17,6 +17,7 @@ import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { HeartbeatManager } from '../../src/core/HeartbeatManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-coord-int-'));
@@ -81,6 +82,27 @@ describe('Coordinator + Server Integration', () => {
   // ── Awake machine lifecycle ──────────────────────────────────
 
   describe('awake machine lifecycle', () => {
+    it('boot state cannot produce a recovered-stall event before the first tick sample', () => {
+      setupIdentity(tmpDir, 'awake');
+      const coord = new MultiMachineCoordinator(new StateManager(tmpDir), {
+        stateDir: tmpDir,
+        multiMachine: { leaseSelfHeal: { tickWatchdog: { staleFactorMissedTicks: 2 } } } as never,
+      });
+      coord.start();
+      const c = coord as any;
+      c.leaseCoordinator = {}; // watchdog is meaningful only once lease mode is attached
+      c.lastTickRunMonoMs = 0;
+      const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+      try {
+        c.runTickWatchdog();
+        expect(c.watchdogReArmTimes).toHaveLength(0);
+        expect(report.mock.calls.some(([event]) => event.feature === 'MultiMachine.leaseTick')).toBe(false);
+      } finally {
+        report.mockRestore();
+        coord.stop();
+      }
+    });
+
     it('state stays writable and processing is active', () => {
       setupIdentity(tmpDir, 'awake');
       const state = new StateManager(tmpDir);

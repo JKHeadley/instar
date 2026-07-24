@@ -524,6 +524,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /internal/stop-gate/evaluate`
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
+- `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
 - `POST /internal/telegram-callback`
 - `POST /internal/telegram-forward`
 

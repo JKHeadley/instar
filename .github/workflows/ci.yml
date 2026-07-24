@@ -66,6 +66,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -76,6 +78,8 @@ jobs:
       # up as gaps close) + a hard ZERO ceiling on dangling refs (a standard must
       # never cite a guard that doesn't exist — a broken guarantee).
       - run: node scripts/standards-coverage.mjs --check
+      - name: Migration consumer lockstep
+        run: node scripts/lint-migration-consumer-completeness.js --diff-base "${{ github.event.pull_request.base.sha || github.event.before }}"
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

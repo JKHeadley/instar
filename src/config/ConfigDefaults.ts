@@ -116,6 +116,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // so resolveDevAgentGate decides — LIVE on a developmentAgent, DARK on the
     // fleet. NEVER hardcode `enabled: false` here (it would dark dev agents too).
     bootHealthBeacon: {},
+    // Raw, floor-independent blocker lifecycle timing. DEV-GATED: enabled is
+    // deliberately omitted (live on developmentAgent, dark on fleet).
+    blockerLifecycleLedger: {
+      dryRun: true,
+    },
     // Default-on so SessionWatchdog runs everywhere — required for the
     // compaction-idle polling fallback to actually fire.
     watchdog: {
@@ -186,6 +191,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       allowFreshFallback: false,
       notifyUser: true,
     },
+    // SingleMachineFailoverGapDetector (increment 2) — pure SIGNAL-only guard that
+    // surfaces the "no failover target for active autonomous work" gap. DEV-GATED:
+    // `enabled` is deliberately OMITTED so resolveDevAgentGate decides — LIVE on a
+    // developmentAgent, DARK on the fleet. NEVER hardcode `enabled: false` here (it
+    // would dark dev agents too — the #1001 mechanism). Ships dryRun-FIRST even on
+    // dev (computes + counts would-raise, raises NOTHING until a deliberate
+    // dryRun:false flip). docs — GET /pool/failover-gap.
+    singleMachineFailoverGap: {
+      dryRun: true,
+    },
+    // MissingLoginSessionDetector (increment 2) — pure SIGNAL-only guard that
+    // surfaces the "a live session is running on a missing-login account" gap.
+    // DEV-GATED: `enabled` is deliberately OMITTED so resolveDevAgentGate decides —
+    // LIVE on a developmentAgent, DARK on the fleet. NEVER hardcode `enabled: false`
+    // here (it would dark dev agents too — the #1001 mechanism). Ships dryRun-FIRST
+    // even on dev (computes + counts would-raise, raises NOTHING until a deliberate
+    // dryRun:false flip). docs — GET /pool/missing-login.
+    missingLoginSession: {
+      dryRun: true,
+    },
     // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
     // for an autonomous run gone silent-to-user while its output is still moving.
     // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
@@ -198,6 +223,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // docs/specs/autonomous-progress-heartbeat.md.
     autonomousHeartbeat: {
       dryRun: true,
+    },
+    // Autonomous Throughput Floor (ACT-847): bounded PULL/AUDIT-only reads.
+    throughputFloor: {
+      flatlineMs: 75 * 60_000,
+      tickMs: 15 * 60_000,
     },
     // U4.5 — Rope-Health Alerts (docs/specs/u4-5-rope-health-alerts.md §5).
     // DEV-GATED: `enabled` is DELIBERATELY OMITTED (not hardcoded false) so
@@ -587,6 +617,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogTtlHours: 24,
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
+    },
+    // Both omit `enabled`: resolveDevAgentGate makes them live on development
+    // agents and dark on the fleet. v1 remains observe-only via dryRun:true.
+    correctionClassReview: {
+      dryRun: true,
+      maxReviewsPerTick: 5,
+      maxAttempts: 3,
+      maxOpenArtifacts: 50,
+      agingDays: 7,
+    },
+    completionClaimVerification: {
+      dryRun: true,
+      generalObservation: true,
+      maxAuditBytes: 50 * 1024 * 1024,
+      maxCorpusBytes: 500 * 1024 * 1024,
+      maxQueued: 128,
+      maxQueuedPerTopic: 8,
+      maxConcurrent: 4,
+      maxConcurrentPerTopic: 1,
+      queueTtlMs: 120_000,
+      redactIdentifiers: false,
     },
     // Bias-to-Action standing-authorization signal (BIAS-TO-ACTION-SPEC, D8).
     // Dev-gated DARK: `enabled` is intentionally OMITTED so the development-agent
@@ -1003,6 +1054,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Mutual SSH-subsystem bootstrap + continuous directional proof.
+    // `enabled` is deliberately OMITTED: DEV_GATED_FEATURES makes this live on
+    // the development agent and dark on fleet. dryRun FIRST creates keys and
+    // computes admissions/probes but does not accept peer sessions.
+    mutualSsh: {
+      dryRun: true,
+      requiredForEmployeeRole: false,
+      freshnessMs: 300_000,
+      cadenceMs: 60_000,
+      probeDeadlineMs: 8_000,
+      concurrency: 4,
+    },
+    // Reliable peer-machine execution. `enabled` is deliberately OMITTED so
+    // resolveDevAgentGate keeps fleet dark; dry-run records the intended
+    // account-home authorized_keys change without granting SSH access.
+    peerExecution: {
+      dryRun: true,
+      requiredForReadiness: true,
+      port: 22,
+    },
     // Seamless LLM Orchestrator (docs/specs/llm-seamlessness-orchestrator.md).
     // A lease-gated tier-1 LLM loop for ANTICIPATORY working-set preload — PROPOSE-
     // ONLY / SIGNAL-ONLY (it never moves a conversation; placement stays with the
@@ -1315,6 +1386,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: false,
       stage: 'dark',
       dryRun: true,
+      // Promotion activation is independently reversible from the already-live
+      // demotion reconciler. `off` means no driver construction, no timer, and
+      // POST /session-pool/promote returns 503. The ceiling is a second,
+      // fail-closed authority bound: selecting a model alone cannot promote.
+      promotionModel: 'off',
+      promotionCeiling: 'dark',
+      promotionTickMs: 60000,
       clockSkewToleranceMs: 300000,
       maxExpectedNtpDriftMs: 250,
       machineRecordEvictionMs: 86400000,
@@ -1459,6 +1537,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // duplicate ESCALATES rather than auto-closes (the safe degradation).
       commitmentCustodyTransfer: {
         dryRun: true,
+      },
+      // SessionPoolFailoverRunner boot-wiring (§Rollout, Track H — the in-agent
+      // PRODUCER of a real failover-E2E green). `enabled` DELIBERATELY OMITTED
+      // (never hardcoded false) so resolveDevAgentGate decides — dev-live,
+      // DARK on the fleet; registered in DEV_GATED_FEATURES. dryRun:true is the
+      // canary: the runner runs the real two-node failover E2E subprocess and
+      // records its verdict, but a recorded green PROMOTES the stage (real
+      // authority), so while dryRun holds the verdict lands in a SIDE store the
+      // promotion path never reads — nothing promotes until a deliberate
+      // dryRun:false. tickIntervalMs paces the slow cadence (the E2E is a heavy
+      // two-server subprocess — floored at 60000 so it can never hot-loop).
+      failoverRunner: {
+        dryRun: true,
+        tickIntervalMs: 3600000,
+        checkTimeoutMs: 180000,
       },
     },
     // Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7). DARK-SHIP: `enabled` is
@@ -1621,6 +1714,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // authenticated setOperator binds the principal; Know-Your-Principal).
       topicOperator: {
         dryRun: false,
+      },
+      // Correction class-review lifecycle records are coherence-critical but
+      // ship dry-run first. `enabled` is intentionally omitted for the dev gate.
+      classReview: {
+        dryRun: true,
       },
       // Secure A2A Verified Pairing §3.8 (FD11) — `threadline-pairing-record`, the EIGHTH
       // replicated-store consumer. Replicates ONLY the verified-IDENTITY RESULT of a pairing
@@ -1946,6 +2044,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
   // forbids for a dev-gated block).
   subscriptionPool: {
+    proactiveSwap: {
+      // Login-loss swap trigger — DEV-GATED: enabled deliberately omitted.
+      // A dev agent evaluates the exact intent but performs no session kill
+      // until a deliberate dryRun:false promotion. Fleet remains dark.
+      loginLoss: {
+        dryRun: true,
+      },
+    },
     credentialRepointing: {
       dryRun: true,
       manualLeversEnabled: true,
@@ -2004,6 +2110,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // dark-gate lint forbids for a dev-gated block).
   feedbackFactory: {
     processing: {},
+    drain: {
+      maxReadyScansPerTick: 250,
+      maxClaimsPerTick: 10,
+      maxWallClockMs: 90000,
+    },
+    consumer: {
+      dryRun: true,
+      maxClaimsPerTick: 10,
+    },
   },
 };
 

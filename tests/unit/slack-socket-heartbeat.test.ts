@@ -13,9 +13,10 @@
  * agent that needs to respond within minutes.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { SocketModeClient, type SocketModeHandlers } from '../../src/messaging/slack/SocketModeClient.js';
 
 const socketClientPath = path.resolve(__dirname, '../../src/messaging/slack/SocketModeClient.ts');
 const socketClientSource = readFileSync(socketClientPath, 'utf-8');
@@ -39,27 +40,46 @@ describe('Heartbeat timing constants', () => {
 });
 
 describe('Active liveness probe', () => {
-  it('sends a ping probe through the _safeSend funnel when no events for DEAD_SILENCE_MS', () => {
-    // After DEAD_SILENCE_MS of silence, sends a JSON ping via _safeSend (net #1)
-    expect(socketClientSource).toMatch(
-      /sinceLastEvent > DEAD_SILENCE_MS[\s\S]*?_safeSend\('\{"type":"ping"\}', 'liveness-probe', true\)/,
-    );
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it('resets silence timer after a successful probe send (TCP alive)', () => {
-    // _safeSend returning true means the send succeeded → reset lastEventAt so we
-    // don't immediately re-probe on the next tick.
-    expect(socketClientSource).toMatch(
-      /_safeSend\('\{"type":"ping"\}', 'liveness-probe', true\)\) \{[\s\S]*?lastEventAt = Date\.now\(\)/,
-    );
+  it('rotates a connection after DEAD_SILENCE_MS instead of sending an ignored JSON ping', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-23T20:00:00.000Z'));
+    const handlers: SocketModeHandlers = {
+      onEvent: vi.fn(async () => {}),
+      onInteraction: vi.fn(async () => {}),
+      onConnected: vi.fn(),
+      onDisconnected: vi.fn(),
+      onError: vi.fn(),
+    };
+    const client = new SocketModeClient({} as never, handlers);
+    const internal = client as unknown as {
+      started: boolean;
+      ws: { readyState: number };
+      lastEventAt: number;
+      _startHeartbeat(): void;
+      _clearHeartbeat(): void;
+      _forceReconnect(reason?: string): void;
+    };
+    internal.started = true;
+    internal.ws = { readyState: WebSocket.OPEN };
+    internal.lastEventAt = Date.now() - 300_001;
+    const reconnect = vi.spyOn(internal, '_forceReconnect').mockImplementation(() => {});
+
+    internal._startHeartbeat();
+    vi.advanceTimersByTime(30_000);
+
+    expect(reconnect).toHaveBeenCalledOnce();
+    expect(reconnect).toHaveBeenCalledWith('dead silence');
+    expect(socketClientSource).not.toContain('{"type":"ping"}');
+    internal._clearHeartbeat();
   });
 
-  it('forces reconnect via _safeSend reconnectOnFailure when the probe send throws', () => {
-    // The probe passes reconnectOnFailure=true; the funnel force-reconnects on a
-    // caught throw (socket dead at the OS level), guarded by the identity check.
-    expect(socketClientSource).toMatch(/_safeSend\('\{"type":"ping"\}', 'liveness-probe', true\)/);
+  it('records a disconnect before tearing down a forced connection', () => {
     expect(socketClientSource).toMatch(
-      /reconnectOnFailure && this\.started && !this\.reconnecting && this\.ws === sock\) \{[\s\S]*?this\._forceReconnect\(\)/,
+      /_forceReconnect\(reason = 'forced reconnect'\)[\s\S]*?handlers\.onDisconnected\(reason\)[\s\S]*?_teardownSocket/,
     );
   });
 });
@@ -72,7 +92,7 @@ describe('WebSocket readyState check', () => {
 
 describe('_forceReconnect method', () => {
   it('exists as a dedicated method', () => {
-    expect(socketClientSource).toContain('private _forceReconnect(): void');
+    expect(socketClientSource).toContain("private _forceReconnect(reason = 'forced reconnect'): void");
   });
 
   it('clears the heartbeat timer', () => {

@@ -37,6 +37,7 @@ import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
+import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -117,7 +118,8 @@ import { classifyMachineEmptyState } from './poolEmptyState.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
 import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
-import { PROVENANCE_COVERAGE } from '../data/provenanceCoverage.js';
+import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
+import { DP_COMPLETION_EVALUATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -126,6 +128,9 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
+import { validateTurnEvidence } from '../monitoring/TurnEvidence.js';
+import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
+import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/ClaimClauseArbiter.js';
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
@@ -299,7 +304,7 @@ import {
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
-import { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { CommitmentPersistenceError, CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
@@ -328,6 +333,7 @@ import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
 import { THREAD_ID_RE } from '../threadline/ThreadLog.js';
 import { readThreadHistoryUnion, type CanonicalReadDeps, type AggregateMessage } from '../threadline/canonicalHistoryRead.js';
+import { isAuthenticatedThreadlineInbound } from '../threadline/ThreadlineReplyValidation.js';
 import { computeSymmetryState, localThreadSync, honorPeerThreadSync, type SymmetryState } from '../threadline/threadSymmetry.js';
 import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
 import { evaluateOutboundCredentialShare } from '../threadline/CredentialShareGate.js';
@@ -1039,6 +1045,7 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  blockerLifecycleService?: import('../monitoring/BlockerLifecycleService.js').BlockerLifecycleService | null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8/FD10)
    *  — backs GET /benchmark-divergence (+pool), POST /benchmark-divergence/analyze,
    *  GET /benchmark-divergence/rollup-aggregates. Null when the ledger failed;
@@ -1133,6 +1140,22 @@ export interface RouteContext {
    *  GET /feedback-factory/stats + POST /feedback-factory/process. Null when
    *  dev-gate dark (feedbackFactory.processing) → both routes 503. */
   feedbackProcessing?: import('../feedback-factory/processing/FeedbackProcessingService.js').FeedbackProcessingService | null;
+  /** Operated feedback drain, including its operator-rooted readiness authority
+   *  registry and consumer promotion record. */
+  feedbackDrain?: {
+    service: import('../feedback-factory/drain/FeedbackDrainService.js').FeedbackDrainService;
+    store: import('../feedback-factory/drain/FeedbackDrainStore.js').FeedbackDrainStore;
+    promotion: import('../feedback-factory/drain/FeedbackConsumerPromotionStore.js').FeedbackConsumerPromotionStore;
+    tickProxy: import('../feedback-factory/drain/FeedbackDrainTickProxy.js').FeedbackDrainTickProxy;
+    checkpointBackup: (trigger: 'promotion' | 'failover') => void;
+    finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+      oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+      ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
+      reconciliation: import('../feedback-factory/drain/FeedbackDrainStore.js').InitiativeLinkReconciliationResult;
+    };
+    isRestorePending: () => boolean;
+  } | null;
+  feedbackDrainPosture?: { state: 'dark' | 'unavailable' | 'live'; reason: 'intentionally-fleet-dark' | 'misclassified-development-install' | 'enabled-missing-canonical-data-directory' | 'enabled-missing-operated-host-owner' | 'initialization-failure' | 'live-healthy' };
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -1157,6 +1180,9 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  classReviewStore?: import('../monitoring/ClassReviewStore.js').ClassReviewStore | null;
+  correctionClassReview?: import('../monitoring/CorrectionClassReview.js').CorrectionClassReview | null;
+  completionClaimVerifier?: import('../monitoring/CompletionClaimVerifier.js').CompletionClaimVerifier | null;
   /** BlockerLedger — the resolution-workflow + memory layer completing Principle 1.
    *  Null/absent when monitoring.blockerLedger.enabled is false (default, ships dark)
    *  → /blockers/* 503s. Powers GET /blockers, GET /blockers/:id, POST /blockers,
@@ -1215,6 +1241,8 @@ export interface RouteContext {
   autonomousLivenessReconciler?:
     | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
     | null;
+  /** AutonomousThroughputFloor status. Null while fleet-dark. */
+  autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
   enforcedTerminationStatus?: (() => unknown) | null;
@@ -1258,11 +1286,20 @@ export interface RouteContext {
   /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
    *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
   machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
+  /** Mutual SSH-subsystem pool health (scrubbed; no key bodies or raw addresses). */
+  mutualSshHealth?: (() => unknown) | null;
   /** Durable Inbound Message Queue engine getter — late-bound (the engine is
    *  constructed in the mesh block after the server). Null/absent or a null
    *  return = the queue is dark/gated; GET /pool/queue answers 503. */
   getInboundQueue?: (() => import('../core/QueueDrainLoop.js').QueueDrainLoop | null) | null;
   getMachineCoherence?: (() => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null) | null;
+  getSingleMachineFailoverGap?: (() => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null) | null;
+  getMissingLoginSession?: (() => import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null) | null;
+  /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — GET
+   *  /session-pool/failover-runner. Null/absent (dev-gated dark) → the route 503s. */
+  getSessionPoolFailoverRunner?: (() => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null) | null;
+  /** Promotion activation; absent/off makes POST /session-pool/promote return 503. */
+  sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -1764,21 +1801,85 @@ function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<st
 }
 
 /**
- * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue
- * — the agent-side half of the §5.6 pending-ref-dead check. null when the queue
- * file is absent/unreadable (⇒ the check is skipped honestly rather than
- * false-flagging every pending ref on an agent that has no queue yet).
+ * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue,
+ * plus the queue's id HIGH-WATER MARK — the agent-side half of the §5.6
+ * pending-ref-dead check. null when the queue file is absent/unreadable (⇒ the
+ * check is skipped honestly rather than false-flagging every pending ref on an
+ * agent that has no queue yet).
+ *
+ * WHY the high-water mark (2026-07-23 false-alarm fix): PROVENANCE_COVERAGE
+ * declares its `pending:ACT-NNNN` tracker ids as SHIPPED SOURCE CONSTANTS —
+ * identical on every install — while the evolution action queue is MACHINE-LOCAL
+ * and unreplicated (the evolutionActions stateSync send side is wired but the
+ * journal-apply side is an unbuilt later rollout stage, so two machines' queues
+ * genuinely diverge and never converge). Measured 2026-07-23: `ACT-1193` is
+ * `pending` on one machine (max id ACT-1211) and simply ABSENT on its peer (max
+ * id ACT-1119) — which made that peer report all 49 pending coverage entries as
+ * dangling trackers. Nothing had been deleted; the peer had never minted an id
+ * that high.
+ *
+ * An id ABOVE the local high-water mark is therefore proof the action was minted
+ * on another machine, NOT proof it was deleted here — a categorically different
+ * (and unactionable-locally) state that must not be reported as a dead tracker.
  */
-function readLiveEvolutionActs(stateDir: string): Set<string> | null {
+export interface LiveEvolutionActs {
+  /** Registered AND non-terminal ids on THIS machine. */
+  readonly alive: ReadonlySet<string>;
+  /** Largest numeric ACT id this machine's queue has ever minted (0 = empty queue). */
+  readonly highWater: number;
+}
+
+/** Numeric suffix of an `ACT-NNNN` id; null when it does not parse. */
+export function parseActOrdinal(id: string): number | null {
+  const m = /^ACT-(\d+)$/.exec(id.trim());
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Adjudicate ONE pending coverage tracker against this machine's action queue
+ * (§5.6). Pure + exported so the decision boundary is unit-testable without the
+ * Express surface.
+ *
+ * - `alive`        — registered and non-terminal here; nothing to report.
+ * - `unverifiable` — above this machine's id high-water mark ⇒ minted on a peer
+ *                    whose queue does not replicate here. NOT a deletion.
+ * - `dead`         — within the range this machine has minted, yet absent or
+ *                    terminal ⇒ the tracker genuinely went away. This is the
+ *                    signal the check exists to give, and it is preserved.
+ *
+ * An id that does not parse keeps the strict `dead` reading so a malformed
+ * tracker still surfaces rather than hiding in the unverifiable bucket.
+ */
+export type PendingTrackerVerdict = 'alive' | 'dead' | 'unverifiable';
+
+export function adjudicatePendingTracker(
+  act: string,
+  liveActs: LiveEvolutionActs,
+): PendingTrackerVerdict {
+  if (liveActs.alive.has(act)) return 'alive';
+  const ord = parseActOrdinal(act);
+  if (ord !== null && ord > liveActs.highWater) return 'unverifiable';
+  return 'dead';
+}
+
+function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
   try {
     const p = path.join(stateDir, 'state', 'evolution', 'action-queue.json');
     if (!fs.existsSync(p)) return null;
     const aq = JSON.parse(fs.readFileSync(p, 'utf-8')) as { actions?: Array<{ id?: string; status?: string }> };
     const alive = new Set<string>();
+    let highWater = 0;
     for (const a of aq.actions ?? []) {
-      if (a.id && (a.status === 'pending' || a.status === 'in_progress')) alive.add(a.id);
+      if (!a.id) continue;
+      // High-water spans EVERY id the queue holds, terminal ones included — a
+      // completed/cancelled action still proves this machine minted that far.
+      const ord = parseActOrdinal(a.id);
+      if (ord !== null && ord > highWater) highWater = ord;
+      if (a.status === 'pending' || a.status === 'in_progress') alive.add(a.id);
     }
-    return alive;
+    return { alive, highWater };
   } catch {
     // @silent-fallback-ok: an unreadable queue ⇒ skip pending-ref-dead (never a
     // false "dead" flag); observe-only surface, never a throw.
@@ -2482,7 +2583,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       await ctx.telegram.sendToTopic(updatesTopicId, text);
       return { ok: true };
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — structured failure is returned to the caller
       return { ok: false, reason: err instanceof Error ? err.message : 'send-error' };
     }
   }
@@ -3324,7 +3425,18 @@ export function createRoutes(ctx: RouteContext): Router {
         });
       }
     } catch { /* Layer 2 is a belt — never let it break the hot path */ }
-    res.json(state);
+    res.json({
+      ...state,
+      breaker: ctx.unjustifiedStopGate?.breakerState() ?? null,
+    });
+  });
+
+  router.post('/internal/stop-gate/reset-breaker', (_req, res) => {
+    if (!ctx.unjustifiedStopGate) {
+      res.status(503).json({ error: 'Stop-gate authority is not initialized' });
+      return;
+    }
+    res.json({ reset: true, breaker: ctx.unjustifiedStopGate.resetBreaker() });
   });
 
   router.get('/internal/stop-gate/kill-switch', (_req, res) => {
@@ -5228,6 +5340,96 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(409).json({ ok: false, error: 'runId mismatch', currentRunId: rec.runId });
       return;
     }
+    const rawRealcheck = body.realcheck;
+    const rawRealcheckRow = rawRealcheck && typeof rawRealcheck === 'object'
+      ? rawRealcheck as Record<string, unknown>
+      : null;
+    const realcheckPayloadValid = rawRealcheckRow?.configured === false || (
+      rawRealcheckRow?.configured === true && (rawRealcheckRow.outcome === 'pass' || rawRealcheckRow.outcome === 'fail')
+    );
+    const realcheck = rawRealcheckRow?.configured === true && realcheckPayloadValid
+      ? {
+          configured: true as const,
+          outcome: rawRealcheckRow.outcome as 'pass' | 'fail',
+          ...(typeof rawRealcheckRow.exitCode === 'number' && Number.isFinite(rawRealcheckRow.exitCode)
+            ? { exitCode: Math.max(-1, Math.min(255, Math.trunc(rawRealcheckRow.exitCode))) }
+            : {}),
+        }
+      : { configured: false as const };
+    const terminal = body.terminal !== false;
+    const correlationId = rec.lastCompletionCorrelationId;
+    const priorObservation = correlationId ? rec.realcheckOutcomeByCorrelation?.[correlationId] : undefined;
+    let realcheckAnnotation = 'skipped-unconfigured';
+    if (body.met !== true) {
+      realcheckAnnotation = 'skipped-not-met';
+    } else if (realcheck.configured && priorObservation && priorObservation.outcome !== realcheck.outcome) {
+      realcheckAnnotation = 'conflicting-observation';
+    } else if (realcheck.configured && priorObservation?.applied) {
+      realcheckAnnotation = 'duplicate-observation';
+    } else if (rec.status !== 'active' && !(realcheck.configured && priorObservation && !priorObservation.applied)) {
+      realcheckAnnotation = 'skipped-terminal-record';
+    } else {
+      const observedAtMs = Date.parse(rec.lastCompletionCorrelationAt ?? '');
+      const stableObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.parse(rec.registeredAt);
+      let reservationReady = !realcheck.configured || !correlationId || priorObservation !== undefined;
+      if (!reservationReady && realcheck.configured && correlationId) {
+        try {
+          const reserved = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+            current.realcheckOutcomeByCorrelation ??= {};
+            current.realcheckOutcomeByCorrelation[correlationId] ??= {
+              outcome: realcheck.outcome,
+              observedAtMs: stableObservedAtMs,
+              applied: false,
+            };
+          });
+          if (!reserved) throw new Error('run-record-missing');
+          reservationReady = true;
+        } catch {
+          realcheckAnnotation = 'observation-persist-error';
+        }
+      }
+      if (reservationReady) {
+        realcheckAnnotation = annotateCompletionRealcheck(
+          rec,
+          { met: body.met === true, realcheck },
+          (annotation) => {
+            const applied = annotateDecisionOutcome({
+              correlationId: annotation.correlationId,
+              ruleId: annotation.ruleId,
+              gradedBy: { component: annotation.gradedBy.component },
+              grade: annotation.grade,
+              decisionPoint: DP_COMPLETION_EVALUATE,
+              evidence: annotation.evidence,
+            });
+            if (!applied.applied) throw new Error(applied.rejected ?? (applied.disabled ? 'disabled' : 'not-applied'));
+          },
+          stableObservedAtMs,
+        );
+        if ((realcheckAnnotation === 'annotated-right' || realcheckAnnotation === 'annotated-wrong') && correlationId && realcheck.configured) {
+          try {
+            const marked = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+              const receipt = current.realcheckOutcomeByCorrelation?.[correlationId];
+              if (receipt?.outcome === realcheck.outcome) receipt.applied = true;
+            });
+            if (!marked) throw new Error('run-record-missing');
+          } catch {
+            // The pre-annotation reservation still blocks opposite replay. A
+            // same-outcome replay safely retries the idempotent annotation.
+            realcheckAnnotation = 'annotation-applied-receipt-pending';
+          }
+        }
+      }
+    }
+    if (!terminal) {
+      res.json({
+        ok: true,
+        runId: rec.runId,
+        terminal: false,
+        realcheckAnnotation,
+        ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+      });
+      return;
+    }
     let unbuiltEnumerated = 0;
     if (scopeAccretionEffective(rec)) {
       try {
@@ -5243,7 +5445,14 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
     autonomousRunStore.markTerminal(rec.topicId, rec.runId, 'ended', reason);
-    res.json({ ok: true, runId: rec.runId, unbuiltEnumerated });
+    res.json({
+      ok: true,
+      runId: rec.runId,
+      terminal: true,
+      unbuiltEnumerated,
+      realcheckAnnotation,
+      ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+    });
   });
 
   // ── POST /autonomous/:topic/ratify-deferral (R23 path 1 — PIN, phone-first) ──
@@ -5420,6 +5629,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousLivenessReconciler.status());
+  });
+  router.get('/autonomous/throughput-floor', (_req, res) => {
+    if (!ctx.autonomousThroughputFloor) {
+      res.status(503).json({ error: 'autonomous-throughput-floor not available on this agent' });
+      return;
+    }
+    res.json(ctx.autonomousThroughputFloor.status());
   });
 
   // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──
@@ -8850,7 +9066,9 @@ export function createRoutes(ctx: RouteContext): Router {
           ),
         }
       : summary.totals;
-    res.json({ ...summary, totals, features });
+    const classReview = ctx.classReviewStore?.health() ?? null;
+    const claimVerificationServerAdmittedOnly = ctx.completionClaimVerifier?.stats?.() ?? null;
+    res.json({ ...summary, totals, features, classReview, claimVerificationServerAdmittedOnly });
   });
 
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
@@ -10459,6 +10677,219 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       metrics: result.metrics,
       stats,
     });
+  });
+
+  router.get('/feedback-factory/drain/status', (_req, res) => {
+    if (!ctx.feedbackDrain) {
+      res.status(503).json({ error: 'feedback-factory drain unavailable', posture: ctx.feedbackDrainPosture ?? { state: 'unavailable', reason: 'initialization-failure' } });
+      return;
+    }
+    const authority = ctx.feedbackDrain.store.getAuthority('feedback-readiness-default');
+    res.json({
+      posture: ctx.feedbackDrainPosture ?? { state: 'live', reason: 'live-healthy' },
+      restorePending: ctx.feedbackDrain.isRestorePending(),
+      ...ctx.feedbackDrain.service.stats(),
+      authority: authority ? {
+        authorityId: authority.authorityId,
+        agentId: authority.agentId,
+        ownerEpoch: authority.ownerEpoch,
+        engineClass: 'registered-frontier-model',
+        generation: authority.generation,
+        revoked: authority.revoked,
+        mode: ctx.feedbackDrain.store.authorityPosture(authority.authorityId, authority.generation).mode,
+      } : null,
+      consumerPromotion: (() => {
+        const promotion = ctx.feedbackDrain!.promotion.read();
+        return promotion ? { live: ctx.feedbackDrain!.promotion.isLive(), approvedBatchBound: promotion.approvedBatchBound, approvedAt: promotion.approvedAt, revoked: promotion.revokedAt !== null } : null;
+      })(),
+    });
+  });
+
+  const feedbackRestorePendingGate = (res: import('express').Response): boolean => {
+    if (!ctx.feedbackDrain?.isRestorePending()) return false;
+    res.status(409).json({ error: 'feedback drain restore finalization is pending' });
+    return true;
+  };
+
+  router.post('/feedback-factory/drain/tick', (req, res) => {
+    void (async () => {
+      if (!ctx.feedbackDrain) {
+        res.status(503).json({ error: 'feedback-factory drain unavailable (dark or initialization failed)' });
+        return;
+      }
+      if (feedbackRestorePendingGate(res)) return;
+      if (req.headers['x-instar-request'] !== '1') {
+        res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+        return;
+      }
+      const proxyEnvelope = req.body?.proxyEnvelope as import('../feedback-factory/drain/FeedbackDrainTickProxy.js').DrainTickProxyEnvelope | undefined;
+      if (proxyEnvelope) {
+        const result = await ctx.feedbackDrain.tickProxy.receive(proxyEnvelope);
+        res.status(result.status).json(result.body);
+        return;
+      }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      const result = await ctx.feedbackDrain.tickProxy.request({ agentId, nonce });
+      res.status(result.status).json(result.body);
+    })();
+  });
+
+  router.post('/feedback-factory/drain/runs/:runId/cancel', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    try {
+      ctx.feedbackDrain.service.requestRunCancellation(String(req.params.runId));
+      res.json({ runId: String(req.params.runId), cancellationRequested: true });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'run cancellation failed' });
+    }
+  });
+
+  router.get('/feedback-factory/backlog/analysis', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    // This authenticated analysis admits a durable replay nonce, so it is a
+    // mutation for restore-pending purposes even though its response is read-only.
+    if (feedbackRestorePendingGate(res)) return;
+    const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+    const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+    if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+      res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+    }
+    if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    const limit = Number(req.query.limit ?? 50);
+    res.json(ctx.feedbackDrain.service.analyzeHistoricalBacklog(Number.isFinite(limit) ? limit : 50));
+  });
+
+  const feedbackMutationIntentValid = (req: import('express').Request, res: import('express').Response): boolean => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return false;
+    }
+    const origin = req.get('origin');
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.host !== req.get('host')) {
+          res.status(403).json({ error: 'same-origin mutation required' }); return false;
+        }
+      } catch { res.status(403).json({ error: 'same-origin mutation required' }); return false; }
+    }
+    return checkMandatePin(req, res);
+  };
+
+  router.post('/feedback-factory/drain/failover/finalize', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const result = ctx.feedbackDrain.finalizeFailoverRestore({
+        restoredOwnerAuthorityEpoch: Number(req.body?.restoredOwnerAuthorityEpoch),
+        operatorDecisionRef: String(req.body?.operatorDecisionRef ?? ''),
+        snapshotId: String(req.body?.snapshotId ?? ''), manifestChecksum: String(req.body?.manifestChecksum ?? ''),
+        oldOwnerQuiesced: req.body?.oldOwnerQuiesced === true,
+        splitBrainRecoveryPacket: req.body?.splitBrainRecoveryPacket,
+      });
+      res.json({ finalized: true, ...result });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'failover restore finalization failed' });
+    }
+  });
+
+  // Operator-rooted authority mutation. Runtime agents/models cannot call this
+  // with Bearer alone, so “registered” is a real security boundary.
+  router.post('/feedback-factory/readiness-authorities', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const body = req.body ?? {};
+      const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
+      if (!['create', 'replace', 'revoke', 'restore'].includes(action)) throw new Error('invalid authority action');
+      const existing = ctx.feedbackDrain.store.getAuthority(String(body.authorityId ?? 'feedback-readiness-default'));
+      const source = (action === 'revoke' || action === 'restore') && existing ? existing : body;
+      const record = ctx.feedbackDrain.store.mutateAuthority({
+        action,
+        operatorDecisionRef: String(body.operatorDecisionRef ?? ''),
+        authorityId: String(source.authorityId ?? 'feedback-readiness-default'),
+        agentId: String(source.agentId ?? ''), ownerMachineId: String(source.ownerMachineId ?? ''),
+        ownerEpoch: Number(source.ownerEpoch), provider: String(source.provider ?? ''),
+        modelFamily: String(source.modelFamily ?? ''), promptVersion: String(source.promptVersion ?? ''),
+        schemaVersion: String(source.schemaVersion ?? ''), decisionPointId: String(source.decisionPointId ?? ''),
+        maxBatch: Number(source.maxBatch), maxTokens: Number(source.maxTokens), maxDailySpendUsd: Number(source.maxDailySpendUsd),
+      });
+      res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
+    }
+  });
+
+  router.post('/feedback-factory/readiness/hold', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      const reason = String(req.body?.reason ?? 'human-break-glass');
+      if (!clusterId || clusterId.length > 200) throw new Error('bounded clusterId required');
+      const row = ctx.feedbackDrain.store.holdReadiness(clusterId, reason);
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'hold failed' }); }
+  });
+
+  router.post('/feedback-factory/readiness/release', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    const humanPath = typeof req.body?.pin === 'string';
+    if (humanPath) {
+      if (!feedbackMutationIntentValid(req, res)) return;
+    } else {
+      if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+        res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+      }
+      if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    }
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      if (req.body?.predicate !== 'source-projection-authority') throw new Error('named deterministic revalidation predicate required');
+      const sourcePresent = ctx.feedbackDrain.service.sourceClusterPresent(clusterId) &&
+        ctx.feedbackDrain.store.integrityCheck() && ctx.feedbackDrain.store.verifyAuthorityAudit() &&
+        Boolean(ctx.feedbackDrain.store.getAuthority('feedback-readiness-default'));
+      const row = ctx.feedbackDrain.store.releaseHeld(clusterId, { revalidated: sourcePresent, reason: 'source-projection-authority-revalidated' });
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'release failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/promote', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.promote({
+        approvedBatchBound: Number(req.body?.approvedBatchBound),
+        evidenceHash: String(req.body?.evidenceHash ?? ''),
+        operatorDecisionId: String(req.body?.operatorDecisionId ?? ''),
+      });
+      try { ctx.feedbackDrain.checkpointBackup('promotion'); }
+      catch (backupError) {
+        ctx.feedbackDrain.promotion.revoke();
+        throw new Error(`promotion checkpoint failed; consumer returned to simulation: ${backupError instanceof Error ? backupError.message : 'backup unavailable'}`);
+      }
+      res.json({ promoted: true, approvedBatchBound: record.approvedBatchBound, approvedAt: record.approvedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'promotion failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/revoke', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.revoke();
+      ctx.feedbackDrain.checkpointBackup('promotion');
+      res.json({ revoked: true, revokedAt: record.revokedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
   });
 
   // The readiness signal. Read-only.
@@ -15330,6 +15761,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/pool', (_req, res) => {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
       router: sync
@@ -15343,7 +15775,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         : null,
       machines,
+      sshEnrollment,
     });
+  });
+
+  router.get('/machines/ssh-health', (_req, res) => {
+    if (!ctx.mutualSshHealth) {
+      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent' });
+      return;
+    }
+    res.json(ctx.mutualSshHealth());
   });
 
   // GET /pool/reconciler — Fix #3 observability (Observable Intelligence). The WS1.3
@@ -15596,6 +16037,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let pending = 0;
     let exempt = 0;
     const pendingRefDead: string[] = [];
+    // Trackers this machine cannot adjudicate: minted above its own id high-water
+    // mark, i.e. created on a peer whose action queue does not replicate here.
+    // NOT dead — unverifiable locally (see readLiveEvolutionActs).
+    const pendingRefUnverifiable: string[] = [];
     const liveActs = readLiveEvolutionActs(ctx.config.stateDir);
     for (const entry of PROVENANCE_COVERAGE) {
       if (entry.status === 'wired') wired++;
@@ -15603,7 +16048,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         pending++;
         if (liveActs !== null) {
           const act = entry.status.slice('pending:'.length);
-          if (!liveActs.has(act)) pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+          const verdict = adjudicatePendingTracker(act, liveActs);
+          if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+          else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
         }
       } else if (entry.status.startsWith('exempt:')) exempt++;
     }
@@ -15615,11 +16062,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       totalCounters.droppedByBudget += c.droppedByBudget;
     }
 
+    const wiredButNoGrader = findWiredWithoutGraders();
     return {
       sinceHours,
       gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
       points,
-      censusDebt: { wired, pending, exempt, pendingRefDead },
+      censusDebt: { wired, pending, exempt, pendingRefDead, pendingRefUnverifiable, wiredButNoGrader },
       counters: totalCounters,
       // The four §5.5 annotation-rejection counters, by class.
       rejections: getDecisionAnnotationRejectionCounters(),
@@ -16072,6 +16520,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json(sentinel.status());
+  });
+
+  // GET /pool/failover-gap — the single-machine failover-gap detector's status
+  // snapshot (increment 2). 503 when the guard is dark on this agent (dev-gated:
+  // `enabled` OMITTED → resolveDevAgentGate; never constructed on the fleet).
+  // Read-only observability — the guard is pure signal.
+  router.get('/pool/failover-gap', (_req, res) => {
+    const s = ctx.getSingleMachineFailoverGap?.() ?? null;
+    if (!s) {
+      res.status(503).json({ error: 'single-machine failover-gap guard not enabled on this agent (dev-gated dark; monitoring.singleMachineFailoverGap.enabled)' });
+      return;
+    }
+    res.json(s.status());
+  });
+
+  // GET /pool/missing-login — the missing-login-session detector's status snapshot
+  // (increment 2). 503 when the guard is dark on this agent (dev-gated: `enabled`
+  // OMITTED → resolveDevAgentGate; never constructed on the fleet). Read-only
+  // observability — the guard is pure signal.
+  router.get('/pool/missing-login', (_req, res) => {
+    const s = ctx.getMissingLoginSession?.() ?? null;
+    if (!s) {
+      res.status(503).json({ error: 'missing-login-session guard not enabled on this agent (dev-gated dark; monitoring.missingLoginSession.enabled)' });
+      return;
+    }
+    res.json(s.status());
   });
 
   // ── Replicated-store conflict + rollback surfaces (multi-machine-replicated-
@@ -16926,6 +17400,49 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { stage, result: row?.result ?? null, commitSha: row?.commitSha ?? null, ranAt: row?.ranAt ?? null, verified: row ? store.verify(row) : null };
     });
     res.json({ latestPerStage, total: store.all().length });
+  });
+
+  // GET /session-pool/failover-runner — the in-agent failover-runner's status
+  // (§Rollout, Track H). Read-only. 503 when the runner is dark (dev-gated:
+  // enabled OMITTED → resolveDevAgentGate; single-machine/fleet). When live it
+  // reports the resolved gate (enabled/dryRun), which store the recorded verdict
+  // lands in (real promotion store vs the dry-run SIDE store), the proven stage +
+  // commit, the cadence, in-flight state, and the last run's outcome + counters.
+  router.get('/session-pool/failover-runner', (_req, res) => {
+    const status = ctx.getSessionPoolFailoverRunner?.() ?? null;
+    if (!status) {
+      res.status(503).json({ error: 'session-pool failover-runner not enabled on this agent (dev-gated dark; multiMachine.sessionPool.failoverRunner.enabled)' });
+      return;
+    }
+    res.json(status);
+  });
+
+  // POST /session-pool/promote — operator-triggered ONE-STEP promotion.
+  // Available in both live promotion models; default-off is an honest 503.
+  // The controller delegates to SessionPoolRolloutDriver → StageAdvancer, so a
+  // missing/stale/red/tampered green or the operator ceiling still refuses.
+  router.post('/session-pool/promote', (_req, res) => {
+    const activation = ctx.sessionPoolPromotionActivation;
+    if (!activation) {
+      res.status(503).json({
+        error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+      });
+      return;
+    }
+    try {
+      const result = activation.promoteOne();
+      if (!result) {
+        res.status(503).json({
+          error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+        });
+        return;
+      }
+      res.json({ ok: true, ...activation.status(), result });
+    } catch (err) {
+      res.status(500).json({
+        error: `session-pool promotion failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   });
 
   // PATCH /pool/machines/:id — rename a machine (§L2 user-editable nickname).
@@ -20414,7 +20931,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, description, priority, commitTo, dueBy, source, tags } = req.body;
+    const { title, description, priority, commitTo, dueBy, source } = req.body;
+    const tags = Array.isArray(req.body.tags) ? req.body.tags.filter((tag: unknown): tag is string => typeof tag === 'string') : [];
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -20428,10 +20946,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // has touched no store. (Wave 1 classifies this family machine-local ⇒
     // admit everywhere; the check still runs first in every mode, §9.15.)
     if (refuseInadmissibleWrite(req, res)) return;
-    const action = ctx.evolution.addAction({
-      title, description, priority, commitTo, dueBy, source, tags,
+    const originCorrection = tags.includes('origin:correction');
+    const admission = evaluateCorrectionInstanceFix({
+      originCorrection,
+      correctionId: typeof req.body.correctionId === 'string' ? req.body.correctionId : undefined,
+      claimedClassReviewRef: typeof req.body.classReviewRef === 'string' ? req.body.classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
     });
-    res.status(201).json(action);
+    if (!admission.allow) {
+      res.status(409).json({ error: 'correction-derived action requires a corresponding filled class review', reason: admission.reason });
+      return;
+    }
+    const stampedTags = admission.classReviewRef
+      ? [...tags.filter((tag: string) => !tag.startsWith('class-review:')), `class-review:${admission.classReviewRef}`]
+      : tags;
+    const action = ctx.evolution.addAction({
+      title, description, priority, commitTo, dueBy, source, tags: stampedTags,
+    });
+    res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
 
   router.patch('/evolution/actions/:id', (req, res) => {
@@ -20447,10 +20981,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
+    const currentAction = ctx.evolution.listActions({}).find((action) => action.id === req.params.id);
     const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
       return;
+    }
+    if (status === 'completed' && currentAction && ctx.classReviewStore) {
+      const refTag = currentAction.tags?.find((tag) => tag.startsWith('class-review:'));
+      if (refTag) ctx.classReviewStore.transitionOutcome(refTag.slice('class-review:'.length), 'process', 'shipped');
     }
     res.json({ ok: true, id: req.params.id, status });
   });
@@ -21841,7 +22380,277 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       topicId: typeof body.topicId === 'number' ? body.topicId : null,
     });
     if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    // This bearer-authenticated one-tap is agent-self. The caller cannot
+    // elevate origin with a request field; operator-attributed capture uses the
+    // authenticated messaging ingress seam.
+    ctx.correctionClassReview?.record(rec, 'agent-self');
     res.status(201).json(CorrectionLedger.toApiView(rec));
+  });
+
+  // Drive 7 WS1 read surface. Rows contain only boundary-scrubbed text and
+  // closed-enum lifecycle fields; raw CorrectionLedger.learning never appears.
+  router.get('/class-reviews', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const lifecycle = typeof req.query.status === 'string' && ['open', 'parked', 'resolved', 'superseded', 'reopened'].includes(req.query.status)
+      ? req.query.status as import('../monitoring/ClassReviewStore.js').ReviewLifecycle : undefined;
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 1000));
+    const records = ctx.classReviewStore.list({ lifecycle, limit });
+    res.json({ records, count: records.length, open: ctx.classReviewStore.countOpen() });
+  });
+
+  router.get('/class-reviews/:dedupeKey', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const record = ctx.classReviewStore.get(req.params.dedupeKey);
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.post('/class-reviews/backfill', (req, res) => {
+    if (!ctx.classReviewStore || !ctx.correctionClassReview || !ctx.correctionLedger) {
+      res.status(503).json({ error: 'correction-class-review disabled' }); return;
+    }
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.body?.limit) || 100, 1000));
+    const result = ctx.correctionClassReview.backfill(ctx.correctionLedger.list({ limit }), {}, limit);
+    const agingDays = Math.max(1, ctx.config.monitoring?.correctionClassReview?.agingDays ?? 7);
+    const activeActionIds = new Set((ctx.evolution?.listActions({ status: 'in_progress' }) ?? []).map((action) => action.id));
+    const aged = ctx.classReviewStore.ageExpiredUnreviewed(new Date(Date.now() - agingDays * 86_400_000), limit, activeActionIds);
+    if (aged.length > 0) void ctx.telegram?.createAttentionItem({
+      id: 'correction-class-review:expired-unreviewed', title: 'Correction class reviews need disposition',
+      summary: `${aged.length} proposed correction class-review arm(s) aged into parked-open status. They remain unresolved and will re-surface on the slow review cadence.`,
+      priority: 'NORMAL', category: 'general', sourceContext: 'correction-class-review-aging',
+    });
+    res.json({ ...result, aged: aged.length, dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false });
+  });
+
+  router.patch('/class-reviews/:dedupeKey/outcome', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0
+      && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const arm = req.body?.arm;
+    const outcome = req.body?.outcome;
+    if (!['standard', 'process'].includes(arm) || !['ratified', 'shipped', 'rejected', 'deferred'].includes(outcome)) {
+      res.status(400).json({ error: 'invalid arm or outcome' }); return;
+    }
+    let record;
+    if (outcome === 'deferred') {
+      if (!ctx.commitmentTracker) { res.status(503).json({ error: 'commitment tracker required for deferred disposition' }); return; }
+      const tracking = ctx.commitmentTracker.record({
+        type: 'one-time-action', source: 'manual', owner: 'agent', blockedOn: 'none',
+        userRequest: `Revisit deferred ${arm} outcome for correction class review ${req.params.dedupeKey}`,
+        agentResponse: 'I will re-surface this parked-open class review for a deliberate disposition.',
+        externalKey: `class-review-deferred:${req.params.dedupeKey}:${arm}`,
+      });
+      record = ctx.classReviewStore.defer(req.params.dedupeKey, arm, tracking.id);
+    } else {
+      record = ctx.classReviewStore.transitionOutcome(req.params.dedupeKey, arm, outcome);
+    }
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.patch('/class-reviews/:dedupeKey/lifecycle', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0 && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const action = req.body?.action;
+    let record = null;
+    if (action === 'reopen') record = ctx.classReviewStore.reopen(req.params.dedupeKey);
+    else if (action === 'supersede') {
+      if (typeof req.body?.supersededBy !== 'string' || typeof req.body?.reason !== 'string' || !req.body.reason.trim()) {
+        res.status(400).json({ error: 'supersededBy and non-empty reason are required' }); return;
+      }
+      record = ctx.classReviewStore.supersede(req.params.dedupeKey, req.body.supersededBy, { actor: 'operator-pin', reason: req.body.reason });
+    } else { res.status(400).json({ error: 'action must be reopen or supersede' }); return; }
+    if (!record) { res.status(404).json({ error: 'not found or invalid lifecycle transition' }); return; }
+    res.json(record);
+  });
+
+  const registerUnifiedFutureClaims = (input: {
+    message: string; topicId?: number; rawBindToken?: string; arbitration?: ClaimClauseArbitration;
+  }): { registered: number; reason?: string } => {
+    if (!ctx.commitmentTracker || typeof input.topicId !== 'number' || !Number.isSafeInteger(input.topicId)) {
+      return { registered: 0, reason: 'no-commitment-tracker-or-topic' };
+    }
+    const acGet = <T>(leaf: string, dflt: T): T =>
+      (ctx.liveConfig?.get<T | undefined>(`actionClaim.${leaf}`, undefined) ??
+        ctx.liveConfig?.get<T>(`messaging.actionClaim.${leaf}`, dflt)) as T;
+    if (!(acGet<boolean>('enabled', false) ?? false)) return { registered: 0, reason: 'action-claim-disabled' };
+    const topicId = input.topicId;
+    const isMinted = topicId < 0;
+    if (isMinted && !resolveDevAgentGate(acGet<boolean | undefined>('slack.enabled', undefined), ctx.config)) {
+      return { registered: 0, reason: 'slack-lane-dark' };
+    }
+    if (isMinted && (acGet<boolean>('slack.dryRun', true) ?? true)) return { registered: 0, reason: 'slack-dry-run' };
+    const bind = verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: topicId,
+      rawToken: input.rawBindToken, attention: ctx.telegram });
+    if (!bind.ok) return { registered: 0, reason: 'conversation-bind-not-authorized' };
+    const clauses = input.arbitration?.authoritative
+      ? input.arbitration.clauses.filter((clause) => clause.label === 'future-commitment').map((clause) => clause.text)
+      : [input.message];
+    let registered = 0;
+    for (const clause of clauses) {
+      const action = routeActionClaim(clause, { completionEnabled: true, completionDryRun: false },
+        input.arbitration?.authoritative
+          ? { authoritative: true, clauses: input.arbitration.clauses.filter((candidate) => candidate.text === clause) }
+          : input.arbitration);
+      let lane: 'action' | 'time'; let verb: string | undefined; let externalKey: string;
+      if (action.isActionClaim && action.claim) {
+        lane = 'action'; verb = action.claim.normalizedClaimVerb;
+        externalKey = `actionclaim:${createHash('sha256').update(`${topicId}|${verb}`).digest('hex').slice(0, 16)}`;
+      } else {
+        const timed = CommitmentTracker.detectTimePromise(clause.slice(0, 500));
+        if (!timed) continue;
+        lane = 'time';
+        externalKey = `timepromise:${createHash('sha256').update(`${topicId}|${clause.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`).digest('hex').slice(0, 16)}`;
+      }
+      const open = ctx.commitmentTracker.getActive().filter((commitment) => commitment.topicId === topicId
+        && typeof commitment.externalKey === 'string'
+        && (commitment.externalKey.startsWith('actionclaim:') || commitment.externalKey.startsWith('timepromise:')));
+      const cap = acGet<number>('perTopicCap', 5) ?? 5;
+      if (!open.some((commitment) => commitment.externalKey === externalKey) && open.length >= cap) continue;
+      ctx.commitmentTracker.record({ type: 'one-time-action', source: 'sentinel', topicId,
+        userRequest: lane === 'action' ? `(action-claim) follow through on: ${verb}` : '(time-promise) follow through on the promise made in this clause',
+        agentResponse: clause.slice(0, 500), externalKey,
+        expiresAt: new Date(Date.now() + (acGet<number>('expiresHours', 6) ?? 6) * 3_600_000).toISOString(),
+        ...(bind.boundBy ? { boundBy: bind.boundBy } : {}),
+      });
+      registered++;
+    }
+    return { registered };
+  };
+
+  // Observe-only v1. The Stop hook parses locally and sends structural-only
+  // evidence; a transcript path is never accepted by this server boundary.
+  router.post('/completion-claim/observe', (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return;
+    }
+    const message = typeof req.body?.message === 'string' ? req.body.message : '';
+    if (!message) { res.status(400).json({ error: 'message is required' }); return; }
+    if (Buffer.byteLength(message, 'utf8') > 32_768) { res.status(413).json({ error: 'claim observation input bound exceeded' }); return; }
+    const forbiddenAuthorityFields = ['agentId', 'sessionId', 'projectDir', 'repository', 'machineId', 'ownershipEpoch'];
+    if (forbiddenAuthorityFields.some((field) => field in (req.body ?? {}))) {
+      res.status(400).json({ error: 'authority context is derived server-side' }); return;
+    }
+    if ('transcriptPath' in (req.body ?? {}) || 'transcript_path' in (req.body ?? {})) {
+      res.status(400).json({ error: 'transcript paths are not accepted; send structural TurnEvidence' }); return;
+    }
+    const hasV1Envelope = 'hookSchemaVersion' in (req.body ?? {}) || 'messageAttemptId' in (req.body ?? {}) || 'turnEvidence' in (req.body ?? {});
+    const messageAttemptId = typeof req.body?.messageAttemptId === 'string' ? req.body.messageAttemptId : undefined;
+    if (hasV1Envelope && (req.body?.hookSchemaVersion !== 1 || !messageAttemptId
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(messageAttemptId))) {
+      res.status(400).json({ error: 'valid hookSchemaVersion and UUIDv7 messageAttemptId are required' }); return;
+    }
+    const evidence = validateTurnEvidence(hasV1Envelope ? req.body?.turnEvidence : req.body?.evidence);
+    if (!evidence) { res.status(400).json({ error: 'valid structural evidence is required' }); return; }
+    const topicId = typeof (hasV1Envelope ? req.body?.topicHint : req.body?.topicId) === 'number'
+      && Number.isSafeInteger(hasV1Envelope ? req.body.topicHint : req.body.topicId)
+      ? Number(hasV1Envelope ? req.body.topicHint : req.body.topicId) : undefined;
+    const rawBindHeader = req.headers['x-instar-bind-token'];
+    const rawBindToken = (Array.isArray(rawBindHeader) ? rawBindHeader[0] : rawBindHeader)
+      ?? (typeof req.body?.bindToken === 'string' ? req.body.bindToken : undefined);
+    const observationBind = topicId === undefined ? null : verifyConversationBind({ bindAuth: ctx.conversationBindAuth,
+      numericTopicId: topicId, rawToken: rawBindToken, attention: ctx.telegram });
+    const boundObservationTopicId = observationBind?.ok ? topicId : undefined;
+    const boundSessionName = observationBind?.ok && observationBind.boundBy?.startsWith('session:')
+      ? observationBind.boundBy.slice('session:'.length) : undefined;
+    const boundSession = boundSessionName ? ctx.state.listSessions().find((session) => session.tmuxSession === boundSessionName) : undefined;
+    const observationNow = new Date();
+    const sessionSnapshot = boundSession ? {
+      state: String(boundSession.status),
+      elapsedMs: Math.max(0, observationNow.getTime() - Date.parse(boundSession.startedAt)),
+      revision: `${boundSession.id}:${boundSession.status}:${boundSession.startedAt}`,
+      observedAt: observationNow.toISOString(),
+    } : undefined;
+    const commitmentSnapshots = Object.fromEntries((boundObservationTopicId === undefined ? [] : (ctx.commitmentTracker?.getActive() ?? [])
+      .filter((commitment) => commitment.topicId === boundObservationTopicId))
+      .slice(0, 100)
+      .map((commitment) => [commitment.id, { state: commitment.status,
+        revision: `${commitment.id}:${commitment.status}:${commitment.lastVerifiedAt ?? commitment.createdAt}`,
+        observedAt: observationNow.toISOString() }]));
+    const guardSnapshots = Object.fromEntries((ctx.guardRegistry?.registeredKeys() ?? []).slice(0, 100).flatMap((key) => {
+      const read = ctx.guardRegistry?.read(key);
+      if (!read || read.kind !== 'ok') return [];
+      const state = !read.status.enabled ? 'off' : read.status.dryRun ? 'dry-run' : 'on';
+      return [[key, { state, revision: `${key}:${state}:${read.status.lastTickAt ?? 0}`,
+        observedAt: observationNow.toISOString() }]];
+    }));
+    const admission = ctx.completionClaimVerifier.enqueue(message, evidence, (arbitration) => {
+      if (ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+        registerUnifiedFutureClaims({ message, topicId, rawBindToken, arbitration });
+      }
+    }, { ...(messageAttemptId ? { messageAttemptId } : {}), ...(boundObservationTopicId !== undefined ? { topicId: boundObservationTopicId } : {}),
+      ...(sessionSnapshot ? { sessionSnapshot } : {}), commitmentSnapshots, guardSnapshots, originFramework: 'claude-code' });
+    if (!admission.accepted && ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+      // Queue pressure/duplicate/provider uncertainty must never suppress the
+      // already-shipped Action-Claim behavior.
+      registerUnifiedFutureClaims({ message, topicId, rawBindToken });
+    }
+    const status = admission.accepted ? 202 : admission.reason === 'queue-full' ? 429 : 200;
+    res.status(status).json({ observed: admission.accepted, queued: admission.accepted, blocked: false,
+      evidenceAvailable: !evidence.unavailable, canaryOk: evidence.canaryOk, reason: admission.reason });
+  });
+
+  router.get('/completion-claim/audit', async (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    const poolProjection = req.query.projection === 'pool' || req.query.scope === 'pool';
+    const localPage = poolProjection ? ctx.completionClaimVerifier.readPoolPage(limit,
+      typeof req.query.cursor === 'string' ? req.query.cursor : undefined) : undefined;
+    const records = localPage?.records ?? ctx.completionClaimVerifier.readAudit(limit);
+    if (req.query.scope !== 'pool') { res.json({ records, count: records.length,
+      ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}), scope: 'local', denominator: 'server-admitted-only' }); return; }
+    const allPeers = ctx.resolvePeerUrls?.() ?? [];
+    const peers = allPeers.slice(0, 16);
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    const remote: Array<Record<string, unknown>> = [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    let remainingBytes = 256 * 1024;
+    await Promise.all(peers.map(async (peer) => {
+      if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) {
+        failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
+      }
+      try {
+        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}&projection=pool`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(250),
+        });
+        if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}` }); return; }
+        const raw = await response.text();
+        const size = Buffer.byteLength(raw);
+        if (size > remainingBytes) { failed.push({ machineId: peer.machineId, error: 'response-bound' }); return; }
+        remainingBytes -= size;
+        const body = JSON.parse(raw) as { records?: Array<Record<string, unknown>> };
+        for (const row of (body.records ?? []).slice(0, limit)) {
+          // Explicit allowlist: peer audit prose and unknown fields never cross.
+          remote.push({ machineId: peer.machineId, remote: true, automationEligible: false,
+            ...(typeof row.day === 'string' ? { day: row.day.slice(0, 10) } : {}),
+            ...(typeof row.claimShapeId === 'string' ? { claimShapeId: row.claimShapeId.slice(0, 128) } : {}),
+            ...(typeof row.modelDoor === 'string' ? { modelDoor: row.modelDoor.slice(0, 64) } : {}),
+            ...(typeof row.verifierVersion === 'string' ? { verifierVersion: row.verifierVersion.slice(0, 64) } : {}),
+            ...(typeof row.count === 'number' ? { count: Math.max(0, Math.floor(row.count)) } : {}),
+            ...(row.verdicts && typeof row.verdicts === 'object' ? { verdicts: Object.fromEntries(
+              ['supported', 'refuted', 'unverifiable', 'unknown'].flatMap((key) => {
+                const value = (row.verdicts as Record<string, unknown>)[key];
+                return typeof value === 'number' && Number.isFinite(value) ? [[key, Math.max(0, Math.floor(value))]] : [];
+              })) } : {}),
+          });
+        }
+      } catch (error) { failed.push({ machineId: peer.machineId, error: error instanceof Error ? error.name : 'unreachable' }); }
+    }));
+    const merged = ([...records.map((row) => ({ ...row, remote: false })), ...remote] as Array<Record<string, unknown>>)
+      .sort((a, b) => `${a.remote ? String(a.machineId) : 'local'}|${String(a.day ?? '')}|${String(a.claimShapeId ?? '')}`
+        .localeCompare(`${b.remote ? String(b.machineId) : 'local'}|${String(b.day ?? '')}|${String(b.claimShapeId ?? '')}`))
+      .slice(0, Math.min(limit, 200));
+    res.json({ records: merged, count: merged.length, ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}),
+      scope: 'pool', denominator: 'server-admitted-only', partial: failed.length > 0 || allPeers.length > peers.length,
+      pool: { peersQueried: peers.length, peersOmitted: Math.max(0, allPeers.length - peers.length), failed } });
   });
 
   // The recurrence analyzer + closed-loop tick (Correction & Preference Learning
@@ -21909,7 +22718,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // record to the next run; any other non-201 is a guard rejection (don't
           // retry). The driver serializes the batch + stops on the first 429.
           return { posted: resp.status === 201, rateLimited: resp.status === 429 };
-        } catch { return { posted: false }; }
+        } catch { /* @silent-fallback-ok — driver retains the source row for bounded retry */ return { posted: false }; }
       };
       const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
         try {
@@ -21923,7 +22732,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             body: JSON.stringify({ source: 'correction-loop', body: item.summary, ...item }),
           });
           return resp.status === 201;
-        } catch { return false; }
+        } catch { /* @silent-fallback-ok — missing attention never changes correction work authority */ return false; }
       };
 
       const driver = new CorrectionLoopDriver(ctx.correctionLedger, analyzer, {
@@ -24336,6 +25145,327 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   /**
    * Get all commitments with optional status filter.
    */
+  const blockerPoolCache = new Map<string, { at: number; value: { origins: unknown[]; failures: Array<{ machineId: string; reason: string }>; poolComplete: boolean } }>();
+  const sanitizeBlockerCounters = (raw: unknown): Record<string, number | boolean> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const source = raw as Record<string, unknown>;
+    const integerKeys = ['attempted', 'inserted', 'deduped', 'failed', 'queueOverflow', 'reconciled',
+      'requestSamplesMissing', 'requestDroppedCapacity', 'clearDroppedCapacity'];
+    if (!integerKeys.every(k => Number.isSafeInteger(source[k]) && (source[k] as number) >= 0) ||
+        typeof source.breakerOpen !== 'boolean') return null;
+    return { ...Object.fromEntries(integerKeys.map(k => [k, source[k] as number])), breakerOpen: source.breakerOpen };
+  };
+  const sanitizeBlockerFactors = (kind: 'summary' | 'trend', raw: unknown): unknown[] | null => {
+    if (!Array.isArray(raw) || raw.length !== 3) return null;
+    const finiteOrNull = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v));
+    const out: unknown[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') return null;
+      const f = item as Record<string, unknown>;
+      if (!['request-to-persist', 'clear-latency', 'deliverable-completion'].includes(String(f.factor))) return null;
+      if (seen.has(String(f.factor))) return null;
+      seen.add(String(f.factor));
+      if (kind === 'summary') {
+        const expectedRecoverability = f.factor === 'request-to-persist' ? 'best-effort' : 'reconcilable';
+        if (f.recoverability !== expectedRecoverability ||
+            !['completed', 'missing', 'excluded'].every(k => Number.isSafeInteger(f[k]) && (f[k] as number) >= 0) ||
+            !finiteOrNull(f.coverage) || (typeof f.coverage === 'number' && (f.coverage < 0 || f.coverage > 1)) ||
+            !finiteOrNull(f.medianMs) || (typeof f.medianMs === 'number' && f.medianMs < 0) ||
+            !finiteOrNull(f.p95Ms) || (typeof f.p95Ms === 'number' && f.p95Ms < 0) ||
+            !f.outcomes || typeof f.outcomes !== 'object') return null;
+        const outcomes = f.outcomes as Record<string, unknown>;
+        const outcomeKeys = ['observed', 'legacy-missing-start', 'clock-regression-or-implausible', 'request-row-missing', 'episode-dropped-capacity'];
+        if (!outcomeKeys.every(k => Number.isSafeInteger(outcomes[k]) && (outcomes[k] as number) >= 0)) return null;
+        const countFields = f.factor === 'deliverable-completion'
+          ? (f.unit === 'count' && f.total === f.completed && typeof f.averagePerDay === 'number' &&
+              Number.isFinite(f.averagePerDay) && f.averagePerDay >= 0 && f.missing === 0 && f.excluded === 0 &&
+              f.medianMs === null && f.p95Ms === null && outcomes.observed === f.completed &&
+              f.coverage === ((f.completed as number) === 0 ? null : 1) && f.window && typeof f.window === 'object' &&
+              (f.window as Record<string, unknown>).kind === 'rolling-hours' &&
+              typeof (f.window as Record<string, unknown>).hours === 'number' &&
+              Number.isFinite((f.window as Record<string, unknown>).hours) &&
+              ((f.window as Record<string, unknown>).hours as number) >= 1 &&
+              ((f.window as Record<string, unknown>).hours as number) <= 168
+            ? { unit: 'count', window: { kind: 'rolling-hours', hours: (f.window as Record<string, unknown>).hours },
+              total: f.total, averagePerDay: f.averagePerDay } : null)
+          : {};
+        if (countFields === null) return null;
+        out.push({ factor: f.factor, ...countFields, recoverability: f.recoverability, completed: f.completed, missing: f.missing,
+          excluded: f.excluded, coverage: f.coverage, medianMs: f.medianMs, p95Ms: f.p95Ms,
+          outcomes: Object.fromEntries(outcomeKeys.map(k => [k, outcomes[k]])) });
+      } else {
+        if (f.factor === 'deliverable-completion') {
+          if (f.unit !== 'count' || !Array.isArray(f.days) || f.days.length > 89 || !finiteOrNull(f.ratio) ||
+              !f.window || typeof f.window !== 'object' ||
+              (f.window as Record<string, unknown>).kind !== 'rolling-days' ||
+              !Number.isSafeInteger((f.window as Record<string, unknown>).days) ||
+              ((f.window as Record<string, unknown>).days as number) < 7 ||
+              ((f.window as Record<string, unknown>).days as number) > 90 ||
+              (f.window as Record<string, unknown>).dailyBuckets !== 'utc' ||
+              (f.window as Record<string, unknown>).currentDay !== 'partial' ||
+              !Number.isSafeInteger(f.windowTotal) || (f.windowTotal as number) < 0 ||
+              !Number.isSafeInteger(f.currentDayCount) || (f.currentDayCount as number) < 0 ||
+              !Array.isArray(f.cumulativeDays) || f.cumulativeDays.length !== f.days.length + 1 ||
+              (typeof f.ratio === 'number' && f.ratio < 0) ||
+              !['climbing', 'flat', 'declining', 'insufficient-data'].includes(String(f.direction)) ||
+              !(f.reason === null || ['insufficient-days', 'zero-denominator'].includes(String(f.reason)))) return null;
+          const days = f.days.map(d => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && Number.isSafeInteger(row.count) && (row.count as number) >= 0
+              ? { day: row.day, count: row.count } : null;
+          });
+          if (days.some(d => d === null)) return null;
+          for (let i = 1; i < days.length; i++) {
+            const previous = Date.parse(`${days[i - 1]!.day as string}T00:00:00.000Z`);
+            const current = Date.parse(`${days[i]!.day as string}T00:00:00.000Z`);
+            if (current - previous !== 86_400_000) return null;
+          }
+          let runningTotal = 0;
+          const cumulativeDays = f.cumulativeDays.map((d, index) => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            const expectedDay = index < days.length ? days[index]!.day : undefined;
+            const validDay = /^\d{4}-\d{2}-\d{2}$/.test(String(row.day));
+            const validCount = Number.isSafeInteger(row.count) && (row.count as number) >= 0;
+            if (!validDay || !validCount || !Number.isSafeInteger(row.cumulative) || typeof row.complete !== 'boolean') return null;
+            runningTotal += row.count as number;
+            if (row.cumulative !== runningTotal || row.complete !== (index < days.length) ||
+                (index < days.length && row.day !== expectedDay)) return null;
+            return { day: row.day, count: row.count, cumulative: row.cumulative, complete: row.complete };
+          });
+          if (cumulativeDays.some(d => d === null) || runningTotal !== f.windowTotal ||
+              cumulativeDays[cumulativeDays.length - 1]?.count !== f.currentDayCount) return null;
+          const liveDay = cumulativeDays[cumulativeDays.length - 1]?.day;
+          const expectedLiveDay = days.length > 0
+            ? new Date(Date.parse(`${days[days.length - 1]!.day as string}T00:00:00.000Z`) + 86_400_000).toISOString().slice(0, 10)
+            : undefined;
+          if (expectedLiveDay !== undefined && liveDay !== expectedLiveDay) return null;
+          const half = (v: unknown) => {
+            if (!v || typeof v !== 'object') return null;
+            const h = v as Record<string, unknown>;
+            return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.total) &&
+              (h.total as number) >= 0 && finiteOrNull(h.meanPerDay) && (h.meanPerDay === null || (h.meanPerDay as number) >= 0)
+              ? { days: h.days, total: h.total, meanPerDay: h.meanPerDay } : null;
+          };
+          const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+          if (!firstHalf || !secondHalf) return null;
+          const split = days.length >> 1;
+          const derivedHalf = (part: Array<{ day: unknown; count: unknown }>) => {
+            const total = part.reduce((sum, row) => sum + Number(row.count), 0);
+            return { days: part.length, total, meanPerDay: total / part.length };
+          };
+          const expectedFirst = derivedHalf(days.slice(0, split) as Array<{ day: unknown; count: unknown }>);
+          const expectedSecond = derivedHalf(days.slice(split) as Array<{ day: unknown; count: unknown }>);
+          const sameNumber = (a: unknown, b: number) => typeof a === 'number' && Number.isFinite(a) &&
+            Math.abs(a - b) <= Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b)) * 8;
+          if (firstHalf.days !== expectedFirst.days || firstHalf.total !== expectedFirst.total ||
+              !sameNumber(firstHalf.meanPerDay, expectedFirst.meanPerDay) ||
+              secondHalf.days !== expectedSecond.days || secondHalf.total !== expectedSecond.total ||
+              !sameNumber(secondHalf.meanPerDay, expectedSecond.meanPerDay)) return null;
+          if (expectedFirst.meanPerDay === 0) {
+            const expectedDirection = expectedSecond.total > 0 ? 'climbing' : 'flat';
+            if (f.ratio !== null || f.reason !== 'zero-denominator' || f.direction !== expectedDirection) return null;
+          } else {
+            const expectedRatio = expectedSecond.meanPerDay / expectedFirst.meanPerDay;
+            const expectedDirection = expectedRatio > 1 ? 'climbing' : expectedRatio < 1 ? 'declining' : 'flat';
+            if (!sameNumber(f.ratio, expectedRatio) || f.reason !== null || f.direction !== expectedDirection) return null;
+          }
+          out.push({ factor: f.factor, unit: 'count', window: { kind: 'rolling-days',
+            days: (f.window as Record<string, unknown>).days, dailyBuckets: 'utc', currentDay: 'partial' }, windowTotal: f.windowTotal,
+            currentDayCount: f.currentDayCount, cumulativeDays, days, firstHalf, secondHalf,
+            ratio: f.ratio, direction: f.direction, reason: f.reason });
+          continue;
+        }
+        if (!Array.isArray(f.days) || f.days.length > 90 || !finiteOrNull(f.ratio) ||
+            (typeof f.ratio === 'number' && f.ratio < 0) ||
+            !(f.reason === null || ['insufficient-days', 'insufficient-samples', 'zero-denominator'].includes(String(f.reason)))) return null;
+        const days = f.days.map(d => {
+          if (!d || typeof d !== 'object') return null;
+          const row = d as Record<string, unknown>;
+          return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && finiteOrNull(row.medianMs) &&
+            (row.medianMs === null || (row.medianMs as number) >= 0) && Number.isSafeInteger(row.samples) && (row.samples as number) >= 0
+            ? { day: row.day, medianMs: row.medianMs, samples: row.samples } : null;
+        });
+        if (days.some(d => d === null)) return null;
+        const half = (v: unknown) => {
+          if (!v || typeof v !== 'object') return null;
+          const h = v as Record<string, unknown>;
+          return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.samples) &&
+            (h.samples as number) >= 0 && finiteOrNull(h.meanMs) && (h.meanMs === null || (h.meanMs as number) >= 0)
+            ? { days: h.days, samples: h.samples, meanMs: h.meanMs } : null;
+        };
+        const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+        if (!firstHalf || !secondHalf) return null;
+        out.push({ factor: f.factor, days, firstHalf, secondHalf, ratio: f.ratio, reason: f.reason });
+      }
+    }
+    if (seen.size !== 3) return null;
+    return out;
+  };
+  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown): Record<string, unknown> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const m = raw as Record<string, unknown>;
+    if (kind === 'summary') {
+      if (!['eligible', 'evaluated', 'missedDue'].every(k => Number.isSafeInteger(m[k]) && (m[k] as number) >= 0) ||
+          !m.byStatus || typeof m.byStatus !== 'object' || !Array.isArray(m.features) || m.features.length > 512) return null;
+      const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'invalid-contract', 'missed-cadence'];
+      const byStatus = m.byStatus as Record<string, unknown>;
+      if (!statuses.filter(k => k !== 'invalid-contract').every(k => Number.isSafeInteger(byStatus[k]) && (byStatus[k] as number) >= 0) ||
+          !(byStatus['invalid-contract'] === undefined || (Number.isSafeInteger(byStatus['invalid-contract']) && (byStatus['invalid-contract'] as number) >= 0))) return null;
+      const features = m.features.map(v => {
+        if (!v || typeof v !== 'object') return null;
+        const f = v as Record<string, unknown>;
+        if (typeof f.featureId !== 'string' || f.featureId.length > 63 || !(f.rung === null || typeof f.rung === 'string') ||
+            !statuses.includes(String(f.status)) || !Number.isSafeInteger(f.passingMetrics) || !Number.isSafeInteger(f.totalMetrics) ||
+            !(f.minNormalizedMargin === null || (typeof f.minNormalizedMargin === 'number' && Number.isFinite(f.minNormalizedMargin)))) return null;
+        return { featureId: f.featureId, rung: f.rung, status: f.status, evaluatedAt: f.evaluatedAt,
+          passingMetrics: f.passingMetrics, totalMetrics: f.totalMetrics,
+          minNormalizedMargin: f.minNormalizedMargin, newestEvidenceAt: f.newestEvidenceAt ?? null };
+      });
+      if (features.some(v => v === null)) return null;
+      const dispositions = ['active', 'composed', 'excluded'];
+      let accounting: unknown[] = []; let accountingCounts: Record<string, unknown> | undefined;
+      if (m.accounting !== undefined || m.accountingCounts !== undefined) {
+        if (!Array.isArray(m.accounting) || m.accounting.length > 512 || !m.accountingCounts || typeof m.accountingCounts !== 'object') return null;
+        if (!Number.isSafeInteger(m.legacyEligible) || (m.legacyEligible as number) < 0) return null;
+        accountingCounts = m.accountingCounts as Record<string, unknown>;
+        if (!dispositions.every(k => Number.isSafeInteger(accountingCounts![k]) && (accountingCounts![k] as number) >= 0)) return null;
+        accounting = m.accounting.map(v => {
+          if (!v || typeof v !== 'object') return null;
+          const a = v as Record<string, unknown>;
+          if (typeof a.featureId !== 'string' || a.featureId.length > 63 || !dispositions.includes(String(a.disposition)) ||
+              typeof a.status !== 'string' || a.status.length > 32 || !(a.flagPath === null || typeof a.flagPath === 'string') ||
+              !['self-owner', 'parent-owner-evidence-only', 'none'].includes(String(a.promotionAuthority)) ||
+              !Number.isSafeInteger(a.sourcePrNumber) || (a.sourcePrNumber as number) < 1 ||
+              !(a.rung === null || ['test-agent-live', 'dev-agent-live', 'fleet'].includes(String(a.rung))) ||
+              !(a.ownerFeatureId === null || typeof a.ownerFeatureId === 'string') ||
+              !(a.graduationCriterion === null || typeof a.graduationCriterion === 'string') ||
+              !(a.evidenceSource === null || (typeof a.evidenceSource === 'object' &&
+                ['endpoint', 'log-filter'].includes(String((a.evidenceSource as Record<string, unknown>).type)) &&
+                typeof (a.evidenceSource as Record<string, unknown>).ref === 'string')) ||
+              !(a.contractError == null || ['invalid-json', 'oversized', 'invalid-shape', 'unknown-source-ref'].includes(String(a.contractError))) ||
+              !Number.isSafeInteger(a.metricCount) || (a.metricCount as number) < 0 || !Array.isArray(a.metricDescriptors) ||
+              a.metricDescriptors.length !== a.metricCount) return null;
+          const metricDescriptors = a.metricDescriptors.map(value => {
+            if (!value || typeof value !== 'object') return null;
+            const d = value as Record<string, unknown>;
+            return typeof d.id === 'string' && ['blocker-summary', 'blocker-trend', 'feature-summary'].includes(String(d.source)) &&
+              typeof d.sourceRef === 'string' && d.descriptorVersion === 1 && ['at-least', 'at-most'].includes(String(d.direction)) &&
+              typeof d.threshold === 'number' && Number.isFinite(d.threshold) && Number.isSafeInteger(d.minSamples) && (d.minSamples as number) > 0
+              ? d : null;
+          });
+          if (metricDescriptors.some(value => value === null)) return null;
+          return { ...a, metricDescriptors };
+        });
+        if (accounting.some(v => v === null)) return null;
+        const actualCounts = { active: 0, composed: 0, excluded: 0 };
+        for (const raw of accounting) {
+          const row = raw as Record<string, unknown>;
+          actualCounts[row.disposition as keyof typeof actualCounts]++;
+          if ((row.disposition === 'active') !== (row.rung !== null)) return null;
+          const expectedAuthority = row.disposition === 'active' ? 'self-owner'
+            : row.disposition === 'composed' ? 'parent-owner-evidence-only' : 'none';
+          if (row.promotionAuthority !== expectedAuthority) return null;
+        }
+        if (dispositions.some(k => actualCounts[k as keyof typeof actualCounts] !== accountingCounts![k]) ||
+            m.eligible !== actualCounts.active + actualCounts.composed + (m.legacyEligible as number)) return null;
+      }
+      return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
+        byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k] ?? 0])), features,
+        ...(accountingCounts ? { accountingCounts: Object.fromEntries(dispositions.map(k => [k, accountingCounts![k]])),
+          legacyEligible: m.legacyEligible, accounting } : {}) };
+    }
+    if (!Array.isArray(m.features) || m.features.length > 512) return null;
+    return { features: m.features.slice(0, 512) };
+  };
+  const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
+    const cacheKey = `${kind}?${query}`;
+    const cached = blockerPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+    const origins: unknown[] = [local];
+    const failures: Array<{ machineId: string; reason: string }> = [];
+    const started = Date.now();
+    let responseBytes = Buffer.byteLength(JSON.stringify(local));
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    for (let i = 0; i < peers.length; i += 4) {
+      await Promise.all(peers.slice(i, i + 4).map(async p => {
+        if (Date.now() - started > 2_500) { failures.push({ machineId: p.machineId, reason: 'deadline' }); return; }
+        if (!isPeerUrlAllowedForCredentials(p.url, extraAllowlist).ok) {
+          failures.push({ machineId: p.machineId, reason: 'omitted-cap' }); return;
+        }
+        try {
+          const response = await fetch(`${p.url}/blocker-lifecycle/${kind}?${query}&scope=local`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(750),
+          });
+          if (response.status === 404) { failures.push({ machineId: p.machineId, reason: 'unsupported' }); return; }
+          if (!response.ok) { failures.push({ machineId: p.machineId, reason: 'http-error' }); return; }
+          const text = await response.text();
+          if (Buffer.byteLength(text) > 512 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          const body = JSON.parse(text) as { schemaVersion?: unknown; origins?: unknown[] };
+          if (body.schemaVersion !== 2) {
+            failures.push({ machineId: p.machineId, reason: body.schemaVersion === 1 ? 'unsupported' : 'invalid-body' }); return;
+          }
+          if (!Array.isArray(body.origins) || body.origins.length !== 1) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const origin = body.origins[0];
+          if (!origin || typeof origin !== 'object') { failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return; }
+          const candidate = origin as Record<string, unknown>;
+          const factors = sanitizeBlockerFactors(kind, candidate.factors);
+          const maturation = sanitizeMaturation(kind, candidate.maturation);
+          const counters = kind === 'summary' ? sanitizeBlockerCounters(candidate.counters) : null;
+          if (!maturation) {
+            failures.push({ machineId: p.machineId, reason: 'unsupported-maturation' }); return;
+          }
+          if (!factors || (kind === 'summary' && !counters)) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const sanitized = kind === 'summary'
+            ? { machineId: p.machineId, factors, maturation, counters }
+            : { machineId: p.machineId, factors, maturation };
+          const bytes = Buffer.byteLength(JSON.stringify(sanitized));
+          if (responseBytes + bytes > 4 * 1024 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          responseBytes += bytes;
+          origins.push(sanitized);
+        } catch (err) {
+          failures.push({ machineId: p.machineId, reason: err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable' });
+        }
+      }));
+    }
+    const value = { origins, failures, poolComplete: failures.length === 0 };
+    blockerPoolCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+  };
+
+  router.get('/blocker-lifecycle/summary', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const sinceHours = Number(req.query.sinceHours ?? 24);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localSummary(sinceHours);
+    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
+  router.get('/blocker-lifecycle/trend', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const windowDays = Number(req.query.windowDays ?? 7);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isInteger(windowDays) || windowDays < 7 || windowDays > 90 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localTrend(windowDays);
+    const pool = scope === 'pool' ? await blockerPoolRead('trend', `windowDays=${windowDays}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
   router.get('/commitments', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false, commitments: [] });
@@ -24561,7 +25691,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             softDeadlineAt, hardDeadlineAt, sessionEpoch,
             ownerMachineId, externalKey, beaconCreatedBySource,
             // C1+C2 "The Agent Carries the Loop" state model (§4.1).
-            owner, blockedOn, actionClass, supersededBy } = req.body;
+            owner, blockedOn, actionClass, supersededBy,
+            correctionId, classReviewRef, origin } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
@@ -24569,6 +25700,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (!['config-change', 'behavioral', 'one-time-action'].includes(type)) {
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
+      return;
+    }
+    const correctionDerived = origin === 'correction' || typeof correctionId === 'string' || typeof classReviewRef === 'string';
+    const classReviewAdmission = evaluateCorrectionInstanceFix({
+      originCorrection: correctionDerived,
+      correctionId: typeof correctionId === 'string' ? correctionId : undefined,
+      claimedClassReviewRef: typeof classReviewRef === 'string' ? classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
+    });
+    if (!classReviewAdmission.allow) {
+      res.status(409).json({ error: 'correction-derived commitment requires a corresponding filled class review', reason: classReviewAdmission.reason });
       return;
     }
     // Beacon validation: must have topicId and at least one deadline marker.
@@ -24623,6 +25767,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         softDeadlineAt, hardDeadlineAt, sessionEpoch,
         ownerMachineId, externalKey, beaconCreatedBySource,
         owner, blockedOn, actionClass, supersededBy,
+        ...(typeof correctionId === 'string' ? { correctionId } : {}),
+        ...(classReviewAdmission.classReviewRef ? { classReviewRef: classReviewAdmission.classReviewRef } : {}),
         ...(boundBy ? { boundBy } : {}),
       });
       // §6.1 dark-window honesty (adversarial-A6/NEW#4): while followThrough
@@ -24646,7 +25792,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         } catch { /* attention is observability */ }
       }
-      res.status(201).json(commitment);
+      res.status(201).json({ ...commitment, classReviewAdmission: {
+        wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
+      } });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -24743,6 +25891,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { message, topicId } = req.body ?? {};
     if (typeof message !== 'string' || typeof topicId !== 'number') {
       res.status(400).json({ error: 'message (string) and topicId (number) are required' });
+      return;
+    }
+    const completionLive = !!ctx.completionClaimVerifier
+      && resolveDevAgentGate(ctx.config.monitoring?.completionClaimVerification?.enabled, ctx.config)
+      && ctx.config.monitoring?.completionClaimVerification?.dryRun === false;
+    if (completionLive && ctx.completionClaimVerifier!.getRecentAuthoritativeArbitration(message)?.authoritative) {
+      res.json({ observed: true, registered: false, reason: 'shared-arbiter-authoritative' });
       return;
     }
     const numericTopicId = Number.isSafeInteger(topicId) ? topicId : undefined;
@@ -25184,6 +26339,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const updated = ctx.commitmentTracker.transitionState(req.params.id, { owner, blockedOn, actionClass, supersededBy });
       res.json({ transitioned: true, id: updated.id, owner: updated.owner, blockedOn: updated.blockedOn });
     } catch (err) {
+      if (err instanceof CommitmentPersistenceError) {
+        res.status(503).json({ error: 'commitment-persistence-unavailable' });
+        return;
+      }
       const msg = (err as Error).message;
       const code = /not found/.test(msg) ? 404 : /terminal/.test(msg) ? 409 : 400;
       res.status(code).json({ error: msg });
@@ -25637,10 +26796,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const burnRate = ctx.quotaPoller ? ctx.quotaPoller.burnRate(req.params.id) : null;
+    const snapshot = account.lastQuota ?? null;
+    const measuredAtMs = snapshot?.measuredAt ? Date.parse(snapshot.measuredAt) : NaN;
+    const snapshotAgeMs = Number.isFinite(measuredAtMs)
+      ? Math.max(0, Date.now() - measuredAtMs)
+      : null;
+    const staleSnapshot = snapshot !== null && (
+      snapshotAgeMs === null ||
+      snapshotAgeMs > QUOTA_SNAPSHOT_STALE_AFTER_MS
+    );
     res.json({
       accountId: account.id,
-      snapshot: account.lastQuota ?? null,
+      snapshot,
       burnRate,
+      staleSnapshot,
+      snapshotAgeMs,
     });
   });
 
@@ -25988,9 +27158,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Resolve the pending login → its configHome + framework → the enroll pane session
     // name (derived through the shared helper so it can NEVER drift from enroll-start's spawn).
-    const login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
+    let login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
     if (!login) {
-      res.status(404).json({ error: `no pending login "${id}" is waiting for a code — start the sign-in again from the dashboard grid` });
+      // The operator submitted against a flow that disappeared across a restart
+      // or exhausted cleanup. Never collapse that honest lifecycle state into a
+      // raw 404/502. If the account still provably needs a login, mint its fresh
+      // replacement now and return the public flow so the cell can redraw.
+      const account = ctx.subscriptionPool.get(id);
+      const stillNeedsSignIn = account?.status === 'needs-reauth' || (
+        account?.identityDrifted === true &&
+        (account.identityDrift?.repairState === 'owner-relogin-required' ||
+          account.identityDrift?.actualAccountId === 'missing-local-login')
+      );
+      if (account && stillNeedsSignIn) {
+        try {
+          const freshLogin = await ctx.enrollmentWizard.start({
+            id: account.id,
+            label: account.nickname,
+            provider: account.provider,
+            framework: account.framework,
+            configHome: account.configHome,
+            expectedEmail: account.email,
+            remote: true,
+          });
+          res.status(409).json({
+            code: 'login-expired-fresh-ready',
+            error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+            freshLogin,
+          });
+          return;
+        } catch (err) {
+          console.warn(`[follow-me] expired login refresh failed id=${id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     // Narrow the authority (codex finding #4): this paste-back path is ONLY for the
@@ -26036,7 +27240,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // affordance — never a "may have closed" guess. Wording floor: the message only references
     // affordances that exist on the surface it lands on (the grid's Retry — never "Approve").
     if (rawFrame == null || !frame.trim()) {
-      res.status(409).json({ code: 'pane-dead', error: `this sign-in's window is no longer running on its machine, so it can't take a code — start the sign-in again from the dashboard grid` });
+      const freshLogin = await ctx.enrollmentWizard.refresh(id);
+      if (freshLogin) {
+        res.status(409).json({
+          code: 'login-expired-fresh-ready',
+          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+          freshLogin,
+        });
+        return;
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     if (!looksReady || looksLikeShell) {
@@ -26283,7 +27499,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (existing) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=reused-pending`);
           // Flow-detail passthrough (topic 29836 D2/D3): expectedEmail (which account the OAuth
-          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (the two-codes heads-up)
+          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (optional flow heads-up)
           // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
           // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
           // never secrets (same fields the pending-logins surface already serves).
@@ -27940,8 +29156,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (typeof inReplyTo === 'string') {
-      const claimedInbound = ctx.listenerManager?.readCanonicalInboxEntry(inReplyTo);
-      if (!claimedInbound || typeof threadId !== 'string' || claimedInbound.threadId !== threadId) {
+      if (!isAuthenticatedThreadlineInbound(
+        { listenerManager: ctx.listenerManager, threadLog: ctx.threadLog },
+        threadId,
+        inReplyTo,
+      )) {
         res.status(400).json({ success: false, error: 'inReplyTo must name an authenticated inbound on this thread.' });
         return;
       }

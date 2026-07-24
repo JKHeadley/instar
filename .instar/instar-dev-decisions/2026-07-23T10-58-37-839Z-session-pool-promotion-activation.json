@@ -1,0 +1,31 @@
+{
+  "ts": "2026-07-23T10:58:37.839Z",
+  "slug": "session-pool-promotion-activation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 222,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The rollout driver, signed result store, and StageAdvancer had been merged, but boot never constructed or invoked the driver, leaving promotion permanently inert while demotion alone was live."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/session-pool-promotion-activation.test.ts",
+      "howCaught": "Auto-climb is floored at one tick per minute, each tick can write at most one adjacent stage, and the finite promotion ceiling makes stage mutations settle to zero; off and operator schedule no autonomous promotion."
+    }
+  },
+  "verdict": "pass"
+}

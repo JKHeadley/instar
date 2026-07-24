@@ -27,6 +27,7 @@ function createMockUpdateChecker(overrides?: Partial<UpdateChecker>): UpdateChec
       healthCheck: 'skipped',
     }),
     getInstalledVersion: vi.fn().mockReturnValue('0.9.8'),
+    getShadowInstalledVersion: vi.fn().mockReturnValue('0.9.9'),
     getLastCheck: vi.fn().mockReturnValue(null),
     rollback: vi.fn().mockResolvedValue({ success: false, previousVersion: '0.9.8', restoredVersion: '0.9.8', message: 'No rollback' }),
     canRollback: vi.fn().mockReturnValue(false),
@@ -248,6 +249,143 @@ describe('AutoUpdater', () => {
         nextRetryAt: '2026-05-29T08:05:00.000Z',
         updatedAt: '2026-05-29T08:00:00.000Z',
       });
+    });
+
+    it('re-arms an overdue persisted restart deferral on startup', async () => {
+      const stateFile = path.join(tmpDir, 'state', 'auto-updater.json');
+      fs.writeFileSync(stateFile, JSON.stringify({
+        lastAppliedVersion: '0.9.9',
+        restartDeferral: {
+          active: true,
+          targetVersion: '0.9.9',
+          firstDeferredAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+          reason: '1 active session(s): finished-session',
+          currentBlockers: ['finished-session'],
+          nextRetryAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        },
+      }));
+
+      const updater = new AutoUpdater(createMockUpdateChecker(), createMockState(), tmpDir);
+      updater.setSessionDeps({ listRunningSessions: vi.fn().mockReturnValue([]) } as any);
+      updater.start();
+
+      await vi.advanceTimersByTimeAsync(2_100);
+
+      expect(fs.existsSync(path.join(tmpDir, 'state', 'restart-requested.json'))).toBe(true);
+      expect(updater.getStatus().restartDeferral).toBeNull();
+      updater.stop();
+    });
+
+    it('repairs a lost deferral timer from durable state on the next update tick', async () => {
+      const stateFile = path.join(tmpDir, 'state', 'auto-updater.json');
+      fs.writeFileSync(stateFile, JSON.stringify({
+        lastAppliedVersion: '0.9.9',
+        restartDeferral: {
+          active: true,
+          targetVersion: '0.9.9',
+          firstDeferredAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+          reason: '1 active session(s): finished-session',
+          currentBlockers: ['finished-session'],
+          nextRetryAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        },
+      }));
+      const checker = createMockUpdateChecker({
+        check: vi.fn().mockResolvedValue({
+          currentVersion: '0.9.8',
+          latestVersion: '0.9.9',
+          updateAvailable: true,
+          checkedAt: new Date().toISOString(),
+        }),
+      });
+      const updater = new AutoUpdater(checker, createMockState(), tmpDir);
+      updater.setSessionDeps({ listRunningSessions: vi.fn().mockReturnValue([]) } as any);
+      updater.start();
+
+      // Simulate the production failure: the only in-memory retry disappears
+      // while the durable deferral row remains active.
+      clearTimeout((updater as any).deferralTimer);
+      (updater as any).deferralTimer = null;
+
+      await vi.advanceTimersByTimeAsync(12_100);
+
+      expect(checker.applyUpdate).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(tmpDir, 'state', 'restart-requested.json'))).toBe(true);
+      expect(updater.getStatus().restartDeferral).toBeNull();
+      updater.stop();
+    });
+
+    it('keeps retrying when a deferred restart attempt rejects', async () => {
+      const stateFile = path.join(tmpDir, 'state', 'auto-updater.json');
+      fs.writeFileSync(stateFile, JSON.stringify({
+        restartDeferral: {
+          active: true,
+          targetVersion: '0.9.9',
+          firstDeferredAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+          reason: '1 active session(s): busy-session',
+          currentBlockers: ['busy-session'],
+          nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+          updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        },
+      }));
+      const updater = new AutoUpdater(createMockUpdateChecker(), createMockState(), tmpDir);
+      vi.spyOn(updater as any, 'gatedRestart').mockRejectedValueOnce(new Error('transient retry failure'));
+      updater.start();
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+      expect(persisted.restartDeferral).toMatchObject({
+        active: true,
+        targetVersion: '0.9.9',
+        reason: '1 active session(s): busy-session',
+      });
+      expect(Date.parse(persisted.restartDeferral.nextRetryAt)).toBeGreaterThan(Date.now());
+      expect((updater as any).deferralTimer).not.toBeNull();
+      updater.stop();
+    });
+
+    it('keeps a deferred restart retry single-flight while the watchdog ticks', async () => {
+      const stateFile = path.join(tmpDir, 'state', 'auto-updater.json');
+      fs.writeFileSync(stateFile, JSON.stringify({
+        lastAppliedVersion: '0.9.9',
+        restartDeferral: {
+          active: true,
+          targetVersion: '0.9.9',
+          firstDeferredAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+          reason: '1 active session(s): recently-finished-session',
+          currentBlockers: ['recently-finished-session'],
+          nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+          updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        },
+      }));
+      const checker = createMockUpdateChecker({
+        check: vi.fn().mockResolvedValue({
+          currentVersion: '0.9.8',
+          latestVersion: '0.9.9',
+          updateAvailable: true,
+          checkedAt: new Date().toISOString(),
+        }),
+      });
+      let releaseRestart!: () => void;
+      const heldRestart = new Promise<void>((resolve) => { releaseRestart = resolve; });
+      const updater = new AutoUpdater(checker, createMockState(), tmpDir);
+      const gatedRestart = vi.spyOn(updater as any, 'gatedRestart').mockReturnValue(heldRestart);
+      updater.start();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gatedRestart).toHaveBeenCalledTimes(1);
+
+      // The normal 10-second update tick sees the durable overdue deferral
+      // while the first retry is still awaiting its async restart path.
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(gatedRestart).toHaveBeenCalledTimes(1);
+
+      updater.stop();
+      releaseRestart();
+      await Promise.resolve();
+      expect((updater as any).deferralTimer).toBeNull();
     });
   });
 

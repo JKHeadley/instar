@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T21:15:00.000Z",
+  "slug": "single-machine-failover-gap-wiring",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 360,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "SingleMachineFailoverGapDetector increment 2 — boot-wiring. Wires the increment-1 pure core into the live server behind the developmentAgent dark-feature gate (enabled OMITTED -> resolveDevAgentGate; dark on the fleet, live on a dev agent) and dryRun-first (ConfigDefaults singleMachineFailoverGap: { dryRun: true }; raises nothing until a deliberate dryRun:false). A new factory module (singleMachineFailoverGapWiring.ts) adapts the neutral FailoverGapAttention shape into the real TelegramAdapter attention-item input and builds the injected deps from the real machinePoolRegistry capacities, meshSelfId, config.multiMachine, and activeAutonomousJobs(stateDir). The detector is constructed ONLY when the gate resolves enabled, registers a synchronous GuardRegistry runtime getter (enabled/dryRun + real lastTickAt liveness), and rides the existing 30s peerPresenceTick fail-toward-silence. New read route GET /pool/failover-gap (503 when dark, 200 status() when live). Guard reclassified NOT_A_GUARD -> GUARD_MANIFEST (config, expectRuntime:true, not loadBearing). Migration parity: strip-migration for a default-shaped enabled:false + DEV_GATED_FEATURES entry + CapabilityIndex entry + type + ConfigDefaults default. All three test tiers added (unit factory dep-mapping, integration route dark/live, e2e feature-alive). Additive, signal-only, dark. tsc clean; unit+integration+e2e green; npm run lint clean."
+}

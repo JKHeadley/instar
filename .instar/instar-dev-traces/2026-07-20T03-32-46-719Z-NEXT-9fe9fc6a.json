@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "NEXT",
+  "sessionId": "783f1baa-7352-4229-8bda-00de9b0ec3cf",
+  "timestamp": "2026-07-20T03:32:46.719Z",
+  "artifactPath": "upgrades/side-effects/NEXT.md",
+  "artifactSha256": "a8622869d4abc49e218e3c1fc8b47663281be325ee9d656eb56b4ef51c944512",
+  "specPath": "docs/specs/correction-class-review-and-verify-before-done.md",
+  "coveredFiles": [
+    "src/data/provenanceCoverage.ts",
+    "src/monitoring/ClaimClauseArbiter.ts",
+    "src/monitoring/CorrectionClassReview.ts",
+    "tests/unit/correction-class-review.test.ts",
+    "tests/unit/turn-evidence-completion-verifier.test.ts",
+    "upgrades/side-effects/NEXT.md"
+  ],
+  "phase": "complete",
+  "tier": 3,
+  "tierReasoning": "Full CI provenance census required typed enrollment plus bounded identity-only envelopes for two new LLM decisions",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-second-pass",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

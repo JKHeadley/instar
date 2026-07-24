@@ -277,16 +277,27 @@ export class SessionMonitor extends EventEmitter {
     // Run BEFORE health classification because a context-exhausted session
     // appears "alive" with recent output (the error message itself), so it
     // would be classified as 'healthy' and skip all recovery logic.
-    if (alive && currentOutput && this.deps.sessionRecovery) {
+    if (alive && this.deps.sessionRecovery) {
       // Topic-level cooldown survives snapshot cleanup (which happens when sessions die between polls)
       const lastCtxAction = this.contextExhaustionCooldowns.get(topicId);
       const ctxCooldownMs = this.config.notificationCooldownMinutes * 60 * 1000;
       const inCtxCooldown = lastCtxAction && (now - lastCtxAction) < ctxCooldownMs;
+      const ctxCheck = detectContextExhaustion(currentOutput);
+
+      // Persist the existing detector's positive result even when the monitor's
+      // existing presentation cooldown is active. The latch stores no metadata
+      // and owns no recovery decision.
+      if (ctxCheck.matched) {
+        this.deps.sessionRecovery.markContextWedgedSeen?.(topicId);
+      }
 
       if (!inCtxCooldown) {
-        const ctxCheck = detectContextExhaustion(currentOutput);
-        if (ctxCheck.matched) {
-          console.log(`[SessionMonitor] Context exhaustion detected in topic ${topicId} (pattern: ${ctxCheck.pattern})`);
+        if (ctxCheck.matched || this.deps.sessionRecovery.hasContextWedgedSeen?.(topicId)) {
+          if (ctxCheck.matched) {
+            console.log(`[SessionMonitor] Context exhaustion detected in topic ${topicId} (pattern: ${ctxCheck.pattern})`);
+          } else {
+            console.log(`[SessionMonitor] Previously seen context exhaustion remains latched for topic ${topicId}`);
+          }
           this.contextExhaustionCooldowns.set(topicId, now);
           let recoveryResult: RecoveryResult | null = null;
           try {

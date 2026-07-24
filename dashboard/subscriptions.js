@@ -726,6 +726,10 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           td.appendChild(el(doc, 'div', 'sub-matrix-held-detail',
             'Its sign-in window closed before finishing — tap Retry to start a fresh sign-in.'));
         }
+        if (c.state === 'expired') {
+          td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-failed',
+            'Didn’t finish — the sign-in link expired before this account was set up.'));
+        }
         td.appendChild(btn);
       } else if (c.state === 'in-progress' && c.login && c.login.verificationUrl) {
         // The cell carries the COMPLETE flow, rebuilt from SERVER pending-login state
@@ -743,6 +747,10 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           : (justVerified && c.state === 'active' ? 'Active — just set up' : MATRIX_CELL_WORD[c.state]);
         const glyph = MATRIX_CELL_GLYPH[c.state] || '';
         td.appendChild(el(doc, 'span', 'sub-matrix-glyph', `${glyph} ${word}`.trim()));
+        if (justVerified) {
+          td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-done',
+            'Done — this account is set up on this machine.'));
+        }
         // An in-progress (◷) cell gets a tappable Cancel so a mis-tapped setup can be
         // reversed (abandon the login + tear down its pane). Emitted on the DURABLE
         // re-rendered cell (not just the live sign-in DOM) so it survives the poll loop.
@@ -1113,6 +1121,14 @@ export function createController(opts) {
             setRowStatus(row, `✗ ${heldExplanation(r.json.expected, r.json.got, r.json.reason)}`);
             rerenderMatrixFromCache();
             btn.removeAttribute('disabled');
+          } else if (r.json && r.json.code === 'login-expired-fresh-ready') {
+            row.removeAttribute('data-interaction-open');
+            setRowStatus(row, 'That code belonged to an expired sign-in. A fresh sign-in is ready now.');
+            await tick();
+          } else if (r.json && r.json.code === 'login-expired') {
+            row.removeAttribute('data-interaction-open');
+            row.setAttribute('class', 'sub-pending sub-pending-failed');
+            setRowStatus(row, `✗ ${r.json.error || 'That sign-in expired — start a fresh one from its grid cell.'}`);
           } else if (r.json && r.json.code === 'pane-dead') {
             // D5: the attempt's window is gone — flip to the explicit needs-restart state.
             row.removeAttribute('data-interaction-open');
@@ -1300,6 +1316,14 @@ export function createController(opts) {
           cell.removeAttribute('data-interaction-open');
           recordSubmitOutcome('held', { accountId, machineId }, r.json);
           renderCellHeld(cell, accountId, machineId, r.json);
+        } else if (r.json && r.json.code === 'login-expired-fresh-ready') {
+          cell.removeAttribute('data-interaction-open');
+          setCellStatus(cell, 'That code belonged to an expired sign-in. A fresh sign-in is ready now.');
+          await tick();
+        } else if (r.json && r.json.code === 'login-expired') {
+          cell.removeAttribute('data-interaction-open');
+          recordSubmitOutcome('broken', { accountId, machineId }, r.json);
+          rerenderMatrixFromCache();
         } else if (r.json && r.json.code === 'pane-dead') {
           // TERMINAL (D5): the sign-in window is gone — explicit needs-restart state.
           cell.removeAttribute('data-interaction-open');

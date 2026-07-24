@@ -54,6 +54,13 @@ describe('StageAdvancer (§Rollout)', () => {
     expect(writes).toEqual(['shadow']);
   });
 
+  it('accepts equal unknown identities without weakening stage attribution', () => {
+    build('unknown');
+    stage = 'live-transfer';
+    store.recordResult(2, 'green', 'unknown', 'npm-install-no-git');
+    expect(advancer.advanceTo('rebalance')).toEqual({ ok: true, stage: 'rebalance' });
+  });
+
   it('REFUSES a green for a STALE commit', () => {
     store.recordResult(0, 'green', 'old-commit', 'e');
     expect(advancer.advanceTo('shadow')).toMatchObject({ ok: false, detail: 'stale-commit' });

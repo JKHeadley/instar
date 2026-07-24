@@ -2534,6 +2534,15 @@ gateCmd
     return gateLog(opts);
   });
 
+gateCmd
+  .command('reset-breaker')
+  .description('Clear the durable authority breaker after repairing a provider')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { gateResetBreaker } = await import('./commands/gate.js');
+    return gateResetBreaker(opts);
+  });
+
 // ── `instar dev:preflight` — contributor ship-gate verifier ────────
 
 program

@@ -53,6 +53,8 @@ for _arg in "$@"; do [[ "$_arg" == "--codex" ]] && IS_CODEX=1; done
 # existing agents that carry REALCHECK_VERIFY but not SCOPE_ACCRETION.
 # hook-capability: TASK_CONTINUATION — ordinary Codex interactive work may use
 # the same trusted Stop boundary when an explicit bounded task ledger is live.
+# hook-capability: DECISION_QUALITY_REALCHECK — run_end_call carries the real-check
+# pass|fail|configured:false observation to the existing decision-quality annotator.
 # emit — human-facing approve/status text. In codex mode the Stop hook's STDOUT must be
 # ONLY valid decision-JSON (the `{"decision":"block",...}` case far below) or empty:
 # codex rejects ANY other stdout as "invalid stop hook JSON output" and reports the stop
@@ -236,6 +238,19 @@ fm_get_raw() {
   printf '%s' "$val"
 }
 
+# Convert the ISO-8601 timestamps written by the autonomous setup path on both
+# macOS/BSD and GNU date. BSD date's strict format rejects fractional seconds,
+# so normalize only a terminal fractional component before parsing. Invalid
+# input remains fail-safe and returns 0.
+iso8601_epoch() {
+  local raw="${1:-}"
+  local normalized
+  normalized=$(printf '%s' "$raw" | sed 's/\.[0-9][0-9]*Z$/Z/')
+  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$normalized" +%s 2>/dev/null \
+    || date -d "$normalized" +%s 2>/dev/null \
+    || echo "0"
+}
+
 ACTIVE=$(fm_get active)
 if [[ "$ACTIVE" != "true" ]]; then
   exit 0
@@ -397,17 +412,30 @@ notify_terminal_stop() {
 # failure NEVER blocks or delays the exit (the R28b daily sweep is the backstop).
 run_end_call() {
   local reason="$1"
+  local met_override="${2:-}" terminal="${3:-true}"
   [[ -z "$REPORT_TOPIC" ]] && return 0
+  local re_met="false" re_configured="false" re_outcome="" re_exit=""
+  [[ "$reason" == met* ]] && re_met="true"
+  [[ -n "$met_override" ]] && re_met="$met_override"
+  if [[ "$RC_ENABLED" == "1" ]] && [[ -n "$VERIFICATION_COMMAND" ]]; then
+    re_configured="true"
+    [[ "$RC_OUTCOME" == "pass" ]] && re_outcome="pass" || re_outcome="fail"
+    [[ "${RC_EXIT:-}" =~ ^-?[0-9]+$ ]] && re_exit="$RC_EXIT"
+  fi
   # Test seam: record the would-be call instead of hitting the server.
   if [[ -n "${INSTAR_HOOK_RUNEND_RECORD:-}" ]]; then
-    printf '{"topic":"%s","reason":"%s","runId":"%s"}\n' "$REPORT_TOPIC" "$reason" "${RUN_ID:-}" \
+    jq -nc --arg topic "$REPORT_TOPIC" --arg r "$reason" --arg id "${RUN_ID:-}" \
+      --argjson met "$re_met" --argjson terminal "$terminal" --argjson configured "$re_configured" --arg outcome "$re_outcome" --arg exit "$re_exit" \
+      '{topic:$topic,reason:$r,runId:$id,met:$met,terminal:$terminal,realcheck:(if $configured then ({configured:true,outcome:$outcome} + (if $exit != "" then {exitCode:($exit|tonumber)} else {} end)) else {configured:false} end)}' \
       >> "$INSTAR_HOOK_RUNEND_RECORD" 2>/dev/null || true
     return 0
   fi
   local re_port re_auth
   re_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
   re_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
-  jq -nc --arg r "$reason" --arg id "${RUN_ID:-}" '{reason:$r} + (if $id != "" then {runId:$id} else {} end)' 2>/dev/null \
+  jq -nc --arg r "$reason" --arg id "${RUN_ID:-}" --argjson met "$re_met" --argjson terminal "$terminal" \
+    --argjson configured "$re_configured" --arg outcome "$re_outcome" --arg exit "$re_exit" \
+    '{reason:$r,met:$met,terminal:$terminal,realcheck:(if $configured then ({configured:true,outcome:$outcome} + (if $exit != "" then {exitCode:($exit|tonumber)} else {} end)) else {configured:false} end)} + (if $id != "" then {runId:$id} else {} end)' 2>/dev/null \
     | curl -s -m 8 -H "Authorization: Bearer $re_auth" -H 'Content-Type: application/json' \
       --data-binary @- "http://localhost:${re_port}/autonomous/${REPORT_TOPIC}/run-end" >/dev/null 2>&1 || true
 }
@@ -515,7 +543,7 @@ if [[ "$GOAL_MODE" == "native" ]]; then
     echo "[autonomous] emergency stop — native /goal cleared" >&2; exit 0
   fi
   if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
-    NG_START=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo 0)
+    NG_START=$(iso8601_epoch "$STARTED_AT")
     if [[ "$NG_START" =~ ^[0-9]+$ ]] && [[ $NG_START -gt 0 ]] && [[ $(( $(date +%s) - NG_START )) -ge $DURATION_SECONDS ]]; then
       notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" hit its time limit and stopped. Ask me and I'll pick up where I left off."
       run_end_call "duration-expiry (native-goal)"
@@ -542,7 +570,7 @@ fi
 # premature exit (that is the very failure class this hook exists to prevent).
 REMAINING_MIN=""
 if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
-  START_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo "0")
+  START_EPOCH=$(iso8601_epoch "$STARTED_AT")
   if [[ "$START_EPOCH" =~ ^[0-9]+$ ]] && [[ $START_EPOCH -gt 0 ]]; then
     NOW_EPOCH=$(date +%s)
     ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
@@ -1216,6 +1244,7 @@ realcheck_gate() {
     # fired to produce this met). Surface the breaker guidance + keep working.
     EVAL_REASON="The declared real check (\`${VERIFICATION_COMMAND}\`) has failed repeatedly — paused re-running it for a cooldown. This is likely an authoring problem (wrong directory, stale, or testing the wrong thing): fix the check or the work, then continue. I've queued it for the operator."
     realcheck_audit_row "fail" "" "0" "$VERIFICATION_COMMAND" "$(realcheck_resolve_cwd)" "1"
+    run_end_call "realcheck-fail" "true" "false"
     echo "[autonomous] real-check breaker OPEN — keeping working (no command run, no judge re-fire)" >&2
     return 1
   fi
@@ -1229,6 +1258,7 @@ realcheck_gate() {
   fi
   # FAIL | timeout | refused-destructive | unavailable → record + keep working.
   realcheck_record_failure
+  run_end_call "realcheck-fail" "true" "false"
   EVAL_REASON="$(realcheck_guidance "$VERIFICATION_COMMAND" "$RC_SANITIZED_OUTPUT")"
   echo "[autonomous] real-check ${RC_OUTCOME} (exit=${RC_EXIT}) — keeping working" >&2
   return 1
@@ -1684,14 +1714,14 @@ REPORT_DUE="false"
 NOW_EPOCH=$(date +%s)
 if [[ -z "$LAST_REPORT_AT" ]] || [[ "$LAST_REPORT_AT" == "null" ]]; then
   if [[ -n "$STARTED_AT" ]]; then
-    START_EPOCH_R=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo "0")
+    START_EPOCH_R=$(iso8601_epoch "$STARTED_AT")
     ELAPSED_SINCE_START=$(( NOW_EPOCH - START_EPOCH_R ))
     if [[ $ELAPSED_SINCE_START -ge $REPORT_INTERVAL_SECS ]]; then
       REPORT_DUE="true"
     fi
   fi
 else
-  LAST_REPORT_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_REPORT_AT" +%s 2>/dev/null || date -d "$LAST_REPORT_AT" +%s 2>/dev/null || echo "0")
+  LAST_REPORT_EPOCH=$(iso8601_epoch "$LAST_REPORT_AT")
   ELAPSED_SINCE_REPORT=$(( NOW_EPOCH - LAST_REPORT_EPOCH ))
   if [[ $ELAPSED_SINCE_REPORT -ge $REPORT_INTERVAL_SECS ]]; then
     REPORT_DUE="true"

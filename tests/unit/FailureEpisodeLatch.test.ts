@@ -19,6 +19,20 @@ function make(signalAfterMs: number) {
 }
 
 describe('FailureEpisodeLatch', () => {
+  it('round-trips a validated snapshot without replaying transitions', () => {
+    let now = 10;
+    const first = new FailureEpisodeLatch({ signalAfterMs: 5, now: () => now });
+    first.recordFailure(); now = 20; first.recordFailure();
+    const second = new FailureEpisodeLatch({ signalAfterMs: 5, now: () => now });
+    second.restore(first.snapshot());
+    expect(second.snapshot()).toEqual(first.snapshot());
+    expect(second.recordFailure()).toMatchObject({ failures: 3, shouldSignal: false });
+  });
+
+  it('rejects inconsistent snapshots', () => {
+    const latch = new FailureEpisodeLatch({ signalAfterMs: 5 });
+    expect(() => latch.restore({ schemaVersion: 1, failingSince: null, failures: 1, signaledFor: null })).toThrow('invalid');
+  });
   it('first failure of an episode is marked firstOfEpisode exactly once', () => {
     const { latch, setNow } = make(10 * MIN);
     setNow(1_000);

@@ -12,11 +12,12 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, createHmac, timingSafeEqual, createPrivateKey } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual, createPrivateKey, randomBytes, randomUUID } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { DynamicMcpService } from '../core/DynamicMcpService.js';
+import { MachineSshIdentity } from '../core/MachineSshIdentity.js';
 import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
 import { captureHeavyMcpPidsForSession, MCP_SERVER_NAME_TO_SIGNATURE } from '../core/mcpPidCapture.js';
 import { makeMcpProcessReaperDeps } from '../monitoring/mcpProcessReaperDeps.js';
@@ -42,6 +43,16 @@ import { InboxDrainer } from '../feedback-factory/inbox/InboxDrainer.js';
 import { BlobInboxClient } from '../feedback-factory/inbox/BlobInboxClient.js';
 import { JsonlFeedbackStore } from '../feedback-factory/store/JsonlFeedbackStore.js';
 import { FeedbackProcessingService, resolveCanonicalStoreDir } from '../feedback-factory/processing/FeedbackProcessingService.js';
+import { FeedbackDrainStore } from '../feedback-factory/drain/FeedbackDrainStore.js';
+import { FeedbackInitiativeConsumer } from '../feedback-factory/drain/FeedbackInitiativeConsumer.js';
+import { FeedbackReadinessArbiter } from '../feedback-factory/drain/FeedbackReadinessArbiter.js';
+import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
+import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
+import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
+import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
+import { BackupManager } from '../core/BackupManager.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
@@ -85,6 +96,13 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { ClassReviewStore } from '../monitoring/ClassReviewStore.js';
+import { CorrectionClassReview } from '../monitoring/CorrectionClassReview.js';
+import { CompletionClaimVerifier } from '../monitoring/CompletionClaimVerifier.js';
+import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
+import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
 import { SelfUnblockRunStore, SelfUnblockChecklist } from '../monitoring/SelfUnblockChecklist.js';
@@ -119,6 +137,9 @@ import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
+import { BlockerLifecycleService } from '../monitoring/BlockerLifecycleService.js';
+import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
@@ -131,7 +152,7 @@ import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertReso
 import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
 import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
-import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
 import { ProviderReconciliationSweep } from '../monitoring/ProviderReconciliationSweep.js';
@@ -187,6 +208,7 @@ import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/Me
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
+import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -278,12 +300,14 @@ export class AgentServer {
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
+    autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  private blockerLifecycleService: BlockerLifecycleService | null = null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8) — null when the ledger failed. */
   private benchmarkDivergenceAnalyzer: BenchmarkDivergenceAnalyzer | null = null;
   private routingPriceAuthority: RoutingPriceAuthority | null = null;
@@ -305,6 +329,7 @@ export class AgentServer {
   private providerCostReportStore: ProviderCostReportStore | null = null;
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
+  private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
@@ -345,6 +370,22 @@ export class AgentServer {
    *  constructed only when resolveDevAgentGate(feedbackFactory.processing.enabled)
    *  is live; null on the fleet → both routes 503. */
   private feedbackProcessing: FeedbackProcessingService | null = null;
+  private feedbackDrain: {
+    service: FeedbackDrainService;
+    store: FeedbackDrainStore;
+    promotion: FeedbackConsumerPromotionStore;
+    tickProxy: FeedbackDrainTickProxy;
+    checkpointBackup: (trigger: 'promotion' | 'failover') => void;
+    finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+      oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+      ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
+      reconciliation: ReturnType<FeedbackDrainStore['reconcileInitiativeLinks']>;
+    };
+    isRestorePending: () => boolean;
+  } | null = null;
+  private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
+  private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
+  private feedbackDefaultsSelfHealEvidence = { successful: 0, samples: 0 };
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -382,6 +423,9 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private classReviewStore: ClassReviewStore | null = null;
+  private correctionClassReview: CorrectionClassReview | null = null;
+  private completionClaimVerifier: CompletionClaimVerifier | null = null;
   private blockerLedger: BlockerLedger | null = null;
   /** Self-Unblock checklist run store (the read surface + the store BlockerLedger verifies). */
   private selfUnblockRunStore: SelfUnblockRunStore | null = null;
@@ -429,6 +473,12 @@ export class AgentServer {
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
   private telegramAdapter: TelegramAdapter | null = null;
+
+  /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
+   * local + peer lifecycle rows at its lowest read primitive. */
+  setClassReviewRemoteReader(reader: import('../monitoring/ClassReviewStore.js').ClassReviewRemoteReader | null): void {
+    this.classReviewStore?.setRemoteReader(reader);
+  }
 
   constructor(options: {
     config: InstarConfig;
@@ -522,9 +572,17 @@ export class AgentServer {
     meshBindActive?: boolean;
     /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
+    mutualSshHealth?: (() => unknown) | null;
     /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
     getInboundQueue?: () => import('../core/QueueDrainLoop.js').QueueDrainLoop | null;
     getMachineCoherence?: () => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null;
+    getSingleMachineFailoverGap?: () => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null;
+    getMissingLoginSession?: () => import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null;
+    /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — read behind
+     *  GET /session-pool/failover-runner; null = dark (dev-gated, route 503s). */
+    getSessionPoolFailoverRunner?: () => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null;
+    /** Session-pool promotion activation. Null while promotionModel is off. */
+    sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Signed cross-machine carrier into the recipient's existing A2A inbox. */
@@ -774,6 +832,7 @@ export class AgentServer {
     topicIntentArcCheck?: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
     /** Shared intelligence provider (subscription/REPL-pool) for the standards-conformance gate. */
     intelligence?: import('../core/types.js').IntelligenceProvider | null;
+    llmQueue?: import('../monitoring/LlmQueue.js').LlmQueue;
     /** Usher signal store (rung 4) — the read-only pull surface for re-surface signals. */
     usherSignalStore?: import('../core/UsherSignalStore.js').UsherSignalStore | null;
     /** OIDC verification function for the GH-check endpoint (injected for testability). */
@@ -829,6 +888,7 @@ export class AgentServer {
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
+    autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -868,6 +928,9 @@ export class AgentServer {
     this.app = express();
 
     // Middleware
+    // Claim observation has a much smaller privacy/cost boundary than the
+    // general API. Parse it under 96 KiB before the broad server parser.
+    this.app.use('/completion-claim/observe', express.json({ limit: '96kb' }));
     this.app.use(express.json({ limit: '12mb' }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -1107,7 +1170,7 @@ export class AgentServer {
           dbPath: path.join(serverDataDir, 'framework-issue-ledger.db'),
         });
         this.mentorRunner = this.buildMentorRunner(this.frameworkIssueLedger, options, serverDataDir);
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok — warning plus explicit unavailable subsystem state
         console.warn('[instar] framework-issue-ledger init failed (non-fatal):', err);
         this.frameworkIssueLedger = null;
         this.mentorRunner = null;
@@ -1601,6 +1664,31 @@ export class AgentServer {
       }
     }
 
+    // Dark, measure-only blocker lifecycle telemetry. The tracker owns state;
+    // this service only observes acknowledged post-commit events.
+    const blockerCfg = (options.config.monitoring as {
+      blockerLifecycleLedger?: { enabled?: boolean };
+    } | undefined)?.blockerLifecycleLedger;
+    if (options.commitmentTracker && options.config.stateDir && resolveDevAgentGate(blockerCfg?.enabled, options.config)) {
+      try {
+        const ledger = new BlockerLifecycleLedger({
+          dbPath: path.join(options.config.stateDir, 'server-data', 'blocker-lifecycle.db'),
+        });
+        this.blockerLifecycleService = new BlockerLifecycleService(
+          options.commitmentTracker,
+          ledger,
+          options.meshSelfId ?? options.config.projectName,
+          undefined,
+          options.initiativeTracker,
+        );
+        options.guardRegistry?.register('monitoring.blockerLifecycleLedger.enabled', () =>
+          this.blockerLifecycleService?.guardStatus() as { enabled: boolean });
+      } catch (err) {
+        console.warn('[instar] blocker-lifecycle-ledger init failed (non-fatal):', err);
+        this.blockerLifecycleService = null;
+      }
+    }
+
     // A2A delivery tracker (A2A-DURABLE-DELIVERY-SPEC.md) — durable per-peer
     // delivery lifecycle + peer-health. Production (commands/server.ts) injects
     // its instance via options; when not injected (e.g. an AgentServer booted
@@ -2032,6 +2120,174 @@ export class AgentServer {
       this.feedbackProcessing = null;
     }
 
+    // Feedback Factory operated drain. The clustering service is the ingress
+    // projection; this layer adds registered agent readiness, durable outbox,
+    // and exact-key Initiative handoff. Dev-live/fleet-dark, consumer dry-run
+    // until a durable PIN-approved promotion record exists.
+    try {
+      const drainEnabled = resolveDevAgentGate(options.config.feedbackFactory?.drain?.enabled, options.config);
+      const consumerEnabled = resolveDevAgentGate(options.config.feedbackFactory?.consumer?.enabled, options.config);
+      const dataDir = resolveCanonicalStoreDir(options.config);
+      let sourceCheckout = false;
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(options.config.projectDir, 'package.json'), 'utf8')) as { name?: string };
+        sourceCheckout = pkg.name === 'instar' && fs.existsSync(path.join(options.config.projectDir, '.git'));
+      } catch { /* @silent-fallback-ok: package discovery is posture-only; an unreadable/non-source install must remain fleet-dark */ }
+      this.feedbackDrainPosture = resolveFeedbackDrainPosture({ drainEnabled, developmentAgent: options.config.developmentAgent === true,
+        sourceCheckout, hasCanonicalDataDir: Boolean(dataDir), dependenciesReady: Boolean(this.feedbackProcessing && options.initiativeTracker), initialized: false });
+      if (drainEnabled && dataDir && this.feedbackProcessing && options.initiativeTracker) {
+        const dbPath = options.config.feedbackFactory?.drain?.dbPath ?? path.join(dataDir, 'feedback-drain.db');
+        const tokenKey = createHash('sha256').update(options.config.authToken ?? `feedback-drain:${options.config.projectName}`).digest();
+        const store = new FeedbackDrainStore({ dbPath, tokenHmacKey: tokenKey });
+        if (!store.integrityCheck()) throw new Error('feedback drain critical integrity_check corruption');
+        const promotion = new FeedbackConsumerPromotionStore(path.join(path.dirname(dbPath), 'consumer-live.json'));
+        const agentId = options.config.projectName;
+        const selfMachineId = options.meshSelfId ?? agentId;
+        const multiMachineMode = options.coordinator?.enabled === true;
+        // In a real mesh, absence is not permission to self-elect. Single-machine
+        // installs retain the local fallback because there is no competing owner.
+        const ownerHost = resolveFeedbackDrainOwnerMachineId(options.config.feedbackFactory?.operatedHostMachineId, selfMachineId, multiMachineMode);
+        const serviceOwnerHost = ownerHost ?? `unconfigured:${selfMachineId}`;
+        let localOwnerEpoch = 1;
+        let restorePending = store.restorePending();
+        const holdsCanonicalLease = () => ownerHost !== null && selfMachineId === ownerHost && (options.coordinator?.enabled ? options.coordinator.holdsLease() : true);
+        const isCanonicalOwner = () => !restorePending && holdsCanonicalLease();
+        const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
+        let service!: FeedbackDrainService;
+        service = new FeedbackDrainService({
+          store,
+          processing: this.feedbackProcessing,
+          consumer: new FeedbackInitiativeConsumer(options.initiativeTracker),
+          arbiter,
+          authorityId: 'feedback-readiness-default',
+          ownerHost: serviceOwnerHost,
+          ownerEpoch: () => options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch,
+          isCanonicalOwner,
+          isConsumerLive: () => consumerEnabled && options.config.feedbackFactory?.consumer?.dryRun === false && promotion.isLive(),
+          consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
+          maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
+          maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
+        });
+        const tickProxy = new FeedbackDrainTickProxy({
+          selfMachineId,
+          ownerMachineId: () => ownerHost,
+          isCanonicalOwner,
+          service,
+          store,
+          signingKey: tokenKey,
+          signEnvelope: multiMachineMode ? (data) => signMachinePayload(data, options.localSigningKeyPem || options.coordinator!.managers.identityManager.loadSigningKey()) : undefined,
+          verifyEnvelope: multiMachineMode ? (sender, data, signature) => {
+            const publicKey = options.coordinator!.managers.identityManager.getSigningPublicKeyPem(sender);
+            return Boolean(publicKey && verifyMachinePayload(data, signature, publicKey));
+          } : undefined,
+          transport: options.resolvePeerUrls ? async (targetMachineId, envelope) => {
+            const peer = options.resolvePeerUrls!().find((candidate) => candidate.machineId === targetMachineId);
+            if (!peer) throw new Error('feedback-drain-owner-url-unavailable');
+            const response = await fetch(`${peer.url}/feedback-factory/drain/tick`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${options.config.authToken ?? ''}`,
+                'Content-Type': 'application/json',
+                'X-Instar-Request': '1',
+                'X-Instar-AgentId': selfMachineId,
+              },
+              body: JSON.stringify({ proxyEnvelope: envelope }),
+              signal: AbortSignal.timeout(5_000),
+            });
+            const body = await response.json() as DrainTickGatewayResult['body'];
+            return { status: response.status as DrainTickGatewayResult['status'], body };
+          } : undefined,
+        });
+        const backupCadence = new FeedbackDrainBackupCadence(new BackupManager(options.config.stateDir, options.config.backup));
+        const checkpointBackup = (trigger: 'promotion' | 'failover') => {
+          if (!isCanonicalOwner()) throw new Error('feedback drain backup requires the canonical owner');
+          store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch);
+          if (trigger === 'promotion') backupCadence.afterPromotion(); else backupCadence.afterFailover();
+        };
+        const finalizeFailoverRestore = (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+          oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+          if (!restorePending) throw new Error('feedback drain has no pending restored checkpoint');
+          if (!holdsCanonicalLease()) throw new Error('feedback drain failover finalization requires the canonical owner');
+          if (!/^[-A-Za-z0-9._:]{8,200}$/.test(input.operatorDecisionRef)) throw new Error('bounded operator decision reference required');
+          const nextEpoch = input.restoredOwnerAuthorityEpoch + 1;
+          if (options.coordinator?.enabled && options.coordinator.getLeaseEpoch() !== nextEpoch) {
+            throw new Error('live coordinator epoch must equal the restored epoch successor');
+          }
+          const finalized = store.finalizeRestore(input);
+          if (!options.coordinator?.enabled) localOwnerEpoch = finalized.ownerAuthorityEpoch;
+          const reconciliation = store.reconcileInitiativeLinks({
+            lookupByFeedbackWorkKey: (feedbackWorkKey) => (options.initiativeTracker?.list({ kind: 'task' }) ?? [])
+              .filter((initiative) => initiative.feedbackWorkKey === feedbackWorkKey)
+              .map((initiative) => ({ feedbackWorkKey, artifactId: initiative.id, artifactKind: 'initiative', readable: Boolean(options.initiativeTracker?.get(initiative.id)) })),
+          });
+          store.checkpointForBackup(finalized.ownerAuthorityEpoch);
+          backupCadence.afterFailover();
+          restorePending = false;
+          return { ...finalized, reconciliation };
+        };
+        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending };
+        if (options.config.stateDir && sourceCheckout) {
+          const selfHealBootId = randomUUID();
+          void runFeedbackFactoryDefaultsSelfHeal({
+            stateDir: options.config.stateDir,
+            developmentAgent: options.config.developmentAgent === true,
+            bootId: selfHealBootId,
+            currentFence: () => isCanonicalOwner() ? `${selfMachineId}:${options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch}` : null,
+            notify: async (notice) => {
+              const enqueue = this.telegramAdapter?.createAttentionItem;
+              if (!enqueue) throw new Error('durable attention enqueue unavailable');
+              await enqueue.call(this.telegramAdapter, {
+                id: notice.id,
+                title: 'Feedback defaults self-heal needs attention',
+                description: `The bounded feedback-defaults repair reported ${notice.reason}.`,
+                summary: `Feedback-defaults self-heal: ${notice.reason}`,
+                priority: notice.priority,
+                category: 'monitoring',
+                sourceContext: 'self-heal-gate:feedback-defaults',
+              });
+            },
+            audit: (event) => console.log(`[self-heal-gate] feedback-defaults ${event.event}${event.reason ? ` (${event.reason})` : ''}`),
+          }).then(result => {
+            this.feedbackDefaultsSelfHealEvidence.samples++;
+            if (result.outcome === 'healed' || result.outcome === 'healthy') this.feedbackDefaultsSelfHealEvidence.successful++;
+          }).catch((error) => {
+            this.feedbackDefaultsSelfHealEvidence.samples++;
+            console.warn('[self-heal-gate] feedback-defaults attempt failed safely:', error instanceof Error ? error.message : 'unknown');
+          });
+        }
+        if (options.config.developmentAgent === true && sourceCheckout) {
+          const backupTick = () => {
+            if (!isCanonicalOwner()) return;
+            backupCadence.maybeHourly(() => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch));
+          };
+          setImmediate(() => { try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
+          this.feedbackDrainBackupTimer = setInterval(() => {
+            try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); }
+          }, 15 * 60 * 1000);
+          this.feedbackDrainBackupTimer.unref?.();
+        }
+        this.feedbackDrainPosture = resolveFeedbackDrainPosture({ drainEnabled: true, developmentAgent: options.config.developmentAgent === true,
+          sourceCheckout, hasCanonicalDataDir: true, dependenciesReady: true, initialized: true, ownerConfigured: ownerHost !== null });
+        console.log(`[feedback-factory] operated drain live (consumer: ${service.stats().consumerLive ? 'live' : 'simulation'})`);
+      }
+    } catch (err) { /* @silent-fallback-ok: failure is logged and exposed as unavailable posture; integrity failures also raise an urgent operator item */
+      console.warn('[feedback-factory] operated drain init failed (non-fatal):', err);
+      this.feedbackDrain = null;
+      this.feedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
+      const errorText = err instanceof Error ? err.message : String(err);
+      if (options.config.stateDir && /(corrupt|malformed|integrity|database disk image|wal)/i.test(errorText)) {
+        void this.telegramAdapter?.createAttentionItem?.({
+          id: `feedback-drain-critical:${createHash('sha256').update(errorText).digest('hex').slice(0, 16)}`,
+          title: 'Feedback drain integrity failure',
+          description: 'The operated feedback drain stopped before making further changes because its durable state failed an integrity check. Operator repair or restore is required.',
+          summary: 'Feedback drain stopped on a critical integrity failure; no automatic repair was attempted.',
+          priority: 'URGENT',
+          category: 'monitoring',
+          sourceContext: 'feedback-drain:integrity',
+        });
+      }
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. DEV-GATED (CMT-1438): `enabled` is OMITTED
     // from the ConfigDefaults block so the developmentAgent gate decides — LIVE on a
@@ -2073,7 +2329,7 @@ export class AgentServer {
                 sourceTreeReadOk: true,
               });
               return out.split('\n').map((s) => s.trim()).filter(Boolean);
-            } catch { return []; }
+            } catch { /* @silent-fallback-ok — missing registry yields no proposed standards, never invented authority */ return []; }
           },
         });
 
@@ -2166,6 +2422,166 @@ export class AgentServer {
     } catch (err) {
       console.warn('[instar] correction-learning ledger init failed (non-fatal):', err);
       this.correctionLedger = null;
+    }
+
+    // Drive 7 WS1 — every captured correction receives a record-time class
+    // review shell and an async standards/process judgment. The feature is live
+    // only on development agents and remains dry-run/observe-only in v1.
+    try {
+      const classReviewEnabled = resolveDevAgentGate(
+        options.config.monitoring?.correctionClassReview?.enabled,
+        options.config,
+      );
+      if (classReviewEnabled && options.config.stateDir) {
+        const cfg = options.config.monitoring?.correctionClassReview ?? {};
+        this.classReviewStore = new ClassReviewStore({
+          dbPath: path.join(options.config.stateDir, 'class-reviews.db'),
+          machineId: options.meshSelfId ?? options.config.projectName,
+        });
+        if (options.replicatedRecordEmitter) {
+          const emitter = options.replicatedRecordEmitter;
+          this.classReviewStore.setReplicationEmitter({
+            emitPut: (record) => emitter.emit(
+              CLASS_REVIEW_STORE_KEY,
+              record.dedupeKey,
+              (hlc, origin, observed) => buildClassReviewRecordData({ record, hlc, op: 'put', origin, observed }),
+            ),
+          });
+        }
+        this.correctionClassReview = new CorrectionClassReview({
+          store: this.classReviewStore,
+          intelligence: options.intelligence,
+          dryRun: cfg.dryRun !== false,
+          maxAttempts: cfg.maxAttempts,
+          maxReviewsPerTick: cfg.maxReviewsPerTick,
+          maxOpenArtifacts: cfg.maxOpenArtifacts,
+          admitCorrectionAction: ({ correctionId, classReviewRef }) => evaluateCorrectionInstanceFix({
+            originCorrection: true, correctionId, claimedClassReviewRef: classReviewRef,
+            dryRun: cfg.dryRun !== false,
+            correctionLedger: this.correctionLedger,
+            classReviewStore: this.classReviewStore,
+          }),
+          standardTitles: () => {
+            try {
+              const registry = fs.readFileSync(path.join(options.config.projectDir, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
+              return [...registry.matchAll(/^###\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 100);
+            } catch { return []; }
+          },
+          createInitiative: options.initiativeTracker ? async (input) => {
+            const created = await options.initiativeTracker!.create({
+              id: String(input.id), title: String(input.title), description: String(input.description),
+              phases: [{ id: 'operator-ratification', name: 'Operator ratification' }],
+              needsUser: true,
+              needsUserReason: 'Standards amendments require explicit operator ratification.',
+            });
+            return { id: created.id };
+          } : undefined,
+          addAction: options.evolution ? (input) => {
+            const recovery = input.origin === 'correction-class-review-recovery';
+            const action = options.evolution!.addAction({
+              title: String(input.title),
+              description: `Correction-derived process improvement. classReviewRef=${String(input.classReviewRef)}; autonomous execution is forbidden.`,
+              priority: 'medium', source: { platform: 'correction-class-review', context: 'process-gap' },
+              tags: [recovery ? 'origin:class-review-recovery' : 'origin:correction', `class-review:${String(input.classReviewRef)}`],
+            });
+            return { id: action.id };
+          } : undefined,
+          audit: (event) => {
+            try {
+              const audit = path.join(options.config.stateDir!, 'logs', 'correction-class-review.jsonl');
+              fs.mkdirSync(path.dirname(audit), { recursive: true });
+              fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, { mode: 0o600 });
+            } catch { /* @silent-fallback-ok — authoritative class-review state remains in SQLite; mirror audit is best-effort */ }
+          },
+        });
+      }
+      const completionEnabled = resolveDevAgentGate(
+        options.config.monitoring?.completionClaimVerification?.enabled,
+        options.config,
+      );
+      if (completionEnabled && options.config.stateDir) {
+        const cfg = options.config.monitoring?.completionClaimVerification ?? {};
+        const sharedClaimQueue = options.llmQueue;
+        const claimIntelligence = options.intelligence && sharedClaimQueue ? {
+          evaluate: (prompt: string, intelligenceOptions: import('../core/types.js').IntelligenceOptions = {}) => sharedClaimQueue.enqueueMetered({
+            component: 'claim-verification', estimatedInputTokens: Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4),
+            maxOutputTokens: intelligenceOptions.maxTokens ?? 1_800, estimatedCostCents: 0.25,
+            hourly: { requests: 300 }, daily: { requests: 2_000, inputTokens: 10_000_000, outputTokens: 4_000_000, costCents: 500 },
+            run: async (signal, reportUsage) => options.intelligence!.evaluate(prompt, { ...intelligenceOptions, signal,
+              attribution: intelligenceOptions.attribution ?? { component: 'completion-claim-verify' },
+              onUsage: (usage) => { reportUsage({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
+                intelligenceOptions.onUsage?.(usage); } }),
+          }),
+        } : null;
+        const secretStore = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
+        const keyName = 'claimVerification.pseudonymKeyV1';
+        let encodedKey = secretStore.get(keyName);
+        if (typeof encodedKey !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(encodedKey)) {
+          const lockPath = path.join(options.config.stateDir, 'machine', 'claim-pseudonym-key.lock');
+          fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+          let lockFd: number | undefined;
+          try {
+            lockFd = fs.openSync(lockPath, 'wx', 0o600);
+            encodedKey = secretStore.get(keyName);
+            if (typeof encodedKey !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(encodedKey)) {
+              encodedKey = randomBytes(32).toString('base64');
+              secretStore.set(keyName, encodedKey);
+              encodedKey = secretStore.get(keyName);
+            }
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            encodedKey = secretStore.get(keyName);
+          } finally {
+            if (lockFd !== undefined) {
+              fs.closeSync(lockFd);
+              try { SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'claim-identity-lock-release' }); }
+              catch { /* @silent-fallback-ok — stale lock disables only a future initialization attempt */ }
+            }
+          }
+        }
+        if (typeof encodedKey !== 'string' || Buffer.from(encodedKey, 'base64').length !== 32) throw new Error('claim observation identity key unavailable');
+        const recorder = new ClaimObservationRecorder({ stateDir: options.config.stateDir,
+          pseudonymKey: Buffer.from(encodedKey, 'base64'), maxAuditBytes: cfg.maxAuditBytes,
+          maxCorpusBytes: cfg.maxCorpusBytes });
+        const housekeeper = new ClaimObservationHousekeeper({ stateDir: options.config.stateDir });
+        const admissionQueue = new ClaimObservationAdmissionQueue({ maxQueued: cfg.maxQueued,
+          maxQueuedPerTopic: cfg.maxQueuedPerTopic, maxConcurrent: cfg.maxConcurrent, queueTtlMs: cfg.queueTtlMs });
+        this.completionClaimVerifier = new CompletionClaimVerifier({
+          intelligence: claimIntelligence,
+          stateDir: options.config.stateDir,
+          enabled: true,
+          dryRun: cfg.dryRun !== false,
+          maxAuditBytes: cfg.maxAuditBytes,
+          maxQueued: cfg.maxQueued,
+          maxQueuedPerTopic: cfg.maxQueuedPerTopic,
+          maxConcurrent: cfg.maxConcurrent,
+          queueTtlMs: cfg.queueTtlMs,
+          generalObservation: cfg.generalObservation !== false,
+          recorder,
+          admissionQueue,
+          bootId: randomUUID(),
+        });
+        this.completionClaimVerifier.recordRetentionFailures(housekeeper.sweep().failures);
+        this.claimObservationHousekeeperTimer = setInterval(() => {
+          this.completionClaimVerifier?.recordRetentionFailures(housekeeper.sweep().failures);
+        }, 6 * 60 * 60 * 1000);
+        this.claimObservationHousekeeperTimer.unref?.();
+        const completionVerifier = this.completionClaimVerifier;
+        runTurnEvidenceBootCanary((reason) => {
+          completionVerifier.recordCanaryDrift();
+          try {
+            const audit = path.join(options.config.stateDir!, 'logs', 'completion-claim-audit.jsonl');
+            fs.mkdirSync(path.dirname(audit), { recursive: true });
+            fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), evaluated: false,
+              flagged: false, event: 'turn-evidence-canary-drift', reason })}\n`, { mode: 0o600 });
+          } catch { /* @silent-fallback-ok — in-memory canary metric still records drift; mirror append cannot break boot */ }
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] correction-class-review init failed (non-fatal):', err);
+      this.classReviewStore = null;
+      this.correctionClassReview = null;
+      this.completionClaimVerifier = null;
     }
 
     // BlockerLedger (docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md, Piece 1)
@@ -3007,6 +3423,7 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
+      blockerLifecycleService: this.blockerLifecycleService,
       benchmarkDivergenceAnalyzer: this.benchmarkDivergenceAnalyzer,
       routingPriceAuthority: this.routingPriceAuthority,
       meteredSpendLedger: this.meteredSpendLedger,
@@ -3054,6 +3471,8 @@ export class AgentServer {
       cutoverReadiness: this.cutoverReadiness,
       inboxDrainer: this.inboxDrainer,
       feedbackProcessing: this.feedbackProcessing,
+      feedbackDrain: this.feedbackDrain,
+      feedbackDrainPosture: this.feedbackDrainPosture,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
@@ -3061,6 +3480,9 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      classReviewStore: this.classReviewStore,
+      correctionClassReview: this.correctionClassReview,
+      completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,
@@ -3089,6 +3511,7 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
@@ -3100,8 +3523,31 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      mutualSshHealth: options.mutualSshHealth ?? (() => {
+        if (!resolveDevAgentGate(options.config.multiMachine?.mutualSsh?.enabled, options.config)) return null;
+        const live = (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
+        if (live) return () => live.status();
+        const machineId = options.coordinator?.managers?.identityManager?.hasIdentity()
+          ? options.coordinator.managers.identityManager.loadIdentity().machineId
+          : `${options.config.projectName}-local`;
+        const identity = new MachineSshIdentity(options.config.stateDir, options.config.projectName, machineId).ensure();
+        return () => ({
+          enabled: true,
+          dryRun: options.config.multiMachine?.mutualSsh?.dryRun !== false,
+          readinessRequired: options.config.multiMachine?.mutualSsh?.requiredForEmployeeRole === true,
+          ready: true,
+          enrollmentState: 'ready',
+          blockedReasons: [],
+          local: { machineId, state: 'identity-ready', clientGeneration: identity.clientGeneration, hostGeneration: identity.hostGeneration },
+          pairs: [],
+        });
+      })(),
       getInboundQueue: options.getInboundQueue ?? null,
       getMachineCoherence: options.getMachineCoherence ?? null,
+      getSingleMachineFailoverGap: options.getSingleMachineFailoverGap ?? null,
+      getMissingLoginSession: options.getMissingLoginSession ?? null,
+      getSessionPoolFailoverRunner: options.getSessionPoolFailoverRunner ?? null,
+      sessionPoolPromotionActivation: options.sessionPoolPromotionActivation ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       workingSetArtifactManager: options.workingSetArtifactManager ?? null,
@@ -3168,6 +3614,69 @@ export class AgentServer {
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
+    if (this.blockerLifecycleService) {
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.completed-runs', () => {
+        const run = this.feedbackDrain?.service.stats().lastRun;
+        if (!run) return null;
+        return { value: run.state === 'succeeded' || run.state === 'no-op' ? 1 : 0, samples: 1 };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('autonomous-throughput.observed-runs', () => {
+        const runs = routeCtx.autonomousThroughputFloor?.status().runs.length ?? 0;
+        return { value: runs, samples: runs };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('claim-verification.classified-claims', () => {
+        const stats = this.completionClaimVerifier?.stats();
+        if (!stats) return null;
+        return { value: stats.classifiedTurns, samples: stats.candidateTurns };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('mutual-ssh.ready-peers', () => {
+        const status = routeCtx.mutualSshHealth?.() as { pairs?: Array<{ mutual?: boolean }> } | null;
+        if (!status?.pairs) return null;
+        return { value: status.pairs.filter(pair => pair.mutual === true).length, samples: status.pairs.length };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('slack-decision-gate.considered-acknowledgments', () => {
+        const stats = options.slack?.getAmbientStats();
+        if (!stats) return null;
+        const channels = stats.channels;
+        const reacted = channels.reduce((sum, channel) => sum + (channel.silentByReason.react ?? 0), 0);
+        const evaluated = channels.reduce((sum, channel) => sum + channel.evaluated, 0);
+        return { value: reacted, samples: evaluated };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('context-recovery.successful-recoveries', () => {
+        const eventPath = path.join(options.config.projectDir, '.instar', 'recovery-events.jsonl');
+        let fd: number | null = null;
+        try {
+          const size = fs.statSync(eventPath).size;
+          const length = Math.min(size, 64 * 1024);
+          const buffer = Buffer.alloc(length);
+          fd = fs.openSync(eventPath, 'r');
+          fs.readSync(fd, buffer, 0, length, size - length);
+          const rows = buffer.toString('utf8').split('\n').slice(length === size ? 0 : 1).filter(Boolean);
+          let samples = 0; let successful = 0;
+          for (const line of rows) {
+            const row = JSON.parse(line) as { failureType?: string; recovered?: boolean };
+            if (row.failureType !== 'context_exhaustion') continue;
+            samples++;
+            if (row.recovered === true) successful++;
+          }
+          return { value: successful, samples };
+        } catch (error) {
+          DegradationReporter.getInstance().report({
+            feature: 'blocker-lifecycle.context-recovery-projection',
+            primary: 'read the bounded local recovery event tail',
+            fallback: 'return no observation so maturation remains HOLD',
+            reason: error instanceof Error ? error.message : 'recovery event-log read failed',
+            impact: 'context-recovery evidence remains unavailable until a later successful read',
+          });
+          return null;
+        } finally {
+          if (fd !== null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — read-only descriptor cleanup */ }
+        }
+      });
+      this.blockerLifecycleService.registerMaturationProjection('self-heal-gate.successful-repairs', () => ({
+        value: this.feedbackDefaultsSelfHealEvidence.successful, samples: this.feedbackDefaultsSelfHealEvidence.samples,
+      }));
+    }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
 
@@ -4740,6 +5249,12 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    if (this.claimObservationHousekeeperTimer) {
+      clearInterval(this.claimObservationHousekeeperTimer);
+      this.claimObservationHousekeeperTimer = null;
+    }
+    this.blockerLifecycleService?.close();
+    this.blockerLifecycleService = null;
     // Stop the feedback-inbox drainer's poll loop (pure timer; store appends are
     // synchronous so there is no in-flight write to wait on).
     if (this.inboxDrainer) {
@@ -4834,6 +5349,7 @@ export class AgentServer {
     }
     // Stop the AutonomousLivenessReconciler tick loop (clears its unref'd timer).
     try { this.routeContext?.autonomousLivenessReconciler?.stop(); } catch { /* best-effort */ }
+    try { this.routeContext?.autonomousThroughputFloor?.stop(); } catch { /* best-effort */ }
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;
@@ -4843,6 +5359,8 @@ export class AgentServer {
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
       this.followMeConsumerTimer = null;
     }
+    try { if (this.feedbackDrainBackupTimer) clearInterval(this.feedbackDrainBackupTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+    this.feedbackDrainBackupTimer = null;
     // Stop the growth-digest publisher's cron + pending catch-up timer.
     if (this.growthDigestPublisher) {
       try { this.growthDigestPublisher.stop(); } catch { /* @silent-fallback-ok — best-effort teardown at shutdown */ }

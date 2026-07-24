@@ -129,17 +129,20 @@ export interface SlackConfig {
    * Conservative ambient "should I speak?" gate (Slack considered/ambient mode,
    * §5.2). DARK by default — when unset OR `enabledChannelIds` is empty, NO gate is
    * attached and undirected messages are dropped exactly as today (mention-only).
-   * The gate runs ONLY for an explicitly-opted-in channel and can only ever make the
-   * agent quieter (fail-to-silence). See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2.
+   * The gate runs ONLY for an explicitly-opted-in channel and fails to silence.
+   * It may add the fixed `eyes` reaction, meaning only “seen and considered” — never
+   * ownership, approval, or a promise of follow-up. Do not opt in a channel where
+   * that reaction convention would imply commitment.
+   * See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2.
    */
   ambientContribution?: {
     /** Channel IDs (C…) explicitly opted into proactive contribution. Default: none. */
     enabledChannelIds?: string[];
-    /** Hard cap on unsolicited messages per channel per window. Conservative default: 1. */
+    /** Hard shared cap on unsolicited messages/reactions per channel per window. Default: 1. */
     maxProactivePerChannel?: number;
     /** Rolling rate-limit window in ms. Default: 1800000 (30 min). */
     windowMs?: number;
-    /** Conservative confidence floor (0-1) for an LLM "speak" verdict. Default: 0.85. */
+    /** Conservative confidence floor (0-1) for an LLM speak/react verdict. Default: 0.85. */
     minConfidence?: number;
   };
   /**

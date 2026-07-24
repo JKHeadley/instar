@@ -410,6 +410,29 @@ describe('SessionMonitor', () => {
       await monitor.poll(); // a NEW genuine death -> notify #2
       expect(deps.sendToTopic).toHaveBeenCalledTimes(2);
     });
+
+    it('presents a previously seen boolean to the same recovery after the banner scrolls away', async () => {
+      const mockRecovery = {
+        markContextWedgedSeen: vi.fn(),
+        hasContextWedgedSeen: vi.fn(() => true),
+        checkAndRecover: vi.fn(async () => ({
+          recovered: false, deferred: true, failureType: 'context_exhaustion' as const,
+          message: 'existing recovery deferred',
+        })),
+      };
+      deps = createMockDeps({
+        getActiveTopicSessions: vi.fn(() => new Map([[203, 'session-latched']])),
+        captureSessionOutput: vi.fn(() => ''),
+        sessionRecovery: mockRecovery as any,
+      });
+      monitor = new SessionMonitor(deps, { pollIntervalSec: 60 });
+
+      await monitor.poll();
+
+      expect(mockRecovery.markContextWedgedSeen).not.toHaveBeenCalled();
+      expect(mockRecovery.hasContextWedgedSeen).toHaveBeenCalledWith(203);
+      expect(mockRecovery.checkAndRecover).toHaveBeenCalledWith(203, 'session-latched');
+    });
   });
 
   describe('context-exhaustion notify ledger persistence (survives server restarts)', () => {

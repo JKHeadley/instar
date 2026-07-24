@@ -47,28 +47,17 @@ describe('EnrollmentWizard', () => {
     expect(EnrollmentWizard.defaultKind('github-copilot')).toBe('url-code-paste');
   });
 
-  it('flowNotice: url-code-paste (Claude) warns about the two-code sequence; device-code does not', () => {
-    const claude = EnrollmentWizard.flowNotice('url-code-paste');
-    expect(claude).toBeTruthy();
-    expect(claude).toMatch(/two codes/i);
-    expect(claude).toMatch(/email/i);
-    expect(EnrollmentWizard.flowNotice('device-code')).toBeUndefined();
-  });
+  it('start attaches NO flow notice on any enrollment (the two-codes disclaimer is retired)', async () => {
+    const claude = wizard([{ verificationUrl: 'https://claude.com/oauth/authorize?code=abc', ttlMs: 15 * 60_000 }]);
+    const cl = await claude.start({ id: 'sagemind-1', label: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code' });
+    expect(cl.kind).toBe('url-code-paste');
+    expect(cl.notice).toBeUndefined();
+    expect(claude.pending()[0].notice).toBeUndefined();
 
-  it('start attaches the two-code notice on a Claude (url-code-paste) enrollment', async () => {
-    const w = wizard([{ verificationUrl: 'https://claude.com/oauth/authorize?code=abc', ttlMs: 15 * 60_000 }]);
-    const l = await w.start({ id: 'sagemind-1', label: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code' });
-    expect(l.kind).toBe('url-code-paste');
-    expect(l.notice).toMatch(/two codes/i);
-    // it survives the store round-trip onto the phone surface
-    expect(w.pending()[0].notice).toMatch(/two codes/i);
-  });
-
-  it('start attaches NO notice on a device-code (Codex) enrollment', async () => {
-    const w = wizard([{ verificationUrl: 'https://auth.openai.com/codex/device', userCode: '7DAU-W4XJA', ttlMs: 15 * 60_000 }]);
-    const l = await w.start({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' });
-    expect(l.kind).toBe('device-code');
-    expect(l.notice).toBeUndefined();
+    const codex = wizard([{ verificationUrl: 'https://auth.openai.com/codex/device', userCode: '7DAU-W4XJA', ttlMs: 15 * 60_000 }]);
+    const cx = await codex.start({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' });
+    expect(cx.kind).toBe('device-code');
+    expect(cx.notice).toBeUndefined();
   });
 
   it('start drives the login + stores the public code/URL with TTL', async () => {
@@ -116,6 +105,49 @@ describe('EnrollmentWizard', () => {
     expect(requests.map((r) => r.openBrowser)).toEqual([true, false]);
     expect(renewed[0].verificationUrl).toBe('https://claude.com/oauth/2');
     expect(store.get('claude-1')?.verificationUrl).toBe('https://claude.com/oauth/2');
+  });
+
+  it('restores a durable pending flow after restart with a fresh artifact and no browser pop', async () => {
+    const requests: Parameters<LoginDriver>[0][] = [];
+    const first = new EnrollmentWizard({
+      store, now: () => clock,
+      driveLogin: async () => ({
+        verificationUrl: 'https://claude.com/oauth/old',
+        ttlMs: 15 * 60_000,
+      }),
+    });
+    await first.start({
+      id: 'claude-1', label: 'Claude', provider: 'anthropic',
+      framework: 'claude-code', configHome: '/tmp/claude-1',
+    });
+
+    // A new process loads the same durable store, but its old pane no longer
+    // exists. Boot recovery must re-drive it before traffic is served.
+    const restartedStore = new PendingLoginStore({ stateDir: dir, now: () => clock });
+    const restarted = new EnrollmentWizard({
+      store: restartedStore, now: () => clock,
+      driveLogin: async (req) => {
+        requests.push(req);
+        return { verificationUrl: 'https://claude.com/oauth/fresh', ttlMs: 15 * 60_000 };
+      },
+    });
+    const recovered = await restarted.recoverAfterRestart();
+
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].verificationUrl).toBe('https://claude.com/oauth/fresh');
+    expect(recovered[0].reissueCount).toBe(1);
+    expect(requests[0].openBrowser).toBe(false);
+  });
+
+  it('refreshes a live-but-dead-pane flow and leaves terminal flows untouched', async () => {
+    const w = wizard([
+      { verificationUrl: 'https://claude.com/oauth/old', ttlMs: 15 * 60_000 },
+      { verificationUrl: 'https://claude.com/oauth/fresh', ttlMs: 15 * 60_000 },
+    ]);
+    await w.start({ id: 'claude-1', label: 'Claude', provider: 'anthropic', framework: 'claude-code' });
+    expect((await w.refresh('claude-1'))?.verificationUrl).toBe('https://claude.com/oauth/fresh');
+    w.complete('claude-1');
+    expect(await w.refresh('claude-1')).toBeNull();
   });
 
   it('a driver failure during reissue is skipped (sweep continues, login stays expired)', async () => {
@@ -442,7 +474,7 @@ describe('EnrollmentWizard', () => {
       expect(l.kind).toBe('device-code');
     });
 
-    it('a remote Claude start stays url-code-paste (no single-code flow) + keeps the two-code notice', async () => {
+    it('a remote Claude start stays url-code-paste (no single-code flow), with no flow notice', async () => {
       let seenKind: string | undefined;
       const drive: LoginDriver = async (req) => {
         seenKind = req.kind;
@@ -451,7 +483,7 @@ describe('EnrollmentWizard', () => {
       const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
       const l = await w.start({ id: 'claude-r', label: 'main', provider: 'anthropic', framework: 'claude-code', remote: true });
       expect(seenKind).toBe('url-code-paste');
-      expect(l.notice).toMatch(/two codes/i);
+      expect(l.notice).toBeUndefined();
     });
 
     it('an explicit kind always wins over the remote preference', async () => {

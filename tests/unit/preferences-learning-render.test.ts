@@ -24,6 +24,8 @@ import {
   renderHeadline,
   renderPreferences,
   renderCorrections,
+  renderClassReviews,
+  renderCompletionAudit,
   renderDisabled,
   createController,
 } from '../../dashboard/preferences-learning.js';
@@ -152,6 +154,35 @@ describe('renderCorrections', () => {
     renderCorrections(doc, target, { records: [{ id: 'X', kind: 'user-preference', scrubbedSummary: 'safe summary', learning: 'RAW-LEAK-SHOULD-NOT-APPEAR', status: 'open', occurrenceCount: 1, detectedAt: new Date().toISOString() }] }, Date.now());
     expect(target.textContent).not.toMatch(/RAW-LEAK-SHOULD-NOT-APPEAR/);
     expect(target.textContent).toMatch(/safe summary/);
+  });
+});
+
+describe('class review and completion surfaces', () => {
+  it('humanizes closed enum values and provides expandable detail without leaking unknown slugs', () => {
+    const reviews = doc.createElement('div');
+    renderClassReviews(doc, reviews, { records: [{
+      fillState: 'dead-lettered', reviewLifecycle: 'expired-internal-slug',
+      standardReview: { verdict: 'needs-upgrade' }, processReview: { verdict: 'process-gap' },
+      standardOutcome: 'expired-unreviewed', processOutcome: 'no-action',
+    }] });
+    expect(reviews.querySelector('details')).not.toBeNull();
+    expect(reviews.textContent).toContain('Needs a standard upgrade');
+    expect(reviews.textContent).toContain('Process gap found');
+    expect(reviews.textContent).toContain('Awaiting overdue review');
+    expect(reviews.textContent).toContain('No action needed');
+    expect(reviews.textContent).not.toMatch(/needs-upgrade|process-gap|expired-unreviewed|no-action|expired-internal-slug/);
+
+    const claims = doc.createElement('div');
+    renderCompletionAudit(doc, claims, { records: [{ verdict: 'uncorroborated-unknown', actionKind: 'handed-off' }] });
+    expect(claims.querySelector('details')).not.toBeNull();
+    expect(claims.textContent).toContain('Evidence was not found');
+    expect(claims.textContent).toContain('Handoff');
+    expect(claims.textContent).not.toMatch(/uncorroborated-unknown|handed-off/);
+
+    const ineligible = doc.createElement('div');
+    renderCompletionAudit(doc, ineligible, { records: [{ verdict: 'not-eligible', actionKind: 'other' }] });
+    expect(ineligible.textContent).toContain('Not eligible for this check');
+    expect(ineligible.textContent).not.toContain('not-eligible');
   });
 });
 

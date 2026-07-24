@@ -154,6 +154,25 @@ describe('Slack registry + resume map are routing-key aware', () => {
     expect(adapter.getChannelForSession('sess-thread')).toBe(threadKey);
   });
 
+  it('disk fallback sees a binding written after adapter boot without mutating memory', () => {
+    const { adapter, stateDir } = makeAdapter({ enabledChannelIds: [CH] });
+    const routingKey = `${CH}:${THREAD_A}`;
+    fs.writeFileSync(path.join(stateDir, 'slack-channel-registry.json'), JSON.stringify({
+      channelToSession: {
+        [routingKey]: { sessionName: 'late-session', registeredAt: new Date().toISOString() },
+      },
+    }));
+    expect(adapter.getChannelForSession('late-session')).toBeNull();
+    expect(adapter.resolveChannelForSessionFromDisk('late-session')).toBe(routingKey);
+    expect(adapter.getChannelForSession('late-session')).toBeNull();
+  });
+
+  it('malformed disk registry fails closed to no binding', () => {
+    const { adapter, stateDir } = makeAdapter();
+    fs.writeFileSync(path.join(stateDir, 'slack-channel-registry.json'), '{not-json');
+    expect(adapter.resolveChannelForSessionFromDisk('orphan')).toBeNull();
+  });
+
   it('resume map keyed on the routing key: a thread resumes its OWN uuid, not the channel root', () => {
     const { adapter } = makeAdapter({ enabledChannelIds: [CH] });
     const channelKey = adapter.resolveRoutingKey(CH, undefined);
@@ -269,5 +288,59 @@ describe('inbound _handleMessage carries thread_ts metadata used by routing', ()
     // The routing layer would resolve this to the thread key:
     const key = adapter.resolveRoutingKey(CH, received[0].metadata.threadTs, received[0].metadata.ts);
     expect(key).toBe(`${CH}:${THREAD_A}`);
+  });
+});
+
+describe('missed-message recovery canonicalizes thread routing keys', () => {
+  it('startup recovery queries each raw channel once and keeps its oldest checkpoint', async () => {
+    const { adapter } = makeAdapter({ allChannels: true });
+    const now = Date.now();
+    const oldestMs = now - 120_000;
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    (adapter as any).channelResumeMap = new Map([
+      [`${CH}:${THREAD_A}`, { uuid: 'a', sessionName: 'a', savedAt: new Date(now - 60_000).toISOString() }],
+      [`${CH}:${THREAD_B}`, { uuid: 'b', sessionName: 'b', savedAt: new Date(oldestMs).toISOString() }],
+    ]);
+    (adapter as any).apiClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params });
+        return { messages: [] };
+      },
+    };
+
+    await (adapter as any)._recoverOnStartup();
+
+    expect(calls).toEqual([{
+      method: 'conversations.history',
+      params: {
+        channel: CH,
+        oldest: (oldestMs / 1000).toFixed(6),
+        limit: 20,
+      },
+    }]);
+  });
+
+  it('reconnect recovery never passes a composite routing key to Slack history', async () => {
+    const { adapter } = makeAdapter({ allChannels: true });
+    const calls: Array<Record<string, unknown>> = [];
+    (adapter as any)._lastDisconnectedAt = Date.now() - 1_000;
+    (adapter as any).channelToSession = new Map([
+      [`${CH}:${THREAD_A}`, { sessionName: 'a', registeredAt: new Date().toISOString() }],
+    ]);
+    (adapter as any).channelResumeMap = new Map([
+      [`${CH}:${THREAD_B}`, { uuid: 'b', sessionName: 'b', savedAt: new Date().toISOString() }],
+    ]);
+    (adapter as any).apiClient = {
+      call: async (_method: string, params: Record<string, unknown>) => {
+        calls.push(params);
+        return { messages: [] };
+      },
+    };
+
+    await (adapter as any)._recoverMissedMessages();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].channel).toBe(CH);
+    expect(String(calls[0].channel)).not.toContain(':');
   });
 });

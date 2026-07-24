@@ -48,6 +48,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   Usher: { task: 'usher' },
   'correction-learning': { task: 'correction-distiller' },
   CoherenceReviewer: { task: 'gate-triage' },
+  FeedbackReadinessArbiter: { task: 'feedback-readiness' },
 
   // ── Argued exemptions (pinned; each must carry a real reason) ──
   InteractivePoolCanaryJudge: {
@@ -138,6 +139,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   openConversationBrief: { pending: 'wave-3' },
   'a2a-checkin': { pending: 'wave-3' },
   'mentor-stage-b': { pending: 'wave-3' },
+  'correction-class-review': { pending: 'wave-3' },
+  'completion-claim-verify': { pending: 'wave-3' },
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -189,6 +192,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   InputClassifier: true,
   SessionSummarySentinel: true,
   TelegramAdapter: true,
+  FeedbackReadinessArbiter: true,
 
   // ── Gates judging user/session/operation content → true ──
   HubIntentClassifier: true, // judges an inbound hub message's bind-intent (untrusted user text)
@@ -223,6 +227,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   openConversationBrief: true,
   'a2a-checkin': true, // A2A peer-authored threads
   'correction-learning': true,
+  'correction-class-review': true, // correction summary + prior model-derived candidates + standards/tool context
+  'completion-claim-verify': true, // outbound model text + structural tool evidence
   'mentor-stage-b': true,
   DashboardInsightEngine: true, // summarizes page data incl. user/peer-authored rows (relationships/threadline/commitments)
 
@@ -379,6 +385,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   OverrideDetector: false, // detects override intent in a turn
   TaskClassifier: false, // classifies task type
   ResumeValidator: false, // matches a resume UUID against a topic — a state match, not a claim
+  FeedbackReadinessArbiter: false, // judges whether cluster evidence warrants work, not a completion/health claim
 
   // Reflectors/jobs that extract/summarize/route but do not credit a completion/health claim.
   crossModelReviewer: false, // reviews a SPEC document, not a session's completion claim
@@ -397,6 +404,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   openConversationBrief: false, // generates an A2A conversation brief
   'a2a-checkin': false, // summarizes A2A check-in threads
   'correction-learning': false, // distills recurring corrections → preference
+  'correction-class-review': false, // proposes standards/process treatment, not completion credit
+  'completion-claim-verify': { claimKind: 'completionClaim' },
   PipeSessionSpawner: false, // spawns from task descriptions
   CartographerSweep: false, // authors doc-tree summaries over code
   StandardsCoverageEnrichment: false, // enriches standards-coverage rows
@@ -491,6 +500,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   TaskClassifier: { pending: 'contract-wave-2' }, // closed task-type label set
   ResumeValidator: { pending: 'contract-wave-2' }, // closed resume-UUID match yes/no verdict
   CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
+  FeedbackReadinessArbiter: { contractTest: 'tests/unit/feedback-factory/readiness-arbiter.test.ts' },
 
   // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
   // No live LLM callsite, a fixed canary, or free-text / open-set content.
@@ -594,6 +604,12 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
     false:
       'distills recurring corrections into a preference (content) — no closed taught output vocabulary a parser gates on',
   },
+  'correction-class-review': {
+    contractTest: 'tests/unit/correction-class-review.test.ts',
+  },
+  'completion-claim-verify': {
+    contractTest: 'tests/unit/turn-evidence-completion-verifier.test.ts',
+  },
   'mentor-stage-b': {
     false:
       'classifies mentor signals over mentee output into differential content — no closed taught verdict vocabulary a parser gates on (its own bench coverage is wave-3)',
@@ -691,6 +707,7 @@ export const LLM_ROUTING_NATURE: Readonly<Record<string, RoutingNature>> = {
   ProjectDriftChecker: { nature: 'B', chain: 'JUDGE' },
   SessionWatchdog: { nature: 'B', chain: 'JUDGE' },
   UnjustifiedStopGate: { nature: 'B', chain: 'JUDGE' },
+  FeedbackReadinessArbiter: { nature: 'B', chain: 'JUDGE' },
 
   // ── Nature D — background digests/summaries (→ SORT; R7 redaction on secret-bearing) ──
   SessionActivitySentinel: { nature: 'D', chain: 'SORT' },
@@ -807,6 +824,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   LLMSanitizer: exposed(EXPOSED_USER_TOOL), // definitionally judges untrusted inbound content
   OverrideDetector: exposed(EXPOSED_USER),
   TaskClassifier: exposed(EXPOSED_USER), // classifies a user task (R8 input-classifier — must stay exposed)
+  FeedbackReadinessArbiter: exposed(EXPOSED_USER_TOOL), // feedback titles + canonical cluster metadata
 
   // ── Reflectors ──
   JobReflector: exposed(EXPOSED_MODEL_TOOL),
@@ -826,6 +844,8 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   openConversationBrief: exposed(EXPOSED_TOOL), // A2A peer content
   'a2a-checkin': exposed(EXPOSED_TOOL), // A2A peer-authored threads
   'correction-learning': exposed(EXPOSED_USER_MODEL),
+  'correction-class-review': exposed(EXPOSED_ALL),
+  'completion-claim-verify': exposed(EXPOSED_MODEL_TOOL),
   'mentor-stage-b': exposed(EXPOSED_MODEL_TOOL), // mentor signals over mentee output
   ResumeValidator: exposed(EXPOSED_TOOL), // matches a resume UUID against topic/session state
   DashboardInsightEngine: exposed(EXPOSED_ALL), // summarizes page data that can embed user + model + tool content (fail-safe: never onto a non-injection door)

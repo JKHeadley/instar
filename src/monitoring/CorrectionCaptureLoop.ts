@@ -29,7 +29,7 @@
  * if the backlog enqueue itself fails the capture falls back to the old drop —
  * the fire-and-forget seam never throws regardless.
  */
-import type { CorrectionLedger, CorrectionKind } from './CorrectionLedger.js';
+import type { CorrectionLedger, CorrectionKind, CorrectionRecord } from './CorrectionLedger.js';
 import type { CorrectionCaptureBacklog } from './CorrectionCaptureBacklog.js';
 import { scrubSecrets } from './scrubSecrets.js';
 
@@ -265,6 +265,9 @@ export interface CaptureAndDistillDeps {
   backlog?: CorrectionCaptureBacklog | null;
   /** Audit sink — one structured line per capture decision. Never throws. */
   audit?: (event: { decision: string; topicId: number | null; detail?: string }) => void;
+  /** Independent record-time consumers. Invoked only after a durable ledger
+   *  write succeeds; failures never affect capture or recurrence processing. */
+  onRecorded?: (record: CorrectionRecord) => void;
   now?: () => number;
 }
 
@@ -415,6 +418,9 @@ export async function captureAndDistill(
       topicId: input.topicId,
       sessionId: input.sessionId ?? null,
     });
+    if (rec) {
+      try { deps.onRecorded?.(rec); } catch { /* @silent-fallback-ok — independent consumer */ }
+    }
     deps.audit?.({
       decision: rec ? 'recorded' : 'error',
       topicId: input.topicId,
@@ -443,6 +449,8 @@ export interface DrainBacklogDeps {
   ttlMs?: number;
   /** Audit sink — one structured line per drain decision. Never throws. */
   audit?: (event: { decision: string; topicId: number | null; detail?: string }) => void;
+  /** Same independent record-time seam as the live capture path. */
+  onRecorded?: (record: CorrectionRecord) => void;
 }
 
 export interface DrainResult {
@@ -530,6 +538,7 @@ export async function drainBacklog(
           sessionId: entry.sessionId ?? null,
         });
         if (rec) {
+          try { deps.onRecorded?.(rec); } catch { /* @silent-fallback-ok — independent consumer */ }
           deps.backlog.markDistilled(entry.id);
           result.recorded++;
           deps.audit?.({ decision: 'drain-recorded', topicId: entry.topicId, detail: `${envelope.kind} ${rec.dedupeKey.slice(0, 24)}` });

@@ -974,6 +974,8 @@ export interface IntelligenceProvider {
 }
 
 export interface IntelligenceOptions {
+  /** Optional shared-queue cancellation signal for preemptible background work. */
+  signal?: AbortSignal;
   /** Model tier preference (implementations may override based on availability) */
   model?: 'fast' | 'balanced' | 'capable';
   /**
@@ -2475,6 +2477,23 @@ export interface MultiMachineConfig {
   failoverTimeoutMinutes: number;
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
+  /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
+  mutualSsh?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    requiredForEmployeeRole?: boolean;
+    freshnessMs?: number;
+    cadenceMs?: number;
+    probeDeadlineMs?: number;
+    concurrency?: number;
+  };
+  /** Standing peer execution via this agent account's authorized_keys. Dev-gated and dry-run-first. */
+  peerExecution?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    requiredForReadiness?: boolean;
+    port?: number;
+  };
   /**
    * Coordination mode (Gap 1 — Active/Active support).
    * - 'primary-standby': One awake, others standby with failover (default)
@@ -2900,6 +2919,16 @@ export interface SessionPoolConfig {
   /** Master switch. Default false — the entire session-pool layer is inert when false. */
   enabled?: boolean;
   /**
+   * Promotion activation selector. `off` is the fleet default; `auto-climb`
+   * drives one green-gated step per cadence; `operator` exposes only the manual
+   * one-step route. The manual route also remains available in auto-climb mode.
+   */
+  promotionModel?: 'auto-climb' | 'operator' | 'off';
+  /** Highest stage either promotion model may reach. Default dark (fail-closed). */
+  promotionCeiling?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /** Auto-climb cadence in ms; runtime floor 60000. Default 60000. */
+  promotionTickMs?: number;
+  /**
    * Graduated rollout stage (spec §Rollout). 'dark' (code shipped, placement
    * dry-run, always local) → 'shadow' (real placement + ownership, no transfer)
    * → 'live-transfer' (failover + pin transfers) → 'rebalance' (load-driven).
@@ -3019,6 +3048,27 @@ export interface SessionPoolConfig {
   commitmentCustodyTransfer?: {
     enabled?: boolean;
     dryRun?: boolean;
+  };
+  /**
+   * SessionPoolFailoverRunner boot-wiring (§Rollout, Track H) — the in-agent
+   * PRODUCER of a real failover-E2E green so a DEPLOYED dev agent can promote its
+   * own sessionPool stage instead of sitting at `shadow` forever. `enabled` is
+   * DELIBERATELY OMITTED from ConfigDefaults (developmentAgent gate — dev-live,
+   * dark fleet; DEV_GATED_FEATURES). Ships dryRun:true FIRST: the runner runs the
+   * real two-node failover E2E subprocess and records its verdict, but a recorded
+   * green PROMOTES the stage (real authority), so while dryRun holds the verdict
+   * lands in a SIDE store the promotion path never reads — nothing promotes until
+   * a deliberate dryRun:false. Config resolver + defaults live in
+   * `src/core/sessionPoolFailoverRunnerConfig.ts`.
+   */
+  failoverRunner?: {
+    enabled?: boolean;
+    /** Default true — record to a SIDE store, never the promotion store. */
+    dryRun?: boolean;
+    /** Slow cadence the heavy E2E runs on (ms). Default 3600000 (1h), floored at 60000. */
+    tickIntervalMs?: number;
+    /** Bounded wall-clock budget for the failover E2E subprocess (ms). Default 180000. */
+    checkTimeoutMs?: number;
   };
   /**
    * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
@@ -3329,6 +3379,9 @@ export interface InstarConfig {
    * config.json.
    */
   feedbackFactory?: {
+    /** Sole machine-registry owner of the canonical feedback drain. Nonowners
+     * proxy one authenticated hop to this machine and never execute locally. */
+    operatedHostMachineId?: string;
     receiverPersistence?: {
       /** Master switch. Dark default — nothing runs unless explicitly true. */
       enabled?: boolean;
@@ -3360,6 +3413,21 @@ export interface InstarConfig {
       /** Canonical store directory (default mirrors receiverPersistence:
        *  <stateDir>/state/feedback-factory/store). */
       dataDir?: string;
+    };
+    /** Operated durable readiness/outbox drain. Dev-live, fleet-dark. */
+    drain?: {
+      enabled?: boolean;
+      /** Canonical SQLite path; defaults beside the canonical feedback store. */
+      dbPath?: string;
+      maxReadyScansPerTick?: number;
+      maxClaimsPerTick?: number;
+      maxWallClockMs?: number;
+    };
+    /** Initiative handoff consumer. Dev-live in simulation until promoted. */
+    consumer?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      maxClaimsPerTick?: number;
     };
   };
   /**
@@ -4080,6 +4148,17 @@ export interface InstarConfig {
         /** §3.3 bound 0: a reading older than this is not a measurement
          *  (default 1800000 = 30m — 2× the quota poller's 15-min cadence). */
         quotaFreshnessMs?: number;
+      };
+      /**
+       * Login-loss extension: a live, refreshable session whose source account
+       * is explicitly `owner-relogin-required` may use the same anti-thrash and
+       * SessionRefresh funnel even when quota is not high. `enabled` is omitted
+       * from defaults so the development-agent gate decides; dryRun defaults
+       * true and records only a would-swap.
+       */
+      loginLoss?: {
+        enabled?: boolean;
+        dryRun?: boolean;
       };
     };
     /**
@@ -5283,6 +5362,14 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * Raw blocker lifecycle timing ledger. Observe-only and dev-gated: omission
+   * enables it on a development agent while keeping fleet agents dark.
+   */
+  blockerLifecycleLedger?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
+  /**
    * DARK-FLAGGED (DEV_GATED_FEATURES idleThrottleSettleGate; CMT-1785 follow-up):
    * settle-gate the SessionManager idle-monitor's `rateLimitedAtIdle` hand-off so it
    * requires the throttle to be present AND the pane byte-identical across polls
@@ -5564,6 +5651,11 @@ export interface MonitoringConfig {
     /** How recently the shared snapshot's lastOutputAt must have advanced (default 300_000). */
     recentOutputChangeWindowMs?: number;
   };
+  throughputFloor?: {
+    enabled?: boolean;
+    flatlineMs?: number;
+    tickMs?: number;
+  };
   /**
    * Blocker Ledger — the durable resolution-workflow + memory layer that
    * COMPLETES Principle 1 ("almost every blocker is a false blocker — work it").
@@ -5659,6 +5751,21 @@ export interface MonitoringConfig {
     checkInEveryMs?: number;
     /** Ignore repeat reports within this window (default: 60_000). */
     dedupeWindowMs?: number;
+  };
+  /**
+   * Proactive compaction for autonomous Claude sessions. Explicit opt-in only
+   * (dark when absent); dry-run defaults true. It reads Claude's own
+   * "Context left until auto-compact" status and acts only at an idle boundary.
+   */
+  proactiveAutonomousCompaction?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Used-context threshold percentage (default 85). */
+    thresholdUsedPercent?: number;
+    /** Poll cadence in milliseconds (default 60_000). */
+    tickIntervalMs?: number;
+    /** Per-session action cooldown in milliseconds (default 30 minutes). */
+    cooldownMs?: number;
   };
   /**
    * SocketDisconnectSentinel — detects Claude Code's "socket connection closed
@@ -6103,6 +6210,39 @@ export interface MonitoringConfig {
    * Registered in DEV_GATED_FEATURES; GET /external-hog. Machine-local by design
    * (hardware-bound-resource — a host OS process is bound to one kernel).
    */
+  /**
+   * SingleMachineFailoverGapDetector (increment 2) — a pure SIGNAL-only guard that
+   * surfaces the "no failover target for active autonomous work" gap BEFORE it bites
+   * (the 2026-07-22 Codey overnight loss): single-machine (no online mesh peer) WHILE
+   * active autonomous runs → ONE deduped HIGH attention item. Never blocks, provisions,
+   * or kills. `enabled` is OMITTED so the runtime resolves it through the
+   * developmentAgent dark-feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK
+   * on the fleet. `dryRun: true` is the graduated-rollout first rung — it computes +
+   * counts would-raise but raises NOTHING until a deliberate dryRun:false flip.
+   * Registered in DEV_GATED_FEATURES; GET /pool/failover-gap.
+   */
+  singleMachineFailoverGap?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
+  /**
+   * MissingLoginSessionDetector (increment 2) — a pure SIGNAL-only guard that
+   * surfaces the "a live session is running on an account whose local login has
+   * gone missing" gap BEFORE the session walls silently (the 2026-07-22 justin-gmail
+   * silent auth-death): a running session bound to an account the subscription pool
+   * flagged `identityDrift.repairState === 'owner-relogin-required'` /
+   * `actualAccountId === 'missing-local-login'` → ONE deduped HIGH attention item.
+   * Never swaps, re-logins, or touches a session. `enabled` is OMITTED so the
+   * runtime resolves it through the developmentAgent dark-feature gate
+   * (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet. `dryRun: true`
+   * is the graduated-rollout first rung — it computes + counts would-raise but
+   * raises NOTHING until a deliberate dryRun:false flip. Registered in
+   * DEV_GATED_FEATURES; GET /pool/missing-login.
+   */
+  missingLoginSession?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
   externalHogSentinel?: {
     enabled?: boolean;
     dryRun?: boolean;
@@ -6382,6 +6522,29 @@ export interface MonitoringConfig {
      *  infra-gap batch serializes under the route's 10/min IP limit (Slice 2
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
+  };
+  /** Un-gated correction durable-outcome drain; enabled on dev agents via DEV_GATED_FEATURES. */
+  correctionClassReview?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    maxReviewsPerTick?: number;
+    maxAttempts?: number;
+    maxOpenArtifacts?: number;
+    agingDays?: number;
+  };
+  /** Verify-Before-Done observe-only completion signal; never blocks in v1. */
+  completionClaimVerification?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    generalObservation?: boolean;
+    maxAuditBytes?: number;
+    maxCorpusBytes?: number;
+    maxQueued?: number;
+    maxQueuedPerTopic?: number;
+    maxConcurrent?: number;
+    maxConcurrentPerTopic?: number;
+    queueTtlMs?: number;
+    redactIdentifiers?: boolean;
   };
   /**
    * Bias-to-Action — standing-authorization signal for B17_FALSE_BLOCKER
@@ -6969,7 +7132,7 @@ export interface BackupSnapshot {
   /** When this snapshot was created */
   createdAt: string;
   /** What triggered this snapshot */
-  trigger: 'auto-session' | 'manual' | 'pre-update';
+  trigger: 'auto-session' | 'manual' | 'pre-update' | 'feedback-hourly' | 'feedback-promotion' | 'feedback-failover';
   /** Files included in this snapshot */
   files: string[];
   /** Total size in bytes */

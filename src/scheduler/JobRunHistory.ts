@@ -18,7 +18,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { capacityOutcome, type CapacityEnforcementResult } from '../core/CapacityEnforcement.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+
+// capacity-enforcement-contract: job-run-history-row@1
 
 export interface JobRunReflection {
   /** High-level summary of what the job did */
@@ -103,6 +106,8 @@ export interface JobRunStats {
   longestRun?: { durationSeconds: number; runId: string; startedAt: string };
   /** Runs per day over the stats window */
   runsPerDay: number;
+  /** Completed rows that were intentionally condensed to the storage budget. */
+  budgetCondensedRuns: number;
 }
 
 /** Monotonic counter to ensure unique runIds even within the same millisecond */
@@ -110,11 +115,10 @@ let runCounter = 0;
 
 /** Per-row size cap from spec §"Run-record observability". When a row's
  *  serialized JSON exceeds this many bytes, non-essential fields are
- *  truncated and a degradation event is reported. The essential set —
+ *  condensed and the row carries durable outcome telemetry. The essential set —
  *  runId, slug, sessionId, trigger, startedAt, result, origin — is
  *  always preserved so query results remain coherent. */
 const ROW_SIZE_CAP_BYTES = 2 * 1024;
-const ROW_SIZE_CAP_DEGRADATION_WINDOW_MS = 60 * 60 * 1000;
 const ERROR_OMISSION_MARKER_PREFIX = '\n...[omitted ';
 const ERROR_OMISSION_MARKER_SUFFIX = ' bytes to fit JobRunHistory row cap]...\n';
 
@@ -126,14 +130,6 @@ const TRUNCATABLE_FIELDS = [
   'handoffNotes',
   'reflection',
 ] as const;
-
-interface RowCapDegradationWindow {
-  windowStartedAt: number;
-  count: number;
-  event?: ReturnType<DegradationReporter['getEvents']>[number];
-}
-
-const rowCapDegradationWindows = new Map<string, RowCapDegradationWindow>();
 
 export class JobRunHistory {
   private ledgerDir: string;
@@ -173,10 +169,6 @@ export class JobRunHistory {
 
   setMachineId(machineId: string): void {
     this.machineId = machineId;
-  }
-
-  static _resetRowCapDegradationDedupForTesting(): void {
-    rowCapDegradationWindows.clear();
   }
 
   /**
@@ -354,6 +346,7 @@ export class JobRunHistory {
     const completed = runs.filter(r => r.result !== 'pending');
     const successes = completed.filter(r => r.result === 'success').length;
     const failures = completed.filter(r => r.result !== 'success').length;
+    const budgetCondensedRuns = completed.filter(r => r.truncated === true).length;
     const withDuration = completed.filter(r => r.durationSeconds != null && r.durationSeconds > 0);
     const totalDuration = withDuration.reduce((sum, r) => sum + (r.durationSeconds ?? 0), 0);
 
@@ -391,6 +384,7 @@ export class JobRunHistory {
       lastRun: runs[0],
       longestRun,
       runsPerDay,
+      budgetCondensedRuns,
     };
   }
 
@@ -556,7 +550,12 @@ export class JobRunHistory {
 
   private appendLine(data: JobRun): void {
     try {
-      const capped = this.applyRowSizeCap(data);
+      const outcome = this.applyRowSizeCap(data);
+      if (outcome.kind === 'invariant-failure') {
+        this.reportCapacityInvariantFailure(data, outcome);
+        return;
+      }
+      const capped = outcome.value;
       const serialized = JSON.stringify(capped) + '\n';
       fs.appendFileSync(this.file, serialized);
       // Keep the in-memory cache coherent with our own append so the read that
@@ -586,43 +585,68 @@ export class JobRunHistory {
   /**
    * Enforce the 2 KB per-row cap from spec §"Run-record observability".
    * If the serialized row exceeds the cap, non-essential fields are
-   * progressively dropped (longest first by TRUNCATABLE_FIELDS order) and
-   * a degradation event is reported. Essential fields are always preserved.
+   * progressively dropped (longest first by TRUNCATABLE_FIELDS order).
+   * Essential fields are always preserved. Successful budget enforcement is
+   * recorded durably on the row (`truncated: true`) and in aggregate stats; it
+   * is not a degradation because the bounded write path completed as designed.
    */
-  private applyRowSizeCap(row: JobRun): JobRun {
+  private applyRowSizeCap(row: JobRun): CapacityEnforcementResult<JobRun> {
     const initialSize = Buffer.byteLength(JSON.stringify(row), 'utf-8');
-    if (initialSize <= ROW_SIZE_CAP_BYTES) return row;
+    if (initialSize <= ROW_SIZE_CAP_BYTES) {
+      return capacityOutcome({
+        value: row,
+        originalBytes: initialSize,
+        storedBytes: initialSize,
+        capBytes: ROW_SIZE_CAP_BYTES,
+        condensed: false,
+      });
+    }
 
     const limited: JobRun = { ...row, ["truncated"]: true };
-    const droppedFields: string[] = [];
     for (const field of TRUNCATABLE_FIELDS) {
       if (limited[field] === undefined) continue;
       delete (limited as unknown as Record<string, unknown>)[field];
-      droppedFields.push(field);
       if (Buffer.byteLength(JSON.stringify(limited), 'utf-8') <= ROW_SIZE_CAP_BYTES) {
         break;
       }
     }
 
     const originalError = limited.error;
-    let errorShortened = false;
     if (Buffer.byteLength(JSON.stringify(limited), 'utf-8') > ROW_SIZE_CAP_BYTES &&
         typeof originalError === 'string') {
       const fitted = this.fitStringFieldToRowCap(limited, 'error', originalError);
       if (fitted !== null) {
         limited.error = fitted;
-        errorShortened = fitted !== originalError;
       }
     }
 
     const finalSize = Buffer.byteLength(JSON.stringify(limited), 'utf-8');
     if (finalSize > ROW_SIZE_CAP_BYTES && limited.error !== undefined) {
       delete (limited as unknown as Record<string, unknown>).error;
-      droppedFields.push('error');
     }
     const storedSize = Buffer.byteLength(JSON.stringify(limited), 'utf-8');
-    this.reportRowCapDegradation(row, initialSize, storedSize, droppedFields, errorShortened);
-    return limited;
+    return capacityOutcome({
+      value: limited,
+      originalBytes: initialSize,
+      storedBytes: storedSize,
+      capBytes: ROW_SIZE_CAP_BYTES,
+      condensed: true,
+    });
+  }
+
+  private reportCapacityInvariantFailure(
+    row: JobRun,
+    outcome: Extract<CapacityEnforcementResult<JobRun>, { kind: 'invariant-failure' }>,
+  ): void {
+    const safeSlug = row.slug.slice(0, 120);
+    // @unexpected-capacity-degradation contract=job-run-history-row@1
+    DegradationReporter.getInstance().report({
+      feature: 'JobRunHistory.appendLine',
+      primary: `Store a run-history row at or below ${outcome.capBytes}B`,
+      fallback: 'Refuse the over-budget row; no partial or oversized JSONL write was made',
+      reason: `Capacity invariant failed for slug=${safeSlug}: essential row remained ${outcome.storedBytes}B after condensing (${outcome.originalBytes}B original)`,
+      impact: 'This run-history transition was not persisted; the failure is explicit and operator-visible',
+    });
   }
 
   private fitStringFieldToRowCap(row: JobRun, field: 'error', value: string): string | null {
@@ -652,48 +676,6 @@ export class JobRunHistory {
     const omittedBytes = Buffer.byteLength(value.slice(headChars, value.length - tailChars), 'utf-8');
     const marker = `${ERROR_OMISSION_MARKER_PREFIX}${omittedBytes}${ERROR_OMISSION_MARKER_SUFFIX}`;
     return `${value.slice(0, headChars)}${marker}${tailChars > 0 ? value.slice(value.length - tailChars) : ''}`;
-  }
-
-  private reportRowCapDegradation(
-    row: JobRun,
-    initialSize: number,
-    finalSize: number,
-    droppedFields: string[],
-    errorShortened: boolean,
-  ): void {
-    const key = `${row.slug}:row-size-cap`;
-    const now = Date.now();
-    const existing = rowCapDegradationWindows.get(key);
-    const inWindow = existing && now - existing.windowStartedAt < ROW_SIZE_CAP_DEGRADATION_WINDOW_MS;
-    const window = inWindow ? existing : { windowStartedAt: now, count: 0 };
-    window.count += 1;
-    rowCapDegradationWindows.set(key, window);
-
-    const reason = `Row size ${initialSize}B exceeded ${ROW_SIZE_CAP_BYTES}B cap for slug=${row.slug}; dedupKey=${key}; count=${window.count}`;
-    const fallback = `Fit oversized run record fields (dropped: ${droppedFields.join(', ') || 'none'}; error=${errorShortened ? 'head-tail shortened' : 'preserved'})`;
-    const impact = `Run record stored at ${finalSize}B with truncated:true flag set; deduped ${window.count} oversized row(s) for slug=${row.slug} in the current window`;
-
-    const reporter = DegradationReporter.getInstance();
-    if (window.event && reporter.getEvents().includes(window.event)) {
-      window.event.reason = reason;
-      window.event.fallback = fallback;
-      window.event.impact = impact;
-      window.event.timestamp = new Date().toISOString();
-      return;
-    }
-
-    try {
-      reporter.report({
-        feature: 'JobRunHistory.appendLine',
-        primary: 'Write full run record with all fields',
-        fallback,
-        reason,
-        impact,
-      });
-      window.event = reporter.getEvents().at(-1);
-    } catch {
-      // @silent-fallback-ok — degradation reporting is best-effort
-    }
   }
 
   /**

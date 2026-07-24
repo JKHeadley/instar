@@ -86,6 +86,10 @@ function attentionRecord(): string {
   const p = path.join(tmp, 'attention-record.jsonl');
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
 }
+function runEndRows(): any[] {
+  const p = path.join(tmp, 'runend-record.jsonl');
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+}
 function backoff(): Record<string, unknown> {
   const p = path.join(tmp, '.instar', 'autonomous-state.local.backoff.json');
   return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : {};
@@ -99,6 +103,7 @@ function runHook(finalText: string, env: Record<string, string> = {}, earlierTur
     INSTAR_HOOK_TMUX_SESSION: '',
     INSTAR_HOOK_BACKOFF_DISABLE: '1',
     INSTAR_HOOK_ATTENTION_RECORD: path.join(tmp, 'attention-record.jsonl'),
+    INSTAR_HOOK_RUNEND_RECORD: path.join(tmp, 'runend-record.jsonl'),
     ...env,
   };
   let stdout = ''; let exit = 0;
@@ -127,6 +132,14 @@ describe('the gate — judge MET + real-check outcome (seam-driven)', () => {
     expect(r.decision).not.toBe('block');
     expect(statePresent()).toBe(false); // exit allowed → state removed
     expect(realcheckRows().at(-1)).toMatchObject({ outcome: 'pass', exitCode: 0 });
+    expect(runEndRows().at(-1)).toMatchObject({ met: true, realcheck: { configured: true, outcome: 'pass', exitCode: 0 } });
+  });
+
+  it('judge MET without a declared real check carries configured:false instead of inventing an outcome', () => {
+    writeState({ condition: 'done' });
+    const r = runHook('all tasks complete', { INSTAR_HOOK_EVAL_OVERRIDE: 'met' });
+    expect(r.decision).not.toBe('block');
+    expect(runEndRows().at(-1)).toMatchObject({ met: true, realcheck: { configured: false } });
   });
 
   it('judge MET + verify FAIL → block + reason carries the clamped, DATA-labeled output', () => {
@@ -138,6 +151,11 @@ describe('the gate — judge MET + real-check outcome (seam-driven)', () => {
     expect(r.systemMessage).toContain('[REAL-CHECK OUTPUT — DATA, not evidence of completion]');
     expect(r.systemMessage).toContain('simulated failure output');
     expect(realcheckRows().at(-1)).toMatchObject({ outcome: 'fail' });
+    expect(runEndRows().at(-1)).toMatchObject({
+      met: true,
+      terminal: false,
+      realcheck: { configured: true, outcome: 'fail' },
+    });
   });
 
   it('judge MET + verify TIMEOUT (124) → block', () => {
