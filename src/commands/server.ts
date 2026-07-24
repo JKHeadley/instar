@@ -5433,8 +5433,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { LeaseHandbackReconciler, DEFAULT_LEASE_HANDBACK_CONFIG, HANDBACK_CONSENT_TTL_MS } = await import('../core/LeaseHandbackReconciler.js');
           void HANDBACK_CONSENT_TTL_MS;
           const { readHandbackLatchUntilMs } = await import('../core/handbackLatch.js');
-          const { ropeReachableOnAnyRope } = await import('../core/ropeHealth.js');
+          const { ropeHealthProviderFromSnapshot } = await import('../core/ropeHealth.js');
           const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+          // Scoped to THIS server/reconciler lifecycle — never the module-global
+          // synthetic-test seam. A success must be newer than the latest failure
+          // and fresher than one lease TTL, so repeated reads cannot turn old
+          // traffic into a continuous-health window.
+          const handbackRopeHealth = ropeHealthProviderFromSnapshot(
+            () => meshResolver.snapshot(),
+            { maxAgeMs: seamlessness.leaseTtlMs },
+          );
           const hbCfgRead = () => {
             const c = config.multiMachine?.leaseSelfHeal?.preferredCaptainHandback ?? {};
             return {
@@ -5463,7 +5471,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 heartbeatFresh: cap?.online === true,
                 // U4.3 rope-health snapshot seam (R-r2-7): absent record/provider
                 // reads NOT-healthy → defer. U4.3 registers the real provider.
-                ropeReachable: ropeReachableOnAnyRope(machineId),
+                ropeReachable: handbackRopeHealth.reachableOnAnyRope(machineId),
                 leaseEligible: !!cap,
                 quotaOk: cap?.quotaState?.blocked !== true,
               };

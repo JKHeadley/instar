@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-07-24T13:51:00.000Z",
+  "slug": "mesh-handback-rope-health-wiring",
+  "riskFloor": 3,
+  "decision": "implement-and-live-prove",
+  "scope": "production rope-health composition wiring for preferred-captain lease hand-back",
+  "evidence": {
+    "incident": "healthy preferred Mini remained permanently unknown to the hand-back reconciler",
+    "focusedTests": "27/27 passing",
+    "build": "TypeScript build passes",
+    "releaseGate": "real two-host failover, served reply, rejoin, hand-back, and exactly-one-holder proof"
+  }
+}
