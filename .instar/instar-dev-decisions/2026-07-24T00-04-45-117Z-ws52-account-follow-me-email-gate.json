@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-24T00:04:45.117Z",
+  "slug": "ws52-account-follow-me-email-gate",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 26,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

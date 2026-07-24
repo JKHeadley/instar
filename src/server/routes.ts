@@ -27499,7 +27499,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (existing) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=reused-pending`);
           // Flow-detail passthrough (topic 29836 D2/D3): expectedEmail (which account the OAuth
-          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (the two-codes heads-up)
+          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (optional flow heads-up)
           // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
           // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
           // never secrets (same fields the pending-logins surface already serves).
