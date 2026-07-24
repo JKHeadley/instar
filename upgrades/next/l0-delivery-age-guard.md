@@ -1,0 +1,33 @@
+---
+title: "Expired queued replies can never auto-deliver (L0 age guard, ships dark)"
+---
+
+## What Changed
+
+The DeliveryFailureSentinel's drain gains a dequeue-time age guard (L0 zombie-free delivery invariant,
+drive12 UX-first enforcement spec Increment 1): on every claimable pull, rows whose ORIGINAL send attempt
+(`attempted_at`) is older than the class policy retire to dead-letter with an audited `expired-stale`
+reason instead of ever reaching delivery, summarized in one coalesced low-priority Attention digest
+(≥6h apart). Policy: `src/data/outbound-queue-expiry.json` (delivery-recovery 24h; `0` ⇒ no expiry —
+the data-edit rollback). Armed per-install by top-level `outboundQueueExpiry.enabled` (DARK by default).
+Ancestor incident: 2026-07-24 — the #1600 recovery fix replayed weeks-old queued replies (including two
+expired secure links) into user topics as new.
+
+## What to Tell Your User
+
+Nothing changes yet — this ships switched off. Once switched on for an agent, a reply that failed to
+send and then sat queued for more than a day will no longer suddenly appear in your chat weeks later as
+if it were new; instead I keep a record of it and mention retired stale messages in one quiet summary.
+
+## Summary of New Capabilities
+
+- Dequeue-time age invariant on the delivery-recovery queue (no delivery path exists for an expired row).
+- Per-queue-class expiry policy data file with `0 ⇒ no expiry` rollback semantics.
+- `sentinel:stale-retired` event + coalesced operator digest (calm-alerting).
+
+## Evidence
+
+New integration suite `sentinel-l0-age-guard.test.ts` (4 tests: stale row retires + never delivers while
+a fresh row on the same pass delivers; dark default preserves today's behavior; `maxAgeMs 0` no-expiry
+rollback; one aggregated event per pass, never per-message). Existing sentinel + store suites green
+(35 tests).

@@ -5290,6 +5290,33 @@ export class AgentServer {
     }
 
     const configPath = path.join(stateDir, 'config.json');
+
+    // L0 zombie-free delivery invariant (drive12 UX-first spec, Increment 1):
+    // per-install arm flag (top-level `outboundQueueExpiry.enabled`, DARK by
+    // default — test agent enables first) + the per-queue-class max age from
+    // the shipped data file (0 ⇒ no expiry, the data-edit rollback sentinel).
+    // Resolution failures fail SAFE: guard stays dark, sentinel unaffected.
+    let l0AgeGuard: { enabled: boolean; maxAgeMs: number } | undefined;
+    try {
+      const armed =
+        (this.config as unknown as { outboundQueueExpiry?: { enabled?: boolean } }).outboundQueueExpiry?.enabled === true;
+      if (armed) {
+        // Packaging convention for runtime-read shipped JSON is <pkg>/src/data/
+        // (cf. DEFAULT_MIRROR_PATH) — plain tsc emits no JSON into dist/, so a
+        // dist-relative '../data/...' would ENOENT on every deployed install.
+        // '../../src/data/...' resolves correctly from BOTH layouts
+        // (dist/server/ and src/server/); wiring-integrity test pins this.
+        const dataUrl = new URL('../../src/data/outbound-queue-expiry.json', import.meta.url);
+        const parsed = JSON.parse(await fs.promises.readFile(dataUrl, 'utf-8')) as {
+          queues?: Record<string, { maxAgeHours?: number }>;
+        };
+        const hours = parsed.queues?.['delivery-recovery']?.maxAgeHours ?? 0;
+        l0AgeGuard = { enabled: true, maxAgeMs: Math.max(0, hours) * 60 * 60 * 1000 };
+      }
+    } catch (err) {
+      console.warn('[delivery-sentinel] L0 age-guard policy resolution failed; guard stays dark:', err);
+    }
+
     const sentinel = new DeliveryFailureSentinel(
       {
         store,
@@ -5312,10 +5339,13 @@ export class AgentServer {
             }
           : undefined,
       },
+      l0AgeGuard ? { l0AgeGuard } : {},
     );
     this.deliverySentinel = sentinel;
     await sentinel.start();
-    console.log('[instar] delivery-failure-sentinel started (Layer 3 recovery active)');
+    console.log(
+      `[instar] delivery-failure-sentinel started (Layer 3 recovery active${l0AgeGuard ? `; L0 age-guard armed at ${Math.round(l0AgeGuard.maxAgeMs / 3_600_000)}h` : ''})`,
+    );
   }
 
   /**

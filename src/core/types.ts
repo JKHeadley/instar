@@ -4028,6 +4028,14 @@ export interface InstarConfig {
     /** Opt-in candidate-body capture for decision-quality benchmarking. */
     recordCandidateBody?: boolean;
   };
+  /**
+   * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
+   * spec, Increment 1). When true, outbound recovery queues enforce their
+   * per-class max age at DEQUEUE time (policy: src/data/outbound-queue-expiry.json;
+   * a class's maxAgeHours 0 ⇒ no expiry). DARK by default — the test agent
+   * (Codey) arms first per the maturation ladder.
+   */
+  outboundQueueExpiry?: { enabled?: boolean };
   /** Monitoring config */
   monitoring: MonitoringConfig;
   /** Feature-rollout reconciler config (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.3
