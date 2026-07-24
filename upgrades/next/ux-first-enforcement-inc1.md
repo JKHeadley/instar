@@ -1,0 +1,20 @@
+---
+type: feature
+---
+
+## What Changed
+
+Pull requests touching messaging and other user-facing surfaces now receive a
+separate UX-impact declaration check. The messaging E2E suite also exercises
+plain-language, honest-failure, and zombie-queue assertions.
+
+## What to Tell Your User
+
+Changes that affect people must explain the visible experience in the PR, and
+CI now checks that explanation alongside a real messaging scenario.
+
+## Summary of New Capabilities
+
+- Base-ref UX-impact PR lint with literal kill switch and separate error classes.
+- `assertPlainEnglish`, `assertHonestFailure`, and `assertNoZombie` helpers.
+- CI wiring for the assertions in `messaging-multi-agent.test.ts`.

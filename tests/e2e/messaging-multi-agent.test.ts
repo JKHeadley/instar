@@ -42,6 +42,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import type { MessageEnvelope } from '../../src/messaging/types.js';
 import { registerAgent, unregisterAgent } from '../../src/core/AgentRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { assertPlainEnglish, assertHonestFailure, assertNoZombie } from '../../src/messaging/detectors/assertUserVisible.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -247,6 +248,9 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
       expect(stored).not.toBeNull();
       expect(stored!.message.body).toBe('Cross-agent relay test');
       expect(stored!.delivery.phase).toBe('received');
+      assertPlainEnglish(stored!.message.body);
+      assertNoZombie([]);
+      assertHonestFailure({ message: 'Try sending again in a moment.', actionable: true, ok: false });
     });
 
     it('Agent B sends → HTTP relay → Agent A receives (bidirectional)', async () => {
