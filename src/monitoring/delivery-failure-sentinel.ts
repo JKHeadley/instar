@@ -76,6 +76,22 @@ export interface SentinelConfig {
   circuitBreakerCount?: number;
   circuitBreakerWindowMs?: number;
   /**
+   * L0 zombie-free delivery invariant (drive12 UX-first enforcement spec,
+   * Increment 1): a queued entry older than `maxAgeMs` at DEQUEUE time can
+   * never auto-deliver — it retires to dead-letter with a dropped-stale
+   * record and an aggregated operator digest. Distinct from
+   * `restorePurgeAgeMs`, which runs ONCE at startup: this is the invariant
+   * on every drain pass, closing the 2026-07-24 zombie-replay class (rows
+   * that dodge the startup purge and later become claimable).
+   *
+   * SHIPS DARK: `enabled` defaults false (today's behavior byte-identical).
+   * `maxAgeMs: 0` ⇒ no expiry even when enabled (the data-edit rollback
+   * sentinel). Policy source: src/data/outbound-queue-expiry.json
+   * ("delivery-recovery" class) + the per-install `outboundQueueExpiry`
+   * config flag, wired at the server construction site.
+   */
+  l0AgeGuard?: { enabled?: boolean; maxAgeMs?: number };
+  /**
    * Restore-purge threshold — entries older than this at startup are
    * dropped, not recovered (spec §3h). Default 60 minutes.
    *
@@ -139,6 +155,7 @@ const DEFAULTS: Required<SentinelConfig> = {
   circuitBreakerCount: 5,
   circuitBreakerWindowMs: 60 * 60 * 1000,
   restorePurgeAgeMs: 60 * 60 * 1000,
+  l0AgeGuard: { enabled: false, maxAgeMs: 24 * 60 * 60 * 1000 },
 };
 
 // ── Sentinel ─────────────────────────────────────────────────────────
@@ -152,6 +169,8 @@ export interface SentinelEvents {
   'sentinel:escalated': [{ delivery_id: string; topic_id: number; category: string }];
   'sentinel:circuit-breaker-tripped': [{ consecutiveFailures: number }];
   'sentinel:circuit-breaker-resumed': [];
+  /** L0 age-guard: rows retired at dequeue time for exceeding the class max age. */
+  'sentinel:stale-retired': [{ count: number; topicIds: number[]; maxAgeMs: number }];
 }
 
 export class DeliveryFailureSentinel extends EventEmitter {
@@ -166,6 +185,11 @@ export class DeliveryFailureSentinel extends EventEmitter {
   private escalationFailures: number[] = []; // ms timestamps
   private inFlight = 0;
   private lastTopicDelivery = new Map<number, number>(); // topic → last delivered ms
+  /** L0 age-guard digest coalescing: at most one Attention digest per window. */
+  private static readonly L0_DIGEST_COALESCE_MS = 6 * 60 * 60 * 1000;
+  private lastStaleDigestAt = 0;
+  private staleDigestPending = 0;
+  private staleDigestTopics = new Set<number>();
   /** Templates verified at start(). False disables escalation path. */
   private templatesValid = true;
   /** Restored on first start(); used to keep restore-purge a one-shot. */
@@ -182,6 +206,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
       circuitBreakerCount: config.circuitBreakerCount ?? DEFAULTS.circuitBreakerCount,
       circuitBreakerWindowMs: config.circuitBreakerWindowMs ?? DEFAULTS.circuitBreakerWindowMs,
       restorePurgeAgeMs: config.restorePurgeAgeMs ?? DEFAULTS.restorePurgeAgeMs,
+      l0AgeGuard: config.l0AgeGuard ?? DEFAULTS.l0AgeGuard,
     };
     this.deps = {
       store: deps.store,
@@ -317,7 +342,13 @@ export class DeliveryFailureSentinel extends EventEmitter {
     const counters = { processed: 0, recovered: 0, escalated: 0 };
 
     // Pull rows that are ready (queued, or claimed-but-stale).
-    const candidates = this.selectClaimable();
+    let candidates = this.selectClaimable();
+
+    // L0 zombie-free delivery invariant (dequeue-time age guard). Runs on
+    // EVERY pull, before any row can reach processRow — no path to delivery
+    // exists for a row older than the class policy. Dark by default.
+    candidates = await this.applyL0AgeGuard(candidates);
+
     if (candidates.length === 0) {
       this.emit('sentinel:tick-complete', counters);
       return counters;
@@ -365,6 +396,123 @@ export class DeliveryFailureSentinel extends EventEmitter {
   }
 
   // ── Internals ──────────────────────────────────────────────────────
+
+  /**
+   * L0 zombie-free delivery invariant (drive12 UX-first spec, Increment 1).
+   *
+   * Partition the claimable rows by age against the class policy; rows past
+   * the max age RETIRE to dead-letter (audited 'expired-stale' reason in
+   * status_history via transition()) and are summarized in ONE aggregated
+   * digest — never delivered, never per-message spam. Age basis is
+   * `attempted_at`: the ORIGINAL failed-send time, so no amount of retry
+   * churn can refresh a row's age.
+   *
+   * Fail-safe posture: the guard only ever REMOVES rows from the delivery
+   * path; an error inside it (store transition failure, digest failure)
+   * must never block the drain of fresh rows, and a disabled/0-age policy
+   * makes it a strict pass-through (today's behavior byte-identical).
+   */
+  private async applyL0AgeGuard(candidates: PendingRelayRow[]): Promise<PendingRelayRow[]> {
+    const policy = this.cfg.l0AgeGuard;
+    if (!policy?.enabled) return candidates;
+    const maxAgeMs = policy.maxAgeMs ?? 0;
+    if (maxAgeMs <= 0) return candidates; // 0 ⇒ no expiry (rollback sentinel)
+
+    const now = this.deps.now();
+    const fresh: PendingRelayRow[] = [];
+    const stale: PendingRelayRow[] = [];
+    for (const row of candidates) {
+      const bornAt = Date.parse(row.attempted_at);
+      if (Number.isFinite(bornAt) && now - bornAt > maxAgeMs) stale.push(row);
+      else fresh.push(row); // unparseable age ⇒ treat as fresh (never guess-drop)
+    }
+    if (stale.length === 0) return fresh;
+
+    const retiredTopics: number[] = [];
+    for (const row of stale) {
+      try {
+        const ageHours = Math.round((now - Date.parse(row.attempted_at)) / 3_600_000);
+        const ok = this.deps.store.transition(row.delivery_id, 'dead-letter', {
+          claimed_by: null,
+          error_body: `expired-stale: L0 age-guard retired at dequeue (age ~${ageHours}h > policy ${Math.round(maxAgeMs / 3_600_000)}h; never delivered)`,
+        });
+        if (ok) retiredTopics.push(row.topic_id);
+      } catch {
+        // A failed retire leaves the row for the next pass; it still never
+        // delivers THIS pass (it is not in `fresh`). Never block the drain.
+      }
+    }
+
+    if (retiredTopics.length > 0) {
+      console.log(
+        `[sentinel:l0-age-guard] retired ${retiredTopics.length} stale row(s) at dequeue (policy ${Math.round(maxAgeMs / 3_600_000)}h; topics: ${[...new Set(retiredTopics)].join(', ')})`,
+      );
+      this.emit('sentinel:stale-retired', { count: retiredTopics.length, topicIds: [...new Set(retiredTopics)], maxAgeMs });
+      await this.postStaleDigest(retiredTopics, maxAgeMs);
+    }
+    return fresh;
+  }
+
+  /**
+   * ONE aggregated operator digest for retired-stale rows, coalesced to at
+   * most one Attention item per `L0_DIGEST_COALESCE_MS` window (calm-alerting
+   * — a steady trickle of expiring rows becomes accumulated counts, never a
+   * per-pass stream). Best-effort: a digest failure never affects the drain.
+   */
+  private async postStaleDigest(topicIds: number[], maxAgeMs: number): Promise<void> {
+    this.staleDigestPending += topicIds.length;
+    for (const t of topicIds) this.staleDigestTopics.add(t);
+    const now = this.deps.now();
+    if (now - this.lastStaleDigestAt < DeliveryFailureSentinel.L0_DIGEST_COALESCE_MS) return;
+    const count = this.staleDigestPending;
+    const topics = [...this.staleDigestTopics];
+    try {
+      const { port, authToken } = this.deps.readConfig();
+      const posted = await new Promise<boolean>((resolve) => {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/attention',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            timeout: 5000,
+          },
+          (res) => {
+            const ok = (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300;
+            res.resume();
+            res.on('end', () => resolve(ok));
+          },
+        );
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(false);
+        });
+        req.end(
+          JSON.stringify({
+            title: `Stale queued replies retired (${count})`,
+            body: `The delivery age-guard retired ${count} queued outbound message(s) older than ${Math.round(maxAgeMs / 3_600_000)}h at dequeue time instead of delivering them late (conversations: ${topics.join(', ')}). Nothing was sent; each row is preserved as a dead-letter record with its reason.`,
+            priority: 'low',
+            source: 'delivery-l0-age-guard',
+          }),
+        );
+      });
+      // Counters clear (and the coalesce window stamps) ONLY on a confirmed
+      // 2xx — a failed/timed-out/non-2xx post keeps accumulating so the
+      // counts are retried on a later pass, never silently lost. The retired
+      // rows themselves are already safe regardless (audited dead-letters +
+      // the emitted event + log line).
+      if (posted) {
+        this.lastStaleDigestAt = now;
+        this.staleDigestPending = 0;
+        this.staleDigestTopics.clear();
+      }
+    } catch {
+      // Digest is observability, never a gate — accumulate and retry on a
+      // later pass.
+    }
+  }
 
   private selectClaimable(): PendingRelayRow[] {
     const nowIso = new Date(this.deps.now()).toISOString();
