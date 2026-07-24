@@ -14,3 +14,5 @@
 - defect class: `unbounded-self-action`
 - closure: `n/a`
 - reason: read-only ranking and rescoring are not self-triggered actions.
+
+The rescore route is explicitly non-mutating and the capability index exposes the agent-facing prefix.

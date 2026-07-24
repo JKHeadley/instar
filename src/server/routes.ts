@@ -13582,6 +13582,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!ctx.workQueue) { res.status(503).json({ error: 'work queue unavailable' }); return; }
     res.json({ items: ctx.workQueue.list() });
   });
+  // @write-domain:none
   router.post('/work-queue/rescore', (_req, res) => {
     if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
       res.status(503).json({ error: 'work queue is not enabled' });
